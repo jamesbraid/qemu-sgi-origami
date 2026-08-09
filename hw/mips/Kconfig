@@ -35,6 +35,11 @@ config JAZZ
     select DS1225Y
     select JAZZ_LED
 
+config SGI_SN0
+    bool
+    default y
+    depends on MIPS64 && TARGET_BIG_ENDIAN
+
 config FULOONG
     bool
     default y
