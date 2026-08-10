@@ -5,9 +5,6 @@
  * Skeleton: one node, CPU and node-0 memory only. The SN0 physical
  * address space is NASID-windowed; until the Hub model exists, node 0
  * memory is mapped at its node-local base only.
- *
- * The CPU is an R4000 placeholder until the R10000 model lands in
- * target/mips.
  */
 
 #include "qemu/osdep.h"
@@ -19,10 +16,12 @@
 #include "cpu.h"
 
 /*
- * 100 MHz hub clock feeding a 180 MHz R10000 on a stock Origin 200;
- * the placeholder R4000 just needs a plausible input clock.
+ * A stock Origin 200 runs its R10000 at 180 MHz and its hub at 90 MHz. The
+ * processor's own counter runs at half the processor clock, which is what the
+ * CPU model's counter divisor expresses, so this is the input that counter is
+ * derived from.
  */
-#define SN0_CPU_REFCLK_HZ (100 * 1000 * 1000)
+#define SN0_CPU_REFCLK_HZ (180 * 1000 * 1000)
 
 static void sn0_init(MachineState *machine)
 {
@@ -47,7 +46,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = 1;
     mc->default_ram_size = 256 * MiB;
     mc->default_ram_id = "sn0.node0.ram";
-    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R4000");
+    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
 }
 
 static const TypeInfo origin200_type = {
