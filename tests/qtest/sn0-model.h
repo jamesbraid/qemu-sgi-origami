@@ -300,8 +300,6 @@ static const uint8_t sn0_model_graph_image[SN0_MODEL_GRAPH_SPAN] = {
  * Sentinel-terminated: an empty list is the goal, and must still build.
  */
 static const SN0ModelDivergence sn0_model_divergences[] = {
-    { 0x4020, 8, 0x9200000008000000ULL, "console.config_base", "cpu-r10k, with the datasheet owner" },
-    { 0x4028, 8, 0x9200000008000000ULL, "console.memory_base", "cpu-r10k, with the datasheet owner" },
     { 0, 0, 0, NULL, NULL },
 };
 
