@@ -1079,6 +1079,13 @@ typedef struct CPUArchState {
     target_ulong CP0_XContext;
     int32_t CP0_Framemask;
 /*
+ * CP0 Register 22, the R10000 family's Diagnostic register. Architecturally 64
+ * bits wide, but every field it defines lies in the low half and the rest is
+ * reserved, so the low half is all there is to store.
+ */
+    int32_t CP0_Diagnostic;
+#define CP0DI_BPMode 16  /* 17..16 branch prediction algorithm, read/write */
+/*
  * CP0 Register 23
  */
     int32_t CP0_Debug;
@@ -1107,7 +1114,13 @@ typedef struct CPUArchState {
 /*
  * CP0 Register 25
  */
-    int32_t CP0_Performance0;
+    /*
+     * Register 25 holds two counters and their two control registers, chosen
+     * by the selector: even selectors are the control registers and odd ones
+     * the counters. The R10000 family reaches the same four through its own
+     * move instructions, whose low bits land in the same place.
+     */
+    int32_t CP0_Performance[4];
 /*
  * CP0 Register 26
  */

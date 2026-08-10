@@ -1351,7 +1351,40 @@ void helper_mtc0_xcontext(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_framemask(CPUMIPSState *env, target_ulong arg1)
 {
-    env->CP0_Framemask = arg1; /* XXX */
+    /*
+     * Sixteen bits, masking physical address bits 39:24 out of an entry as it
+     * is written to the TLB. The rest of the register is ignored on write and
+     * reads as zero. The masking itself is not modeled; a guest that writes
+     * zero here, which is what one does, gets the same behaviour either way.
+     */
+    env->CP0_Framemask = arg1 & 0xffff;
+}
+
+void helper_mtc0_diagnostic(CPUMIPSState *env, target_ulong arg1)
+{
+    /*
+     * Of the twelve fields in the R10000 family's Diagnostic register only the
+     * branch prediction algorithm control is writable; the rest report branch
+     * cache and instruction TLB state, and the gaps between them are reserved
+     * and read as zero. None of that state exists here, so the writable field
+     * is the whole of what this register holds.
+     */
+    env->CP0_Diagnostic = arg1 & (3 << CP0DI_BPMode);
+}
+
+void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
+                                  uint32_t sel)
+{
+    if (sel & 1) {
+        /* A counter: 32 bits wide, and nothing here increments it. */
+        env->CP0_Performance[sel] = arg1;
+    } else {
+        /*
+         * A control register: an event number, an interrupt enable, and one
+         * mode bit per privilege level.
+         */
+        env->CP0_Performance[sel] = arg1 & 0x1ff;
+    }
 }
 
 void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
@@ -1383,7 +1416,7 @@ void helper_mttc0_debug(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_performance0(CPUMIPSState *env, target_ulong arg1)
 {
-    env->CP0_Performance0 = arg1 & 0x000007ff;
+    env->CP0_Performance[0] = arg1 & 0x000007ff;
 }
 
 void helper_mtc0_errctl(CPUMIPSState *env, target_ulong arg1)

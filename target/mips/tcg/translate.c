@@ -5125,7 +5125,15 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
 
-    if (sel != 0) {
+    /*
+     * On the R10000 family the selector bits of a coprocessor 0 move to or from
+     * register 25 are not the MIPS32 register selector; they are part of that
+     * processor's own instructions for reaching its two performance counters
+     * and their two control registers. Every other register keeps the rule that
+     * a nonzero selector needs MIPS32.
+     */
+    if (sel != 0 &&
+        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -5677,8 +5685,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        tcg_gen_movi_tl(arg, 0); /* unimplemented */
-        register_name = "'Diagnostic"; /* implementation dependent */
+        gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
+        register_name = "Diagnostic"; /* implementation dependent */
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -5730,21 +5738,24 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_25:
         switch (sel) {
         case CP0_REG25__PERFCTL0:
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance0));
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[0]));
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
-            /* gen_helper_mfc0_performance1(arg); */
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[1]));
             register_name = "Performance1";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCTL1:
-            /* gen_helper_mfc0_performance2(arg); */
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[2]));
             register_name = "Performance2";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCNT1:
-            /* gen_helper_mfc0_performance3(arg); */
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[3]));
             register_name = "Performance3";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCTL2:
             /* gen_helper_mfc0_performance4(arg); */
             register_name = "Performance4";
@@ -5880,7 +5891,15 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     const char *register_name = "invalid";
     bool icount;
 
-    if (sel != 0) {
+    /*
+     * On the R10000 family the selector bits of a coprocessor 0 move to or from
+     * register 25 are not the MIPS32 register selector; they are part of that
+     * processor's own instructions for reaching its two performance counters
+     * and their two control registers. Every other register keeps the rule that
+     * a nonzero selector needs MIPS32.
+     */
+    if (sel != 0 &&
+        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -6410,7 +6429,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        /* ignored */
+        gen_helper_mtc0_diagnostic(tcg_env, arg);
         register_name = "Diagnostic"; /* implementation dependent */
         break;
     case CP0_REGISTER_23:
@@ -6481,17 +6500,13 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
-            /* gen_helper_mtc0_performance1(arg); */
-            register_name = "Performance1";
-            goto cp0_unimplemented;
         case CP0_REG25__PERFCTL1:
-            /* gen_helper_mtc0_performance2(arg); */
-            register_name = "Performance2";
-            goto cp0_unimplemented;
         case CP0_REG25__PERFCNT1:
-            /* gen_helper_mtc0_performance3(arg); */
-            register_name = "Performance3";
-            goto cp0_unimplemented;
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                             tcg_constant_i32(sel));
+            register_name = "Performance";
+            break;
         case CP0_REG25__PERFCTL2:
             /* gen_helper_mtc0_performance4(arg); */
             register_name = "Performance4";
@@ -6632,7 +6647,15 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
 
-    if (sel != 0) {
+    /*
+     * On the R10000 family the selector bits of a coprocessor 0 move to or from
+     * register 25 are not the MIPS32 register selector; they are part of that
+     * processor's own instructions for reaching its two performance counters
+     * and their two control registers. Every other register keeps the rule that
+     * a nonzero selector needs MIPS32.
+     */
+    if (sel != 0 &&
+        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -7150,8 +7173,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        tcg_gen_movi_tl(arg, 0); /* unimplemented */
-        register_name = "'Diagnostic"; /* implementation dependent */
+        gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
+        register_name = "Diagnostic"; /* implementation dependent */
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -7202,21 +7225,24 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_25:
         switch (sel) {
         case CP0_REG25__PERFCTL0:
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance0));
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[0]));
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
-            /* gen_helper_dmfc0_performance1(arg); */
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[1]));
             register_name = "Performance1";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCTL1:
-            /* gen_helper_dmfc0_performance2(arg); */
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[2]));
             register_name = "Performance2";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCNT1:
-            /* gen_helper_dmfc0_performance3(arg); */
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[3]));
             register_name = "Performance3";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCTL2:
             /* gen_helper_dmfc0_performance4(arg); */
             register_name = "Performance4";
@@ -7347,7 +7373,15 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     const char *register_name = "invalid";
     bool icount;
 
-    if (sel != 0) {
+    /*
+     * On the R10000 family the selector bits of a coprocessor 0 move to or from
+     * register 25 are not the MIPS32 register selector; they are part of that
+     * processor's own instructions for reaching its two performance counters
+     * and their two control registers. Every other register keeps the rule that
+     * a nonzero selector needs MIPS32.
+     */
+    if (sel != 0 &&
+        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -7869,7 +7903,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        /* ignored */
+        gen_helper_mtc0_diagnostic(tcg_env, arg);
         register_name = "Diagnostic"; /* implementation dependent */
         break;
     case CP0_REGISTER_23:
@@ -7938,17 +7972,13 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
-            /* gen_helper_mtc0_performance1(tcg_env, arg); */
-            register_name = "Performance1";
-            goto cp0_unimplemented;
         case CP0_REG25__PERFCTL1:
-            /* gen_helper_mtc0_performance2(tcg_env, arg); */
-            register_name = "Performance2";
-            goto cp0_unimplemented;
         case CP0_REG25__PERFCNT1:
-            /* gen_helper_mtc0_performance3(tcg_env, arg); */
-            register_name = "Performance3";
-            goto cp0_unimplemented;
+            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                             tcg_constant_i32(sel));
+            register_name = "Performance";
+            break;
         case CP0_REG25__PERFCTL2:
             /* gen_helper_mtc0_performance4(tcg_env, arg); */
             register_name = "Performance4";
