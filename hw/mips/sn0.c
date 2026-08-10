@@ -631,9 +631,19 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     stq_be_p(hub + 0x58, SN0_HUB_FREQ_HZ);      /* Hub clock in hertz */
 
     /*
-     * The memory bank. Eight bank sizes, which is the count for the addressing
-     * mode this machine runs in — the guest reads which mode from a Hub
-     * register, so the mode and the array length have to agree.
+     * The memory bank, in the eight-bank layout the addressing mode this
+     * machine reports calls for. The mode is not just a count: the other
+     * mode's record is eight bytes shorter, so it moves the directory
+     * attribute too, and a guest reading four bank sizes out of a record
+     * holding eight takes the fifth bank's size for the attribute while
+     * separately computing every node-relative address with the wrong shift.
+     * One guest cannot even adapt, its bank count being fixed when the kernel
+     * is built.
+     *
+     * The guest reads the mode from the Hub's network-interface status
+     * register, which makes this layout conditional on that register rather
+     * than on anything visible here. The firmware test asserts the two
+     * together so neither can be changed alone.
      */
     mem = sn0_component_at(graph, 2);
     stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */

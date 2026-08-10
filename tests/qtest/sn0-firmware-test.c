@@ -51,6 +51,22 @@
 #define BOARD_LOCAL         1
 #define COMP_ENABLED        1
 #define COMP_PROCESSOR      1
+#define COMP_MEMORY         3
+#define COMP_MEMORY_INDEX   2
+
+/*
+ * The Hub's network-interface status register, reached through the crossbar's
+ * widget-1 window at an address that resolves to the reading processor's own
+ * node. Its more-nodes bit is the addressing mode.
+ */
+#define HUB_LOCAL           (0x20000000000ULL + 0x01000000)
+#define NI_STATUS           0x600000
+#define NI_MORE_NODES       (1ULL << 18)
+
+/* Memory-component fields, in the eight-bank layout M mode calls for. */
+#define MEM_TOTAL_MB        0x38
+#define MEM_BANK_SIZES      0x3c
+#define MEM_BANKS           8
 
 #define CONSOLE_PORT_OFFSET 0x178
 #define CONSOLE_PORT_LIMIT  0x380       /* at or above: the later controller */
@@ -181,6 +197,52 @@ static void test_components_enabled(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The memory component's layout is conditional on a Hub register, and nothing
+ * about the structure says so. A guest reads the addressing mode from the Hub's
+ * network-interface status register and parses the memory component differently
+ * depending on the answer: in M mode eight bank sizes with the directory
+ * attribute behind them, in N mode four bank sizes and a record eight bytes
+ * shorter, so the mode does not merely change a count, it moves the attribute
+ * and resizes the record. One guest has no runtime choice at all and is built
+ * for eight.
+ *
+ * So the two have to be checked together or the pair can drift: the machine
+ * could start reporting N mode and every assertion about the component would
+ * still pass, and a guest would read the fifth bank's size where it expects the
+ * attribute while separately computing every node-relative address with the
+ * wrong shift. That bit has already been wrong once in this machine's history,
+ * when the Hub was realized without a bus and never reset, so its reset value
+ * read as N mode.
+ */
+static void test_memory_layout_matches_addressing_mode(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 256");
+    uint64_t mem = GRAPH_COMPONENTS + COMP_MEMORY_INDEX * GRAPH_COMP_STRIDE;
+    unsigned int i;
+
+    /* The condition the eight-bank layout below depends on. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_MORE_NODES,
+                    ==, 0);
+
+    g_assert_cmphex(qtest_readb(qts, mem + COMP_TYPE), ==, COMP_MEMORY);
+    g_assert_cmphex(qtest_readw(qts, mem + MEM_TOTAL_MB), ==, 256);
+    g_assert_cmphex(qtest_readw(qts, mem + MEM_BANK_SIZES), ==, 256);
+
+    /*
+     * Every bank slot after the first is zero, which bounds the damage if the
+     * mode bit ever disagrees with this layout after all: the slot an N-mode
+     * guest would read as the directory attribute is one of these, so it would
+     * read a zero attribute rather than a bank size wearing an attribute's
+     * clothes.
+     */
+    for (i = 1; i < MEM_BANKS; i++) {
+        g_assert_cmphex(qtest_readw(qts, mem + MEM_BANK_SIZES + i * 2), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
 static void test_board_list(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -242,6 +304,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/firmware/signatures", NULL, test_signatures);
     qtest_add_data_func("sn0/firmware/components-enabled", NULL,
                         test_components_enabled);
+    qtest_add_data_func("sn0/firmware/memory-layout-matches-addressing-mode",
+                        NULL, test_memory_layout_matches_addressing_mode);
     qtest_add_data_func("sn0/firmware/board-list", NULL, test_board_list);
 
     return g_test_run();
