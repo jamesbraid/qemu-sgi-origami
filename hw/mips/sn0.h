@@ -42,11 +42,19 @@
 #define SN0_SPACE_MEMSPEC   SN0_SPACE(3)  /* uncached attribute 2 */
 
 /*
- * Node memory fills the bottom of a node's window in up to eight banks of
- * 512 MB.
+ * Node memory fills the bottom of a node's window in up to eight banks of 512
+ * MB.
  */
 #define SN0_MEM_BANK_SIZE   (512 * MiB)
 #define SN0_MEM_BANKS       8
+
+/*
+ * The Hub's register window, at both halves of the crossbar's widget 1 small
+ * window. The lower half resolves to the reading processor's own node whatever
+ * node number the address carries; the upper half names a node.
+ */
+#define SN0_HUB_LOCAL_WINDOW 0x01000000
+#define SN0_HUB_NODE_WINDOW  0x01800000
 
 /*
  * The boot flash: one megabyte, and the guest sees it two ways. The processor's
