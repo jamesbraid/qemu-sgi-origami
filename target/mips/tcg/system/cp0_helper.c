@@ -652,6 +652,17 @@ void helper_mtc0_vpeopt(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_entrylo0(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * A 32-bit write assigns rather than merges, so on the R10000 family it
+     * clears an uncached attribute that a doubleword write had set. The manual
+     * says only that the attribute cannot be programmed from 32-bit user or
+     * supervisor mode, not that a 32-bit write clears one; a guest that set the
+     * attribute with a doubleword write and then updated the frame number with
+     * a word write would lose the space it had named. Left as it is because
+     * both operating systems use the doubleword form throughout their refill
+     * paths, so nothing reaches it, but it is a divergence rather than a
+     * decision.
+     */
     /* 1k pages not implemented */
     target_ulong rxi = arg1 & (env->CP0_PageGrain & (3u << CP0PG_XIE));
     env->CP0_EntryLo0 = (arg1 & MTC0_ENTRYLO_MASK(env))

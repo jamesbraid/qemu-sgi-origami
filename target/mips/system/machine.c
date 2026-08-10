@@ -214,7 +214,7 @@ static int get_tlb(QEMUFile *f, void *pv, size_t size,
                    const VMStateField *field)
 {
     r4k_tlb_t *v = pv;
-    uint16_t flags;
+    uint32_t flags;
 
     if (target_long_bits() == 64) {
         v->VPN = qemu_get_be64(f);
@@ -224,10 +224,17 @@ static int get_tlb(QEMUFile *f, void *pv, size_t size,
     qemu_get_be32s(f, &v->PageMask);
     qemu_get_be16s(f, &v->ASID);
     qemu_get_be32s(f, &v->MMID);
-    qemu_get_be16s(f, &flags);
+    qemu_get_be32s(f, &flags);
     v->G = (flags >> 10) & 1;
-    v->C0 = (flags >> 7) & 3;
-    v->C1 = (flags >> 4) & 3;
+    /*
+     * Three bits each, not two: a cache algorithm runs to seven, and reading
+     * only two of its bits turned an uncached accelerated entry into a
+     * cacheable one on the way back in.
+     */
+    v->C0 = (flags >> 7) & 7;
+    v->C1 = (flags >> 4) & 7;
+    v->UC0 = (flags >> 16) & 3;
+    v->UC1 = (flags >> 18) & 3;
     v->V0 = (flags >> 3) & 1;
     v->V1 = (flags >> 2) & 1;
     v->D0 = (flags >> 1) & 1;
@@ -250,7 +257,14 @@ static int put_tlb(QEMUFile *f, void *pv, size_t size,
 
     uint16_t asid = v->ASID;
     uint32_t mmid = v->MMID;
-    uint16_t flags = ((v->EHINV << 15) |
+    /*
+     * The sixteen bits this used to be were completely full, so the uncached
+     * attribute goes above them rather than squeezing in. Everything below bit
+     * 16 keeps the position it always had.
+     */
+    uint32_t flags = ((v->UC1 << 18) |
+                      (v->UC0 << 16) |
+                      (v->EHINV << 15) |
                       (v->RI1 << 14) |
                       (v->RI0 << 13) |
                       (v->XI1 << 12) |
@@ -271,7 +285,7 @@ static int put_tlb(QEMUFile *f, void *pv, size_t size,
     qemu_put_be32s(f, &v->PageMask);
     qemu_put_be16s(f, &asid);
     qemu_put_be32s(f, &mmid);
-    qemu_put_be16s(f, &flags);
+    qemu_put_be32s(f, &flags);
     qemu_put_be64s(f, &v->PFN[0]);
     qemu_put_be64s(f, &v->PFN[1]);
 
@@ -292,8 +306,15 @@ static const VMStateInfo vmstate_info_tlb = {
 
 static const VMStateDescription vmstate_tlb = {
     .name = "cpu/tlb",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    /*
+     * Version 4 widened the flags word to carry the uncached attribute. A
+     * version 3 stream is refused rather than read, because the attribute would
+     * come back zero, and zero is not memory: it names the Hub, so a restored
+     * guest would find every mapped uncached page pointing at the wrong space
+     * without any indication that it had happened.
+     */
+    .version_id = 4,
+    .minimum_version_id = 4,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(nb_tlb, CPUMIPSTLBContext),
         VMSTATE_UINT32(tlb_in_use, CPUMIPSTLBContext),
