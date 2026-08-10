@@ -15,6 +15,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
+#include "qemu/datadir.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "cpu.h"
@@ -189,8 +190,28 @@ static void sn0_init(MachineState *machine)
                                 SN0_SPACE_HUB + node + SN0_FLASH_HUB,
                                 &s->flash_hub_view);
 
+    /*
+     * A firmware image, if one was supplied, replaces what this file would
+     * otherwise synthesize. Both go into the same buffer and reach the flash as
+     * one blob, so there is never a question of which of two writers lands
+     * last. An image shorter than the flash leaves the synthesized bytes behind
+     * it, which is what a partly programmed flash looks like.
+     */
     flash = g_malloc0(SN0_FLASH_SIZE);
     sn0_build_flash(flash);
+
+    if (machine->firmware) {
+        char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+        ssize_t size = path ? load_image_size(path, flash, SN0_FLASH_SIZE) : -1;
+
+        if (size < 0) {
+            error_report("origin200: cannot read the firmware image '%s'",
+                         machine->firmware);
+            exit(EXIT_FAILURE);
+        }
+        g_free(path);
+    }
+
     rom_add_blob_fixed("sn0.flash", flash, SN0_FLASH_SIZE,
                        node + SN0_FLASH_LOCAL);
     g_free(flash);
