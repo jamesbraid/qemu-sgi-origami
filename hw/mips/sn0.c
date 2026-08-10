@@ -631,7 +631,15 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      */
     cpu = sn0_component_at(graph, 0);
     stw_be_p(cpu + 0x38, 0x0900);               /* identification, low half */
-    stw_be_p(cpu + 0x3a, 0x0900);               /* floating-point revision */
+    /*
+     * The floating-point unit's implementation and revision register. It holds
+     * the same value as the processor's identification for a reason rather than
+     * by a slip of the keyboard: the unit is on the same die and carries the
+     * same implementation number, nine, with revision zero. This is what the
+     * CPU model reports through that register, so a guest comparing the two
+     * finds them agreeing, which is the point of writing it over zero.
+     */
+    stw_be_p(cpu + 0x3a, 0x0900);
     stw_be_p(cpu + 0x3c, 180);                  /* clock in megahertz */
     stw_be_p(cpu + 0x3e, 1);                    /* secondary cache, megabytes */
     stw_be_p(cpu + 0x40, 90);                   /* secondary cache clock */
