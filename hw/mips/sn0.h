@@ -138,7 +138,16 @@
 #define SN0_GDA_SIGNATURE       0x58464552  /* "XFER" */
 #define SN0_GDA_VERSION         2
 #define SN0_GDA_NODE_TABLE      0x80
-#define SN0_GDA_NODES           256
+/*
+ * The table is 256 bytes of signed sixteen-bit node identifiers, so 128 of
+ * them, and the width is the whole point: a guest indexes it with a stride of
+ * two and reads each entry with a signed halfword load, then skips the entry if
+ * it is negative. Written a byte per entry instead, the first entry reads as
+ * 0x00ff, which is positive, so nothing is skipped and the guest goes looking
+ * for a node numbered 255.
+ */
+#define SN0_GDA_NODES           128
+#define SN0_GDA_NODE_ABSENT     0xffff
 #define SN0_FIRST_FREE          0x19000
 
 /*
