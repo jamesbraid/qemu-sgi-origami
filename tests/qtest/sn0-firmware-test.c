@@ -71,13 +71,14 @@
 #define MEM_BANKS           8
 
 /*
- * The register offset that reaches serial port A: the I/O controller's serial
- * block sits in a window at 0x20000 with port A at 0x178 inside it. The low
- * twelve bits, 0x178 on their own, are the generation discriminator and not a
- * register.
+ * The console's address within widget 8, composed: the I/O bridge's window for
+ * the third device on its bus, plus serial port A inside the controller. A real
+ * Origin 200 reports its console at this address.
  */
-#define CONSOLE_PORT_OFFSET 0x20178
-#define CONSOLE_PORT_MASK   0xfffff     /* the part that reaches hardware */
+#define BRIDGE_DEVICE2      0x600000
+#define IOC3_SERIAL_A       0x020178
+#define CONSOLE_IN_WIDGET   (BRIDGE_DEVICE2 + IOC3_SERIAL_A)
+#define CONSOLE_PORT_MASK   0xfffff     /* the offset the guest drives */
 #define CONSOLE_PORT_LIMIT  0x380       /* at or above: the later controller */
 #define CONSOLE_WIDGET      8
 #define CONSOLE_BAUD        9600
@@ -102,25 +103,28 @@ static void test_console_port_offset(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t base = qtest_readq(qts, CONFIG_GRAPH + GRAPH_CONSOLE_OFF);
-    uint64_t port = base & CONSOLE_PORT_MASK;
+    uint64_t in_widget = base & 0xffffff;
 
     /*
-     * Assert the whole twenty bits, because that is the part reaching a
-     * register. This test used to mask twelve, and twelve is wrong in the one
-     * way that matters: the guest uses the low twelve to decide which
-     * generation of I/O controller it has and the low twenty to decide which
-     * register to write, and 0x178 and 0x20178 share their low twelve. So a
-     * twelve-bit assertion accepted the one wrong answer available: a guest
-     * that identified its console correctly, then drove an address answering
-     * nothing and took a bus error setting 8N1 on a port not there.
+     * Assert the composed address, then each mask the guest applies to it. Two
+     * wrong values have already been written into this field and every check
+     * short of the whole address accepted at least one of them.
      *
-     * A test that passes on the broken value is worse than no test, because it
-     * is cited as evidence the field is right.
+     * 0x178 alone is the generation discriminator and reaches no register.
+     * 0x20178 is the right register offset inside the controller but, without
+     * the bridge's device window above it, lands in the bridge's own PCI
+     * configuration space rather than at any device. Both keep 0x178 in the low
+     * twelve bits, the only part a guest announces a decision about, so both
+     * produce a machine that identifies its console correctly and then writes
+     * 8N1 to something that is not a serial port.
      */
-    g_assert_cmphex(port, ==, CONSOLE_PORT_OFFSET);
+    g_assert_cmphex(in_widget, ==, CONSOLE_IN_WIDGET);
 
-    /* The generation check the guest makes, which the above does not imply. */
-    g_assert_cmphex(port & 0xfff, <, CONSOLE_PORT_LIMIT);
+    /* The register offset the guest drives, after its twenty-bit split. */
+    g_assert_cmphex(base & CONSOLE_PORT_MASK, ==, IOC3_SERIAL_A);
+
+    /* And the generation check, which neither of the above implies. */
+    g_assert_cmphex(base & 0xfff, <, CONSOLE_PORT_LIMIT);
 
     /* The widget the console hangs off, which the descriptor repeats below. */
     g_assert_cmphex((base >> 24) & 0xff, ==, CONSOLE_WIDGET);

@@ -124,26 +124,31 @@
 #define SN0_COMP_ENABLED        1
 
 /*
- * The console's serial port, as an offset within the base-I/O widget. A guest
- * splits this address with two different masks and they mean different things,
- * which is the trap: the low twenty bits are the register offset that has to
- * reach hardware, while only the low twelve select which generation of I/O
- * controller it believes it has, and at or above 0x380 it reads a configuration
- * register this machine does not have.
+ * The console's serial port, as an offset within the base-I/O widget. It is a
+ * composed address and the composition is spelled out here because writing the
+ * total as one number is what went wrong twice.
  *
- * So both 0x178 and 0x20178 pass the generation check identically, because they
- * share their low twelve bits — and only one of them is a register. The I/O
- * controller puts its serial block in a window at 0x20000 with port A at 0x178
- * inside it, so 0x20178 is the address of the port's first 16550 register and
- * 0x178 is the discriminator value that identifies it.
+ * A guest splits this with two masks meaning different things. The low twenty
+ * bits are the register offset it drives; the low twelve of those select which
+ * generation of I/O controller it believes it has, and at 0x380 or above it
+ * reads a configuration register this machine does not have. The bits above
+ * twenty are the bus base it adds the offset back onto, so they must be right
+ * too, and they are invisible to both checks.
  *
- * This machine had the discriminator here. The guest identified its console
- * correctly, drove an address that answers nothing, and took a bus error on a
- * byte store of 0x03 to offset three — setting 8N1 on a port that was not
- * there — with nothing in the failure naming the console.
+ * Composed, this is widget 8's window, plus the I/O bridge's window for the
+ * third device on its bus, plus serial port A inside the controller. A real
+ * Origin 200 reports its console at exactly this address.
+ *
+ * Two earlier values were wrong here and both looked right. 0x178 alone is the
+ * generation discriminator and not a register. 0x20178 is the register offset
+ * within the controller but lands, unqualified, in the bridge's own PCI
+ * configuration window rather than at any device. Both keep 0x178 in the low
+ * twelve bits, so both pass the only check a guest announces.
  */
-#define SN0_CONSOLE_PORT_OFFSET 0x20178
-#define SN0_CONSOLE_PORT_MASK   0xfffff  /* the part that reaches hardware */
+#define SN0_BRIDGE_DEVICE2      0x600000  /* the third device's window */
+#define SN0_IOC3_SERIAL_A       0x020178  /* serial port A in the controller */
+#define SN0_CONSOLE_PORT_OFFSET (SN0_BRIDGE_DEVICE2 + SN0_IOC3_SERIAL_A)
+#define SN0_CONSOLE_PORT_MASK   0xfffff   /* the part the guest drives */
 #define SN0_CONSOLE_WIDGET      8
 #define SN0_CONSOLE_BAUD        9600
 #define SN0_GDA                 0x11000
