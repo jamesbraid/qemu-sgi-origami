@@ -15,6 +15,8 @@
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
+#include "hw/mips/bootloader.h"
+#include "elf.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "qemu/datadir.h"
@@ -31,6 +33,22 @@
  * derived from.
  */
 #define SN0_CPU_REFCLK_HZ (180 * 1000 * 1000)
+
+/*
+ * Where the firmware's own code sits inside the flash: clear of the ten entry
+ * points at the start and of the configuration block behind them, both of which
+ * the address map fixes.
+ */
+#define SN0_FLASH_BOOTLOADER 0x200
+
+/*
+ * Where the argument vector handed to a kernel goes. Low memory below the
+ * firmware structures and above the exception vectors a kernel installs. The
+ * structure work owns the final layout of this region; this is the one address
+ * in it that exists so far.
+ */
+#define SN0_ARGV_ADDR   0x800
+#define SN0_ARGV_STRING (SN0_ARGV_ADDR + 0x40)
 
 /* What the firmware configuration block says about this machine. */
 #define SN0_CPU_FREQ_HZ   180000000
@@ -99,6 +117,87 @@ static const MemoryRegionOps sn0_flash_ops = {
  * to run yet. The firmware that fills these arrives with the boot structure
  * work.
  */
+/*
+ * Where an address in a kernel's headers puts its bytes. A kernel is linked
+ * into the unmapped 64-bit window and its headers carry that address as both
+ * the virtual and the physical one, so taking the physical address at face
+ * value would place the image far outside any memory the machine has —
+ * silently, and the guest then executes whatever the untouched memory at its
+ * entry point holds.
+ *
+ * The translation is the processor's own: the physical address is the low forty
+ * bits, and the cache algorithm above them is not part of it. An uncached
+ * window keeps its attribute, so a kernel linked into one lands in that space
+ * rather than in memory, for the same reason a processor reference to it would.
+ */
+static uint64_t sn0_elf_to_phys(void *opaque, uint64_t addr)
+{
+    if ((addr >> 62) == 2) {                    /* the unmapped 64-bit window */
+        unsigned int cca = (addr >> 59) & 7;
+        uint64_t pa = addr & ((1ULL << 40) - 1);
+
+        if (cca == 2 || cca == 7) {     /* uncached, so it has an attribute */
+            return SN0_SPACE((((addr >> 57) & 3) + 1) & 3) | pa;
+        }
+        return pa;
+    }
+
+    /* Both compatibility segments reach the bottom of node-local memory. */
+    if (addr >= SN0_COMPAT_CACHED && addr < 0xffffffffc0000000ull) {
+        return addr & 0x1fffffff;
+    }
+
+    return addr;
+}
+
+/*
+ * Hand a loaded kernel control with the convention it expects: the argument
+ * count in the first argument register and the vector in the second. A real
+ * firmware reaches this point after all its own work; ours has none yet, so the
+ * reset entry jumps straight here.
+ *
+ * The jump at the reset entry has to be two instructions, which is all the
+ * eight bytes between entry points allow, so it is a region-relative jump
+ * rather than an absolute one. Both addresses are in the same region of the
+ * flash, so that reaches.
+ */
+static void sn0_build_kernel_handoff(uint8_t *flash, hwaddr flash_vaddr,
+                                     uint64_t entry, unsigned argc,
+                                     hwaddr argv)
+{
+    void *p = flash + SN0_FLASH_BOOTLOADER;
+    hwaddr target = flash_vaddr + SN0_FLASH_BOOTLOADER;
+
+    stl_be_p(flash, 0x08000000 | ((target >> 2) & 0x03ffffff)); /* j target */
+    stl_be_p(flash + 4, 0);                                     /* delay slot */
+
+    /*
+     * Hand over in 64-bit kernel mode. A kernel is linked into the unmapped
+     * 64-bit window, so the jump to its entry point is itself a 64-bit
+     * reference and takes an address error unless extended kernel addressing is
+     * on, which it is not out of reset. Clearing error level at the same
+     * time puts the user segment back under the translation buffer, and
+     * clearing the boot-exception-vector bit points exceptions at the
+     * addresses a kernel is about to install handlers at rather than into
+     * this flash.
+     *
+     * The register used is one the architecture reserves for kernel scratch, so
+     * nothing a kernel expects on entry is disturbed.
+     */
+    stl_be_p(p, 0x341a0000 | (1 << CP0St_KX));  /* ori k0, zero, KX */
+    p = (uint8_t *)p + 4;
+    stl_be_p(p, 0x409a6000);                    /* mtc0 k0, CP0_Status */
+    p = (uint8_t *)p + 4;
+
+    bl_gen_jump_kernel(&p,
+                       false, 0,          /* the kernel sets up its own stack */
+                       true, argc,
+                       true, argv,
+                       false, 0,
+                       false, 0,
+                       entry);
+}
+
 static void sn0_build_flash(uint8_t *flash)
 {
     static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
@@ -239,6 +338,42 @@ static void sn0_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
         g_free(path);
+    }
+
+    /*
+     * A kernel, loaded straight from an ELF image, which is the boot path every
+     * test and every guest we care about uses. Booting from a disk is the
+     * firmware's job and arrives with the disk.
+     */
+    if (machine->kernel_filename) {
+        uint64_t entry;
+        ssize_t size = load_elf(machine->kernel_filename, NULL,
+                                sn0_elf_to_phys, NULL, &entry, NULL, NULL,
+                                NULL, ELFDATA2MSB, EM_MIPS, 1, 0);
+
+        if (size < 0) {
+            error_report("origin200: cannot load the kernel '%s'",
+                         machine->kernel_filename);
+            exit(EXIT_FAILURE);
+        }
+
+        /*
+         * One argument, the kernel's own name, which is what a firmware that
+         * loaded it by name would pass. Nothing on the path to a console reads
+         * it, but the count and the vector are both read, so both are real.
+         */
+        rom_add_blob_fixed("sn0.argv.string", machine->kernel_filename,
+                           strlen(machine->kernel_filename) + 1,
+                           node + SN0_ARGV_STRING);
+        {
+            uint64_t argv0 = cpu_to_be64(SN0_COMPAT_CACHED + SN0_ARGV_STRING);
+
+            rom_add_blob_fixed("sn0.argv", &argv0, sizeof(argv0),
+                               node + SN0_ARGV_ADDR);
+        }
+
+        sn0_build_kernel_handoff(flash, (hwaddr)(int32_t)0xbfc00000, entry, 1,
+                                 SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
     }
 
     rom_add_blob_fixed("sn0.flash", flash, SN0_FLASH_SIZE,

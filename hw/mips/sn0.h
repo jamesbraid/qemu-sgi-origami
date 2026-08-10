@@ -53,6 +53,13 @@
  * window. The lower half resolves to the reading processor's own node whatever
  * node number the address carries; the upper half names a node.
  */
+/*
+ * The cached compatibility segment, which reaches node-local physical zero. A
+ * pointer handed to a kernel has to be one it can dereference, and this is the
+ * segment both guests read low memory through.
+ */
+#define SN0_COMPAT_CACHED 0xffffffff80000000ull
+
 #define SN0_HUB_LOCAL_WINDOW 0x01000000
 #define SN0_HUB_NODE_WINDOW  0x01800000
 
