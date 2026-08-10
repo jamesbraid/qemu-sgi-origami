@@ -87,6 +87,8 @@
 #define GDA_SIGNATURE       0x58464552  /* "XFER" */
 #define GDA_VERSION         2
 #define GDA_NODE_TABLE      0x80
+#define GDA_NODES           64      /* the count this family is built with */
+#define GDA_NODE_ABSENT     0xffff
 
 /* Component record fields this file reads. */
 #define COMP_TYPE           0x00
@@ -281,6 +283,28 @@ static void test_memory_layout_matches_addressing_mode(const void *data)
      */
     for (i = 1; i < MEM_BANKS; i++) {
         g_assert_cmphex(qtest_readw(qts, mem + MEM_BANK_SIZES + i * 2), ==, 0);
+    }
+
+    /*
+     * The same bit decides how far a guest walks the node table, which is the
+     * mode's third consequence and the reason this test covers two structures
+     * rather than one. A guest declares capacity for 128 entries and clamps to
+     * that first, then clamps again to 64 in M mode, and only the second clamp
+     * keeps it inside a table this size. In N mode it would read 64 entries
+     * past the end, and because the area beyond is zeroed every one of them
+     * reads as node zero rather than as the negative marker that ends the walk.
+     * So it would not fault. It would quietly scan node zero sixty-four more
+     * times.
+     *
+     * What this loop catches is a table shorter than the guest will read, the
+     * dangerous direction. It does not catch a longer one, since reading the
+     * first sixty-four finds them all correct, and a longer table is not a
+     * hazard anyway, only a departure from what real firmware writes.
+     */
+    for (i = 0; i < GDA_NODES; i++) {
+        uint16_t entry = qtest_readw(qts, GDA + GDA_NODE_TABLE + i * 2);
+
+        g_assert_cmphex(entry, ==, i == 0 ? 0 : GDA_NODE_ABSENT);
     }
 
     qtest_quit(qts);
