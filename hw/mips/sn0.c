@@ -31,7 +31,7 @@
 #include "sn0.h"
 
 /*
- * A stock Origin 200 runs its R10000 at 180 MHz and its hub at 90 MHz. The
+ * A stock Origin 200 runs its R10000 at 180 MHz and its Hub at 90 MHz. The
  * processor's own counter runs at half the processor clock, which is what the
  * CPU model's counter divisor expresses, so this is the input that counter is
  * derived from.
