@@ -583,6 +583,14 @@ typedef struct CPUArchState {
     uint64_t PAMask;
 #define PAMASK_BASE ((1ULL << PABITS_BASE) - 1)
 
+/*
+ * Where the R10000 family's uncached attribute appears to the memory system.
+ * The processor drives those two bits beside the address rather than as part
+ * of it, so a machine that needs to tell the four uncached spaces apart sees
+ * them just above the physical address.
+ */
+#define MIPS_UNCACHED_WINDOW_SHIFT 40
+
     int32_t msair;
 #define MSAIR_ProcID    8
 #define MSAIR_Rev       0

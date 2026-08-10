@@ -176,11 +176,26 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
          * meant for node memory, for the Hub's own registers, for a crossbar
          * widget, or for a special memory operation.
          */
+        hwaddr window = 0;
+
         if (env->insn_flags & INSN_R10K) {
             unsigned int cca = (address >> 59) & 0x7;
 
             if (cca == 2 || cca == 7) {
+                /*
+                 * The attribute is a separate signal, not address, so it has
+                 * nowhere to live in a physical address. Give it one: the
+                 * memory system sees it above the physical address, which is
+                 * what lets a machine tell an uncached reference to memory
+                 * from one to a register on the other side of the Hub.
+                 * Attribute 3 is memory and is placed at window zero, so a
+                 * plain physical address still means memory and nothing that
+                 * does not use the attribute has to know about any of this.
+                 */
+                unsigned int attr = (address >> 57) & 3;
+
                 pa &= ~(3ULL << 57);
+                window = (hwaddr)((attr + 1) & 3) << MIPS_UNCACHED_WINDOW_SHIFT;
             }
         }
 
@@ -207,7 +222,7 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                 ret = get_seg_physical_address(env, physical, prot,
                                                real_address, access_type,
                                                mmu_idx, am, false, env->PAMask,
-                                               0);
+                                               window);
             } else {
                 ret = TLBRET_BADADDR;
             }
