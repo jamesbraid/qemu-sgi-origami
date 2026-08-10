@@ -95,6 +95,44 @@
 #define SN0_HW_DIR_GDA          3
 #define SN0_CONFIG_GRAPH        0x4000
 #define SN0_CONFIG_GRAPH_SIZE   0xc000
+
+/*
+ * Inside the graph: a header, a linked list of board records and the component
+ * records they point at. Every link is a 32-bit offset from the start of node
+ * memory, so the whole thing is position-independent within the node.
+ */
+#define SN0_GRAPH_MAGIC         0xbeedbabeULL
+#define SN0_GRAPH_CONSOLE_OFF   0x18    /* where the descriptor is embedded */
+#define SN0_GRAPH_BOARDS        0x4100
+#define SN0_GRAPH_BOARD_SIZE    0xc0
+#define SN0_GRAPH_COMPONENTS    0x4400
+#define SN0_GRAPH_COMP_STRIDE   0x80
+
+/* Board types: the high nibble is the class, the low nibble the type in it. */
+#define SN0_BOARD_NODE          0x11
+#define SN0_BOARD_MIDPLANE      0x41
+#define SN0_BOARD_BASE_IO       0x21
+#define SN0_BOARD_LOCAL         1       /* record kind */
+
+/* Component types, and the flag that stops a consumer skipping one. */
+#define SN0_COMP_PROCESSOR      1
+#define SN0_COMP_HUB            2
+#define SN0_COMP_MEMORY         3
+#define SN0_COMP_BRIDGE         5
+#define SN0_COMP_IO_CONTROLLER  6
+#define SN0_COMP_MODULE_SERIAL  26
+#define SN0_COMP_ENABLED        1
+
+/*
+ * The console. Its port offset is the second silent trap in this machine: a
+ * guest decides which generation of I/O controller it is talking to from the
+ * low twelve bits of this address alone, and at or above 0x380 it reads a
+ * configuration register that does not exist here. An Origin 200's console port
+ * is at 0x178.
+ */
+#define SN0_CONSOLE_PORT_OFFSET 0x178
+#define SN0_CONSOLE_WIDGET      8
+#define SN0_CONSOLE_BAUD        9600
 #define SN0_GDA                 0x11000
 #define SN0_GDA_SIZE            0x400
 #define SN0_GDA_SIGNATURE       0x58464552  /* "XFER" */

@@ -493,6 +493,176 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
     }
 }
 
+/* One component record, with the fields every kind of component shares. */
+static void sn0_component(uint8_t *graph, unsigned int index, uint8_t type,
+                          uint8_t widget)
+{
+    uint8_t *c = graph + (SN0_GRAPH_COMPONENTS - SN0_CONFIG_GRAPH) +
+                 index * SN0_GRAPH_COMP_STRIDE;
+
+    c[0x00] = type;
+    c[0x01] = 1;                                /* record version */
+    /* Not optional: a component without this is skipped by every consumer. */
+    c[0x02] = SN0_COMP_ENABLED;
+    c[0x20] = widget;
+    stl_be_p(c + 0x1c, index);                  /* virtual identifier */
+    /*
+     * The back-pointer to a matching firmware component is read for every
+     * component a guest visits, so it is zero rather than left as whatever the
+     * buffer held.
+     */
+    stq_be_p(c + 0x28, 0);
+}
+
+static uint8_t *sn0_component_at(uint8_t *graph, unsigned int index)
+{
+    return graph + (SN0_GRAPH_COMPONENTS - SN0_CONFIG_GRAPH) +
+           index * SN0_GRAPH_COMP_STRIDE;
+}
+
+/*
+ * One board record, linked to the next. The list is terminated only by a zero
+ * next-board offset: a consumer reads the record first and checks afterwards,
+ * so there is no escape from a bad link. A board without the local-board kind
+ * is skipped entirely, components and all.
+ */
+static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
+                      unsigned int next, unsigned int first_component,
+                      unsigned int components)
+{
+    uint8_t *b = graph + (SN0_GRAPH_BOARDS - SN0_CONFIG_GRAPH) +
+                 index * SN0_GRAPH_BOARD_SIZE;
+    unsigned int i;
+
+    stl_be_p(b + 0x00, next);
+    b[0x04] = SN0_BOARD_LOCAL;
+    b[0x05] = type;
+    b[0x06] = 1;                                /* record version */
+    b[0x17] = components;
+    /*
+     * A board's components are addressed relative to the board's own node
+     * identifier rather than the node whose list is being walked, and that
+     * field also indexes a table with no bounds check, so it has to be right
+     * and in range on every board even here.
+     */
+    stw_be_p(b + 0x20, 0);
+    for (i = 0; i < components; i++) {
+        stl_be_p(b + 0x24 + i * 4,
+                 SN0_GRAPH_COMPONENTS + (first_component + i) *
+                 SN0_GRAPH_COMP_STRIDE);
+    }
+}
+
+/*
+ * The configuration graph: a header carrying the console descriptor inline,
+ * then the three boards a single-node Origin 200 has.
+ *
+ * The board list follows what a real machine of this generation emits rather
+ * than what would be tidiest. Its midplane board carries no crossbar component
+ * at all — just a module serial number — which is why a guest falling back
+ * to assuming the Hub sits at a fixed widget is the normal path on this machine
+ * and not a degraded one.
+ */
+static void sn0_build_graph(MachineState *machine, hwaddr node)
+{
+    uint8_t *graph = g_malloc0(SN0_CONFIG_GRAPH_SIZE);
+    uint8_t *console = graph + SN0_GRAPH_CONSOLE_OFF;
+    uint8_t *cpu, *hub, *mem;
+    uint64_t total_mb = machine->ram_size / MiB;
+
+    stq_be_p(graph + 0x00, SN0_GRAPH_MAGIC);
+    /* The structure version, which real firmware writes as zero. */
+    stl_be_p(graph + 0x08, 0);
+    stl_be_p(graph + 0x0c, 0x48);               /* allocation arenas */
+    /*
+     * Redundant with the descriptor embedded below and it has to agree with it:
+     * a guest reaches the descriptor by adding this to the header's own
+     * address, so anything else points the console into the middle of the
+     * header.
+     */
+    stl_be_p(graph + 0x10, SN0_GRAPH_CONSOLE_OFF);
+    stl_be_p(graph + 0x14, SN0_GRAPH_BOARDS);
+
+    /*
+     * The console descriptor. The port offset is the trap: a guest picks which
+     * generation of I/O controller this is from the low twelve bits of the
+     * serial-port base and nothing else, and gets it wrong silently.
+     *
+     * The address is the crosstalk view of the base-I/O widget, which is where
+     * the controller will be once it exists. Nothing answers there yet, and
+     * nothing on the path to the console switch reads through it — the guest
+     * only takes the address apart.
+     */
+    stq_be_p(console + 0x00, 0x9200000000000000ULL |
+                             ((uint64_t)SN0_CONSOLE_WIDGET << 24) |
+                             SN0_CONSOLE_PORT_OFFSET);
+    stq_be_p(console + 0x08, 0x9200000000000000ULL |
+                             ((uint64_t)SN0_CONSOLE_WIDGET << 24));
+    stq_be_p(console + 0x10, 0x9200000000000000ULL |
+                             ((uint64_t)SN0_CONSOLE_WIDGET << 24));
+    stw_be_p(console + 0x18, SN0_CONSOLE_BAUD);
+    stl_be_p(console + 0x1c, 0);                /* console type */
+    stw_be_p(console + 0x20, 0);                /* node identifier */
+    console[0x22] = SN0_CONSOLE_WIDGET;
+    console[0x23] = 1;                          /* devices behind the bridge */
+
+    /* Board 0: the node board, with a processor, a Hub and a memory bank. */
+    sn0_board(graph, 0, SN0_BOARD_NODE,
+              SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3);
+    sn0_component(graph, 0, SN0_COMP_PROCESSOR, 0);
+    sn0_component(graph, 1, SN0_COMP_HUB, 0);
+    sn0_component(graph, 2, SN0_COMP_MEMORY, 0);
+
+    /*
+     * The processor's own fields, which are the only source a guest has for its
+     * clock and cache: with none readable its clock stays zero, which breaks
+     * its delay loop, and it dies just after its last printed line. The
+     * identification field is sixteen bits, so it carries the low half of the
+     * processor identification register and not the whole of it.
+     */
+    cpu = sn0_component_at(graph, 0);
+    stw_be_p(cpu + 0x38, 0x0900);               /* identification, low half */
+    stw_be_p(cpu + 0x3a, 0x0900);               /* floating-point revision */
+    stw_be_p(cpu + 0x3c, 180);                  /* clock in megahertz */
+    stw_be_p(cpu + 0x3e, 1);                    /* secondary cache, megabytes */
+    stw_be_p(cpu + 0x40, 90);                   /* secondary cache clock */
+
+    hub = sn0_component_at(graph, 1);
+    stq_be_p(hub + 0x58, SN0_HUB_FREQ_HZ);      /* Hub clock in hertz */
+
+    /*
+     * The memory bank. Eight bank sizes, which is the count for the addressing
+     * mode this machine runs in — the guest reads which mode from a Hub
+     * register, so the mode and the array length have to agree.
+     */
+    mem = sn0_component_at(graph, 2);
+    stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */
+    stw_be_p(mem + 0x3a, 0);                    /* bank-to-address mapping */
+    stw_be_p(mem + 0x3c, total_mb);             /* one populated bank */
+
+    /*
+     * Board 1: the midplane, carrying a module serial number and nothing else,
+     * which is what a real Origin 200 emits.
+     */
+    sn0_board(graph, 1, SN0_BOARD_MIDPLANE,
+              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1);
+    sn0_component(graph, 3, SN0_COMP_MODULE_SERIAL, 0);
+
+    /*
+     * Board 2: the base-I/O board, and the end of the list. Nothing on the path
+     * to the console switch reads it; it is here because the graph has to
+     * describe the machine that was actually built, and because the moment a
+     * console works this is what a guest walks looking for one.
+     */
+    sn0_board(graph, 2, SN0_BOARD_BASE_IO, 0, 4, 2);
+    sn0_component(graph, 4, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 5, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
+
+    rom_add_blob_fixed("sn0.graph", graph, SN0_CONFIG_GRAPH_SIZE,
+                       node + SN0_CONFIG_GRAPH);
+    g_free(graph);
+}
+
 /*
  * The structures a guest reads out of low memory before it has a console. Each
  * is written where the boot structures datasheet puts it, and each carries
@@ -572,6 +742,8 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
         gda[SN0_GDA_NODE_TABLE + i] = i == 0 ? 0 : 0xff;
     }
     rom_add_blob_fixed("sn0.gda", gda, sizeof(gda), node + SN0_GDA);
+
+    sn0_build_graph(machine, node);
 
     /* The memory descriptors, shaped as a real machine of this era reports. */
     mem[n].type = SN0_MEM_EXCEPTION_BLOCK;
