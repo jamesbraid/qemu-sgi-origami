@@ -264,3 +264,6 @@ config K230_DECOMP_GZIP
     bool
 
 source macio/Kconfig
+
+config SGI_HUB
+    bool

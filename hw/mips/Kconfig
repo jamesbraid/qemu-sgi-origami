@@ -39,6 +39,7 @@ config SGI_SN0
     bool
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
+    select SGI_HUB
 
 config FULOONG
     bool

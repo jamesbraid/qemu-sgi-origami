@@ -2,9 +2,9 @@
 /*
  * SGI Origin 200/2000 ("SN0", IP27) family machines.
  *
- * The bare machine: one node's memory and its boot flash, and nothing else
- * yet. The Hub, the crossbar and the I/O bridge grow into the address space
- * this file lays out.
+ * The bare machine: one node's memory and its boot flash, and nothing else yet.
+ * The Hub, the crossbar and the I/O bridge grow into the address space this
+ * file lays out.
  */
 
 #include "qemu/osdep.h"
@@ -15,7 +15,10 @@
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "qemu/datadir.h"
+#include "hw/misc/sgi-hub.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "cpu.h"
@@ -40,6 +43,9 @@ struct SN0MachineState {
 
     MemoryRegion flash;
     MemoryRegion flash_hub_view;
+    MemoryRegion hub_regs_node_view;
+
+    SGIHubState hub;
 };
 typedef struct SN0MachineState SN0MachineState;
 
@@ -197,6 +203,29 @@ static void sn0_init(MachineState *machine)
      * last. An image shorter than the flash leaves the synthesized bytes behind
      * it, which is what a partly programmed flash looks like.
      */
+    /*
+     * The Hub's register window, at both halves of the crossbar's widget 1
+     * small window. The lower half is how a guest reaches the Hub of whichever
+     * node it is running on without first learning its node number: the address
+     * carries node zero whoever forms it. The upper half names a node
+     * explicitly. On one node the two resolve to the same Hub, and both have to
+     * decode, because a guest uses one to read its processor number and the
+     * other to clear interrupt state in the same boot.
+     */
+    object_initialize_child(OBJECT(machine), "hub", &s->hub, TYPE_SGI_HUB);
+    qdev_prop_set_uint32(DEVICE(&s->hub), "nasid", 0);
+    sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
+
+    memory_region_add_subregion(system,
+                                SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,
+                                &s->hub.regs);
+    memory_region_init_alias(&s->hub_regs_node_view, NULL,
+                             "sn0.node0.hub.explicit", &s->hub.regs, 0,
+                             SGI_HUB_WINDOW_SIZE);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_XTALK + node + SN0_HUB_NODE_WINDOW,
+                                &s->hub_regs_node_view);
+
     flash = g_malloc0(SN0_FLASH_SIZE);
     sn0_build_flash(flash);
 

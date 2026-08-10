@@ -98,8 +98,8 @@ static void test_flash_two_views(const void *data)
 
     /*
      * The same bytes have to appear at both addresses. Comparing the whole
-     * configuration block rather than one field is what would catch two
-     * regions built separately from the same values.
+     * configuration block rather than one field is what would catch two regions
+     * built separately from the same values.
      */
     for (i = 0; i < 0x50; i += 4) {
         uint32_t reset_view = qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET + i);
