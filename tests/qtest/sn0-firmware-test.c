@@ -133,12 +133,21 @@ static void test_signatures(const void *data)
     g_assert_cmphex(qtest_readw(qts, GDA + 0x04), ==, GDA_VERSION);
 
     /*
-     * Node zero exists and is numbered zero; every other slot is marked absent.
-     * A slot left as zero would name node zero a second time, and a guest that
-     * believes in two nodes waits for a processor that will never answer.
+     * The node table, read the way a guest reads it: signed sixteen-bit
+     * identifiers at a stride of two, skipped when negative. Node zero exists
+     * and is numbered zero, and every slot after it is all ones so that the
+     * guest's signed load sees a negative number and stops.
+     *
+     * The width is the assertion, not a detail of it. Written a byte per entry
+     * the table still looks right byte for byte, but the guest's halfword load
+     * on the first entry pairs node zero with the absent marker beside it and
+     * reads 0x00ff, a positive 255 that no negative test rejects, so the guest
+     * goes scanning a node numbered 255 and dies on the first address it forms
+     * there. Reading halfwords here is what makes this test able to see that.
      */
-    g_assert_cmphex(qtest_readb(qts, GDA + GDA_NODE_TABLE), ==, 0);
-    g_assert_cmphex(qtest_readb(qts, GDA + GDA_NODE_TABLE + 1), ==, 0xff);
+    g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE + 2), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE + 4), ==, 0xffff);
 
     qtest_quit(qts);
 }

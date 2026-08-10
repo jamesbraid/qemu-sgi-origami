@@ -734,12 +734,20 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
      * either guest has: one walks it from entry zero and stops at the first
      * negative entry with no fallback, so entry zero has to be this node and
      * entry one has to be negative already.
+     *
+     * The entries are signed sixteen-bit identifiers. A guest reads each one
+     * with a signed halfword load and skips it when it is negative, so absent
+     * has to be all ones across both bytes: a single 0xff byte pairs with its
+     * neighbour and reads as a positive 255, which nothing rejects, and the
+     * guest then computes addresses on a node numbered 255 and faults on the
+     * first one it forms.
      */
     stl_be_p(gda + 0x00, SN0_GDA_SIGNATURE);
     stw_be_p(gda + 0x04, SN0_GDA_VERSION);
     stw_be_p(gda + 0x06, 0);                        /* master node */
     for (i = 0; i < SN0_GDA_NODES; i++) {
-        gda[SN0_GDA_NODE_TABLE + i] = i == 0 ? 0 : 0xff;
+        stw_be_p(gda + SN0_GDA_NODE_TABLE + i * 2,
+                 i == 0 ? 0 : SN0_GDA_NODE_ABSENT);
     }
     rom_add_blob_fixed("sn0.gda", gda, sizeof(gda), node + SN0_GDA);
 
