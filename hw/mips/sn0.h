@@ -124,13 +124,26 @@
 #define SN0_COMP_ENABLED        1
 
 /*
- * The console. Its port offset is the second silent trap in this machine: a
- * guest decides which generation of I/O controller it is talking to from the
- * low twelve bits of this address alone, and at or above 0x380 it reads a
- * configuration register that does not exist here. An Origin 200's console port
- * is at 0x178.
+ * The console's serial port, as an offset within the base-I/O widget. A guest
+ * splits this address with two different masks and they mean different things,
+ * which is the trap: the low twenty bits are the register offset that has to
+ * reach hardware, while only the low twelve select which generation of I/O
+ * controller it believes it has, and at or above 0x380 it reads a configuration
+ * register this machine does not have.
+ *
+ * So both 0x178 and 0x20178 pass the generation check identically, because they
+ * share their low twelve bits — and only one of them is a register. The I/O
+ * controller puts its serial block in a window at 0x20000 with port A at 0x178
+ * inside it, so 0x20178 is the address of the port's first 16550 register and
+ * 0x178 is the discriminator value that identifies it.
+ *
+ * This machine had the discriminator here. The guest identified its console
+ * correctly, drove an address that answers nothing, and took a bus error on a
+ * byte store of 0x03 to offset three — setting 8N1 on a port that was not
+ * there — with nothing in the failure naming the console.
  */
-#define SN0_CONSOLE_PORT_OFFSET 0x178
+#define SN0_CONSOLE_PORT_OFFSET 0x20178
+#define SN0_CONSOLE_PORT_MASK   0xfffff  /* the part that reaches hardware */
 #define SN0_CONSOLE_WIDGET      8
 #define SN0_CONSOLE_BAUD        9600
 #define SN0_GDA                 0x11000

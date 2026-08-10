@@ -7,12 +7,14 @@
  * its own failure, because a guest that cannot make sense of the graph stops
  * with a message. Four things do not, and those are what this file is for.
  *
- * The first is the console's serial-port base. A guest picks which generation
- * of I/O controller it has from the low twelve bits of that address and from
- * nothing else. An Origin 200's console port is at 0x178; at 0x380 or above a
- * guest decides it has the later controller and reads a configuration register
- * that does not exist on this machine. Both beliefs produce output, so no line
- * of a boot transcript distinguishes them.
+ * The first is the console's serial-port base, which a guest splits with two
+ * different masks that mean different things. The low twenty bits are the
+ * register offset that has to reach hardware; only the low twelve decide which
+ * generation of I/O controller it believes it has, and at 0x380 or above it
+ * reads a configuration register this machine does not have. Both beliefs
+ * produce output, so no line of a transcript distinguishes them. And because
+ * 0x178 and 0x20178 share their low twelve bits, a value can pass the
+ * generation check while reaching no register at all.
  *
  * The second is the console offset in the graph header, which is redundant with
  * the descriptor stored behind it. A guest reaches the descriptor by adding the
@@ -68,7 +70,14 @@
 #define MEM_BANK_SIZES      0x3c
 #define MEM_BANKS           8
 
-#define CONSOLE_PORT_OFFSET 0x178
+/*
+ * The register offset that reaches serial port A: the I/O controller's serial
+ * block sits in a window at 0x20000 with port A at 0x178 inside it. The low
+ * twelve bits, 0x178 on their own, are the generation discriminator and not a
+ * register.
+ */
+#define CONSOLE_PORT_OFFSET 0x20178
+#define CONSOLE_PORT_MASK   0xfffff     /* the part that reaches hardware */
 #define CONSOLE_PORT_LIMIT  0x380       /* at or above: the later controller */
 #define CONSOLE_WIDGET      8
 #define CONSOLE_BAUD        9600
@@ -93,14 +102,25 @@ static void test_console_port_offset(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t base = qtest_readq(qts, CONFIG_GRAPH + GRAPH_CONSOLE_OFF);
-    uint64_t port = base & 0xfff;
+    uint64_t port = base & CONSOLE_PORT_MASK;
 
     /*
-     * The one field in the whole of the synthesized firmware that a guest reads
-     * for a decision it never announces.
+     * Assert the whole twenty bits, because that is the part reaching a
+     * register. This test used to mask twelve, and twelve is wrong in the one
+     * way that matters: the guest uses the low twelve to decide which
+     * generation of I/O controller it has and the low twenty to decide which
+     * register to write, and 0x178 and 0x20178 share their low twelve. So a
+     * twelve-bit assertion accepted the one wrong answer available: a guest
+     * that identified its console correctly, then drove an address answering
+     * nothing and took a bus error setting 8N1 on a port not there.
+     *
+     * A test that passes on the broken value is worse than no test, because it
+     * is cited as evidence the field is right.
      */
     g_assert_cmphex(port, ==, CONSOLE_PORT_OFFSET);
-    g_assert_cmphex(port, <, CONSOLE_PORT_LIMIT);
+
+    /* The generation check the guest makes, which the above does not imply. */
+    g_assert_cmphex(port & 0xfff, <, CONSOLE_PORT_LIMIT);
 
     /* The widget the console hangs off, which the descriptor repeats below. */
     g_assert_cmphex((base >> 24) & 0xff, ==, CONSOLE_WIDGET);
