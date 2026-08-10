@@ -81,6 +81,24 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
     tlb->XI1 = (env->CP0_EntryLo1 >> CP0EnLo_XI) & 1;
     tlb->RI1 = (env->CP0_EntryLo1 >> CP0EnLo_RI) & 1;
     tlb->PFN[1] = (get_tlb_pfn_from_entrylo(env->CP0_EntryLo1) & ~mask) << 12;
+
+    /*
+     * The top two bits of each low half are either the read-inhibit and
+     * execute-inhibit bits or the R10000 family's uncached attribute. No
+     * processor has both, so they are read one way or the other and never both:
+     * reading an attribute as inhibit bits would make the page unreadable, and
+     * a guest that programmed one would get an exception it never asked for.
+     */
+    tlb->UC0 = 0;
+    tlb->UC1 = 0;
+    if (env->insn_flags & INSN_R10K) {
+        tlb->UC0 = extract64(env->CP0_EntryLo0, CP0EnLo_UC, 2);
+        tlb->UC1 = extract64(env->CP0_EntryLo1, CP0EnLo_UC, 2);
+        tlb->XI0 = 0;
+        tlb->RI0 = 0;
+        tlb->XI1 = 0;
+        tlb->RI1 = 0;
+    }
 }
 
 static void r4k_helper_tlbinv(CPUMIPSState *env)
@@ -265,10 +283,12 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
         env->CP0_EntryLo0 = tlb->G | (tlb->V0 << 1) | (tlb->D0 << 2) |
                         ((uint64_t)tlb->RI0 << CP0EnLo_RI) |
                         ((uint64_t)tlb->XI0 << CP0EnLo_XI) | (tlb->C0 << 3) |
+                        ((uint64_t)tlb->UC0 << CP0EnLo_UC) |
                         get_entrylo_pfn_from_tlb(tlb->PFN[0] >> 12);
         env->CP0_EntryLo1 = tlb->G | (tlb->V1 << 1) | (tlb->D1 << 2) |
                         ((uint64_t)tlb->RI1 << CP0EnLo_RI) |
                         ((uint64_t)tlb->XI1 << CP0EnLo_XI) | (tlb->C1 << 3) |
+                        ((uint64_t)tlb->UC1 << CP0EnLo_UC) |
                         get_entrylo_pfn_from_tlb(tlb->PFN[1] >> 12);
     }
 }
@@ -427,7 +447,25 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                 return TLBRET_RI;
             }
             if (access_type != MMU_DATA_STORE || (n ? tlb->D1 : tlb->D0)) {
-                *physical = tlb->PFN[n] | (address & (mask >> 1));
+                unsigned int cca = n ? tlb->C1 : tlb->C0;
+                hwaddr window = 0;
+
+                /*
+                 * A mapped reference carries the same uncached attribute an
+                 * unmapped one does, taken from the entry rather than from the
+                 * address, and only when the entry's cache algorithm is
+                 * uncached or uncached accelerated. Without this a mapped
+                 * uncached page aimed at the Hub or a crossbar widget would
+                 * quietly read node memory instead.
+                 */
+                if ((env->insn_flags & INSN_R10K) && (cca == 2 || cca == 7)) {
+                    unsigned int uc = n ? tlb->UC1 : tlb->UC0;
+
+                    window = (hwaddr)((uc + 1) & 3) <<
+                             MIPS_UNCACHED_WINDOW_SHIFT;
+                }
+
+                *physical = window | tlb->PFN[n] | (address & (mask >> 1));
                 *prot = PAGE_READ;
                 if (n ? tlb->D1 : tlb->D0) {
                     *prot |= PAGE_WRITE;

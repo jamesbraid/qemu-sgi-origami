@@ -138,6 +138,13 @@ struct r4k_tlb_t {
     unsigned int RI0:1;
     unsigned int RI1:1;
     unsigned int EHINV:1;
+    /*
+     * The R10000 family's uncached attribute, which an uncached reference
+     * through this entry drives out beside the address. Written from bits 63:62
+     * of the two EntryLo registers by a TLB write.
+     */
+    unsigned int UC0:2;
+    unsigned int UC1:2;
     uint64_t PFN[2];
 };
 

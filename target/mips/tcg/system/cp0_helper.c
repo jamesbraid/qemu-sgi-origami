@@ -659,7 +659,14 @@ void helper_mtc0_entrylo0(CPUMIPSState *env, target_ulong arg1)
 }
 
 #if defined(TARGET_MIPS64)
-#define DMTC0_ENTRYLO_MASK(env) (env->PAMask >> 6)
+/*
+ * The R10000 family keeps its uncached attribute in the top two bits, so those
+ * have to survive a write; every other processor drops them unless the
+ * inhibit-bit extension is enabled.
+ */
+#define DMTC0_ENTRYLO_MASK(env) \
+    ((env->PAMask >> 6) | \
+     ((env->insn_flags & INSN_R10K) ? (3ULL << CP0EnLo_UC) : 0))
 
 void helper_dmtc0_entrylo0(CPUMIPSState *env, uint64_t arg1)
 {
