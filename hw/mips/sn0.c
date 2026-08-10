@@ -578,6 +578,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     uint8_t *console = graph + SN0_GRAPH_CONSOLE_OFF;
     uint8_t *cpu, *hub, *mem;
     uint64_t total_mb = machine->ram_size / MiB;
+    uint64_t chip;
 
     stq_be_p(graph + 0x00, SN0_GRAPH_MAGIC);
     /* The structure version, which real firmware writes as zero. */
@@ -600,17 +601,41 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * first while wrong for the second gives a guest that identifies its
      * console correctly and then drives an address that answers nothing.
      *
-     * The address is the crosstalk view of the base-I/O widget, where the
-     * controller will be once it exists. Nothing answers there yet, and this
-     * milestone ends at the first store the guest makes to it.
+     * All three base fields are derived from one chip address rather than
+     * composed separately, because composing them separately is how the device
+     * window came to be present in one of them and missing from the other two.
+     * The three are read by different guests for different purposes, so a
+     * correction applied to one does not announce itself to the others.
      */
-    stq_be_p(console + 0x00, 0x9200000000000000ULL |
-                             ((uint64_t)SN0_CONSOLE_WIDGET << 24) |
-                             SN0_CONSOLE_PORT_OFFSET);
-    stq_be_p(console + 0x08, 0x9200000000000000ULL |
-                             ((uint64_t)SN0_CONSOLE_WIDGET << 24));
-    stq_be_p(console + 0x10, 0x9200000000000000ULL |
-                             ((uint64_t)SN0_CONSOLE_WIDGET << 24));
+    chip = 0x9200000000000000ULL |
+           ((uint64_t)SN0_CONSOLE_WIDGET << 24) | SN0_BRIDGE_DEVICE2;
+
+    /*
+     * The serial-port base, which OpenBSD splits into a bus and a register
+     * offset. This is the field carrying the generation trap in its low twelve
+     * bits.
+     */
+    stq_be_p(console + 0x00, chip | SN0_IOC3_SERIAL_A);
+
+    /*
+     * The configuration base. No consumer for this field is known and nothing
+     * has been observed in it, so the chip's own base is a choice rather than
+     * a measurement: the least surprising value, given the fields either side
+     * of it are chip-relative. Written down as an open question rather than
+     * left looking settled.
+     */
+    stq_be_p(console + 0x08, chip);
+
+    /*
+     * The memory base, the one field in this descriptor Linux reads. It takes
+     * this as the base of the controller chip and adds the chip's own register
+     * offset itself, validating nothing — no null check, no signature, no
+     * timeout. So it needs the device window the serial-port base carries, and
+     * it needs to be an address the processor can issue rather than a bare
+     * physical one. Wrong here, Linux takes a bus error or spins forever on a
+     * transmitter-empty bit that never sets, and both look like a silent boot.
+     */
+    stq_be_p(console + 0x10, chip);
     stw_be_p(console + 0x18, SN0_CONSOLE_BAUD);
     stl_be_p(console + 0x1c, 0);                /* console type */
     stw_be_p(console + 0x20, 0);                /* node identifier */
