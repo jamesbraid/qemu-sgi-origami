@@ -17,6 +17,10 @@
 #include "hw/core/loader.h"
 #include "hw/mips/bootloader.h"
 #include "elf.h"
+#include "chardev/char-fe.h"
+#include "system/system.h"
+#include "exec/cpu-common.h"
+#include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "qemu/datadir.h"
@@ -33,13 +37,6 @@
  * derived from.
  */
 #define SN0_CPU_REFCLK_HZ (180 * 1000 * 1000)
-
-/*
- * Where the firmware's own code sits inside the flash: clear of the ten entry
- * points at the start and of the configuration block behind them, both of which
- * the address map fixes.
- */
-#define SN0_FLASH_BOOTLOADER 0x200
 
 /*
  * Where the argument vector handed to a kernel goes. Low memory below the
@@ -62,8 +59,18 @@ struct SN0MachineState {
     MemoryRegion flash;
     MemoryRegion flash_hub_view;
     MemoryRegion hub_regs_node_view;
+    MemoryRegion arcs_trap;
+    MemoryRegion fw_text;
 
     SGIHubState hub;
+
+    /*
+     * Whether this machine presents firmware of its own; see the class notes.
+     */
+    bool synthesized_firmware;
+
+    /* Where the firmware's console output goes. */
+    Chardev *console;
 };
 typedef struct SN0MachineState SN0MachineState;
 
@@ -161,12 +168,12 @@ static uint64_t sn0_elf_to_phys(void *opaque, uint64_t addr)
  * rather than an absolute one. Both addresses are in the same region of the
  * flash, so that reaches.
  */
-static void sn0_build_kernel_handoff(uint8_t *flash, hwaddr flash_vaddr,
-                                     uint64_t entry, unsigned argc,
-                                     hwaddr argv)
+static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
+                                     hwaddr fw_vaddr, uint64_t entry,
+                                     unsigned argc, hwaddr argv)
 {
-    void *p = flash + SN0_FLASH_BOOTLOADER;
-    hwaddr target = flash_vaddr + SN0_FLASH_BOOTLOADER;
+    void *p = fw + SN0_FW_BOOTLOADER;
+    hwaddr target = fw_vaddr + SN0_FW_BOOTLOADER;
 
     stl_be_p(flash, 0x08000000 | ((target >> 2) & 0x03ffffff)); /* j target */
     stl_be_p(flash + 4, 0);                                     /* delay slot */
@@ -175,11 +182,10 @@ static void sn0_build_kernel_handoff(uint8_t *flash, hwaddr flash_vaddr,
      * Hand over in 64-bit kernel mode. A kernel is linked into the unmapped
      * 64-bit window, so the jump to its entry point is itself a 64-bit
      * reference and takes an address error unless extended kernel addressing is
-     * on, which it is not out of reset. Clearing error level at the same
-     * time puts the user segment back under the translation buffer, and
-     * clearing the boot-exception-vector bit points exceptions at the
-     * addresses a kernel is about to install handlers at rather than into
-     * this flash.
+     * on, which it is not out of reset. Clearing error level at the same time
+     * puts the user segment back under the translation buffer, and clearing the
+     * boot-exception-vector bit points exceptions at the addresses a kernel is
+     * about to install handlers at rather than into this flash.
      *
      * The register used is one the architecture reserves for kernel scratch, so
      * nothing a kernel expects on entry is disturbed.
@@ -237,6 +243,158 @@ static void sn0_build_flash(uint8_t *flash)
     stl_be_p(config + 0x48, 0);                    /* configuration flags */
 }
 
+/*
+ * The firmware routines a guest calls. A stub in the flash performs one load
+ * from the trap region and returns; this is what that load does, and its return
+ * value is what the guest finds in its return register, because the translator
+ * puts a loaded value there through the ordinary path. Reaching into the
+ * processor state to leave a result instead would be writing behind the
+ * translator's back, which it does not reload for.
+ */
+enum {
+    ARCS_ESUCCESS = 0,
+    ARCS_EINVAL = 21,
+};
+
+/*
+ * ARCS Write(handle, buffer, length, count) — the routine all early output
+ * uses.
+ */
+static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
+{
+    uint64_t buffer = env->active_tc.gpr[5];
+    uint64_t length = env->active_tc.gpr[6];
+    uint64_t count_ptr = env->active_tc.gpr[7];
+    uint32_t written = 0;
+    uint8_t chunk[256];
+
+    while (written < length) {
+        unsigned int n = MIN(sizeof(chunk), length - written);
+
+        /*
+         * The buffer is a guest virtual address, so it goes through the
+         * processor's own translation rather than being taken apart here: a
+         * pointer into a translated page would otherwise be decoded wrongly and
+         * silently.
+         */
+        if (cpu_memory_rw_debug(env_cpu(env), buffer + written, chunk, n,
+                                false) < 0) {
+            break;
+        }
+        if (s->console) {
+            qemu_chr_write_all(s->console, chunk, n);
+        }
+        written += n;
+    }
+
+    /*
+     * The guest is told how much went out, whether or not anyone was listening.
+     */
+    if (count_ptr) {
+        uint32_t be = cpu_to_be32(written);
+
+        cpu_memory_rw_debug(env_cpu(env), count_ptr, &be, sizeof(be), true);
+    }
+
+    return ARCS_ESUCCESS;
+}
+
+static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
+                                 unsigned size, MemTxAttrs attrs)
+{
+    SN0MachineState *s = opaque;
+    unsigned int op = addr / 8;
+    CPUMIPSState *env;
+
+    *val = ARCS_EINVAL;
+
+    /*
+     * A debugger examining memory must not make a firmware call happen as a
+     * side effect of looking at it.
+     */
+    if (attrs.debug) {
+        *val = 0;
+        return MEMTX_OK;
+    }
+
+    /* No processor at all is a state a test harness can produce. */
+    if (!current_cpu) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn0: firmware routine %u reached with no processor\n",
+                      op);
+        return MEMTX_OK;
+    }
+    env = cpu_env(current_cpu);
+
+    switch (op) {
+    case SN0_ARCS_WRITE:
+        *val = sn0_arcs_write(s, env);
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "sn0: firmware routine %u is not implemented\n", op);
+        break;
+    }
+
+    return MEMTX_OK;
+}
+
+static MemTxResult sn0_arcs_write_mmio(void *opaque, hwaddr addr, uint64_t val,
+                                       unsigned size, MemTxAttrs attrs)
+{
+    if (!attrs.debug) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn0: write of 0x%" PRIx64 " to the firmware trap region "
+                      "at 0x%" HWADDR_PRIx "; the routines are called by "
+                      "reading\n", val, addr);
+    }
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps sn0_arcs_ops = {
+    .read_with_attrs = sn0_arcs_read,
+    .write_with_attrs = sn0_arcs_write_mmio,
+    .endianness = DEVICE_BIG_ENDIAN,
+    /*
+     * Eight bytes exactly, both as what a guest may ask for and as what this
+     * implements. Leaving the implementation width unstated would let the
+     * memory system split a doubleword load into two word accesses and call the
+     * routine twice — which is invisible to the caller, because the second
+     * call overwrites the first's result with the same value, and shows up only
+     * as every line of a guest's early output appearing twice.
+     */
+    .valid.min_access_size = 8,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 8,
+    .impl.max_access_size = 8,
+};
+
+/*
+ * One stub per vector entry, and the vector that points at them. A stub forms
+ * the address of its own slot in the trap region, loads from it, and returns;
+ * the assembler temporary carries the address because it is reserved and cannot
+ * be live across a call, and it is clear of the registers holding the arguments
+ * the routine is about to read.
+ */
+static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
+                           uint64_t *vector)
+{
+    int i;
+
+    for (i = 0; i < SN0_ARCS_ENTRIES; i++) {
+        uint8_t *stub = fw + SN0_ARCS_STUBS + i * SN0_ARCS_STUB_SIZE;
+        uint64_t slot = trap_vaddr + i * 8;
+
+        stl_be_p(stub, 0x3c010000 | ((slot >> 16) & 0xffff)); /* lui $1, hi */
+        stl_be_p(stub + 4, 0xdc220000 | (slot & 0xffff));  /* ld $2, lo($1) */
+        stl_be_p(stub + 8, 0x03e00008);                       /* jr $31 */
+        stl_be_p(stub + 12, 0);                               /* delay slot */
+
+        vector[i] = cpu_to_be64(fw_vaddr + SN0_ARCS_STUBS +
+                                i * SN0_ARCS_STUB_SIZE);
+    }
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -244,7 +402,8 @@ static void sn0_init(MachineState *machine)
     hwaddr node = SN0_NODE_BASE(0);
     Clock *cpuclk;
     MIPSCPU *cpu;
-    uint8_t *flash;
+    uint8_t *flash, *fw;
+    hwaddr fw_vaddr;
 
     if (machine->ram_size > SN0_NODE_SIZE) {
         error_report("origin200: a node holds at most %" PRIu64 " bytes of "
@@ -341,6 +500,32 @@ static void sn0_init(MachineState *machine)
     }
 
     /*
+     * The firmware this machine presents, unless it was told to stand aside for
+     * a real image. The trap region, the stubs the vector entries point at, and
+     * the vector itself go together: any subset of them is a half-firmware that
+     * is worse than either state.
+     */
+    fw = g_malloc0(SN0_FW_TEXT_SIZE);
+    fw_vaddr = (hwaddr)(int32_t)(0xa0000000 + SN0_FW_TEXT_LOCAL);
+
+    if (s->synthesized_firmware) {
+        uint64_t vector[SN0_ARCS_ENTRIES];
+
+        s->console = serial_hd(0);
+
+        memory_region_init_io(&s->arcs_trap, NULL, &sn0_arcs_ops, s,
+                              "sn0.arcs.trap", SN0_ARCS_TRAP_SIZE);
+        memory_region_add_subregion(system, node + SN0_ARCS_TRAP_LOCAL,
+                                    &s->arcs_trap);
+
+        sn0_build_arcs(fw, fw_vaddr,
+                       (hwaddr)(int32_t)(0xa0000000 + SN0_ARCS_TRAP_LOCAL),
+                       vector);
+        rom_add_blob_fixed("sn0.arcs.vector", vector, sizeof(vector),
+                           node + SN0_ARCS_VECTOR);
+    }
+
+    /*
      * A kernel, loaded straight from an ELF image, which is the boot path every
      * test and every guest we care about uses. Booting from a disk is the
      * firmware's job and arrives with the disk.
@@ -372,13 +557,40 @@ static void sn0_init(MachineState *machine)
                                node + SN0_ARGV_ADDR);
         }
 
-        sn0_build_kernel_handoff(flash, (hwaddr)(int32_t)0xbfc00000, entry, 1,
+        sn0_build_kernel_handoff(flash, fw, fw_vaddr, entry, 1,
                                  SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
     }
 
     rom_add_blob_fixed("sn0.flash", flash, SN0_FLASH_SIZE,
                        node + SN0_FLASH_LOCAL);
     g_free(flash);
+
+    /*
+     * The firmware's own instructions, in a region of the machine's rather than
+     * in the flash, so that whatever image the flash holds keeps every byte of
+     * it. Read-only, like the flash, because nothing should be writing here.
+     */
+    memory_region_init_rom(&s->fw_text, NULL, "sn0.firmware.text",
+                           SN0_FW_TEXT_SIZE, &error_fatal);
+    memory_region_add_subregion(system, node + SN0_FW_TEXT_LOCAL, &s->fw_text);
+    rom_add_blob_fixed("sn0.firmware.text", fw, SN0_FW_TEXT_SIZE,
+                       node + SN0_FW_TEXT_LOCAL);
+    g_free(fw);
+}
+
+static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
+{
+    return SN0_MACHINE(obj)->synthesized_firmware;
+}
+
+static void sn0_set_synthesized_firmware(Object *obj, bool value, Error **errp)
+{
+    SN0_MACHINE(obj)->synthesized_firmware = value;
+}
+
+static void sn0_instance_init(Object *obj)
+{
+    SN0_MACHINE(obj)->synthesized_firmware = true;
 }
 
 static void origin200_class_init(ObjectClass *oc, const void *data)
@@ -391,12 +603,21 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_size = SN0_MEM_BANK_SIZE;
     mc->default_ram_id = "sn0.node0.ram";
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
+
+    object_class_property_add_bool(oc, "synthesized-firmware",
+                                   sn0_get_synthesized_firmware,
+                                   sn0_set_synthesized_firmware);
+    object_class_property_set_description(oc, "synthesized-firmware",
+        "Present firmware of the machine's own: the structures in low memory, "
+        "the call vector and the routines behind it. Turn it off to run a real "
+        "firmware image with nothing of ours in its way.");
 }
 
 static const TypeInfo origin200_type = {
     .name = MACHINE_TYPE_NAME("origin200"),
     .parent = TYPE_MACHINE,
     .class_init = origin200_class_init,
+    .instance_init = sn0_instance_init,
     .instance_size = sizeof(SN0MachineState),
 };
 

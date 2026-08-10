@@ -81,6 +81,39 @@
 #define SN0_FLASH_ENTRIES   10
 #define SN0_FLASH_ENTRY_STRIDE 8
 
+/*
+ * The firmware call vector, in low memory where the parameter block points at
+ * it: thirty-five entries of eight bytes, entry n at 8n. Every entry is the
+ * address of a stub in the flash, because a guest reads five of them out as
+ * pointers and will jump to one the moment anything goes wrong, so none may be
+ * null even when the routine behind it does nothing.
+ */
+#define SN0_ARCS_VECTOR         0x2800
+#define SN0_ARCS_ENTRIES        35
+#define SN0_ARCS_WRITE          27      /* entry at offset 0xd8 */
+
+/*
+ * The stubs those entries point at, and the region their one memory access
+ * lands in. A stub is four instructions: form the address, load from it,
+ * return. The load is what crosses into the firmware implementation, and which
+ * slot it reads names the routine.
+ */
+#define SN0_ARCS_STUB_SIZE      16
+#define SN0_ARCS_TRAP_LOCAL     0x1fd00000  /* node offset, past the flash */
+#define SN0_ARCS_TRAP_SIZE      0x1000
+
+/*
+ * The firmware's own instructions live in a region of the machine's rather than
+ * in the flash, because the flash belongs to whatever image was put there: a
+ * real firmware, or a bare-metal program under test, either of which is
+ * entitled to every byte of it. Only the reset entry is shared, and the address
+ * map fixes that anyway.
+ */
+#define SN0_FW_TEXT_LOCAL       0x1fd01000
+#define SN0_FW_TEXT_SIZE        0x1000
+#define SN0_FW_BOOTLOADER       0x000       /* offset within that region */
+#define SN0_ARCS_STUBS          0x100
+
 /* The firmware configuration block, at flash offset 0x60. */
 #define SN0_CONFIG_OFFSET   0x60
 #define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
