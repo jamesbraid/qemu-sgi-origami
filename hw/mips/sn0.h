@@ -82,6 +82,36 @@
 #define SN0_FLASH_ENTRY_STRIDE 8
 
 /*
+ * The firmware structures in low memory, at the offsets the guests look for
+ * them. Every one of these is fixed by the boot structures datasheet.
+ */
+#define SN0_PARAM_BLOCK         0x1000
+#define SN0_PARAM_SIGNATURE     0x53435241  /* a constant, not "ARCS" */
+#define SN0_HW_DIRECTORY        0x2000
+#define SN0_HW_DIR_ENTRIES      16
+#define SN0_HW_DIR_ENTRY_SIZE   64
+#define SN0_HW_DIR_SIGNATURE    0x434d5f53505f5357ULL
+#define SN0_HW_DIR_CONFIG_GRAPH 1
+#define SN0_HW_DIR_GDA          3
+#define SN0_CONFIG_GRAPH        0x4000
+#define SN0_CONFIG_GRAPH_SIZE   0xc000
+#define SN0_GDA                 0x11000
+#define SN0_GDA_SIZE            0x400
+#define SN0_GDA_SIGNATURE       0x58464552  /* "XFER" */
+#define SN0_GDA_VERSION         2
+#define SN0_GDA_NODE_TABLE      0x80
+#define SN0_GDA_NODES           256
+#define SN0_FIRST_FREE          0x19000
+
+/*
+ * The memory descriptor list. A guest holds the pointer it is handed and reads
+ * through it, so the descriptors live in memory rather than being synthesised
+ * per call. Below the parameter block, in the page the real list describes as
+ * holding nothing a guest reads.
+ */
+#define SN0_MEM_LIST            0x900
+
+/*
  * The firmware call vector, in low memory where the parameter block points at
  * it: thirty-five entries of eight bytes, entry n at 8n. Every entry is the
  * address of a stub in the flash, because a guest reads five of them out as
@@ -90,7 +120,11 @@
  */
 #define SN0_ARCS_VECTOR         0x2800
 #define SN0_ARCS_ENTRIES        35
+#define SN0_ARCS_GET_CHILD      10      /* entry at offset 0x50 */
+#define SN0_ARCS_GET_SYSTEM_ID  17      /* entry at offset 0x88 */
+#define SN0_ARCS_GET_MEMORY     18      /* entry at offset 0x90 */
 #define SN0_ARCS_WRITE          27      /* entry at offset 0xd8 */
+#define SN0_ARCS_GET_ENV        30      /* entry at offset 0xf0 */
 
 /*
  * The stubs those entries point at, and the region their one memory access

@@ -71,6 +71,10 @@ struct SN0MachineState {
 
     /* Where the firmware's console output goes. */
     Chardev *console;
+
+    /* The memory descriptor list, and where a guest sees it. */
+    uint64_t mem_addr;
+    unsigned int mem_count;
 };
 typedef struct SN0MachineState SN0MachineState;
 
@@ -299,6 +303,74 @@ static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
     return ARCS_ESUCCESS;
 }
 
+/*
+ * The memory descriptors a guest walks to learn what memory it has. Two things
+ * about this list are load-bearing and neither is obvious.
+ *
+ * The base page of the first free entry is how a guest tells this machine from
+ * its successor. At or above page 0x20 it silently decides it is the later
+ * machine and takes a different path for the rest of the boot, with no message,
+ * so first free memory has to start below that. Ours starts at page 0x19, which
+ * is where a real machine of this generation puts it.
+ *
+ * The walk stops at the first firmware-permanent entry and the guest rewrites
+ * that entry to reach the 32 MB mark, so nothing after it is ever read. The
+ * shape here follows a real machine's: pages 2 through 0x18 are described by
+ * nothing at all, which is what the real list does.
+ */
+enum {
+    SN0_MEM_EXCEPTION_BLOCK = 0,
+    SN0_MEM_PARAM_BLOCK = 1,
+    SN0_MEM_FREE = 2,
+    SN0_MEM_FIRMWARE_TEMP = 5,
+    SN0_MEM_FIRMWARE_PERMANENT = 7,
+    SN0_MEM_LOADED_PROGRAM = 6,
+};
+
+#define SN0_MEM_FIRST_FREE_PAGE  0x19    /* must stay below 0x20 */
+#define SN0_MEM_PERMANENT_PAGE   0x1a00
+#define SN0_MEM_PERMANENT_PAGES  0x600
+
+struct sn0_mem_descriptor {
+    uint32_t type;
+    uint32_t pad;
+    uint64_t base_page;
+    uint64_t pages;
+};
+
+/*
+ * ARCS GetMemoryDescriptor(previous) — called first with nothing and then
+ * with each descriptor it returned, so it walks a list. The list is built once
+ * and lives in the trap region's own storage, because a guest holds the pointer
+ * we hand back and reads through it.
+ */
+static uint64_t sn0_arcs_get_memory(SN0MachineState *s, CPUMIPSState *env)
+{
+    uint64_t previous = env->active_tc.gpr[4];
+    unsigned int next = 0;
+
+    if (previous) {
+        unsigned int i;
+
+        /* Which one did we hand out last? */
+        for (i = 0; i < s->mem_count; i++) {
+            if (previous == s->mem_addr +
+                            i * sizeof(struct sn0_mem_descriptor)) {
+                next = i + 1;
+                break;
+            }
+        }
+        if (i == s->mem_count) {
+            return 0;
+        }
+    }
+
+    if (next >= s->mem_count) {
+        return 0;                       /* the end of the list */
+    }
+    return s->mem_addr + next * sizeof(struct sn0_mem_descriptor);
+}
+
 static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
                                  unsigned size, MemTxAttrs attrs)
 {
@@ -329,6 +401,32 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
     switch (op) {
     case SN0_ARCS_WRITE:
         *val = sn0_arcs_write(s, env);
+        break;
+    case SN0_ARCS_GET_MEMORY:
+        *val = sn0_arcs_get_memory(s, env);
+        break;
+    case SN0_ARCS_GET_CHILD:
+        /*
+         * Null, which a guest handles: it falls back to the hardware
+         * directory's configuration-graph signature to identify the machine,
+         * and that path needs no component tree at all.
+         */
+        *val = 0;
+        break;
+    case SN0_ARCS_GET_SYSTEM_ID:
+        /*
+         * Null too. A guest reads the vendor and product strings out of this
+         * only if identification has already failed, and on our path it does
+         * not.
+         */
+        *val = 0;
+        break;
+    case SN0_ARCS_GET_ENV:
+        /*
+         * Null for every variable. A guest checks each result before using it,
+         * and the one that matters — the console rate — falls back to 9600.
+         */
+        *val = 0;
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -395,6 +493,132 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
     }
 }
 
+/*
+ * The structures a guest reads out of low memory before it has a console. Each
+ * is written where the boot structures datasheet puts it, and each carries
+ * every field rather than only the ones a guest currently reads: a block that
+ * is right only where somebody looks is a trap for whoever comes next.
+ */
+static void sn0_build_structures(MachineState *machine, hwaddr node,
+                                 uint64_t kernel_page, uint64_t kernel_pages)
+{
+    SN0MachineState *s = SN0_MACHINE(machine);
+    struct sn0_mem_descriptor mem[6];
+    uint8_t param[0x60] = { };
+    uint8_t dir[SN0_HW_DIR_ENTRIES * SN0_HW_DIR_ENTRY_SIZE] = { };
+    uint8_t gda[SN0_GDA_SIZE] = { };
+    unsigned int n = 0;
+    int i;
+
+    /*
+     * The parameter block. Two things about the signature are fatal to get
+     * wrong: it is a numeric constant rather than the four characters it looks
+     * like, and it has to sit in the second four bytes of a 64-bit field. A
+     * guest tests the 32-bit form first by reading the first four bytes, so a
+     * constant written there makes it conclude the firmware is 32-bit and read
+     * every pointer at half its real offset.
+     */
+    stq_be_p(param + 0x00, SN0_PARAM_SIGNATURE);
+    stq_be_p(param + 0x08, 0x60);                   /* length of this block */
+    stw_be_p(param + 0x10, 64);                     /* version */
+    stw_be_p(param + 0x12, 0);                      /* revision */
+    stq_be_p(param + 0x38, 0x118);                  /* call vector length */
+    stq_be_p(param + 0x40, SN0_COMPAT_CACHED + SN0_ARCS_VECTOR);
+    stq_be_p(param + 0x48, 0x88);                   /* private vector length */
+    stq_be_p(param + 0x50, SN0_COMPAT_CACHED + SN0_ARCS_VECTOR + 0x400);
+    rom_add_blob_fixed("sn0.param", param, sizeof(param),
+                       node + SN0_PARAM_BLOCK);
+
+    /*
+     * The hardware directory. Its index assignments are permanent, and on the
+     * path a guest takes when it finds no component tree the
+     * configuration-graph entry's signature is the whole of the machine
+     * identification — so that entry being right is what stops the guest
+     * halting with an unrecognised system.
+     */
+    for (i = 0; i < SN0_HW_DIR_ENTRIES; i++) {
+        uint8_t *e = dir + i * SN0_HW_DIR_ENTRY_SIZE;
+
+        switch (i) {
+        case SN0_HW_DIR_CONFIG_GRAPH:
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x08, SN0_CONFIG_GRAPH);
+            stq_be_p(e + 0x18, SN0_CONFIG_GRAPH_SIZE);
+            stq_be_p(e + 0x20, 1);
+            break;
+        case SN0_HW_DIR_GDA:
+            /* The odd one: reached through the pointer, not the offset. */
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x10, SN0_COMPAT_CACHED + SN0_GDA);
+            stq_be_p(e + 0x18, SN0_GDA_SIZE);
+            stq_be_p(e + 0x20, 1);
+            break;
+        default:
+            break;
+        }
+    }
+    rom_add_blob_fixed("sn0.hwdir", dir, sizeof(dir), node + SN0_HW_DIRECTORY);
+
+    /*
+     * The global data area. The node table is the only enumeration of nodes
+     * either guest has: one walks it from entry zero and stops at the first
+     * negative entry with no fallback, so entry zero has to be this node and
+     * entry one has to be negative already.
+     */
+    stl_be_p(gda + 0x00, SN0_GDA_SIGNATURE);
+    stw_be_p(gda + 0x04, SN0_GDA_VERSION);
+    stw_be_p(gda + 0x06, 0);                        /* master node */
+    for (i = 0; i < SN0_GDA_NODES; i++) {
+        gda[SN0_GDA_NODE_TABLE + i] = i == 0 ? 0 : 0xff;
+    }
+    rom_add_blob_fixed("sn0.gda", gda, sizeof(gda), node + SN0_GDA);
+
+    /* The memory descriptors, shaped as a real machine of this era reports. */
+    mem[n].type = SN0_MEM_EXCEPTION_BLOCK;
+    mem[n].base_page = 0;
+    mem[n++].pages = 1;
+
+    mem[n].type = SN0_MEM_PARAM_BLOCK;
+    mem[n].base_page = 1;
+    mem[n++].pages = 1;
+
+    /*
+     * The load-bearing one: below page 0x20, or the guest silently becomes
+     * another machine.
+     */
+    mem[n].type = SN0_MEM_FREE;
+    mem[n].base_page = SN0_MEM_FIRST_FREE_PAGE;
+    mem[n++].pages = (kernel_pages ? kernel_page : SN0_MEM_PERMANENT_PAGE) -
+                     SN0_MEM_FIRST_FREE_PAGE;
+
+    if (kernel_pages) {
+        mem[n].type = SN0_MEM_LOADED_PROGRAM;
+        mem[n].base_page = kernel_page;
+        mem[n++].pages = kernel_pages;
+
+        mem[n].type = SN0_MEM_FREE;
+        mem[n].base_page = kernel_page + kernel_pages;
+        mem[n++].pages = SN0_MEM_PERMANENT_PAGE - (kernel_page + kernel_pages);
+    }
+
+    /* The walk stops here, and the guest rewrites this entry's count. */
+    mem[n].type = SN0_MEM_FIRMWARE_PERMANENT;
+    mem[n].base_page = SN0_MEM_PERMANENT_PAGE;
+    mem[n++].pages = SN0_MEM_PERMANENT_PAGES;
+
+    for (i = 0; i < (int)n; i++) {
+        uint8_t buf[sizeof(struct sn0_mem_descriptor)] = { };
+
+        stl_be_p(buf + 0x00, mem[i].type);
+        stq_be_p(buf + 0x08, mem[i].base_page);
+        stq_be_p(buf + 0x10, mem[i].pages);
+        rom_add_blob_fixed("sn0.memdesc", buf, sizeof(buf),
+                           node + SN0_MEM_LIST + i * sizeof(buf));
+    }
+    s->mem_addr = SN0_COMPAT_CACHED + SN0_MEM_LIST;
+    s->mem_count = n;
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -404,6 +628,7 @@ static void sn0_init(MachineState *machine)
     MIPSCPU *cpu;
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
+    uint64_t kernel_page = 0, kernel_pages = 0;
 
     if (machine->ram_size > SN0_NODE_SIZE) {
         error_report("origin200: a node holds at most %" PRIu64 " bytes of "
@@ -531,9 +756,9 @@ static void sn0_init(MachineState *machine)
      * firmware's job and arrives with the disk.
      */
     if (machine->kernel_filename) {
-        uint64_t entry;
+        uint64_t entry, low, high;
         ssize_t size = load_elf(machine->kernel_filename, NULL,
-                                sn0_elf_to_phys, NULL, &entry, NULL, NULL,
+                                sn0_elf_to_phys, NULL, &entry, &low, &high,
                                 NULL, ELFDATA2MSB, EM_MIPS, 1, 0);
 
         if (size < 0) {
@@ -559,6 +784,17 @@ static void sn0_init(MachineState *machine)
 
         sn0_build_kernel_handoff(flash, fw, fw_vaddr, entry, 1,
                                  SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
+
+        kernel_page = low / 0x1000;
+        kernel_pages = (high - low + 0xfff) / 0x1000;
+    }
+
+    /*
+     * The structures go in last, because the memory descriptors have to say
+     * where the kernel landed and how much of memory it took.
+     */
+    if (s->synthesized_firmware) {
+        sn0_build_structures(machine, node, kernel_page, kernel_pages);
     }
 
     rom_add_blob_fixed("sn0.flash", flash, SN0_FLASH_SIZE,
