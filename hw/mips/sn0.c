@@ -595,12 +595,14 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     /*
      * The console descriptor. The port offset is the trap: a guest picks which
      * generation of I/O controller this is from the low twelve bits of the
-     * serial-port base and nothing else, and gets it wrong silently.
+     * serial-port base, and which register a write lands on from the low
+     * twenty. Those are not the same field, and a value that satisfies the
+     * first while wrong for the second gives a guest that identifies its
+     * console correctly and then drives an address that answers nothing.
      *
-     * The address is the crosstalk view of the base-I/O widget, which is where
-     * the controller will be once it exists. Nothing answers there yet, and
-     * nothing on the path to the console switch reads through it — the guest
-     * only takes the address apart.
+     * The address is the crosstalk view of the base-I/O widget, where the
+     * controller will be once it exists. Nothing answers there yet, and this
+     * milestone ends at the first store the guest makes to it.
      */
     stq_be_p(console + 0x00, 0x9200000000000000ULL |
                              ((uint64_t)SN0_CONSOLE_WIDGET << 24) |
