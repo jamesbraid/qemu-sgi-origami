@@ -66,13 +66,34 @@ static void test_config_graph(const void *data)
     for (i = 0; i < ARRAY_SIZE(sn0_model_graph); i++) {
         const SN0ModelField *f = &sn0_model_graph[i];
         uint64_t got = read_field(qts, f->offset, f->width);
+        uint64_t want = f->value;
+        const SN0ModelDivergence *excused = NULL;
+        size_t d;
 
-        if (got != f->value) {
-            g_test_message("%s at %#" PRIx64 ": model says %#" PRIx64
-                           ", machine has %#" PRIx64,
-                           f->field, f->offset, f->value, got);
+        /*
+         * A field the model and the machine are known to disagree about. The
+         * exception lives in the model, with a reason and an owner, and is
+         * checked in both directions: if the machine has stopped diverging the
+         * entry is stale and should go, so that too is a failure.
+         */
+        for (d = 0; sn0_model_divergences[d].field != NULL; d++) {
+            if (sn0_model_divergences[d].offset == f->offset) {
+                excused = &sn0_model_divergences[d];
+                want = excused->machine_value;
+                break;
+            }
         }
-        g_assert_cmphex(got, ==, f->value);
+
+        if (got != want) {
+            g_test_message("%s at %#" PRIx64 ": %s says %#" PRIx64
+                           ", machine has %#" PRIx64 "%s%s",
+                           f->field, f->offset,
+                           excused ? "the known divergence" : "model",
+                           want, got,
+                           excused ? " — owner: " : "",
+                           excused ? excused->owner : "");
+        }
+        g_assert_cmphex(got, ==, want);
     }
 
     qtest_quit(qts);
