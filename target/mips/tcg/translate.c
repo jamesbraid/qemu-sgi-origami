@@ -5697,8 +5697,17 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
-        register_name = "Diagnostic"; /* implementation dependent */
+        /*
+         * Implementation dependent: the R10000 family's Diagnostic register
+         * lives here, and every other processor reads zero and ignores writes
+         * as it did before that register was modeled.
+         */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
+        } else {
+            tcg_gen_movi_tl(arg, 0);
+        }
+        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -6441,8 +6450,11 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        gen_helper_mtc0_diagnostic(tcg_env, arg);
-        register_name = "Diagnostic"; /* implementation dependent */
+        /* Implementation dependent; only the R10000 family has a register. */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_helper_mtc0_diagnostic(tcg_env, arg);
+        }
+        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -6508,7 +6520,17 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_25:
         switch (sel) {
         case CP0_REG25__PERFCTL0:
-            gen_helper_mtc0_performance0(tcg_env, arg);
+            /*
+             * The R10000 family's control registers are narrower than the
+             * MIPS32 one this helper was written for, and its two must agree
+             * with each other.
+             */
+            if (ctx->insn_flags & INSN_R10K) {
+                gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                                 tcg_constant_i32(sel));
+            } else {
+                gen_helper_mtc0_performance0(tcg_env, arg);
+            }
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
@@ -7185,8 +7207,17 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
-        register_name = "Diagnostic"; /* implementation dependent */
+        /*
+         * Implementation dependent: the R10000 family's Diagnostic register
+         * lives here, and every other processor reads zero and ignores writes
+         * as it did before that register was modeled.
+         */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
+        } else {
+            tcg_gen_movi_tl(arg, 0);
+        }
+        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -7915,8 +7946,11 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        gen_helper_mtc0_diagnostic(tcg_env, arg);
-        register_name = "Diagnostic"; /* implementation dependent */
+        /* Implementation dependent; only the R10000 family has a register. */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_helper_mtc0_diagnostic(tcg_env, arg);
+        }
+        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -7980,7 +8014,17 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_25:
         switch (sel) {
         case CP0_REG25__PERFCTL0:
-            gen_helper_mtc0_performance0(tcg_env, arg);
+            /*
+             * The R10000 family's control registers are narrower than the
+             * MIPS32 one this helper was written for, and its two must agree
+             * with each other.
+             */
+            if (ctx->insn_flags & INSN_R10K) {
+                gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                                 tcg_constant_i32(sel));
+            } else {
+                gen_helper_mtc0_performance0(tcg_env, arg);
+            }
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:

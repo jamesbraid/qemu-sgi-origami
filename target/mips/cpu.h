@@ -1084,7 +1084,20 @@ typedef struct CPUArchState {
  * reserved, so the low half is all there is to store.
  */
     int32_t CP0_Diagnostic;
-#define CP0DI_BPMode 16  /* 17..16 branch prediction algorithm, read/write */
+#define CP0DI_BPOp    0  /*  1..0  branch prediction table operation */
+#define CP0DI_BPIdx   3  /* 11..3  branch prediction table index */
+#define CP0DI_BPState 14 /* 15..14 branch prediction table entry state */
+#define CP0DI_BPMode 16  /* 17..16 branch prediction algorithm */
+/*
+ * The fields software writes. The manual's errata calls every field read-only
+ * and then names the prediction algorithm as read-write, but the same section
+ * gives a code sequence that writes the index and the operation to start a
+ * prediction table access and writes the state for a table write, so those
+ * three are software-written too. Everything else in the register reports what
+ * the branch caches and the instruction TLB last did, and is left read-only.
+ */
+#define CP0DI_WRITABLE ((3 << CP0DI_BPOp) | (0x1ff << CP0DI_BPIdx) | \
+                        (3 << CP0DI_BPState) | (3 << CP0DI_BPMode))
 /*
  * CP0 Register 23
  */
