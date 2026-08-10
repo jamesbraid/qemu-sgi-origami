@@ -180,7 +180,13 @@ qtests_mips = \
   (config_all_devices.has_key('CONFIG_VGA') ? ['display-vga-test'] : [])
 
 qtests_mipsel = qtests_mips
-qtests_mips64 = qtests_mips
+
+# The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
+# 32-bit mips targets, where the machine does not exist.
+qtests_mips64 = \
+  qtests_mips + \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-address-map-test'] : [])
+
 qtests_mips64el = qtests_mips
 
 qtests_ppc = \
