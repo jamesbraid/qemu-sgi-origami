@@ -374,8 +374,8 @@ static const VMStateDescription mips_vmstate_octeon_crypto = {
 
 const VMStateDescription vmstate_mips_cpu = {
     .name = "cpu",
-    .version_id = 21,
-    .minimum_version_id = 21,
+    .version_id = 22,
+    .minimum_version_id = 22,
     .post_load = cpu_post_load,
     .fields = (const VMStateField[]) {
         /* Active TC */
@@ -466,9 +466,10 @@ const VMStateDescription vmstate_mips_cpu = {
         VMSTATE_UINT64_ARRAY(env.CP0_WatchHi, MIPSCPU, 8),
         VMSTATE_UINTTL(env.CP0_XContext, MIPSCPU),
         VMSTATE_INT32(env.CP0_Framemask, MIPSCPU),
+        VMSTATE_INT32(env.CP0_Diagnostic, MIPSCPU),
         VMSTATE_INT32(env.CP0_Debug, MIPSCPU),
         VMSTATE_UINTTL(env.CP0_DEPC, MIPSCPU),
-        VMSTATE_INT32(env.CP0_Performance0, MIPSCPU),
+        VMSTATE_INT32_ARRAY(env.CP0_Performance, MIPSCPU, 4),
         VMSTATE_INT32(env.CP0_ErrCtl, MIPSCPU),
         VMSTATE_UINT64(env.CP0_TagLo, MIPSCPU),
         VMSTATE_INT32(env.CP0_DataLo, MIPSCPU),

@@ -247,7 +247,7 @@ target_ulong HELPER(rdhwr_ccres)(CPUMIPSState *env)
 target_ulong HELPER(rdhwr_performance)(CPUMIPSState *env)
 {
     check_hwrena(env, 4, GETPC());
-    return env->CP0_Performance0;
+    return env->CP0_Performance[0];
 }
 
 target_ulong HELPER(rdhwr_xnp)(CPUMIPSState *env)
