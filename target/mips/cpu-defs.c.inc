@@ -612,7 +612,7 @@ const mips_def_t mips_defs[] =
         .CP1_fcr31_rw_bitmask = 0x0183FFFF,
         .SEGBITS = 44,
         .PABITS = 40,
-        .insn_flags = CPU_MIPS4,
+        .insn_flags = CPU_MIPS4 | INSN_R10K,
         .mmu_type = MMU_TYPE_R4000,
     },
     {

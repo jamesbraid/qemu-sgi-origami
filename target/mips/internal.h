@@ -398,8 +398,14 @@ static inline void compute_hflags(CPUMIPSState *env)
          * and disable the MIPS IV extensions to the MIPS III ISA.
          * Some other MIPS IV CPUs ignore the bit, so the check here
          * would be too restrictive for them.
+         *
+         * On the R10000 family the bit only governs user mode; kernel and
+         * supervisor code may use the MIPS IV extensions whether it is set or
+         * not, and a kernel relies on that, never setting the bit for itself.
          */
-        if (env->CP0_Status & (1U << CP0St_CU3)) {
+        if ((env->CP0_Status & (1U << CP0St_XX)) ||
+            ((env->insn_flags & INSN_R10K) &&
+             (env->hflags & MIPS_HFLAG_KSU) != MIPS_HFLAG_UM)) {
             env->hflags |= MIPS_HFLAG_COP1X;
         }
     }
