@@ -24,6 +24,7 @@
 #include "exec/helper-proto.h"
 #include "exec/memop.h"
 #include "fpu_helper.h"
+#include "qemu/log.h"
 #include "qemu/crc32c.h"
 #include "qemu/timer.h"
 #include <zlib.h>
@@ -349,6 +350,23 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
 {
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(cs);
     CPUMIPSState *env = cpu_env(cs);
+
+    /*
+     * An access that reaches no device is otherwise entirely silent. The
+     * processor raises a bus error, the guest's handler usually panics
+     * somewhere unrelated, and nothing anywhere names the address that started
+     * it — so the first evidence of a missing device is a failure that looks
+     * like something else. Saying it here costs nothing and fires without
+     * anyone having decided in advance to look, which a trace of accesses that
+     * *did* land cannot do.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "mips: %s of %u byte%s at 0x%" VADDR_PRIx " (physical "
+                  "0x%" HWADDR_PRIx ") reached no device; raising a bus "
+                  "error\n",
+                  access_type == MMU_INST_FETCH ? "instruction fetch" :
+                  access_type == MMU_DATA_STORE ? "store" : "load",
+                  size, size == 1 ? "" : "s", addr, physaddr);
 
     if (access_type == MMU_INST_FETCH) {
         do_raise_exception(env, EXCP_IBE, retaddr);
