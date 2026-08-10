@@ -157,14 +157,16 @@
 #define SN0_GDA_VERSION         2
 #define SN0_GDA_NODE_TABLE      0x80
 /*
- * The table is 256 bytes of signed sixteen-bit node identifiers, so 128 of
- * them, and the width is the whole point: a guest indexes it with a stride of
+ * The table is 128 bytes of signed sixteen-bit node identifiers, so 64 of them:
+ * the count a kernel for this family is built with, the 128-entry variant being
+ * the top-of-line machine with its own firmware image. The width is the other
+ * half and is the part that bit us. A guest indexes it with a stride of
  * two and reads each entry with a signed halfword load, then skips the entry if
  * it is negative. Written a byte per entry instead, the first entry reads as
  * 0x00ff, which is positive, so nothing is skipped and the guest goes looking
  * for a node numbered 255.
  */
-#define SN0_GDA_NODES           128
+#define SN0_GDA_NODES           64
 #define SN0_GDA_NODE_ABSENT     0xffff
 #define SN0_FIRST_FREE          0x19000
 
