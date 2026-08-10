@@ -240,7 +240,13 @@ static inline MemOp mo_endian_env(CPUMIPSState *env)
 
 static inline void restore_pamask(CPUMIPSState *env)
 {
-    if (env->hflags & MIPS_HFLAG_ELPA) {
+    /*
+     * The extended physical addressing feature is what widens the address of a
+     * processor whose architectural width is the base one. A processor born
+     * wider does not need it enabling: the R10000 family's forty bits are not
+     * an extension, so its declared width applies from reset.
+     */
+    if ((env->hflags & MIPS_HFLAG_ELPA) || (env->insn_flags & INSN_R10K)) {
         env->PAMask = (1ULL << env->PABITS) - 1;
     } else {
         env->PAMask = PAMASK_BASE;

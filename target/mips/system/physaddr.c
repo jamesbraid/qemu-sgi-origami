@@ -160,7 +160,31 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         }
     } else if (address < 0xC000000000000000ULL) {
         /* xkphys */
-        if ((address & 0x07FFFFFFFFFFFFFFULL) <= env->PAMask) {
+        uint64_t pa = address & 0x07FFFFFFFFFFFFFFULL;
+
+        /*
+         * The R10000 family drives a two-bit uncached attribute out to the
+         * system interface alongside the address, and for an unmapped
+         * reference it takes that attribute from address bits 58:57. Those two
+         * bits are not part of the physical address and, for an uncached or
+         * uncached accelerated reference, are not checked for address errors;
+         * only bits 56:40 have to be zero. Any other cache algorithm keeps the
+         * narrower rule that bits 58:40 must be zero.
+         *
+         * The SGI Origin address map is built on this: the four values of the
+         * attribute are how a processor says whether an uncached reference is
+         * meant for node memory, for the Hub's own registers, for a crossbar
+         * widget, or for a special memory operation.
+         */
+        if (env->insn_flags & INSN_R10K) {
+            unsigned int cca = (address >> 59) & 0x7;
+
+            if (cca == 2 || cca == 7) {
+                pa &= ~(3ULL << 57);
+            }
+        }
+
+        if (pa <= env->PAMask) {
             /* KX/SX/UX bit to check for each xkphys EVA access mode */
             static const uint8_t am_ksux[8] = {
                 [CP0SC_AM_UK]    = (1u << CP0St_KX),
