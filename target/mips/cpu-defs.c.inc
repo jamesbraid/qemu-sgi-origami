@@ -570,6 +570,52 @@ const mips_def_t mips_defs[] =
         .mmu_type = MMU_TYPE_R4000,
     },
     {
+        /*
+         * The processor every SGI Origin shipped with. Config0 uses the
+         * R10000's own layout, whose bits 24..0 come from the reset mode bits
+         * the board drives: the values here describe an Origin 200, with 32
+         * Kbyte primary caches (hardwired), a 1 Mbyte secondary cache with a
+         * 128-byte block, its system interface and secondary cache clocks at
+         * half the 180 MHz processor clock, and kseg0 cacheable noncoherent.
+         * Bit 31 of that layout is the top bit of the primary instruction
+         * cache size field and reads zero, so it does not claim a second
+         * Config register the way a MIPS32 processor's bit 31 would.
+         *
+         * Virtual addresses are 44 bits and physical addresses 40, which is
+         * wider than the R4000 and is what gives the XContext register its own
+         * field positions.
+         *
+         * LLAddr is a plain 32-bit scratch register here: unlike the R4000 the
+         * R10000 does not record a load-linked address in it, and keeps it only
+         * for compatibility.
+         */
+        .name = "R10000",
+        .CP0_PRid = 0x00000900,
+        .CP0_Config0 = (3 << CP0C0_R10K_IC) | (3 << CP0C0_R10K_DC) |
+                       (3 << CP0C0_R10K_SC) | (1 << CP0C0_R10K_SS) |
+                       (1 << CP0C0_R10K_SB) | (3 << CP0C0_R10K_EC) |
+                       (3 << CP0C0_K0),
+        /* Config1 is only used internally; the R10000 has only Config0. */
+        .CP0_Config1 = (1 << CP0C1_FP) | (63 << CP0C1_MMU),
+        .CP0_LLAddr_rw_bitmask = 0xFFFFFFFF,
+        .CP0_LLAddr_shift = 0,
+        .SYNCI_Step = 32,
+        .CCRes = 2,
+        /*
+         * Bit 31 is writable, unlike on the R4000, because it is XX rather than
+         * a fourth coprocessor's usable bit.
+         */
+        .CP0_Status_rw_bitmask = 0xB678FFFF,
+        /* A full 64-bit FPU that does not use the fcr0 feature bits. */
+        .CP1_fcr0 = (0x9 << FCR0_PRID) | (0x0 << FCR0_REV),
+        .CP1_fcr31 = 0,
+        .CP1_fcr31_rw_bitmask = 0x0183FFFF,
+        .SEGBITS = 44,
+        .PABITS = 40,
+        .insn_flags = CPU_MIPS4,
+        .mmu_type = MMU_TYPE_R4000,
+    },
+    {
         .name = "VR5432",
         .CP0_PRid = 0x00005400,
         /* No L2 cache, icache size 8k, dcache size 8k, uncached coherency. */

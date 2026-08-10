@@ -806,6 +806,12 @@ typedef struct CPUArchState {
  */
     int32_t CP0_Status;
 #define CP0St_CU3   31
+/*
+ * The R10000 family has no fourth coprocessor, because the MIPS IV extension
+ * took that coprocessor's opcode. The bit becomes XX, which enables MIPS IV in
+ * user mode and is ignored in kernel and supervisor mode.
+ */
+#define CP0St_XX    31
 #define CP0St_CU2   30
 #define CP0St_CU1   29
 #define CP0St_CU0   28
@@ -897,6 +903,25 @@ typedef struct CPUArchState {
 #define CP0C0_DC   6     /*  8..6 */
 #define CP0C0_IB   5
 #define CP0C0_DB   4
+/*
+ * CP0 Register 16 as the R10000 family lays it out, which is neither of the
+ * above: the primary cache size fields move to the top of the register and the
+ * secondary cache and system interface fields fill the middle. Bits 24..0 are
+ * the reset mode bits the board drives, so their values describe the machine
+ * rather than the processor. Only BE and K0 sit where the older layout puts
+ * them.  Bits 25..22 are reserved and read as zero.
+ */
+#define CP0C0_R10K_IC 29 /* 31..29 primary instruction cache size */
+#define CP0C0_R10K_DC 26 /* 28..26 primary data cache size */
+#define CP0C0_R10K_SC 19 /* 21..19 processor to secondary cache clock divisor */
+#define CP0C0_R10K_SS 16 /* 18..16 secondary cache size */
+#define CP0C0_R10K_SK 14 /* secondary cache data error correction method */
+#define CP0C0_R10K_SB 13 /* secondary cache block size */
+#define CP0C0_R10K_EC 9  /* 12..9 processor to system interface clock divisor */
+#define CP0C0_R10K_PM 7  /* 8..7 maximum outstanding processor requests */
+#define CP0C0_R10K_PE 6  /* processor eliminate requests enabled */
+#define CP0C0_R10K_CT 5  /* target of coherent requests */
+#define CP0C0_R10K_DN 3  /* 4..3 processor device number */
     int32_t CP0_Config1;
 #define CP0C1_M    31
 #define CP0C1_MMU  25    /* 30..25 */
