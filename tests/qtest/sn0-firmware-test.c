@@ -147,6 +147,25 @@ static void test_console_descriptor(const void *data)
                     GRAPH_CONSOLE_OFF);
 
     console = CONFIG_GRAPH + qtest_readl(qts, CONFIG_GRAPH + 0x10);
+
+    /*
+     * The memory base is the field Linux reads, and it reads no other. It takes
+     * this as the base of the controller chip and adds the chip's own register
+     * offset itself, checking nothing. So it has to carry the bridge's device
+     * window, and be an address the processor can issue rather than a bare
+     * physical one. Wrong here, Linux takes a bus error or spins forever on a
+     * transmitter-empty bit that never sets, and both are a silent boot with
+     * no diagnostic to work from.
+     *
+     * Asserted as a relationship rather than as a constant, because the defect
+     * this catches is not a wrong address — it is the two fields disagreeing
+     * after one of them was corrected. The serial-port base already had the
+     * device window added and this one did not, which no assertion on either
+     * field alone would have noticed.
+     */
+    g_assert_cmphex(qtest_readq(qts, console + 0x10) + IOC3_SERIAL_A, ==,
+                    qtest_readq(qts, console + 0x00));
+
     g_assert_cmphex(qtest_readw(qts, console + 0x18), ==, CONSOLE_BAUD);
     g_assert_cmphex(qtest_readb(qts, console + 0x22), ==, CONSOLE_WIDGET);
 
