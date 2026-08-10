@@ -1356,20 +1356,33 @@ void helper_mtc0_framemask(CPUMIPSState *env, target_ulong arg1)
      * is written to the TLB. The rest of the register is ignored on write and
      * reads as zero. The masking itself is not modeled; a guest that writes
      * zero here, which is what one does, gets the same behaviour either way.
+     *
+     * The register belongs to the R10000 family alone, but the translator lets
+     * any processor without release 6 reach it, so only narrow it where its
+     * width is known and leave the rest as they were.
      */
-    env->CP0_Framemask = arg1 & 0xffff;
+    if (env->insn_flags & INSN_R10K) {
+        env->CP0_Framemask = arg1 & 0xffff;
+    } else {
+        env->CP0_Framemask = arg1; /* XXX */
+    }
 }
 
 void helper_mtc0_diagnostic(CPUMIPSState *env, target_ulong arg1)
 {
     /*
-     * Of the twelve fields in the R10000 family's Diagnostic register only the
-     * branch prediction algorithm control is writable; the rest report branch
-     * cache and instruction TLB state, and the gaps between them are reserved
-     * and read as zero. None of that state exists here, so the writable field
-     * is the whole of what this register holds.
+     * Software writes the branch prediction algorithm, and the index,
+     * operation and state fields through which it reaches the branch
+     * prediction table. The rest of the register reports what the branch
+     * caches and the instruction TLB last did, and its gaps are reserved and
+     * read as zero.
+     *
+     * No branch prediction table exists behind those fields. A diagnostic that
+     * starts a table read therefore reads back the state it last wrote rather
+     * than a table entry; nothing an operating system does goes near it, and
+     * modeling the table would mean modeling branch prediction.
      */
-    env->CP0_Diagnostic = arg1 & (3 << CP0DI_BPMode);
+    env->CP0_Diagnostic = arg1 & CP0DI_WRITABLE;
 }
 
 void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
