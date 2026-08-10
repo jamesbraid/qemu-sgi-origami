@@ -507,6 +507,15 @@ static void sn0_component(uint8_t *graph, unsigned int index, uint8_t type,
     c[0x20] = widget;
     stl_be_p(c + 0x1c, index);                  /* virtual identifier */
     /*
+     * Padding in the reference declaration, but OpenBSD declares a bitfield
+     * across these two bytes holding an Origin 3000 controller port, a PCI bus
+     * number, a multifunction flag and a PCI function number. Leaving them to
+     * whatever the buffer held would have an OpenBSD guest read invented PCI
+     * routing out of a machine that has none, so they are zeroed on purpose
+     * rather than by luck.
+     */
+    stw_be_p(c + 0x24, 0);
+    /*
      * The back-pointer to a matching firmware component is read for every
      * component a guest visits, so it is zero rather than left as whatever the
      * buffer held.
