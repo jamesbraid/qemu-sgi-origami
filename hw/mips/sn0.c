@@ -27,10 +27,13 @@
 static void sn0_init(MachineState *machine)
 {
     Clock *cpuclk;
+    MIPSCPU *cpu;
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(cpuclk, SN0_CPU_REFCLK_HZ);
-    mips_cpu_create_with_clock(machine->cpu_type, cpuclk, true);
+    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk, true);
+    cpu_mips_irq_init_cpu(cpu);
+    cpu_mips_clock_init(cpu);
 
     memory_region_add_subregion(get_system_memory(), 0, machine->ram);
 }
