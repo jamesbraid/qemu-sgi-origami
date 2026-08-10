@@ -658,6 +658,13 @@ typedef struct CPUArchState {
 #if defined(TARGET_MIPS64)
 # define CP0EnLo_RI 63
 # define CP0EnLo_XI 62
+/*
+ * The R10000 family's uncached attribute occupies bits 63:62, the same two bits
+ * a MIPS32 processor spends on read-inhibit and execute-inhibit. No processor
+ * has both, so a TLB write reads the pair one way or the other depending on
+ * which processor it is, and never both ways.
+ */
+# define CP0EnLo_UC 62
 #else
 # define CP0EnLo_RI 31
 # define CP0EnLo_XI 30
