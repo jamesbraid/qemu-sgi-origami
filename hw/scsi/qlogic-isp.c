@@ -221,6 +221,16 @@ struct QLogicISPState {
  * a full re-initialisation of the chip rather than a narrower clear, so it and
  * the bus reset share this function instead of each clearing its own list of
  * registers and drifting apart.
+ *
+ * Mailboxes 4 and 5 are the queue pointers, and this is a place two sources
+ * disagree: 86Box's model, evidence about the accept-and-answer approach
+ * rather than about register values, sets them to 1 and 7 after reset. But
+ * OpenBSD's own reset sequence explicitly zeroes all four queue-pointer names
+ * with dedicated writes, and the datasheet's qtest checklist states the same
+ * thing independently, so the higher-authority source here is behavioural
+ * agreement between the guest and the datasheet, not the secondary model.
+ * Zero is what this function sets, and this comment is the record of having
+ * chosen it over the alternative rather than never having seen the alternative.
  */
 static void qlogic_isp_reset_state(QLogicISPState *s)
 {
