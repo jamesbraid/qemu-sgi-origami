@@ -48,6 +48,7 @@
 #include "hw/pci/pci_bus.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
+#include "system/address-spaces.h"
 
 /*
  * The data half of an eight-byte register slot. Every access this model serves
@@ -111,6 +112,48 @@
 #define BRIDGE_ATE_LOW_BASE     0x011000
 #define BRIDGE_ATE_LOW_STRIDE   4
 #define BRIDGE_ATE_LOW_SIZE     (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_LOW_STRIDE)
+
+/*
+ * What an entry holds. The remote map field routes between systems across a
+ * virtual backplane and is zero on a single machine; the model carries its full
+ * sixteen bits even though nothing here will ever set the upper half, because
+ * the direct map register's mode bit is what decides whether a device fills
+ * eight of them or all sixteen, and a model narrowing the field would make that
+ * bit unimplementable.
+ */
+#define ATE_REMOTE_MAP          MAKE_64BIT_MASK(48, 16)
+#define ATE_ADDRESS             MAKE_64BIT_MASK(12, 36)
+#define ATE_TARGET_WIDGET       MAKE_64BIT_MASK(8, 4)
+#define ATE_BYTE_SWAP           BIT_ULL(5)
+#define ATE_BARRIER             BIT_ULL(4)
+#define ATE_PREFETCH            BIT_ULL(3)
+#define ATE_PRECISE             BIT_ULL(2)
+#define ATE_COHERENT            BIT_ULL(1)
+#define ATE_VALID               BIT_ULL(0)
+
+/*
+ * A device sees four gigabytes of PCI address space, and the chip divides it by
+ * the top two address bits: the first gigabyte is local and not translated, the
+ * second goes through the table, and the upper two gigabytes are the direct
+ * window.
+ */
+#define BRIDGE_PCI_TRANSLATED   0x40000000u
+#define BRIDGE_PCI_DIRECT       0x80000000u
+
+/* The two translation page sizes, chosen by a bit in the control register. */
+#define BRIDGE_PAGE_SHIFT_4K    12
+#define BRIDGE_PAGE_SHIFT_16K   14
+
+/*
+ * The direct window's own arithmetic. The offset field supplies crosstalk
+ * address bits 47:31 and the low 31 bits of the PCI address pass through, and
+ * the add-512-megabytes bit — which resets set — steps the result over the
+ * processor's low compatibility segments, but only when the offset field is
+ * zero.
+ */
+#define BRIDGE_DIRECT_SHIFT     31
+#define BRIDGE_DIRECT_PASS      MAKE_64BIT_MASK(0, 31)
+#define BRIDGE_DIRECT_512MB     (512 * MiB)
 
 /*
  * PCI type 0 configuration space. Eight devices 4 KB apart, each holding eight
@@ -889,6 +932,160 @@ static void sgi_bridge_set_irq(void *opaque, int pin, int level)
                   pin, level ? "high" : "low");
 }
 
+/*
+ * The translation page size, which a bit in the control register chooses.
+ */
+static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
+{
+    return s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_PAGE_16K ?
+           BRIDGE_PAGE_SHIFT_16K : BRIDGE_PAGE_SHIFT_4K;
+}
+
+/*
+ * Where a crosstalk address a translation produced is issued.
+ *
+ * This is the one seam between what this chip does and how the machine
+ * around it represents the fabric, and it is kept to a single function so
+ * that settling the second does not disturb the first. A translated transfer
+ * names a target widget and an offset inside it; composing those into one
+ * address is the fabric's business, and the fabric's representation is not
+ * settled. Until it is, the offset is the address and the widget is carried
+ * but not applied — which is right for the machine as it stands, where the
+ * only target anything names is the node's own memory.
+ *
+ * No test depends on this. The two entries the straddle test uses differ
+ * only in the page they name and target the same widget, so what they assert
+ * stays true whatever this function becomes.
+ */
+static hwaddr sgi_bridge_compose_xtalk(SGIBridgeState *s,
+                                       unsigned int target_widget,
+                                       hwaddr offset)
+{
+    return offset;
+}
+
+/*
+ * A transfer a device initiates, translated one page at a time.
+ *
+ * The address mask returned here is one page and never more, and that is the
+ * whole mechanism. The memory system clamps a transfer to the end of the
+ * range a translation covers and then asks again for the next one, so a mask
+ * of one page turns a single transfer spanning several pages into one call
+ * here per page.
+ *
+ * A model returning a larger mask, or hand-rolling the walk instead of going
+ * through this interface, translates once and uses that one translation for
+ * the whole transfer. That is right for every transfer inside one page and
+ * wrong for the tail of every transfer crossing a boundary — a defect a
+ * neighbouring emulator of comparable hardware carried for years, because the
+ * transfers that expose it are the rare ones.
+ */
+static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
+                                          IOMMUAccessFlags flag, int iommu_idx)
+{
+    SGIBridgeState *s = container_of(iommu, SGIBridgeState, iommu);
+    unsigned int shift = sgi_bridge_page_shift(s);
+    hwaddr page_mask = MAKE_64BIT_MASK(0, shift);
+    IOMMUTLBEntry entry = {
+        .target_as = &address_space_memory,
+        .iova = addr & ~page_mask,
+        .translated_addr = 0,
+        .addr_mask = page_mask,
+        .perm = IOMMU_NONE,
+    };
+    uint32_t direct;
+    uint64_t ate;
+    unsigned int index;
+    hwaddr offset;
+
+    if (addr < BRIDGE_PCI_TRANSLATED) {
+        /*
+         * Local. Not translated to crosstalk at all, so it reaches whatever is
+         * at that address on this side rather than being carried across.
+         */
+        entry.translated_addr = addr & ~page_mask;
+        entry.perm = IOMMU_RW;
+        return entry;
+    }
+
+    if (addr >= BRIDGE_PCI_DIRECT) {
+        direct = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DIRECT_MAP)];
+        offset = (hwaddr)(direct & DIRECT_OFFSET) << BRIDGE_DIRECT_SHIFT;
+        offset |= addr & BRIDGE_DIRECT_PASS;
+
+        /*
+         * The add-512-megabytes rule, which applies only when the offset field
+         * is zero. It exists to step the window over the processor's low
+         * compatibility segments, and the bit resets set, so a machine that has
+         * programmed nothing still gets the step.
+         */
+        if ((direct & DIRECT_OFFSET) == 0 && (direct & DIRECT_ADD_512MB)) {
+            offset += BRIDGE_DIRECT_512MB;
+        }
+
+        entry.translated_addr =
+            sgi_bridge_compose_xtalk(s, (direct & DIRECT_WIDGET) >>
+                                     DIRECT_WIDGET_SHIFT, offset) & ~page_mask;
+        entry.perm = IOMMU_RW;
+        return entry;
+    }
+
+    /* Through the table. The index is the page number inside the window. */
+    index = (addr - BRIDGE_PCI_TRANSLATED) >> shift;
+    if (index >= SGI_BRIDGE_ATE_ENTRIES) {
+        /*
+         * Past the internal table. An external static RAM would supply the
+         * rest, and this machine has none, so the transfer has nowhere to go.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: transfer to PCI address 0x%" HWADDR_PRIx
+                      " needs translation entry %u, which is past the %u the "
+                      "chip holds and this machine has no external table\n",
+                      addr, index, SGI_BRIDGE_ATE_ENTRIES);
+        return entry;
+    }
+
+    ate = s->ate_entry[index];
+    if (!(ate & ATE_VALID)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: transfer to PCI address 0x%" HWADDR_PRIx
+                      " uses translation entry %u, which is not valid\n",
+                      addr, index);
+        return entry;
+    }
+
+    entry.translated_addr =
+        sgi_bridge_compose_xtalk(s, (ate & ATE_TARGET_WIDGET) >> 8,
+                                 ate & ATE_ADDRESS) & ~page_mask;
+    entry.perm = IOMMU_RW;
+    return entry;
+}
+
+/*
+ * Every device on this bus translates through the same table: the chip has one,
+ * and which device asked is carried in the entry rather than in the lookup.
+ */
+static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
+                                                     int devfn)
+{
+    SGIBridgeState *s = opaque;
+
+    return &s->iommu_as;
+}
+
+static const PCIIOMMUOps sgi_bridge_iommu_ops = {
+    .get_address_space = sgi_bridge_device_address_space,
+};
+
+#define TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION "sgi-bridge-iommu-memory-region"
+
+static void sgi_bridge_iommu_class_init(ObjectClass *oc, const void *data)
+{
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(oc);
+
+    imrc->translate = sgi_bridge_translate;
+}
+
 static void sgi_bridge_reset_hold(Object *obj, ResetType type)
 {
     SGIBridgeState *s = SGI_BRIDGE(obj);
@@ -995,6 +1192,17 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
     memory_region_add_subregion(&s->widget, BRIDGE_CFG0_BASE, &s->cfg0);
 
+    /*
+     * The translation every device on this bus transfers through, and the
+     * address space they are given in place of the system's.
+     */
+    memory_region_init_iommu(&s->iommu, sizeof(s->iommu),
+                             TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION, obj,
+                             "sgi-bridge.iommu", UINT64_MAX);
+    address_space_init(&s->iommu_as, MEMORY_REGION(&s->iommu),
+                       "sgi-bridge.dma");
+    pci_setup_iommu(phb->bus, &sgi_bridge_iommu_ops, s);
+
     /* The translation table, and the read-only view of its lower halves. */
     memory_region_init_io(&s->ate, obj, &sgi_bridge_ate_ops, s,
                           "sgi-bridge.ate", BRIDGE_ATE_SIZE);
@@ -1048,6 +1256,11 @@ static const TypeInfo sgi_bridge_types[] = {
         .parent = TYPE_PCI_HOST_BRIDGE,
         .instance_size = sizeof(SGIBridgeState),
         .class_init = sgi_bridge_class_init,
+    },
+    {
+        .name = TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION,
+        .parent = TYPE_IOMMU_MEMORY_REGION,
+        .class_init = sgi_bridge_iommu_class_init,
     },
 };
 

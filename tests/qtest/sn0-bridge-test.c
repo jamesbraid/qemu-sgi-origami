@@ -713,6 +713,160 @@ static void test_translation_entries_reset_clear(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The transfer source, and the registers it is driven through. It is a device
+ * of this fork's own, built because nothing in the tree could issue one
+ * transfer of a length and address a test chooses without either claiming this
+ * machine supports message-signalled interrupts or testing the translation
+ * table through another chip's script engine.
+ */
+#define DMA_CARD                " -device sgi-bridge-dma-test"
+#define DMA_REG_ADDRESS         0x00
+#define DMA_REG_LENGTH          0x04
+#define DMA_REG_SEED            0x08
+#define DMA_REG_GO              0x0c
+
+/* Where the transfer source's own registers are put in PCI memory space. */
+#define DMA_CARD_MMIO           0x10000000u
+
+/*
+ * The translated window, and the two pages of it this test uses. A page is 4 KB
+ * because the control register resets choosing that size.
+ */
+#define PCI_TRANSLATED          0x40000000u
+#define PAGE_SIZE_4K            0x1000u
+
+/*
+ * The two places the two pages are translated to, and the point of the whole
+ * test: they are NOT adjacent. A model translating once per transfer instead of
+ * once per page puts the tail of a straddling transfer in the page physically
+ * after the first one, which is right only when the two happen to be
+ * consecutive — so a test whose two pages are consecutive cannot tell the two
+ * models apart, and is the test that was missing from a neighbouring emulator
+ * for years.
+ */
+#define TARGET_PAGE_A           0x00100000u
+#define TARGET_PAGE_B           0x00200000u
+#define TARGET_PAGE_AFTER_A     (TARGET_PAGE_A + PAGE_SIZE_4K)
+
+/* An entry naming a page, targeting a widget, and marked valid. */
+#define ATE_ENTRY(page, widget) ((uint64_t)(page) | \
+                                 ((uint64_t)(widget) << 8) | 1)
+
+/* How far into the first page the transfer starts, and how long it runs. */
+#define STRADDLE_HEAD           8
+#define STRADDLE_TAIL           8
+#define STRADDLE_LENGTH         (STRADDLE_HEAD + STRADDLE_TAIL)
+#define STRADDLE_START          (PCI_TRANSLATED + PAGE_SIZE_4K - STRADDLE_HEAD)
+#define STRADDLE_SEED           0x40
+
+static void bridge_start_the_transfer_source(QTestState *qts)
+{
+    /* Give the source its registers, and let it master the bus. */
+    qtest_writel(qts, CFG0(0, 0) + 0x10, DMA_CARD_MMIO);
+    qtest_writel(qts, CFG0(0, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY | 0x0004);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(0)),
+                 DEV_MEMORY_SPACE | (DMA_CARD_MMIO >> 20));
+}
+
+static void bridge_transfer(QTestState *qts, uint32_t addr, uint32_t length,
+                            uint32_t seed)
+{
+    qtest_writel(qts, WINDOW(0) + DMA_REG_ADDRESS, addr);
+    qtest_writel(qts, WINDOW(0) + DMA_REG_LENGTH, length);
+    qtest_writel(qts, WINDOW(0) + DMA_REG_SEED, seed);
+    qtest_writel(qts, WINDOW(0) + DMA_REG_GO, 1);
+}
+
+static void test_a_transfer_straddling_a_page(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t head[STRADDLE_HEAD], tail[STRADDLE_TAIL];
+    uint8_t after[STRADDLE_TAIL];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+
+    /*
+     * Two entries differing in nothing but the page they name. They target the
+     * same widget deliberately, so that what this test asserts stays true
+     * however the machine ends up composing a widget and an offset into a
+     * fabric address — the question that composition answers is not this
+     * test's.
+     */
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0));
+
+    /* Clear all three places, so a byte found later was put there. */
+    qtest_memset(qts, TARGET_PAGE_A, 0, PAGE_SIZE_4K);
+    qtest_memset(qts, TARGET_PAGE_B, 0, PAGE_SIZE_4K);
+    qtest_memset(qts, TARGET_PAGE_AFTER_A, 0, PAGE_SIZE_4K);
+
+    /* One transfer, starting before the boundary and crossing it. */
+    bridge_transfer(qts, STRADDLE_START, STRADDLE_LENGTH, STRADDLE_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A + PAGE_SIZE_4K - STRADDLE_HEAD,
+                  head, sizeof(head));
+    qtest_memread(qts, TARGET_PAGE_B, tail, sizeof(tail));
+    qtest_memread(qts, TARGET_PAGE_AFTER_A, after, sizeof(after));
+
+    /* The head is in the page the first entry names. */
+    for (i = 0; i < STRADDLE_HEAD; i++) {
+        g_assert_cmpuint(head[i], ==, (uint8_t)(STRADDLE_SEED + i));
+    }
+
+    /*
+     * And the tail is in the page the SECOND entry names, which is the whole
+     * assertion. A model that translated once for the transfer would have
+     * carried on into the page after the first one.
+     */
+    for (i = 0; i < STRADDLE_TAIL; i++) {
+        g_assert_cmpuint(tail[i], ==,
+                         (uint8_t)(STRADDLE_SEED + STRADDLE_HEAD + i));
+    }
+
+    /*
+     * Stated as its own assertion rather than left implied, because it names
+     * the exact wrong answer: the page physically after the first one is where
+     * a translate-once model puts the tail, and it must be untouched.
+     */
+    for (i = 0; i < STRADDLE_TAIL; i++) {
+        g_assert_cmpuint(after[i], ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_an_invalid_entry_transfers_nothing(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[8];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+
+    /* The same entry as the straddle test's first, without its valid bit. */
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0) & ~1ull);
+    qtest_memset(qts, TARGET_PAGE_A, 0, PAGE_SIZE_4K);
+
+    bridge_transfer(qts, PCI_TRANSLATED, sizeof(seen), STRADDLE_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, 0);
+    }
+
+    /* And the same transfer lands once the entry is made valid. */
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_transfer(qts, PCI_TRANSLATED, sizeof(seen), STRADDLE_SEED);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(STRADDLE_SEED + i));
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -751,6 +905,10 @@ int main(int argc, char **argv)
                         test_the_lower_half_view_is_read_only);
     qtest_add_data_func("sn0/bridge/translation-entries-reset-clear", NULL,
                         test_translation_entries_reset_clear);
+    qtest_add_data_func("sn0/bridge/transfer-straddling-a-page", NULL,
+                        test_a_transfer_straddling_a_page);
+    qtest_add_data_func("sn0/bridge/invalid-entry-transfers-nothing", NULL,
+                        test_an_invalid_entry_transfers_nothing);
 
     return g_test_run();
 }

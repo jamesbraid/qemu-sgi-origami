@@ -274,3 +274,7 @@ config SGI_IOC3
 
 config SGI_XBOW
     bool
+
+config SGI_BRIDGE_DMA_TEST
+    bool
+    depends on PCI
