@@ -8,6 +8,9 @@ config M41T80
     depends on I2C
     default y if I2C_DEVICES
 
+config M48T35
+    bool
+
 config M48T59
     bool
 

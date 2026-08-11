@@ -30,6 +30,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/pci/pci.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
 
@@ -593,6 +594,23 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.ssram", SGI_IOC3_SSRAM_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SSRAM_BASE, &s->ssram);
 
+    /*
+     * The byte bus's first device select, and the clock behind it. The chip
+     * decodes the select and the part answers, so what is mapped here is the
+     * clock's own region rather than anything this file implements.
+     *
+     * It is realized as a system-bus device rather than a plain one because a
+     * plain device realized with no bus is never reset -- its registers decode
+     * and answer perfectly while every reset value stays at whatever the
+     * allocation left there, which is a defect nothing warns about.
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->rtc), errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s->bar, SGI_IOC3_BYTEBUS_DEV0,
+                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rtc),
+                                                       0));
+
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
     /*
@@ -675,6 +693,8 @@ static void sgi_ioc3_init(Object *obj)
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         object_initialize_child(obj, "serial[*]", &s->serial[i], TYPE_SERIAL);
     }
+
+    object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
 }
 
 static const VMStateDescription vmstate_sgi_ioc3 = {

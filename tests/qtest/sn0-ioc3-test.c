@@ -728,6 +728,187 @@ static void test_the_buffer_ram_is_seventeen_bits_wide(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The byte bus's first device select and the real-time clock behind it. The
+ * window is byte-wide, unlike every other block on this chip, and the clock is
+ * its top eight bytes.
+ */
+#define BYTEBUS_DEV0    (IOC3_BASE + 0x80000)
+#define RTC_CONTROL     (BYTEBUS_DEV0 + 0x7ff8)
+#define RTC_SECONDS     (BYTEBUS_DEV0 + 0x7ff9)
+#define RTC_MINUTES     (BYTEBUS_DEV0 + 0x7ffa)
+#define RTC_HOURS       (BYTEBUS_DEV0 + 0x7ffb)
+#define RTC_WEEKDAY     (BYTEBUS_DEV0 + 0x7ffc)
+#define RTC_DAY         (BYTEBUS_DEV0 + 0x7ffd)
+#define RTC_MONTH       (BYTEBUS_DEV0 + 0x7ffe)
+#define RTC_YEAR        (BYTEBUS_DEV0 + 0x7fff)
+
+#define RTC_CSR_READ    0x40
+#define RTC_CSR_WRITE   0x80
+
+/*
+ * A fixed time to start the clock at, so the fields can be asserted exactly
+ * rather than for plausibility. The seconds are deliberately mid-minute: a run
+ * takes a moment, and a base on a minute boundary would let the minute roll
+ * underneath the test.
+ */
+#define RTC_ARGS \
+    "-M origin200,io-bridge=on -rtc base=2026-08-11T12:30:05,clock=vm"
+
+static void test_the_clock_reads_the_time_it_was_given(const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The read sequence all three drivers perform: freeze, read the fields,
+     * release. Asserting the values exactly is the point -- and the year is
+     * the assertion that matters most, because it is the one no boot can
+     * check. The clock holds two digits counted from 1970, so 2026 is 0x56,
+     * and a model presenting the calendar year's last two digits would answer
+     * 0x26 here and have a guest report 1996 with nothing else looking wrong.
+     */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
+    g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, 0x30);
+    g_assert_cmphex(qtest_readb(qts, RTC_HOURS), ==, 0x12);
+    g_assert_cmphex(qtest_readb(qts, RTC_DAY), ==, 0x11);
+    g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x08);
+    g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x56);
+
+    /* The 11th of August 2026 was a Tuesday, which this part counts as 3. */
+    g_assert_cmphex(qtest_readb(qts, RTC_WEEKDAY), ==, 0x03);
+
+    qtest_writeb(qts, RTC_CONTROL, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_clock_freeze_holds_an_instant(const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The freeze has to be tested against a clock that is actually moving, and
+     * the virtual clock only moves when a test moves it. An earlier version of
+     * this file asserted that three reads in a row agreed, which passed with
+     * the freeze removed entirely -- nothing was advancing between the reads,
+     * so the assertion could not fail. Stepping the clock is what turns it
+     * into a test.
+     */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
+
+    qtest_clock_step(qts, 3 * 1000000000LL);
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
+
+    /* Released, the clock is where the stepped time put it, not where it was. */
+    qtest_writeb(qts, RTC_CONTROL, 0);
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x08);
+
+    qtest_quit(qts);
+}
+
+static void test_the_clock_control_register_reads_back(const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * A driver reads this register, sets a bit in what it read, writes it
+     * back, and later writes back the value it saved. So it has to read as
+     * what was written -- a register that answered zero would have every
+     * driver clear the other bit by accident on its way out.
+     */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, RTC_CONTROL), ==, RTC_CSR_READ);
+
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ | RTC_CSR_WRITE);
+    g_assert_cmphex(qtest_readb(qts, RTC_CONTROL), ==,
+                    RTC_CSR_READ | RTC_CSR_WRITE);
+
+    qtest_writeb(qts, RTC_CONTROL, 0);
+    g_assert_cmphex(qtest_readb(qts, RTC_CONTROL), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_clock_takes_a_time_a_guest_sets(const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The write sequence: arm, write the fields, release. The year written is
+     * 0x40 -- 1970 plus forty -- so reading back 0x40 rather than 0x10 is what
+     * says the epoch runs the same way in both directions. A model that
+     * applied the epoch on read alone would pass the read test above and fail
+     * here.
+     */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_WRITE);
+    qtest_writeb(qts, RTC_SECONDS, 0x45);
+    qtest_writeb(qts, RTC_MINUTES, 0x21);
+    qtest_writeb(qts, RTC_HOURS, 0x09);
+    qtest_writeb(qts, RTC_DAY, 0x07);
+    qtest_writeb(qts, RTC_MONTH, 0x03);
+    qtest_writeb(qts, RTC_YEAR, 0x40);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, 0x21);
+    g_assert_cmphex(qtest_readb(qts, RTC_HOURS), ==, 0x09);
+    g_assert_cmphex(qtest_readb(qts, RTC_DAY), ==, 0x07);
+    g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x03);
+    g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x40);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_clock_storage_holds_a_write(const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The cells below the clock are real storage, and that is load-bearing
+     * rather than incidental: SGI's own driver decides which of two clock
+     * parts is fitted by writing 0xff to the byte at offset 0x6 with the byte
+     * at 0xB set to zero, then reading 0x6 back. A model that answered those
+     * as zero, or answered only the clock block, would be identified as a
+     * Dallas part and driven through a register set this device does not have.
+     */
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0b, 0x00);
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x06, 0xff);
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0b, 0x80);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x06), ==, 0xff);
+
+    /* The ends of the storage, so a window that stops short is caught here. */
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0000, 0x5a);
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x7ff7, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x0000), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x7ff7), ==, 0xa5);
+
+    /*
+     * Consecutive cells are distinct, and the storage does not alias the clock
+     * above it: the byte below the control register keeps its own value while
+     * the control register holds another.
+     */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x7ff7), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, RTC_CONTROL), ==, RTC_CSR_READ);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -748,6 +929,16 @@ int main(int argc, char **argv)
                         test_the_buffer_ram_halves_are_distinct);
     qtest_add_data_func("sn0/ioc3/buffer-ram-is-seventeen-bits-wide", NULL,
                         test_the_buffer_ram_is_seventeen_bits_wide);
+    qtest_add_data_func("sn0/ioc3/clock-reads-the-time-it-was-given", NULL,
+                        test_the_clock_reads_the_time_it_was_given);
+    qtest_add_data_func("sn0/ioc3/clock-freeze-holds-an-instant", NULL,
+                        test_the_clock_freeze_holds_an_instant);
+    qtest_add_data_func("sn0/ioc3/clock-control-reads-back", NULL,
+                        test_the_clock_control_register_reads_back);
+    qtest_add_data_func("sn0/ioc3/clock-takes-a-time-a-guest-sets", NULL,
+                        test_the_clock_takes_a_time_a_guest_sets);
+    qtest_add_data_func("sn0/ioc3/clock-storage-holds-a-write", NULL,
+                        test_the_clock_storage_holds_a_write);
     qtest_add_data_func("sn0/ioc3/ports-are-distinct", NULL,
                         test_ports_are_distinct);
     qtest_add_data_func("sn0/ioc3/registers-are-a-byte-apart", NULL,

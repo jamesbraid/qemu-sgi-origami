@@ -9,6 +9,7 @@
 #include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
+#include "hw/rtc/m48t35.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3 "sgi-ioc3"
@@ -250,6 +251,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SSRAM_STORED   (SGI_IOC3_SSRAM_DATA | SGI_IOC3_SSRAM_PARITY)
 
 /*
+ * The byte bus: four device selects for byte-wide parts outside the chip. The
+ * Origin 200 wires only the first, and what hangs off it is the machine's
+ * real-time clock -- a Timekeeper, directly addressed, with a flat 32 KB
+ * window. The other three selects are other machines' wiring and stay a hole
+ * here rather than answering.
+ *
+ * The window belongs to this chip and the part behind it is a device of its
+ * own, which is what the bus is: this model decodes the select and forwards,
+ * and the clock answers.
+ */
+#define SGI_IOC3_BYTEBUS_DEV0   0x80000
+
+/*
  * The two serial ports' bits, which are pass-throughs: they follow the 16550's
  * own interrupt level rather than latching, so a write cannot clear them and
  * what really quiets one is the register read the guest's serial driver does.
@@ -330,6 +344,14 @@ struct SGIIOC3State {
      */
     MemoryRegion ssram;
     uint32_t ssram_word[SGI_IOC3_SSRAM_WORDS];
+
+    /*
+     * The real-time clock on the byte bus's first device select. It is a child
+     * of this chip rather than a device the machine wires up, because that is
+     * the topology: the bus belongs to the controller and a guest reaches the
+     * clock only through this chip's window.
+     */
+    M48T35State rtc;
 };
 
 #endif
