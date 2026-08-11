@@ -1176,23 +1176,28 @@ static void sn0_firmware_reset(void *opaque)
  * adapters need resources assigned but not a window aimed in advance.
  *
  * Every device gets PCI_COMMAND_MASTER along with its space-decode bits,
- * because a leaf device that cannot master cannot DMA, and real ARCS PROM
- * sets it at POST the same standard PC-descended way it sets the space-
- * decode bits.
+ * and this is load-bearing rather than cosmetic: PCI_COMMAND_MASTER gates
+ * the qlogic-isp1040's bus_master_as through the generic PCI core's
+ * bus_master_enable_region, the same as it would on real hardware, so a
+ * device this firmware leaves without it cannot DMA at all. There is no
+ * SeaBIOS-equivalent anywhere on this machine — nothing else assigns PCI
+ * resources before a guest runs — so this write is the only place mastering
+ * can come from for a guest that does not set it itself. Real ARCS PROM
+ * sets it at POST the same standard way it sets the space-decode bits, and
+ * this is that.
  *
- * OpenBSD does not depend on this machine doing it: its qlw driver maps its
- * BARs through pci_mapreg_map() (sys/dev/pci/pci_map.c), whose internal
- * pci_mapreg_assign() unconditionally ORs PCI_COMMAND_MASTER_ENABLE into
- * the command register as part of mapping any BAR, before the driver's own
- * attach code ever touches PCI_COMMAND_STATUS_REG directly. That call
- * happens whether or not the BAR arrived already assigned, so this
- * machine's DMA transfers worked before this fix because the guest turned
- * mastering on itself, not because this model's DMA path is unguarded — it
- * is not: PCI_COMMAND_MASTER gates the qlogic-isp1040's bus_master_as the
- * same way it would on real hardware, through the generic PCI core's
- * bus_master_enable_region. Whether this matters for a guest that does not
- * self-enable mastering the way OpenBSD's PCI midlayer does — Linux is the
- * open case — is worth checking once that guest reaches this far.
+ * OpenBSD's qlw driver happens not to depend on this machine doing it
+ * anyway: it maps its BARs through pci_mapreg_map() (sys/dev/pci/pci_map.c),
+ * whose internal pci_mapreg_assign() unconditionally ORs
+ * PCI_COMMAND_MASTER_ENABLE into the command register as part of mapping
+ * any BAR, before the driver's own attach code ever touches
+ * PCI_COMMAND_STATUS_REG directly — regardless of whether the BAR arrived
+ * already assigned. That covers this one guest's driver, not the machine:
+ * nothing here has yet observed a real DMA transfer succeed on this Origin
+ * 200 configuration (the ISP1040's mailbox does not come up past reset —
+ * task #44 — so OpenBSD's own mastering call is currently unexercised
+ * too), and whether Linux's SGI PCI bridge path self-enables mastering the
+ * way OpenBSD's does is a wholly separate, open question.
  */
 static void sn0_assign_pci_resources(void *opaque)
 {
