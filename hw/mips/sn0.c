@@ -168,6 +168,65 @@ static const MemoryRegionOps sn0_flash_ops = {
     .valid.max_access_size = 8,
 };
 
+/*
+ * The Hub special view of the boot flash, LBOOT, is 256 MB decoding a 1 MB
+ * chip: a real chip-select ignores the offset bits above its own size, so the
+ * chip's contents repeat every 1 MB across the whole window. Expressed here as
+ * the decode dropping those bits — masking the offset down to the flash's own
+ * size before reaching it — rather than as 256 separate aliases naming the
+ * same repeat, because that is what the hardware does and a guest's own code
+ * genuinely lands on offsets past the first repeat.
+ *
+ * Reached through the flash's own backing memory directly, not through its
+ * device ops: the flash is a ROM device, answering reads from that backing
+ * memory as long as nothing has taken it out of that mode, and its ops exist
+ * only to reject the write path a real guest never takes. Dispatching a read
+ * through the ops instead would reach the same stub every unprogrammed
+ * access reports through, and read back nothing.
+ */
+static uint64_t sn0_lboot_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SN0MachineState *s = opaque;
+    const uint8_t *p = memory_region_get_ram_ptr(&s->flash) +
+                       (addr & (SN0_FLASH_SIZE - 1));
+
+    /*
+     * A single byte carries no endianness of its own, so it is its own case
+     * rather than a big-endian load of width one — the generic byte-swapping
+     * helper this file uses for the wider sizes does not accept that
+     * combination.
+     */
+    switch (size) {
+    case 1:
+        return ldub_p(p);
+    case 2:
+        return lduw_be_p(p);
+    case 4:
+        return ldl_be_p(p);
+    case 8:
+        return ldq_be_p(p);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void sn0_lboot_write(void *opaque, hwaddr addr, uint64_t val,
+                            unsigned size)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sn0: ignoring write of 0x%" PRIx64 " to boot flash "
+                  "offset 0x%" HWADDR_PRIx " through the Hub special view; "
+                  "programming the flash is not modeled\n", val, addr);
+}
+
+static const MemoryRegionOps sn0_lboot_ops = {
+    .read = sn0_lboot_read,
+    .write = sn0_lboot_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+};
+
 
 /*
  * Build what a programmed flash would hold at the addresses a guest reaches
@@ -1170,12 +1229,15 @@ static void sn0_init(MachineState *machine)
 
     /*
      * The same bytes through the Hub's special space, which is how a guest
-     * reads the machine type without going through the compatibility segment.
-     * One region and an alias, so the two views cannot drift apart.
+     * reads the machine type without going through the compatibility segment
+     * — and, at any offset past the flash's own 1 MB, how real firmware
+     * reaches its own code a second way (LBOOT; see the constant's comment).
+     * One region and a masking mirror onto it, so the view nearest offset
+     * zero cannot drift from the flash and every repeat past it answers with
+     * the same bytes a real chip's address decode would.
      */
-    memory_region_init_alias(&s->flash_hub_view, NULL,
-                             "sn0.node0.flash.hub", &s->flash, 0,
-                             SN0_FLASH_SIZE);
+    memory_region_init_io(&s->flash_hub_view, NULL, &sn0_lboot_ops, s,
+                          "sn0.node0.flash.hub", SN0_LBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_HUB,
                                 &s->flash_hub_view);

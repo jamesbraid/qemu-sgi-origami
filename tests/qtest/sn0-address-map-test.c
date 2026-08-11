@@ -124,6 +124,36 @@ static void test_flash_two_views(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Hub special view of the flash, LBOOT, is 256 MB decoding a 1 MB chip:
+ * real firmware reaches its own code through offsets in this window well past
+ * the flash's real size, and a real chip-select ignores the extra bits and
+ * repeats. This is the case `test_flash_two_views` cannot reach, since offset
+ * zero would pass even with a window sized to the flash alone.
+ */
+static void test_lboot_mirrors_the_flash(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t direct, mirrored;
+
+    /* One repeat period past the flash's own size: the first wrap. */
+    direct = qtest_readq(qts, FLASH_RESET + CONFIG_OFFSET);
+    mirrored = qtest_readq(qts, FLASH_HUB + 0x100000 + CONFIG_OFFSET);
+    g_assert_cmphex(mirrored, ==, direct);
+
+    /* Deep into the window, the offset this project's own D1 trace hit. */
+    direct = qtest_readl(qts, FLASH_RESET + 0x2a3c);
+    mirrored = qtest_readl(qts, FLASH_HUB + 0xfc02a3c);
+    g_assert_cmphex(mirrored, ==, direct);
+
+    /* The last aligned double word of the 256 MB window still wraps. */
+    direct = qtest_readq(qts, FLASH_RESET + (0x10000000 - 8) % 0x100000);
+    mirrored = qtest_readq(qts, FLASH_HUB + 0x10000000 - 8);
+    g_assert_cmphex(mirrored, ==, direct);
+
+    qtest_quit(qts);
+}
+
 static void test_entry_points(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -227,6 +257,8 @@ int main(int argc, char **argv)
                         test_config_block);
     qtest_add_data_func("sn0/address-map/flash-two-views", NULL,
                         test_flash_two_views);
+    qtest_add_data_func("sn0/address-map/lboot-mirrors-the-flash", NULL,
+                        test_lboot_mirrors_the_flash);
     qtest_add_data_func("sn0/address-map/entry-points", NULL,
                         test_entry_points);
     qtest_add_data_func("sn0/address-map/flash-read-only", NULL,
