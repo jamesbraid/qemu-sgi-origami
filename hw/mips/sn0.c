@@ -583,10 +583,19 @@ static uint8_t *sn0_component_at(uint8_t *graph, unsigned int index)
  * next-board offset: a consumer reads the record first and checks afterwards,
  * so there is no escape from a bad link. A board without the local-board kind
  * is skipped entirely, components and all.
+ *
+ * The declared count and the number of components actually populated in the
+ * array are separate parameters rather than one, because real firmware makes
+ * them disagree on this machine's midplane: it populates one component and
+ * declares a count of zero, on purpose, so that a consumer walking the array
+ * to the declared count never visits it. `components` is how many entries
+ * this call populates; `declared_count` is what the count field says. Every
+ * board but the midplane wants them equal, which is what the callers do.
  */
 static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
                       uint8_t version, unsigned int next,
-                      unsigned int first_component, unsigned int components)
+                      unsigned int first_component, unsigned int components,
+                      unsigned int declared_count)
 {
     uint8_t *b = graph + (SN0_GRAPH_BOARDS - SN0_CONFIG_GRAPH) +
                  index * SN0_GRAPH_BOARD_SIZE;
@@ -596,7 +605,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
     b[0x04] = SN0_BOARD_LOCAL;
     b[0x05] = type;
     b[0x06] = version;
-    b[0x17] = components;
+    b[0x17] = declared_count;
     /*
      * A board's components are addressed relative to the board's own node
      * identifier rather than the node whose list is being walked, and that
@@ -693,7 +702,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
 
     /* Board 0: the node board, with a processor, a Hub and a memory bank. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
-              SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3);
+              SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3, 3);
     sn0_component(graph, 0, SN0_COMP_PROCESSOR, 0);
     sn0_component(graph, 1, SN0_COMP_HUB, 0);
     sn0_component(graph, 2, SN0_COMP_MEMORY, 0);
@@ -754,9 +763,20 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     /*
      * Board 1: the midplane, carrying a module serial number and nothing else,
      * which is what a real Origin 200 emits.
+     *
+     * Real firmware populates that one component and declares a count of
+     * zero — deliberately, not by omission. OpenBSD's enumeration loop runs
+     * to the declared count rather than to the end of the array, so on real
+     * hardware the serial-number component is present and never visited.
+     * There is a mechanism behind the number, not only a captured value to
+     * follow: real firmware adds the component and then decrements the
+     * count by one on purpose, and its own consumer for that component reads
+     * it back at the index *equal to* the (decremented) count — exactly the
+     * slot the decrement excludes from an ordinary walk. A count of one
+     * would put the component one slot away from where that consumer looks.
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
-              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1);
+              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1, 0);
     sn0_component(graph, 3, SN0_COMP_MODULE_SERIAL, 0);
 
     /*
@@ -765,7 +785,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * describe the machine that was actually built, and because the moment a
      * console works this is what a guest walks looking for one.
      */
-    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 2);
+    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 2, 2);
     sn0_component(graph, 4, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
     sn0_component(graph, 5, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
 
