@@ -885,6 +885,19 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
  * the translation mechanism and the reset value, and proves nothing whatever
  * about this write.
  *
+ * **What does not make it dispensable is a guest doing it instead, and that
+ * reason circulates.** OpenBSD programs translation entries — but the *other*
+ * ones. Its large-window allocator skips this entry by a hard-coded index and
+ * then reads through it as though it were small window zero, so the guest
+ * depends on this entry being right and never writes it. A firmware that
+ * omitted the redirection would not be rescued by the guest.
+ *
+ * The distinction matters because the two reasons have different reach. The
+ * coincidence above is a property of a machine whose I/O bridge sits behind
+ * widget zero; on a machine where the redirect named anything else, this write
+ * would be doing real work, and an implementer carrying the guest-does-it
+ * version would drop it there too.
+ *
  * It has to run at reset rather than at machine creation, because the Hub
  * resets its translation table and would undo it — the same reason the firmware
  * structures in memory are loaded by the ROM loader at reset rather than
