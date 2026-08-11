@@ -440,6 +440,29 @@
 #define SN0_ARCS_GET_ENV        30      /* entry at offset 0xf0 */
 
 /*
+ * The SGI-private call vector: seventeen more entries of eight bytes each,
+ * at the offset the parameter block's private-vector field points at.
+ * IRIX and the SGI standalone shell need it; the open-source guests we boot
+ * never look at it. Its trap-page slots and dispatcher op numbers continue
+ * where the firmware call vector's own thirty-five leave off, in the same
+ * trap page, because the mechanism is identical and the two vectors never
+ * overlap in address.
+ */
+#define SN0_ARCS_PRIVATE_VECTOR   (SN0_ARCS_VECTOR + 0x400)
+#define SN0_ARCS_PRIVATE_ENTRIES  17
+#define SN0_ARCS_PRIVATE_BASE_OP  SN0_ARCS_ENTRIES
+/* Capability level, private-vector entry at offset 0x48 -> index 9. */
+#define SN0_ARCS_CAPABILITY_OP    (SN0_ARCS_PRIVATE_BASE_OP + 9)
+/*
+ * Level three: the firmware can load a relocatable object. The SGI
+ * standalone shell shipped on install media is a relocatable object with no
+ * program headers and no entry point, so a firmware answering less than
+ * three cannot load it. Not on the banner path; written down so the number
+ * is right before anything asks for it.
+ */
+#define SN0_ARCS_CAPABILITY_LEVEL 3
+
+/*
  * The stubs those entries point at, and the region their one memory access
  * lands in. A stub is four instructions: form the address, load from it,
  * return. The load is what crosses into the firmware implementation, and which
