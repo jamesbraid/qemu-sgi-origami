@@ -171,6 +171,8 @@
 #define SN0_WIDGET0_PART         0xc002
 #define SN0_WIDGET0_MANUFACTURER 0x036
 #define SN0_WIDGET0_REVISION     3
+/* The identification field is four bits wide. */
+#define SN0_WIDGET0_REVISION_MAX 0xf
 
 /*
  * The redirection the firmware performs, and the Hub register fields it needs

@@ -11,6 +11,7 @@
 #include "qemu/units.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
@@ -80,6 +81,20 @@ struct SN0MachineState {
 
     /* Where the firmware's console output goes. */
     Chardev *console;
+
+    /*
+     * Candidate values: hardware facts this machine asserts without having
+     * observed them. They are settable so that two runs can differ in one value
+     * and nothing else — a candidate that takes a rebuild to change makes every
+     * comparison a comparison of two emulators as well as two values, and a
+     * difference then cannot be attributed to either.
+     *
+     * A value belongs here when it is derived rather than captured. Moving one
+     * in is how we say we are not sure; moving one out, to a constant, is how
+     * we
+     * say an observation settled it.
+     */
+    uint32_t widget0_revision;
 
     /* The memory descriptor list, and where a guest sees it. */
     uint64_t mem_addr;
@@ -1020,7 +1035,7 @@ static void sn0_init(MachineState *machine)
     qdev_prop_set_uint32(DEVICE(&s->xbow), "part", SN0_WIDGET0_PART);
     qdev_prop_set_uint32(DEVICE(&s->xbow), "manufacturer",
                          SN0_WIDGET0_MANUFACTURER);
-    qdev_prop_set_uint32(DEVICE(&s->xbow), "revision", SN0_WIDGET0_REVISION);
+    qdev_prop_set_uint32(DEVICE(&s->xbow), "revision", s->widget0_revision);
     sysbus_realize(SYS_BUS_DEVICE(&s->xbow), &error_fatal);
     memory_region_add_subregion(&s->xtalk, SN0_XTALK_BASE(SN0_XBOW_WIDGET),
                                 sysbus_mmio_get_region(
@@ -1250,9 +1265,36 @@ static void sn0_set_synthesized_firmware(Object *obj, bool value, Error **errp)
     SN0_MACHINE(obj)->synthesized_firmware = value;
 }
 
+static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
+                                     void *opaque, Error **errp)
+{
+    uint32_t value = SN0_MACHINE(obj)->widget0_revision;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void sn0_set_widget0_revision(Object *obj, Visitor *v, const char *name,
+                                     void *opaque, Error **errp)
+{
+    uint32_t value;
+
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (value > SN0_WIDGET0_REVISION_MAX) {
+        error_setg(errp, "the widget 0 revision is a four-bit field, so at "
+                         "most %u", SN0_WIDGET0_REVISION_MAX);
+        return;
+    }
+    SN0_MACHINE(obj)->widget0_revision = value;
+}
+
 static void sn0_instance_init(Object *obj)
 {
-    SN0_MACHINE(obj)->synthesized_firmware = true;
+    SN0MachineState *s = SN0_MACHINE(obj);
+
+    s->synthesized_firmware = true;
+    s->widget0_revision = SN0_WIDGET0_REVISION;
 }
 
 static void origin200_class_init(ObjectClass *oc, const void *data)
@@ -1273,6 +1315,24 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "Present firmware of the machine's own: the structures in low memory, "
         "the call vector and the routines behind it. Turn it off to run a real "
         "firmware image with nothing of ours in its way.");
+
+    /*
+     * The first of the candidate values. A captured boot of this configuration
+     * announces revision 3 and that is the default, but another Origin 200's
+     * firmware announces 4 — a machine we do not model and whose sources we do
+     * not hold, so 3 is this machine's answer rather than the family's.
+     * Settable
+     * so that the difference can be run rather than argued about, without the
+     * two runs also differing in the emulator.
+     */
+    object_class_property_add(oc, "widget0-revision", "uint32",
+                              sn0_get_widget0_revision,
+                              sn0_set_widget0_revision, NULL, NULL);
+    object_class_property_set_description(oc, "widget0-revision",
+        "The silicon revision crosstalk widget 0 reports. Both guests treat a "
+        "revision below four as having a byte-swapping defect and avoid that "
+        "widget's PCI I/O space, so this changes behaviour and not only a "
+        "printed line.");
 }
 
 static const TypeInfo origin200_type = {
