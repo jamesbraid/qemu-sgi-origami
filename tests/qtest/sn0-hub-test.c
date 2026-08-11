@@ -40,6 +40,7 @@
 #define PI_REGION_PRESENT   0x000018
 #define PI_PROCESSOR_NUMBER 0x000020
 #define PI_CALIAS_SIZE      0x000028
+#define PI_INT_MODIFY       0x000090
 #define PI_INT_PEND0        0x000098
 #define PI_INT_PEND1        0x0000a0
 #define PI_INT_MASK0_A      0x0000a8
@@ -52,6 +53,14 @@
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
 #define NI_IDENTITY     0xffULL          /* revision and chip identity */
+
+/*
+ * The interrupt-modify register's two fields: the interrupt number, and the bit
+ * that says whether to set the named pending bit or clear it. Numbers 0 through
+ * 63 are the first pending bank and 64 through 127 the second.
+ */
+#define INT_MODIFY_SET      0x100
+#define INT_BANK_BITS       64
 
 /* The big-window translation table, entry n at 8n from its base. */
 #define IO_BWIN_TABLE   0x400160
@@ -383,6 +392,91 @@ static void test_big_window_naming_an_absent_widget(const void *data)
     qtest_quit(qts);
 }
 
+static void test_interrupt_modify_sets_and_clears(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The pending banks are read-only, so this register is the only way a bit
+     * gets set or cleared, and it is where a device interrupt arrives. A model
+     * that discarded these writes would look correct until the second time a
+     * device needed attention — nothing reads the register back, so no
+     * assertion anywhere else can notice.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
+
+    /* And nothing else: not a neighbouring bit, and not the other bank. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_interrupt_number_selects_the_bank(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The number's top bit is what makes 64 through 127 the second bank rather
+     * than a separate register. Number 70 is bit 6 of the second bank, and a
+     * model masking the number to six bits would put it at bit 6 of the first —
+     * a plausible-looking bit in the wrong bank, which the guest experiences as
+     * an interrupt delivered to the wrong handler.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 70);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==,
+                    1ULL << (70 - INT_BANK_BITS));
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_a_masked_pending_bit_raises_nothing(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Pending is node-wide and masking is per processor, so a bit set with its
+     * mask clear is pending and invisible. Setting the mask afterwards has to
+     * raise the line with no further write to the pending state — which is the
+     * assertion that separates a model recomputing its outputs from one that
+     * raises a line at the moment a pending bit is written.
+     *
+     * What a qtest can see of that is the pending state rather than the line
+     * itself; the line is checked by the boot, where a guest that never gets
+     * its interrupt is the symptom. So this asserts the half that is visible
+     * and is named here as half.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 1ULL << 12);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
+
+    qtest_quit(qts);
+}
+
+static void test_the_pending_banks_reject_writes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Read-only, and worth asserting rather than assuming: a model that let a
+     * guest write them directly would work for any guest that only ever used
+     * the modify register, and would silently accept a driver that did not.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_PEND0, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_PEND1, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -406,6 +500,14 @@ int main(int argc, char **argv)
                         test_big_window_follows_the_slice_too);
     qtest_add_data_func("sn0/hub/big-window-absent-widget", NULL,
                         test_big_window_naming_an_absent_widget);
+    qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
+                        test_interrupt_modify_sets_and_clears);
+    qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,
+                        test_interrupt_number_selects_the_bank);
+    qtest_add_data_func("sn0/hub/masked-pending-raises-nothing", NULL,
+                        test_a_masked_pending_bit_raises_nothing);
+    qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
+                        test_the_pending_banks_reject_writes);
 
     return g_test_run();
 }
