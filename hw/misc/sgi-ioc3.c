@@ -224,6 +224,106 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
     .impl.max_access_size = 4,
 };
 
+/*
+ * Read the collision and deferral counters and zero them in the same step,
+ * which is what the hardware does and what makes reading them a way to clear
+ * them. Separate from the read handler because the clearing is the part worth
+ * naming: a caller that only wanted the value would be using the wrong verb.
+ */
+static uint32_t sgi_ioc3_take_counters(SGIIOC3State *s)
+{
+    unsigned int index = (SGI_IOC3_ENET_COUNTERS - SGI_IOC3_ENET_BASE) / 4;
+    uint32_t counters = s->enet_reg[index];
+
+    s->enet_reg[index] = 0;
+    return counters;
+}
+
+static uint64_t sgi_ioc3_enet_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIIOC3State *s = opaque;
+    unsigned int index = addr / 4;
+
+    switch (SGI_IOC3_ENET_BASE + addr) {
+    case SGI_IOC3_ENET_COUNTERS:
+        /*
+         * Collisions and deferrals, cleared by the act of reading them. Both
+         * guests read this once while resetting the block for no reason other
+         * than to zero it, so a model that returned the count without clearing
+         * would leave a driver's own counters climbing on a machine that has
+         * never sent a frame.
+         */
+        return sgi_ioc3_take_counters(s);
+
+    case SGI_IOC3_ENET_BUFFER_INDEX:
+        /*
+         * Where the block's own engines sit in the buffer memory. Nothing is
+         * moving, so every one of the four positions is zero, and this is read
+         * only rather than storage because software cannot place them.
+         */
+        return 0;
+
+    case SGI_IOC3_ENET_MII_CONTROL:
+        /*
+         * Never busy. The read a guest asked for finished before it could
+         * look, so the poll after it stops on the first pass.
+         */
+        return s->enet_reg[index] & ~SGI_IOC3_ENET_MII_BUSY;
+
+    case SGI_IOC3_ENET_MII_DATA_R:
+        /* No physical-layer chip answers; an absent one reads all-ones. */
+        return SGI_IOC3_ENET_MII_ABSENT;
+
+    default:
+        return s->enet_reg[index];
+    }
+}
+
+static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
+                                unsigned size)
+{
+    SGIIOC3State *s = opaque;
+    unsigned int index = addr / 4;
+
+    switch (SGI_IOC3_ENET_BASE + addr) {
+    case SGI_IOC3_ENET_INT_STATUS:
+        /*
+         * Written to acknowledge: a one clears the source it names rather than
+         * setting it. This is the same contract as the SuperIO interrupt
+         * register, and the reason to state it twice is that modelling this one
+         * as ordinary storage produces the same failure on the ethernet line
+         * that it produced on the serial one -- a driver writes back the bits
+         * it just read, the write sets them instead of clearing them, and the
+         * source it was acknowledging never goes away.
+         */
+        s->enet_reg[index] &= ~(uint32_t)val;
+        return;
+
+    case SGI_IOC3_ENET_COUNTERS:
+    case SGI_IOC3_ENET_BUFFER_INDEX:
+    case SGI_IOC3_ENET_MII_DATA_R:
+        /* Read-only. A guest writing here is not told it worked. */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3: write to read-only ethernet register 0x%03x\n",
+                      (unsigned)(SGI_IOC3_ENET_BASE + addr));
+        return;
+
+    default:
+        s->enet_reg[index] = val;
+        return;
+    }
+}
+
+static const MemoryRegionOps sgi_ioc3_enet_ops = {
+    .read = sgi_ioc3_enet_read,
+    .write = sgi_ioc3_enet_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 static const hwaddr sgi_ioc3_serial_base[SGI_IOC3_SERIAL_PORTS] = {
     SGI_IOC3_SERIAL_A, SGI_IOC3_SERIAL_B,
 };
@@ -285,6 +385,14 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.main", SGI_IOC3_MAIN_SIZE);
     memory_region_add_subregion(&s->bar, 0, &s->main);
 
+    /*
+     * The ethernet block, its own window so that the unmodelled parallel port,
+     * PS/2 and serial DMA registers between it and the main one stay a hole.
+     */
+    memory_region_init_io(&s->enet, OBJECT(dev), &sgi_ioc3_enet_ops, s,
+                          "sgi-ioc3.enet", SGI_IOC3_ENET_SIZE);
+    memory_region_add_subregion(&s->bar, SGI_IOC3_ENET_BASE, &s->enet);
+
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
     /*
@@ -312,6 +420,14 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->int_status = 0;
     s->int_enable = 0;
     sgi_ioc3_update_irq(s);
+
+    /*
+     * The ethernet block resets to zero throughout, which the datasheet gives
+     * for every register in it. That matters most for the media access
+     * control register, whose transmit and receive enables sit in it: a block
+     * that came up enabled would be one no driver had asked to run.
+     */
+    memset(s->enet_reg, 0, sizeof(s->enet_reg));
 
     /*
      * SGI's own register diagnostic lists every register in the chip
@@ -345,8 +461,8 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -356,6 +472,7 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
+        VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3State, SGI_IOC3_ENET_REGS),
         VMSTATE_END_OF_LIST()
     }
 };

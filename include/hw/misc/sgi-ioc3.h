@@ -115,6 +115,64 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_MAIN_SIZE      (SGI_IOC3_PIN_REG_LAST + 4)
 
 /*
+ * The ethernet block. Its media access controller is SGI's own design rather
+ * than a catalogue part, so the datasheet's register table is the whole
+ * specification and there is no vendor document behind it to consult.
+ *
+ * This is a window of its own rather than an extension of the main one,
+ * because the offsets between the pin registers and this block belong to the
+ * parallel port, the PS/2 controller and the serial DMA engines, none of which
+ * are modelled. Widening the main window would turn those into zeros; leaving
+ * a hole keeps an access to them reported, which is this device's stated rule.
+ */
+#define SGI_IOC3_ENET_MAC_CONTROL   0x0f0
+#define SGI_IOC3_ENET_INT_STATUS    0x0f4
+#define SGI_IOC3_ENET_INT_ENABLE    0x0f8
+#define SGI_IOC3_ENET_RX_CONTROL    0x0fc
+#define SGI_IOC3_ENET_RX_RING_HI    0x100
+#define SGI_IOC3_ENET_RX_RING_LO    0x104
+#define SGI_IOC3_ENET_RX_BARRIER    0x108
+#define SGI_IOC3_ENET_RX_CONSUME    0x10c
+#define SGI_IOC3_ENET_RX_PRODUCE    0x110
+#define SGI_IOC3_ENET_RX_TIMER      0x114
+#define SGI_IOC3_ENET_TX_CONTROL    0x118
+#define SGI_IOC3_ENET_RANDOM_SEED   0x11c
+#define SGI_IOC3_ENET_COUNTERS      0x120
+#define SGI_IOC3_ENET_BUFFER_INDEX  0x124
+#define SGI_IOC3_ENET_TX_RING_HI    0x128
+#define SGI_IOC3_ENET_TX_RING_LO    0x12c
+#define SGI_IOC3_ENET_TX_CONSUME    0x130
+#define SGI_IOC3_ENET_TX_PRODUCE    0x134
+#define SGI_IOC3_ENET_MAC_ADDR_HI   0x138
+#define SGI_IOC3_ENET_MAC_ADDR_LO   0x13c
+#define SGI_IOC3_ENET_HASH_HI       0x140
+#define SGI_IOC3_ENET_HASH_LO       0x144
+#define SGI_IOC3_ENET_MII_CONTROL   0x148
+#define SGI_IOC3_ENET_MII_DATA_R    0x14c
+#define SGI_IOC3_ENET_MII_DATA_W    0x150
+
+#define SGI_IOC3_ENET_BASE          SGI_IOC3_ENET_MAC_CONTROL
+#define SGI_IOC3_ENET_SIZE          (SGI_IOC3_ENET_MII_DATA_W + 4 - \
+                                     SGI_IOC3_ENET_BASE)
+#define SGI_IOC3_ENET_REGS          (SGI_IOC3_ENET_SIZE / 4)
+
+/* Bit 10 of the media-independent interface control register starts a read,
+ * and bit 11 reads back as busy while one is in flight. Nothing here takes
+ * time, so a read is complete by the time the guest can look and busy never
+ * reads set -- a driver that polls it therefore stops on its first look
+ * rather than running its timeout out.
+ */
+#define SGI_IOC3_ENET_MII_READ      (1u << 10)
+#define SGI_IOC3_ENET_MII_BUSY      (1u << 11)
+
+/*
+ * No physical-layer chip answers. A driver scans all thirty-two addresses
+ * reading identifier registers, and an absent one reads as all-ones on a real
+ * bus, so that is what a read returns.
+ */
+#define SGI_IOC3_ENET_MII_ABSENT    0xffffu
+
+/*
  * The two serial ports' bits, which are pass-throughs: they follow the 16550's
  * own interrupt level rather than latching, so a write cannot clear them and
  * what really quiets one is the register read the guest's serial driver does.
@@ -152,6 +210,18 @@ struct SGIIOC3State {
     uint32_t microlan_control;
     uint32_t pin_control;
     uint32_t pin_data;
+
+    /*
+     * The ethernet block, held as one array indexed by register rather than as
+     * two dozen named fields. Almost every register in it is plain storage a
+     * driver writes and reads back, and the few that are not are handled by
+     * name at their offsets, so naming the rest individually would add bulk
+     * without adding meaning. The block moves no packets: it exists so that a
+     * guest configuring the controller finds registers where the hardware has
+     * them, which is what its attach needs and all that is claimed here.
+     */
+    MemoryRegion enet;
+    uint32_t enet_reg[SGI_IOC3_ENET_REGS];
 };
 
 #endif
