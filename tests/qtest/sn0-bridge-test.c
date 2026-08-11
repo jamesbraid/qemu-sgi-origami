@@ -142,6 +142,37 @@
 
 #define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
 
+/*
+ * PCI type 0 configuration space, and the window each device and function is
+ * reached through inside it.
+ */
+#define BRIDGE_CFG0             0x020000
+#define CFG0_DEVICE_STRIDE      0x1000
+#define CFG0_FUNCTION_STRIDE    0x100
+#define CFG0(device, function)  (BRIDGE_BASE + BRIDGE_CFG0 + \
+                                 (device) * CFG0_DEVICE_STRIDE + \
+                                 (function) * CFG0_FUNCTION_STRIDE)
+
+/*
+ * A card to probe with. Which card does not matter — these tests are about
+ * the window rather than what is behind it — so this is an in-tree device
+ * needing no backing file and no network.
+ *
+ * Its identity double-word is 0x00121000, whose four bytes are 0x00, 0x10,
+ * 0x12 and 0x00 from the least significant up. Two of them are the same and
+ * carry nothing, so the byte-lane assertions below rest on the two that differ
+ * and on the two halfword reads, where the vendor and the device identifier
+ * have no digits in common at all. Said out loud because "assert all four
+ * bytes" reads like four independent checks and is two.
+ */
+#define PROBE_CARD              " -device lsi53c895a"
+#define PROBE_VENDOR            0x1000
+#define PROBE_DEVICE            0x0012
+#define PROBE_IDENTITY          (PROBE_VENDOR | (PROBE_DEVICE << 16))
+
+/* What a slot with nothing in it answers, which must not be zero. */
+#define NO_CARD                 0xffffffffu
+
 static uint32_t bridge_identity(uint32_t revision)
 {
     return (revision << ID_REVISION_SHIFT) |
@@ -387,6 +418,73 @@ static void test_the_default_machine_has_no_bridge(const void *data)
     qtest_quit(qts);
 }
 
+static void test_configuration_space_reaches_a_card(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
+
+    /*
+     * A 32-bit read of a slot's first configuration register returns the
+     * identity double-word as a number, which is what both guests read first
+     * and decide whether a slot is occupied from.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(0, 0)), ==, PROBE_IDENTITY);
+
+    qtest_quit(qts);
+}
+
+static void test_configuration_byte_lanes(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
+
+    /*
+     * A narrow access reaches the byte lanes of the containing double-word,
+     * which on a big-endian machine puts the double-word's least significant
+     * byte at the highest of its four addresses. Linux aims at exactly those
+     * addresses — it exclusive-ors the register offset with four minus the
+     * width — so a model that ignored the width and returned the byte at the
+     * offset it was given would hand Linux the wrong end of every identifier
+     * it reads a byte or a halfword of.
+     *
+     * The halfwords are the assertions with real teeth here: the vendor and
+     * the device identifier share no digits, so reading the wrong one cannot
+     * pass.
+     */
+    g_assert_cmphex(qtest_readw(qts, CFG0(0, 0) + 2), ==, PROBE_VENDOR);
+    g_assert_cmphex(qtest_readw(qts, CFG0(0, 0) + 0), ==, PROBE_DEVICE);
+
+    g_assert_cmphex(qtest_readb(qts, CFG0(0, 0) + 1), ==,
+                    (PROBE_DEVICE >> 0) & 0xff);
+    g_assert_cmphex(qtest_readb(qts, CFG0(0, 0) + 2), ==,
+                    (PROBE_VENDOR >> 8) & 0xff);
+
+    qtest_quit(qts);
+}
+
+static void test_configuration_space_is_laid_out_right(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD
+                                 " -device lsi53c895a,addr=1");
+
+    /* A device's configuration space is 4 KB above the one below it. */
+    g_assert_cmphex(qtest_readl(qts, CFG0(1, 0)), ==, PROBE_IDENTITY);
+
+    /*
+     * And a function's is 256 bytes above the one below it. This card has one
+     * function, so the assertion is that function 1 of slot 0 is *empty* —
+     * which is what says the function field decodes at all. A model ignoring
+     * it would alias every function onto function 0 and answer with the card's
+     * identity eight times over, and no test that only reads function 0 could
+     * tell the difference.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(0, 1)), ==, NO_CARD);
+
+    /* A slot with no card in it answers all ones, and specifically not zero. */
+    g_assert_cmphex(qtest_readl(qts, CFG0(2, 0)), ==, NO_CARD);
+    g_assert_cmphex(qtest_readl(qts, CFG0(7, 0)), ==, NO_CARD);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -409,6 +507,12 @@ int main(int argc, char **argv)
                         test_the_target_flush_answers);
     qtest_add_data_func("sn0/bridge/absent-by-default", NULL,
                         test_the_default_machine_has_no_bridge);
+    qtest_add_data_func("sn0/bridge/configuration-space", NULL,
+                        test_configuration_space_reaches_a_card);
+    qtest_add_data_func("sn0/bridge/configuration-byte-lanes", NULL,
+                        test_configuration_byte_lanes);
+    qtest_add_data_func("sn0/bridge/configuration-space-layout", NULL,
+                        test_configuration_space_is_laid_out_right);
 
     return g_test_run();
 }

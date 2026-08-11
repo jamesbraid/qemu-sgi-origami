@@ -55,6 +55,13 @@ struct SGIBridgeState {
     MemoryRegion widget;
     MemoryRegion regs;
 
+    /*
+     * The window a processor reads PCI configuration space through. Type 0
+     * only: there is no PCI-to-PCI bridge on this machine, and Linux's own
+     * driver says outright that it uses type 0 accesses only.
+     */
+    MemoryRegion cfg0;
+
     /* The PCI side's two address spaces, which the device windows look into. */
     MemoryRegion pci_mmio;
     MemoryRegion pci_io;
