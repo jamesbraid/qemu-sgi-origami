@@ -1044,23 +1044,96 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
  * interrupt-modify register is the other half, and it arrives with the
  * interrupt registers.
  */
+/*
+ * The per-pin interrupt address register holds the destination in a compressed
+ * form rather than whole: bits 17:8 are the crosstalk address's bits 47:38 —
+ * that is, the address's top bit and then the nine-bit node — and bits 7:0 are
+ * the interrupt number. Three independent sources agree on that layout, which
+ * is why it is trusted: SGI's own mask, OpenBSD's identical one, and Linux
+ * composing the same value from two terms by different arithmetic.
+ */
+#define INT_HOST_ADDR_SHIFT     8
+#define XTALK_HOST_SHIFT        38
+#define XTALK_NODE_SHIFT        38
+
+/* Where the Hub's interrupt-modify register sits inside a node's Hub window. */
+#define HUB_NODE_WINDOW         0x01800000
+#define HUB_INT_MODIFY          0x90
+#define HUB_INT_MODIFY_SET      0x100
+
+/*
+ * Turn a pin's transition into the packet the chip really sends: a write to the
+ * Hub's interrupt-modify register on the destination node, carrying the
+ * interrupt number.
+ *
+ * The address is reconstructed from what the guest programmed, not invented
+ * here. Restoring bits 17:8 of the per-pin register to bits 47:38 puts the
+ * crosstalk address's top bit back and the node at bit 38; the Hub's window and
+ * the register's offset complete it.
+ *
+ * That crosstalk address is then issued into the machine's fabric. This model's
+ * fabric is addressed the processor's way rather than the packet's, so the node
+ * and the offset are recomposed with the machine's own encoding — which is the
+ * seam between what this chip does and how the machine represents the bus, and
+ * is why the two constants for it come from the machine instead of living here.
+ */
+static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
+{
+    uint64_t addr = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
+    uint64_t host = (addr & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT;
+    uint64_t xtalk = (host << XTALK_HOST_SHIFT) | HUB_NODE_WINDOW |
+                     HUB_INT_MODIFY;
+    unsigned int node = (xtalk >> XTALK_NODE_SHIFT) & 0x1ff;
+    uint64_t number = addr & INT_HOST_FIELD;
+    uint64_t value = number | (set ? HUB_INT_MODIFY_SET : 0);
+    hwaddr where = s->fabric_base +
+                   ((uint64_t)node << s->fabric_node_shift) +
+                   HUB_NODE_WINDOW + HUB_INT_MODIFY;
+
+    if (!addr) {
+        /*
+         * Nothing programmed. A guest that has not set the destination has not
+         * asked for this interrupt yet, and writing to node zero's Hub because
+         * the register happens to read zero would deliver an interrupt nobody
+         * routed.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: interrupt pin %d changed with no "
+                      "destination programmed; no packet sent\n", pin);
+        return;
+    }
+
+    address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
+                      NULL);
+}
+
 static void sgi_bridge_set_irq(void *opaque, int pin, int level)
 {
     SGIBridgeState *s = opaque;
+    bool was = extract32(s->pin_level, pin, 1);
 
     s->pin_level = deposit32(s->pin_level, pin, 1, level);
 
     /*
-     * The level is now what the interrupt status register reports, so a guest
-     * reading that register sees this immediately. What is not modelled yet is
-     * the packet the chip sends across the crossbar to the host's own interrupt
-     * register, which needs the machine's interrupt chain to say how a widget
-     * and an offset become an address.
+     * The level is what the interrupt status register reports, and it is also
+     * what decides whether a packet goes: the chip sends on a transition rather
+     * than while a level is held, so a device holding its pin high does not
+     * flood the Hub with writes.
      */
-    qemu_log_mask(LOG_UNIMP,
-                  "sgi-bridge: interrupt pin %d went %s; the status register "
-                  "reports it, and the packet to the host is not modelled\n",
-                  pin, level ? "high" : "low");
+    if (level && !was) {
+        sgi_bridge_send_interrupt(s, pin, true);
+    } else if (!level && was) {
+        /*
+         * The falling edge sends a clear only if the guest asked for it, which
+         * it does precisely so that it need not clear the Hub bit itself. With
+         * the mode bit clear the guest clears the bit in its own handler, and a
+         * model sending anyway would clear an interrupt the guest had not
+         * finished servicing.
+         */
+        if (s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_MODE)] & (1u << pin)) {
+            sgi_bridge_send_interrupt(s, pin, false);
+        }
+    }
 }
 
 /*
@@ -1277,6 +1350,18 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->widget);
 
     /*
+     * The address space this chip issues interrupt packets into. It is the
+     * machine's own, given rather than assumed, so that a packet travels the
+     * same fabric a processor's access does.
+     */
+    if (!s->fabric) {
+        error_setg(errp, "the I/O bridge needs the fabric its interrupt "
+                         "packets travel");
+        return;
+    }
+    address_space_init(&s->fabric_as, s->fabric, "sgi-bridge.fabric");
+
+    /*
      * The two address spaces a PCI device sees. Both are the full 32 bits a
      * device can address, because a device window's base supplies PCI address
      * bits 31:20 for I/O space just as it does for memory space — this chip
@@ -1363,6 +1448,11 @@ static const VMStateDescription vmstate_sgi_bridge = {
  * the chip says so here rather than by editing this file.
  */
 static const Property sgi_bridge_properties[] = {
+    DEFINE_PROP_LINK("fabric", SGIBridgeState, fabric, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
+    DEFINE_PROP_UINT64("fabric-base", SGIBridgeState, fabric_base, 0),
+    DEFINE_PROP_UINT32("fabric-node-shift", SGIBridgeState,
+                       fabric_node_shift, 0),
     DEFINE_PROP_UINT32("revision", SGIBridgeState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIBridgeState, part, 0xc002),
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),

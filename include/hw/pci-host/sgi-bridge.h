@@ -110,6 +110,24 @@ struct SGIBridgeState {
     AddressSpace iommu_as;
 
     /*
+     * The fabric this chip issues interrupt packets into, and how the machine
+     * encodes a crosstalk address in it. A pin rise becomes a write to the
+     * Hub's interrupt-modify register on the destination node, and that write
+     * has to travel the machine's own address space rather than reaching the
+     * Hub by a call — a direct call would model a wire that does not exist and
+     * would step over the crosstalk fabric entirely.
+     *
+     * The chip composes the crosstalk address the guest asked for; turning a
+     * node and an offset into an address in *this* machine is the machine's
+     * business, so the two constants that do it arrive from there rather than
+     * being known here.
+     */
+    MemoryRegion *fabric;
+    AddressSpace fabric_as;
+    uint64_t fabric_base;
+    uint32_t fabric_node_shift;
+
+    /*
      * Every defined register in the local block, one 32-bit word per eight-byte
      * slot, indexed by the slot number. A slot the chip does not define holds
      * nothing and is never read: which slots exist, what each resets to and

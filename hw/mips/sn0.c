@@ -1144,6 +1144,23 @@ static void sn0_init(MachineState *machine)
          */
         qdev_prop_set_uint32(DEVICE(&s->io_bridge), "revision",
                              s->widget0_revision);
+        /*
+         * The fabric its interrupt packets travel, and how this machine encodes
+         * a crosstalk destination in it. A pin rise becomes a write to the
+         * Hub's interrupt-modify register on the named node, and it goes
+         * through the machine's own address space rather than by calling into
+         * the Hub — the packet is a real transfer across the bus and modelling
+         * it as a function call would invent a wire and step over the fabric.
+         *
+         * The chip knows the packet's format; this knows where a node's Hub
+         * lives, which is why the encoding arrives from here.
+         */
+        object_property_set_link(OBJECT(&s->io_bridge), "fabric",
+                                 OBJECT(system), &error_fatal);
+        qdev_prop_set_uint64(DEVICE(&s->io_bridge), "fabric-base",
+                             SN0_SPACE_XTALK);
+        qdev_prop_set_uint32(DEVICE(&s->io_bridge), "fabric-node-shift",
+                             SN0_NODE_SHIFT);
         sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge), &error_fatal);
         memory_region_add_subregion_overlap(
             &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
