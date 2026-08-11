@@ -67,6 +67,7 @@
 #define BRIDGE_DIRECT_MAP       0x080
 #define BRIDGE_ARBITRATION      0x0a0
 #define BRIDGE_BUS_TIMEOUT      0x0c0
+#define BRIDGE_PCI_TYPE1_CONFIG 0x0c8
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
 
 #define BRIDGE_DEVICES          8
@@ -124,6 +125,11 @@
 #define BUS_TIMEOUT_RESET       (1u << 16)
 #define BUS_TIMEOUT_WRITABLE    (BUS_TIMEOUT_RETRY_HOLD | BUS_TIMEOUT_GIO | \
                                  BUS_TIMEOUT_PCI_RETRY)
+
+/* A bus number and a device number, with reserved bits above and below. */
+#define TYPE1_BUS_NUMBER        (0xffu << 16)
+#define TYPE1_DEVICE_NUMBER     (0x1fu << 11)
+#define TYPE1_WRITABLE          (TYPE1_BUS_NUMBER | TYPE1_DEVICE_NUMBER)
 
 #define DEV_ERROR_LOCK          (1u << 28)
 #define DEV_PAGE_CROSS_CHECK    (1u << 27)
@@ -306,7 +312,14 @@ static void test_reset_state(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DIRECT_MAP)), ==,
                     DIRECT_MAP_RESET);
 
-    /* This machine straps PCI rather than the chip's other bus. */
+    /*
+     * This machine straps PCI rather than the chip's other bus. The whole word
+     * is compared, which asserts more than that: the chip's register table
+     * gives both strap-driven bits as undefined at reset, so the flash-select
+     * bit reading clear is this model's choice of strap and not a reading. It
+     * is asserted anyway, so that changing which flash chip the machine straps
+     * has to be deliberate.
+     */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_STATUS)), ==, STATUS_PCI_MODE);
 
     qtest_quit(qts);
@@ -354,6 +367,16 @@ static void test_fields_are_the_width_they_should_be(const void *data)
     qtest_writel(qts, REG(BRIDGE_BUS_TIMEOUT), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_BUS_TIMEOUT)), ==,
                     BUS_TIMEOUT_WRITABLE);
+
+    /*
+     * The type 1 configuration register carries a bus number and a device
+     * number and nothing else. This model gave it a whole writable word until
+     * its fields were checked against the chip's own register table, on the
+     * strength of a claim that our sources gave no width — they did.
+     */
+    qtest_writel(qts, REG(BRIDGE_PCI_TYPE1_CONFIG), 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_PCI_TYPE1_CONFIG)), ==,
+                    TYPE1_WRITABLE);
 
     /* Bits 31:29 of a device register are reserved and read back clear. */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
