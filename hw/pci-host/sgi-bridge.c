@@ -131,9 +131,29 @@
 #define NIC_PHASE_IDLE          0   /* nothing asked since the last reset */
 #define NIC_PHASE_COMMAND       1   /* taking the eight bits of a command */
 #define NIC_PHASE_SEARCH        2   /* answering a search for parts */
+#define NIC_PHASE_FUNCTION      3   /* selected; taking a function command */
+#define NIC_PHASE_OFFSET        4   /* taking the two bytes of a page offset */
+#define NIC_PHASE_ANSWER        5   /* shifting a page's answer back out */
 
-/* The command this part answers, by the number the bus assigns it. */
+/*
+ * The commands this part answers, by the numbers the bus assigns them. A guest
+ * with one part on the bus skips the addressing step rather than naming the
+ * part, which is why the skip is here and a match is not.
+ */
 #define NIC_CMD_SEARCH_ROM      0xf0
+#define NIC_CMD_SKIP_ROM        0xcc
+#define NIC_CMD_READ_MEMORY     0xa5
+
+/*
+ * The page a guest reads at a time, and what the part sends back for one: a
+ * redirection byte saying the page has not been moved, a check pair over the
+ * request and that byte, the page itself, and a check pair over the page. The
+ * guest reads the first three, checks them, and only then reads the rest.
+ */
+#define NIC_PAGE_SIZE           32
+#define NIC_PAGES               2
+#define NIC_NOT_REDIRECTED      0xff
+#define NIC_ANSWER_SIZE         (3 + NIC_PAGE_SIZE + 2)
 
 /*
  * What the part calls itself: a family code in the low byte, six bytes of
@@ -875,6 +895,84 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
  * that, which is how a guest learns something is there; a guest reads a zero
  * and treats it as presence.
  */
+/*
+ * The check the guest runs over what it sent and what came back. Reflected
+ * polynomial, starting from zero — and **the part sends the result inverted**,
+ * which is the part of this that cannot be guessed: the guest does not compare
+ * against a value, it runs the check across the whole exchange including the
+ * two bytes the part appended and requires a fixed residue. Sending the check
+ * uninverted lands on a different residue and the guest rejects the page.
+ */
+static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
+                                       unsigned int len)
+{
+    unsigned int i;
+    unsigned int bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * What the identity part holds. A guest takes the bytes at offsets eleven
+ * through twenty-nine and thirty-two through thirty-seven, drops the spaces,
+ * and reads the result as the board's part number — which selects the routine
+ * that decides where this board's second interrupt lands.
+ *
+ * The value is what a real Origin 200 reports, traced through the firmware
+ * that reads it, rather than a number chosen to produce a wanted mapping. The
+ * difference matters even though both would work: this one stays right if the
+ * table it would otherwise have been reverse-engineered against changes.
+ */
+static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
+    [11] = '0', '3', '0', '-', '1', '2', '4', '4', '-', '0', '0', '1',
+    [23] = ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    [32] = ' ', ' ', ' ', ' ', ' ', ' ',
+};
+
+/*
+ * Assemble everything the guest will read for one page, once it has finished
+ * asking. Built in one go rather than a byte at a time because the checks span
+ * the request as well as the answer, so none of it is known until the last
+ * byte of the request arrives.
+ */
+static void sgi_bridge_onewire_answer(SGIBridgeState *s)
+{
+    unsigned int offset = s->onewire_args[0] | (s->onewire_args[1] << 8);
+    uint8_t request[4];
+    uint16_t crc;
+
+    if (offset > sizeof(sgi_bridge_onewire_image) - NIC_PAGE_SIZE) {
+        offset = 0;             /* a page this part does not have */
+    }
+
+    request[0] = NIC_CMD_READ_MEMORY;
+    request[1] = s->onewire_args[0];
+    request[2] = s->onewire_args[1];
+    request[3] = NIC_NOT_REDIRECTED;
+
+    s->onewire_out[0] = NIC_NOT_REDIRECTED;
+    crc = ~sgi_bridge_onewire_crc(0, request, sizeof(request));
+    s->onewire_out[1] = crc & 0xff;
+    s->onewire_out[2] = crc >> 8;
+
+    memcpy(&s->onewire_out[3], &sgi_bridge_onewire_image[offset],
+           NIC_PAGE_SIZE);
+    crc = ~sgi_bridge_onewire_crc(0, (const uint8_t *)
+                                  &sgi_bridge_onewire_image[offset],
+                                  NIC_PAGE_SIZE);
+    s->onewire_out[3 + NIC_PAGE_SIZE] = crc & 0xff;
+    s->onewire_out[4 + NIC_PAGE_SIZE] = crc >> 8;
+
+    s->onewire_outbit = 0;
+    s->onewire_phase = NIC_PHASE_ANSWER;
+}
+
 static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
 {
     uint32_t *held = &s->reg[SGI_BRIDGE_SLOT(BRIDGE_NIC)];
@@ -890,6 +988,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         s->onewire_phase = NIC_PHASE_COMMAND;
         s->onewire_bit = 0;
         s->onewire_command = 0;
+        s->onewire_outbit = 0;
         level = false;
     } else if (s->onewire_phase == NIC_PHASE_COMMAND) {
         /*
@@ -902,8 +1001,23 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         }
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
-            s->onewire_phase = s->onewire_command == NIC_CMD_SEARCH_ROM ?
-                               NIC_PHASE_SEARCH : NIC_PHASE_IDLE;
+            switch (s->onewire_command) {
+            case NIC_CMD_SEARCH_ROM:
+                s->onewire_phase = NIC_PHASE_SEARCH;
+                break;
+            case NIC_CMD_SKIP_ROM:
+                /*
+                 * The guest has one part on this bus and says so rather than
+                 * naming it. The part is now selected and the next byte is a
+                 * function rather than an address.
+                 */
+                s->onewire_command = 0;
+                s->onewire_phase = NIC_PHASE_FUNCTION;
+                break;
+            default:
+                s->onewire_phase = NIC_PHASE_IDLE;
+                break;
+            }
         }
     } else if (s->onewire_phase == NIC_PHASE_SEARCH) {
         /*
@@ -926,6 +1040,44 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
 
         if (++s->onewire_bit == NIC_ROM_BITS * 3) {
             s->onewire_bit = 0;
+            s->onewire_phase = NIC_PHASE_IDLE;
+        }
+    } else if (s->onewire_phase == NIC_PHASE_FUNCTION) {
+        /* The function asked of the selected part, a bit at a time. */
+        if (pulse < NIC_PULSE_IS_ZERO) {
+            s->onewire_command |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            s->onewire_argn = 0;
+            s->onewire_args[0] = 0;
+            s->onewire_args[1] = 0;
+            s->onewire_phase = s->onewire_command == NIC_CMD_READ_MEMORY ?
+                               NIC_PHASE_OFFSET : NIC_PHASE_IDLE;
+        }
+    } else if (s->onewire_phase == NIC_PHASE_OFFSET) {
+        /* Two bytes of page offset, low first, still one slot per bit. */
+        if (pulse < NIC_PULSE_IS_ZERO) {
+            s->onewire_args[s->onewire_argn] |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            if (++s->onewire_argn == 2) {
+                sgi_bridge_onewire_answer(s);
+            }
+        }
+    } else if (s->onewire_phase == NIC_PHASE_ANSWER) {
+        /*
+         * Shifting the answer back, least-significant bit of each byte first.
+         * The guest reads with the same short slot it uses to write a one, so
+         * there is nothing to tell apart here: whatever it does, the part is
+         * sending.
+         */
+        unsigned int byte = s->onewire_outbit / 8;
+
+        level = (s->onewire_out[byte] >> (s->onewire_outbit % 8)) & 1;
+        if (++s->onewire_outbit == NIC_ANSWER_SIZE * 8) {
+            s->onewire_outbit = 0;
             s->onewire_phase = NIC_PHASE_IDLE;
         }
     }

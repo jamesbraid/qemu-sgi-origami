@@ -1082,6 +1082,99 @@ static void test_a_search_returns_the_identity(const void *data)
     qtest_quit(qts);
 }
 
+/* Shift a byte out to the part, least-significant bit first. */
+static void nic_write_byte(QTestState *qts, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if ((byte >> i) & 1) {
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+}
+
+/* And read one back the same way. */
+static uint8_t nic_read_byte(QTestState *qts)
+{
+    unsigned int i;
+    uint8_t byte = 0;
+
+    for (i = 0; i < 8; i++) {
+        if (NIC_READ(qts)) {
+            byte |= 1u << i;
+        }
+    }
+    return byte;
+}
+
+/* The check a guest runs across a whole exchange, and what it requires. */
+static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+#define NIC_CRC_RESIDUE 0xb001
+
+/*
+ * Read a page the way a guest does, and check it the way a guest does.
+ *
+ * The two checks are separate on purpose and both are asserted, because they
+ * fail for different reasons and a model can pass one while failing the other.
+ * The first covers the request *and* the part's answer to it, so it catches a
+ * part that answered a page nobody asked for; the second covers the page
+ * bytes alone. Both require a fixed residue rather than a value, which is what
+ * makes the part's check bytes have to be sent inverted — sending them plain
+ * lands on a different residue and a guest rejects the page.
+ */
+static void test_a_page_reads_back_with_its_checks(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t exchange[6];
+    uint8_t page[34];
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+
+    /* One part on the bus, so the guest skips addressing it. */
+    nic_write_byte(qts, 0xcc);
+
+    /* Read memory, from the first page. */
+    exchange[0] = 0xa5;
+    exchange[1] = 0x00;
+    exchange[2] = 0x00;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, exchange[i]);
+    }
+
+    /* The redirection byte and the check over request and answer together. */
+    for (i = 3; i < 6; i++) {
+        exchange[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(exchange[3], ==, 0xff);     /* this page is not moved */
+    g_assert_cmphex(nic_crc(0, exchange, 6), ==, NIC_CRC_RESIDUE);
+
+    /* Then the page and its own check. */
+    for (i = 0; i < sizeof(page); i++) {
+        page[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+
+    /* And the bytes are the board's part number, where a guest looks for it. */
+    g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
+
+    qtest_quit(qts);
+}
+
 static void test_a_reset_finds_the_part(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1298,6 +1391,8 @@ int main(int argc, char **argv)
                         test_a_reset_finds_the_part);
     qtest_add_data_func("sn0/bridge/one-wire-search-returns-identity", NULL,
                         test_a_search_returns_the_identity);
+    qtest_add_data_func("sn0/bridge/one-wire-page-reads-back", NULL,
+                        test_a_page_reads_back_with_its_checks);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
