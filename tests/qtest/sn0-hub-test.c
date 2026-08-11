@@ -47,6 +47,7 @@
 #define PI_INT_MASK1_A      0x0000b0
 #define PI_INT_MASK0_B      0x0000b8
 #define PI_INT_MASK1_B      0x0000c0
+#define IO_LINK_STATUS      0x400128
 #define NI_STATUS           0x600000
 
 #define NI_MORE_NODES   (1ULL << 18)
@@ -477,6 +478,63 @@ static void test_the_pending_banks_reject_writes(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_crosstalk_link_reports_up(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    unsigned int state = (link >> 12) & 3;
+
+    /*
+     * The assertion that keeps mainline Linux's crosstalk probe alive, and it
+     * deliberately contradicts the register table's reset of zero. Linux reads
+     * this register, tests the high bit of the link-state field, and if it is
+     * clear returns immediately with no retry, no timeout and no message — so
+     * a machine reporting its link down has no crossbar, no bridge, no PCI, no
+     * console and no disk, and nothing anywhere saying why.
+     *
+     * Written as "two or three" rather than as a constant because both mean
+     * working and nothing we have distinguishes them; what must hold is that
+     * the bit Linux tests is set. A test asserting the exact value would be
+     * asserting a choice this model made, and a test asserting only "non-zero"
+     * would pass on one, which means the link never came up.
+     */
+    g_assert_cmpuint(state, >=, 2);
+    g_assert_cmphex(link & (1ULL << 13), ==, 1ULL << 13);
+
+    /*
+     * No guest we boot reads this. OpenBSD never touches the register, so this
+     * assertion is the only thing in the project watching a value that decides
+     * whether a different guest sees any hardware at all.
+     */
+    g_assert_cmphex(link & 0x3fc00000000ULL, ==, 0x3fc00000000ULL);
+    g_assert_cmphex(link & 0x3ff0000ULL, ==, 0x3ff0000ULL);
+    g_assert_cmphex(link & 0x3fULL, ==, 0xa);
+
+    qtest_quit(qts);
+}
+
+static void test_a_guest_cannot_write_the_link_state(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The link state is what the hardware reports about itself. A model that
+     * let it be written would let a guest tell this machine its own link was
+     * down, which is the one value here that must not be settable — and a
+     * writable-everything model passes every read-back test.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS, 0);
+    g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS) >> 12) & 3,
+                     >=, 2);
+
+    /* What a guest may change, it changes. */
+    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS, 0x15);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS) & 0x3f, ==,
+                    0x15);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -500,6 +558,10 @@ int main(int argc, char **argv)
                         test_big_window_follows_the_slice_too);
     qtest_add_data_func("sn0/hub/big-window-absent-widget", NULL,
                         test_big_window_naming_an_absent_widget);
+    qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,
+                        test_the_crosstalk_link_reports_up);
+    qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,
+                        test_a_guest_cannot_write_the_link_state);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
                         test_interrupt_modify_sets_and_clears);
     qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,

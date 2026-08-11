@@ -39,6 +39,46 @@
 #define HUB_PI_INT_MASK1_B      0x0000c0  /* second bank reaching processor B */
 
 /*
+ * I/O interface: the link to the crossbar, and what this Hub says about it.
+ */
+#define HUB_IO_LINK_STATUS      0x400128
+
+/*
+ * The link state is two bits with a counter-intuitive encoding: zero means the
+ * link failed, one means it never came up, and *both* two and three mean it is
+ * working. The convenient consequence, which a guest relies on and so does
+ * this model, is that the two working values are the two with the field's high
+ * bit set — so testing that one bit answers "is this link up?", which is
+ * exactly the test mainline Linux performs.
+ *
+ * Between two and three nothing we have distinguishes them and nothing reads
+ * the low bit, so two is a choice rather than a finding.
+ */
+#define IO_LINK_STATE_SHIFT     12
+#define IO_LINK_STATE_UP        (2ULL << IO_LINK_STATE_SHIFT)
+#define IO_LINK_STATE_MASK      (3ULL << IO_LINK_STATE_SHIFT)
+
+#define IO_LINK_MAX_BURST       (0x3fcULL << 32)
+#define IO_LINK_MAX_RETRY       (0x3ffULL << 16)
+#define IO_LINK_NULL_TIMEOUT    0xaULL
+
+#define IO_LINK_RESET           (IO_LINK_MAX_BURST | IO_LINK_MAX_RETRY | \
+                                 IO_LINK_STATE_UP | IO_LINK_NULL_TIMEOUT)
+
+/*
+ * What a guest may change. The burst, the retry count and the null-packet
+ * timeout are configuration; the warm-reset trigger is a one-shot the model
+ * accepts and does nothing with. Everything the hardware reports about itself —
+ * the link state, the eight-bit mode and the link-enabled bit — is not
+ * writable,
+ * because a guest that could write the link state could tell this machine its
+ * own link was down.
+ */
+#define IO_LINK_WARM_RESET      (1ULL << 8)
+#define IO_LINK_WRITABLE        (IO_LINK_MAX_BURST | IO_LINK_MAX_RETRY | \
+                                 IO_LINK_WARM_RESET | 0x3fULL)
+
+/*
  * I/O interface: the big-window translation table, entry n at 8n from its base.
  * One entry aims one 512 MB window of the node's crosstalk window at a slice of
  * one widget's crosstalk space.
@@ -293,6 +333,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->pi_int_mask[2];
     case HUB_PI_INT_MASK1_B:
         return s->pi_int_mask[3];
+    case HUB_IO_LINK_STATUS:
+        return s->io_link_status;
     case HUB_NI_STATUS:
         return s->ni_status;
     case HUB_PI_INT_MODIFY:
@@ -354,6 +396,10 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_PI_INT_MASK1_B:
         s->pi_int_mask[3] = val;
         break;
+    case HUB_IO_LINK_STATUS:
+        s->io_link_status = (s->io_link_status & ~IO_LINK_WRITABLE) |
+                            (val & IO_LINK_WRITABLE);
+        break;
     case HUB_NI_STATUS:
         /*
          * Firmware assigns node numbers and chooses the region size through
@@ -399,6 +445,31 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
+
+    /*
+     * The crosstalk link comes up reporting itself up, and this is one of the
+     * few places the model knowingly departs from a documented reset value.
+     *
+     * The register table resets the link state to zero and its own note says
+     * zero means the link failed. Implementing that faithfully produces a
+     * machine mainline Linux cannot use at all: it probes crosstalk by reading
+     * this register and testing one bit, and if the bit is clear it returns
+     * immediately — before it reads widget 0, before it identifies anything.
+     * No retry, no timeout, no message. The result is no crossbar, so no
+     * bridge, no PCI, no I/O controller, no console and no disk, with nothing
+     * in the log saying why.
+     *
+     * The justification for departing is that the reset value describes a Hub
+     * whose link has not been trained yet, and this machine's link is
+     * permanently connected to something that is always present — there is no
+     * interval during which "not yet up" is true of it. That departure is a
+     * machine-contract decision and has been ratified as one; it is not this
+     * file's to make, only to implement.
+     *
+     * OpenBSD never reads this register, so no boot of the guest we run can
+     * show whether it is right. The test is the only thing watching it.
+     */
+    s->io_link_status = IO_LINK_RESET;
 
     /*
      * Every entry resets to zero, which names widget 0 at its first slice in
@@ -470,7 +541,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -479,6 +550,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
+        VMSTATE_UINT64_V(io_link_status, SGIHubState, 3),
         /*
          * Version-gated rather than unconditional, so that a stream written
          * before this table existed still loads: its windows come up where
