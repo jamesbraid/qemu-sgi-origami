@@ -1175,17 +1175,24 @@ static void sn0_firmware_reset(void *opaque)
  * Only the controller's window is pre-aimed; see sn0.h for why the two
  * adapters need resources assigned but not a window aimed in advance.
  *
- * Every device gets PCI_COMMAND_MASTER along with its space-decode bits, a
- * fidelity fix rather than a functional one. OpenBSD's own qlw driver
- * (sys/dev/pci/qlw_pci.c) only ORs a few unrelated bits into an existing
- * command value on attach; it never sets mastering itself, and neither does
- * the generic SGI PCI machine-dependent layer for an ordinary leaf device —
- * both assume firmware already did, which is the standard PC-descended PCI
- * POST behaviour real ARCS PROM follows. This model's own DMA path does not
- * currently gate on the bit — a real adapter's sequential read and write
- * both already succeeded through this machine before this fix — so its
- * absence was not blocking a transfer, only leaving the guest-visible
- * config space wrong relative to what the driver assumes firmware set.
+ * Every device gets PCI_COMMAND_MASTER along with its space-decode bits,
+ * because a leaf device that cannot master cannot DMA, and real ARCS PROM
+ * sets it at POST the same standard PC-descended way it sets the space-
+ * decode bits.
+ *
+ * OpenBSD does not depend on this machine doing it: its qlw driver maps its
+ * BARs through pci_mapreg_map() (sys/dev/pci/pci_map.c), whose internal
+ * pci_mapreg_assign() unconditionally ORs PCI_COMMAND_MASTER_ENABLE into
+ * the command register as part of mapping any BAR, before the driver's own
+ * attach code ever touches PCI_COMMAND_STATUS_REG directly. That call
+ * happens whether or not the BAR arrived already assigned, so this
+ * machine's DMA transfers worked before this fix because the guest turned
+ * mastering on itself, not because this model's DMA path is unguarded — it
+ * is not: PCI_COMMAND_MASTER gates the qlogic-isp1040's bus_master_as the
+ * same way it would on real hardware, through the generic PCI core's
+ * bus_master_enable_region. Whether this matters for a guest that does not
+ * self-enable mastering the way OpenBSD's PCI midlayer does — Linux is the
+ * open case — is worth checking once that guest reaches this far.
  */
 static void sn0_assign_pci_resources(void *opaque)
 {
