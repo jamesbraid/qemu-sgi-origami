@@ -83,6 +83,16 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define REG_MCR         4
 #define REG_SCR         7
 
+/*
+ * The Bridge's own interrupt status register, task 42's destination: where the
+ * controller's second interrupt has to land once it leaves this chip. Task 44
+ * settled that a device window's own byte lanes need no correction for a
+ * whole-register access like this one, so this is the same plain address a
+ * bridge-side test reads it at.
+ */
+#define BRIDGE_INT_STATUS (BRIDGE_BASE + 0x100 + REG_DATA)
+#define BRIDGE_PIN_SUPERIO (1u << 3)   /* SN0_IOC3_SUPERIO_PIN, restated */
+
 /* The MicroLAN engine and the pin block it shares a window with. */
 #define MICROLAN_CONTROL (IOC3_BASE + 0x30)
 #define MICROLAN_LEVEL   (1u << 0)
@@ -309,6 +319,54 @@ static void test_a_serial_bit_ignores_an_acknowledgement(const void *data)
      */
     qtest_writeb(qts, SERIAL_A + 1, 0x00);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_SERIAL_A, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_second_interrupt_reaches_bridge_pin_3(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The controller's second interrupt (task 42) — the one this chip's
+     * superio_irq output carries — has no PCI INTx of its own to travel on,
+     * so nothing here reaches this pin unless the board's own direct wire is
+     * modelled. Before that wire exists this test fails exactly the way the
+     * task's own bug report does: the bit never sets.
+     */
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, 0);
+
+    /*
+     * Arm the local interrupt the same way the acknowledgement test above
+     * does — the enable bit alone raises nothing, since int_status is still
+     * clear, which is why this line does not yet reach the assertion below.
+     */
+    qtest_writel(qts, INT_ENABLE_SET, INT_SERIAL_A);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, 0);
+
+    /*
+     * Now the port itself asserts, which is what actually drives superio_irq
+     * (int_status & int_enable, both live for the first time). This is the
+     * whole chain the task exists to close: a real IOC3 interrupt source, to
+     * this chip's own combined status, out its second interrupt pin, across
+     * the wire task 42 adds, and into the Bridge's own pin 3.
+     */
+    qtest_writeb(qts, SERIAL_A + 1, 0x02);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, BRIDGE_PIN_SUPERIO);
+
+    /*
+     * And it is live, not latched, the same as the local status bit already
+     * is: the source dropping its level is what clears the pin, with nothing
+     * written to either chip's status register.
+     */
+    qtest_writeb(qts, SERIAL_A + 1, 0x00);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, 0);
 
     qtest_quit(qts);
 }
@@ -1008,6 +1066,9 @@ int main(int argc, char **argv)
                         test_the_enable_mask_has_two_write_aliases);
     qtest_add_data_func("sn0/ioc3/serial-bit-ignores-acknowledgement", NULL,
                         test_a_serial_bit_ignores_an_acknowledgement);
+    qtest_add_data_func("sn0/ioc3/second-interrupt-reaches-bridge-pin-3",
+                        NULL,
+                        test_the_second_interrupt_reaches_bridge_pin_3);
     qtest_add_data_func("sn0/ioc3/port-answers-where-the-graph-says", NULL,
                         test_port_answers_where_the_graph_says);
     qtest_add_data_func("sn0/ioc3/one-wire-slot-always-finishes", NULL,
