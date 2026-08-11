@@ -52,6 +52,8 @@
  * it — the distinction the pending-bank tests have to leave to the boot.
  */
 #define HUB_IRQ_LINES       "sysbus-irq"
+#define HUB_IRQ_BANK0       0
+#define HUB_IRQ_BANK1       1
 #define HUB_IRQ_RT_A        2
 
 /* A millisecond of the counter, which is the unit these tests arm. */
@@ -594,10 +596,22 @@ static void test_interrupt_number_selects_the_bank(const void *data)
      * a plausible-looking bit in the wrong bank, which the guest experiences as
      * an interrupt delivered to the wrong handler.
      */
+    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK1_A, ~0ULL);
+
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 70);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==,
                     1ULL << (70 - INT_BANK_BITS));
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    /*
+     * And it is the second bank's line that rises. The register check above
+     * would pass a model that put the bit in the right bank and drove the
+     * wrong line, which is the same wrong-handler symptom by a different
+     * route — so assert the two together rather than trusting one for both.
+     */
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK1));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
 
     qtest_quit(qts);
 }
@@ -613,17 +627,26 @@ static void test_a_masked_pending_bit_raises_nothing(const void *data)
      * assertion that separates a model recomputing its outputs from one that
      * raises a line at the moment a pending bit is written.
      *
-     * What a qtest can see of that is the pending state rather than the line
-     * itself; the line is checked by the boot, where a guest that never gets
-     * its interrupt is the symptom. So this asserts the half that is visible
-     * and is named here as half.
+     * This test used to assert only the pending state and say the line itself
+     * was left to the boot. It is not: intercepting the Hub's outgoing sysbus
+     * lines shows the level directly, so the half that was named as missing is
+     * asserted here.
      */
+    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 1ULL << 12);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK0));
+
+    /* Clearing the last bit the mask can see drops the line rather than
+     * latching it, which is what a level-triggered output means. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
 
     qtest_quit(qts);
 }
