@@ -618,21 +618,30 @@ static void test_the_target_flush_answers(const void *data)
     qtest_quit(qts);
 }
 
-static void test_the_default_machine_has_no_bridge(const void *data)
+static void test_the_default_machine_has_the_bridge(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * The bridge is an option and the machine without it is the machine the
-     * contract describes, so this guards the option from quietly becoming the
-     * default. It is a weaker assertion than it looks — a qtest cannot tell
-     * a refused access from one that returned zero — so it says the address
-     * does not answer *with the bridge's identity*, which is what would be
-     * there if the chip had been fitted.
+     * The machine with nothing said about it, which is now the machine with
+     * the bridge fitted. Every other test here asks for it explicitly, so this
+     * is the only one that would notice the default going back.
+     *
+     * This assertion used to run the other way, guarding the option from
+     * quietly becoming the default while the bridge was being built. It is
+     * inverted rather than deleted because the risk did not go away, it
+     * reversed: what would now be silent is the machine losing the bus every
+     * device on it hangs off, and the suite staying green because every other
+     * test names the option.
+     *
+     * It is also a stronger assertion inverted than it was before. Reading the
+     * identity as the bridge's own whole word can only happen if the chip is
+     * there; the old form could only say the address did not answer with that
+     * word, which a refused access and a zero both satisfy.
      */
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), !=,
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), !=, CONTROL_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
 
     qtest_quit(qts);
 }
@@ -1510,8 +1519,8 @@ int main(int argc, char **argv)
                         test_a_read_only_register_stays_put);
     qtest_add_data_func("sn0/bridge/target-flush", NULL,
                         test_the_target_flush_answers);
-    qtest_add_data_func("sn0/bridge/absent-by-default", NULL,
-                        test_the_default_machine_has_no_bridge);
+    qtest_add_data_func("sn0/bridge/fitted-by-default", NULL,
+                        test_the_default_machine_has_the_bridge);
     qtest_add_data_func("sn0/bridge/configuration-space", NULL,
                         test_configuration_space_reaches_a_card);
     qtest_add_data_func("sn0/bridge/configuration-byte-lanes", NULL,
