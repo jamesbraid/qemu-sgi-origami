@@ -279,10 +279,57 @@
 #define SN0_HW_DIR_ENTRIES      16
 #define SN0_HW_DIR_ENTRY_SIZE   64
 #define SN0_HW_DIR_SIGNATURE    0x434d5f53505f5357ULL
+#define SN0_HW_DIR_LAUNCH       0
 #define SN0_HW_DIR_CONFIG_GRAPH 1
+#define SN0_HW_DIR_NMI          2
 #define SN0_HW_DIR_GDA          3
+#define SN0_HW_DIR_FREEMEM      4
+#define SN0_HW_DIR_DEBUG_STACKS 5
+#define SN0_HW_DIR_PI_ERROR     6
 #define SN0_CONFIG_GRAPH        0x4000
 #define SN0_CONFIG_GRAPH_SIZE   0xc000
+
+/*
+ * The launch blocks: two per node, one per processor, at a fixed offset and
+ * stride. Not on the banner path — they matter when a second processor
+ * starts — but the directory advertises them from the start, so they are
+ * written from the start. Both blocks carry the same eight-byte signature;
+ * every other field is zero until there is a second processor to launch.
+ * The directory's size field for this entry is the span of both blocks
+ * together — stride times count — because the two blocks fill the region
+ * the low-memory map reserves for them exactly.
+ */
+#define SN0_LAUNCH_BLOCKS       0x2400
+#define SN0_LAUNCH_ENTRIES      2
+#define SN0_LAUNCH_STRIDE       0x200
+#define SN0_LAUNCH_DIR_SIZE     (SN0_LAUNCH_ENTRIES * SN0_LAUNCH_STRIDE)
+#define SN0_LAUNCH_SIGNATURE    0xaddbead2addbead3ULL
+
+/*
+ * The non-maskable-interrupt handler and its two per-processor blocks. The
+ * directory's size field for this entry is one block's size, not the span of
+ * both: the guest installs its own handler address and complement into a
+ * block at this offset plus its processor's stride, and the directory
+ * describes the array element a guest indexes rather than the whole region.
+ */
+#define SN0_NMI_BLOCKS          0x3000
+#define SN0_NMI_ENTRIES         2
+#define SN0_NMI_STRIDE          0x40
+#define SN0_NMI_DIR_SIZE        SN0_NMI_STRIDE
+
+/*
+ * First free memory, the debugger stacks and the processor-interface error
+ * spools: directory entries with no content of their own to write, only an
+ * offset, size, count and stride for a guest to read. First free memory's
+ * own offset is SN0_FIRST_FREE, the constant the memory descriptors share.
+ */
+#define SN0_HWDIR_FREEMEM_SIZE        ((uint64_t)-1)
+#define SN0_HWDIR_DEBUG_STACKS_BASE   0x25000
+#define SN0_HWDIR_DEBUG_STACKS_SIZE   0xe000
+#define SN0_HWDIR_DEBUG_STACKS_N      2
+#define SN0_HWDIR_DEBUG_STACKS_STRIDE 0x7000
+#define SN0_HWDIR_PI_ERROR_BASE       0x12000
+#define SN0_HWDIR_PI_ERROR_SIZE       0x4000
 
 /*
  * Inside the graph: a header, a linked list of board records and the component

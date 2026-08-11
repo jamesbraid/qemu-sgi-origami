@@ -90,6 +90,24 @@
 #define GDA_NODES           64      /* the count this family is built with */
 #define GDA_NODE_ABSENT     0xffff
 
+/*
+ * The hardware directory: sixteen entries of sixty-four bytes each, every
+ * entry the same shape. This is the machine-identification fallback and the
+ * non-maskable-interrupt path's only route to its own save blocks, so a
+ * directory entry that has never been written is not a cosmetic gap.
+ */
+#define HW_DIRECTORY        0x2000
+#define HW_DIR_ENTRY_SIZE   0x40
+#define HW_DIR_SIGNATURE    0x434d5f53505f5357ULL
+#define HW_DIR_NMI          2
+#define HW_DIR_OFF_SIGNATURE 0x00
+#define HW_DIR_OFF_OFFSET    0x08
+#define HW_DIR_OFF_SIZE      0x18
+#define HW_DIR_OFF_COUNT     0x20
+#define HW_DIR_OFF_STRIDE    0x28
+#define NMI_BLOCKS           0x3000
+#define NMI_STRIDE           0x40
+
 /* Component record fields this file reads. */
 #define COMP_TYPE           0x00
 #define COMP_FLAGS          0x02
@@ -209,6 +227,35 @@ static void test_signatures(const void *data)
     g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE), ==, 0);
     g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE + 2), ==, 0xffff);
     g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE + 4), ==, 0xffff);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The non-maskable-interrupt directory entry, index two of sixteen. OpenBSD
+ * reads this entry's offset during machine setup and stores through it
+ * directly, installing its own handler address and a complement — a
+ * four-word write to wherever this entry says, before the console exists and
+ * with nothing that could report a wrong destination. A zeroed entry sends
+ * that write to node offset zero, inside the exception-handler area; the
+ * fault is invisible today only because the kernel copies its own exception
+ * vectors over the same bytes later in setup, which is an ordering accident
+ * and not a property of the design.
+ */
+static void test_directory_nmi_entry(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t entry = HW_DIRECTORY + HW_DIR_NMI * HW_DIR_ENTRY_SIZE;
+
+    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_SIGNATURE), ==,
+                    HW_DIR_SIGNATURE);
+    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_OFFSET), ==,
+                    NMI_BLOCKS);
+    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_SIZE), ==,
+                    NMI_STRIDE);
+    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_COUNT), ==, 2);
+    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_STRIDE), ==,
+                    NMI_STRIDE);
 
     qtest_quit(qts);
 }
@@ -369,6 +416,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/firmware/console-descriptor", NULL,
                         test_console_descriptor);
     qtest_add_data_func("sn0/firmware/signatures", NULL, test_signatures);
+    qtest_add_data_func("sn0/firmware/directory-nmi-entry", NULL,
+                        test_directory_nmi_entry);
     qtest_add_data_func("sn0/firmware/components-enabled", NULL,
                         test_components_enabled);
     qtest_add_data_func("sn0/firmware/memory-layout-matches-addressing-mode",

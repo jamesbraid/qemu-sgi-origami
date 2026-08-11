@@ -814,6 +814,23 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
             stq_be_p(e + 0x18, SN0_GDA_SIZE);
             stq_be_p(e + 0x20, 1);
             break;
+        case SN0_HW_DIR_NMI:
+            /*
+             * OpenBSD reads this entry's offset during machine setup and
+             * stores its own handler address and complement straight through
+             * it, before the console exists and with nothing that could
+             * report a wrong destination. A zeroed entry sends that write to
+             * node offset zero — the exception-handler area — invisibly,
+             * because the kernel's own exception vectors are copied over the
+             * same bytes later in setup and paper over the stray write. That
+             * is an ordering accident, not a property worth relying on.
+             */
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x08, SN0_NMI_BLOCKS);
+            stq_be_p(e + 0x18, SN0_NMI_DIR_SIZE);
+            stq_be_p(e + 0x20, SN0_NMI_ENTRIES);
+            stq_be_p(e + 0x28, SN0_NMI_STRIDE);
+            break;
         default:
             break;
         }
