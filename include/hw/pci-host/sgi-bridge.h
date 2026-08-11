@@ -43,6 +43,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
 #define SGI_BRIDGE_DEVICES      8
 #define SGI_BRIDGE_PINS         8
 
+/*
+ * The internal address translation table: 128 entries of eight bytes, which
+ * live in the chip rather than in memory. That is the difference between this
+ * table and the scatter-gather tables of the host bridges it otherwise
+ * resembles, whose entries a translation fetches from RAM — here a translation
+ * reads a register. An external static RAM can extend the table, and this
+ * machine does not have one.
+ */
+#define SGI_BRIDGE_ATE_ENTRIES  128
+
 struct SGIBridgeState {
     PCIHostState parent_obj;
 
@@ -76,6 +86,18 @@ struct SGIBridgeState {
      */
     MemoryRegion device_window_mem[SGI_BRIDGE_DEVICES];
     MemoryRegion device_window_io[SGI_BRIDGE_DEVICES];
+
+    /*
+     * The two views of the translation table. Entries are written as 64-bit
+     * quantities through the first, whose upper halves read back there; the
+     * second is a read-only 32-bit view of their lower halves, and exists
+     * because nothing else can read a lower half at all.
+     */
+    MemoryRegion ate;
+    MemoryRegion ate_low;
+
+    /* The entries themselves, which are registers in this chip. */
+    uint64_t ate_entry[SGI_BRIDGE_ATE_ENTRIES];
 
     /*
      * Every defined register in the local block, one 32-bit word per eight-byte
