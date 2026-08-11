@@ -88,6 +88,18 @@
 #define BRIDGE_DEVICE(n)        (0x200 + SGI_BRIDGE_REG_SLOT * (n))
 #define BRIDGE_DEVICE_FLUSH(n)  (0x240 + SGI_BRIDGE_REG_SLOT * (n))
 
+/*
+ * PCI type 0 configuration space. Eight devices 4 KB apart, each holding eight
+ * functions 256 bytes apart, which is how both guests compute the address:
+ * Linux indexes a device array and then a function array, and OpenBSD adds the
+ * device shifted left twelve to the function shifted left eight.
+ */
+#define BRIDGE_CFG0_BASE        0x020000
+#define BRIDGE_CFG0_SIZE        (32 * KiB)
+#define BRIDGE_CFG0_DEVICE(a)   (((a) >> 12) & 7)
+#define BRIDGE_CFG0_FUNCTION(a) (((a) >> 8) & 7)
+#define BRIDGE_CFG0_REGISTER    0xff
+
 /* Read response buffer allocation, which this model keeps as storage. */
 #define BRIDGE_RRB_EVEN         0x280
 #define BRIDGE_RRB_ODD          0x288
@@ -539,6 +551,80 @@ static const MemoryRegionOps sgi_bridge_reg_ops = {
 };
 
 /*
+ * Where in PCI configuration space an access through the window lands.
+ *
+ * The device and function come straight out of the address, and the register
+ * within the function needs one correction, which is the part worth writing
+ * down. A 32-bit access returns the configuration double-word as a number, so
+ * on this big-endian machine the double-word's least significant byte is at the
+ * *highest* of its four byte addresses. A guest reaching for a single byte or a
+ * halfword therefore aims at the window address whose byte lanes hold the
+ * bytes it wants, and Linux composes exactly that: it exclusive-ors the
+ * register offset with four minus the width. Undoing it here is what makes a
+ * byte read of a vendor identifier return the vendor's low byte rather than the
+ * device identifier's high one.
+ *
+ * OpenBSD never needs the correction because it reads configuration space in
+ * 32-bit units only, where four minus the width is zero. That is why this is
+ * single-sourced from Linux and stated as a rule about byte lanes rather than
+ * as a rule about that driver: the two agree wherever they overlap.
+ */
+static uint32_t sgi_bridge_config_address(hwaddr addr, unsigned size)
+{
+    unsigned int reg = addr & BRIDGE_CFG0_REGISTER;
+    unsigned int devfn = PCI_DEVFN(BRIDGE_CFG0_DEVICE(addr),
+                                   BRIDGE_CFG0_FUNCTION(addr));
+
+    reg = (reg & ~3u) | ((reg & 3u) ^ (4u - size));
+
+    return (devfn << 8) | reg;
+}
+
+static uint64_t sgi_bridge_config_read(void *opaque, hwaddr addr, unsigned size)
+{
+    PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
+
+    /*
+     * A slot with no card in it answers all ones rather than zero, which is
+     * what both guests are built to see. Linux reads configuration space
+     * through an accessor that catches a bus error and treats the failure as an
+     * empty slot; OpenBSD reads it through a guarded load and *substitutes all
+     * ones itself* when the load faults. So all ones is the answer OpenBSD
+     * would have manufactured anyway, and the answer the PCI layer above both
+     * of them reads as nothing being there. Zero would be a real device whose
+     * vendor identifier happened to be zero.
+     */
+    return pci_data_read(phb->bus, sgi_bridge_config_address(addr, size), size);
+}
+
+static void sgi_bridge_config_write(void *opaque, hwaddr addr, uint64_t val,
+                                    unsigned size)
+{
+    PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
+
+    pci_data_write(phb->bus, sgi_bridge_config_address(addr, size), val, size);
+}
+
+/*
+ * Configuration space takes accesses of one, two and four bytes, which is the
+ * one place this chip is less strict than its register block. Both the minimum
+ * and the maximum are declared because leaving either unset makes the memory
+ * system reshape an access before this code sees it, and this code needs the
+ * width the guest actually issued: the width is a term in the byte-lane
+ * correction above, so an access that arrives having been widened or split
+ * would be corrected by the wrong amount and read the wrong byte.
+ */
+static const MemoryRegionOps sgi_bridge_config_ops = {
+    .read = sgi_bridge_config_read,
+    .write = sgi_bridge_config_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+/*
  * Which of the eight interrupt pins a PCI function's interrupt reaches.
  *
  * A slot's first interrupt pin goes to the chip pin of the same number, which
@@ -644,6 +730,14 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                                      &s->pci_mmio, &s->pci_io,
                                      PCI_DEVFN(0, 0), SGI_BRIDGE_PINS,
                                      TYPE_PCI_BUS);
+
+    /*
+     * The configuration window goes in after the bus exists, because reading it
+     * is reading the bus.
+     */
+    memory_region_init_io(&s->cfg0, obj, &sgi_bridge_config_ops, s,
+                          "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
+    memory_region_add_subregion(&s->widget, BRIDGE_CFG0_BASE, &s->cfg0);
 }
 
 static const VMStateDescription vmstate_sgi_bridge = {
