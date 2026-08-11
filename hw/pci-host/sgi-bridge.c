@@ -102,6 +102,19 @@
 #define NIC_PULSE_MASK          (0x3ffu << NIC_PULSE_SHIFT)
 #define NIC_WRITABLE            (NIC_SAMPLE_MASK | NIC_PULSE_MASK)
 
+/*
+ * What separates a reset from a bit slot: a reset holds the wire down for
+ * hundreds of microseconds and a bit slot for tens or fewer. A threshold
+ * rather than a value, because mainline resets with 520 microseconds where
+ * OpenBSD uses 500, and a model keyed on either exactly would answer one guest
+ * and not the other. Both fall the same side of this line.
+ *
+ * A written zero and a written one are also different widths, and this model
+ * does not yet distinguish them, because nothing it does depends on which was
+ * written. It will when the part starts taking commands.
+ */
+#define NIC_PULSE_IS_RESET      400
+
 
 #define BRIDGE_SSRAM_PARITY_ERR 0x090
 #define BRIDGE_ARBITRATION      0x0a0
@@ -826,18 +839,26 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
  * apart, because a guest that waited for real microseconds would be waiting on
  * a wire this machine does not have.
  *
- * Nothing is on the bus yet, so the wire idles high and every slot samples
- * one — including a reset, where a part that was present would pull the wire
- * down and answer zero instead. That is why the slot kind is not worked out
- * here: with no part to answer, there is nothing for the timings to select
- * between, and inventing the classification before the thing it selects for
- * would be three branches computing one answer.
+ * The wire is open-drain and idles high, so a slot samples one unless the part
+ * pulls it down. The board identity part answers a reset by doing exactly
+ * that, which is how a guest learns something is there; a guest reads a zero
+ * and treats it as presence.
  */
-static void sgi_bridge_onewire_slot(SGIBridgeState *s)
+static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
 {
     uint32_t *held = &s->reg[SGI_BRIDGE_SLOT(BRIDGE_NIC)];
+    uint32_t pulse = (val & NIC_PULSE_MASK) >> NIC_PULSE_SHIFT;
+    bool level;
 
-    *held |= NIC_DONE | NIC_LEVEL;
+    /*
+     * A reset is the only slot the part answers so far: it holds the wire down
+     * and a guest reads that zero as presence. Every other slot leaves the
+     * wire idling high, whether the guest was writing a bit or reading one.
+     */
+    level = pulse < NIC_PULSE_IS_RESET;
+
+    *held &= ~NIC_LEVEL;
+    *held |= NIC_DONE | (level ? NIC_LEVEL : 0);
 }
 
 static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
@@ -869,7 +890,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         if (sgi_bridge_is_device_register(addr, &slot)) {
             sgi_bridge_aim_window(s, slot);
         } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_NIC) {
-            sgi_bridge_onewire_slot(s);
+            sgi_bridge_onewire_slot(s, (uint32_t)val);
         }
         return;
     }

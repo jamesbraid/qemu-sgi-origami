@@ -992,11 +992,40 @@ static void test_a_write_runs_a_bit_slot(const void *data)
 
     nic = qtest_readl(qts, REG(BRIDGE_NIC));
     g_assert_cmphex(nic & NIC_DONE, ==, NIC_DONE);
-    g_assert_cmphex(nic & NIC_LEVEL, ==, NIC_LEVEL);
 
     /* And the timings read back, so a driver can see what it asked for. */
     g_assert_cmphex(nic & (NIC_PULSE(0x3ff) | NIC_SAMPLE(0xff)), ==,
                     NIC_PULSE(520) | NIC_SAMPLE(65));
+
+    qtest_quit(qts);
+}
+
+/*
+ * A reset finds the part, and a bit slot does not.
+ *
+ * This is the assertion that says something is on the bus at all: the wire is
+ * open-drain and idles high, so a slot reads one unless the part pulls it
+ * down, and the part answers a reset by doing exactly that. A guest reads that
+ * zero as presence and will not talk to a bus that does not give it.
+ *
+ * The two slots are asserted together and that is the point of the test. Each
+ * alone is satisfied by a model that answers every slot the same way — one
+ * that always reads zero looks like a part answering a reset, and one that
+ * always reads one looks like an empty bus. Only the difference between them
+ * says the model is reading the timings rather than returning a constant.
+ */
+static void test_a_reset_finds_the_part(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    /* The width mainline holds the wire down for to reset it. */
+    qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(520) | NIC_SAMPLE(65));
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_NIC)) & NIC_LEVEL, ==, 0);
+
+    /* And the width it uses to read a bit, which nothing answers yet. */
+    qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(6) | NIC_SAMPLE(13));
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_NIC)) & NIC_LEVEL, ==,
+                    NIC_LEVEL);
 
     qtest_quit(qts);
 }
@@ -1197,6 +1226,8 @@ int main(int argc, char **argv)
                         test_mode_and_device_keep_what_was_written);
     qtest_add_data_func("sn0/bridge/one-wire-write-runs-a-slot", NULL,
                         test_a_write_runs_a_bit_slot);
+    qtest_add_data_func("sn0/bridge/one-wire-reset-finds-the-part", NULL,
+                        test_a_reset_finds_the_part);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
