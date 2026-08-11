@@ -46,6 +46,21 @@
  * MB.
  */
 #define SN0_MEM_BANK_SIZE   (512 * MiB)
+
+/*
+ * A bank is not one run of memory: it is four slots of 128 MB apiece, and a
+ * guest works out where memory sits from the slot rather than from the bank.
+ * A bank larger than one slot is spread a quarter to each of its four, so a
+ * 256 MB bank appears as four 64 MB pieces on the 128 MB stride with gaps
+ * between them; a bank of one slot or less sits wholly in the first.
+ *
+ * Sourced from both guests. IRIX places a bank at a 512 MB stride and its
+ * kernel decodes a faulting address back through the same shift; mainline
+ * Linux addresses a slot at 128 MB and indexes its bank-size array by the
+ * slot over four, which is the same layout counted in smaller units.
+ */
+#define SN0_MEM_SLOT_SIZE   (128 * MiB)
+#define SN0_MEM_BANK_SLOTS  (SN0_MEM_BANK_SIZE / SN0_MEM_SLOT_SIZE)
 #define SN0_MEM_BANKS       8
 
 /*
