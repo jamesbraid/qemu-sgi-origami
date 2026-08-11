@@ -151,10 +151,14 @@
 #define SN0_WIDGET0_REVISION     3
 
 /*
- * The redirection the firmware performs, and the two Hub register fields it
- * needs to express it. Widget 0's small window is unreliable through a defect
- * on the Hub's processor-interface side, so firmware aims the last big window
- * at widget 0 instead. Both guests expect to find that done.
+ * The redirection the firmware performs, and the Hub register fields it needs
+ * to express it. Widget 0's small window is unreliable through a defect on the
+ * Hub's processor-interface side, so firmware aims the last big window at
+ * widget 0 instead, and both guests expect to find that done.
+ *
+ * On this machine they find it done by the translation table's reset value,
+ * which already names widget 0. Our firmware performs the write anyway, because
+ * a real firmware does, and it changes nothing.
  */
 #define SN0_HUB_IO_BWIN_TABLE       0x400160
 #define SN0_HUB_IO_BWIN_STRIDE      8
