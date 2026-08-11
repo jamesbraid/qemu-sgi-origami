@@ -173,6 +173,42 @@
 /* What a slot with nothing in it answers, which must not be zero. */
 #define NO_CARD                 0xffffffffu
 
+/* The two configuration registers these tests program on a card. */
+#define PCI_COMMAND             0x04
+#define PCI_COMMAND_MEMORY      0x0002
+#define PCI_BAR1                0x14
+
+/*
+ * A 32-bit scratch register in the probe card's memory-mapped register file,
+ * which is storage and nothing else. The window tests need somewhere behind a
+ * card that takes a value and gives it back, and want to depend on as little of
+ * that card's behaviour as possible; a scratch register is the least of it.
+ */
+#define CARD_SCRATCH            0x34
+
+/*
+ * Where each card's register file is put in PCI memory space. Sixteen megabytes
+ * apart, which is far more than any window is wide, so that a window aimed at
+ * one card cannot reach another and a test passing means the window went where
+ * it was aimed rather than somewhere that happened to work.
+ */
+#define CARD_MMIO(slot)         (0x10000000u + (slot) * 0x1000000u)
+
+/*
+ * Where each slot's window sits in the widget's address space, written out
+ * rather than computed. The model derives these from a base and two sizes; the
+ * test states them, because a test that recomputes the implementation's
+ * arithmetic checks that the arithmetic was run, not that it was right. The
+ * first two windows are 2 MB and the last six are 1 MB, which is the detail
+ * every driver gets wrong once.
+ */
+static const uint64_t window_offset[BRIDGE_DEVICES] = {
+    0x200000, 0x400000, 0x600000, 0x700000,
+    0x800000, 0x900000, 0xa00000, 0xb00000,
+};
+
+#define WINDOW(slot)            (BRIDGE_BASE + window_offset[slot])
+
 static uint32_t bridge_identity(uint32_t revision)
 {
     return (revision << ID_REVISION_SHIFT) |
@@ -485,6 +521,90 @@ static void test_configuration_space_is_laid_out_right(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The four slots the window tests populate: both large windows, and two of the
+ * small ones far enough apart that a wrong window size shows up as a wrong
+ * address rather than as an overlap.
+ */
+static const int populated[] = { 0, 1, 2, 7 };
+#define POPULATED_SLOTS         ARRAY_SIZE(populated)
+
+static void bridge_aim_window_at_its_card(QTestState *qts, int slot)
+{
+    qtest_writel(qts, CFG0(slot, 0) + PCI_BAR1, CARD_MMIO(slot));
+    qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
+}
+
+static void test_device_windows_reach_their_cards(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device lsi53c895a,addr=0"
+                                 " -device lsi53c895a,addr=1"
+                                 " -device lsi53c895a,addr=2"
+                                 " -device lsi53c895a,addr=7");
+    unsigned int i;
+
+    for (i = 0; i < POPULATED_SLOTS; i++) {
+        bridge_aim_window_at_its_card(qts, populated[i]);
+    }
+
+    /*
+     * Every window is written before any is read back, which is the part that
+     * makes this a test of eight separate windows rather than of one. Windows
+     * that overlapped in the widget's space, or that all pointed at the same
+     * place in PCI space, would each pass a write-then-read-immediately check
+     * and fail here, because the last write would be the only one left.
+     */
+    for (i = 0; i < POPULATED_SLOTS; i++) {
+        qtest_writel(qts, WINDOW(populated[i]) + CARD_SCRATCH,
+                     0xc0ffee00 + populated[i]);
+    }
+    for (i = 0; i < POPULATED_SLOTS; i++) {
+        g_assert_cmphex(qtest_readl(qts, WINDOW(populated[i]) + CARD_SCRATCH),
+                        ==, 0xc0ffee00u + populated[i]);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_a_window_goes_where_its_base_says(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
+
+    bridge_aim_window_at_its_card(qts, 0);
+    qtest_writel(qts, WINDOW(0) + CARD_SCRATCH, 0xc0ffee00);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), ==, 0xc0ffee00);
+
+    /*
+     * Move the window a megabyte up and the card is no longer under it.
+     * Without this, a model that ignored the base field entirely — mapping
+     * every window onto whatever the card's address happened to be — would
+     * pass everything above, because every card is aimed where it lives.
+     */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(0)),
+                 DEV_MEMORY_SPACE | ((CARD_MMIO(0) >> 20) + 1));
+    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), !=, 0xc0ffee00);
+
+    /*
+     * And selecting I/O space takes the card out from under it too, since this
+     * card's register file is in memory space. A model treating the
+     * memory-or-I/O bit as storage would answer here as though it were still
+     * memory space, which is the state a slot resets into and so the state
+     * every other test in this file leaves it in.
+     */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(0)), CARD_MMIO(0) >> 20);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), !=, 0xc0ffee00);
+
+    /* Put it back: the card is there again, so the window moved, not it. */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(0)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(0) >> 20));
+    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), ==, 0xc0ffee00);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -513,6 +633,10 @@ int main(int argc, char **argv)
                         test_configuration_byte_lanes);
     qtest_add_data_func("sn0/bridge/configuration-space-layout", NULL,
                         test_configuration_space_is_laid_out_right);
+    qtest_add_data_func("sn0/bridge/device-windows", NULL,
+                        test_device_windows_reach_their_cards);
+    qtest_add_data_func("sn0/bridge/window-follows-its-base", NULL,
+                        test_a_window_goes_where_its_base_says);
 
     return g_test_run();
 }
