@@ -649,6 +649,85 @@ static void test_the_media_interface_never_reads_busy(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The ethernet buffer RAM window, and the offsets the three drivers that size
+ * it actually touch. SGI's own driver and OpenBSD's put their second word at
+ * the halfway point of the window; mainline Linux puts its a quarter of the
+ * way in, which is inside the smaller RAM and so cannot fail on a chip that
+ * has one. Both pairs are asserted here because both are issued at us, and
+ * the halfway pair is asserted because it is the only one that fails on a
+ * window aliasing at its midpoint.
+ */
+#define SSRAM_FIRST       (IOC3_BASE + 0x40000)
+#define SSRAM_LINUX_PAIR  (IOC3_BASE + 0x50000)
+#define SSRAM_HALFWAY     (IOC3_BASE + 0x60000)
+#define SSRAM_LAST        (IOC3_BASE + 0x7fffc)
+
+/* The pattern OpenBSD's driver writes, and the complement it writes second. */
+#define SSRAM_PATTERN     0x55aau
+#define SSRAM_COMPLEMENT  (0xffffu ^ SSRAM_PATTERN)
+
+static void test_the_buffer_ram_halves_are_distinct(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The size probe in full, as OpenBSD performs it: a pattern at the first
+     * word, its complement at the halfway word, then both read back. The
+     * driver compares the second read as a whole thirty-two-bit word rather
+     * than through the data mask, which is why this asserts the whole word
+     * too -- anything the model left in the bits above the data would send a
+     * driver that finds 128 KB of RAM down the branch for 64 KB.
+     */
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_PATTERN);
+    qtest_writel(qts, SSRAM_HALFWAY, SSRAM_COMPLEMENT);
+
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_PATTERN);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_HALFWAY), ==, SSRAM_COMPLEMENT);
+
+    /* Mainline Linux's second word, a quarter of the way in, as well. */
+    qtest_writel(qts, SSRAM_LINUX_PAIR, SSRAM_COMPLEMENT);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_PATTERN);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_LINUX_PAIR), ==, SSRAM_COMPLEMENT);
+
+    /*
+     * The window runs to its end and does not wrap onto itself, which is the
+     * same property as the halves being distinct asserted at the other end of
+     * the region: a model whose storage stopped short of the top would either
+     * fault here or answer with the first word.
+     */
+    qtest_writel(qts, SSRAM_LAST, 0x1234);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_LAST), ==, 0x1234);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_PATTERN);
+
+    qtest_quit(qts);
+}
+
+static void test_the_buffer_ram_is_seventeen_bits_wide(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Sixteen bits of data and the parity bit stored beside them, and nothing
+     * above. No boot can see this: every driver writes values that fit in the
+     * data field, so a model storing all thirty-two bits produces an identical
+     * transcript. The parity bit is asserted as storage rather than as
+     * something computed, because this chip moves no frames here and a
+     * diagnostic write is how software places a parity bit at all.
+     */
+    qtest_writel(qts, SSRAM_FIRST, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x0001ffff);
+
+    qtest_writel(qts, SSRAM_FIRST, 0x00010000);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x00010000);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -665,6 +744,10 @@ int main(int argc, char **argv)
                         test_the_ethernet_read_only_registers);
     qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
                         test_the_media_interface_never_reads_busy);
+    qtest_add_data_func("sn0/ioc3/buffer-ram-halves-are-distinct", NULL,
+                        test_the_buffer_ram_halves_are_distinct);
+    qtest_add_data_func("sn0/ioc3/buffer-ram-is-seventeen-bits-wide", NULL,
+                        test_the_buffer_ram_is_seventeen_bits_wide);
     qtest_add_data_func("sn0/ioc3/ports-are-distinct", NULL,
                         test_ports_are_distinct);
     qtest_add_data_func("sn0/ioc3/registers-are-a-byte-apart", NULL,

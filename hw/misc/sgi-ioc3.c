@@ -467,6 +467,44 @@ static const MemoryRegionOps sgi_ioc3_enet_ops = {
     .impl.max_access_size = 4,
 };
 
+/*
+ * The ethernet buffer RAM. Every slot answers and keeps what it is given, and
+ * the two halves of the window are separate storage, which is the whole of
+ * what a driver's size probe measures: it writes a pattern at the first slot
+ * and the complement at the halfway slot and reads both back, so a window
+ * aliasing at its midpoint reports half the RAM.
+ *
+ * Seventeen bits are kept because seventeen bits exist -- sixteen of data and
+ * the parity bit stored beside them. The parity bit is storage like the rest
+ * rather than something computed: this model moves no frames, so there is
+ * nothing to compute it over, and a diagnostic write is how software would
+ * place a deliberately wrong one anyway.
+ */
+static uint64_t sgi_ioc3_ssram_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIIOC3State *s = opaque;
+
+    return s->ssram_word[addr / 4];
+}
+
+static void sgi_ioc3_ssram_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size)
+{
+    SGIIOC3State *s = opaque;
+
+    s->ssram_word[addr / 4] = val & SGI_IOC3_SSRAM_STORED;
+}
+
+static const MemoryRegionOps sgi_ioc3_ssram_ops = {
+    .read = sgi_ioc3_ssram_read,
+    .write = sgi_ioc3_ssram_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 static const hwaddr sgi_ioc3_serial_base[SGI_IOC3_SERIAL_PORTS] = {
     SGI_IOC3_SERIAL_A, SGI_IOC3_SERIAL_B,
 };
@@ -546,6 +584,15 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
 
+    /*
+     * The ethernet buffer RAM, the whole window rather than part of it: an
+     * Origin 200 populates all of it, so there is no unpopulated remainder
+     * here whose behaviour would have to be decided.
+     */
+    memory_region_init_io(&s->ssram, OBJECT(dev), &sgi_ioc3_ssram_ops, s,
+                          "sgi-ioc3.ssram", SGI_IOC3_SSRAM_SIZE);
+    memory_region_add_subregion(&s->bar, SGI_IOC3_SSRAM_BASE, &s->ssram);
+
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
     /*
@@ -592,6 +639,15 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->kbc_control = 0;
 
     /*
+     * The ethernet buffer RAM is deliberately not among these. It is memory
+     * rather than a register file, and a reset line does not empty memory --
+     * what a chip holds there after a reset is what it held before one. Its
+     * contents at power-on are whatever the parts came up with, and zero is
+     * as good a stand-in for that as anything, which is what allocating the
+     * array gives us for free.
+     */
+
+    /*
      * SGI's own register diagnostic lists every register in the chip
      * resetting to zero apart from the PCI identity and revision words,
      * and these three are no exception.
@@ -623,8 +679,8 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 8,
+    .minimum_version_id = 8,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -637,6 +693,7 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3State, SGI_IOC3_ENET_REGS),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
         VMSTATE_UINT32(kbc_control, SGIIOC3State),
+        VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
         VMSTATE_END_OF_LIST()
     }
 };

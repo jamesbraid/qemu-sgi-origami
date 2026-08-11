@@ -226,6 +226,30 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_ENET_MII_ABSENT    0xffffu
 
 /*
+ * The ethernet buffer RAM, reached through the diagnostic window that gives
+ * each of its sixteen-bit words a thirty-two-bit slot of its own: bits 0-15
+ * are the data, bit 16 is the parity bit stored beside them, and nothing owns
+ * the bits above. So the window's quarter-megabyte of address space is 65,536
+ * slots holding 65,536 sixteen-bit words -- 128 KB of RAM in 256 KB of
+ * address space, which is the whole of what an Origin 200 populates.
+ *
+ * Address space and RAM being different quantities is the thing to hold on to
+ * here, because every driver sizing this RAM prints the RAM figure and every
+ * header states the address figure. A chip with the smaller RAM answers over
+ * the first half of the window only, so the halves being separate storage is
+ * the entire content of the size probe: a window that aliased at its midpoint
+ * would report half the RAM while looking, from every other angle, like
+ * memory that works.
+ */
+#define SGI_IOC3_SSRAM_BASE     0x40000
+#define SGI_IOC3_SSRAM_SIZE     0x40000
+#define SGI_IOC3_SSRAM_WORDS    (SGI_IOC3_SSRAM_SIZE / 4)
+
+#define SGI_IOC3_SSRAM_DATA     0x0000ffffu
+#define SGI_IOC3_SSRAM_PARITY   0x00010000u
+#define SGI_IOC3_SSRAM_STORED   (SGI_IOC3_SSRAM_DATA | SGI_IOC3_SSRAM_PARITY)
+
+/*
  * The two serial ports' bits, which are pass-throughs: they follow the 16550's
  * own interrupt level rather than latching, so a write cannot clear them and
  * what really quiets one is the register read the guest's serial driver does.
@@ -293,6 +317,19 @@ struct SGIIOC3State {
      */
     MemoryRegion kbc;
     uint32_t kbc_control;
+
+    /*
+     * The ethernet buffer RAM, one array entry per sixteen-bit word so that a
+     * word and the slot it answers in stay the same thing. This is memory
+     * rather than registers: the block's own engines would fill it with
+     * received frames on a chip that moved any, and what a guest does with it
+     * here is size it. Held as storage that keeps seventeen bits, which is
+     * what the chip has, rather than as a plain thirty-two-bit array, because
+     * the width is invisible to a boot -- every driver writes values that fit
+     * -- and so is only ever checked by a test.
+     */
+    MemoryRegion ssram;
+    uint32_t ssram_word[SGI_IOC3_SSRAM_WORDS];
 };
 
 #endif
