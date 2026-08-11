@@ -82,6 +82,7 @@ struct SN0MachineState {
     /* Crosstalk space, and the small window each widget is reached through. */
     MemoryRegion xtalk;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
+    MemoryRegion mem_slot[SN0_MEM_BANK_SLOTS];
 
     SGIHubState hub;
     SGIIOC3State ioc3;
@@ -1123,7 +1124,30 @@ static void sn0_init(MachineState *machine)
      * compatibility segments all arrive here, because that attribute is the one
      * placed at window zero.
      */
-    memory_region_add_subregion(system, node, machine->ram);
+    /*
+     * Place memory where the guest's own arithmetic looks for it. The
+     * configuration graph advertises a single bank of everything the machine
+     * has, and a guest reading that bank spreads anything larger than one slot
+     * a quarter to each of the bank's four slots. Mapping it as one run
+     * instead leaves the upper slots advertised and unbacked, which is exactly
+     * what a guest allocating high walks off the end of.
+     */
+    if (machine->ram_size <= SN0_MEM_SLOT_SIZE) {
+        memory_region_add_subregion(system, node, machine->ram);
+    } else {
+        uint64_t per_slot = machine->ram_size / SN0_MEM_BANK_SLOTS;
+        unsigned int i;
+
+        for (i = 0; i < SN0_MEM_BANK_SLOTS; i++) {
+            g_autofree char *name = g_strdup_printf("sn0.node0.ram.slot%u", i);
+
+            memory_region_init_alias(&s->mem_slot[i], OBJECT(machine), name,
+                                     machine->ram, i * per_slot, per_slot);
+            memory_region_add_subregion(system,
+                                        node + (hwaddr)i * SN0_MEM_SLOT_SIZE,
+                                        &s->mem_slot[i]);
+        }
+    }
 
     /*
      * The boot flash, at the node offset the reset vector reaches through the
