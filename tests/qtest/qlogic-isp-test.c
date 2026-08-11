@@ -11,10 +11,12 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "libqos/qgraph.h"
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
+#include "scsi/constants.h"
 
 /* Register offsets within the 16-bit window. */
 #define ISP_REG_ID_LOW      0x00
@@ -68,6 +70,31 @@
 #define ISP_MBOX_TEST_FAILED    0x4003
 
 #define ISP_FIRMWARE_STATUS_MAX_REQUESTS 512
+
+#define ISP_MBOX_CMD_INIT_REQ_QUEUE  0x0010
+#define ISP_MBOX_CMD_INIT_RSP_QUEUE  0x0011
+#define ISP_MBOX_CMD_PARAM_ERROR     0x4006
+
+#define ISP_QUEUE_ENTRY_SIZE     64
+
+#define ISP_ENTRY_TYPE_REQUEST   0x01
+#define ISP_ENTRY_TYPE_STATUS    0x03
+
+#define ISP_REQ_OFF_HANDLE       4
+#define ISP_REQ_OFF_DEVICE       8
+#define ISP_REQ_OFF_CDBLEN       10
+#define ISP_REQ_OFF_TIMEOUT      16
+#define ISP_REQ_OFF_SEGCOUNT     18
+#define ISP_REQ_OFF_CDB          20
+
+#define ISP_STATUS_OFF_HANDLE       4
+#define ISP_STATUS_OFF_SCSI_STATUS  8
+#define ISP_STATUS_OFF_COMPLETION   10
+#define ISP_STATUS_OFF_SENSE_DATA   32
+
+#define ISP_IOCB_COMPLETE  0x0000
+
+#define ISP_SCSI_STATUS_SENSE_VALID 0x0200
 
 #define ISP_BUS_STATUS_INT_REQ      0x0002
 #define ISP_BUS_STATUS_RISC_INT_REQ 0x0004
@@ -850,10 +877,201 @@ static void test_get_firmware_status(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/* Writes a 32-bit little-endian value into a request/status entry buffer. */
+static void isp_put32(uint8_t *entry, int off, uint32_t val)
+{
+    uint32_t le = cpu_to_le32(val);
+
+    memcpy(entry + off, &le, 4);
+}
+
+static void isp_put16(uint8_t *entry, int off, uint16_t val)
+{
+    uint16_t le = cpu_to_le16(val);
+
+    memcpy(entry + off, &le, 2);
+}
+
+static uint32_t isp_get32(const uint8_t *entry, int off)
+{
+    uint32_t le;
+
+    memcpy(&le, entry + off, 4);
+    return le32_to_cpu(le);
+}
+
+static uint16_t isp_get16(const uint8_t *entry, int off)
+{
+    uint16_t le;
+
+    memcpy(&le, entry + off, 2);
+    return le16_to_cpu(le);
+}
+
+/*
+ * Loads mailboxes 1, 2, 3, 6 and 7 with a queue's entry count and 64-bit
+ * base address split the way OpenBSD's own driver splits it — low half in
+ * mailbox 3, next in mailbox 2, next in mailbox 7, top in mailbox 6 — then
+ * runs the given init command and returns mailbox 0.
+ */
+static uint16_t isp_init_queue(QPCIDevice *dev, QPCIBar io, uint16_t cmd,
+                               uint16_t count, uint64_t addr)
+{
+    qpci_io_writew(dev, io, ISP_MAILBOX(1), count);
+    qpci_io_writew(dev, io, ISP_MAILBOX(2), (addr >> 16) & 0xffff);
+    qpci_io_writew(dev, io, ISP_MAILBOX(3), addr & 0xffff);
+    qpci_io_writew(dev, io, ISP_MAILBOX(6), (addr >> 48) & 0xffff);
+    qpci_io_writew(dev, io, ISP_MAILBOX(7), (addr >> 32) & 0xffff);
+    /*
+     * Only mailbox 0 is loaded fresh here: this command's arguments span
+     * mailboxes 1, 2, 3, 6 and 7, which the four-mailbox call helper would
+     * overwrite with zero if used here instead.
+     */
+    qpci_io_writew(dev, io, ISP_MAILBOX(0), cmd);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    return qpci_io_readw(dev, io, ISP_MAILBOX(0));
+}
+
+/*
+ * Initialising either queue with a zero address or a zero entry count is
+ * rejected. No guest on this device's path sends either — the check exists
+ * because 86Box's model makes the same one, evidence about the approach
+ * worth keeping even where nothing here can watch it matter — so this pins
+ * the one behaviour a qtest can actually exercise: the model does not
+ * silently accept a queue it was not actually given.
+ */
+static void test_init_queue_rejects_zero(void *obj, void *data,
+                                         QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   0, 0x1000), ==,
+                    ISP_MBOX_CMD_PARAM_ERROR);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, 0), ==,
+                    ISP_MBOX_CMD_PARAM_ERROR);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The steady-state contract in full: with both queues initialised, a
+ * command entry written at the request-in index and the pointer advanced
+ * produces a status entry in the response queue carrying the same handle,
+ * the response-in pointer advanced, and an interrupt raised with the
+ * semaphore lock clear — the datasheet's own words for what this test
+ * checks, because an I/O completion is not a mailbox result and must not be
+ * decoded as one.
+ *
+ * A test-unit-ready command is used because it moves no data, which keeps
+ * this test to the ring protocol itself rather than also exercising the
+ * scatter-gather path — that is worth its own test once this one is
+ * trusted, not folded into the first one to pass.
+ */
+static void test_command_round_trip(void *obj, void *data,
+                                    QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    const uint32_t handle = 0x1234abcd;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;    /* entry_count: no continuations needed. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, handle);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);    /* bus 0, target 0, lun 0. */
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    /* Test unit ready: an all-zero six-byte CDB. */
+
+    /*
+     * The first command to a freshly attached SCSI device answers a pending
+     * power-on unit attention rather than the command itself — this is real
+     * generic-SCSI-layer behaviour, not this device's protocol, and
+     * virtio-scsi's own qtest suite documents and relies on the same thing.
+     * A round trip that only sent one command and asserted good status
+     * would not tell the difference between a model correctly relaying
+     * whatever the SCSI layer said and one that invented a fixed answer;
+     * asserting the specific condition here, and a clean status on the
+     * second command below, is what tells them apart.
+     */
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, handle);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + 2] & 0x0f, ==,
+                    UNIT_ATTENTION);
+
+    qlogic_isp_ack(dev, io);
+
+    /*
+     * Second command: the unit attention is clear, so this one is clean.
+     * This device consumed the first entry, so it expects the second at the
+     * next ring slot, not the one it already read.
+     */
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, handle);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
-        .extra_device_opts = "addr=04.0",
+        .extra_device_opts = "addr=04.0,id=scsi0",
+        .before_cmd_line = "-drive id=drv0,if=none,file=null-co://,"
+                           "file.read-zeroes=on,format=raw",
+        .after_cmd_line = "-device scsi-hd,bus=scsi0.0,drive=drv0",
     };
 
     add_qpci_address(&opts, &(QPCIAddress) { .devfn = QPCI_DEVFN(4, 0) });
@@ -890,6 +1108,10 @@ static void qlogic_isp_register_nodes(void)
                  test_about_firmware, NULL);
     qos_add_test("get-firmware-status", "qlogic-isp1040",
                  test_get_firmware_status, NULL);
+    qos_add_test("init-queue-rejects-zero", "qlogic-isp1040",
+                 test_init_queue_rejects_zero, NULL);
+    qos_add_test("command-round-trip", "qlogic-isp1040",
+                 test_command_round_trip, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);

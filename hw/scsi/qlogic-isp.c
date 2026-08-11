@@ -46,6 +46,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/pci/pci_device.h"
+#include "hw/scsi/scsi.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
@@ -168,6 +169,8 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 /* The queue pointers, at these offsets from the mailbox base. */
 #define ISP_MAILBOX_REQUEST_QUEUE   4
 #define ISP_MAILBOX_RESPONSE_QUEUE  5
+#define ISP_REG_REQUEST_QUEUE   (ISP_REG_MAILBOX_BASE + 0x08)
+#define ISP_REG_RESPONSE_QUEUE  (ISP_REG_MAILBOX_BASE + 0x0a)
 
 /*
  * After reset the adapter presents an ASCII signature in mailboxes 1, 2 and 3:
@@ -204,11 +207,15 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_CMD_WRITE_RAM_WORD     0x0004
 #define ISP_MBOX_CMD_VERIFY_CHECKSUM    0x0007
 #define ISP_MBOX_CMD_ABOUT_FIRMWARE     0x0008
+#define ISP_MBOX_CMD_INIT_REQ_QUEUE     0x0010
+#define ISP_MBOX_CMD_INIT_RSP_QUEUE     0x0011
+#define ISP_MBOX_CMD_BUS_RESET          0x0018
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
 
-#define ISP_MBOX_COMPLETE       0x4000
-#define ISP_MBOX_INVALID        0x4001
-#define ISP_MBOX_TEST_FAILED    0x4003
+#define ISP_MBOX_COMPLETE           0x4000
+#define ISP_MBOX_INVALID            0x4001
+#define ISP_MBOX_TEST_FAILED        0x4003
+#define ISP_MBOX_CMD_PARAM_ERROR    0x4006
 
 /*
  * The adapter runs QLogic microcode on an internal RISC processor, and the
@@ -300,6 +307,88 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_SXP_RISC_COUNT      \
     ((ISP_REG_SXP_RISC_END - ISP_REG_SXP_RISC_BASE) / 2)
 
+/*
+ * Initialising a queue is a mailbox command like any other, but its address
+ * argument is unusual: mailbox 1 is the entry count, and the queue's base
+ * address is a 64-bit host address split across mailboxes 2, 3, 6 and 7
+ * rather than the low pair alone. OpenBSD's own driver always sends this
+ * split form — never the separate 64-bit-only command variant the datasheet
+ * also names — so that is the only form this model needs to answer.
+ *
+ * Zero is rejected for either the address or the count. No guest on this
+ * device's path sends either, so the check is unexercised by construction,
+ * but it costs nothing and 86Box's model makes the same check, which is
+ * evidence about the approach worth keeping even where it cannot be watched
+ * failing here.
+ */
+#define ISP_MBOX_ADDR_LOW(mb)   ((uint64_t)(mb)[3])
+#define ISP_MBOX_ADDR_MID(mb)   ((uint64_t)(mb)[2] << 16)
+#define ISP_MBOX_ADDR_HIGH(mb)  ((uint64_t)(mb)[7] << 32)
+#define ISP_MBOX_ADDR_TOP(mb)   ((uint64_t)(mb)[6] << 48)
+
+/*
+ * Queue entries are 64 bytes and every offset below is a byte offset into
+ * one entry. Confirmed against OpenBSD's own packed struct declarations for
+ * each entry kind, which leave no compiler padding to second-guess: a
+ * request entry, its continuations, a status entry and a marker all total
+ * exactly 64 bytes this way.
+ */
+#define ISP_QUEUE_ENTRY_SIZE    64
+
+/* The entry header every kind of entry starts with. */
+#define ISP_ENTRY_OFF_TYPE      0
+#define ISP_ENTRY_OFF_COUNT     1
+
+#define ISP_ENTRY_TYPE_REQUEST      0x01
+#define ISP_ENTRY_TYPE_CONTINUATION 0x02
+#define ISP_ENTRY_TYPE_STATUS       0x03
+#define ISP_ENTRY_TYPE_MARKER       0x04
+
+/*
+ * A request entry. The device field packs bus, target and lun into one
+ * 16-bit word rather than three separate bytes — confirmed from how
+ * OpenBSD's driver builds the value it writes, (((bus << 7) | target) << 8)
+ * | lun, not from the header's field layout alone, which only names the
+ * field and does not spell out which bits mean what.
+ */
+#define ISP_REQ_OFF_HANDLE      4
+#define ISP_REQ_OFF_DEVICE      8
+#define ISP_REQ_OFF_CDBLEN      10
+#define ISP_REQ_OFF_TIMEOUT     16
+#define ISP_REQ_OFF_SEGCOUNT    18
+#define ISP_REQ_OFF_CDB         20
+#define ISP_REQ_CDB_LEN         12
+#define ISP_REQ_OFF_SEGS        32
+#define ISP_REQ_SEGS_INLINE     4
+
+#define ISP_DEVICE_LUN(dev)     ((dev) & 0xff)
+#define ISP_DEVICE_TARGET(dev)  (((dev) >> 8) & 0x7f)
+
+/* A continuation entry: four bytes reserved, then seven more segments. */
+#define ISP_CONT_OFF_SEGS       8
+#define ISP_CONT_SEGS           7
+
+/* One inline or continuation segment: a 32-bit address and a 32-bit length. */
+#define ISP_SEG_SIZE            8
+
+/*
+ * A status entry, written by the adapter. Sense data validity rides in the
+ * SCSI status word's own bit 9 rather than a separate flag, which is easy to
+ * miss because nothing about the field's name says so.
+ */
+#define ISP_STATUS_OFF_HANDLE       4
+#define ISP_STATUS_OFF_SCSI_STATUS  8
+#define ISP_STATUS_OFF_COMPLETION   10
+#define ISP_STATUS_OFF_RESID        20
+#define ISP_STATUS_OFF_SENSE_DATA   32
+#define ISP_STATUS_SENSE_MAX        32
+
+#define ISP_SCSI_STATUS_SENSE_VALID 0x0200
+
+#define ISP_IOCB_COMPLETE            0x0000
+#define ISP_IOCB_INCOMPLETE          0x0001
+#define ISP_IOCB_DATA_UNDERRUN       0x0015
+
 struct QLogicISPState {
     PCIDevice parent_obj;
 
@@ -315,7 +404,29 @@ struct QLogicISPState {
     uint16_t risc_bank[ISP_SXP_RISC_COUNT];
     uint16_t sxp_bank[ISP_SXP_RISC_COUNT];
     uint16_t risc_ram[ISP_RISC_RAM_WORDS];    /* Downloaded firmware. */
+
+    SCSIBus bus;
+
+    hwaddr rqst_base;
+    hwaddr resp_base;
+    uint16_t rqst_len;
+    uint16_t resp_len;
+    uint16_t rqst_cons;    /* Next request entry this device will read. */
+    uint16_t resp_prod;    /* Next response slot this device will write. */
 };
+
+/*
+ * State for one in-flight SCSI command, from the request entry that started
+ * it to the status entry its completion posts. hba_private on the SCSIRequest
+ * is how QEMU's generic SCSI layer hands this back on completion or
+ * cancellation, the same mechanism every SCSI HBA model in the tree uses.
+ */
+typedef struct QLogicISPRequest {
+    QLogicISPState *dev;
+    SCSIRequest *sreq;
+    QEMUSGList qsg;
+    uint32_t handle;
+} QLogicISPRequest;
 
 /*
  * The adapter presents one PCI interrupt line and it is a level, so the line
@@ -391,6 +502,20 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
      * function clears.
      */
     memset(s->risc_ram, 0, sizeof(s->risc_ram));
+
+    /*
+     * The driver re-initialises both queues after every reset, as part of
+     * the same attach sequence that re-downloads firmware, so a stale base
+     * address or length from before the reset is never acted on — but
+     * zeroing them here means this device cannot act on one either, rather
+     * than relying on the driver's ordering to keep it safe.
+     */
+    s->rqst_base = 0;
+    s->resp_base = 0;
+    s->rqst_len = 0;
+    s->resp_len = 0;
+    s->rqst_cons = 0;
+    s->resp_prod = 0;
 
     qlogic_isp_update_irq(s);
 }
@@ -498,6 +623,55 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[1] = 0;
         s->mailbox[2] = ISP_FIRMWARE_STATUS_MAX_REQUESTS;
         s->mailbox[3] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    case ISP_MBOX_CMD_INIT_REQ_QUEUE: {
+        uint64_t addr = ISP_MBOX_ADDR_TOP(s->mailbox) |
+                        ISP_MBOX_ADDR_HIGH(s->mailbox) |
+                        ISP_MBOX_ADDR_MID(s->mailbox) |
+                        ISP_MBOX_ADDR_LOW(s->mailbox);
+
+        if (addr == 0 || s->mailbox[1] == 0) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
+
+        s->rqst_base = addr;
+        s->rqst_len = s->mailbox[1];
+        s->rqst_cons = 0;
+        s->mailbox[ISP_MAILBOX_REQUEST_QUEUE] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+    }
+
+    case ISP_MBOX_CMD_INIT_RSP_QUEUE: {
+        uint64_t addr = ISP_MBOX_ADDR_TOP(s->mailbox) |
+                        ISP_MBOX_ADDR_HIGH(s->mailbox) |
+                        ISP_MBOX_ADDR_MID(s->mailbox) |
+                        ISP_MBOX_ADDR_LOW(s->mailbox);
+
+        if (addr == 0 || s->mailbox[1] == 0) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
+
+        s->resp_base = addr;
+        s->resp_len = s->mailbox[1];
+        s->resp_prod = 0;
+        s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+    }
+
+    /*
+     * Nothing in this model distinguishes a bus that has been reset from one
+     * that has not — there are no in-flight commands to abort and no
+     * negotiated transfer parameters to drop, since neither is modelled yet
+     * — so the only contract to honour is the one the driver checks: that
+     * the command completes.
+     */
+    case ISP_MBOX_CMD_BUS_RESET:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
@@ -624,6 +798,267 @@ static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
            s->sxp_bank : s->risc_bank;
 }
 
+static hwaddr qlogic_isp_rqst_entry_addr(QLogicISPState *s, uint16_t index)
+{
+    return s->rqst_base + (hwaddr)index * ISP_QUEUE_ENTRY_SIZE;
+}
+
+static hwaddr qlogic_isp_resp_entry_addr(QLogicISPState *s, uint16_t index)
+{
+    return s->resp_base + (hwaddr)index * ISP_QUEUE_ENTRY_SIZE;
+}
+
+/*
+ * Posts a status entry and raises the interrupt that tells the host it is
+ * there. Unlike a mailbox result, an I/O completion does not take the
+ * semaphore lock — the driver's own decode order depends on that, reading
+ * the semaphore first and only falling through to bus interface status when
+ * it finds the lock clear — so this sets only the status bits, never the
+ * semaphore.
+ *
+ * The response queue is a ring the adapter alone produces into; nothing
+ * here needs to track what the host has consumed; writing the new
+ * response-in value into mailbox 5 is the entire handoff; the host's own
+ * write of the same value back is how it acknowledges having read up to
+ * that point, and this device does not need to notice that write for
+ * anything.
+ */
+static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
+                                   uint16_t scsi_status, uint16_t completion,
+                                   uint32_t resid, const uint8_t *sense,
+                                   int sense_len)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    hwaddr addr;
+    uint8_t hdr[4] = { ISP_ENTRY_TYPE_STATUS, 1, 0, 0 };
+
+    if (s->resp_len == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: status posted before the response "
+                      "queue was initialised\n");
+        return;
+    }
+
+    addr = qlogic_isp_resp_entry_addr(s, s->resp_prod);
+
+    pci_dma_write(pci, addr, hdr, sizeof(hdr));
+    stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_HANDLE, handle,
+                   MEMTXATTRS_UNSPECIFIED);
+    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_SCSI_STATUS, scsi_status,
+                   MEMTXATTRS_UNSPECIFIED);
+    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_COMPLETION, completion,
+                   MEMTXATTRS_UNSPECIFIED);
+    stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_RESID, resid,
+                   MEMTXATTRS_UNSPECIFIED);
+
+    if (sense_len > 0) {
+        uint8_t buf[ISP_STATUS_SENSE_MAX];
+
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf, sense, MIN(sense_len, ISP_STATUS_SENSE_MAX));
+        pci_dma_write(pci, addr + ISP_STATUS_OFF_SENSE_DATA, buf,
+                      sizeof(buf));
+    }
+
+    s->resp_prod = (s->resp_prod + 1) % s->resp_len;
+    s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE] = s->resp_prod;
+
+    s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
+    qlogic_isp_update_irq(s);
+}
+
+static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
+{
+    QLogicISPRequest *req = sreq->hba_private;
+    QLogicISPState *s = req->dev;
+    uint8_t sense[SCSI_SENSE_BUF_SIZE];
+    int sense_len;
+    uint16_t scsi_status = sreq->status;
+    uint16_t completion;
+
+    sense_len = scsi_req_get_sense(sreq, sense, sizeof(sense));
+    if (sense_len > 0) {
+        scsi_status |= ISP_SCSI_STATUS_SENSE_VALID;
+    }
+
+    completion = resid ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
+
+    qlogic_isp_post_status(s, req->handle, scsi_status, completion,
+                           resid, sense, sense_len);
+
+    scsi_req_unref(req->sreq);
+    qemu_sglist_destroy(&req->qsg);
+    g_free(req);
+}
+
+static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
+{
+    QLogicISPRequest *req = sreq->hba_private;
+
+    scsi_req_unref(req->sreq);
+    qemu_sglist_destroy(&req->qsg);
+    g_free(req);
+}
+
+static const struct SCSIBusInfo qlogic_isp_scsi_info = {
+    .tcq = false,
+    .max_target = 16,
+    .max_lun = 8,
+    .complete = qlogic_isp_scsi_complete,
+    .cancel = qlogic_isp_scsi_cancel,
+};
+
+/*
+ * Reads the segments a command entry carries — four inline, then seven per
+ * continuation entry, in the order OpenBSD's own driver writes them, until
+ * seg_count segments have been read or the entry_count the header declared
+ * is exhausted. A command needing no continuation reads only the inline
+ * four and touches nothing past the request entry itself.
+ */
+static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
+                                     hwaddr rqst_addr, uint8_t entry_count,
+                                     uint16_t seg_count)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t collected = 0;
+    uint16_t cont_index = s->rqst_cons;
+    int conts_left = entry_count - 1;
+    int i;
+
+    for (i = 0; i < ISP_REQ_SEGS_INLINE && collected < seg_count; i++) {
+        hwaddr seg_addr = rqst_addr + ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE;
+        uint32_t addr, len;
+
+        ldl_le_pci_dma(pci, seg_addr, &addr, MEMTXATTRS_UNSPECIFIED);
+        ldl_le_pci_dma(pci, seg_addr + 4, &len, MEMTXATTRS_UNSPECIFIED);
+        qemu_sglist_add(qsg, addr, len);
+        collected++;
+    }
+
+    while (collected < seg_count && conts_left > 0) {
+        hwaddr cont_addr;
+
+        cont_index = (cont_index + 1) % s->rqst_len;
+        cont_addr = qlogic_isp_rqst_entry_addr(s, cont_index);
+
+        for (i = 0; i < ISP_CONT_SEGS && collected < seg_count; i++) {
+            hwaddr seg_addr = cont_addr + ISP_CONT_OFF_SEGS + i * ISP_SEG_SIZE;
+            uint32_t addr, len;
+
+            ldl_le_pci_dma(pci, seg_addr, &addr, MEMTXATTRS_UNSPECIFIED);
+            ldl_le_pci_dma(pci, seg_addr + 4, &len, MEMTXATTRS_UNSPECIFIED);
+            qemu_sglist_add(qsg, addr, len);
+            collected++;
+        }
+        conts_left--;
+    }
+}
+
+/*
+ * Dispatches one request entry: finds the target the device field names,
+ * builds the scatter-gather list its segments describe, and hands both to
+ * QEMU's generic SCSI layer. A target or lun nothing answers to is not this
+ * model's error to report loudly — it is exactly what a real adapter would
+ * meet issuing the same command to empty hardware — so it is answered with
+ * an incomplete status entry rather than logged, the same outcome the
+ * datasheet names for a request that cannot be carried out.
+ */
+static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
+                                      uint8_t entry_count)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint32_t handle;
+    uint16_t device;
+    uint8_t target, lun;
+    uint16_t cdb_len;
+    uint16_t seg_count;
+    uint8_t cdb[ISP_REQ_CDB_LEN];
+    SCSIDevice *sdev;
+    QLogicISPRequest *req;
+
+    ldl_le_pci_dma(pci, addr + ISP_REQ_OFF_HANDLE, &handle,
+                  MEMTXATTRS_UNSPECIFIED);
+    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_DEVICE, &device,
+                    MEMTXATTRS_UNSPECIFIED);
+    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_CDBLEN, &cdb_len,
+                    MEMTXATTRS_UNSPECIFIED);
+    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_SEGCOUNT, &seg_count,
+                    MEMTXATTRS_UNSPECIFIED);
+    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+
+    target = ISP_DEVICE_TARGET(device);
+    lun = ISP_DEVICE_LUN(device);
+
+    sdev = scsi_device_find(&s->bus, 0, target, lun);
+    if (!sdev) {
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE, 0,
+                               NULL, 0);
+        return;
+    }
+
+    req = g_new0(QLogicISPRequest, 1);
+    req->dev = s;
+    req->handle = handle;
+    pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
+    qlogic_isp_read_segments(s, &req->qsg, addr, entry_count, seg_count);
+
+    req->sreq = scsi_req_new(sdev, 0, lun, cdb,
+                             MIN(cdb_len, sizeof(cdb)), req);
+    if (scsi_req_enqueue(req->sreq)) {
+        scsi_req_continue(req->sreq);
+    }
+}
+
+/*
+ * Walks every new entry between where this device last stopped reading and
+ * the request-in index the host just wrote, which is what a write to that
+ * register means: process everything posted since the last time. A marker
+ * is consumed and produces nothing; a request entry is dispatched and its
+ * continuations are skipped over here because reading segments already
+ * walked them.
+ */
+static void qlogic_isp_process_requests(QLogicISPState *s)
+{
+    uint16_t prod = s->mailbox[ISP_MAILBOX_REQUEST_QUEUE];
+
+    if (s->rqst_len == 0) {
+        return;
+    }
+
+    while (s->rqst_cons != prod) {
+        PCIDevice *pci = PCI_DEVICE(s);
+        hwaddr addr = qlogic_isp_rqst_entry_addr(s, s->rqst_cons);
+        uint8_t entry_type;
+        uint8_t entry_count;
+
+        ldub_pci_dma(pci, addr + ISP_ENTRY_OFF_TYPE, &entry_type,
+                    MEMTXATTRS_UNSPECIFIED);
+        ldub_pci_dma(pci, addr + ISP_ENTRY_OFF_COUNT, &entry_count,
+                    MEMTXATTRS_UNSPECIFIED);
+        if (entry_count == 0) {
+            entry_count = 1;
+        }
+
+        switch (entry_type) {
+        case ISP_ENTRY_TYPE_REQUEST:
+            qlogic_isp_handle_request(s, addr, entry_count);
+            break;
+
+        case ISP_ENTRY_TYPE_MARKER:
+            break;
+
+        default:
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "qlogic-isp: unexpected request entry type "
+                          "0x%02x at index %u\n", entry_type,
+                          s->rqst_cons);
+            break;
+        }
+
+        s->rqst_cons = (s->rqst_cons + entry_count) % s->rqst_len;
+    }
+}
+
 static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
     QLogicISPState *s = opaque;
@@ -673,6 +1108,15 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
         s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2] = val;
+        /*
+         * Writing the request-in pointer is the trigger, not a host command:
+         * the datasheet's own steady-state protocol has the host advance
+         * this register and the adapter start consuming from it, with
+         * nothing else in between.
+         */
+        if (addr == ISP_REG_REQUEST_QUEUE) {
+            qlogic_isp_process_requests(s);
+        }
         return;
     }
 
@@ -782,12 +1226,15 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+
+    scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev),
+                 &qlogic_isp_scsi_info);
 }
 
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
         VMSTATE_UINT16(bus_cfg1, QLogicISPState),
@@ -799,6 +1246,12 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16_ARRAY(risc_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
         VMSTATE_UINT16_ARRAY(sxp_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
         VMSTATE_UINT16_ARRAY(risc_ram, QLogicISPState, ISP_RISC_RAM_WORDS),
+        VMSTATE_UINT64(rqst_base, QLogicISPState),
+        VMSTATE_UINT64(resp_base, QLogicISPState),
+        VMSTATE_UINT16(rqst_len, QLogicISPState),
+        VMSTATE_UINT16(resp_len, QLogicISPState),
+        VMSTATE_UINT16(rqst_cons, QLogicISPState),
+        VMSTATE_UINT16(resp_prod, QLogicISPState),
         VMSTATE_END_OF_LIST()
     }
 };
