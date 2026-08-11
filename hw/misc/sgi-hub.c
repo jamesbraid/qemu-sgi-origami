@@ -160,6 +160,15 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
  * The floor beneath the big windows: what a window that reaches no widget
  * answers. Reported with the window number, because the offset alone says
  * nothing about which of the seven was disabled.
+ *
+ * **Answering zero is our choice and not the machine's behaviour**, and no
+ * source gives the real one. A crossbar port with nothing on it almost
+ * certainly produces an error response rather than zeros; what the datasheets
+ * require is only that the access not fault the machine, because disabling a
+ * window by naming an absent widget is a thing the guests do deliberately.
+ * Zero satisfies that and is a guess about the rest. A guest that ever keys off
+ * the difference will have been reading our answer for a long time by then,
+ * which is why this says so here rather than leaving it to be inferred.
  */
 static uint64_t sgi_hub_bwin_empty_read(void *opaque, hwaddr addr,
                                         unsigned size)

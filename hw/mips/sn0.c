@@ -870,7 +870,19 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
  * big window and points all software at that; both guests carry the workaround
  * with a comment saying so, and each expects to find the redirection already
  * done. Ours does it here.
-
+ *
+ * **It changes nothing on this machine today, and that is worth knowing rather
+ * than discovering.** The entry resets to widget zero, first slice, memory
+ * space, which is exactly the value the redirection writes — so all seven
+ * windows already point at widget zero before any firmware runs, and removing
+ * this call would not move the boot by a line. It is kept because a real
+ * firmware does it and because the coincidence is a property of one machine's
+ * reset values rather than of the mechanism: it stops being a no-op the moment
+ * the entry, the widget or the reset value differs.
+ *
+ * The consequence for anyone reading a green boot: reaching widget zero proves
+ * the translation mechanism and the reset value, and proves nothing whatever
+ * about this write.
  *
  * It has to run at reset rather than at machine creation, because the Hub
  * resets its translation table and would undo it — the same reason the firmware

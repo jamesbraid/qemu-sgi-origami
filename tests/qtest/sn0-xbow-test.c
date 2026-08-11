@@ -137,10 +137,16 @@ static void test_it_is_where_the_firmware_put_it(const void *data)
      * the identity test and would not be the machine either guest expects.
      *
      * The whole entry is compared rather than the widget field, because the
-     * space bit is the field this was wrong in: a window on widget 0's memory
-     * space reads plausible values that are not its registers, and every other
-     * assertion in this file would still pass if the identity happened to be
-     * reachable anyway.
+     * space bit is the field this was wrong in once already.
+     *
+     * **This cannot tell that the firmware wrote anything.** The value the
+     * sources give is widget zero, first slice, and the space select clear —
+     * which is bit for bit what the register resets to, so a machine whose
+     * firmware never ran passes this. That is not a hole to be plugged, it is
+     * a fact about the hardware: the redirection writes the value the entry
+     * already holds, and no assertion on the register can separate the two.
+     * What this is worth is a guard on the constant, so that a later change to
+     * either the entry number or the value has to be deliberate.
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW)),
                     ==, FIRMWARE_ENTRY);
