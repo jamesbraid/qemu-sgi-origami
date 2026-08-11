@@ -59,6 +59,10 @@
 #define IO_BWIN_WIDGET(w) ((uint64_t)(w) << 8)
 #define IO_BWIN_SLICE(x)  ((uint64_t)(x))
 
+/* The widget number SGI's firmware names when it wants a window to reach
+ * nothing. Widget 3 is absent on this machine. */
+#define IO_BWIN_ABSENT_WIDGET  3
+
 /*
  * The entry the firmware writes for this redirection, term by term rather than
  * as a total. The space-select bit at 12 is clear: which of a widget's two
@@ -226,6 +230,34 @@ static void test_both_windows_reach_one_device(const void *data)
     /* And it is the identity, rather than the two agreeing on a wrong value. */
     g_assert_cmphex(ID_PART(through_small), ==, BRIDGE_PART);
     g_assert_cmphex(ID_MANUFACTURER(through_small), ==, BRIDGE_MANUFACTURER);
+
+    /*
+     * The negative, without which the comparison above proves less than it
+     * looks. Two addresses returning the same value is also what happens if
+     * both land inside one over-broad mapping and the translation entry is
+     * doing nothing at all — so aim entry 6 somewhere else and require the big
+     * window to stop answering as widget 0. If it keeps answering, the entry
+     * was never steering it and the agreement above was a coincidence of
+     * layout.
+     *
+     * This also pins the thing OpenBSD depends on and nothing else here can
+     * see: that big window 6 reaches widget 0 *because of the entry's
+     * contents*. Our entries reset to zero, and zero spells widget 0, memory
+     * space, offset 0 — so the path OpenBSD needs works with no firmware write
+     * at all, which is a property of the reset value rather than of anything
+     * that runs. A change satisfying the reset-to-zero requirement another way,
+     * such as zeroing the entries but leaving the windows disabled, would pass
+     * every Linux test and every Linux boot while OpenBSD's only route to
+     * widget 0 went dark.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW),
+                 IO_BWIN_WIDGET(IO_BWIN_ABSENT_WIDGET));
+    g_assert_cmphex(qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA),
+                    !=, through_big);
+
+    /* The small window is unaffected: it does not go through a translation. */
+    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + XBOW_IDENTIFICATION +
+                                REG_DATA), ==, through_small);
 
     qtest_quit(qts);
 }
