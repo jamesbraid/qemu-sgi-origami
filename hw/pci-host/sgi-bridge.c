@@ -787,6 +787,28 @@ static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
     memory_region_set_enabled(&s->device_window_io[slot], !memory);
 }
 
+void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
+                              hwaddr pci_base, bool memory_space)
+{
+    uint32_t *held = &s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+    uint32_t assigned = DEV_WINDOW_BASE | DEV_MEMORY_SPACE;
+    uint32_t base = (uint32_t)(pci_base >> BRIDGE_WINDOW_BASE_SHIFT) &
+                    DEV_WINDOW_BASE;
+
+    /*
+     * A masked read-modify-write, the same shape a guest's own write to this
+     * register gets in sgi_bridge_write, and for the same reason: the base
+     * and space-select fields are not the whole register, and a guest
+     * writing them leaves the error-lock and page-cross-check bits alone.
+     * Firmware aiming a window is a guest action too, and a plain overwrite
+     * here would silently clear those two bits with nothing to notice —
+     * exactly the register-write bug that rule exists to catch.
+     */
+    *held = (*held & ~assigned) | (base | (memory_space ? DEV_MEMORY_SPACE
+                                                        : 0));
+    sgi_bridge_aim_window(s, slot);
+}
+
 /*
  * Whether a register slot is one of the eight per-device control registers, and
  * which device it belongs to. A write to one of them re-aims that slot's

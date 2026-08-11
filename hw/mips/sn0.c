@@ -111,6 +111,17 @@ struct SN0MachineState {
     Chardev *console;
 
     /*
+     * The PCI devices on the I/O bridge's bus whose resources firmware
+     * assigns after reset (task #43): the base I/O controller and the two
+     * SCSI adapters. Kept here because reset is not realize — a device's own
+     * reset clears the state a realize-time assignment would have set, so
+     * the assignment has to run again every time the machine resets, and it
+     * needs these to still have somewhere to reach the devices from.
+     */
+    PCIDevice *pci_ioc3;
+    PCIDevice *pci_scsi[SN0_SCSI_ADAPTERS];
+
+    /*
      * Candidate values: hardware facts this machine asserts without having
      * observed them. They are settable so that two runs can differ in one value
      * and nothing else — a candidate that takes a rebuild to change makes every
@@ -1147,9 +1158,56 @@ static void sn0_firmware_reset(void *opaque)
                       MEMTXATTRS_UNSPECIFIED, NULL);
 }
 
+/*
+ * The PCI resources real ARCS PROM assigns at POST (task #43): a BAR for
+ * each attached device, and the I/O bridge's own per-device window pre-aimed
+ * at the base I/O controller's, so a guest can reach its console before it
+ * has run any code of its own that could aim a window itself.
+ *
+ * This has to run at reset for the same reason sn0_firmware_reset above
+ * does, and it is the same bug in a new place if it does not: a PCI
+ * device's config space and the bridge's own device-window registers both
+ * reset along with everything else, so an assignment made once at board
+ * init is exactly the state their own reset handlers clear. Registering
+ * this from the machine-init-done notifier, the same as that function, puts
+ * it after the devices whose reset would otherwise undo it.
+ *
+ * Only the controller's window is pre-aimed; see sn0.h for why the two
+ * adapters need resources assigned but not a window aimed in advance.
+ */
+static void sn0_assign_pci_resources(void *opaque)
+{
+    SN0MachineState *s = opaque;
+    unsigned int slot;
+
+    if (!s->io_bridge_present) {
+        return;
+    }
+
+    pci_default_write_config(s->pci_ioc3, PCI_BASE_ADDRESS_0,
+                             SN0_PCI_IOC3_MEM, 4);
+    pci_default_write_config(s->pci_ioc3, PCI_COMMAND, PCI_COMMAND_MEMORY, 2);
+    sgi_bridge_assign_window(&s->io_bridge, SN0_IOC3_DEVICE, SN0_PCI_IOC3_MEM,
+                             true);
+
+    for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
+        hwaddr io_base = slot == 0 ? SN0_PCI_SCSI0_IO : SN0_PCI_SCSI1_IO;
+        hwaddr mem_base = slot == 0 ? SN0_PCI_SCSI0_MEM : SN0_PCI_SCSI1_MEM;
+
+        pci_default_write_config(s->pci_scsi[slot], PCI_BASE_ADDRESS_0,
+                                 io_base, 4);
+        pci_default_write_config(s->pci_scsi[slot], PCI_BASE_ADDRESS_1,
+                                 mem_base, 4);
+        pci_default_write_config(s->pci_scsi[slot], PCI_COMMAND,
+                                 PCI_COMMAND_IO | PCI_COMMAND_MEMORY, 2);
+    }
+}
+
 static void sn0_machine_ready(Notifier *notifier, void *data)
 {
     qemu_register_reset(sn0_firmware_reset, SN0_MACHINE(qdev_get_machine()));
+    qemu_register_reset(sn0_assign_pci_resources,
+                        SN0_MACHINE(qdev_get_machine()));
 }
 
 static Notifier sn0_machine_ready_notifier = {
@@ -1415,6 +1473,8 @@ static void sn0_init(MachineState *machine)
     pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge)->bus,
                           &error_fatal);
 
+    s->pci_ioc3 = ioc3;
+
     if (s->io_bridge_present) {
         memory_region_add_subregion_overlap(
             &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
@@ -1433,11 +1493,15 @@ static void sn0_init(MachineState *machine)
          * adapters answer their register contract with an empty bus — a disk
          * arrives on the command line, behind the first adapter, when a guest
          * needs to boot from one.
+         *
+         * What assigns each of their PCI resources is sn0_assign_pci_resources
+         * below, not here — see that function for why realize is the wrong
+         * point to do it.
          */
         for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
-            pci_create_simple(PCI_HOST_BRIDGE(&s->io_bridge)->bus,
-                              PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0),
-                              "qlogic-isp1040");
+            s->pci_scsi[slot] = pci_create_simple(
+                PCI_HOST_BRIDGE(&s->io_bridge)->bus,
+                PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
         }
     } else {
         warn_report("origin200: the base I/O controller is mapped directly "

@@ -21,6 +21,18 @@
 #define TYPE_SGI_BRIDGE "sgi-bridge"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
 
+/*
+ * Aim a device slot's window the way a guest's own write to BRIDGE_DEVICE(n)
+ * would, for the machine's own firmware-emulation code to call before any
+ * guest has run. A slot's window is otherwise armed only by a guest write
+ * reaching the register through crosstalk space — the path a running guest
+ * uses once it has decided where its own device's PCI resources live — and
+ * firmware has to arrange that same result for whichever slot carries the
+ * console, before any guest code exists to do it itself.
+ */
+void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
+                              hwaddr pci_base, bool memory_space);
+
 /* The whole of the widget's crosstalk space belongs to this chip. */
 #define SGI_BRIDGE_WIDGET_SIZE  (16 * MiB)
 
