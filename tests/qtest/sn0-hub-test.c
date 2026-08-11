@@ -119,6 +119,15 @@
 #define IO_BWIN_INVALID_WIDGET 3
 
 /*
+ * The crossbar sits at widget 0, and the low half of its identification
+ * register is what a guest reads to find out what is there. It is read-only,
+ * which is why the widget-0 case below is asserted differently from every
+ * other window here.
+ */
+#define WIDGET_ID_LOW           4
+#define BWIN_REACHING_NOTHING   0
+
+/*
  * The seven big windows themselves, and something to find at the far end of
  * one. The base I/O controller sits at the third device window of widget 8, and
  * its serial port A has a scratch register that stores whatever is put in it —
@@ -530,6 +539,43 @@ static void test_big_window_follows_the_slice_too(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A big window whose entry names widget 0. Every other window test here uses a
+ * non-zero widget, so this case has no coverage — and it is the one OpenBSD's
+ * only route to the crossbar rests on. The translation entries reset to zero,
+ * zero spells widget 0 with memory space and offset 0, and the window has to be
+ * enabled and aimed at widget 0 as a result rather than treated as unused.
+ *
+ * Reading a zero widget field as "no widget here" is a change someone could
+ * make believing it correct, because that is exactly how a guest reads the same
+ * field when it hunts for a free entry. It would pass every Linux test and
+ * every Linux boot, because Linux reaches the crossbar through the small window
+ * and never through this one.
+ *
+ * The form is weaker than the console window's write-and-read-back above and
+ * cannot be otherwise: widget 0's only register is read-only, so there is no
+ * value to put in through one window and take out through another. What is
+ * asserted instead is that a window explicitly aimed at widget 0 answers the
+ * same as the window that reaches widget 0 by reset alone, and that neither is
+ * answering with what a window reaching no widget returns.
+ */
+static void test_a_big_window_may_name_widget_zero(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint32_t named, by_reset;
+
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0),
+                 IO_BWIN_WIDGET(0) | IO_BWIN_SLICE(0));
+
+    named = qtest_readl(qts, BIG_WINDOW(0) + WIDGET_ID_LOW);
+    by_reset = qtest_readl(qts, BIG_WINDOW(IO_BWIN_ENTRIES - 1) + WIDGET_ID_LOW);
+
+    g_assert_cmphex(named, ==, by_reset);
+    g_assert_cmphex(named, !=, BWIN_REACHING_NOTHING);
+
+    qtest_quit(qts);
+}
+
 static void test_big_window_naming_an_absent_widget(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -854,6 +900,8 @@ int main(int argc, char **argv)
                         test_big_window_follows_its_entry);
     qtest_add_data_func("sn0/hub/big-window-follows-the-slice", NULL,
                         test_big_window_follows_the_slice_too);
+    qtest_add_data_func("sn0/hub/big-window-may-name-widget-zero", NULL,
+                        test_a_big_window_may_name_widget_zero);
     qtest_add_data_func("sn0/hub/big-window-absent-widget", NULL,
                         test_big_window_naming_an_absent_widget);
     qtest_add_data_func("sn0/hub/identifies-itself", NULL,
