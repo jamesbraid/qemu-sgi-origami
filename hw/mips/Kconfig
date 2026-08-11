@@ -40,6 +40,7 @@ config SGI_SN0
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     select SGI_BRIDGE
+    select SGI_BRIDGE_DMA_TEST
     select SGI_HUB
     select SGI_IOC3
     select SGI_XBOW

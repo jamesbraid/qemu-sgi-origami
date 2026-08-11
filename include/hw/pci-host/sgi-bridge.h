@@ -47,9 +47,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
  * The internal address translation table: 128 entries of eight bytes, which
  * live in the chip rather than in memory. That is the difference between this
  * table and the scatter-gather tables of the host bridges it otherwise
- * resembles, whose entries a translation fetches from RAM — here a translation
- * reads a register. An external static RAM can extend the table, and this
- * machine does not have one.
+ * resembles, whose entries a translation fetches from RAM. Here a
+ * translation reads a register. An external static RAM can extend the
+ * table, and this machine does not have one.
  */
 #define SGI_BRIDGE_ATE_ENTRIES  128
 
@@ -98,6 +98,16 @@ struct SGIBridgeState {
 
     /* The entries themselves, which are registers in this chip. */
     uint64_t ate_entry[SGI_BRIDGE_ATE_ENTRIES];
+
+    /*
+     * What a transfer a device initiates passes through. Every device on the
+     * bus is given this address space rather than the system's, so a transfer
+     * that reached memory without being translated could only do so by
+     * bypassing the PCI transfer helpers, which is the mistake this arrangement
+     * exists to make impossible rather than to detect.
+     */
+    IOMMUMemoryRegion iommu;
+    AddressSpace iommu_as;
 
     /*
      * Every defined register in the local block, one 32-bit word per eight-byte
