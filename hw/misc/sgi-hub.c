@@ -25,6 +25,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
+#include "qemu/timer.h"
+#include "qemu/host-utils.h"
 
 /* Processor interface, at the base of the window. */
 #define HUB_PI_REGION_PRESENT   0x000018  /* which memory regions exist */
@@ -105,6 +107,26 @@
 #define HUB_PI_CPU_PRESENT_B    0x000048
 #define HUB_PI_CPU_ENABLE_A     0x000050
 #define HUB_PI_CPU_ENABLE_B     0x000058
+
+/*
+ * The real-time counter: a free-running 52-bit upcounter at 1.25 MHz, and the
+ * one part of this unit both guests need. OpenBSD's whole requirement is that
+ * it be readable and advance monotonically at that rate — it drives its clock
+ * from the processor's own timer and uses this only as a reference. Linux
+ * reads it as a clock source and arms a comparator against it, so for Linux it
+ * must also tick *between* two reads a few instructions apart: it reads the
+ * counter, adds a delta, writes the comparator, and re-reads to check the
+ * deadline has not already passed. A counter that does not move between those
+ * two reads reports a deadline safely in the future that never arrives.
+ *
+ * Derived from the virtual clock rather than stored, so it cannot drift from
+ * the timer a comparator will eventually be armed against. A write moves the
+ * origin instead of the count, which is what makes it writable without it
+ * ever running backwards on its own — Linux zeroes it once at boot.
+ */
+#define HUB_PI_RT_COUNT         0x030100
+#define PI_RT_HZ                1250000ULL
+#define PI_RT_MASK              (((uint64_t)1 << 52) - 1)
 
 /*
  * I/O interface: the link to the crossbar, and what this Hub says about it.
@@ -367,6 +389,25 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     sgi_hub_update_irq(s);
 }
 
+/* Where the counter has got to, from the clock rather than from stored state. */
+static uint64_t sgi_hub_rt_count(SGIHubState *s)
+{
+    int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->pi_rt_origin_ns;
+
+    if (delta < 0) {
+        return 0;
+    }
+    return muldiv64(delta, PI_RT_HZ, NANOSECONDS_PER_SECOND) & PI_RT_MASK;
+}
+
+/* Move the origin so the counter reads what was written, and keep running. */
+static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
+{
+    val &= PI_RT_MASK;
+    s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                         muldiv64(val, NANOSECONDS_PER_SECOND, PI_RT_HZ);
+}
+
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
@@ -377,6 +418,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     switch (addr) {
+    case HUB_PI_RT_COUNT:
+        return sgi_hub_rt_count(s);
     case HUB_PI_CPU_PRESENT_A:
         return s->cpus >= 1;
     case HUB_PI_CPU_PRESENT_B:
@@ -468,6 +511,9 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     }
 
     switch (addr) {
+    case HUB_PI_RT_COUNT:
+        sgi_hub_rt_set(s, val);
+        break;
     case HUB_PI_CPU_ENABLE_A:
         s->pi_cpu_enable[0] = val & 1;
         break;
@@ -560,6 +606,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
     memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
+    s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memset(s->pi_int_pend, 0, sizeof(s->pi_int_pend));
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
@@ -663,12 +710,13 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(pi_region_present, SGIHubState),
         VMSTATE_UINT8_ARRAY(pi_cpu_enable, SGIHubState, 2),
+        VMSTATE_INT64(pi_rt_origin_ns, SGIHubState),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),

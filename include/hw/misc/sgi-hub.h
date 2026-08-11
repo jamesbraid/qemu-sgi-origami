@@ -90,6 +90,9 @@ struct SGIHubState {
     uint64_t pi_int_pend[2];
     uint64_t pi_int_mask[4];
     uint8_t pi_cpu_enable[2];
+
+    /* Virtual-clock time at which the real-time counter read zero. */
+    int64_t pi_rt_origin_ns;
     uint64_t ni_status;
     uint64_t io_link_status;
     uint64_t io_widget_control;
