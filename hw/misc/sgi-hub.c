@@ -7,7 +7,9 @@
  * This model implements the registers an operating system touches on its way to
  * switching its console away from the firmware, which is a small and specific
  * set, and reports anything else rather than answering it. The rest arrives
- * with the interrupt path and the crossbar.
+ * with the interrupt path and the crossbar — and, where real firmware turns
+ * out to be a guest in its own right rather than only the thing an OS boots
+ * past, with whatever it touches that no OS does.
  *
  * Two of these registers decide things a guest can never recover from getting
  * wrong. The processor-number register tells it which of a node's two
@@ -92,6 +94,15 @@
  */
 #define HUB_IO_XTALK_TIMEOUT    0x4003b8
 #define HUB_IO_XTALK_PRESCALE   0x4003c0
+
+/*
+ * Memory and directory interface. Both guests we boot read memory size
+ * through the synthesized configuration graph rather than this unit's
+ * registers directly, which is why only these two exist here: real firmware's
+ * own diagnostics are the first guest that writes them.
+ */
+#define HUB_MD_INDICATOR_0      0x220050  /* documented purpose unestablished */
+#define HUB_MD_INDICATOR_1      0x220058  /* same layout, the table's second */
 #define IO_XTALK_TIMEOUT_MASK   0xffULL
 #define IO_XTALK_PRESCALE_MASK  0xffffffULL
 
@@ -670,6 +681,20 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-hub: write of 0x%" PRIx64 " to the read-only "
                       "register 0x%" HWADDR_PRIx "\n", val, addr);
+        break;
+    case HUB_MD_INDICATOR_0:
+    case HUB_MD_INDICATOR_1:
+        /*
+         * Write-only, and a boot issues the write, so the model has to accept
+         * it. What it should do beyond that is unestablished: two guests write
+         * different values here for two different stated purposes and neither
+         * is "indicator", so there is no behaviour to implement and nothing is
+         * stored for a guest to read back. Logged rather than silent, the same
+         * as any other register whose meaning nobody has established.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to indicator register "
+                      "0x%" HWADDR_PRIx ", no behaviour modelled\n", val, addr);
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
