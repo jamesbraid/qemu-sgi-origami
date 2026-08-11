@@ -356,6 +356,22 @@ static void test_reset_state(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The base I/O controller's slot. Firmware assigns it PCI resources and aims
+ * its window at them after every reset (task #43), so this is the one slot
+ * whose register does not stay at the raw hardware reset value once the
+ * machine has actually reset — see the exclusion below.
+ */
+#define IOC3_SLOT 2
+
+/*
+ * Where firmware places the controller's memory BAR — SN0_PCI_IOC3_MEM in
+ * hw/mips/sn0.h, restated here because this file does not include machine
+ * headers. Not a hardware fact; see that constant's own comment for why it
+ * is not zero.
+ */
+#define IOC3_PCI_MEM 0x100000
+
 static void test_every_slot_resets_alike(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
@@ -372,11 +388,42 @@ static void test_every_slot_resets_alike(const void *data)
      * bits. That is a claim about this model rather than about the chip, and it
      * is made deliberately: an unspecified field that silently changes value is
      * worth a failing test, and the failure says which model changed.
+     *
+     * The controller's own slot is skipped here on purpose, not missed: task
+     * #43's firmware assigns it a window immediately after this same reset,
+     * so by the time a qtest can read anything the register already reflects
+     * that assignment rather than the raw hardware default every other slot
+     * still shows. test_ioc3_slot_is_reassigned_after_reset below is the
+     * assertion for what it becomes instead.
      */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
+        if (n == IOC3_SLOT) {
+            continue;
+        }
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(n))), ==,
                         DEVICE_RESET);
     }
+
+    qtest_quit(qts);
+}
+
+static void test_ioc3_slot_is_reassigned_after_reset(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    /*
+     * The other half of the exclusion above. Firmware's assignment is a
+     * masked read-modify-write of the base and space-select fields only —
+     * the same shape a guest's own write to this register gets — so the
+     * error-lock and page-cross-check bits every other slot resets with
+     * survive here too, and only the base and space-select fields carry the
+     * assignment. A model that overwrote the whole register instead would
+     * pass a test asserting only the base field and silently clear those two
+     * bits, which is why the whole word is compared rather than a part of it.
+     */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
+                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
+                    (IOC3_PCI_MEM >> 20)); /* base is PCI address bits 31:20 */
 
     qtest_quit(qts);
 }
@@ -1385,6 +1432,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/reset-state", NULL, test_reset_state);
     qtest_add_data_func("sn0/bridge/every-slot-resets-alike", NULL,
                         test_every_slot_resets_alike);
+    qtest_add_data_func("sn0/bridge/ioc3-slot-reassigned-after-reset", NULL,
+                        test_ioc3_slot_is_reassigned_after_reset);
     qtest_add_data_func("sn0/bridge/field-widths", NULL,
                         test_fields_are_the_width_they_should_be);
     qtest_add_data_func("sn0/bridge/device-window-base", NULL,

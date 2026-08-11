@@ -464,6 +464,52 @@
 #define SN0_SCSI_DEVICE1        1         /* second SCSI adapter's PCI device */
 #define SN0_SCSI_ADAPTERS       2         /* what the base I/O board carries */
 #define SN0_IOC3_DEVICE         2         /* the I/O controller's PCI device */
+
+/*
+ * Where firmware places each PCI device's resources, and which of a slot's two
+ * spaces its window is pre-aimed at. No source establishes real ARCS PROM's own
+ * addresses as a documented fact — but Linux's own platform code
+ * (arch/mips/pci/pci-ip27.c) is a source for what the guest requires them to
+ * be, and observing it beats guessing: it declares the PCI bus's claimable
+ * resource window as starting at the console widget's own crosstalk base plus
+ * the bridge's per-device window base (0x08200000 in a boot transcript, widget
+ * 8 shifted into position plus 0x200000), and refuses to enable a device whose
+ * BAR falls outside that window even when the BAR is correctly non-zero and
+ * assigned — "BAR 0 ... not assigned; can't enable device" was this file's own
+ * first attempt at these constants, caught only by booting Linux and reading
+ * what it actually did rather than assuming a small offset would do.
+ *
+ * So each device's PCI address is that widget base plus its own slot's window
+ * offset — the same offset sgi_bridge_window_offset() computes and the same
+ * one the controller's crosstalk address already uses (SN0_BRIDGE_DEVICE2 for
+ * slot 2), restated here because this header does not reach into that file's
+ * internals. Memory and I/O space are independent regions in this Bridge, so
+ * a memory BAR and an I/O BAR sharing the same numeric offset do not collide.
+ *
+ * Only the controller's window is pre-aimed. It carries the console, which a
+ * guest reaches before it has run any code of its own that could aim a window
+ * itself — real ARCS PROM does this as part of POST. The two adapters need no
+ * such arrangement: a guest's own driver aims their windows when it attaches,
+ * the same way OpenBSD's qlw already does, so firmware only has to give them
+ * PCI resources that look assigned rather than reachable in advance.
+ *
+ * None of these addresses is zero, which is worth stating because it very
+ * nearly was: generic PCI code refuses to map a BAR that resolves to address
+ * zero at all, treating it as still unassigned, unless a machine opts in with
+ * pci_allow_0_address — which real hardware does not have and this machine
+ * does not set. A zero here silently leaves the device unreachable with no
+ * error, exactly the failure this firmware exists to prevent, and it is what
+ * this file's very first version chose for the controller before a real boot
+ * caught it.
+ */
+#define SN0_PCI_WIDGET_BASE     ((uint32_t)SN0_CONSOLE_WIDGET << 24)
+#define SN0_PCI_SCSI0_WINDOW    0x00200000  /* slot 0's own 2 MB window */
+#define SN0_PCI_SCSI1_WINDOW    0x00400000  /* slot 1's own 2 MB window */
+#define SN0_PCI_IOC3_MEM        (SN0_PCI_WIDGET_BASE + SN0_BRIDGE_DEVICE2)
+#define SN0_PCI_SCSI0_MEM       (SN0_PCI_WIDGET_BASE + SN0_PCI_SCSI0_WINDOW)
+#define SN0_PCI_SCSI1_MEM       (SN0_PCI_WIDGET_BASE + SN0_PCI_SCSI1_WINDOW)
+#define SN0_PCI_SCSI0_IO        SN0_PCI_SCSI0_MEM
+#define SN0_PCI_SCSI1_IO        SN0_PCI_SCSI1_MEM
 #define SN0_IOC3_SERIAL_A       0x020178  /* serial port A in the controller */
 #define SN0_CONSOLE_PORT_OFFSET (SN0_BRIDGE_DEVICE2 + SN0_IOC3_SERIAL_A)
 #define SN0_CONSOLE_PORT_MASK   0xfffff   /* the part the guest drives */
