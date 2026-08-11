@@ -39,6 +39,61 @@
 #define HUB_PI_INT_MASK1_B      0x0000c0  /* second bank reaching processor B */
 
 /*
+ * I/O interface: the Hub's own face as a widget on the crossbar. Every device
+ * on the crossbar begins its address space with the same identification, status
+ * and control registers, and this is where the Hub presents that block —
+ * anything walking the fabric reads the identification first and learns it is
+ * talking to a Hub.
+ */
+#define HUB_IO_WIDGET_ID        0x400000
+#define HUB_IO_WIDGET_STATUS    0x400008
+#define HUB_IO_WIDGET_CONTROL   0x400020
+
+/*
+ * The identification register's layout is the common crosstalk one, shared with
+ * every other widget: revision, part number, manufacturer, and a lowest bit
+ * that
+ * always reads one. That last bit is declared by no Hub source — the register
+ * table's field list stops above it and the header calls it reserved — and is
+ * set here because this is the JTAG device identification format the crossbar
+ * contract uses, which the Bridge and the crossbar both state. Following the
+ * shared contract is better than inventing a Hub-specific answer, and it is
+ * recorded as inherited rather than sourced.
+ */
+#define IO_WIDGET_ID_REVISION   (1ULL << 28)
+#define IO_WIDGET_ID_PART       (0xc101ULL << 12)
+#define IO_WIDGET_ID_ONE        1ULL
+#define IO_WIDGET_ID_MFG_SHIFT  1
+
+/*
+ * The control register. Two of its reset values are load-bearing rather than
+ * decorative: this Hub's own widget number resets to 1, which is the
+ * register-level counterpart of the address map putting the Hub at widget 1, so
+ * a model resetting it to zero contradicts its own decode; and the crossbar
+ * credit resets to 2.
+ *
+ * The tag-mode bit is what the hardware reports rather than what software
+ * chooses, so it is not writable. The widget number is, which is storage here:
+ * nothing re-decodes if a guest changes it, and no guest does.
+ */
+#define IO_WIDGET_CONTROL_NUMBER    1ULL
+#define IO_WIDGET_CONTROL_CREDIT    (2ULL << 13)
+#define IO_WIDGET_CONTROL_RESET     (IO_WIDGET_CONTROL_NUMBER | \
+                                     IO_WIDGET_CONTROL_CREDIT)
+#define IO_WIDGET_CONTROL_TAG_MODE  (1ULL << 4)
+#define IO_WIDGET_CONTROL_WRITABLE  (0x7fffffULL & ~IO_WIDGET_CONTROL_TAG_MODE)
+
+/*
+ * The crosstalk timeouts, which are the first two registers mainline Linux
+ * writes when it initialises a Hub — the prescale and then the timeout, before
+ * it enables anything. Both must accept a write at reset with no unlock step.
+ */
+#define HUB_IO_XTALK_TIMEOUT    0x4003b8
+#define HUB_IO_XTALK_PRESCALE   0x4003c0
+#define IO_XTALK_TIMEOUT_MASK   0xffULL
+#define IO_XTALK_PRESCALE_MASK  0xffffffULL
+
+/*
  * I/O interface: the link to the crossbar, and what this Hub says about it.
  */
 #define HUB_IO_LINK_STATUS      0x400128
@@ -333,6 +388,25 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->pi_int_mask[2];
     case HUB_PI_INT_MASK1_B:
         return s->pi_int_mask[3];
+    case HUB_IO_WIDGET_ID:
+        return IO_WIDGET_ID_REVISION | IO_WIDGET_ID_PART |
+               ((uint64_t)s->manufacturer << IO_WIDGET_ID_MFG_SHIFT) |
+               IO_WIDGET_ID_ONE;
+    case HUB_IO_WIDGET_STATUS:
+        /*
+         * Nothing this model does sets an error, a retry count or an
+         * outstanding-request count: transfers complete instantly and the link
+         * never fails. Bit 4 reads zero because SGI's own table records it as
+         * undefined and assumed reserved, which is preserved rather than
+         * resolved.
+         */
+        return 0;
+    case HUB_IO_WIDGET_CONTROL:
+        return s->io_widget_control;
+    case HUB_IO_XTALK_TIMEOUT:
+        return s->io_xtalk_timeout;
+    case HUB_IO_XTALK_PRESCALE:
+        return s->io_xtalk_prescale;
     case HUB_IO_LINK_STATUS:
         return s->io_link_status;
     case HUB_NI_STATUS:
@@ -395,6 +469,23 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_PI_INT_MASK1_B:
         s->pi_int_mask[3] = val;
+        break;
+    case HUB_IO_WIDGET_CONTROL:
+        s->io_widget_control = (s->io_widget_control &
+                                ~IO_WIDGET_CONTROL_WRITABLE) |
+                               (val & IO_WIDGET_CONTROL_WRITABLE);
+        break;
+    case HUB_IO_XTALK_TIMEOUT:
+        s->io_xtalk_timeout = val & IO_XTALK_TIMEOUT_MASK;
+        break;
+    case HUB_IO_XTALK_PRESCALE:
+        s->io_xtalk_prescale = val & IO_XTALK_PRESCALE_MASK;
+        break;
+    case HUB_IO_WIDGET_ID:
+    case HUB_IO_WIDGET_STATUS:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-hub: write of 0x%" PRIx64 " to the read-only widget "
+                      "register 0x%" HWADDR_PRIx "\n", val, addr);
         break;
     case HUB_IO_LINK_STATUS:
         s->io_link_status = (s->io_link_status & ~IO_LINK_WRITABLE) |
@@ -470,6 +561,9 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
      * show whether it is right. The test is the only thing watching it.
      */
     s->io_link_status = IO_LINK_RESET;
+    s->io_widget_control = IO_WIDGET_CONTROL_RESET;
+    s->io_xtalk_timeout = 0;
+    s->io_xtalk_prescale = 0;
 
     /*
      * Every entry resets to zero, which names widget 0 at its first slice in
@@ -541,7 +635,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -551,6 +645,9 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
         VMSTATE_UINT64_V(io_link_status, SGIHubState, 3),
+        VMSTATE_UINT64_V(io_widget_control, SGIHubState, 4),
+        VMSTATE_UINT64_V(io_xtalk_timeout, SGIHubState, 4),
+        VMSTATE_UINT64_V(io_xtalk_prescale, SGIHubState, 4),
         /*
          * Version-gated rather than unconditional, so that a stream written
          * before this table existed still loads: its windows come up where
@@ -580,6 +677,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
+    DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),
     DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,

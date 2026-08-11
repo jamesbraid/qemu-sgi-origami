@@ -47,6 +47,11 @@
 #define PI_INT_MASK1_A      0x0000b0
 #define PI_INT_MASK0_B      0x0000b8
 #define PI_INT_MASK1_B      0x0000c0
+#define IO_WIDGET_ID        0x400000
+#define IO_WIDGET_STATUS    0x400008
+#define IO_WIDGET_CONTROL   0x400020
+#define IO_XTALK_TIMEOUT    0x4003b8
+#define IO_XTALK_PRESCALE   0x4003c0
 #define IO_LINK_STATUS      0x400128
 #define NI_STATUS           0x600000
 
@@ -535,6 +540,89 @@ static void test_a_guest_cannot_write_the_link_state(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t id = qtest_readq(qts, HUB_LOCAL + IO_WIDGET_ID);
+
+    /*
+     * The one assertion that proves the Hub is present and identifiable to
+     * anything walking the crossbar, which reads this register first.
+     */
+    g_assert_cmphex((id >> 12) & 0xffff, ==, 0xc101);
+    g_assert_cmpuint((id >> 28) & 0xf, !=, 0);
+
+    /*
+     * The lowest bit is set from the crosstalk contract every widget shares
+     * rather than from any Hub source — no Hub document declares it, and it is
+     * here because the identification format requires it. Asserted so that the
+     * inheritance is deliberate rather than incidental.
+     */
+    g_assert_cmphex(id & 1, ==, 1);
+
+    /*
+     * The manufacturer is deliberately *not* compared against a constant. Two
+     * sources name it and they disagree, nothing on any path we boot reads it,
+     * and the datasheet asks for it to be a choice the machine description
+     * makes. So what is asserted is that the machine's choice reaches the
+     * register — a constant here would harden one of two disputed readings into
+     * a test, which is how a guess becomes a fact nobody remembers choosing.
+     */
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -global sgi-hub.manufacturer=0x24");
+    id = qtest_readq(qts, HUB_LOCAL + IO_WIDGET_ID);
+    g_assert_cmphex((id >> 1) & 0x7ff, ==, 0x24);
+    g_assert_cmphex((id >> 12) & 0xffff, ==, 0xc101);
+
+    qtest_quit(qts);
+}
+
+static void test_the_widget_control_reset_values(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t control = qtest_readq(qts, HUB_LOCAL + IO_WIDGET_CONTROL);
+
+    /*
+     * The widget number resetting to one is the register-level counterpart of
+     * the address map putting the Hub at widget 1. A model resetting this to
+     * zero would contradict its own decode, and nothing else in the machine
+     * would notice — no guest reads it on a single-node board.
+     */
+    g_assert_cmphex(control & 0xf, ==, 1);
+
+    /* And the crossbar credit, the other reset value that is not zero. */
+    g_assert_cmphex((control >> 13) & 7, ==, 2);
+
+    /*
+     * The status register reports nothing, because this model never has an
+     * error, a retry or an outstanding request. Bit 4 is undefined in SGI's own
+     * table and reads zero rather than being invented.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_WIDGET_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_crosstalk_timeouts(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The first two registers mainline Linux writes when it initialises a Hub,
+     * with the values it writes. Both must accept a write straight out of reset
+     * with no unlock step — a model requiring one would fail a guest at the
+     * very start of its Hub setup, before anything it printed could say why.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_XTALK_PRESCALE, 0x800);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_XTALK_PRESCALE), ==, 0x800);
+
+    qtest_writeq(qts, HUB_LOCAL + IO_XTALK_TIMEOUT, 0xff);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_XTALK_TIMEOUT), ==, 0xff);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -558,6 +646,12 @@ int main(int argc, char **argv)
                         test_big_window_follows_the_slice_too);
     qtest_add_data_func("sn0/hub/big-window-absent-widget", NULL,
                         test_big_window_naming_an_absent_widget);
+    qtest_add_data_func("sn0/hub/identifies-itself", NULL,
+                        test_the_hub_identifies_itself_on_the_crossbar);
+    qtest_add_data_func("sn0/hub/widget-control-reset", NULL,
+                        test_the_widget_control_reset_values);
+    qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
+                        test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,
                         test_the_crosstalk_link_reports_up);
     qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,
