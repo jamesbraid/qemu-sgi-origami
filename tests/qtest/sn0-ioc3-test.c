@@ -830,6 +830,36 @@ static void test_the_clock_freeze_holds_an_instant(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_clock_year_wraps_below_its_epoch(const void *data)
+{
+    /*
+     * A clock started before its own epoch. The year cell holds two digits
+     * counted from 1970, so 1969 is minus one, and C's remainder keeps the
+     * sign of its left operand -- a plain modulo hands the binary-to-BCD
+     * conversion a negative number and produces a byte that is not BCD at all.
+     *
+     * There is no right answer for a date the register cannot express; what
+     * there is, is a wrong one, and this is the assertion that catches it. The
+     * wrap puts 1969 at 99, which is where two digits counting down from 1970
+     * land, and is what the same arithmetic does at the top end in 2070.
+     *
+     * It has its own machine because the base is the whole point: every other
+     * clock test here starts in 2026, where the defect is invisible.
+     */
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+                                 "-rtc base=1969-12-31T23:59:00,clock=vm");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x99);
+    g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x12);
+    g_assert_cmphex(qtest_readb(qts, RTC_DAY), ==, 0x31);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_the_clock_control_register_reads_back(const void *data)
 {
     QTestState *qts = qtest_init(RTC_ARGS);
@@ -960,6 +990,8 @@ int main(int argc, char **argv)
                         test_the_clock_reads_the_time_it_was_given);
     qtest_add_data_func("sn0/ioc3/clock-freeze-holds-an-instant", NULL,
                         test_the_clock_freeze_holds_an_instant);
+    qtest_add_data_func("sn0/ioc3/clock-year-wraps-below-its-epoch", NULL,
+                        test_the_clock_year_wraps_below_its_epoch);
     qtest_add_data_func("sn0/ioc3/clock-control-reads-back", NULL,
                         test_the_clock_control_register_reads_back);
     qtest_add_data_func("sn0/ioc3/clock-takes-a-time-a-guest-sets", NULL,
