@@ -778,8 +778,14 @@ static void test_the_clock_reads_the_time_it_was_given(const void *data)
     g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x08);
     g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x56);
 
-    /* The 11th of August 2026 was a Tuesday, which this part counts as 3. */
-    g_assert_cmphex(qtest_readb(qts, RTC_WEEKDAY), ==, 0x03);
+    /*
+     * The weekday reads zero, which is not a gap. The register is a counter
+     * software sets, and mainline Linux's driver records that the part leaves
+     * it alone until it has been set to something non-zero -- so zero on a
+     * machine nobody has set the day on is what the part reports. It is
+     * storage here, asserted as written in the test that writes it.
+     */
+    g_assert_cmphex(qtest_readb(qts, RTC_WEEKDAY), ==, 0x00);
 
     qtest_writeb(qts, RTC_CONTROL, 0);
 
@@ -803,12 +809,23 @@ static void test_the_clock_freeze_holds_an_instant(const void *data)
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
     g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
 
-    qtest_clock_step(qts, 3 * 1000000000LL);
+    /*
+     * Step across a minute boundary, so the fields above the seconds have to
+     * hold as well. Checking the seconds alone would pass on a freeze that
+     * held one field and let the rest run.
+     */
+    qtest_clock_step(qts, 62 * 1000000000LL);
     g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
+    g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, 0x30);
+    g_assert_cmphex(qtest_readb(qts, RTC_HOURS), ==, 0x12);
+    g_assert_cmphex(qtest_readb(qts, RTC_DAY), ==, 0x11);
+    g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x08);
+    g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x56);
 
     /* Released, the clock is where the stepped time put it, not where it was. */
     qtest_writeb(qts, RTC_CONTROL, 0);
-    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x08);
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x07);
+    g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, 0x31);
 
     qtest_quit(qts);
 }
@@ -855,12 +872,22 @@ static void test_the_clock_takes_a_time_a_guest_sets(const void *data)
     qtest_writeb(qts, RTC_SECONDS, 0x45);
     qtest_writeb(qts, RTC_MINUTES, 0x21);
     qtest_writeb(qts, RTC_HOURS, 0x09);
+    qtest_writeb(qts, RTC_WEEKDAY, 0x05);
     qtest_writeb(qts, RTC_DAY, 0x07);
     qtest_writeb(qts, RTC_MONTH, 0x03);
     qtest_writeb(qts, RTC_YEAR, 0x40);
     qtest_writeb(qts, RTC_CONTROL, 0);
 
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    /*
+     * Every field the guest wrote, including the two it would be easiest to
+     * drop: the seconds, which a staging bug can zero while the rest of the
+     * date survives, and the weekday, which nothing on any of our paths reads
+     * and which was silently discarded until a review asked what happened to
+     * it.
+     */
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x45);
+    g_assert_cmphex(qtest_readb(qts, RTC_WEEKDAY), ==, 0x05);
     g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, 0x21);
     g_assert_cmphex(qtest_readb(qts, RTC_HOURS), ==, 0x09);
     g_assert_cmphex(qtest_readb(qts, RTC_DAY), ==, 0x07);

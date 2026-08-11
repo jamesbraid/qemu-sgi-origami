@@ -59,8 +59,15 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
     case M48T35_HOURS:
         return to_bcd(tm.tm_hour);
     case M48T35_WEEKDAY:
-        /* One through seven, where the C library counts from zero. */
-        return to_bcd(tm.tm_wday + 1);
+        /*
+         * What was last written, and zero until something writes it. Real
+         * hardware counts days in this register and this model does not, which
+         * no driver here can tell: the one that reads it discards the value,
+         * and its own comment records that the part leaves the register alone
+         * until software sets it non-zero -- so zero on a machine nobody has
+         * set the day on is the honest answer rather than a gap.
+         */
+        return s->cell[M48T35_WEEKDAY];
     case M48T35_DAY:
         return to_bcd(tm.tm_mday);
     case M48T35_MONTH:
@@ -69,10 +76,18 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
     case M48T35_YEAR:
         /*
          * Two digits counted from 1970, which is what every driver adds back.
-         * The modulo is what happens on this part after 2069 and is the same
+         * The wrap is what happens on this part after 2069 and is the same
          * thing the hardware does with two digits.
+         *
+         * The addition before the modulo is not decoration: a base earlier
+         * than 1970 gives a negative difference, and C's remainder keeps the
+         * sign, so the plain expression would hand to_bcd() a negative number
+         * and produce a byte that is not BCD at all. A clock started before
+         * its own epoch has no right answer -- this one wraps, as the two
+         * digits do at the other end.
          */
-        return to_bcd((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100);
+        return to_bcd(((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100 + 100)
+                      % 100);
     default:
         g_assert_not_reached();
     }
@@ -97,7 +112,15 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
         s->staged_hour = from_bcd(val);
         break;
     case M48T35_WEEKDAY:
-        /* Derived from the date when the time is applied; nothing to keep. */
+        /*
+         * Kept rather than derived from the date. The register is writable and
+         * a model that dropped the write would be advertising storage it does
+         * not have -- invisible on every path we run, since OpenBSD writes it
+         * and never reads it, IRIX skips it, and Linux reads it and throws the
+         * value away, but a silent drop is not something to leave in a device
+         * because nobody currently looks.
+         */
+        s->cell[M48T35_WEEKDAY] = val;
         break;
     case M48T35_DAY:
         s->staged_mday = from_bcd(val);
