@@ -41,6 +41,21 @@
 #define PI_PROCESSOR_NUMBER 0x000020
 #define PI_CALIAS_SIZE      0x000028
 #define PI_RT_COUNT         0x030100
+#define PI_RT_COMPARE_A     0x000108
+#define PI_RT_PENDING_A     0x000120
+#define PI_RT_ENABLE_A      0x000140
+
+/*
+ * The Hub's outgoing lines, by the order it registers them: the two pending
+ * banks, then the counter comparator for each processor. Intercepting them is
+ * what lets a test see the line itself rather than only the pending bit behind
+ * it — the distinction the pending-bank tests have to leave to the boot.
+ */
+#define HUB_IRQ_LINES       "sysbus-irq"
+#define HUB_IRQ_RT_A        2
+
+/* A millisecond of the counter, which is the unit these tests arm. */
+#define PI_RT_MS            (PI_RT_HZ / 1000)
 #define PI_INT_MODIFY       0x000090
 #define PI_INT_PEND0        0x000098
 #define PI_INT_PEND1        0x0000a0
@@ -169,6 +184,82 @@ static void test_the_real_time_counter_is_fifty_two_bits(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_MASK);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The whole path in one test: arm, wait, the bit pends, the line rises, the
+ * handler acknowledges, the line drops. The acknowledgement half is not a
+ * flourish — a line that latches high instead of following the pending bit
+ * gives a guest an interrupt storm the moment it returns from its handler.
+ */
+static void test_the_comparator_raises_and_releases_the_line(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS);
+
+    /* A millisecond short of the deadline, nothing has happened. */
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_quit(qts);
+}
+
+/*
+ * The enable bit gates the line, it does not gate the match. So a comparator
+ * that fires with the interrupt off still leaves the bit pending, and enabling
+ * afterwards raises the line with nothing further written to pending — which
+ * is what says the model recomputes its outputs rather than raising the line
+ * at the instant of the match.
+ */
+static void test_the_comparator_pends_with_its_interrupt_off(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS);
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_quit(qts);
+}
+
+/*
+ * A comparator left behind the counter waits a full revolution rather than
+ * matching at once. Fifty-two bits at 1.25 MHz is longer than any run, so the
+ * observable effect is that a stale value never fires — and the failure this
+ * guards against is the opposite one, where it fires immediately and forever.
+ */
+static void test_a_comparator_behind_the_counter_does_not_fire(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_MS);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS / 2);
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
 
     qtest_quit(qts);
 }
@@ -733,6 +824,12 @@ int main(int argc, char **argv)
                         test_the_real_time_counter_is_writable_and_keeps_running);
     qtest_add_data_func("sn0/hub/rt-counter-width", NULL,
                         test_the_real_time_counter_is_fifty_two_bits);
+    qtest_add_data_func("sn0/hub/rt-comparator-raises-line", NULL,
+                        test_the_comparator_raises_and_releases_the_line);
+    qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
+                        test_the_comparator_pends_with_its_interrupt_off);
+    qtest_add_data_func("sn0/hub/rt-comparator-behind-waits", NULL,
+                        test_a_comparator_behind_the_counter_does_not_fire);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
                         test_interrupt_modify_sets_and_clears);
     qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,
