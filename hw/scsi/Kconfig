@@ -24,6 +24,12 @@ config MEGASAS_SCSI_PCI
     depends on PCI
     select SCSI
 
+config QLOGIC_ISP_SCSI_PCI
+    bool
+    default y if PCI_DEVICES
+    depends on PCI
+    select SCSI
+
 config VMW_PVSCSI_SCSI_PCI
     bool
     default y if PCI_DEVICES
