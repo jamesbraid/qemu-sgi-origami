@@ -107,14 +107,18 @@
  * the way. So this is the machine's identity rather than a device default,
  * which is why it is set here.
  *
- * The revision is the one field of the three with no source behind it. Nothing
- * in the reference material gives a power-on value for it, so this is a choice
- * this file makes rather than a fact, and it is recorded as one.
+ * The revision was a choice this file made until it was sourced: a captured
+ * OpenBSD 7.9 GENERIC-IP27 boot on a real Origin 200 of this configuration
+ * announces revision 3 at both widget 0 and widget 8. It is a value the guest
+ * prints and also one it acts on — below revision four it treats the bridge as
+ * having a byte-swapping defect and avoids that widget's PCI I/O space
+ * altogether — so the earlier guess of 1 took the same branch by luck while
+ * printing a line no capture would match.
  */
 #define SN0_XBOW_WIDGET          0
 #define SN0_WIDGET0_PART         0xc002
 #define SN0_WIDGET0_MANUFACTURER 0x036
-#define SN0_WIDGET0_REVISION     1
+#define SN0_WIDGET0_REVISION     3
 
 /*
  * The redirection the firmware performs, and the two Hub register fields it
