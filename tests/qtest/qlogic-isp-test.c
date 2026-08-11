@@ -62,6 +62,7 @@
 #define ISP_HOST_CMD_RELEASE_RISC   0x3
 #define ISP_HOST_CMD_SET_HOST_INT   0x5
 #define ISP_HOST_CMD_CLEAR_HOST_INT 0x6
+#define ISP_HOST_CMD_CLEAR_RISC_INT 0x7
 
 #define ISP_RISC_FLAG_HOST_INT      0x0080
 #define ISP_RISC_FLAG_RESET         0x0040
@@ -475,10 +476,16 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
                     ISP_RISC_FLAG_PAUSED);
 
+    /*
+     * Resetting the RISC replaces every flag rather than adding to them, so
+     * the paused flag set above does not survive it. A model that only set
+     * the reset flag would leave the paused flag standing here, which is the
+     * bug this asserts against.
+     */
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_RESET_RISC << ISP_HOST_CMD_SHIFT);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
-                    ISP_RISC_FLAG_PAUSED | ISP_RISC_FLAG_RESET);
+                    ISP_RISC_FLAG_RESET);
 
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_RELEASE_RISC << ISP_HOST_CMD_SHIFT);
@@ -489,8 +496,18 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
                     ISP_RISC_FLAG_HOST_INT);
 
+    /*
+     * This command does nothing on real hardware, so the flag it might be
+     * mistaken for clearing is still set afterwards.
+     */
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_CLEAR_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
+                    ISP_RISC_FLAG_HOST_INT);
+
+    /* Clearing the RISC interrupt is what actually clears it. */
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
 
     /*

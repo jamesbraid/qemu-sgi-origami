@@ -307,8 +307,19 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
     case ISP_HOST_CMD_NOP:
         break;
 
+    /*
+     * Resetting the RISC replaces every flag rather than adding one, which
+     * this model did not originally do: an earlier version only set the
+     * reset flag and left a pending host interrupt or a paused flag standing
+     * alongside it. 86Box's state machine — evidence about behaviour, which
+     * the datasheet marks as this model's own and worth reading, as distinct
+     * from its register definitions, which are inherited from elsewhere —
+     * treats a RISC reset as replacing the whole flag set with reset alone,
+     * consistent with the flags being separate bits of one processor-state
+     * latch bank that a reset pulse would clear together.
+     */
     case ISP_HOST_CMD_RESET_RISC:
-        s->risc_flags |= ISP_RISC_FLAG_RESET;
+        s->risc_flags = ISP_RISC_FLAG_RESET;
         break;
 
     case ISP_HOST_CMD_PAUSE_RISC:
@@ -320,8 +331,11 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
      * and the reset flag, which it does not. The guest resets the processor and
      * then releases it as consecutive steps of its attach, so a release that
      * left the reset flag standing would report a processor held in reset for
-     * the rest of the machine's life. That is this model's reading of what
-     * releasing means rather than an observed behaviour.
+     * the rest of the machine's life. That was this model's own reading before
+     * it was corroborated: 86Box's independent state machine clears exactly
+     * these two flags and no others on release, which is the second,
+     * unrelated implementation this reading needed to move from inference to
+     * observation.
      */
     case ISP_HOST_CMD_RELEASE_RISC:
         s->risc_flags &= ~(ISP_RISC_FLAG_PAUSED | ISP_RISC_FLAG_RESET);
@@ -331,18 +345,38 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
         s->risc_flags |= ISP_RISC_FLAG_HOST_INT;
         break;
 
+    /*
+     * This command does nothing on real hardware. 86Box's model says so
+     * outright, from its own reverse-engineering notes rather than from
+     * register-map inheritance; neither qla1280 nor OpenBSD's qlw, the two
+     * drivers whose behaviour this file otherwise leans on, ever issues it.
+     * An earlier version of this model cleared the host-interrupt flag here,
+     * which was invented rather than sourced — the flag is cleared by
+     * clearing the RISC interrupt instead, once that command is implemented.
+     */
     case ISP_HOST_CMD_CLEAR_HOST_INT:
-        s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
         break;
 
     /*
-     * Accepted so the guest's attach proceeds, but with nothing behind them
-     * yet: clearing the RISC interrupt is the first half of an interrupt
-     * acknowledgement and there is no interrupt to acknowledge until the
-     * mailbox engine exists, and the parity and BIOS commands control paths
-     * this model does not have.
+     * Clearing the RISC interrupt is the first half of every interrupt
+     * acknowledgement, and 86Box's model clears exactly the host-interrupt
+     * flag and the whole of bus interface status here — nothing else.
+     * Nothing yet sets bus interface status to anything but zero, so this
+     * half of the command has no source of a pending interrupt to clear
+     * until the mailbox engine exists; clearing the flag and the register
+     * now is still correct and testable on its own, and is what makes the
+     * next commit's interrupt line able to lower on this command rather
+     * than needing its own separate acknowledgement path.
      */
     case ISP_HOST_CMD_CLEAR_RISC_INT:
+        s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
+        s->bus_status = 0;
+        break;
+
+    /*
+     * Accepted so the guest's attach proceeds, but with nothing behind them:
+     * the parity and BIOS commands control paths this model does not have.
+     */
     case ISP_HOST_CMD_MASK_PARITY:
     case ISP_HOST_CMD_BIOS_ENABLE:
     case ISP_HOST_CMD_ENABLE_PARITY:
