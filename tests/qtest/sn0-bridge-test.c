@@ -368,9 +368,18 @@ static void test_reset_state(const void *data)
  * Where firmware places the controller's memory BAR — SN0_PCI_IOC3_MEM in
  * hw/mips/sn0.h, restated here because this file does not include machine
  * headers. Not a hardware fact; see that constant's own comment for why it
- * is not zero.
+ * is not zero, and see it for why this is the console widget's own base
+ * plus the third device window's offset rather than an arbitrary low
+ * address: OpenBSD's own platform code expects a PCI address inside the
+ * bus resource window it declares, not merely a non-zero one, and this is
+ * the value that satisfies it. Written as the sum of those two named parts,
+ * not folded into one number, so a change to either announces itself here
+ * instead of leaving a restated constant silently wrong — which is exactly
+ * what a bare 0x100000 did the first time this was written, caught only by
+ * this file's own reset-value test failing against a real, live-built
+ * machine.
  */
-#define IOC3_PCI_MEM 0x100000
+#define IOC3_PCI_MEM ((8 << 24) + 0x600000)
 
 static void test_every_slot_resets_alike(const void *data)
 {
