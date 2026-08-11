@@ -63,7 +63,56 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_INT_STATUS     0x1c
 #define SGI_IOC3_INT_ENABLE_SET 0x20
 #define SGI_IOC3_INT_ENABLE_CLR 0x24
-#define SGI_IOC3_MAIN_SIZE      0x28
+
+/*
+ * MicroLAN (one-wire) control and the pin block it shares the window with.
+ * Both guests route the MicroLAN engine onto pin 8 as their first act on the
+ * chip, so this has to decode and answer before any one-wire transaction can
+ * even be attempted — see docs/datasheets/ioc3.md's "GPIO and MicroLAN"
+ * section for the full register semantics this models.
+ *
+ * The bus itself answers silently: every slot completes (never leaving a
+ * guest polling forever) but no part responds, which is a known, already
+ * -documented interim rather than a guess — see that datasheet section's
+ * "the bus must answer" discussion, and task #13, which owns fitting the
+ * real ethernet-address part this chip should present. A slot that never
+ * finishes is what this file has to rule out; what the slot reports when
+ * it does finish is a separate, larger piece of work.
+ */
+#define SGI_IOC3_MICROLAN_CONTROL 0x30
+#define SGI_IOC3_MICROLAN_LEVEL (1u << 0)   /* sampled from the bus */
+#define SGI_IOC3_MICROLAN_DONE  (1u << 1)   /* hardware sets this when done */
+#define SGI_IOC3_MICROLAN_TIMING (~(SGI_IOC3_MICROLAN_LEVEL | \
+                                    SGI_IOC3_MICROLAN_DONE))
+
+/*
+ * The pin control register has two write-only aliases over one word, the
+ * same shape as the interrupt-enable pair above: a guest sets or clears
+ * individual bits without a read-modify-write. Bit 21 is the one both
+ * guests' one-wire drivers set immediately — it routes the MicroLAN engine
+ * onto pin 8, and nothing on that bus works until it is.
+ */
+#define SGI_IOC3_PIN_CONTROL_SET 0x34
+#define SGI_IOC3_PIN_CONTROL_CLR 0x38
+#define SGI_IOC3_PIN_MICROLAN_ENABLE (1u << 21)
+
+#define SGI_IOC3_PIN_DATA       0x3c
+#define SGI_IOC3_PINS           9
+
+/*
+ * One register per pin, at 0x40 plus four times the pin number, so a guest
+ * can drive or read a single pin without a read-modify-write of the data
+ * register above. Each is an alias onto one bit of that same register
+ * rather than storage of its own — reading returns that bit alone, and
+ * writing changes only that bit, which is what "without a read-modify-
+ * write" means for the guest even though this model still does one
+ * internally.
+ */
+#define SGI_IOC3_PIN_REG(n)     (0x40 + 4 * (n))
+#define SGI_IOC3_PIN_REG_FIRST  SGI_IOC3_PIN_REG(0)
+#define SGI_IOC3_PIN_REG_LAST   SGI_IOC3_PIN_REG(SGI_IOC3_PINS - 1)
+
+#define SGI_IOC3_MAIN_SIZE      (SGI_IOC3_PIN_REG_LAST + 4)
 
 /*
  * The two serial ports' bits, which are pass-throughs: they follow the 16550's
@@ -93,6 +142,16 @@ struct SGIIOC3State {
     qemu_irq superio_irq;
     uint32_t int_status;
     uint32_t int_enable;
+
+    /*
+     * The MicroLAN engine and the pin block it shares a window with. Only
+     * pin_control's bit 21 (MicroLAN routed to pin 8) and microlan_control's
+     * own completion have any behaviour modelled yet; the rest is plain
+     * storage so a guest reading back what it wrote sees what it wrote.
+     */
+    uint32_t microlan_control;
+    uint32_t pin_control;
+    uint32_t pin_data;
 };
 
 #endif

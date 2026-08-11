@@ -112,12 +112,27 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
 
+    if (addr >= SGI_IOC3_PIN_REG_FIRST && addr <= SGI_IOC3_PIN_REG_LAST &&
+        (addr & 3) == 0) {
+        unsigned int pin = (addr - SGI_IOC3_PIN_REG_FIRST) / 4;
+
+        return (s->pin_data >> pin) & 1;
+    }
+
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
         return s->int_status;
     case SGI_IOC3_INT_ENABLE_SET:
         /* The set alias reads back the live mask; the clear alias does not. */
         return s->int_enable;
+    case SGI_IOC3_MICROLAN_CONTROL:
+        return s->microlan_control;
+    case SGI_IOC3_PIN_CONTROL_SET:
+        /* Same shape as the interrupt-enable pair: the set alias reads back
+         * the live mask, the clear alias does not. */
+        return s->pin_control;
+    case SGI_IOC3_PIN_DATA:
+        return s->pin_data;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc3: read of main register 0x%" HWADDR_PRIx
@@ -130,6 +145,15 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     SGIIOC3State *s = opaque;
+
+    if (addr >= SGI_IOC3_PIN_REG_FIRST && addr <= SGI_IOC3_PIN_REG_LAST &&
+        (addr & 3) == 0) {
+        unsigned int pin = (addr - SGI_IOC3_PIN_REG_FIRST) / 4;
+        uint32_t bit = 1u << pin;
+
+        s->pin_data = (s->pin_data & ~bit) | ((val & 1) ? bit : 0);
+        return;
+    }
 
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
@@ -150,6 +174,36 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_IOC3_INT_ENABLE_CLR:
         s->int_enable &= ~val;
         sgi_ioc3_update_irq(s);
+        break;
+    case SGI_IOC3_MICROLAN_CONTROL:
+        /*
+         * A one-wire time slot: the guest supplies how long to hold the bus
+         * low and how long the remainder of the slot lasts, and hardware
+         * performs it. This model performs it synchronously — real timing
+         * is not observable from a guest driver's own read-after-write
+         * polling loop, so completing the slot in the write itself satisfies
+         * both OpenBSD's and Linux's drivers without reproducing microsecond
+         * delays neither one can tell apart from an instant one.
+         *
+         * No part answers on this bus yet (task #13), which for every slot
+         * type here means the bus stays at its idle high level: an unasked
+         * reset sees no presence pulse, and a read slot sees no device
+         * pulling the line low. Reporting that level is what "no part
+         * responds" means at the register a guest actually reads, and it is
+         * what keeps a guest's own presence check correctly negative rather
+         * than silently positive.
+         */
+        s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
+                              SGI_IOC3_MICROLAN_LEVEL | SGI_IOC3_MICROLAN_DONE;
+        break;
+    case SGI_IOC3_PIN_CONTROL_SET:
+        s->pin_control |= val;
+        break;
+    case SGI_IOC3_PIN_CONTROL_CLR:
+        s->pin_control &= ~val;
+        break;
+    case SGI_IOC3_PIN_DATA:
+        s->pin_data = val;
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -258,6 +312,15 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->int_status = 0;
     s->int_enable = 0;
     sgi_ioc3_update_irq(s);
+
+    /*
+     * SGI's own register diagnostic lists every register in the chip
+     * resetting to zero apart from the PCI identity and revision words,
+     * and these three are no exception.
+     */
+    s->microlan_control = 0;
+    s->pin_control = 0;
+    s->pin_data = 0;
 }
 
 static void sgi_ioc3_init(Object *obj)
@@ -282,14 +345,17 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
         VMSTATE_UINT32_V(int_enable, SGIIOC3State, 2),
         VMSTATE_STRUCT_ARRAY(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS, 0,
                              vmstate_serial, SerialState),
+        VMSTATE_UINT32(microlan_control, SGIIOC3State),
+        VMSTATE_UINT32(pin_control, SGIIOC3State),
+        VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_END_OF_LIST()
     }
 };

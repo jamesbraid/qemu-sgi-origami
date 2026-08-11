@@ -83,6 +83,18 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define REG_MCR         4
 #define REG_SCR         7
 
+/* The MicroLAN engine and the pin block it shares a window with. */
+#define MICROLAN_CONTROL (IOC3_BASE + 0x30)
+#define MICROLAN_LEVEL   (1u << 0)
+#define MICROLAN_DONE    (1u << 1)
+
+#define PIN_CONTROL_SET  (IOC3_BASE + 0x34)
+#define PIN_CONTROL_CLR  (IOC3_BASE + 0x38)
+#define PIN_MICROLAN_ENABLE (1u << 21)
+
+#define PIN_DATA         (IOC3_BASE + 0x3c)
+#define PIN_REG(n)       (IOC3_BASE + 0x40 + 4 * (n))
+
 /* Where the graph keeps the console descriptor, and its serial-port base. */
 #define CONFIG_GRAPH    0x4000
 #define GRAPH_CONSOLE   0x18
@@ -292,6 +304,129 @@ static void test_a_serial_bit_ignores_an_acknowledgement(const void *data)
     qtest_quit(qts);
 }
 
+static void test_a_one_wire_slot_always_finishes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * This is the assertion #47 exists for. A guest issues a one-wire time
+     * slot by writing the hold and remainder timing into this register and
+     * then polls it for the done bit — real hardware takes microseconds,
+     * this model takes none, but either way a slot that never finishes is a
+     * guest that polls forever. Reset value has the bit clear; any write at
+     * all must bring it back with both control bits set, regardless of what
+     * timing the guest asked for.
+     */
+    g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_DONE, ==,
+                    0);
+
+    qtest_writel(qts, MICROLAN_CONTROL, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_DONE, ==,
+                    MICROLAN_DONE);
+
+    qtest_quit(qts);
+}
+
+static void test_a_one_wire_slot_reports_no_part(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * No part answers this bus yet (task #13 is the separate work of
+     * fitting one), and the level a guest samples is how "no part" reaches
+     * a driver: an idle one-wire bus stays high, so every slot — reset,
+     * read, write — has to report a high level rather than one that
+     * happens to spell "a device pulled the line low", which a guest's own
+     * presence check would read as a device being there.
+     */
+    qtest_writel(qts, MICROLAN_CONTROL, 0);
+    g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
+                    MICROLAN_LEVEL);
+
+    qtest_quit(qts);
+}
+
+static void test_one_wire_slot_preserves_the_timing_written(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint32_t timing = 0x12345678 & ~(MICROLAN_LEVEL | MICROLAN_DONE);
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Bits 0 and 1 are hardware's to set, not a mask the guest's own value
+     * happens to already carry — this writes a pattern with both of them
+     * set in the guest's own value and checks the readback still shows
+     * exactly what hardware decides, not a blind copy of the write.
+     */
+    qtest_writel(qts, MICROLAN_CONTROL, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL), ==,
+                    timing | MICROLAN_LEVEL | MICROLAN_DONE);
+
+    qtest_quit(qts);
+}
+
+static void test_pin_control_has_two_write_aliases(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The same shape as the interrupt-enable pair: a guest sets or clears
+     * bits without a read-modify-write, and the set alias reads back the
+     * live mask. Bit 21 is the one both guests actually use — routing the
+     * MicroLAN engine onto pin 8 — but the test exercises the mechanism
+     * generally rather than just that one bit, the same reasoning the
+     * interrupt-enable test already applies.
+     */
+    g_assert_cmphex(qtest_readl(qts, PIN_CONTROL_SET), ==, 0);
+
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, PIN_CONTROL_SET), ==,
+                    PIN_MICROLAN_ENABLE);
+
+    qtest_writel(qts, PIN_CONTROL_SET, 1u << 5);
+    g_assert_cmphex(qtest_readl(qts, PIN_CONTROL_SET), ==,
+                    PIN_MICROLAN_ENABLE | (1u << 5));
+
+    qtest_writel(qts, PIN_CONTROL_CLR, PIN_MICROLAN_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, PIN_CONTROL_SET), ==, 1u << 5);
+
+    qtest_quit(qts);
+}
+
+static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Pin register 3 is a convenience alias onto bit 3 of the shared data
+     * word, not storage of its own — writing through it and reading back
+     * through the data register is what proves that, the same reasoning
+     * the ports-are-distinct test applies to the two serial files: two
+     * addresses reaching one place, not two places that happen to agree.
+     */
+    qtest_writel(qts, PIN_REG(3), 1);
+    g_assert_cmphex(qtest_readl(qts, PIN_DATA), ==, 1u << 3);
+    g_assert_cmphex(qtest_readl(qts, PIN_REG(3)), ==, 1);
+
+    /* And the reverse: writing the data register moves the pin register. */
+    qtest_writel(qts, PIN_DATA, 0);
+    g_assert_cmphex(qtest_readl(qts, PIN_REG(3)), ==, 0);
+
+    /* A neighbouring pin is untouched by either. */
+    g_assert_cmphex(qtest_readl(qts, PIN_REG(4)), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -308,6 +443,16 @@ int main(int argc, char **argv)
                         test_a_serial_bit_ignores_an_acknowledgement);
     qtest_add_data_func("sn0/ioc3/port-answers-where-the-graph-says", NULL,
                         test_port_answers_where_the_graph_says);
+    qtest_add_data_func("sn0/ioc3/one-wire-slot-always-finishes", NULL,
+                        test_a_one_wire_slot_always_finishes);
+    qtest_add_data_func("sn0/ioc3/one-wire-slot-reports-no-part", NULL,
+                        test_a_one_wire_slot_reports_no_part);
+    qtest_add_data_func("sn0/ioc3/one-wire-slot-preserves-timing", NULL,
+                        test_one_wire_slot_preserves_the_timing_written);
+    qtest_add_data_func("sn0/ioc3/pin-control-two-aliases", NULL,
+                        test_pin_control_has_two_write_aliases);
+    qtest_add_data_func("sn0/ioc3/pin-register-reaches-data-word", NULL,
+                        test_a_pin_register_reaches_the_shared_data_word);
 
     return g_test_run();
 }
