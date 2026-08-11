@@ -425,7 +425,6 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
 {
     SN0MachineState *s = opaque;
     unsigned int op = addr / 8;
-    CPUMIPSState *env;
 
     *val = ARCS_EINVAL;
 
@@ -438,21 +437,27 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
         return MEMTX_OK;
     }
 
-    /* No processor at all is a state a test harness can produce. */
-    if (!current_cpu) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sn0: firmware routine %u reached with no processor\n",
-                      op);
-        return MEMTX_OK;
-    }
-    env = cpu_env(current_cpu);
-
+    /*
+     * Only the two routines below this point read the calling processor's
+     * registers, so only they need a processor to exist — "no processor at
+     * all" is a state a test harness can produce, and every other routine
+     * here answers the same constant regardless of who is asking, so there
+     * is no reason to fail those too.
+     */
     switch (op) {
     case SN0_ARCS_WRITE:
-        *val = sn0_arcs_write(s, env);
-        break;
     case SN0_ARCS_GET_MEMORY:
-        *val = sn0_arcs_get_memory(s, env);
+        if (!current_cpu) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sn0: firmware routine %u reached with no "
+                          "processor\n", op);
+            break;
+        }
+        if (op == SN0_ARCS_WRITE) {
+            *val = sn0_arcs_write(s, cpu_env(current_cpu));
+        } else {
+            *val = sn0_arcs_get_memory(s, cpu_env(current_cpu));
+        }
         break;
     case SN0_ARCS_GET_CHILD:
         /*
@@ -476,6 +481,15 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
          * and the one that matters — the console rate — falls back to 9600.
          */
         *val = 0;
+        break;
+    case SN0_ARCS_CAPABILITY_OP:
+        /*
+         * Level three: the firmware can load a relocatable object. Not on
+         * the banner path — the guests we boot never call the private
+         * vector at all — but a caller that does must not be told a lower
+         * level and silently take a different, unsupported path.
+         */
+        *val = SN0_ARCS_CAPABILITY_LEVEL;
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -522,15 +536,24 @@ static const MemoryRegionOps sn0_arcs_ops = {
  * the assembler temporary carries the address because it is reserved and cannot
  * be live across a call, and it is clear of the registers holding the arguments
  * the routine is about to read.
+ *
+ * `stub_index` is where in the shared stub area this vector's stubs start,
+ * and `op_base` is the trap-page slot — and so the dispatcher's op number —
+ * the first entry lands on. The firmware call vector and the private vector
+ * share one stub area and one trap page, each continuing where the other
+ * leaves off, so the two never collide and the dispatcher tells them apart
+ * by op number alone.
  */
 static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
-                           uint64_t *vector)
+                           uint64_t *vector, unsigned int entries,
+                           unsigned int stub_index, unsigned int op_base)
 {
-    int i;
+    unsigned int i;
 
-    for (i = 0; i < SN0_ARCS_ENTRIES; i++) {
-        uint8_t *stub = fw + SN0_ARCS_STUBS + i * SN0_ARCS_STUB_SIZE;
-        uint64_t slot = trap_vaddr + i * 8;
+    for (i = 0; i < entries; i++) {
+        uint8_t *stub = fw + SN0_ARCS_STUBS +
+                        (stub_index + i) * SN0_ARCS_STUB_SIZE;
+        uint64_t slot = trap_vaddr + (op_base + i) * 8;
 
         stl_be_p(stub, 0x3c010000 | ((slot >> 16) & 0xffff)); /* lui $1, hi */
         stl_be_p(stub + 4, 0xdc220000 | (slot & 0xffff));  /* ld $2, lo($1) */
@@ -538,7 +561,7 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
         stl_be_p(stub + 12, 0);                               /* delay slot */
 
         vector[i] = cpu_to_be64(fw_vaddr + SN0_ARCS_STUBS +
-                                i * SN0_ARCS_STUB_SIZE);
+                                (stub_index + i) * SN0_ARCS_STUB_SIZE);
     }
 }
 
@@ -1336,6 +1359,8 @@ static void sn0_init(MachineState *machine)
 
     if (s->synthesized_firmware) {
         uint64_t vector[SN0_ARCS_ENTRIES];
+        uint64_t private_vector[SN0_ARCS_PRIVATE_ENTRIES];
+        hwaddr trap_vaddr = (hwaddr)(int32_t)(0xa0000000 + SN0_ARCS_TRAP_LOCAL);
 
         s->console = serial_hd(0);
 
@@ -1344,11 +1369,24 @@ static void sn0_init(MachineState *machine)
         memory_region_add_subregion(system, node + SN0_ARCS_TRAP_LOCAL,
                                     &s->arcs_trap);
 
-        sn0_build_arcs(fw, fw_vaddr,
-                       (hwaddr)(int32_t)(0xa0000000 + SN0_ARCS_TRAP_LOCAL),
-                       vector);
+        sn0_build_arcs(fw, fw_vaddr, trap_vaddr, vector, SN0_ARCS_ENTRIES,
+                       0, 0);
         rom_add_blob_fixed("sn0.arcs.vector", vector, sizeof(vector),
                            node + SN0_ARCS_VECTOR);
+
+        /*
+         * The SGI-private call vector. IRIX and the SGI standalone shell
+         * need it; the guests we boot never look at it. Every entry not
+         * separately dispatched falls to the shared trap handler's default
+         * case, which logs an unimplemented call rather than jumping to
+         * garbage — the same treatment the main vector's own unimplemented
+         * entries get.
+         */
+        sn0_build_arcs(fw, fw_vaddr, trap_vaddr, private_vector,
+                       SN0_ARCS_PRIVATE_ENTRIES, SN0_ARCS_ENTRIES,
+                       SN0_ARCS_PRIVATE_BASE_OP);
+        rom_add_blob_fixed("sn0.arcs.private", private_vector,
+                           sizeof(private_vector), node + SN0_ARCS_PRIVATE_VECTOR);
     }
 
     /*

@@ -132,6 +132,24 @@
 #define PI_ERROR_BASE        0x12000
 #define PI_ERROR_SIZE        0x4000
 
+/*
+ * The two call vectors and the trap page their stubs read through. The
+ * private vector's stubs continue immediately where the firmware call
+ * vector's own thirty-five leave off, in the same stub area and the same
+ * trap page, so its first entry is checked against the main vector's last
+ * one rather than against a hand-computed absolute address — the exact
+ * relationship the builder creates, without duplicating its sign-extension
+ * arithmetic in the test.
+ */
+#define ARCS_VECTOR          0x2800
+#define ARCS_ENTRIES         35
+#define ARCS_PRIVATE_VECTOR  0x2c00
+#define ARCS_PRIVATE_ENTRIES 17
+#define ARCS_STUB_SIZE       16
+#define ARCS_TRAP_LOCAL      0x1fd00000
+#define ARCS_CAPABILITY_OP   (ARCS_ENTRIES + 9) /* private entry at offset 0x48 */
+#define ARCS_CAPABILITY_LEVEL 3
+
 /* Component record fields this file reads. */
 #define COMP_TYPE           0x00
 #define COMP_FLAGS          0x02
@@ -368,6 +386,46 @@ static void test_hub_port_unconnected(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The SGI-private call vector. IRIX and the SGI standalone shell need it;
+ * the guests we boot never look at it, which is exactly why a broken vector
+ * here would go unnoticed by every other test. Checked two ways, because a
+ * range check alone proves memory safety and nothing about the vector's own
+ * contract: a broken implementation that pointed all seventeen entries at
+ * the same stub would still pass "every entry is non-null and in range."
+ */
+static void test_private_vector(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t main_last = qtest_readq(qts,
+                                     ARCS_VECTOR + (ARCS_ENTRIES - 1) * 8);
+    uint64_t expected_first = main_last + ARCS_STUB_SIZE;
+    int i;
+
+    for (i = 0; i < ARCS_PRIVATE_ENTRIES; i++) {
+        uint64_t entry = qtest_readq(qts, ARCS_PRIVATE_VECTOR + i * 8);
+
+        /*
+         * Each entry is a distinct stub, one stride past the previous —
+         * exactly the arrangement the builder creates, and the property a
+         * "same stub everywhere" bug fails on directly.
+         */
+        g_assert_cmphex(entry, ==, expected_first + i * ARCS_STUB_SIZE);
+    }
+
+    /*
+     * The capability entry, invoked through the trap page rather than
+     * merely read out of the vector — the same memory access its stub would
+     * perform when a guest jumps to it and loads from its slot. This is the
+     * dispatcher actually running, not a value sitting in a table.
+     */
+    g_assert_cmphex(qtest_readq(qts,
+                                ARCS_TRAP_LOCAL + ARCS_CAPABILITY_OP * 8),
+                    ==, ARCS_CAPABILITY_LEVEL);
+
+    qtest_quit(qts);
+}
+
 static void test_components_enabled(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -576,6 +634,8 @@ int main(int argc, char **argv)
                         test_directory_entries);
     qtest_add_data_func("sn0/firmware/hub-port-unconnected", NULL,
                         test_hub_port_unconnected);
+    qtest_add_data_func("sn0/firmware/private-vector", NULL,
+                        test_private_vector);
     qtest_add_data_func("sn0/firmware/components-enabled", NULL,
                         test_components_enabled);
     qtest_add_data_func("sn0/firmware/memory-layout-matches-addressing-mode",
