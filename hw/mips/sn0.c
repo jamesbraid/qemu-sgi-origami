@@ -29,6 +29,7 @@
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "system/reset.h"
@@ -1165,7 +1166,7 @@ static void sn0_init(MachineState *machine)
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
-    unsigned int w;
+    unsigned int w, slot;
 
     if (machine->ram_size > SN0_NODE_SIZE) {
         error_report("origin200: a node holds at most %" PRIu64 " bytes of "
@@ -1424,6 +1425,24 @@ static void sn0_init(MachineState *machine)
         memory_region_add_subregion_overlap(
             &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge), 0), -1);
+
+        /*
+         * The two SCSI adapters the base I/O board carries, at the first two
+         * PCI devices. They exist only when the bridge does, because the bus
+         * they sit on is the bridge's: without it there is nowhere to put them
+         * and no address a guest could reach them at.
+         *
+         * They are created with no drive attached. A machine that invented
+         * backing storage would be describing a disk nobody asked for, and the
+         * adapters answer their register contract with an empty bus — a disk
+         * arrives on the command line, behind the first adapter, when a guest
+         * needs to boot from one.
+         */
+        for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
+            pci_create_simple(PCI_HOST_BRIDGE(&s->io_bridge)->bus,
+                              PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0),
+                              "qlogic-isp1040");
+        }
     }
 
     /*
