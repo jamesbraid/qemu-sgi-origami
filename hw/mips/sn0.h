@@ -60,20 +60,36 @@
  * it. A translation entry supplies crosstalk address bits 33:29, so 32
  * slices of 512 MB, which is 16 GB.
  *
- * A widget has two such spaces — a translation entry's bit 12 chooses
- * between them — and this models one of them without naming which. Which
- * value that bit takes for the widget 0 redirection is **unestablished**: the
- * only code that programs this entry for this purpose is a block in Linux
- * compiled out behind a conditional nothing defines, and it says memory
- * space. A routine in SGI's own firmware writes the other value, but its call
- * site programs a different window for a different job — reaching a peer Hub
- * during multi-node discovery — so it is a fact about peer probing rather
- * than about this redirect.
+ * A widget has two such spaces — a translation entry's bit 12 chooses between
+ * them — and the redirection uses the **memory** space. That is sourced from
+ * live code rather than inferred: IRIX programs this entry, for this purpose,
+ * inside a block compiled for this machine family, naming memory mode with
+ * widget zero and offset zero. Across the whole corpus the other value appears
+ * in exactly one write, and that one programs a different window on a peer node
+ * for error injection.
  *
- * So the space this models is whichever one the redirection uses, and a window
- * asking for the other is reported rather than quietly aimed here. Nothing in
- * the machine depends on which of the two names is right, and the log line is
- * what would show up the day one of them turns out to matter.
+ * The history is worth keeping because the wrong answer was well argued. The
+ * value was first sourced from a routine that really does select the other
+ * space — whose caller programs a different window for a different job,
+ * peer-Hub
+ * discovery — and applied here because both write the same register. A fact
+ * about one purpose, carried to another on the strength of the mechanism
+ * looking the same.
+ *
+ * So this models the memory space, and a window asking for the other is
+ * reported
+ * rather than quietly aimed here.
+ *
+ * **The small windows are modelled as reaching the same space, and the argument
+ * is the redirection rather than anything about where registers live.** The
+ * guests' own small-window address helper returns the big window's base when
+ * the
+ * widget is zero and the small window's otherwise — a transparent substitute,
+ * chosen at the call site with nothing else changed. A substitute has to
+ * present
+ * what it replaces, and the window it substitutes is programmed to memory
+ * space.
+ * Derived, not observed; there is no capture.
  */
 #define SN0_XTALK_WIDGETS       16
 #define SN0_XTALK_WIDGET_SHIFT  34

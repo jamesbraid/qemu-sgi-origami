@@ -338,6 +338,21 @@ static void test_big_window_naming_an_absent_widget(const void *data)
      * for it. The entry has to accept it, and an access through the window has
      * to reach nothing.
      *
+     * This writes the register directly rather than imitating a guest's disable
+     * helper, and that is deliberate. **The helper's arguments are crossed in
+     * most releases** — it passes the space constant where the window number
+     * goes and the window number where the space bit goes — so a guest asking
+     * to
+     * disable window n actually writes entry zero, leaves window n alone, and
+     * spills n across the space select. IRIX 6.5 and 6.5.5f both have it
+     * crossed and 6.5.5f calls it live; 6.5.30 has it fixed; Linux inherited
+     * the
+     * crossed form. A test asserting that disabling window n leaves entry n
+     * naming widget three would encode what the macro meant rather than what
+     * most guests do, and would fail against a real IRIX while the model was
+     * right. What is asserted here is the register's own contract, which is
+     * what the model owes either way.
+     *
      * Reaching nothing must not fault, which is the part of this a qtest cannot
      * check and the part most easily got wrong. A disabled window is the
      * ordinary state of six of the seven — every entry resets that way — so a
