@@ -115,6 +115,37 @@
  */
 #define NIC_PULSE_IS_RESET      400
 
+/*
+ * A written zero holds the wire down for far longer than a written one, which
+ * is how this bus carries a bit from the guest to the part. A read uses the
+ * same short slot as a written one — the guest lets the wire go and samples
+ * what is left — so the part cannot tell a read from a written one by timing,
+ * and does not need to: it answers whatever the conversation expects next.
+ */
+#define NIC_PULSE_IS_ZERO       40
+
+/*
+ * Where the part is in a conversation. A guest drives one bit per register
+ * write, so this has to survive between them.
+ */
+#define NIC_PHASE_IDLE          0   /* nothing asked since the last reset */
+#define NIC_PHASE_COMMAND       1   /* taking the eight bits of a command */
+#define NIC_PHASE_SEARCH        2   /* answering a search for parts */
+
+/* The command this part answers, by the number the bus assigns it. */
+#define NIC_CMD_SEARCH_ROM      0xf0
+
+/*
+ * What the part calls itself: a family code in the low byte, six bytes of
+ * serial number, and a check byte over the seven. **The family code is the
+ * load-bearing part** — a guest matches on it to decide this is a memory it
+ * knows how to read, and the wrong one means the part is found and ignored.
+ * The serial is ours and nothing reads it; the check byte is computed over the
+ * other seven and a guest verifies it before believing any of them.
+ */
+#define NIC_ROM_IDENTITY        0x360605040302010bULL
+#define NIC_ROM_BITS            64
+
 
 #define BRIDGE_SSRAM_PARITY_ERR 0x090
 #define BRIDGE_ARBITRATION      0x0a0
@@ -848,14 +879,56 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
 {
     uint32_t *held = &s->reg[SGI_BRIDGE_SLOT(BRIDGE_NIC)];
     uint32_t pulse = (val & NIC_PULSE_MASK) >> NIC_PULSE_SHIFT;
-    bool level;
+    bool level = true;
 
-    /*
-     * A reset is the only slot the part answers so far: it holds the wire down
-     * and a guest reads that zero as presence. Every other slot leaves the
-     * wire idling high, whether the guest was writing a bit or reading one.
-     */
-    level = pulse < NIC_PULSE_IS_RESET;
+    if (pulse >= NIC_PULSE_IS_RESET) {
+        /*
+         * A reset. The part holds the wire down, which a guest reads as
+         * presence, and forgets whatever conversation was in progress: the
+         * next thing it expects is a command.
+         */
+        s->onewire_phase = NIC_PHASE_COMMAND;
+        s->onewire_bit = 0;
+        s->onewire_command = 0;
+        level = false;
+    } else if (s->onewire_phase == NIC_PHASE_COMMAND) {
+        /*
+         * A command arrives least-significant bit first, one slot per bit. The
+         * guest is writing, so what it samples is the idle wire; the part is
+         * only listening.
+         */
+        if (pulse < NIC_PULSE_IS_ZERO) {
+            s->onewire_command |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            s->onewire_phase = s->onewire_command == NIC_CMD_SEARCH_ROM ?
+                               NIC_PHASE_SEARCH : NIC_PHASE_IDLE;
+        }
+    } else if (s->onewire_phase == NIC_PHASE_SEARCH) {
+        /*
+         * A search asks for each bit of the identity three slots at a time:
+         * the bit, then its complement, then the guest writes back the one it
+         * chose. With a single part on the bus every choice matches what was
+         * offered, so the third slot is taken and ignored rather than
+         * compared — comparing is what resolves a collision between two parts,
+         * and this board has one.
+         */
+        unsigned int step = s->onewire_bit % 3;
+        unsigned int index = s->onewire_bit / 3;
+        bool bit = (NIC_ROM_IDENTITY >> index) & 1;
+
+        if (step == 0) {
+            level = bit;
+        } else if (step == 1) {
+            level = !bit;
+        }
+
+        if (++s->onewire_bit == NIC_ROM_BITS * 3) {
+            s->onewire_bit = 0;
+            s->onewire_phase = NIC_PHASE_IDLE;
+        }
+    }
 
     *held &= ~NIC_LEVEL;
     *held |= NIC_DONE | (level ? NIC_LEVEL : 0);
@@ -1386,6 +1459,11 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
     for (i = 0; i < SGI_BRIDGE_REG_SLOTS; i++) {
         s->reg[i] = sgi_bridge_regs[i].reset;
     }
+
+    /* Nothing has been asked of the identity part since the machine started. */
+    s->onewire_phase = NIC_PHASE_IDLE;
+    s->onewire_bit = 0;
+    s->onewire_command = 0;
 
     /*
      * The one register whose reset value the table cannot hold, because it is

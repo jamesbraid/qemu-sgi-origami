@@ -138,6 +138,16 @@ struct SGIBridgeState {
     uint32_t reg[SGI_BRIDGE_REG_SLOTS];
 
     /*
+     * The one-wire conversation with the board identity part. A guest drives
+     * it a bit at a time through a single register, so where the part is in a
+     * command has to be remembered between writes: which phase it is in, how
+     * many bits of the current byte have arrived, and what those bits spell.
+     */
+    uint8_t onewire_phase;
+    uint8_t onewire_bit;
+    uint8_t onewire_command;
+
+    /*
      * The level each of the eight interrupt pins is being driven to by whatever
      * is in that slot. This is the state the interrupt status register reports,
      * and it is kept as the devices' levels rather than as a latched word
