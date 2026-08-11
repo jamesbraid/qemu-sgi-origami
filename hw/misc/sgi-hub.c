@@ -19,6 +19,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/core/qdev-properties.h"
@@ -35,6 +36,30 @@
 #define HUB_PI_INT_MASK1_A      0x0000b0  /* second bank reaching processor A */
 #define HUB_PI_INT_MASK0_B      0x0000b8  /* first bank reaching processor B */
 #define HUB_PI_INT_MASK1_B      0x0000c0  /* second bank reaching processor B */
+
+/*
+ * I/O interface: the big-window translation table, entry n at 8n from its base.
+ * One entry aims one 512 MB window of the node's crosstalk window at a slice of
+ * one widget's crosstalk space.
+ */
+#define HUB_IO_BWIN_TABLE       0x400160
+#define HUB_IO_BWIN_STRIDE      8
+
+/*
+ * An entry is thirteen bits with no valid bit anywhere in it. A window is
+ * turned off by naming a widget that is not there, which is what both guests do
+ * rather than clearing an enable, so every widget number has to be accepted and
+ * a window aimed at an empty port simply fails to reach anything.
+ *
+ * Bits 7:5 are inside the register's declared width and are named by nothing,
+ * so they are stored rather than dropped: no source says they read back zero.
+ */
+#define IO_BWIN_MASK            0x1fff
+#define IO_BWIN_SPACE           (1U << 12) /* the widget's device space */
+#define IO_BWIN_WIDGET_SHIFT    8
+#define IO_BWIN_WIDGET_MASK     (0xfU << IO_BWIN_WIDGET_SHIFT)
+#define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
+#define IO_BWIN_SLICE_SHIFT     29
 
 /* Network interface. */
 #define HUB_NI_STATUS           0x600000  /* status, revision and identity */
@@ -60,9 +85,75 @@
 #define PI_CALIAS_SIZE_MASK     0xf
 #define PI_CALIAS_SIZE_RESET    15
 
+/*
+ * Which translation entry an address is, if it is one. Entries are eight bytes
+ * apart and only the aligned address is the register, so a narrower access part
+ * way into one is not treated as the entry.
+ */
+static bool sgi_hub_bwin_entry(hwaddr addr, unsigned int *n)
+{
+    hwaddr off = addr - HUB_IO_BWIN_TABLE;
+
+    if (addr < HUB_IO_BWIN_TABLE ||
+        off >= SGI_HUB_BWIN_ENTRIES * HUB_IO_BWIN_STRIDE ||
+        off % HUB_IO_BWIN_STRIDE) {
+        return false;
+    }
+
+    *n = off / HUB_IO_BWIN_STRIDE;
+    return true;
+}
+
+/*
+ * Point a window where its entry says. The entry names a widget and one 512 MB
+ * slice of that widget's space, and the window is an alias, so following the
+ * entry is moving the alias — a window whose entry names a widget that is not
+ * there ends up over an empty part of crosstalk space and stops decoding, which
+ * is exactly how the hardware disables one.
+ */
+static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
+{
+    uint32_t entry = s->io_bwin[n];
+    uint64_t widget = (entry & IO_BWIN_WIDGET_MASK) >> IO_BWIN_WIDGET_SHIFT;
+    uint64_t slice = (uint64_t)(entry & IO_BWIN_SLICE_MASK)
+                     << IO_BWIN_SLICE_SHIFT;
+
+    /*
+     * The space-select bit chooses the widget's device space rather than its
+     * memory space, and our crosstalk space models only the one. A window
+     * asking for the space we do not have decodes to nothing and says so, which
+     * is the same answer this table already gives for a widget that is not
+     * there. Aiming it at the space we do have instead would put every access
+     * through it somewhere plausible and wrong, with one log line at
+     * programming time as the only sign — and a guest cannot tell a plausible
+     * wrong answer from a right one.
+     *
+     * Which value the firmware writes here for the widget 0 redirection is not
+     * in any datasheet we hold, and is a question outstanding with the source
+     * readers. Until it is answered this is the failure that announces itself.
+     */
+    if (entry & IO_BWIN_SPACE) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: big window %u selects widget %" PRIu64 "'s "
+                      "device space, which is not modeled; the window will "
+                      "reach nothing\n", n, widget);
+        memory_region_set_enabled(&s->bwin_window[n], false);
+        return;
+    }
+
+    memory_region_set_alias_offset(&s->bwin_window[n],
+                                   (widget << s->xtalk_widget_shift) | slice);
+    memory_region_set_enabled(&s->bwin_window[n], true);
+}
+
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
+    unsigned int n;
+
+    if (sgi_hub_bwin_entry(addr, &n)) {
+        return s->io_bwin[n];
+    }
 
     switch (addr) {
     case HUB_PI_REGION_PRESENT:
@@ -103,6 +194,13 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                           unsigned size)
 {
     SGIHubState *s = opaque;
+    unsigned int n;
+
+    if (sgi_hub_bwin_entry(addr, &n)) {
+        s->io_bwin[n] = val & IO_BWIN_MASK;
+        sgi_hub_bwin_follow(s, n);
+        return;
+    }
 
     switch (addr) {
     case HUB_PI_REGION_PRESENT:
@@ -160,6 +258,7 @@ static const MemoryRegionOps sgi_hub_ops = {
 static void sgi_hub_reset_hold(Object *obj, ResetType type)
 {
     SGIHubState *s = SGI_HUB(obj);
+    unsigned int n;
 
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
@@ -167,33 +266,98 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
+
+    /*
+     * Every entry resets to zero, which names widget 0 at its first slice. That
+     * is not a disabled window — the table has nothing to disable with — so all
+     * seven come out of reset pointing at whatever widget 0 is, and firmware
+     * aims six of them elsewhere before anything reads through them.
+     */
+    for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
+        s->io_bwin[n] = 0;
+        sgi_hub_bwin_follow(s, n);
+    }
 }
 
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
 {
     SGIHubState *s = SGI_HUB(dev);
+    unsigned int n;
+
+    if (!s->xtalk) {
+        error_setg(errp, "the Hub needs the crosstalk space its big windows "
+                         "translate into");
+        return;
+    }
+    if (!s->xtalk_widget_shift) {
+        error_setg(errp, "the Hub needs the widget stride of the crosstalk "
+                         "space its big windows translate into");
+        return;
+    }
 
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_hub_ops, s,
                           "sgi-hub.regs", SGI_HUB_WINDOW_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
+
+    memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",
+                       SGI_HUB_BWIN_TOTAL);
+    for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
+        char *name = g_strdup_printf("sgi-hub.bigwin%u", n);
+
+        memory_region_init_alias(&s->bwin_window[n], OBJECT(dev), name,
+                                 s->xtalk, 0, SGI_HUB_BWIN_SIZE);
+        memory_region_add_subregion(&s->bwin, (hwaddr)n * SGI_HUB_BWIN_SIZE,
+                                    &s->bwin_window[n]);
+        g_free(name);
+    }
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bwin);
 }
+
+static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(pi_region_present, SGIHubState),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
+        /*
+         * Version-gated rather than unconditional, so that a stream written
+         * before this table existed still loads: its windows come up where
+         * reset put them, which is where a machine that had no table had them.
+         */
+        VMSTATE_UINT32_ARRAY_V(io_bwin, SGIHubState, SGI_HUB_BWIN_ENTRIES, 2),
         VMSTATE_END_OF_LIST()
     }
 };
 
+/*
+ * The windows are aliases whose offsets are not part of the migration stream,
+ * so they have to be pointed where the restored entries say once those have
+ * arrived.
+ */
+static int sgi_hub_post_load(void *opaque, int version_id)
+{
+    SGIHubState *s = opaque;
+    unsigned int n;
+
+    for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
+        sgi_hub_bwin_follow(s, n);
+    }
+    return 0;
+}
+
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
+    DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
+                       xtalk_widget_shift, 0),
+    DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
 };
 
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)

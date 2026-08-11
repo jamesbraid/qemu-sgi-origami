@@ -85,6 +85,14 @@
 #define SN0_XTALK_PORT_LAST      15
 
 /*
+ * The seven big windows fill the rest of the node's crosstalk window, starting
+ * one big window above its base. The sixteenth between the small windows and
+ * this decodes to nothing. How wide each one is and where each one points are
+ * the Hub's translation table's business, not this file's.
+ */
+#define SN0_BIG_WINDOW_BASE      0x20000000
+
+/*
  * The Hub's register window, at both halves of the crossbar's widget 1 small
  * window. The lower half resolves to the reading processor's own node whatever
  * node number the address carries; the upper half names a node.
