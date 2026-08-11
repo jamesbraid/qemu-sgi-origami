@@ -446,10 +446,104 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
     qtest_quit(qts);
 }
 
+/* The ethernet block's registers, at their offsets in the chip's window. */
+#define ENET_INT_STATUS   (IOC3_BASE + 0x0f4)
+#define ENET_INT_ENABLE   (IOC3_BASE + 0x0f8)
+#define ENET_COUNTERS     (IOC3_BASE + 0x120)
+#define ENET_BUFFER_INDEX (IOC3_BASE + 0x124)
+#define ENET_MII_CONTROL  (IOC3_BASE + 0x148)
+#define ENET_MII_DATA_R   (IOC3_BASE + 0x14c)
+
+static void test_the_ethernet_interrupt_register_acknowledges(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * A write clears the sources it names instead of setting them. This is the
+     * one register in the block where storage would look like it worked: a
+     * driver writes back the bits it just read, and a model that stored them
+     * would leave every source asserted forever while every read still
+     * returned something plausible.
+     *
+     * Asserting from zero is what makes the direction observable. Storage
+     * would leave the written value behind; acknowledgement leaves zero, and
+     * only one of those two can be true of the same write.
+     */
+    qtest_writel(qts, ENET_INT_STATUS, 0x00010001);
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS), ==, 0);
+
+    /*
+     * The enable register beside it takes the same bit numbering and is
+     * ordinary storage, so the pair is the contrast: identical layout,
+     * opposite behaviour on write. A model that treated both the same way
+     * would fail exactly one of these two assertions whichever way it chose.
+     */
+    qtest_writel(qts, ENET_INT_ENABLE, 0x00010001);
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_ENABLE), ==, 0x00010001);
+
+    qtest_quit(qts);
+}
+
+static void test_the_ethernet_read_only_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The collision and deferral counters are cleared by being read, which is
+     * how both guests zero them during reset. Nothing here has sent a frame so
+     * they are zero already; what this pins is that reading them is permitted
+     * and answers, since a driver's reset path stops on a fault here.
+     */
+    g_assert_cmphex(qtest_readl(qts, ENET_COUNTERS), ==, 0);
+
+    /* Software cannot place the block's engines, so a write does not take. */
+    qtest_writel(qts, ENET_BUFFER_INDEX, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, ENET_BUFFER_INDEX), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_media_interface_never_reads_busy(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * A driver starts a read and then polls the busy bit until it clears,
+     * giving up with a timeout. Nothing here takes time, so busy must already
+     * be clear on the first look: a model that left it set would hang the
+     * driver's poll for its whole timeout on every register it reads, and a
+     * driver scanning thirty-two addresses does that thirty-two times.
+     *
+     * The read is issued first rather than asserting on an idle register,
+     * because the bit that has to be clear is the one after a read was asked
+     * for -- asserting it on an untouched register would pass on a model that
+     * sets busy and never clears it.
+     */
+    qtest_writel(qts, ENET_MII_CONTROL, (1u << 10));
+    g_assert_cmphex(qtest_readl(qts, ENET_MII_CONTROL) & (1u << 11), ==, 0);
+
+    /* No physical-layer chip answers, and an absent one reads all-ones. */
+    g_assert_cmphex(qtest_readl(qts, ENET_MII_DATA_R), ==, 0xffff);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sn0/ioc3/ethernet-interrupt-acknowledges", NULL,
+                        test_the_ethernet_interrupt_register_acknowledges);
+    qtest_add_data_func("sn0/ioc3/ethernet-read-only-registers", NULL,
+                        test_the_ethernet_read_only_registers);
+    qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
+                        test_the_media_interface_never_reads_busy);
     qtest_add_data_func("sn0/ioc3/ports-are-distinct", NULL,
                         test_ports_are_distinct);
     qtest_add_data_func("sn0/ioc3/registers-are-a-byte-apart", NULL,
