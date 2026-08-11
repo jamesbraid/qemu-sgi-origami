@@ -948,6 +948,17 @@ static void sn0_init(MachineState *machine)
      * records as an interim: the address a guest issues is right, the reason it
      * decodes is not, and it is revisited when the bridge lands.
      */
+    /*
+     * Announced rather than left to a comment. A temporary arrangement that
+     * nothing says out loud is one somebody later reads as the design, and this
+     * one is deliberately wrong about *why* the address decodes while being
+     * right about the address itself. It says so on every run, and the line
+     * disappears when the bridge makes it true.
+     */
+    warn_report("origin200: the base I/O controller is mapped directly at its "
+                "crosstalk address; the I/O bridge that really decodes it is "
+                "not modelled yet (an approved interim)");
+
     object_initialize_child(OBJECT(machine), "ioc3", &s->ioc3, TYPE_SGI_IOC3);
     qdev_prop_set_chr(DEVICE(&s->ioc3), "chardev-a", serial_hd(0));
     sysbus_realize(SYS_BUS_DEVICE(&s->ioc3), &error_fatal);
