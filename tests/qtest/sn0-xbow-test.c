@@ -34,8 +34,9 @@
  * is refused on width. A qtest's 64-bit read does not: it goes through the
  * address space, which clamps the length to the region's declared maximum and
  * issues *two* 4-byte accesses instead. So the identity comes back in the low
- * half of the answer, from a perfectly legal narrow access, and a test asserting
- * "a wide read must not return the identity" fails against a correct model. The
+ * half of the answer, from a perfectly legal narrow access, and a test
+ * asserting "a wide read must not return the identity" fails against a
+ * correct model. The
  * assertion was written, failed exactly that way, and is recorded here rather
  * than reworded into something that passes.
  *
@@ -52,16 +53,15 @@
 #define IO_BWIN_STRIDE  8
 #define IO_BWIN_ENTRY(n) (IO_BWIN_TABLE + (n) * IO_BWIN_STRIDE)
 #define IO_BWIN_WIDGET(w) ((uint64_t)(w) << 8)
-#define IO_BWIN_SPACE_IO  (1ULL << 12)
 #define IO_BWIN_SLICE(x)  ((uint64_t)(x))
 
 /*
- * The entry SGI's firmware writes for this redirection, term by term. The space
- * bit is the one a model gets backwards without noticing: clear means the
- * widget's memory space, and a window there reaches the wrong half of widget 0
- * while both halves exist and answer.
+ * The entry the firmware writes for this redirection, term by term rather than
+ * as a total. The space-select bit at 12 is clear: which of a widget's two
+ * address spaces this redirection uses is unestablished, and this is the value
+ * the only source addressing the case states.
  */
-#define FIRMWARE_ENTRY  (IO_BWIN_WIDGET(0) | IO_BWIN_SPACE_IO | IO_BWIN_SLICE(0))
+#define FIRMWARE_ENTRY  (IO_BWIN_WIDGET(0) | IO_BWIN_SLICE(0))
 
 #define BIG_WINDOW_SIZE 0x20000000ULL
 #define BIG_WINDOW(n)   (SPACE_XTALK + 0x20000000 + (n) * BIG_WINDOW_SIZE)
@@ -72,8 +72,8 @@
 
 /*
  * Every register is 32 bits in the low half of an eight-byte slot, so on this
- * big-endian machine the data sits at the slot's offset plus four, which is the
- * address both guests' headers name and the address the boot was measured
+ * big-endian machine the data sits at the slot's offset plus four, which is
+ * the address both guests' headers name and the address the boot was measured
  * reading.
  */
 #define XBOW_IDENTIFICATION 0x0000

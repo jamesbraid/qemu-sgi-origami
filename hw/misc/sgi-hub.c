@@ -55,7 +55,7 @@
  * so they are stored rather than dropped: no source says they read back zero.
  */
 #define IO_BWIN_MASK            0x1fff
-#define IO_BWIN_SPACE           (1U << 12) /* set selects I/O space */
+#define IO_BWIN_SPACE           (1U << 12) /* the other address space */
 #define IO_BWIN_WIDGET_SHIFT    8
 #define IO_BWIN_WIDGET_MASK     (0xfU << IO_BWIN_WIDGET_SHIFT)
 #define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
@@ -130,26 +130,30 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
     uint64_t widget = (entry & IO_BWIN_WIDGET_MASK) >> IO_BWIN_WIDGET_SHIFT;
     uint64_t slice = (uint64_t)(entry & IO_BWIN_SLICE_MASK)
                      << IO_BWIN_SLICE_SHIFT;
-    uint64_t space;
-
     /*
-     * The space-select bit picks which of the widget's two address spaces the
-     * window lands on — clear for its memory space, set for its I/O space — and
-     * it is decoded rather than interpreted, because a widget's slot in
-     * crosstalk space is two equal halves with the selector as the slot's top
-     * bit. That is what makes the bit impossible to drop: it is an address bit
-     * on the way through, not a case to handle.
+     * The space-select bit chooses between the widget's two address spaces, and
+     * this machine models the one the redirection uses. A window asking for
+     * the other one is reported and left reaching nothing rather than aimed
+     * here anyway: a window on the wrong space returns plausible values that
+     * are not the registers the guest asked for, and nothing about a returned
+     * value says which space produced it.
      *
-     * The machine models the I/O half and leaves the memory half empty, so a
-     * window aimed at the wrong space reaches nothing rather than the same
-     * registers by another name. Every entry resets with this bit clear, which
-     * is why the windows start reaching nothing until firmware aims one.
+     * Which of the two the redirection uses is unestablished, and the value
+     * here is the one the only source addressing this case states. This log
+     * line is how the other possibility would announce itself.
      */
-    space = (entry & IO_BWIN_SPACE) ? 1ULL << (s->xtalk_widget_shift - 1) : 0;
+    if (entry & IO_BWIN_SPACE) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: big window %u asks for the crosstalk space "
+                      "this machine does not model; it will reach no "
+                      "widget\n", n);
+        memory_region_set_enabled(&s->bwin_window[n], false);
+        return;
+    }
 
     memory_region_set_alias_offset(&s->bwin_window[n],
-                                   (widget << s->xtalk_widget_shift) | space |
-                                   slice);
+                                   (widget << s->xtalk_widget_shift) | slice);
+    memory_region_set_enabled(&s->bwin_window[n], true);
 }
 
 /*
