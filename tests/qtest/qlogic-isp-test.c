@@ -67,6 +67,9 @@
 #define ISP_RISC_FLAG_RESET         0x0040
 #define ISP_RISC_FLAG_PAUSED        0x0020
 
+#define ISP_REG_SXP_RISC_BASE   0x80
+#define ISP_REG_SXP_RISC_LAST   0xbe    /* Last offset before host command. */
+
 typedef struct QQlogicIsp QQlogicIsp;
 
 struct QQlogicIsp {
@@ -501,6 +504,63 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
     qpci_iounmap(dev, io);
 }
 
+/*
+ * The bank select is bus configuration 1 bit 3, and the window at 0x80
+ * presents the RISC block with it clear and the SXP block with it set.
+ * Neither block is decoded into named registers, so the only way to observe
+ * the select working is that the same offset holds two different values
+ * depending on it, which is what this writes and reads back to prove.
+ *
+ * Bit 0 is the wrong constant a model is most likely to inherit from a
+ * driver header that defines it but never exercises it, so the test sets it
+ * alongside a value in the RISC bank and confirms it neither switches the
+ * bank nor is retained anywhere a guest could read it back.
+ */
+static void test_sxp_risc_bank_select(void *obj, void *data,
+                                      QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    /* Reset leaves bit 3 clear, so the RISC bank answers first. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1) &
+                    ISP_BUS_CFG1_BANK_SELECT, ==, 0);
+
+    qpci_io_writew(dev, io, ISP_REG_SXP_RISC_BASE, 0x1234);
+    qpci_io_writew(dev, io, ISP_REG_SXP_RISC_LAST, 0x5566);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_BASE), ==, 0x1234);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_LAST), ==, 0x5566);
+
+    /* Selecting the SXP bank hides that value behind the bank's own zero. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, ISP_BUS_CFG1_BANK_SELECT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_BASE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_LAST), ==, 0);
+
+    qpci_io_writew(dev, io, ISP_REG_SXP_RISC_BASE, 0x7890);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_BASE), ==, 0x7890);
+
+    /* Clearing the select uncovers the RISC bank's value again, unharmed. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_BASE), ==, 0x1234);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_LAST), ==, 0x5566);
+
+    /*
+     * Bit 0 is not stored by bus configuration 1 at all, so setting it
+     * alongside the RISC selection changes neither the readable register nor
+     * which bank answers at 0x80.
+     */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, 0x0001);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SXP_RISC_BASE), ==, 0x1234);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    qpci_iounmap(dev, io);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -528,6 +588,8 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("queue-pointers", "qlogic-isp1040",
                  test_queue_pointers, NULL);
     qos_add_test("host-command", "qlogic-isp1040", test_host_command, NULL);
+    qos_add_test("sxp-risc-bank-select", "qlogic-isp1040",
+                 test_sxp_risc_bank_select, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);
