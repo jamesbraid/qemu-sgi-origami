@@ -40,6 +40,7 @@
 #define PI_REGION_PRESENT   0x000018
 #define PI_PROCESSOR_NUMBER 0x000020
 #define PI_CALIAS_SIZE      0x000028
+#define PI_RT_COUNT         0x030100
 #define PI_INT_MODIFY       0x000090
 #define PI_INT_PEND0        0x000098
 #define PI_INT_PEND1        0x0000a0
@@ -59,6 +60,17 @@
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
 #define NI_IDENTITY     0xffULL          /* revision and chip identity */
+
+/*
+ * The real-time counter's rate and width. A nanosecond divides by the rate
+ * exactly, so every count below is an exact figure rather than a tolerance —
+ * which is the point: a check that the counter merely *moved* would pass a
+ * counter running at any rate at all, including one whose ticks a guest
+ * computing a delay from them would get wrong by a factor of a thousand.
+ */
+#define PI_RT_HZ            1250000ULL
+#define PI_RT_NS_PER_SEC    1000000000LL
+#define PI_RT_MASK          ((((uint64_t)1) << 52) - 1)
 
 /*
  * The interrupt-modify register's two fields: the interrupt number, and the bit
@@ -101,6 +113,65 @@
 #define SMALL_WINDOW(w) (SPACE_XTALK + (uint64_t)(w) * 0x1000000)
 #define CONSOLE_WIDGET  8
 #define IOC3_SCRATCH    (0x600000 + 0x020178 + 7)
+
+/*
+ * The counter runs at 1.25 MHz. Stepping the virtual clock a known distance
+ * and asserting the exact number of ticks that fall in it tests the rate, not
+ * just that something changed.
+ */
+static void test_the_real_time_counter_runs_at_its_rate(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Zero it, as a guest does at boot, which puts the count and the virtual
+     * clock on one origin and makes every figure below absolute rather than a
+     * difference. Stepping the clock by exactly one second must then yield
+     * exactly one second of ticks.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, 0);
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_HZ);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Writable, and still running afterwards. Both halves in one test on purpose:
+ * a counter that accepts a write and then stops reads back correctly at the
+ * instant of the write, so asserting the write alone would pass a frozen
+ * counter — which is the failure a guest cannot see, because it arms a
+ * deadline against a clock that will never reach it and is told that worked.
+ */
+static void test_the_real_time_counter_is_writable_and_keeps_running(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    const uint64_t start = 1000;
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, start);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, start);
+
+    /* A millisecond is 1250 ticks at 1.25 MHz, exactly. */
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==,
+                     start + PI_RT_HZ / 1000);
+
+    qtest_quit(qts);
+}
+
+/* Fifty-two bits wide: the top twelve of a written value do not come back. */
+static void test_the_real_time_counter_is_fifty_two_bits(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_MASK);
+
+    qtest_quit(qts);
+}
 
 static void test_addressing_mode(const void *data)
 {
@@ -656,6 +727,12 @@ int main(int argc, char **argv)
                         test_the_crosstalk_link_reports_up);
     qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,
                         test_a_guest_cannot_write_the_link_state);
+    qtest_add_data_func("sn0/hub/rt-counter-rate", NULL,
+                        test_the_real_time_counter_runs_at_its_rate);
+    qtest_add_data_func("sn0/hub/rt-counter-writable", NULL,
+                        test_the_real_time_counter_is_writable_and_keeps_running);
+    qtest_add_data_func("sn0/hub/rt-counter-width", NULL,
+                        test_the_real_time_counter_is_fifty_two_bits);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
                         test_interrupt_modify_sets_and_clears);
     qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,
