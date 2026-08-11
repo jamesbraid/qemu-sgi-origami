@@ -72,6 +72,17 @@
 #define ISP_MBOX_CMD_ABOUT_FIRMWARE      0x0008
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
 
+#define ISP_MBOX_CMD_SET_INITIATOR_ID      0x0030
+#define ISP_MBOX_CMD_SET_SELECTION_TIMEOUT 0x0031
+#define ISP_MBOX_CMD_SET_RETRY_COUNT       0x0032
+#define ISP_MBOX_CMD_SET_TAG_AGE_LIMIT      0x0033
+#define ISP_MBOX_CMD_SET_CLOCK_RATE         0x0034
+#define ISP_MBOX_CMD_SET_ACTIVE_NEGATION    0x0035
+#define ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP   0x0036
+#define ISP_MBOX_CMD_SET_TARGET_PARAMETERS  0x0038
+#define ISP_MBOX_CMD_SET_DEVICE_QUEUE       0x0039
+#define ISP_MBOX_CMD_SET_FIRMWARE_FEATURES  0x004a
+
 #define ISP_MBOX_COMPLETE       0x4000
 #define ISP_MBOX_INVALID        0x4001
 #define ISP_MBOX_TEST_FAILED    0x4003
@@ -884,6 +895,83 @@ static void test_get_firmware_status(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/*
+ * The "config setters" the datasheet names in bring-up order: firmware
+ * features, clock rate, retry count, async data setup, active negation, tag
+ * age limit, selection timeout, then initiator ID and the per-target
+ * parameter and queue-depth commands. OpenBSD's qlw_attach() aborts the
+ * whole attach the instant any one of these answers invalid, before it ever
+ * creates the SCSI bus or probes a target — a real boot against a build of
+ * this model that had every earlier command but none of these attached the
+ * adapter and then enumerated no disk at all, because the bus these commands
+ * gate into existence was never created. None of them carries a value this
+ * model reads back, so completion is the entire contract, the same as
+ * bus-reset already relies on.
+ */
+static void test_config_setters(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_FIRMWARE_FEATURES, 1, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_CLOCK_RATE, 60, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_RETRY_COUNT, 2, 1, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP, 6, 6, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_ACTIVE_NEGATION, 0, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_TAG_AGE_LIMIT, 8, 8, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT,
+                          250, 250, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_INITIATOR_ID, 7, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_TARGET_PARAMETERS,
+                          0, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_DEVICE_QUEUE, 0, 32, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
 /* Writes a 32-bit little-endian value into a request/status entry buffer. */
 static void isp_put32(uint8_t *entry, int off, uint32_t val)
 {
@@ -1175,6 +1263,8 @@ static void qlogic_isp_register_nodes(void)
                  test_about_firmware, NULL);
     qos_add_test("get-firmware-status", "qlogic-isp1040",
                  test_get_firmware_status, NULL);
+    qos_add_test("config-setters", "qlogic-isp1040",
+                 test_config_setters, NULL);
     qos_add_test("init-queue-rejects-zero", "qlogic-isp1040",
                  test_init_queue_rejects_zero, NULL);
     qos_add_test("command-round-trip", "qlogic-isp1040",

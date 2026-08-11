@@ -235,6 +235,16 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE     0x0011
 #define ISP_MBOX_CMD_BUS_RESET          0x0018
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
+#define ISP_MBOX_CMD_SET_INITIATOR_ID      0x0030
+#define ISP_MBOX_CMD_SET_SELECTION_TIMEOUT 0x0031
+#define ISP_MBOX_CMD_SET_RETRY_COUNT       0x0032
+#define ISP_MBOX_CMD_SET_TAG_AGE_LIMIT      0x0033
+#define ISP_MBOX_CMD_SET_CLOCK_RATE         0x0034
+#define ISP_MBOX_CMD_SET_ACTIVE_NEGATION    0x0035
+#define ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP   0x0036
+#define ISP_MBOX_CMD_SET_TARGET_PARAMETERS  0x0038
+#define ISP_MBOX_CMD_SET_DEVICE_QUEUE       0x0039
+#define ISP_MBOX_CMD_SET_FIRMWARE_FEATURES  0x004a
 
 #define ISP_MBOX_COMPLETE           0x4000
 #define ISP_MBOX_INVALID            0x4001
@@ -649,6 +659,38 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[1] = 0;
         s->mailbox[2] = ISP_FIRMWARE_STATUS_MAX_REQUESTS;
         s->mailbox[3] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * The "config setters" the datasheet's own bring-up section names in
+     * order: firmware features, clock rate, retry count, async data setup,
+     * active negation, tag age limit and selection timeout for the adapter
+     * as a whole, then initiator ID per bus and target parameters and
+     * per-LUN queue depth per target. OpenBSD's qlw_attach() treats every
+     * one of these as fatal: a single command answering invalid aborts the
+     * whole attach before the SCSI bus is ever created. A real boot found
+     * exactly that gap — this model answered every earlier command
+     * correctly and then went silent here, so qlw0 attached but never grew
+     * a scsibus and no disk behind it was ever enumerated.
+     *
+     * None of these carries behavior this model tracks: they configure
+     * negotiation and timing parameters for a bus this model does not
+     * negotiate and a target it does not throttle, and nothing later in
+     * the boot path reads any of them back. The same reasoning already
+     * used for bus reset applies to all of them — the only contract is
+     * that the command completes.
+     */
+    case ISP_MBOX_CMD_SET_FIRMWARE_FEATURES:
+    case ISP_MBOX_CMD_SET_CLOCK_RATE:
+    case ISP_MBOX_CMD_SET_RETRY_COUNT:
+    case ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP:
+    case ISP_MBOX_CMD_SET_ACTIVE_NEGATION:
+    case ISP_MBOX_CMD_SET_TAG_AGE_LIMIT:
+    case ISP_MBOX_CMD_SET_SELECTION_TIMEOUT:
+    case ISP_MBOX_CMD_SET_INITIATOR_ID:
+    case ISP_MBOX_CMD_SET_TARGET_PARAMETERS:
+    case ISP_MBOX_CMD_SET_DEVICE_QUEUE:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
