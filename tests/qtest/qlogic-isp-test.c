@@ -95,8 +95,12 @@
 
 #define ISP_QUEUE_ENTRY_SIZE     64
 
-#define ISP_ENTRY_TYPE_REQUEST   0x01
-#define ISP_ENTRY_TYPE_STATUS    0x03
+#define ISP_ENTRY_TYPE_REQUEST      0x01
+#define ISP_ENTRY_TYPE_CONTINUATION 0x02
+#define ISP_ENTRY_TYPE_STATUS       0x03
+
+#define ISP_CONT_OFF_SEGS 8
+#define ISP_CONT_SEGS     7
 
 #define ISP_REQ_OFF_HANDLE       4
 #define ISP_REQ_OFF_DEVICE       8
@@ -1261,6 +1265,158 @@ static void test_inquiry_data_transfer(void *obj, void *data,
 }
 
 /*
+ * Every command above fits its whole transfer in the four segments a
+ * request entry carries inline. Nothing has ever forced a fifth segment
+ * into a continuation entry — not real firmware download, not the earlier
+ * inquiry, not either real OpenBSD boot, since none of them needed more
+ * than four scatter-gather pieces. This is exactly the shape that produced
+ * both real bugs this device has had: an entire code path
+ * (qlogic_isp_read_segments' continuation loop) with no test anywhere
+ * near it. Deliberately split a 36-byte inquiry into five pieces — four
+ * inline segments that exactly fill the request entry, then one more in a
+ * continuation entry — so the boundary itself is what gets exercised, not
+ * just "some segments somewhere in a continuation."
+ *
+ * The five destination regions are not contiguous in guest memory, which
+ * is deliberate: scatter-gather exists for exactly this, and a model that
+ * happened to work only because a test's segments were adjacent would be
+ * passing for the wrong reason.
+ */
+static void test_continuation_entry_segments(void *obj, void *data,
+                                             QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint64_t piece[5];
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t cont[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t inquiry[36];
+    size_t i;
+    const uint8_t piece_len[5] = { 8, 8, 8, 8, 4 };
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    for (i = 0; i < 5; i++) {
+        piece[i] = guest_alloc(alloc, 64);   /* deliberately not adjacent */
+    }
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Slot 0: absorb the power-on unit attention, same as every test above. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qlogic_isp_ack(dev, io);
+
+    /*
+     * Slots 1 and 2: the inquiry itself, five segments, two ring entries.
+     * Poison every destination first so a segment the model never writes
+     * shows up as 0xff instead of the zeroed guest_alloc default, which
+     * would silently pass either way.
+     */
+    for (i = 0; i < 5; i++) {
+        uint8_t poison[64];
+        memset(poison, 0xff, sizeof(poison));
+        qtest_memwrite(qts, piece[i], poison, sizeof(poison));
+    }
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 2;    /* this entry plus one continuation. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 5);
+    entry[ISP_REQ_OFF_CDB + 0] = INQUIRY;
+    entry[ISP_REQ_OFF_CDB + 4] = sizeof(inquiry);
+    for (i = 0; i < 4; i++) {
+        isp_put32(entry, ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE,
+                  (uint32_t)piece[i]);
+        isp_put32(entry, ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE + 4,
+                  piece_len[i]);
+    }
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+
+    memset(cont, 0, sizeof(cont));
+    cont[0] = ISP_ENTRY_TYPE_CONTINUATION;
+    cont[1] = 1;
+    isp_put32(cont, ISP_CONT_OFF_SEGS, (uint32_t)piece[4]);
+    isp_put32(cont, ISP_CONT_OFF_SEGS + 4, piece_len[4]);
+    qtest_memwrite(qts, rqst_addr + 2 * ISP_QUEUE_ENTRY_SIZE, cont,
+                   sizeof(cont));
+
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 3);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x2);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Reassemble the five DMA'd pieces and check them like one buffer. */
+    for (i = 0; i < 5; i++) {
+        qtest_memread(qts, piece[i], inquiry + (i < 4 ? i * 8 : 32),
+                     piece_len[i]);
+    }
+    g_assert_cmphex(inquiry[0], ==, 0x00);
+    g_assert_cmpint(memcmp(&inquiry[8], "QEMU    ", 8), ==, 0);
+    g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
+
+    /*
+     * Slot 3: the ring walker must have advanced rqst_cons by this
+     * command's entry_count (2), not by 1 — otherwise it would now be
+     * reading the continuation entry as if it were a fresh top-level
+     * request, and this command would never see its response. A plain
+     * test unit ready here is the check: it only gets a clean answer if
+     * the cursor already skipped past both of the previous command's
+     * slots correctly.
+     */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x3);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr + 3 * ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 4);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 3);
+
+    qtest_memread(qts, resp_addr + 2 * ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x3);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
  * Bit-bangs a read of the EEPROM's word 0 the way OpenBSD's driver does —
  * chip select and clock asserted, the read command and a word address
  * shifted out, then sixteen clocks reading data-in on each — and checks
@@ -1371,6 +1527,8 @@ static void qlogic_isp_register_nodes(void)
                  test_command_round_trip, NULL);
     qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
                  test_inquiry_data_transfer, NULL);
+    qos_add_test("continuation-entry-segments", "qlogic-isp1040",
+                 test_continuation_entry_segments, NULL);
     qos_add_test("nvram-read-fails", "qlogic-isp1040",
                  test_nvram_read_fails, NULL);
 }

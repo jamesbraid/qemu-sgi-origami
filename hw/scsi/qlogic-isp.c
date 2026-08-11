@@ -1105,14 +1105,32 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
  * is consumed and produces nothing; a request entry is dispatched and its
  * continuations are skipped over here because reading segments already
  * walked them.
+ *
+ * The request-in value is whatever the guest last wrote to a plain 16-bit
+ * register — nothing here validated it on the way in. A real driver always
+ * wraps it modulo the queue length before writing (OpenBSD's own
+ * sc_next_req_id does exactly that), so in real traffic it is already in
+ * range. But rqst_cons, this device's own read cursor, is *always* kept
+ * wrapped, and comparing a wrapped cursor against an unwrapped guest value
+ * is a check with a gap: any prod at or above rqst_len — a guest bug, a
+ * fuzzer, a malicious guest, or simply a future guest that does not share
+ * this wrapping convention — makes rqst_cons != prod true forever, since
+ * rqst_cons can never leave [0, rqst_len). That is an infinite loop in the
+ * emulator itself, driven entirely by guest-supplied data. Wrapping prod
+ * here, the same way rqst_cons is always wrapped, removes the gap instead
+ * of adding a bounds check for it: the loop terminates by construction for
+ * every possible 16-bit value, not just the ones a well-behaved driver
+ * sends.
  */
 static void qlogic_isp_process_requests(QLogicISPState *s)
 {
-    uint16_t prod = s->mailbox[ISP_MAILBOX_REQUEST_QUEUE];
+    uint16_t prod;
 
     if (s->rqst_len == 0) {
         return;
     }
+
+    prod = s->mailbox[ISP_MAILBOX_REQUEST_QUEUE] % s->rqst_len;
 
     while (s->rqst_cons != prod) {
         PCIDevice *pci = PCI_DEVICE(s);
