@@ -585,8 +585,8 @@ static uint8_t *sn0_component_at(uint8_t *graph, unsigned int index)
  * is skipped entirely, components and all.
  */
 static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
-                      unsigned int next, unsigned int first_component,
-                      unsigned int components)
+                      uint8_t version, unsigned int next,
+                      unsigned int first_component, unsigned int components)
 {
     uint8_t *b = graph + (SN0_GRAPH_BOARDS - SN0_CONFIG_GRAPH) +
                  index * SN0_GRAPH_BOARD_SIZE;
@@ -595,7 +595,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
     stl_be_p(b + 0x00, next);
     b[0x04] = SN0_BOARD_LOCAL;
     b[0x05] = type;
-    b[0x06] = 1;                                /* record version */
+    b[0x06] = version;
     b[0x17] = components;
     /*
      * A board's components are addressed relative to the board's own node
@@ -692,7 +692,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     console[0x23] = 1;                          /* devices behind the bridge */
 
     /* Board 0: the node board, with a processor, a Hub and a memory bank. */
-    sn0_board(graph, 0, SN0_BOARD_NODE,
+    sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
               SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3);
     sn0_component(graph, 0, SN0_COMP_PROCESSOR, 0);
     sn0_component(graph, 1, SN0_COMP_HUB, 0);
@@ -755,7 +755,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * Board 1: the midplane, carrying a module serial number and nothing else,
      * which is what a real Origin 200 emits.
      */
-    sn0_board(graph, 1, SN0_BOARD_MIDPLANE,
+    sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
               SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1);
     sn0_component(graph, 3, SN0_COMP_MODULE_SERIAL, 0);
 
@@ -765,7 +765,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * describe the machine that was actually built, and because the moment a
      * console works this is what a guest walks looking for one.
      */
-    sn0_board(graph, 2, SN0_BOARD_BASE_IO, 0, 4, 2);
+    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 2);
     sn0_component(graph, 4, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
     sn0_component(graph, 5, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
 
