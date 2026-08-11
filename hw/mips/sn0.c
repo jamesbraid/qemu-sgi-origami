@@ -1044,6 +1044,19 @@ static void sn0_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
 
     /*
+     * The Hub's two pending banks reach the processor on its first two hardware
+     * interrupt lines. The processor's own interrupt array is indexed by the
+     * position within the Cause register's pending field, so the index is the
+     * Cause bit less that field's offset — derived rather than written, because
+     * the sources all name the Cause bit and a hand-written index is a silent
+     * two-line error with nothing to check it against.
+     */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 0,
+                       cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 1,
+                       cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+
+    /*
      * The base-I/O controller, at the crosstalk address the configuration graph
      * advertises. What is mapped is the chip's whole window, whose base is the
      * console widget plus the I/O bridge's window for the third device on its

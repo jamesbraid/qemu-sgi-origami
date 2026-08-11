@@ -12,6 +12,7 @@
 #define HW_MISC_SGI_HUB_H
 
 #include "qemu/units.h"
+#include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "system/memory.h"
 #include "qom/object.h"
@@ -31,6 +32,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
  * second node's Hub has its own seven windows onto the same crosstalk space,
  * pointed wherever that node's firmware pointed them.
  */
+/* The two pending banks, of 64 interrupt numbers each. */
+#define SGI_HUB_PENDING_BANKS 2
+#define SGI_HUB_BANK_BITS     64
+
 #define SGI_HUB_BWIN_ENTRIES 7
 #define SGI_HUB_BWIN_SIZE    (512 * MiB)
 #define SGI_HUB_BWIN_TOTAL   (SGI_HUB_BWIN_ENTRIES * SGI_HUB_BWIN_SIZE)
@@ -55,6 +60,16 @@ struct SGIHubState {
      */
     MemoryRegion *xtalk;
     uint32_t xtalk_widget_shift;
+
+    /*
+     * The two lines this Hub drives into the processor: the first pending bank
+     * on hardware interrupt 0 and the second on hardware interrupt 1. Both are
+     * level-triggered — the line follows the state of the pending bits and the
+     * masks and drops when software clears the last bit it can see — so they
+     * are
+     * recomputed on every change rather than pulsed.
+     */
+    qemu_irq bank_irq[SGI_HUB_PENDING_BANKS];
 
     /* Which node this Hub is, which its network-interface status reports. */
     uint32_t nasid;

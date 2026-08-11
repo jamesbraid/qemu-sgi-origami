@@ -49,6 +49,19 @@
 #define SN0_MEM_BANKS       8
 
 /*
+ * The two lines the Hub drives into the processor, named by the Cause register
+ * bit each one raises: the first pending bank on hardware interrupt 0, which is
+ * Cause bit 10, and the second on hardware interrupt 1, Cause bit 11. Stated as
+ * the Cause bit rather than as the processor's interrupt index because that is
+ * how every source states it, and the index is derived from it here rather than
+ * written out — the two differ by the offset of the pending field in Cause, and
+ * writing the index directly is how a model ends up two lines off with nothing
+ * to compare against.
+ */
+#define SN0_HUB_BANK0_CAUSE_BIT 10
+#define SN0_HUB_BANK1_CAUSE_BIT 11
+
+/*
  * Crosstalk address space. A crosstalk address is a widget number and an offset
  * within that widget and nothing in between: the crossbar routes on the
  * widget number and carries the offset through untouched. Modeling it as one

@@ -30,6 +30,7 @@
 #define HUB_PI_REGION_PRESENT   0x000018  /* which memory regions exist */
 #define HUB_PI_PROCESSOR_NUMBER 0x000020  /* which processor is reading */
 #define HUB_PI_CALIAS_SIZE      0x000028  /* size of the cached alias */
+#define HUB_PI_INT_MODIFY       0x000090  /* the only way to set or clear one */
 #define HUB_PI_INT_PEND0        0x000098  /* pending interrupts, first bank */
 #define HUB_PI_INT_PEND1        0x0000a0  /* pending interrupts, second bank */
 #define HUB_PI_INT_MASK0_A      0x0000a8  /* first bank reaching processor A */
@@ -80,6 +81,18 @@
 #define NI_STATUS_WRITABLE      (NI_STATUS_MORE_NODES | \
                                  NI_STATUS_REGION_SIZE | \
                                  NI_STATUS_NODE_MASK)
+
+/*
+ * The interrupt-modify register: seven bits naming an interrupt number and one
+ * bit saying what to do with it. Numbers 0 through 63 are the first pending
+ * bank and 64 through 127 the second, so the number's top bit selects the bank.
+ * There is no other way to set or clear a bit — the pending banks themselves
+ * are
+ * read-only — and this is the register a device interrupt arrives at, as a
+ * crosstalk write from the I/O bridge rather than as a processor store.
+ */
+#define PI_INT_MODIFY_NUMBER    0x7f
+#define PI_INT_MODIFY_SET       0x100
 
 /* The cached-alias size is a four-bit code, and resets to the largest. */
 #define PI_CALIAS_SIZE_MASK     0xf
@@ -200,6 +213,52 @@ static const MemoryRegionOps sgi_hub_bwin_empty_ops = {
     .valid.max_access_size = 8,
 };
 
+/*
+ * Recompute what this Hub is asserting. A processor sees a bank's line raised
+ * when any bit of that bank is set in the pending register *and* in that
+ * processor's mask for it: pending is node-wide state, masking is per
+ * processor.
+ *
+ * The lines are level-triggered, so this is the whole of the output logic and
+ * it
+ * has to run on every change to a pending bit or a mask. A model that raised a
+ * line when a bit was set, rather than recomputing, would leave it asserted
+ * after software cleared the last bit it could see — which a guest experiences
+ * as an interrupt storm rather than as a lost interrupt.
+ *
+ * One processor for now, so the masks consulted are processor A's. A second
+ * processor gets its own pair of lines from its own masks over the same pending
+ * banks.
+ */
+static void sgi_hub_update_irq(SGIHubState *s)
+{
+    unsigned int bank;
+
+    for (bank = 0; bank < SGI_HUB_PENDING_BANKS; bank++) {
+        qemu_set_irq(s->bank_irq[bank],
+                     !!(s->pi_int_pend[bank] & s->pi_int_mask[bank]));
+    }
+}
+
+/*
+ * Set or clear one pending bit. The number's low six bits are the bit and its
+ * seventh selects the bank, which is what makes numbers 64 through 127 the
+ * second bank rather than a separate register.
+ */
+static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
+{
+    unsigned int number = val & PI_INT_MODIFY_NUMBER;
+    unsigned int bank = number / SGI_HUB_BANK_BITS;
+    uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
+
+    if (val & PI_INT_MODIFY_SET) {
+        s->pi_int_pend[bank] |= bit;
+    } else {
+        s->pi_int_pend[bank] &= ~bit;
+    }
+    sgi_hub_update_irq(s);
+}
+
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
@@ -236,6 +295,15 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->pi_int_mask[3];
     case HUB_NI_STATUS:
         return s->ni_status;
+    case HUB_PI_INT_MODIFY:
+        /*
+         * Write-only: the register is an instruction rather than a value, and
+         * the state it modifies is read through the pending banks.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-hub: read of the write-only interrupt-modify "
+                      "register\n");
+        return 0;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: read of unimplemented register 0x%" HWADDR_PRIx
@@ -263,6 +331,9 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     }
 
     switch (addr) {
+    case HUB_PI_INT_MODIFY:
+        sgi_hub_int_modify(s, val);
+        break;
     case HUB_PI_REGION_PRESENT:
         s->pi_region_present = val;
         break;
@@ -271,9 +342,11 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_PI_INT_MASK0_A:
         s->pi_int_mask[0] = val;
+        sgi_hub_update_irq(s);
         break;
     case HUB_PI_INT_MASK1_A:
         s->pi_int_mask[1] = val;
+        sgi_hub_update_irq(s);
         break;
     case HUB_PI_INT_MASK0_B:
         s->pi_int_mask[2] = val;
@@ -348,6 +421,8 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
         s->io_bwin[n] = 0;
         sgi_hub_bwin_follow(s, n);
     }
+
+    sgi_hub_update_irq(s);
 }
 
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
@@ -369,6 +444,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_hub_ops, s,
                           "sgi-hub.regs", SGI_HUB_WINDOW_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
+
+    for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
+        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);
+    }
 
     memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",
                        SGI_HUB_BWIN_TOTAL);
@@ -423,6 +502,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         sgi_hub_bwin_follow(s, n);
     }
+    sgi_hub_update_irq(s);
     return 0;
 }
 
