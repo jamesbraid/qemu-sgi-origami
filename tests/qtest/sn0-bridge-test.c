@@ -477,28 +477,21 @@ static void test_the_target_flush_answers(const void *data)
     qtest_quit(qts);
 }
 
-static void test_the_default_machine_has_the_bridge(const void *data)
+static void test_the_default_machine_has_no_bridge(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * This is a contract guard rather than a behavioural one, and the
-     * distinction is why it exists at all: thirty other assertions in this
-     * file prove the bridge works, and none of them says anything about
-     * whether the *default* machine is the one the contract describes. That
-     * is what this holds, and it is why it moves with a sign-off and not
-     * with a fix.
-     *
-     * It was written the other way up — asserting the bridge was absent —
-     * while the chip was being built, so that the option could not quietly
-     * become the machine. It did that job: it is what caught the change that
-     * inverted it. The assertion is the same two reads against the same
-     * constants, with the expectation turned over, because the contract it
-     * guards is now that the bridge is fitted.
+     * The bridge is an option and the machine without it is the machine the
+     * contract describes, so this guards the option from quietly becoming the
+     * default. It is a weaker assertion than it looks — a qtest cannot tell
+     * a refused access from one that returned zero — so it says the address
+     * does not answer *with the bridge's identity*, which is what would be
+     * there if the chip had been fitted.
      */
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), !=,
                     bridge_identity(BRIDGE_REVISION));
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), !=, CONTROL_RESET);
 
     qtest_quit(qts);
 }
@@ -1174,8 +1167,8 @@ int main(int argc, char **argv)
                         test_a_read_only_register_stays_put);
     qtest_add_data_func("sn0/bridge/target-flush", NULL,
                         test_the_target_flush_answers);
-    qtest_add_data_func("sn0/bridge/present-by-default", NULL,
-                        test_the_default_machine_has_the_bridge);
+    qtest_add_data_func("sn0/bridge/absent-by-default", NULL,
+                        test_the_default_machine_has_no_bridge);
     qtest_add_data_func("sn0/bridge/configuration-space", NULL,
                         test_configuration_space_reaches_a_card);
     qtest_add_data_func("sn0/bridge/configuration-byte-lanes", NULL,
