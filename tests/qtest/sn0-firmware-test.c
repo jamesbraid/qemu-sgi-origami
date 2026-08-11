@@ -102,7 +102,11 @@
 #define HW_DIRECTORY        0x2000
 #define HW_DIR_ENTRY_SIZE   0x40
 #define HW_DIR_SIGNATURE    0x434d5f53505f5357ULL
+#define HW_DIR_LAUNCH       0
 #define HW_DIR_NMI          2
+#define HW_DIR_FREEMEM      4
+#define HW_DIR_DEBUG_STACKS 5
+#define HW_DIR_PI_ERROR     6
 #define HW_DIR_OFF_SIGNATURE 0x00
 #define HW_DIR_OFF_OFFSET    0x08
 #define HW_DIR_OFF_SIZE      0x18
@@ -110,6 +114,23 @@
 #define HW_DIR_OFF_STRIDE    0x28
 #define NMI_BLOCKS           0x3000
 #define NMI_STRIDE           0x40
+
+#define LAUNCH_BLOCKS        0x2400
+#define LAUNCH_ENTRIES       2
+#define LAUNCH_STRIDE        0x200
+#define LAUNCH_DIR_SIZE      (LAUNCH_ENTRIES * LAUNCH_STRIDE)
+#define LAUNCH_SIGNATURE     0xaddbead2addbead3ULL
+
+#define FIRST_FREE           0x19000
+#define FREEMEM_SIZE         0xffffffffffffffffULL
+
+#define DEBUG_STACKS_BASE    0x25000
+#define DEBUG_STACKS_SIZE    0xe000
+#define DEBUG_STACKS_N       2
+#define DEBUG_STACKS_STRIDE  0x7000
+
+#define PI_ERROR_BASE        0x12000
+#define PI_ERROR_SIZE        0x4000
 
 /* Component record fields this file reads. */
 #define COMP_TYPE           0x00
@@ -242,30 +263,87 @@ static void test_signatures(const void *data)
 }
 
 /*
- * The non-maskable-interrupt directory entry, index two of sixteen. OpenBSD
- * reads this entry's offset during machine setup and stores through it
- * directly, installing its own handler address and a complement — a
- * four-word write to wherever this entry says, before the console exists and
- * with nothing that could report a wrong destination. A zeroed entry sends
- * that write to node offset zero, inside the exception-handler area; the
- * fault is invisible today only because the kernel copies its own exception
- * vectors over the same bytes later in setup, which is an ordering accident
- * and not a property of the design.
+ * The six hardware-directory entries the firmware fills, checked against the
+ * datasheet's own table rather than against each other. The non-maskable-
+ * interrupt entry is the one with a live consumer: OpenBSD reads its offset
+ * during machine setup and stores through it directly, installing its own
+ * handler address and a complement — a four-word write to wherever this
+ * entry says, before the console exists and with nothing that could report
+ * a wrong destination. A zeroed entry sends that write to node offset zero,
+ * inside the exception-handler area; the fault was invisible only because
+ * the kernel copies its own exception vectors over the same bytes later in
+ * setup, which is an ordering accident and not a property of the design.
+ * The other five have no consumer on any guest we boot, which is why they
+ * are checked here rather than by anything a transcript would show.
  */
-static void test_directory_nmi_entry(const void *data)
+static void test_directory_entries(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
-    uint64_t entry = HW_DIRECTORY + HW_DIR_NMI * HW_DIR_ENTRY_SIZE;
+    uint64_t launch = HW_DIRECTORY + HW_DIR_LAUNCH * HW_DIR_ENTRY_SIZE;
+    uint64_t nmi = HW_DIRECTORY + HW_DIR_NMI * HW_DIR_ENTRY_SIZE;
+    uint64_t freemem = HW_DIRECTORY + HW_DIR_FREEMEM * HW_DIR_ENTRY_SIZE;
+    uint64_t debug = HW_DIRECTORY + HW_DIR_DEBUG_STACKS * HW_DIR_ENTRY_SIZE;
+    uint64_t pi_error = HW_DIRECTORY + HW_DIR_PI_ERROR * HW_DIR_ENTRY_SIZE;
+    int i;
 
-    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_SIGNATURE), ==,
+    g_assert_cmphex(qtest_readq(qts, launch + HW_DIR_OFF_SIGNATURE), ==,
                     HW_DIR_SIGNATURE);
-    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_OFFSET), ==,
+    g_assert_cmphex(qtest_readq(qts, launch + HW_DIR_OFF_OFFSET), ==,
+                    LAUNCH_BLOCKS);
+    g_assert_cmphex(qtest_readq(qts, launch + HW_DIR_OFF_SIZE), ==,
+                    LAUNCH_DIR_SIZE);
+    g_assert_cmphex(qtest_readq(qts, launch + HW_DIR_OFF_COUNT), ==,
+                    LAUNCH_ENTRIES);
+    g_assert_cmphex(qtest_readq(qts, launch + HW_DIR_OFF_STRIDE), ==,
+                    LAUNCH_STRIDE);
+
+    g_assert_cmphex(qtest_readq(qts, nmi + HW_DIR_OFF_SIGNATURE), ==,
+                    HW_DIR_SIGNATURE);
+    g_assert_cmphex(qtest_readq(qts, nmi + HW_DIR_OFF_OFFSET), ==,
                     NMI_BLOCKS);
-    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_SIZE), ==,
+    g_assert_cmphex(qtest_readq(qts, nmi + HW_DIR_OFF_SIZE), ==,
                     NMI_STRIDE);
-    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_COUNT), ==, 2);
-    g_assert_cmphex(qtest_readq(qts, entry + HW_DIR_OFF_STRIDE), ==,
+    g_assert_cmphex(qtest_readq(qts, nmi + HW_DIR_OFF_COUNT), ==, 2);
+    g_assert_cmphex(qtest_readq(qts, nmi + HW_DIR_OFF_STRIDE), ==,
                     NMI_STRIDE);
+
+    g_assert_cmphex(qtest_readq(qts, freemem + HW_DIR_OFF_SIGNATURE), ==,
+                    HW_DIR_SIGNATURE);
+    g_assert_cmphex(qtest_readq(qts, freemem + HW_DIR_OFF_OFFSET), ==,
+                    FIRST_FREE);
+    g_assert_cmphex(qtest_readq(qts, freemem + HW_DIR_OFF_SIZE), ==,
+                    FREEMEM_SIZE);
+    g_assert_cmphex(qtest_readq(qts, freemem + HW_DIR_OFF_COUNT), ==, 1);
+
+    g_assert_cmphex(qtest_readq(qts, debug + HW_DIR_OFF_SIGNATURE), ==,
+                    HW_DIR_SIGNATURE);
+    g_assert_cmphex(qtest_readq(qts, debug + HW_DIR_OFF_OFFSET), ==,
+                    DEBUG_STACKS_BASE);
+    g_assert_cmphex(qtest_readq(qts, debug + HW_DIR_OFF_SIZE), ==,
+                    DEBUG_STACKS_SIZE);
+    g_assert_cmphex(qtest_readq(qts, debug + HW_DIR_OFF_COUNT), ==,
+                    DEBUG_STACKS_N);
+    g_assert_cmphex(qtest_readq(qts, debug + HW_DIR_OFF_STRIDE), ==,
+                    DEBUG_STACKS_STRIDE);
+
+    g_assert_cmphex(qtest_readq(qts, pi_error + HW_DIR_OFF_SIGNATURE), ==,
+                    HW_DIR_SIGNATURE);
+    g_assert_cmphex(qtest_readq(qts, pi_error + HW_DIR_OFF_OFFSET), ==,
+                    PI_ERROR_BASE);
+    g_assert_cmphex(qtest_readq(qts, pi_error + HW_DIR_OFF_SIZE), ==,
+                    PI_ERROR_SIZE);
+    g_assert_cmphex(qtest_readq(qts, pi_error + HW_DIR_OFF_COUNT), ==, 1);
+
+    /*
+     * The launch blocks themselves, not just the directory entry that points
+     * at them: both carry the launch signature. Nothing else in the block is
+     * asserted, because nothing else has a value yet — there is no second
+     * processor to launch.
+     */
+    for (i = 0; i < LAUNCH_ENTRIES; i++) {
+        g_assert_cmphex(qtest_readq(qts, LAUNCH_BLOCKS + i * LAUNCH_STRIDE),
+                        ==, LAUNCH_SIGNATURE);
+    }
 
     qtest_quit(qts);
 }
@@ -494,8 +572,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/firmware/console-descriptor", NULL,
                         test_console_descriptor);
     qtest_add_data_func("sn0/firmware/signatures", NULL, test_signatures);
-    qtest_add_data_func("sn0/firmware/directory-nmi-entry", NULL,
-                        test_directory_nmi_entry);
+    qtest_add_data_func("sn0/firmware/directory-entries", NULL,
+                        test_directory_entries);
     qtest_add_data_func("sn0/firmware/hub-port-unconnected", NULL,
                         test_hub_port_unconnected);
     qtest_add_data_func("sn0/firmware/components-enabled", NULL,
