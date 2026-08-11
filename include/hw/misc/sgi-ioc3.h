@@ -6,6 +6,7 @@
 #ifndef HW_MISC_SGI_IOC3_H
 #define HW_MISC_SGI_IOC3_H
 
+#include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial.h"
 #include "qom/object.h"
@@ -26,6 +27,32 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SERIAL_A       0x020178
 #define SGI_IOC3_SERIAL_B       0x020170
 
+/*
+ * The SuperIO interrupt block, in the chip's main register window.
+ *
+ * The chip presents two interrupt outputs rather than one — an ethernet line
+ * and a SuperIO line — and each has its own status and enable pair. This is the
+ * SuperIO pair, and the register-level reason the two outputs are separate is
+ * that this status register has no ethernet bit in it at all. Only the SuperIO
+ * line is modelled: the ethernet block does not exist here.
+ *
+ * The enable mask has two write aliases over one register, so that a guest can
+ * turn a source on or off without a read-modify-write.
+ */
+#define SGI_IOC3_INT_STATUS     0x1c
+#define SGI_IOC3_INT_ENABLE_SET 0x20
+#define SGI_IOC3_INT_ENABLE_CLR 0x24
+#define SGI_IOC3_MAIN_SIZE      0x28
+
+/*
+ * The two serial ports' bits, which are pass-throughs: they follow the 16550's
+ * own interrupt level rather than latching, so a write cannot clear them and
+ * what really quiets one is the register read the guest's serial driver does.
+ */
+#define SGI_IOC3_INT_SERIAL_A   (1u << 6)
+#define SGI_IOC3_INT_SERIAL_B   (1u << 15)
+#define SGI_IOC3_INT_PASSTHROUGH (SGI_IOC3_INT_SERIAL_A | SGI_IOC3_INT_SERIAL_B)
+
 struct SGIIOC3State {
     SysBusDevice parent_obj;
 
@@ -39,6 +66,12 @@ struct SGIIOC3State {
 
     SerialState serial[SGI_IOC3_SERIAL_PORTS];
     MemoryRegion serial_io[SGI_IOC3_SERIAL_PORTS];
+
+    /* The main window's interrupt registers, and the line they drive. */
+    MemoryRegion main;
+    qemu_irq superio_irq;
+    uint32_t int_status;
+    uint32_t int_enable;
 };
 
 #endif

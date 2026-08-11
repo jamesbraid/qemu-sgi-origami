@@ -34,6 +34,15 @@
 #define SERIAL_B        (IOC3_BASE + 0x020170)
 
 /* 16550 registers this test touches, by offset from a port's base. */
+/* The SuperIO interrupt block, in the chip's main window. */
+#define INT_STATUS      (IOC3_BASE + 0x1c)
+#define INT_ENABLE_SET  (IOC3_BASE + 0x20)
+#define INT_ENABLE_CLR  (IOC3_BASE + 0x24)
+
+#define INT_SERIAL_A    (1u << 6)
+#define INT_SERIAL_B    (1u << 15)
+#define INT_KEYBOARD    (1u << 22)   /* a latched bit, for contrast */
+
 #define REG_LCR         3
 #define REG_MCR         4
 #define REG_SCR         7
@@ -163,6 +172,78 @@ static void test_port_answers_where_the_graph_says(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_enable_mask_has_two_write_aliases(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * One mask behind two addresses, so a guest can turn a source on or off
+     * without a read-modify-write. The set alias reads back the live mask,
+     * which is what says they are two views of one register rather than two
+     * registers — a model with two independent words would pass any test that
+     * only ever wrote and read the same address.
+     */
+    g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET), ==, 0);
+
+    qtest_writel(qts, INT_ENABLE_SET, INT_SERIAL_A | INT_SERIAL_B);
+    g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET), ==,
+                    INT_SERIAL_A | INT_SERIAL_B);
+
+    /* Clearing through the other alias reaches the same mask. */
+    qtest_writel(qts, INT_ENABLE_CLR, INT_SERIAL_B);
+    g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET), ==, INT_SERIAL_A);
+
+    /* And a one in the set alias does not disturb what is already there. */
+    qtest_writel(qts, INT_ENABLE_SET, INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET), ==,
+                    INT_SERIAL_A | INT_KEYBOARD);
+
+    qtest_quit(qts);
+}
+
+static void test_a_serial_bit_ignores_an_acknowledgement(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The two serial bits are pass-throughs: they follow the 16550's own
+     * interrupt level rather than latching, so writing one back cannot clear
+     * it. This is the assertion that catches a model treating the whole status
+     * register as write-one-to-clear — which looks right until a guest's
+     * handler writes back everything it serviced, drops a level that is still
+     * asserted, and never takes that interrupt again.
+     *
+     * The port has to be actually asserting for this to test anything, and the
+     * first version of this test did not arrange that: with the port quiet the
+     * bit is zero, clearing zero and ignoring zero are the same, and the test
+     * passed against a model that cleared the bit. It was written with a
+     * comment explaining why the bit might be zero, which is the tell — an
+     * assertion whose own comment excuses the case that makes it vacuous.
+     *
+     * So the port is made to assert first. Enabling the transmitter-empty
+     * interrupt raises the 16550 immediately, because its holding register is
+     * empty from reset and stays empty with nothing being sent.
+     */
+    qtest_writeb(qts, SERIAL_A + 1, 0x02);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_SERIAL_A, ==,
+                    INT_SERIAL_A);
+
+    /* Now the acknowledgement, which must not touch it. */
+    qtest_writel(qts, INT_STATUS, INT_SERIAL_A);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_SERIAL_A, ==,
+                    INT_SERIAL_A);
+
+    /*
+     * And what does quiet it is the port, not this register: turning the
+     * 16550's own interrupt off drops the level, and the pass-through bit
+     * follows it down with nothing written here at all.
+     */
+    qtest_writeb(qts, SERIAL_A + 1, 0x00);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_SERIAL_A, ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -173,6 +254,10 @@ int main(int argc, char **argv)
                         test_registers_are_a_byte_apart);
     qtest_add_data_func("sn0/ioc3/wide-access-is-not-narrowed", NULL,
                         test_a_wide_access_is_not_narrowed);
+    qtest_add_data_func("sn0/ioc3/enable-mask-two-aliases", NULL,
+                        test_the_enable_mask_has_two_write_aliases);
+    qtest_add_data_func("sn0/ioc3/serial-bit-ignores-acknowledgement", NULL,
+                        test_a_serial_bit_ignores_an_acknowledgement);
     qtest_add_data_func("sn0/ioc3/port-answers-where-the-graph-says", NULL,
                         test_port_answers_where_the_graph_says);
 
