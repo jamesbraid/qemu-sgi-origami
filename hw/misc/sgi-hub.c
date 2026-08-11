@@ -771,13 +771,31 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
      * a value that entry already holds: reaching widget 0 through a big window
      * here is the reset state doing it, not the firmware.
      *
-     * **The zero is load-bearing and not merely the documented reset.** A guest
-     * looking for a spare entry decides by reading the widget field and calling
-     * zero free, so an entry resetting to anything else would be read as one
-     * already in use. A Hub that reset these to a plausible non-zero value
-     * would
-     * hand a guest fewer large windows than the machine has, with the shortage
-     * surfacing much later in whichever driver failed to get a mapping.
+     * **The zero is load-bearing and not merely the documented reset**, for two
+     * independent reasons. Satisfying one of them without the other is possible
+     * and would look like a tidy-up, which is why both are written here.
+     *
+     * **First, a guest looking for a spare entry decides by reading the widget
+     * field and calling zero free**, so an entry resetting to anything else
+     * would be read as one already in use. A Hub that reset these to a
+     * plausible non-zero value would hand a guest fewer large windows than the
+     * machine has, with the shortage surfacing much later in whichever driver
+     * failed to get a mapping.
+     *
+     * **Second, a zeroed entry spells widget 0, memory space, offset 0 — so the
+     * window it steers reaches the crossbar, and that is one guest's only route
+     * there.** OpenBSD redirects every widget-0 access onto the last big window
+     * and never programs the entry itself, so the crossbar is reachable for it
+     * only because these reset to zero *and the windows are enabled as a
+     * result*. The real machine lands in the same place by the same accident:
+     * its firmware zeroes all seven entries in a generic loop rather than
+     * writing widget 0 anywhere on purpose.
+     *
+     * **A change that zeroed the entries but left the windows disabled would
+     * satisfy the first reason and break the second, and nothing would say so.**
+     * Linux reaches the crossbar through its small window and never through
+     * this one, so every Linux test and every Linux boot would still pass. The
+     * guard is the qtest asserting that a window naming widget 0 answers.
      */
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         s->io_bwin[n] = 0;
