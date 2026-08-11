@@ -565,8 +565,24 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
     }
 }
 
-/* One component record, with the fields every kind of component shares. */
-static void sn0_component(uint8_t *graph, unsigned int index, uint8_t type,
+/*
+ * One component record, with the fields every kind of component shares.
+ *
+ * `index` is the component's position in the flat graph array, which is
+ * where its record physically lives and has to be unique and sequential
+ * across every type. `virtual_id` is a different thing that today happens to
+ * take the same values by coincidence: IRIX requires a processor
+ * component's virtual identifier to be its processor number specifically,
+ * checked for range and uniqueness on every boot, and no consumer has been
+ * found that reads it for any other type — but numbering every component by
+ * its ordinal among components of its own type is one rule rather than a
+ * type-by-type list of exceptions, and it is what writing the flat index
+ * was standing in for as long as each type had exactly one member appearing
+ * first. Add a second processor, or a second component of any type, and the
+ * two numbers stop agreeing.
+ */
+static void sn0_component(uint8_t *graph, unsigned int index,
+                          unsigned int virtual_id, uint8_t type,
                           uint8_t widget)
 {
     uint8_t *c = graph + (SN0_GRAPH_COMPONENTS - SN0_CONFIG_GRAPH) +
@@ -577,7 +593,7 @@ static void sn0_component(uint8_t *graph, unsigned int index, uint8_t type,
     /* Not optional: a component without this is skipped by every consumer. */
     c[0x02] = SN0_COMP_ENABLED;
     c[0x20] = widget;
-    stl_be_p(c + 0x1c, index);                  /* virtual identifier */
+    stl_be_p(c + 0x1c, virtual_id);
     /*
      * Padding in the reference declaration, but OpenBSD declares a bitfield
      * across these two bytes holding an Origin 3000 controller port, a PCI bus
@@ -726,9 +742,9 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     /* Board 0: the node board, with a processor, a Hub and a memory bank. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
               SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3, 3);
-    sn0_component(graph, 0, SN0_COMP_PROCESSOR, 0);
-    sn0_component(graph, 1, SN0_COMP_HUB, 0);
-    sn0_component(graph, 2, SN0_COMP_MEMORY, 0);
+    sn0_component(graph, 0, 0, SN0_COMP_PROCESSOR, 0);  /* processor 0 */
+    sn0_component(graph, 1, 0, SN0_COMP_HUB, 0);
+    sn0_component(graph, 2, 0, SN0_COMP_MEMORY, 0);
 
     /*
      * The processor's own fields, which are the only source a guest has for its
@@ -800,7 +816,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
               SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1, 0);
-    sn0_component(graph, 3, SN0_COMP_MODULE_SERIAL, 0);
+    sn0_component(graph, 3, 0, SN0_COMP_MODULE_SERIAL, 0);
 
     /*
      * Board 2: the base-I/O board, and the end of the list. Nothing on the path
@@ -809,8 +825,8 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * console works this is what a guest walks looking for one.
      */
     sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 2, 2);
-    sn0_component(graph, 4, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
-    sn0_component(graph, 5, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 4, 0, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 5, 0, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
 
     rom_add_blob_fixed("sn0.graph", graph, SN0_CONFIG_GRAPH_SIZE,
                        node + SN0_CONFIG_GRAPH);
