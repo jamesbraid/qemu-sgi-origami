@@ -55,6 +55,9 @@
 #define COMP_PROCESSOR      1
 #define COMP_MEMORY         3
 #define COMP_MEMORY_INDEX   2
+#define COMP_HUB_INDEX      1
+#define COMP_PORT_OFFSET    0x3c
+#define COMP_PORT_NODE_INVALID 0xffff
 
 /*
  * The Hub's network-interface status register, reached through the crossbar's
@@ -260,6 +263,26 @@ static void test_directory_nmi_entry(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Hub component's port descriptor names no crossbar link on this
+ * machine, and the required value for that is the invalid marker in the
+ * node-identifier bits, not zero. Zero is a live node identifier here: a
+ * consumer that treats an unconnected port as a real link follows it into a
+ * board lookup at this node's own hardware directory, which is exactly the
+ * kind of silent failure this file exists to catch — nothing we boot reads
+ * this field today, so a wrong value here has no other way to be noticed.
+ */
+static void test_hub_port_unconnected(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t hub = GRAPH_COMPONENTS + COMP_HUB_INDEX * GRAPH_COMP_STRIDE;
+
+    g_assert_cmphex(qtest_readw(qts, hub + COMP_PORT_OFFSET), ==,
+                    COMP_PORT_NODE_INVALID);
+
+    qtest_quit(qts);
+}
+
 static void test_components_enabled(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -418,6 +441,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/firmware/signatures", NULL, test_signatures);
     qtest_add_data_func("sn0/firmware/directory-nmi-entry", NULL,
                         test_directory_nmi_entry);
+    qtest_add_data_func("sn0/firmware/hub-port-unconnected", NULL,
+                        test_hub_port_unconnected);
     qtest_add_data_func("sn0/firmware/components-enabled", NULL,
                         test_components_enabled);
     qtest_add_data_func("sn0/firmware/memory-layout-matches-addressing-mode",

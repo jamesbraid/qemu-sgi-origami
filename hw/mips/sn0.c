@@ -58,6 +58,18 @@
 #define SN0_RTC_FREQ_HZ   1250000       /* an 800 ns tick */
 #define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
 
+/*
+ * A component's port descriptor: a sixteen-bit node identifier, an eight-bit
+ * flag byte, eight bits of padding, and a thirty-two-bit offset, packed into
+ * one big-endian eight-byte field. Zero is a live node identifier on this
+ * machine, not a safe default — the invalid marker is all ones in the node-
+ * identifier bits and nothing else, with the rest of the descriptor zero for
+ * a port that names no link, which every port on this machine does: the Hub
+ * sits at a fixed widget with no crossbar component modelled.
+ */
+#define SN0_PORT_NODE_INVALID   0xffffULL
+#define SN0_PORT_UNCONNECTED    (SN0_PORT_NODE_INVALID << 48)
+
 struct SN0MachineState {
     MachineState parent_obj;
 
@@ -709,6 +721,14 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     stw_be_p(cpu + 0x40, 90);                   /* secondary cache clock */
 
     hub = sn0_component_at(graph, 1);
+    /*
+     * The port descriptor at 0x3c: this Hub names no crossbar link, so the
+     * node-identifier bits must read as the invalid marker rather than the
+     * zero the buffer starts with. A consumer that treats zero as a real
+     * node follows it into a board lookup at this node's own hardware
+     * directory and fails to recognise it as a board.
+     */
+    stq_be_p(hub + 0x3c, SN0_PORT_UNCONNECTED);
     stq_be_p(hub + 0x58, SN0_HUB_FREQ_HZ);      /* Hub clock in hertz */
 
     /*
