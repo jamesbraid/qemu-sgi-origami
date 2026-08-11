@@ -138,14 +138,24 @@
  * The sixteen small windows fill the bottom sixteenth of a node's crosstalk
  * window, one per widget, each reaching that widget's first 16 MB.
  *
- * Only the crossbar's eight device ports are mapped here. Widget 1 is the Hub,
- * whose window is node-relative in a way a widget-indexed space cannot express,
- * so it keeps its own mapping. Widget 0's small window is left to fault
- * deliberately: a defect on the processor-interface side of the Hub makes it
- * unreliable on real hardware, both guests expect firmware to have redirected
- * widget 0 onto the last big window instead, and a guest that reaches for the
- * broken window should say so loudly rather than quietly work here and diverge
- * from the machine it is modeling.
+ * Widget 0 and the crossbar's eight device ports are mapped here. Widget 1 is
+ * the Hub, whose window is node-relative in a way a widget-indexed space cannot
+ * express, so it keeps its own mapping.
+ *
+ * **Widget 0's small window has to decode, and this said the opposite until a
+ * guest proved otherwise.** A defect is recorded against that window and
+ * firmware redirects widget 0 onto the last big window because of it — which
+ * led to leaving the small window unmapped so that anything reaching for it
+ * would say so loudly. Linux reaches for it, deliberately, with the address
+ * macro whose name says raw, and took a bus error on a machine built to that
+ * reasoning.
+ *
+ * **The two guests use different paths and the machine owes both.** Linux reads
+ * widget 0 through this small window; OpenBSD redirects to big window 6 through
+ * the one function both its identification paths call. Satisfying either alone
+ * leaves the machine broken for the other guest, and the same register must
+ * answer identically through both — they are one device seen through two
+ * windows, not two devices.
  */
 #define SN0_SMALL_WINDOW_SIZE    (16 * MiB)
 #define SN0_SMALL_WINDOW(widget) ((hwaddr)(widget) * SN0_SMALL_WINDOW_SIZE)
