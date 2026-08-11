@@ -193,6 +193,19 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MAILBOX3_SIGNATURE  0x2020
 
 /*
+ * The mailbox command protocol: the host writes mailbox 0 and whatever
+ * arguments the command needs, then sets the host interrupt, and the adapter
+ * answers by writing a result into mailbox 0 and posting an interrupt. Complete
+ * and invalid are the two outcomes every command shares; a command-specific
+ * error is any other value, none of which this commit produces yet because it
+ * implements the one command OpenBSD's own attach sequence actually issues at
+ * this stage — a no-op, used purely as a liveness check.
+ */
+#define ISP_MBOX_CMD_NOP        0x0000
+#define ISP_MBOX_COMPLETE       0x4000
+#define ISP_MBOX_INVALID        0x4001
+
+/*
  * Host command register. A write carries a command in the top four bits; a
  * read returns flags describing what the RISC processor is doing.
  */
@@ -258,6 +271,31 @@ struct QLogicISPState {
 };
 
 /*
+ * The adapter presents one PCI interrupt line and it is a level, so the line
+ * is recomputed from scratch on every change rather than tracked
+ * incrementally: whatever changed — bus interface status, the enables in bus
+ * interface control, or a reset zeroing both — funnels through here, and the
+ * line is exactly what this function says it should be afterwards.
+ *
+ * Only the RISC interrupt request bit and its own enable matter to the
+ * physical line, not the plain interrupt request bit alongside it or the
+ * global enable bit next to that. 86Box's model masks the computed level down
+ * to the RISC bit alone before checking it, with a comment stating outright
+ * that unmasking the other status bit does nothing on real hardware; the
+ * datasheet documents a global enable bit without saying what it does, which
+ * is consistent with 86Box's reading that it does nothing observable either.
+ * A source that says a bit is inert is worth as much as one that says what a
+ * bit does, and is why this model does not condition the line on it.
+ */
+static void qlogic_isp_update_irq(QLogicISPState *s)
+{
+    bool level = (s->bus_status & s->bus_ctrl &
+                  ISP_BUS_STATUS_RISC_INT_REQ) != 0;
+
+    pci_set_irq(PCI_DEVICE(s), level);
+}
+
+/*
  * The state a power-on or a soft reset both land on. The guest's soft reset is
  * a full re-initialisation of the chip rather than a narrower clear, so it and
  * the bus reset share this function instead of each clearing its own list of
@@ -297,6 +335,48 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
 
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
+
+    qlogic_isp_update_irq(s);
+}
+
+/*
+ * Runs the one mailbox command this commit implements. The host writes
+ * mailbox 0 and sets the host interrupt to mean "a command is ready", which
+ * is what calls this; the adapter answers by writing a result into mailbox 0,
+ * taking the semaphore lock, posting an interrupt, and letting the line
+ * reflect that.
+ *
+ * A no-op is the only command modelled here because it is the only one
+ * OpenBSD's own attach sequence issues at this stage: a liveness check with
+ * nothing else attached to it. Everything else answers invalid, which is
+ * accurate today and will need revisiting one command at a time as later
+ * commits give the adapter more to do — not a placeholder that happens to
+ * work because nothing yet asks for anything else.
+ *
+ * Processing synchronously, inside the register write that triggers it,
+ * matches how QEMU's other message-interface storage controllers handle a
+ * command that does not touch guest memory, and keeps a qtest deterministic:
+ * the result is present the instant the write that requested it returns,
+ * with no timer or scheduled callback to wait on.
+ */
+static void qlogic_isp_mailbox_command(QLogicISPState *s)
+{
+    switch (s->mailbox[0]) {
+    case ISP_MBOX_CMD_NOP:
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp: mailbox command 0x%04x not modelled\n",
+                      s->mailbox[0]);
+        s->mailbox[0] = ISP_MBOX_INVALID;
+        break;
+    }
+
+    s->semaphore = ISP_SEMAPHORE_LOCK;
+    s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
+    qlogic_isp_update_irq(s);
 }
 
 static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
@@ -341,8 +421,13 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
         s->risc_flags &= ~(ISP_RISC_FLAG_PAUSED | ISP_RISC_FLAG_RESET);
         break;
 
+    /*
+     * Setting the host interrupt is how the driver tells the adapter a
+     * mailbox command is ready, so it is also what triggers processing one.
+     */
     case ISP_HOST_CMD_SET_HOST_INT:
         s->risc_flags |= ISP_RISC_FLAG_HOST_INT;
+        qlogic_isp_mailbox_command(s);
         break;
 
     /*
@@ -360,17 +445,15 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
     /*
      * Clearing the RISC interrupt is the first half of every interrupt
      * acknowledgement, and 86Box's model clears exactly the host-interrupt
-     * flag and the whole of bus interface status here — nothing else.
-     * Nothing yet sets bus interface status to anything but zero, so this
-     * half of the command has no source of a pending interrupt to clear
-     * until the mailbox engine exists; clearing the flag and the register
-     * now is still correct and testable on its own, and is what makes the
-     * next commit's interrupt line able to lower on this command rather
-     * than needing its own separate acknowledgement path.
+     * flag and the whole of bus interface status here — nothing else. For a
+     * mailbox completion the driver also writes zero to the semaphore
+     * separately, which is what actually releases the lock; this command
+     * does not touch it.
      */
     case ISP_HOST_CMD_CLEAR_RISC_INT:
         s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
         s->bus_status = 0;
+        qlogic_isp_update_irq(s);
         break;
 
     /*
@@ -477,13 +560,17 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
      * A soft reset takes effect immediately and leaves its own bit clear, so
      * the guest's poll for the bit to clear succeeds on its first read. It is
      * applied after the enables are stored so that the reset wins, which is
-     * the order the write itself implies.
+     * the order the write itself implies. The interrupt line is recomputed
+     * either way, since the enables this register owns are half of what
+     * decides it and changing them can raise or lower the line on their own,
+     * with nothing else about the write signalling that it should.
      */
     case ISP_REG_BUS_CTRL:
         s->bus_ctrl = val & ISP_BUS_CTRL_WRITE_MASK;
         if (val & ISP_BUS_CTRL_SOFT_RESET) {
             qlogic_isp_reset_state(s);
         }
+        qlogic_isp_update_irq(s);
         break;
 
     case ISP_REG_SEMAPHORE:

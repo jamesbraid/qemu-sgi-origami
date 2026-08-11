@@ -56,6 +56,13 @@
 #define ISP_MAILBOX2_SIGNATURE  0x5020
 #define ISP_MAILBOX3_SIGNATURE  0x2020
 
+#define ISP_MBOX_CMD_NOP        0x0000
+#define ISP_MBOX_COMPLETE       0x4000
+#define ISP_MBOX_INVALID        0x4001
+
+#define ISP_BUS_STATUS_INT_REQ      0x0002
+#define ISP_BUS_STATUS_RISC_INT_REQ 0x0004
+
 #define ISP_HOST_CMD_SHIFT          12
 #define ISP_HOST_CMD_RESET_RISC     0x1
 #define ISP_HOST_CMD_PAUSE_RISC     0x2
@@ -578,6 +585,103 @@ static void test_sxp_risc_bank_select(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/*
+ * This suite asserts the register contract a guest driver actually reads and
+ * writes, not the physical interrupt wire's assertion at the platform's
+ * interrupt controller. No conventional-PCI storage or network device qtest
+ * in this tree does the latter — the ones that observe a physical legacy
+ * line at all are testing ISA-specific routing behaviour that is itself the
+ * feature under test, which is not this device's contract. Reaching the wire
+ * here would mean this qtest also programming the machine's PCI-to-ISA
+ * interrupt routing, which is generic platform behaviour this device does
+ * not own, tested nowhere else in this tree for a device that does not own
+ * it either. What is tested is what the datasheet actually specifies at the
+ * register level: bus interface status carries the pending-interrupt bits
+ * unconditionally, and bus interface control carries the enables that gate
+ * whether the wire those bits feed ever asserts.
+ */
+
+/*
+ * A no-op is the only mailbox command OpenBSD's own attach sequence issues at
+ * this stage, used purely to confirm the adapter is alive. Completing it is
+ * what proves the mailbox engine — not just the registers it uses — actually
+ * runs: the semaphore lock and bus interface status only become non-zero as
+ * a side effect of processing a command, so asserting them here is what
+ * distinguishes a working engine from one that merely stores whatever is
+ * written to mailbox 0.
+ */
+static void test_mailbox_nop(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qpci_io_writew(dev, io, ISP_MAILBOX(0), ISP_MBOX_CMD_NOP);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==,
+                    ISP_SEMAPHORE_LOCK);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+
+    /*
+     * Acknowledgement is two steps for a mailbox result. Clearing the RISC
+     * interrupt clears bus interface status and the host-interrupt flag;
+     * releasing the semaphore is a separate write the driver issues after.
+     */
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==,
+                    ISP_SEMAPHORE_LOCK);
+
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * A command this model does not implement still completes — as invalid,
+ * posted through the same mechanism as a successful command. The mailbox
+ * protocol has no way to leave a command pending: every write of the host
+ * interrupt gets an answer, and unimplemented is one of the two answers
+ * every command can receive.
+ */
+static void test_mailbox_invalid_command(void *obj, void *data,
+                                         QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qpci_io_writew(dev, io, ISP_MAILBOX(0), 0x00ff);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_INVALID);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==,
+                    ISP_SEMAPHORE_LOCK);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, 0);
+    qpci_iounmap(dev, io);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -607,6 +711,9 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("host-command", "qlogic-isp1040", test_host_command, NULL);
     qos_add_test("sxp-risc-bank-select", "qlogic-isp1040",
                  test_sxp_risc_bank_select, NULL);
+    qos_add_test("mailbox-nop", "qlogic-isp1040", test_mailbox_nop, NULL);
+    qos_add_test("mailbox-invalid-command", "qlogic-isp1040",
+                 test_mailbox_invalid_command, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);
