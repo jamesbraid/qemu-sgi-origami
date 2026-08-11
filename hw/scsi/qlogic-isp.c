@@ -202,6 +202,33 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_RISC_FLAG_PAUSED        0x0020
 #define ISP_RISC_FLAG_EXTERNAL      0x0010
 
+/*
+ * The SXP and RISC register blocks share the window from 0x80 up to the host
+ * command register at 0xc0, and bus configuration 1 bit 3 chooses which one
+ * answers there. No guest on origami's path reads either block — NetBSD's
+ * driver does, and NetBSD is a cross-check source rather than a target guest
+ * here — so no individual register in either block is named or decoded.
+ *
+ * The datasheet is explicit that the select still has to be implemented,
+ * because a model that ignored it and always presented one bank would
+ * mislead anyone who later needs the other. That means the two blocks need
+ * real, separate storage rather than a bit that is stored but never acted
+ * on: the observable a guest — or a qtest — has of the select working is
+ * that the same offset holds two different values depending on it, and a
+ * bit that only gates a log message could not show that.
+ *
+ * The trap the datasheet names is a model that wires bit 0 instead of bit 3,
+ * inherited from a driver header that defines that constant but never
+ * exercises it. Bit 0 already cannot reach this select: bus configuration
+ * 1's write mask only stores bit 3 among the low four bits, so a guest
+ * setting bit 0 changes nothing this device tracks, and the two-bank storage
+ * here makes that a testable fact rather than an assertion about a mask.
+ */
+#define ISP_REG_SXP_RISC_BASE   0x80
+#define ISP_REG_SXP_RISC_END    0xc0
+#define ISP_SXP_RISC_COUNT      \
+    ((ISP_REG_SXP_RISC_END - ISP_REG_SXP_RISC_BASE) / 2)
+
 struct QLogicISPState {
     PCIDevice parent_obj;
 
@@ -214,6 +241,8 @@ struct QLogicISPState {
     uint16_t semaphore;
     uint16_t risc_flags;    /* What a read of the host command register says. */
     uint16_t mailbox[ISP_MAILBOX_COUNT];
+    uint16_t risc_bank[ISP_SXP_RISC_COUNT];
+    uint16_t sxp_bank[ISP_SXP_RISC_COUNT];
 };
 
 /*
@@ -244,6 +273,9 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->mailbox[1] = ISP_MAILBOX1_SIGNATURE;
     s->mailbox[2] = ISP_MAILBOX2_SIGNATURE;
     s->mailbox[3] = ISP_MAILBOX3_SIGNATURE;
+
+    memset(s->risc_bank, 0, sizeof(s->risc_bank));
+    memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
 }
 
 static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
@@ -306,12 +338,34 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
     }
 }
 
+/*
+ * Bus configuration 1 bit 3 picks which of the two storage arrays the window
+ * from 0x80 to 0xbf resolves to. Reading the bit fresh out of bus_cfg1 rather
+ * than caching a selection is what makes a write to bus configuration 1 take
+ * effect on the very next access to the window, which is the order NetBSD's
+ * own access pattern relies on: select the bank, then touch the window.
+ */
+static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
+{
+    return (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ?
+           s->sxp_bank : s->risc_bank;
+}
+
 static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
     QLogicISPState *s = opaque;
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
         return s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2];
+    }
+
+    if (addr >= ISP_REG_SXP_RISC_BASE && addr < ISP_REG_SXP_RISC_END) {
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp: read of unimplemented %s register "
+                      "0x%02" HWADDR_PRIx "\n",
+                      (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
+                      addr);
+        return qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2];
     }
 
     switch (addr) {
@@ -346,6 +400,16 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
         s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2] = val;
+        return;
+    }
+
+    if (addr >= ISP_REG_SXP_RISC_BASE && addr < ISP_REG_SXP_RISC_END) {
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp: write 0x%04x to unimplemented %s register "
+                      "0x%02" HWADDR_PRIx "\n", (unsigned)val,
+                      (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
+                      addr);
+        qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2] = val;
         return;
     }
 
@@ -445,8 +509,8 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
         VMSTATE_UINT16(bus_cfg1, QLogicISPState),
@@ -455,6 +519,8 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(semaphore, QLogicISPState),
         VMSTATE_UINT16(risc_flags, QLogicISPState),
         VMSTATE_UINT16_ARRAY(mailbox, QLogicISPState, ISP_MAILBOX_COUNT),
+        VMSTATE_UINT16_ARRAY(risc_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
+        VMSTATE_UINT16_ARRAY(sxp_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
         VMSTATE_END_OF_LIST()
     }
 };
