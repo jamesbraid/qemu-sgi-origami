@@ -956,6 +956,19 @@ static void test_the_clock_takes_a_time_a_guest_sets(const void *data)
      * applied the epoch on read alone would pass the read test above and fail
      * here.
      */
+    /*
+     * Move the virtual clock well away from the host's before setting the
+     * time. The two are the same clock by default and this test asks for the
+     * virtual one, so any arithmetic that mixes them shows up here as a
+     * read-back off by however far apart they are -- which is what made this
+     * test fail intermittently by one second before the model was fixed, on
+     * runs where real time happened to cross a second boundary while the
+     * virtual clock stood still. Stepping first turns that coincidence into a
+     * certainty: a model differencing against the wrong clock now fails every
+     * time rather than one run in fifty.
+     */
+    qtest_clock_step(qts, 5 * 1000000000LL);
+
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_WRITE);
     qtest_writeb(qts, RTC_SECONDS, 0x45);
     qtest_writeb(qts, RTC_MINUTES, 0x21);
