@@ -267,3 +267,7 @@ source macio/Kconfig
 
 config SGI_HUB
     bool
+
+config SGI_IOC3
+    bool
+    select SERIAL

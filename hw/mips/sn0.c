@@ -25,6 +25,7 @@
 #include "hw/core/sysbus.h"
 #include "qemu/datadir.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/misc/sgi-ioc3.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "cpu.h"
@@ -63,6 +64,7 @@ struct SN0MachineState {
     MemoryRegion fw_text;
 
     SGIHubState hub;
+    SGIIOC3State ioc3;
 
     /*
      * Whether this machine presents firmware of its own; see the class notes.
@@ -932,6 +934,29 @@ static void sn0_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "hub", &s->hub, TYPE_SGI_HUB);
     qdev_prop_set_uint32(DEVICE(&s->hub), "nasid", 0);
     sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
+
+    /*
+     * The base-I/O controller, at the crosstalk address the configuration graph
+     * advertises. What is mapped is the chip's whole window, whose base is the
+     * console widget plus the I/O bridge's window for the third device on its
+     * bus. The serial ports sit inside that window at their own offsets, so
+     * port A lands where the graph's console descriptor points and the two
+     * agree by construction rather than by arithmetic done twice.
+     *
+     * The bridge itself is not modelled, so this reaches the chip without the
+     * chip's real parent in the path. That is an interim the machine contract
+     * records as an interim: the address a guest issues is right, the reason it
+     * decodes is not, and it is revisited when the bridge lands.
+     */
+    object_initialize_child(OBJECT(machine), "ioc3", &s->ioc3, TYPE_SGI_IOC3);
+    qdev_prop_set_chr(DEVICE(&s->ioc3), "chardev-a", serial_hd(0));
+    sysbus_realize(SYS_BUS_DEVICE(&s->ioc3), &error_fatal);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_XTALK + node +
+                                ((hwaddr)SN0_CONSOLE_WIDGET << 24) +
+                                SN0_BRIDGE_DEVICE2,
+                                sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->ioc3), 0));
 
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,
