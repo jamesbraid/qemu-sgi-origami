@@ -59,11 +59,29 @@
  * How far a widget's space runs is set by how far a big window can reach into
  * it. A translation entry supplies crosstalk address bits 33:29, so 32
  * slices of 512 MB, which is 16 GB.
+ *
+ * A widget has two such spaces, and which one a window lands on is a field of
+ * the translation entry rather than something a model may choose to ignore: the
+ * firmware's own naming is that the bit clear means memory space and set means
+ * I/O space, and it sets the bit for the widget 0 redirection. So the space is
+ * an address bit here, giving each widget a slot of two equal halves with the
+ * selector as the top bit of the slot.
+ *
+ * **We model the I/O space and not the memory space.** Every register this
+ * machine has is in the I/O half — that is where the redirection points and
+ * where the small windows reach — and the memory half is left empty rather than
+ * aliased onto the same registers, so a window aimed at the wrong space reaches
+ * nothing and says so instead of returning plausible values from the other half.
+ * That the small windows reach the I/O half is this model's reading and not a
+ * sourced fact; what is sourced is that the registers they reach are there.
  */
 #define SN0_XTALK_WIDGETS       16
-#define SN0_XTALK_WIDGET_SHIFT  34
+#define SN0_XTALK_SPACE_SHIFT   34
+#define SN0_XTALK_WIDGET_SHIFT  35
 #define SN0_XTALK_WIDGET_SIZE   (1ULL << SN0_XTALK_WIDGET_SHIFT)
-#define SN0_XTALK_BASE(widget)  ((hwaddr)(widget) << SN0_XTALK_WIDGET_SHIFT)
+#define SN0_XTALK_IO_SPACE      (1ULL << SN0_XTALK_SPACE_SHIFT)
+#define SN0_XTALK_BASE(widget)  (((hwaddr)(widget) << SN0_XTALK_WIDGET_SHIFT) | \
+                                 SN0_XTALK_IO_SPACE)
 #define SN0_XTALK_SIZE          (SN0_XTALK_WIDGETS * SN0_XTALK_WIDGET_SIZE)
 
 /*
@@ -131,7 +149,29 @@
 #define SN0_HUB_IO_BWIN_ENTRY(n)    (SN0_HUB_IO_BWIN_TABLE + \
                                      (n) * SN0_HUB_IO_BWIN_STRIDE)
 #define SN0_HUB_IO_BWIN_WIDGET(w)   ((uint64_t)(w) << 8)
+#define SN0_HUB_IO_BWIN_SPACE_IO    (1ULL << 12)
+#define SN0_HUB_IO_BWIN_SLICE(x)    ((uint64_t)(x))
 #define SN0_FIRMWARE_WIDGET0_WINDOW 6
+
+/*
+ * The entry SGI's firmware writes, term by term rather than as a total, because
+ * every device-address error this project has made was a dropped term in a sum.
+ * The slice is written out even though it is zero: a field left to a zeroed
+ * register and a field deliberately set to zero are indistinguishable until
+ * somebody changes how the register is initialised.
+ */
+#define SN0_FIRMWARE_WIDGET0_SLICE  0
+#define SN0_FIRMWARE_WIDGET0_ENTRY  (SN0_HUB_IO_BWIN_WIDGET(SN0_XBOW_WIDGET) | \
+                                     SN0_HUB_IO_BWIN_SPACE_IO | \
+                                     SN0_HUB_IO_BWIN_SLICE( \
+                                         SN0_FIRMWARE_WIDGET0_SLICE))
+
+/*
+ * The widget number SGI's firmware names to disable a window. There is no valid
+ * bit, so a window is turned off by pointing it at a widget that is not there,
+ * and the firmware's headers name three as the invalid one.
+ */
+#define SN0_XTALK_INVALID_WIDGET    3
 
 /*
  * The Hub's register window, at both halves of the crossbar's widget 1 small
