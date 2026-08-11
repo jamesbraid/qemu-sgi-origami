@@ -224,6 +224,82 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
     .impl.max_access_size = 4,
 };
 
+static uint64_t sgi_ioc3_kbc_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIIOC3State *s = opaque;
+
+    switch (SGI_IOC3_KBC_BASE + addr) {
+    case SGI_IOC3_KBC_CONTROL:
+        /*
+         * Held as written. The bits hardware owns in this register report a
+         * write still in progress and a state machine not yet idle, and this
+         * model never sets either, so a driver that writes a byte and then
+         * polls for the engine to go quiet reads quiet on its first look
+         * rather than waiting out a timeout that would never end.
+         */
+        return s->kbc_control;
+
+    case SGI_IOC3_KBC_KBD_RECEIVE:
+    case SGI_IOC3_KBC_AUX_RECEIVE:
+        /*
+         * No keyboard and no mouse are plugged in. Each register packs up to
+         * three received bytes, each with its own valid flag in the top bits,
+         * and zero clears every one of those flags -- so this reads as a port
+         * that has received nothing, which is true, rather than as three bytes
+         * of zero.
+         */
+        return 0;
+
+    default:
+        /*
+         * The two transmit registers are write-only. Reading one is a guest
+         * asking what it last sent, which the hardware does not keep.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3: read of write-only PS/2 register 0x%03x\n",
+                      (unsigned)(SGI_IOC3_KBC_BASE + addr));
+        return 0;
+    }
+}
+
+static void sgi_ioc3_kbc_write(void *opaque, hwaddr addr, uint64_t val,
+                               unsigned size)
+{
+    SGIIOC3State *s = opaque;
+
+    switch (SGI_IOC3_KBC_BASE + addr) {
+    case SGI_IOC3_KBC_CONTROL:
+        s->kbc_control = val;
+        return;
+
+    case SGI_IOC3_KBC_KBD_TRANSMIT:
+    case SGI_IOC3_KBC_AUX_TRANSMIT:
+        /*
+         * Accepted and dropped. There is nothing on the other end of either
+         * port to receive a byte, and the write completing is what a driver
+         * needs; a device that refused the write would be reporting a fault
+         * where the real one reports an unplugged port.
+         */
+        return;
+
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3: write to read-only PS/2 register 0x%03x\n",
+                      (unsigned)(SGI_IOC3_KBC_BASE + addr));
+        return;
+    }
+}
+
+static const MemoryRegionOps sgi_ioc3_kbc_ops = {
+    .read = sgi_ioc3_kbc_read,
+    .write = sgi_ioc3_kbc_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 /*
  * Which of a port's seven serial DMA registers hardware owns. The two index
  * registers software advances are writable and the two hardware advances are
@@ -460,6 +536,11 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.enet", SGI_IOC3_ENET_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_ENET_BASE, &s->enet);
 
+    /* The PS/2 controller, below the serial DMA block. */
+    memory_region_init_io(&s->kbc, OBJECT(dev), &sgi_ioc3_kbc_ops, s,
+                          "sgi-ioc3.kbc", SGI_IOC3_KBC_SIZE);
+    memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE, &s->kbc);
+
     /* The serial DMA block, immediately below the ethernet one. */
     memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
                           "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
@@ -507,6 +588,9 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
      */
     memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
 
+    /* Both PS/2 ports come up with their lines released and nothing sent. */
+    s->kbc_control = 0;
+
     /*
      * SGI's own register diagnostic lists every register in the chip
      * resetting to zero apart from the PCI identity and revision words,
@@ -539,8 +623,8 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -552,6 +636,7 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3State, SGI_IOC3_ENET_REGS),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
+        VMSTATE_UINT32(kbc_control, SGIIOC3State),
         VMSTATE_END_OF_LIST()
     }
 };

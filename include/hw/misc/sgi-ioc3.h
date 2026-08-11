@@ -115,6 +115,26 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_MAIN_SIZE      (SGI_IOC3_PIN_REG_LAST + 4)
 
 /*
+ * The PS/2 keyboard and mouse controller: a control and status register and
+ * then a receive and a transmit register for each of the two ports.
+ *
+ * It is a bit-level engine rather than a command-level 8042 clone, so there is
+ * no command protocol to answer -- what a guest needs during attach is that
+ * the registers decode. Nothing is plugged in, so both receive registers hold
+ * no valid bytes, which is what an empty port reads as.
+ */
+#define SGI_IOC3_KBC_CONTROL        0x09c
+#define SGI_IOC3_KBC_KBD_RECEIVE    0x0a0
+#define SGI_IOC3_KBC_AUX_RECEIVE    0x0a4
+#define SGI_IOC3_KBC_KBD_TRANSMIT   0x0a8
+#define SGI_IOC3_KBC_AUX_TRANSMIT   0x0ac
+
+#define SGI_IOC3_KBC_BASE           SGI_IOC3_KBC_CONTROL
+#define SGI_IOC3_KBC_SIZE           (SGI_IOC3_KBC_AUX_TRANSMIT + 4 - \
+                                     SGI_IOC3_KBC_BASE)
+#define SGI_IOC3_KBC_REGS           (SGI_IOC3_KBC_SIZE / 4)
+
+/*
  * The serial DMA block: a ring base shared by both ports, then seven registers
  * for each port four bytes apart. It ends where the ethernet block begins, so
  * the two windows meet without a gap between them.
@@ -265,6 +285,14 @@ struct SGIIOC3State {
      */
     MemoryRegion sdma;
     uint32_t sdma_reg[SGI_IOC3_SDMA_REGS];
+
+    /*
+     * The PS/2 controller. Only its control and status register holds anything
+     * a guest wrote; the receive pair reads empty because no device is plugged
+     * in, and the transmit pair takes bytes nothing carries away.
+     */
+    MemoryRegion kbc;
+    uint32_t kbc_control;
 };
 
 #endif

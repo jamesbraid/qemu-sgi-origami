@@ -446,6 +446,53 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
     qtest_quit(qts);
 }
 
+/* The PS/2 controller's five registers. */
+#define KBC_CONTROL       (IOC3_BASE + 0x09c)
+#define KBC_KBD_RECEIVE   (IOC3_BASE + 0x0a0)
+#define KBC_AUX_RECEIVE   (IOC3_BASE + 0x0a4)
+#define KBC_KBD_TRANSMIT  (IOC3_BASE + 0x0a8)
+
+static void test_the_ps2_ports_read_empty(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Nothing is plugged into either port, and each receive register carries a
+     * valid flag per byte in its top bits. Zero clears all of them, so this is
+     * a port that has received nothing rather than one holding three zero
+     * bytes -- a distinction a driver acts on, since it reads the flags to
+     * decide whether there is anything to take.
+     *
+     * A write is issued first: these are read-only, so if the model let one
+     * through, the following read would return it and the assertion would
+     * catch both faults at once.
+     */
+    qtest_writel(qts, KBC_KBD_RECEIVE, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
+    qtest_writel(qts, KBC_AUX_RECEIVE, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0);
+
+    /*
+     * The control register is the one a driver both sets and reads back, so it
+     * is asserted in both directions. The bits hardware owns in it report a
+     * write in progress and a state machine not yet idle; this model never
+     * sets either, which is what lets a driver's poll after a transmit finish
+     * on its first look instead of waiting out a timeout.
+     */
+    qtest_writel(qts, KBC_CONTROL, 0x00000005);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0x00000005);
+
+    /* A transmit register takes a byte and carries it nowhere, which must
+     * still complete -- a refused write would report a fault where the real
+     * chip reports an unplugged port. */
+    qtest_writel(qts, KBC_KBD_TRANSMIT, 0xed);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0x00000005);
+
+    qtest_quit(qts);
+}
+
 /* The serial DMA block: the shared ring base, then each port's registers. */
 #define SDMA_RING_LO      (IOC3_BASE + 0x0b4)
 #define SDMA_A_TX_PRODUCE (IOC3_BASE + 0x0bc)
@@ -606,6 +653,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sn0/ioc3/ps2-ports-read-empty", NULL,
+                        test_the_ps2_ports_read_empty);
     qtest_add_data_func("sn0/ioc3/serial-dma-indices-by-owner", NULL,
                         test_the_serial_dma_indices_by_owner);
     qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,
