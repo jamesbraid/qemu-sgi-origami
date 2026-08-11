@@ -282,11 +282,23 @@
  * reset vector reaches it as node-local physical 0x1fc00000 through the
  * compatibility segments, and the Hub special space reaches the same bytes at
  * the node's base plus 0x10000000. Both views are real hardware behaviour
- * rather than a software convention, so they are one region and an alias.
+ * rather than a software convention, so they are one region and a second
+ * mapping onto it.
+ *
+ * The Hub special view is not the same size as the flash. SGI names it LBOOT
+ * and gives it 256 MB, because that view's decode is the Hub's chip-select for
+ * a boot PROM socket, not a copy of the PROM's own size — real firmware
+ * reaches its own code through this view as a matter of course, at whatever
+ * offset the code lives at beyond the flash's real 1 MB, and expects a real
+ * chip's address decode to have ignored the extra bits and answered with the
+ * same byte a smaller, in-range offset would. A view sized to the flash alone
+ * answers only the first 1 MB of that 256 MB window and reaches nothing for
+ * the rest, which is not what the window is for.
  */
 #define SN0_FLASH_SIZE      (1 * MiB)
 #define SN0_FLASH_LOCAL     0x1fc00000  /* node offset, reset vector view */
 #define SN0_FLASH_HUB       0x10000000  /* node offset within Hub special */
+#define SN0_LBOOT_SIZE      (256 * MiB) /* the Hub special view's real size */
 
 /*
  * The directory and error-correction back doors, reached through Hub special
