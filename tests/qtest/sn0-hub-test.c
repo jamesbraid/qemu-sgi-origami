@@ -61,13 +61,13 @@
 #define IO_BWIN_WIDGET(w) ((uint64_t)(w) << 8)
 #define IO_BWIN_SLICE(x)  ((uint64_t)(x))
 /*
- * Set selects the widget's I/O space, clear its memory space. Every register
- * this machine has is in the I/O half, and SGI's firmware sets this bit for the
- * widget 0 redirection, so a window meant to reach anything sets it. A window
- * left on the memory half reaches nothing, which is how an entry that has only
- * been reset behaves.
+ * The space select. It chooses between the widget's two address spaces, and the
+ * machine models the one the redirection uses; a window asking for the other is
+ * reported and reaches nothing. Which of the two names that is stays
+ * unestablished, so nothing here asserts it — what is asserted is that the two
+ * do not both answer.
  */
-#define IO_BWIN_SPACE_IO  (1ULL << 12)
+#define IO_BWIN_OTHER_SPACE  (1ULL << 12)
 
 /* The widget number SGI's firmware names to turn a window off. */
 #define IO_BWIN_INVALID_WIDGET 3
@@ -231,12 +231,12 @@ static void test_translation_entries_decode(const void *data)
      */
     for (n = 0; n < IO_BWIN_ENTRIES; n++) {
         qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(n),
-                     IO_BWIN_WIDGET(8 + n) | IO_BWIN_SPACE_IO |
+                     IO_BWIN_WIDGET(8 + n) |
                      IO_BWIN_SLICE(n));
     }
     for (n = 0; n < IO_BWIN_ENTRIES; n++) {
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(n)), ==,
-                        IO_BWIN_WIDGET(8 + n) | IO_BWIN_SPACE_IO |
+                        IO_BWIN_WIDGET(8 + n) |
                         IO_BWIN_SLICE(n));
     }
 
@@ -283,7 +283,7 @@ static void test_big_window_follows_its_entry(const void *data)
      * model that answered plausibly at both.
      */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0),
-                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_SPACE_IO |
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) |
                  IO_BWIN_SLICE(0));
 
     qtest_writeb(qts, SMALL_WINDOW(CONSOLE_WIDGET) + IOC3_SCRATCH, 0x5a);
@@ -315,13 +315,13 @@ static void test_big_window_follows_the_slice_too(const void *data)
     qtest_writeb(qts, SMALL_WINDOW(CONSOLE_WIDGET) + IOC3_SCRATCH, 0x3c);
 
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(1),
-                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_SPACE_IO |
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) |
                  IO_BWIN_SLICE(1));
     g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(1) + IOC3_SCRATCH), !=, 0x3c);
 
     /* Move it back to the first slice and the same address reaches the chip. */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(1),
-                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_SPACE_IO |
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) |
                  IO_BWIN_SLICE(0));
     g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(1) + IOC3_SCRATCH), ==, 0x3c);
 
@@ -346,21 +346,21 @@ static void test_big_window_naming_an_absent_widget(const void *data)
      * afterwards, which the last read does.
      */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(2),
-                 IO_BWIN_WIDGET(IO_BWIN_INVALID_WIDGET) | IO_BWIN_SPACE_IO);
+                 IO_BWIN_WIDGET(IO_BWIN_INVALID_WIDGET));
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(2)), ==,
-                    IO_BWIN_WIDGET(IO_BWIN_INVALID_WIDGET) | IO_BWIN_SPACE_IO);
+                    IO_BWIN_WIDGET(IO_BWIN_INVALID_WIDGET));
 
     qtest_readb(qts, BIG_WINDOW(2));
 
     /*
      * The other way to reach nothing, and the one that looks like it should
-     * work: the right widget with the space bit clear. The machine models the
-     * widget's I/O half, so a window on its memory half is as disabled as one
-     * naming a widget that is not there.
+     * work: the right widget, asking for the address space this machine does
+     * not model. A window there is as disabled as one naming a widget that is
+     * not there, and for the same reason — nothing is mapped where it points.
      */
     qtest_writeb(qts, SMALL_WINDOW(CONSOLE_WIDGET) + IOC3_SCRATCH, 0x77);
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(3),
-                 IO_BWIN_WIDGET(CONSOLE_WIDGET));
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_OTHER_SPACE);
     g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(3) + IOC3_SCRATCH), !=, 0x77);
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
