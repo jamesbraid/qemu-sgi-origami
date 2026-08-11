@@ -63,6 +63,10 @@ struct SN0MachineState {
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;
 
+    /* Crosstalk space, and the small window each widget is reached through. */
+    MemoryRegion xtalk;
+    MemoryRegion small_window[SN0_XTALK_WIDGETS];
+
     SGIHubState hub;
     SGIIOC3State ioc3;
 
@@ -865,6 +869,7 @@ static void sn0_init(MachineState *machine)
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
+    unsigned int w;
 
     if (machine->ram_size > SN0_NODE_SIZE) {
         error_report("origin200: a node holds at most %" PRIu64 " bytes of "
@@ -923,6 +928,16 @@ static void sn0_init(MachineState *machine)
      * it, which is what a partly programmed flash looks like.
      */
     /*
+     * Crosstalk space, which every widget lives in and which the node's
+     * crosstalk windows are views onto. A widget's registers go in here once,
+     * at that widget's own base, and the windows a processor reaches them
+     * through are aliases of it — so a device has one address, and the small
+     * window and the big window that both reach it cannot come to disagree
+     * about what it is.
+     */
+    memory_region_init(&s->xtalk, NULL, "sn0.xtalk", SN0_XTALK_SIZE);
+
+    /*
      * The Hub's register window, at both halves of the crossbar's widget 1
      * small window. The lower half is how a guest reaches the Hub of whichever
      * node it is running on without first learning its node number: the address
@@ -962,12 +977,30 @@ static void sn0_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "ioc3", &s->ioc3, TYPE_SGI_IOC3);
     qdev_prop_set_chr(DEVICE(&s->ioc3), "chardev-a", serial_hd(0));
     sysbus_realize(SYS_BUS_DEVICE(&s->ioc3), &error_fatal);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_XTALK + node +
-                                ((hwaddr)SN0_CONSOLE_WIDGET << 24) +
+    memory_region_add_subregion(&s->xtalk,
+                                SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) +
                                 SN0_BRIDGE_DEVICE2,
                                 sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(&s->ioc3), 0));
+
+    /*
+     * The crossbar's eight device ports, each reached through its own small
+     * window onto the first 16 MB of that widget's crosstalk space. All eight
+     * decode because all eight exist on the crossbar; the seven with nothing
+     * attached reach an empty part of crosstalk space and fault, which is what
+     * a port with no widget on it does.
+     */
+    for (w = SN0_XTALK_PORT_FIRST; w <= SN0_XTALK_PORT_LAST; w++) {
+        char *name = g_strdup_printf("sn0.node0.xtalk.small%u", w);
+
+        memory_region_init_alias(&s->small_window[w], NULL, name, &s->xtalk,
+                                 SN0_XTALK_BASE(w), SN0_SMALL_WINDOW_SIZE);
+        memory_region_add_subregion(system,
+                                    SN0_SPACE_XTALK + node +
+                                    SN0_SMALL_WINDOW(w),
+                                    &s->small_window[w]);
+        g_free(name);
+    }
 
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,
