@@ -125,6 +125,7 @@
 #define BOARD_COMP_LIST     0x24
 
 #define BOARD_TYPE_NODE     0x11
+#define BOARD_TYPE_MIDPLANE 0x41
 #define BOARD_VERSION_NODE  3      /* every other board type gets two */
 #define BOARD_VERSION_OTHER 2
 
@@ -430,7 +431,20 @@ static void test_board_list(const void *data)
         }
 
         components = qtest_readb(qts, board + BOARD_COMPONENTS);
-        g_assert_cmpuint(components, >, 0);
+        /*
+         * The declared count is exactly zero on the midplane and greater
+         * than zero on every other board — not "greater than zero"
+         * everywhere. Real firmware writes zero on the midplane on purpose,
+         * while still populating one component behind it, so a bound this
+         * test enforced unconditionally would reject the machine it is
+         * meant to model. Keeping the bound on every other board type means
+         * an accidentally zeroed count elsewhere still fails here.
+         */
+        if (qtest_readb(qts, board + BOARD_TYPE) == BOARD_TYPE_MIDPLANE) {
+            g_assert_cmpuint(components, ==, 0);
+        } else {
+            g_assert_cmpuint(components, >, 0);
+        }
         g_assert_cmpuint(components, <=, GRAPH_COMPONENTS_N);
 
         /* Every component a board points at has to be one that exists. */
@@ -443,6 +457,23 @@ static void test_board_list(const void *data)
                             GRAPH_COMPONENTS_N * GRAPH_COMP_STRIDE);
             g_assert_cmphex((off - GRAPH_COMPONENTS) % GRAPH_COMP_STRIDE, ==,
                             0);
+        }
+
+        /*
+         * The midplane's declared count excludes its one real component from
+         * an ordinary walk, but the component is still there — one slot past
+         * the count, which is the exact slot real firmware's own consumer
+         * reads it back from. A test that only walked to the declared count
+         * would never look at this slot at all.
+         */
+        if (qtest_readb(qts, board + BOARD_TYPE) == BOARD_TYPE_MIDPLANE) {
+            uint32_t off = qtest_readl(qts, board + BOARD_COMP_LIST +
+                                       components * 4);
+
+            g_assert_cmphex(off, >=, GRAPH_COMPONENTS);
+            g_assert_cmphex(off, <,
+                            GRAPH_COMPONENTS +
+                            GRAPH_COMPONENTS_N * GRAPH_COMP_STRIDE);
         }
 
         board = qtest_readl(qts, board + BOARD_NEXT);
