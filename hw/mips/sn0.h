@@ -349,6 +349,17 @@
 #define SN0_BOARD_BASE_IO       0x21
 #define SN0_BOARD_LOCAL         1       /* record kind */
 
+/*
+ * A board's record version has a required minimum: IRIX's board-naming
+ * routine treats anything below two as unnamed and substitutes a generic
+ * label, changing the device path of everything beneath that board. Real
+ * firmware writes two on an ordinary board and three on the node board
+ * specifically, for a reason its own source states — a later register
+ * addition to the per-node error structure the node board's record carries.
+ */
+#define SN0_BOARD_VERSION_NODE  3
+#define SN0_BOARD_VERSION       2       /* every other board */
+
 /* Component types, and the flag that stops a consumer skipping one. */
 #define SN0_COMP_PROCESSOR      1
 #define SN0_COMP_HUB            2

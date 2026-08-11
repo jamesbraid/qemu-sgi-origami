@@ -119,8 +119,14 @@
 /* Board record fields this file reads. */
 #define BOARD_NEXT          0x00
 #define BOARD_KIND          0x04
+#define BOARD_TYPE          0x05
+#define BOARD_VERSION       0x06
 #define BOARD_COMPONENTS    0x17
 #define BOARD_COMP_LIST     0x24
+
+#define BOARD_TYPE_NODE     0x11
+#define BOARD_VERSION_NODE  3      /* every other board type gets two */
+#define BOARD_VERSION_OTHER 2
 
 static void test_console_port_offset(const void *data)
 {
@@ -404,6 +410,24 @@ static void test_board_list(const void *data)
 
         /* A board that is not local is skipped, components and all. */
         g_assert_cmphex(qtest_readb(qts, board + BOARD_KIND), ==, BOARD_LOCAL);
+
+        /*
+         * The record version has an exact required value per board type,
+         * not a lower bound. IRIX's board-naming routine treats anything
+         * below two as unnamed regardless of what is above it, so a
+         * lower-bound check would pass the node board carrying the
+         * midplane's version, every board carrying the same wrong value, or
+         * a version far above what real firmware ever writes — none of
+         * which is the property that has to hold.
+         */
+        {
+            uint8_t type = qtest_readb(qts, board + BOARD_TYPE);
+            uint8_t expected_version = (type == BOARD_TYPE_NODE) ?
+                                       BOARD_VERSION_NODE : BOARD_VERSION_OTHER;
+
+            g_assert_cmphex(qtest_readb(qts, board + BOARD_VERSION), ==,
+                            expected_version);
+        }
 
         components = qtest_readb(qts, board + BOARD_COMPONENTS);
         g_assert_cmpuint(components, >, 0);
