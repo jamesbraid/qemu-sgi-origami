@@ -426,13 +426,24 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
  * full revolution rather than firing at once.
  *
  * The distance is one to 2^52 rather than zero to 2^52 - 1, so a comparator
- * that already equals the counter waits a revolution too. Nothing we can
- * observe says whether the hardware treats that as a match — a continuous
- * equality comparator would, a counter that has to count into the value would
- * not, and neither guest can tell, because Linux clears the pending bit
- * straight after zeroing the counter and OpenBSD never arms a comparator at
- * all. Given the choice is free, take the one that cannot produce a
- * zero-length interval: an interval of no time is a timer that fires forever.
+ * that already equals the counter waits a revolution too. No manual states
+ * which way the hardware goes — a continuous equality comparator would call
+ * that a match, a counter that has to count into the value would not — and
+ * neither guest can tell us, because Linux clears the pending bit straight
+ * after zeroing the counter and OpenBSD never arms a comparator at all.
+ *
+ * The one piece of evidence points at counting in. IRIX's own timer setup
+ * computes the distance to the requested deadline and, when that distance is
+ * zero or negative, does not write the comparator at all: it runs the timeout
+ * handler in software instead. Routing around the hardware costs something,
+ * and nobody pays it for a comparator that would have fired immediately by
+ * itself — so the engineers who had the part appear to have believed an
+ * already-reached value does not fire again until wraparound. That is an
+ * inference from a design decision rather than a documented statement, which
+ * is why it is written here and not asserted in the datasheet, but it agrees
+ * with the choice this code had already made for a different reason: of two
+ * readings we cannot separate, take the one that cannot produce a zero-length
+ * interval, because an interval of no time is a timer that fires forever.
  */
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 {
