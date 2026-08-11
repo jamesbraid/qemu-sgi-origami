@@ -89,6 +89,17 @@ struct SGIBridgeState {
     MemoryRegion pci_io;
 
     /*
+     * The address-space views of the two regions above, needed only so a
+     * window's read/write callback can deliver a corrected access with
+     * address_space_read/write: those walk a real address space's flat view
+     * to find whichever subregion a PCI device's BAR mapped there, where a
+     * bare MemoryRegion dispatch call would not, because pci_mmio and
+     * pci_io are containers with no operations of their own.
+     */
+    AddressSpace pci_mmio_as;
+    AddressSpace pci_io_as;
+
+    /*
      * A window per PCI slot, through which a processor reaches whatever is in
      * that slot. Each slot has two of them, aimed at the same place in the
      * widget's space and looking into the two PCI address spaces, with exactly
@@ -98,6 +109,26 @@ struct SGIBridgeState {
      */
     MemoryRegion device_window_mem[SGI_BRIDGE_DEVICES];
     MemoryRegion device_window_io[SGI_BRIDGE_DEVICES];
+
+    /*
+     * A window's own idea of where it is aimed, now that a window is a plain
+     * I/O region rather than an alias: an alias carries its own offset, and a
+     * region built with memory_region_init_io has nowhere to hold one, so this
+     * is that offset moved into the device's own state.
+     */
+    hwaddr device_window_base[SGI_BRIDGE_DEVICES];
+
+    /*
+     * What a window's read/write callback needs to know beyond the value and
+     * the address a guest issued: which slot it is and, through that, this
+     * chip as a whole. One of these backs every window, memory and I/O alike,
+     * and is set once at realize.
+     */
+    struct SGIBridgeDeviceWindow {
+        SGIBridgeState *s;
+        unsigned int slot;
+    } device_window_mem_ctx[SGI_BRIDGE_DEVICES];
+    struct SGIBridgeDeviceWindow device_window_io_ctx[SGI_BRIDGE_DEVICES];
 
     /*
      * The two views of the translation table. Entries are written as 64-bit

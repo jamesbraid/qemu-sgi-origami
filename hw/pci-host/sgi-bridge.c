@@ -44,6 +44,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/misc/sgi-ioc3.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci/pci_device.h"
@@ -781,8 +782,7 @@ static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
                   BRIDGE_WINDOW_BASE_SHIFT;
     bool memory = control & DEV_MEMORY_SPACE;
 
-    memory_region_set_alias_offset(&s->device_window_mem[slot], base);
-    memory_region_set_alias_offset(&s->device_window_io[slot], base);
+    s->device_window_base[slot] = base;
     memory_region_set_enabled(&s->device_window_mem[slot], memory);
     memory_region_set_enabled(&s->device_window_io[slot], !memory);
 }
@@ -808,6 +808,248 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
                                                         : 0));
     sgi_bridge_aim_window(s, slot);
 }
+
+/*
+ * Whether a narrow access through a device window needs its byte lanes
+ * corrected before it reaches whichever PCI space this slot's window is
+ * aimed at.
+ *
+ * Real Bridge hardware has exactly one mechanism for this question: the
+ * per-device DEV_SWAP_PROGRAMMED bit (Table 36 of the Bridge ASIC
+ * specification), which the chip resets disabled and which neither guest
+ * this fork boots ever sets — confirmed by grep on both `pci-ip27.c`'s
+ * `bridge_probe()` and `xbridge.c`'s device bring-up, for every device
+ * either guest attaches. With that bit disabled, the specification's own
+ * byte-lane tables (Appendix A, Tables 65 and 73) show a narrow transfer's
+ * bytes land reversed within their 32-bit word — not passed through
+ * unmodified — which is what the correction below undoes.
+ *
+ * What this function decides is therefore not a hardware fact: real
+ * silicon has no notion of PCI vendor or device ID, and nothing here claims
+ * it does. It is a model-level compatibility policy, and the guest-facing
+ * reason it is correct is that OpenBSD's own driver author already had to
+ * answer the identical question with the identical hardware signal (none)
+ * to ask, and answered it by device identity —
+ * `xbridge_probe_device_hook()` exempts IOC3, IOC4 and RAD1 by PCI vendor
+ * and device ID and leaves every other device to correct itself in
+ * software. This model exempts the same way, checked against the PCI
+ * configuration space every device on this bus already carries, rather
+ * than against a slot number, which would silently go stale the moment a
+ * device moved slots, or against this model's own declared endianness,
+ * which is a QEMU-internal detail that happens to correlate with the real
+ * fact today and is not the same fact.
+ *
+ * IOC4 and RAD1 are not modelled in this fork and do not exist on an
+ * Origin 200, so the exemption checked here is IOC3 alone — sized for what
+ * a device in this machine can actually be, not padded for parts it does
+ * not have. An unrecognised device, or an empty slot, is corrected: that
+ * is the same default OpenBSD's own else-branch gives a device it does not
+ * name, and it means a future device added to this Bridge's window is
+ * corrected unless a later change adds it to the exemption list for a
+ * stated, sourced reason, rather than silently inheriting a gap.
+ */
+static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
+                                             unsigned int slot)
+{
+    PCIHostState *phb = PCI_HOST_BRIDGE(s);
+    PCIDevice *dev = phb->bus ? pci_find_device(phb->bus, 0,
+                                                PCI_DEVFN(slot, 0)) : NULL;
+
+    if (!dev) {
+        return true;
+    }
+    return !(pci_get_word(dev->config + PCI_VENDOR_ID) ==
+             SGI_IOC3_VENDOR_ID &&
+             pci_get_word(dev->config + PCI_DEVICE_ID) ==
+             SGI_IOC3_DEVICE_ID);
+}
+
+/*
+ * The byte-lane correction itself. Only the low two bits of a window offset
+ * move — a transfer never crosses the 32-bit word its lanes are defined
+ * within, which is what the specification's own tables show and why
+ * `sgi_bridge_config_address()` above applies the identical arithmetic to
+ * configuration space for the identical reason.
+ */
+static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
+{
+    return (offset & ~3u) | ((offset & 3u) ^ (4u - size));
+}
+
+/*
+ * Whether the device actually answering a corrected access declares an
+ * endianness that `address_space_read`/`write` would silently value-swap
+ * against, on top of the address correction above.
+ *
+ * `address_space_read`/`write` always dispatch to whatever they reach with
+ * a bare `size_memop()` — no endianness bit of its own, confirmed directly
+ * in `flatview_read_continue_step`/`write_continue_step`
+ * (`system/physmem.c`) — and QEMU's `adjust_endianness` then compares that
+ * bare op against the target region's own declared endianness and swaps
+ * the value whenever they disagree. For a region declared
+ * `DEVICE_LITTLE_ENDIAN` on this fork's little-endian-host build tools run
+ * on, the bare op already agrees (`MO_LE` is bit pattern zero on a
+ * little-endian host) and nothing swaps — which is why the ISP1040
+ * mailbox, declared exactly that, needed no correction here beyond the
+ * address one. A region declared `DEVICE_BIG_ENDIAN` — IOC3's own blocks —
+ * disagrees with that same bare op and gets swapped once, silently, which
+ * this window's own address_space_read/write call would otherwise pass
+ * straight through uncorrected. This function reads the resolved target's
+ * own declaration and says whether that swap happened, so the value can be
+ * undone the same way the address already is.
+ */
+static bool sgi_bridge_leaf_value_was_swapped(AddressSpace *space,
+                                              hwaddr addr, unsigned int size,
+                                              bool is_write)
+{
+    hwaddr xlat = addr;
+    hwaddr len = size;
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+    MemoryRegion *leaf;
+    enum device_endian end;
+    bool leaf_big_endian;
+
+    RCU_READ_LOCK_GUARD();
+    leaf = address_space_translate(space, addr, &xlat, &len, is_write, attrs);
+    if (!leaf || !leaf->ops) {
+        return false;
+    }
+    end = leaf->ops->endianness;
+    leaf_big_endian = end == DEVICE_NATIVE_ENDIAN ? target_big_endian() :
+                      end == DEVICE_BIG_ENDIAN;
+    return leaf_big_endian != (bool)HOST_BIG_ENDIAN;
+}
+
+/*
+ * A device-window access, corrected if this slot needs it, then delivered
+ * to whichever PCI space (memory or I/O) the window looks into.
+ *
+ * `pci_mmio`/`pci_io` are containers with no operations of their own — a
+ * PCI device's BAR mapping lives in a subregion added under them, found
+ * only by walking a real address space's flat view — so reaching one takes
+ * `address_space_read`/`write` on `pci_mmio_as`/`pci_io_as`, not a dispatch
+ * call directly against the container.
+ *
+ * Those two move raw bytes and apply no endianness conversion of their own
+ * to the *address-corrected* transfer, which is what makes them the right
+ * tool for the address half of this window — qtest's own `qtest_memread`
+ * is the same call for the same reason. The buffer holds the value this
+ * host's own C compiler would give a `uint64_t` variable of that value —
+ * its byte order is the host's — decoded and encoded as such below,
+ * because that is what a `.read`/`.write` callback's own value looks like
+ * as bytes on *this machine running QEMU*. What that raw decode does not
+ * see is the swap `adjust_endianness` already applied *inside* the
+ * dispatch this window's own call triggers, whenever the device actually
+ * answering declares a fixed endianness that disagrees with the bare op
+ * `address_space_read`/`write` always use — `sgi_bridge_leaf_value_was_
+ * swapped` undoes exactly that, so the value crossing this window is
+ * reinterpreted no more than it would be crossing a transparent alias.
+ */
+static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
+                                       AddressSpace *space, hwaddr addr,
+                                       unsigned int size)
+{
+    hwaddr offset = sgi_bridge_slot_needs_correction(s, slot) ?
+                    sgi_bridge_window_correct(addr, size) : addr;
+    hwaddr target = s->device_window_base[slot] + offset;
+    uint8_t bytes[4] = { 0 };
+    uint64_t val;
+
+    address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
+#if HOST_BIG_ENDIAN
+    val = ldn_be_p(bytes, size);
+#else
+    val = ldn_le_p(bytes, size);
+#endif
+    if (sgi_bridge_leaf_value_was_swapped(space, target, size, false)) {
+        val = bswap64(val) >> (64 - size * 8);
+    }
+    return val;
+}
+
+static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
+                                    AddressSpace *space, hwaddr addr,
+                                    uint64_t val, unsigned int size)
+{
+    hwaddr offset = sgi_bridge_slot_needs_correction(s, slot) ?
+                    sgi_bridge_window_correct(addr, size) : addr;
+    hwaddr target = s->device_window_base[slot] + offset;
+    uint8_t bytes[4];
+
+    if (sgi_bridge_leaf_value_was_swapped(space, target, size, true)) {
+        val = bswap64(val) >> (64 - size * 8);
+    }
+#if HOST_BIG_ENDIAN
+    stn_be_p(bytes, size, val);
+#else
+    stn_le_p(bytes, size, val);
+#endif
+    address_space_write(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
+}
+
+static uint64_t sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
+                                           unsigned size)
+{
+    struct SGIBridgeDeviceWindow *win = opaque;
+
+    return sgi_bridge_window_read(win->s, win->slot, &win->s->pci_mmio_as,
+                                  addr, size);
+}
+
+static void sgi_bridge_window_mem_write(void *opaque, hwaddr addr,
+                                        uint64_t val, unsigned size)
+{
+    struct SGIBridgeDeviceWindow *win = opaque;
+
+    sgi_bridge_window_write(win->s, win->slot, &win->s->pci_mmio_as, addr,
+                            val, size);
+}
+
+static uint64_t sgi_bridge_window_io_read(void *opaque, hwaddr addr,
+                                          unsigned size)
+{
+    struct SGIBridgeDeviceWindow *win = opaque;
+
+    return sgi_bridge_window_read(win->s, win->slot, &win->s->pci_io_as, addr,
+                                  size);
+}
+
+static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
+                                       uint64_t val, unsigned size)
+{
+    struct SGIBridgeDeviceWindow *win = opaque;
+
+    sgi_bridge_window_write(win->s, win->slot, &win->s->pci_io_as, addr, val,
+                            size);
+}
+
+/*
+ * A device window takes accesses of one, two and four bytes — the same
+ * widths configuration space does, and for the same reason: both bounds are
+ * declared so the memory system never reshapes an access before this code
+ * sees it, because the width is a term in the byte-lane correction and an
+ * access that arrived widened or split would be corrected by the wrong
+ * amount.
+ */
+static const MemoryRegionOps sgi_bridge_window_mem_ops = {
+    .read = sgi_bridge_window_mem_read,
+    .write = sgi_bridge_window_mem_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static const MemoryRegionOps sgi_bridge_window_io_ops = {
+    .read = sgi_bridge_window_io_read,
+    .write = sgi_bridge_window_io_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
 
 /*
  * Whether a register slot is one of the eight per-device control registers, and
@@ -1729,11 +1971,19 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      */
     memory_region_init(&s->pci_mmio, obj, "sgi-bridge.pci-mmio", 4 * GiB);
     memory_region_init(&s->pci_io, obj, "sgi-bridge.pci-io", 4 * GiB);
+    address_space_init(&s->pci_mmio_as, &s->pci_mmio, "sgi-bridge.pci-mmio");
+    address_space_init(&s->pci_io_as, &s->pci_io, "sgi-bridge.pci-io");
 
     /*
      * The eight slot windows, two regions each looking into one of those two
-     * spaces. Both go in at the slot's place in the widget's address space and
-     * reset decides which of the pair answers.
+     * spaces. Both go in at the slot's place in the widget's address space
+     * and reset decides which of the pair answers.
+     *
+     * Each is a plain I/O region rather than an alias, because an alias has
+     * nowhere to carry the byte-lane correction a narrow access needs: it
+     * offers only an offset, retargeted by sgi_bridge_aim_window(), with no
+     * hook to look at the access width or which device the slot holds. The
+     * per-window context below is what a callback uses to recover both.
      */
     for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
         g_autofree char *mem_name =
@@ -1741,11 +1991,19 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
         g_autofree char *io_name =
             g_strdup_printf("sgi-bridge.window%u.io", slot);
 
-        memory_region_init_alias(&s->device_window_mem[slot], obj, mem_name,
-                                 &s->pci_mmio, 0,
-                                 sgi_bridge_window_size(slot));
-        memory_region_init_alias(&s->device_window_io[slot], obj, io_name,
-                                 &s->pci_io, 0, sgi_bridge_window_size(slot));
+        s->device_window_mem_ctx[slot].s = s;
+        s->device_window_mem_ctx[slot].slot = slot;
+        s->device_window_io_ctx[slot].s = s;
+        s->device_window_io_ctx[slot].slot = slot;
+
+        memory_region_init_io(&s->device_window_mem[slot], obj,
+                              &sgi_bridge_window_mem_ops,
+                              &s->device_window_mem_ctx[slot], mem_name,
+                              sgi_bridge_window_size(slot));
+        memory_region_init_io(&s->device_window_io[slot], obj,
+                              &sgi_bridge_window_io_ops,
+                              &s->device_window_io_ctx[slot], io_name,
+                              sgi_bridge_window_size(slot));
         memory_region_add_subregion(&s->widget,
                                     sgi_bridge_window_offset(slot),
                                     &s->device_window_mem[slot]);
