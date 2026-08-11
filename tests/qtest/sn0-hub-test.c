@@ -794,6 +794,46 @@ static void test_a_guest_cannot_write_the_link_state(const void *data)
     qtest_quit(qts);
 }
 
+static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t link;
+
+    /*
+     * Unset at reset. Real firmware operates this bit itself
+     * (hubii_llp_enable(), an ordinary load-modify-store through this
+     * register once a real part is identified on the link) rather than
+     * finding it already set, so presetting it here would model the
+     * firmware's own write for it.
+     */
+    link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    g_assert_cmphex(link & (1ULL << 10), ==, 0);
+
+    /*
+     * Writable on its own: this is the property the removed couldn't-fail
+     * assertion never covered, because nothing previously distinguished a
+     * model that stored this bit from one that discarded it.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS, 1ULL << 10);
+    link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    g_assert_cmphex(link & (1ULL << 10), ==, 1ULL << 10);
+
+    /*
+     * And it is the only newly-writable thing. A guest writing the enabled
+     * bit alongside the state field and the eight-bit-mode bit must not
+     * move either of those — firmware may enable the link, but nothing may
+     * claim the link came up.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS,
+                (1ULL << 10) | (1ULL << 11) | (3ULL << 12));
+    link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    g_assert_cmphex(link & (1ULL << 10), ==, 1ULL << 10);
+    g_assert_cmphex(link & (1ULL << 11), ==, 0);
+    g_assert_cmpuint((link >> 12) & 3, >=, 2);
+
+    qtest_quit(qts);
+}
+
 static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -914,6 +954,8 @@ int main(int argc, char **argv)
                         test_the_crosstalk_link_reports_up);
     qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,
                         test_a_guest_cannot_write_the_link_state);
+    qtest_add_data_func("sn0/hub/link-enabled-bit-is-writable", NULL,
+                        test_a_guest_can_write_the_link_enabled_bit);
     qtest_add_data_func("sn0/hub/rt-counter-rate", NULL,
                         test_the_real_time_counter_runs_at_its_rate);
     qtest_add_data_func("sn0/hub/rt-counter-writable", NULL,

@@ -169,21 +169,32 @@
 #define IO_LINK_MAX_RETRY       (0x3ffULL << 16)
 #define IO_LINK_NULL_TIMEOUT    0xaULL
 
+/*
+ * Real firmware operates this bit itself — hubii_llp_enable() does an
+ * ordinary load-modify-store through this exact register once it has
+ * identified a real part on the link — so it is a control the guest drives,
+ * not a status the hardware alone reports. Left unset at reset: presetting it
+ * would model the firmware's own write for it, silently discarding whatever
+ * that write was actually gated on.
+ */
+#define IO_LINK_ENABLED         (1ULL << 10)
+
 #define IO_LINK_RESET           (IO_LINK_MAX_BURST | IO_LINK_MAX_RETRY | \
                                  IO_LINK_STATE_UP | IO_LINK_NULL_TIMEOUT)
 
 /*
  * What a guest may change. The burst, the retry count and the null-packet
  * timeout are configuration; the warm-reset trigger is a one-shot the model
- * accepts and does nothing with. Everything the hardware reports about itself —
- * the link state, the eight-bit mode and the link-enabled bit — is not
- * writable,
- * because a guest that could write the link state could tell this machine its
- * own link was down.
+ * accepts and does nothing with; the link-enabled bit is a control real
+ * firmware operates, per the comment above. The link state and the eight-bit
+ * mode stay read-only: firmware may enable the link, but nothing may claim
+ * the link came up — a guest that could write the state field could tell
+ * this machine its own link was down.
  */
 #define IO_LINK_WARM_RESET      (1ULL << 8)
 #define IO_LINK_WRITABLE        (IO_LINK_MAX_BURST | IO_LINK_MAX_RETRY | \
-                                 IO_LINK_WARM_RESET | 0x3fULL)
+                                 IO_LINK_WARM_RESET | IO_LINK_ENABLED | \
+                                 0x3fULL)
 
 /*
  * I/O interface: the big-window translation table, entry n at 8n from its base.
