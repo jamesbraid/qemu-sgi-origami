@@ -146,6 +146,17 @@ struct SGIBridgeState {
     uint8_t onewire_phase;
     uint8_t onewire_bit;
     uint8_t onewire_command;
+    uint8_t onewire_args[2];
+    uint8_t onewire_argn;
+
+    /*
+     * What the part is shifting back: a page's answer, assembled whole when
+     * the guest finishes asking for it. The answer is the redirection byte and
+     * its check pair, then the page, then the page's check pair — thirty-seven
+     * bytes, which the guest reads in two goes and checks separately.
+     */
+    uint8_t onewire_out[37];
+    uint16_t onewire_outbit;
 
     /*
      * The level each of the eight interrupt pins is being driven to by whatever
