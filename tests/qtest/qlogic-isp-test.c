@@ -104,6 +104,8 @@
 #define ISP_REQ_OFF_TIMEOUT      16
 #define ISP_REQ_OFF_SEGCOUNT     18
 #define ISP_REQ_OFF_CDB          20
+#define ISP_REQ_OFF_SEGS         32
+#define ISP_SEG_SIZE             8
 
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
@@ -1161,6 +1163,104 @@ static void test_command_round_trip(void *obj, void *data,
 }
 
 /*
+ * The round trip above only ever sends test unit ready, which carries no
+ * data phase at all — it is not what actually exercises a scatter-gather
+ * transfer, and a real driver's target probe issues something that does on
+ * the very first command: inquiry. This model shipped with no scatter-
+ * gather list handed to the SCSI layer, so any command that reached
+ * scsi_req_data() found a null bus->info->transfer_data and crashed the
+ * emulator itself — invisible to every qtest above, because none of them
+ * carried data. A real OpenBSD boot found it the only way it could: it
+ * reached "scsibus1 at qlw0: 16 targets" and crashed on the very next
+ * command. This test sends an inquiry with a real data segment and reads
+ * the answer back out of guest memory, which is what actually exercises
+ * the path that crashed.
+ */
+static void test_inquiry_data_transfer(void *obj, void *data,
+                                       QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr, data_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t inquiry[36];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    data_addr = guest_alloc(alloc, sizeof(inquiry));
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* First command absorbs the power-on unit attention, same as above. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qlogic_isp_ack(dev, io);
+
+    /* Second command: a real inquiry with a data-in segment. */
+    memset(inquiry, 0xff, sizeof(inquiry));
+    qtest_memwrite(qts, data_addr, inquiry, sizeof(inquiry));
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 1);
+    entry[ISP_REQ_OFF_CDB + 0] = INQUIRY;
+    entry[ISP_REQ_OFF_CDB + 4] = sizeof(inquiry);    /* allocation length */
+    isp_put32(entry, ISP_REQ_OFF_SEGS + 0, (uint32_t)data_addr);
+    isp_put32(entry, ISP_REQ_OFF_SEGS + 4, sizeof(inquiry));
+
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x2);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /*
+     * The buffer started as all-0xff; only a real DMA from the model can
+     * have put a device-type byte and the disk's vendor/product strings
+     * here. This is the assertion that would have failed loudly instead of
+     * segfaulting the emulator, had it existed before today.
+     */
+    qtest_memread(qts, data_addr, inquiry, sizeof(inquiry));
+    g_assert_cmphex(inquiry[0], ==, 0x00);
+    g_assert_cmpint(memcmp(&inquiry[8], "QEMU    ", 8), ==, 0);
+    g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
  * Bit-bangs a read of the EEPROM's word 0 the way OpenBSD's driver does —
  * chip select and clock asserted, the read command and a word address
  * shifted out, then sixteen clocks reading data-in on each — and checks
@@ -1269,6 +1369,8 @@ static void qlogic_isp_register_nodes(void)
                  test_init_queue_rejects_zero, NULL);
     qos_add_test("command-round-trip", "qlogic-isp1040",
                  test_command_round_trip, NULL);
+    qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
+                 test_inquiry_data_transfer, NULL);
     qos_add_test("nvram-read-fails", "qlogic-isp1040",
                  test_nvram_read_fails, NULL);
 }

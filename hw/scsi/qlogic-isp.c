@@ -968,10 +968,31 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
     g_free(req);
 }
 
+/*
+ * Handing the SCSI layer this request's already-built scatter-gather list
+ * is what makes a data phase happen at all. Without it, every command that
+ * carries data — which a bare liveness check like TEST_UNIT_READY never
+ * does, and INQUIRY, the very first thing a real driver's target probe
+ * issues, always does — reaches scsi_req_data() with no sg list attached,
+ * and that function's fallback path is an unconditional call through
+ * bus->info->transfer_data(), which this model has never defined. A real
+ * OpenBSD boot found this the only way it could: the guest attached qlw0,
+ * created its scsibus, and crashed the emulator itself on the first
+ * INQUIRY of the first probed target, because nothing before that point in
+ * this model's own test suite ever sent a command with a data phase.
+ */
+static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
+{
+    QLogicISPRequest *req = sreq->hba_private;
+
+    return &req->qsg;
+}
+
 static const struct SCSIBusInfo qlogic_isp_scsi_info = {
     .tcq = false,
     .max_target = 16,
     .max_lun = 8,
+    .get_sg_list = qlogic_isp_get_sg_list,
     .complete = qlogic_isp_scsi_complete,
     .cancel = qlogic_isp_scsi_cancel,
 };
