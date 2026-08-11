@@ -1174,6 +1174,18 @@ static void sn0_firmware_reset(void *opaque)
  *
  * Only the controller's window is pre-aimed; see sn0.h for why the two
  * adapters need resources assigned but not a window aimed in advance.
+ *
+ * Every device gets PCI_COMMAND_MASTER along with its space-decode bits, a
+ * fidelity fix rather than a functional one. OpenBSD's own qlw driver
+ * (sys/dev/pci/qlw_pci.c) only ORs a few unrelated bits into an existing
+ * command value on attach; it never sets mastering itself, and neither does
+ * the generic SGI PCI machine-dependent layer for an ordinary leaf device —
+ * both assume firmware already did, which is the standard PC-descended PCI
+ * POST behaviour real ARCS PROM follows. This model's own DMA path does not
+ * currently gate on the bit — a real adapter's sequential read and write
+ * both already succeeded through this machine before this fix — so its
+ * absence was not blocking a transfer, only leaving the guest-visible
+ * config space wrong relative to what the driver assumes firmware set.
  */
 static void sn0_assign_pci_resources(void *opaque)
 {
@@ -1186,7 +1198,8 @@ static void sn0_assign_pci_resources(void *opaque)
 
     pci_default_write_config(s->pci_ioc3, PCI_BASE_ADDRESS_0,
                              SN0_PCI_IOC3_MEM, 4);
-    pci_default_write_config(s->pci_ioc3, PCI_COMMAND, PCI_COMMAND_MEMORY, 2);
+    pci_default_write_config(s->pci_ioc3, PCI_COMMAND,
+                             PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, 2);
     sgi_bridge_assign_window(&s->io_bridge, SN0_IOC3_DEVICE, SN0_PCI_IOC3_MEM,
                              true);
 
@@ -1199,7 +1212,8 @@ static void sn0_assign_pci_resources(void *opaque)
         pci_default_write_config(s->pci_scsi[slot], PCI_BASE_ADDRESS_1,
                                  mem_base, 4);
         pci_default_write_config(s->pci_scsi[slot], PCI_COMMAND,
-                                 PCI_COMMAND_IO | PCI_COMMAND_MEMORY, 2);
+                                 PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
+                                 PCI_COMMAND_MASTER, 2);
     }
 }
 
