@@ -1270,6 +1270,13 @@ static void sn0_init(MachineState *machine)
                        cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 1,
                        cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+    /*
+     * The real-time counter's comparator for this processor. The Hub offers a
+     * line per socket; this node has one processor, so the second stays
+     * unconnected and the Hub's writes to it go nowhere.
+     */
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 2,
+                       cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
 
     /*
      * The base-I/O controller, at the crosstalk address the configuration graph

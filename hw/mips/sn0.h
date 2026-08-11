@@ -75,6 +75,7 @@
  */
 #define SN0_HUB_BANK0_CAUSE_BIT 10
 #define SN0_HUB_BANK1_CAUSE_BIT 11
+#define SN0_HUB_RT_CAUSE_BIT    12
 
 /*
  * Crosstalk address space. A crosstalk address is a widget number and an offset

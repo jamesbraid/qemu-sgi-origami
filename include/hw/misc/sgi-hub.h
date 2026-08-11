@@ -13,12 +13,23 @@
 
 #include "qemu/units.h"
 #include "hw/core/irq.h"
+#include "qemu/timer.h"
 #include "hw/core/sysbus.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_HUB "sgi-hub"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
+
+/*
+ * What a comparator's timer is handed when it expires. A timer callback gets
+ * one pointer, and both processors' comparators run the same callback, so the
+ * pointer has to name which of the two fired rather than just the Hub.
+ */
+typedef struct SGIHubCounterLine {
+    SGIHubState *hub;
+    unsigned index;
+} SGIHubCounterLine;
 
 #define SGI_HUB_WINDOW_SIZE (8 * MiB)
 
@@ -32,6 +43,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
  * second node's Hub has its own seven windows onto the same crosstalk space,
  * pointed wherever that node's firmware pointed them.
  */
+/* Processor sockets a node has, which is what makes every A/B register a pair. */
+#define SGI_HUB_PROCESSORS  2
+
 /* The two pending banks, of 64 interrupt numbers each. */
 #define SGI_HUB_PENDING_BANKS 2
 #define SGI_HUB_BANK_BITS     64
@@ -71,6 +85,14 @@ struct SGIHubState {
      */
     qemu_irq bank_irq[SGI_HUB_PENDING_BANKS];
 
+    /*
+     * The real-time counter comparator's line into each processor, hardware
+     * interrupt 2. Level-triggered on the same principle as the bank lines: it
+     * follows the pending bit gated by the enable bit, and drops when the
+     * handler acknowledges by clearing pending.
+     */
+    qemu_irq rt_irq[SGI_HUB_PROCESSORS];
+
     /* Which node this Hub is, which its network-interface status reports. */
     uint32_t nasid;
 
@@ -93,6 +115,19 @@ struct SGIHubState {
 
     /* Virtual-clock time at which the real-time counter read zero. */
     int64_t pi_rt_origin_ns;
+
+    /*
+     * The comparator, per processor. A match sets the pending bit whether or
+     * not the enable bit is set; the enable bit only gates pending onto the
+     * processor's line, which is what lets a guest poll the bit with the
+     * interrupt off.
+     */
+    uint64_t pi_rt_compare[SGI_HUB_PROCESSORS];
+    uint8_t pi_rt_pending[SGI_HUB_PROCESSORS];
+    uint8_t pi_rt_enable[SGI_HUB_PROCESSORS];
+
+    QEMUTimer *rt_timer[SGI_HUB_PROCESSORS];
+    SGIHubCounterLine rt_line[SGI_HUB_PROCESSORS];
     uint64_t ni_status;
     uint64_t io_link_status;
     uint64_t io_widget_control;

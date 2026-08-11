@@ -125,6 +125,12 @@
  * ever running backwards on its own — Linux zeroes it once at boot.
  */
 #define HUB_PI_RT_COUNT         0x030100
+#define HUB_PI_RT_COMPARE_A     0x000108
+#define HUB_PI_RT_COMPARE_B     0x000110
+#define HUB_PI_RT_PENDING_A     0x000120
+#define HUB_PI_RT_PENDING_B     0x000128
+#define HUB_PI_RT_ENABLE_A      0x000140
+#define HUB_PI_RT_ENABLE_B      0x000148
 #define PI_RT_HZ                1250000ULL
 #define PI_RT_MASK              (((uint64_t)1 << 52) - 1)
 
@@ -364,9 +370,15 @@ static void sgi_hub_update_irq(SGIHubState *s)
 {
     unsigned int bank;
 
+    unsigned int cpu;
+
     for (bank = 0; bank < SGI_HUB_PENDING_BANKS; bank++) {
         qemu_set_irq(s->bank_irq[bank],
                      !!(s->pi_int_pend[bank] & s->pi_int_mask[bank]));
+    }
+    for (cpu = 0; cpu < SGI_HUB_PROCESSORS; cpu++) {
+        qemu_set_irq(s->rt_irq[cpu], s->pi_rt_pending[cpu] &&
+                                     s->pi_rt_enable[cpu]);
     }
 }
 
@@ -408,6 +420,46 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
                          muldiv64(val, NANOSECONDS_PER_SECOND, PI_RT_HZ);
 }
 
+/*
+ * Arm one comparator against the counter as it stands now. The distance is
+ * taken forward and wrapping, so a comparator left behind the counter waits a
+ * full revolution rather than firing at once.
+ *
+ * The distance is one to 2^52 rather than zero to 2^52 - 1, so a comparator
+ * that already equals the counter waits a revolution too. Nothing we can
+ * observe says whether the hardware treats that as a match — a continuous
+ * equality comparator would, a counter that has to count into the value would
+ * not, and neither guest can tell, because Linux clears the pending bit
+ * straight after zeroing the counter and OpenBSD never arms a comparator at
+ * all. Given the choice is free, take the one that cannot produce a
+ * zero-length interval: an interval of no time is a timer that fires forever.
+ */
+static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
+{
+    uint64_t ticks = ((s->pi_rt_compare[index] - sgi_hub_rt_count(s) - 1) &
+                      PI_RT_MASK) + 1;
+
+    timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              muldiv64(ticks, NANOSECONDS_PER_SECOND, PI_RT_HZ));
+}
+
+/*
+ * A match. Set the pending bit and recompute the line; the enable bit decides
+ * whether that reaches the processor.
+ *
+ * Deliberately not re-armed here. A comparator would match again one full
+ * revolution later, which at 1.25 MHz over 52 bits is longer than any run, and
+ * re-arming at the match point risks a zero-length interval that would fire
+ * forever. The guests that use the comparator rewrite it from every handler.
+ */
+static void sgi_hub_rt_expire(void *opaque)
+{
+    SGIHubCounterLine *line = opaque;
+
+    line->hub->pi_rt_pending[line->index] = 1;
+    sgi_hub_update_irq(line->hub);
+}
+
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
@@ -420,6 +472,12 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     switch (addr) {
     case HUB_PI_RT_COUNT:
         return sgi_hub_rt_count(s);
+    case HUB_PI_RT_COMPARE_A: return s->pi_rt_compare[0];
+    case HUB_PI_RT_COMPARE_B: return s->pi_rt_compare[1];
+    case HUB_PI_RT_PENDING_A: return s->pi_rt_pending[0];
+    case HUB_PI_RT_PENDING_B: return s->pi_rt_pending[1];
+    case HUB_PI_RT_ENABLE_A:  return s->pi_rt_enable[0];
+    case HUB_PI_RT_ENABLE_B:  return s->pi_rt_enable[1];
     case HUB_PI_CPU_PRESENT_A:
         return s->cpus >= 1;
     case HUB_PI_CPU_PRESENT_B:
@@ -513,6 +571,28 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     switch (addr) {
     case HUB_PI_RT_COUNT:
         sgi_hub_rt_set(s, val);
+        /* Moving the counter moves every deadline standing against it. */
+        sgi_hub_rt_arm(s, 0);
+        sgi_hub_rt_arm(s, 1);
+        break;
+    case HUB_PI_RT_COMPARE_A:
+    case HUB_PI_RT_COMPARE_B: {
+        unsigned int i = (addr == HUB_PI_RT_COMPARE_B);
+
+        s->pi_rt_compare[i] = val & PI_RT_MASK;
+        sgi_hub_rt_arm(s, i);
+        break;
+    }
+    case HUB_PI_RT_PENDING_A:
+    case HUB_PI_RT_PENDING_B:
+        /* The handler acknowledges by writing zero, which drops the line. */
+        s->pi_rt_pending[addr == HUB_PI_RT_PENDING_B] = val & 1;
+        sgi_hub_update_irq(s);
+        break;
+    case HUB_PI_RT_ENABLE_A:
+    case HUB_PI_RT_ENABLE_B:
+        s->pi_rt_enable[addr == HUB_PI_RT_ENABLE_B] = val & 1;
+        sgi_hub_update_irq(s);
         break;
     case HUB_PI_CPU_ENABLE_A:
         s->pi_cpu_enable[0] = val & 1;
@@ -607,6 +687,12 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
     memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
     s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    memset(s->pi_rt_compare, 0, sizeof(s->pi_rt_compare));
+    memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
+    memset(s->pi_rt_enable, 0, sizeof(s->pi_rt_enable));
+    for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
+        timer_del(s->rt_timer[n]);
+    }
     memset(s->pi_int_pend, 0, sizeof(s->pi_int_pend));
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
@@ -688,6 +774,13 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);
     }
+    for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
+        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->rt_irq[n]);
+        s->rt_line[n].hub = s;
+        s->rt_line[n].index = n;
+        s->rt_timer[n] = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_hub_rt_expire,
+                                      &s->rt_line[n]);
+    }
 
     memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",
                        SGI_HUB_BWIN_TOTAL);
@@ -710,13 +803,17 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(pi_region_present, SGIHubState),
         VMSTATE_UINT8_ARRAY(pi_cpu_enable, SGIHubState, 2),
         VMSTATE_INT64(pi_rt_origin_ns, SGIHubState),
+        VMSTATE_UINT64_ARRAY(pi_rt_compare, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_UINT8_ARRAY(pi_rt_pending, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_UINT8_ARRAY(pi_rt_enable, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIHubState, SGI_HUB_PROCESSORS),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
