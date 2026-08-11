@@ -71,6 +71,8 @@
 #define IO_XTALK_TIMEOUT    0x4003b8
 #define IO_XTALK_PRESCALE   0x4003c0
 #define IO_LINK_STATUS      0x400128
+#define MD_INDICATOR_0      0x220050
+#define MD_INDICATOR_1      0x220058
 #define NI_STATUS           0x600000
 
 #define NI_MORE_NODES   (1ULL << 18)
@@ -352,6 +354,27 @@ static void test_writes_the_guest_makes(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + PI_CALIAS_SIZE, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_md_indicator_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Write-only: real firmware's own diagnostics write here and the model
+     * has to accept it without faulting, but what the write means is
+     * unestablished and nothing stores it. Asserting a read-back would
+     * certify readable state the hardware does not have, so this asserts the
+     * opposite — the write is accepted, and a read still returns the
+     * unimplemented default rather than echoing what was written.
+     */
+    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_0, 0xb4);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_INDICATOR_0), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_1, 0x1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_INDICATOR_1), ==, 0);
 
     qtest_quit(qts);
 }
@@ -818,6 +841,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/reset-values", NULL, test_reset_values);
     qtest_add_data_func("sn0/hub/guest-writes", NULL,
                         test_writes_the_guest_makes);
+    qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
+                        test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,
                         test_status_field_access);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
