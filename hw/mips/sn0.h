@@ -61,8 +61,17 @@
  * slices of 512 MB, which is 16 GB.
  *
  * A widget has two such spaces — a translation entry's bit 12 chooses between
- * them — and the redirection uses the **memory** space. That is sourced from
- * live code rather than inferred: IRIX programs this entry, for this purpose,
+ * them — and the redirection uses the **memory** space.
+ *
+ * The bit has two vocabularies and both are the sources' own: Linux and IRIX
+ * call its set value I/O space, OpenBSD's header calls the same value device
+ * space. Neither is ours and neither is wrong, so both are named here, because
+ * a reader checking this against one header or the other has to recognise it.
+ * A third meaning sits nearby and is not this bit at all — the Bridge's own
+ * header uses device space for its PCI windows, one chip further out.
+ *
+ * That the redirection selects memory is sourced from live code rather than
+ * inferred: IRIX programs this entry, for this purpose,
  * inside a block compiled for this machine family, naming memory mode with
  * widget zero and offset zero. Across the whole corpus the other value appears
  * in exactly one write, and that one programs a different window on a peer node
@@ -156,8 +165,18 @@
  * Hub's processor-interface side, so firmware aims the last big window at
  * widget 0 instead, and both guests expect to find that done.
  *
- * They find it done by the translation table's reset value, which already names
- * widget 0, so the write puts back what is there. That is not a property of our
+ * **Nothing in the entry's contents marks it reserved, and a guest reads those
+ * contents as meaning the opposite.** OpenBSD's large-window allocator scans
+ * the
+ * table for a spare entry and treats one whose widget field is zero as free —
+ * which is exactly what the redirect holds. What keeps a guest from claiming it
+ * is a hard-coded index exclusion in that allocator, not anything about the
+ * value. Nothing on this machine asks for a large window yet, so nothing
+ * exercises it; the day something does, that one line is the whole protection.
+ *
+ * They find the redirection done by the translation table's reset value, which
+ * already names widget 0, so the write puts back what is there. That is not a
+ * property of our
  * model: the entry resets to zero, and zero is field for field what the
  * redirection writes, so a real machine's firmware is doing the same
  * belt-and-braces write on any machine whose I/O bridge sits behind widget 0.
