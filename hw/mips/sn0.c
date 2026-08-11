@@ -948,6 +948,10 @@ static void sn0_init(MachineState *machine)
      */
     object_initialize_child(OBJECT(machine), "hub", &s->hub, TYPE_SGI_HUB);
     qdev_prop_set_uint32(DEVICE(&s->hub), "nasid", 0);
+    qdev_prop_set_uint32(DEVICE(&s->hub), "xtalk-widget-shift",
+                         SN0_XTALK_WIDGET_SHIFT);
+    object_property_set_link(OBJECT(&s->hub), "xtalk", OBJECT(&s->xtalk),
+                             &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
 
     /*
@@ -1001,6 +1005,16 @@ static void sn0_init(MachineState *machine)
                                     &s->small_window[w]);
         g_free(name);
     }
+
+    /*
+     * The seven big windows, filling the crosstalk window above the small ones.
+     * Where each of them points is the Hub's to say, not the machine's: they
+     * follow the Hub's translation table, and this only decides where the set
+     * of them lands in the node's address space.
+     */
+    memory_region_add_subregion(system,
+                                SN0_SPACE_XTALK + node + SN0_BIG_WINDOW_BASE,
+                                &s->hub.bwin);
 
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,

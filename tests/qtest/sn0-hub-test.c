@@ -16,6 +16,16 @@
  * have to decode, because a guest uses one to read its processor number and the
  * other to clear interrupt state in the same boot.
  *
+ * The big-window tests below have a limit worth stating rather than leaving to
+ * be discovered: a qtest cannot see a bus error, because no processor is
+ * executing, so an access that reached nothing and an access that was answered
+ * with zero are the same thing from here. Every assertion that means "this
+ * window must not reach the device" is therefore written as "this must not
+ * return what the device holds", which catches a window decoding to the wrong
+ * place and does not catch a window that answers zero rather than faulting.
+ * Each of them puts a distinctive value in the device first so that "what the
+ * device holds" is not itself zero.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -42,6 +52,29 @@
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
 #define NI_IDENTITY     0xffULL          /* revision and chip identity */
+
+/* The big-window translation table, entry n at 8n from its base. */
+#define IO_BWIN_TABLE   0x400160
+#define IO_BWIN_STRIDE  8
+#define IO_BWIN_ENTRIES 7
+#define IO_BWIN_ENTRY(n) (IO_BWIN_TABLE + (n) * IO_BWIN_STRIDE)
+#define IO_BWIN_WIDGET(w) ((uint64_t)(w) << 8)
+#define IO_BWIN_SLICE(x)  ((uint64_t)(x))
+
+/*
+ * The seven big windows themselves, and something to find at the far end of
+ * one. The base I/O controller sits at the third device window of widget 8, and
+ * its serial port A has a scratch register that stores whatever is put in it —
+ * a byte that can be written through one window and read back through another,
+ * which is what says the two windows reached one device rather than two.
+ */
+#define BIG_WINDOW_BASE 0x20000000
+#define BIG_WINDOW_SIZE 0x20000000ULL
+#define BIG_WINDOW(n)   (SPACE_XTALK + BIG_WINDOW_BASE + (n) * BIG_WINDOW_SIZE)
+
+#define SMALL_WINDOW(w) (SPACE_XTALK + (uint64_t)(w) * 0x1000000)
+#define CONSOLE_WIDGET  8
+#define IOC3_SCRATCH    (0x600000 + 0x020178 + 7)
 
 static void test_addressing_mode(const void *data)
 {
@@ -173,6 +206,134 @@ static void test_both_windows(const void *data)
     qtest_quit(qts);
 }
 
+static void test_translation_entries_decode(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned n;
+
+    /*
+     * Seven entries, eight bytes apart, each its own register. Writing a
+     * different value to every one and reading them all back afterwards is what
+     * separates seven registers from one register decoded seven ways — a model
+     * that aliased them would return the last value written for all of them and
+     * would pass any test that wrote and read one at a time.
+     */
+    for (n = 0; n < IO_BWIN_ENTRIES; n++) {
+        qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(n),
+                     IO_BWIN_WIDGET(8 + n) | IO_BWIN_SLICE(n));
+    }
+    for (n = 0; n < IO_BWIN_ENTRIES; n++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(n)), ==,
+                        IO_BWIN_WIDGET(8 + n) | IO_BWIN_SLICE(n));
+    }
+
+    /*
+     * There is no eighth. SGI's manuals number these seven entries one through
+     * seven, so the register one stride past the last is the one someone
+     * counting from the manual would write; it is not a translation entry and
+     * must not behave like one.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(IO_BWIN_ENTRIES), ~0ULL);
+    g_assert_cmphex(qtest_readq(qts,
+                                HUB_LOCAL + IO_BWIN_ENTRY(IO_BWIN_ENTRIES)),
+                    ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_translation_entry_width(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Thirteen bits and nothing above them. The entry has no valid bit — a
+     * window is turned off by naming a widget that is not there — so there is
+     * no bit above 12 for a model to invent one in, and a guest writing a wider
+     * value must not find it stored.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0), ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0)), ==, 0x1fff);
+
+    qtest_quit(qts);
+}
+
+static void test_big_window_follows_its_entry(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Aim big window 0 at the widget the base I/O controller is on, at that
+     * widget's first slice, and the controller has to answer through the window
+     * as well as through its small one. Writing through the small window and
+     * reading through the big one is the assertion: equal values from two
+     * addresses say one device, where a read alone would be satisfied by any
+     * model that answered plausibly at both.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0),
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_SLICE(0));
+
+    qtest_writeb(qts, SMALL_WINDOW(CONSOLE_WIDGET) + IOC3_SCRATCH, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(0) + IOC3_SCRATCH), ==, 0x5a);
+
+    /* And the other way, so neither is the direction that happens to work. */
+    qtest_writeb(qts, BIG_WINDOW(0) + IOC3_SCRATCH, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, SMALL_WINDOW(CONSOLE_WIDGET) +
+                                IOC3_SCRATCH), ==, 0xa5);
+
+    qtest_quit(qts);
+}
+
+static void test_big_window_follows_the_slice_too(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The entry's low five bits choose which 512 MB slice of the widget the
+     * window lands on, and they are the half of the entry a model can drop
+     * without any of the tests above noticing: name the right widget, ignore
+     * the slice, and every access still reaches the right device.
+     *
+     * So aim a window at the same widget one slice further up, where nothing
+     * is, and require that the controller does *not* answer. Asserting where a
+     * window does not reach is the only form of this that a model ignoring the
+     * field cannot pass.
+     */
+    qtest_writeb(qts, SMALL_WINDOW(CONSOLE_WIDGET) + IOC3_SCRATCH, 0x3c);
+
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(1),
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_SLICE(1));
+    g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(1) + IOC3_SCRATCH), !=, 0x3c);
+
+    /* Move it back to the first slice and the same address reaches the chip. */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(1),
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_SLICE(0));
+    g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(1) + IOC3_SCRATCH), ==, 0x3c);
+
+    qtest_quit(qts);
+}
+
+static void test_big_window_naming_an_absent_widget(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * How the guests disable a window: there is no valid bit, so they program
+     * an invalid widget number instead. The entry has to accept it, and an
+     * access through the window has to reach nothing without taking the machine
+     * down — the model still has to be answering afterwards, which is what the
+     * read after it checks.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(2), IO_BWIN_WIDGET(0xf));
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(2)), ==,
+                    IO_BWIN_WIDGET(0xf));
+
+    qtest_readb(qts, BIG_WINDOW(2));
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -186,6 +347,16 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/status-field-access", NULL,
                         test_status_field_access);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
+    qtest_add_data_func("sn0/hub/translation-entries-decode", NULL,
+                        test_translation_entries_decode);
+    qtest_add_data_func("sn0/hub/translation-entry-width", NULL,
+                        test_translation_entry_width);
+    qtest_add_data_func("sn0/hub/big-window-follows-its-entry", NULL,
+                        test_big_window_follows_its_entry);
+    qtest_add_data_func("sn0/hub/big-window-follows-the-slice", NULL,
+                        test_big_window_follows_the_slice_too);
+    qtest_add_data_func("sn0/hub/big-window-absent-widget", NULL,
+                        test_big_window_naming_an_absent_widget);
 
     return g_test_run();
 }
