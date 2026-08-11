@@ -787,6 +787,27 @@ static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
     memory_region_set_enabled(&s->device_window_io[slot], !memory);
 }
 
+/*
+ * Every slot's window, re-aimed from its own register. Reset uses this to
+ * establish the windows' initial state from the registers it has just set to
+ * their reset values, and a post-migration load uses it for the same reason
+ * with a different source: `device_window_base` and each window pair's
+ * enabled state are both derived from the per-slot register, not independent
+ * facts, so nothing about them needs to travel in the migration stream in its
+ * own right — only the register does, and it already does
+ * (`VMSTATE_UINT32_ARRAY(reg, ...)`). Deriving both call sites from one
+ * function is what keeps that true; two copies of this loop would be two
+ * places the derivation could go out of step with each other.
+ */
+static void sgi_bridge_aim_all_windows(SGIBridgeState *s)
+{
+    unsigned int slot;
+
+    for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
+        sgi_bridge_aim_window(s, slot);
+    }
+}
+
 void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
                               hwaddr pci_base, bool memory_space)
 {
@@ -1890,7 +1911,6 @@ static void sgi_bridge_iommu_class_init(ObjectClass *oc, const void *data)
 static void sgi_bridge_reset_hold(Object *obj, ResetType type)
 {
     SGIBridgeState *s = SGI_BRIDGE(obj);
-    unsigned int slot;
     unsigned int i;
 
     for (i = 0; i < SGI_BRIDGE_REG_SLOTS; i++) {
@@ -1927,9 +1947,7 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
      * base of zero, so every window comes up over the bottom of PCI memory
      * space, which is where a slot that nothing has configured points.
      */
-    for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
-        sgi_bridge_aim_window(s, slot);
-    }
+    sgi_bridge_aim_all_windows(s);
 }
 
 static void sgi_bridge_realize(DeviceState *dev, Error **errp)
@@ -2058,10 +2076,30 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s->widget, BRIDGE_ATE_LOW_BASE, &s->ate_low);
 }
 
+/*
+ * Re-aim every window after a migration or snapshot load. `device_window_base`
+ * and each window pair's enabled state are derived from the per-slot register
+ * (sgi_bridge_aim_window(), above) rather than independent facts, and the
+ * register is what the migration stream actually carries
+ * (`VMSTATE_UINT32_ARRAY(reg, ...)` below) — so post_load's job is exactly
+ * reset's, run against restored register values instead of their reset ones.
+ * Without this, a guest that resumes after a load reaches whatever slot the
+ * windows happened to be aimed at when the destination's device was created
+ * rather than where the guest itself last programmed them.
+ */
+static int sgi_bridge_post_load(void *opaque, int version_id)
+{
+    SGIBridgeState *s = opaque;
+
+    sgi_bridge_aim_all_windows(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_bridge = {
     .name = "sgi-bridge",
     .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = sgi_bridge_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIBridgeState, SGI_BRIDGE_REG_SLOTS),
         VMSTATE_UINT8(pin_level, SGIBridgeState),
