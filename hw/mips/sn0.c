@@ -1298,9 +1298,11 @@ static void sn0_init(MachineState *machine)
      * right about the address itself. It says so on every run, and the line
      * disappears when the bridge makes it true.
      */
-    warn_report("origin200: the base I/O controller is mapped directly at its "
-                "crosstalk address; the I/O bridge that really decodes it is "
-                "not modelled yet (an approved interim)");
+    if (!s->io_bridge_present) {
+        warn_report("origin200: the base I/O controller is mapped directly at "
+                    "its crosstalk address; the I/O bridge that really decodes "
+                    "it is not modelled yet (an approved interim)");
+    }
 
     object_initialize_child(OBJECT(machine), "ioc3", &s->ioc3, TYPE_SGI_IOC3);
     qdev_prop_set_chr(DEVICE(&s->ioc3), "chardev-a", serial_hd(0));
@@ -1361,6 +1363,22 @@ static void sn0_init(MachineState *machine)
             &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge), 0), -1);
     }
+
+    /*
+     * Widget 0's small window, which Linux reads the crossbar's identification
+     * register through — by name, with the raw address macro, rather than the
+     * substituting helper that would have sent it to big window 6. OpenBSD
+     * takes that other path, so both have to work and both have to reach the
+     * same device: this alias and big window 6 are two views of one widget.
+     */
+    memory_region_init_alias(&s->small_window[SN0_XBOW_WIDGET], NULL,
+                             "sn0.node0.xtalk.small0", &s->xtalk,
+                             SN0_XTALK_BASE(SN0_XBOW_WIDGET),
+                             SN0_SMALL_WINDOW_SIZE);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_XTALK + node +
+                                SN0_SMALL_WINDOW(SN0_XBOW_WIDGET),
+                                &s->small_window[SN0_XBOW_WIDGET]);
 
     /*
      * The crossbar's eight device ports, each reached through its own small

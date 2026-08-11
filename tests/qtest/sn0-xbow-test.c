@@ -158,25 +158,6 @@ static void test_it_is_where_the_firmware_put_it(const void *data)
     qtest_quit(qts);
 }
 
-static void test_small_window_zero_is_not_the_way_in(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-    uint32_t through_the_window =
-        qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA);
-
-    /*
-     * Widget 0's small window is the one the Hub defect makes unreliable, and
-     * the machine leaves it unmapped so that a guest reaching for it says so
-     * instead of quietly working. If it answered, this model would be a machine
-     * on which the workaround both guests carry is unnecessary — which is a
-     * different machine, and one that would hide a missing big window.
-     */
-    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + XBOW_IDENTIFICATION +
-                                REG_DATA), !=, through_the_window);
-
-    qtest_quit(qts);
-}
-
 static void test_upper_half_is_not_the_register(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -217,6 +198,38 @@ static void test_the_revision_is_settable(const void *data)
     qtest_quit(qts);
 }
 
+static void test_both_windows_reach_one_device(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint32_t through_small, through_big;
+
+    /*
+     * The two guests reach widget 0 by different routes and the machine owes
+     * both. Linux reads the small window directly, using the address macro
+     * whose name says raw rather than the substituting helper; OpenBSD
+     * redirects to the last big window through the one function both its
+     * identification paths call. Each uses the path the other does not.
+     *
+     * So the assertion is not that either window answers — it is that they
+     * answer *the same*. A machine that mapped one and forgot the other passes
+     * every single-window check and is broken for exactly one guest, which is
+     * the failure this project has already shipped once here: the small window
+     * was left unmapped on the strength of a claim about both guests that was
+     * only ever true of one, and Linux found it with a bus error.
+     */
+    through_small = qtest_readl(qts, SPACE_XTALK + XBOW_IDENTIFICATION +
+                                REG_DATA);
+    through_big = qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA);
+
+    g_assert_cmphex(through_small, ==, through_big);
+
+    /* And it is the identity, rather than the two agreeing on a wrong value. */
+    g_assert_cmphex(ID_PART(through_small), ==, BRIDGE_PART);
+    g_assert_cmphex(ID_MANUFACTURER(through_small), ==, BRIDGE_MANUFACTURER);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -225,8 +238,8 @@ int main(int argc, char **argv)
                         test_identity_is_the_bridges);
     qtest_add_data_func("sn0/xbow/reached-through-the-last-big-window", NULL,
                         test_it_is_where_the_firmware_put_it);
-    qtest_add_data_func("sn0/xbow/small-window-zero-is-not-the-way-in", NULL,
-                        test_small_window_zero_is_not_the_way_in);
+    qtest_add_data_func("sn0/xbow/both-windows-reach-one-device", NULL,
+                        test_both_windows_reach_one_device);
     qtest_add_data_func("sn0/xbow/upper-half-of-the-slot", NULL,
                         test_upper_half_is_not_the_register);
     qtest_add_data_func("sn0/xbow/revision-is-settable", NULL,
