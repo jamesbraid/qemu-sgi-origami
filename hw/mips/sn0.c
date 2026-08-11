@@ -994,8 +994,12 @@ static void sn0_init(MachineState *machine)
      * The crossbar, answering at widget 0 with this machine's identity rather
      * than a crossbar's own. It is reachable only through a big window: widget
      * 0's small window is the one a Hub defect makes unreliable, so it is left
-     * unmapped and the firmware aims the last big window here instead, which is
-     * what both guests expect to find already done.
+     * unmapped and the guests reach widget 0 through the last big window
+     * instead, which is what they expect to find already arranged.
+     *
+     * What arranges it is the translation table's reset value rather than our
+     * firmware's write, which puts back the value already there. The firmware
+     * call is kept for being what a real firmware does.
      */
     object_initialize_child(OBJECT(machine), "xbow", &s->xbow, TYPE_SGI_XBOW);
     qdev_prop_set_uint64(DEVICE(&s->xbow), "span", SN0_XTALK_WIDGET_SIZE);

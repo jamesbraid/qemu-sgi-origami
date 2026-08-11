@@ -11,10 +11,14 @@
  *
  * Widget 0 is reached only through a big window here. Its small window is the
  * one a Hub defect makes unreliable on real hardware, so the machine leaves it
- * unmapped and the firmware aims the last big window at widget 0 instead —
- * which is the arrangement both guests expect, and the arrangement these tests
+ * unmapped and the guests reach widget 0 through the last big window instead —
+ * which is the arrangement both expect, and the arrangement these tests
  * exercise, because testing the identity through a path no guest uses would
  * prove the register right and the machine unreachable.
+ *
+ * What puts the window there is the translation table's reset value, not the
+ * firmware's redirection, which writes the value the entry already holds. No
+ * assertion below can tell those apart, and one of them says so.
  *
  * One limit of these tests, stated because it would otherwise be assumed away:
  * where the machine is supposed to raise a bus error, a qtest cannot see one.

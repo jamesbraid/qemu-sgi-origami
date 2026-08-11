@@ -322,10 +322,14 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
 
     /*
-     * Every entry resets to zero, which names widget 0 at its first slice. That
-     * is not a disabled window — the table has nothing to disable with — so all
-     * seven come out of reset pointing at whatever widget 0 is, and firmware
-     * aims six of them elsewhere before anything reads through them.
+     * Every entry resets to zero, which names widget 0 at its first slice in
+     * memory space. That is not a disabled window — the table has nothing to
+     * disable with — so all seven come out of reset pointing at whatever
+     * widget 0 is, and on this machine nothing ever aims them anywhere else.
+     *
+     * Which is why the firmware's redirection of widget 0 onto the last window
+     * writes a value that entry already holds. Reaching widget 0 through a big
+     * window here is the reset state doing it, not the firmware.
      */
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         s->io_bwin[n] = 0;
