@@ -278,6 +278,21 @@
 #define SN0_FLASH_HUB       0x10000000  /* node offset within Hub special */
 
 /*
+ * The directory and error-correction back doors, reached through Hub special
+ * space above the boot flash windows. Real firmware's own memory and
+ * directory diagnostics write a pattern through here and read it back to
+ * test for stuck bits; a range that answers with anything other than what
+ * was last written there fails that test on a healthy machine. We model no
+ * coherence directory and no error correction, so the addresses carry no
+ * meaning beyond that round trip, and each window is sized to the full
+ * offset range the guest's own address macros can produce within it.
+ */
+#define SN0_BACKDOOR_ECC_HUB  0x80000000  /* node offset within Hub special */
+#define SN0_BACKDOOR_ECC_SIZE (1 * GiB)
+#define SN0_BACKDOOR_DIR_HUB  0xc0000000  /* node offset within Hub special */
+#define SN0_BACKDOOR_DIR_SIZE (1 * GiB)
+
+/*
  * Ten entry points at the start of the flash, eight bytes apart. A guest calls
  * them by address, so each has to be a branch rather than whatever follows.
  */

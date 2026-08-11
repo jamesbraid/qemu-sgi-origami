@@ -27,6 +27,16 @@
 #define FLASH_RESET     (NODE0 + 0x1fc00000)
 #define FLASH_HUB       (SPACE_HUB + NODE0 + 0x10000000)
 
+/*
+ * The directory and error-correction back doors. Real firmware's own memory
+ * and directory diagnostic writes a pattern through here and reads it back
+ * to test for stuck bits; nothing about coherence or ECC is modelled, so the
+ * only property that has to hold is the round trip itself.
+ */
+#define BACKDOOR_ECC    (SPACE_HUB + NODE0 + 0x80000000ULL)
+#define BACKDOOR_DIR    (SPACE_HUB + NODE0 + 0xc0000000ULL)
+#define BACKDOOR_SIZE   0x40000000ULL
+
 /* The configuration block, at flash offset 0x60. */
 #define CONFIG_OFFSET   0x60
 #define CONFIG_MAGIC    0x69703237636f6e66ULL    /* "ip27conf" */
@@ -170,6 +180,45 @@ static void test_node_memory(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Write a pattern at a handful of addresses across a back-door window and
+ * confirm each reads back unchanged. The offsets are the start of the
+ * window, one in the middle, and the last aligned double word, rather than
+ * one address at the base, because a region sized wrong at the top is a
+ * different bug from one that never held state at all.
+ */
+static void check_backdoor_round_trip(QTestState *qts, uint64_t base)
+{
+    static const uint64_t offsets[] = { 0x0, 0x12345678, BACKDOOR_SIZE - 8 };
+    unsigned int i;
+
+    for (i = 0; i < G_N_ELEMENTS(offsets); i++) {
+        uint64_t addr = base + offsets[i];
+        uint64_t pattern = 0xdaedbaefdaedbaefULL ^ offsets[i];
+
+        qtest_writeq(qts, addr, pattern);
+        g_assert_cmphex(qtest_readq(qts, addr), ==, pattern);
+    }
+}
+
+static void test_directory_backdoor(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    check_backdoor_round_trip(qts, BACKDOOR_DIR);
+
+    qtest_quit(qts);
+}
+
+static void test_ecc_backdoor(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    check_backdoor_round_trip(qts, BACKDOOR_ECC);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -183,6 +232,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/address-map/flash-read-only", NULL,
                         test_flash_is_read_only);
     qtest_add_data_func("sn0/address-map/node-memory", NULL, test_node_memory);
+    qtest_add_data_func("sn0/address-map/directory-backdoor", NULL,
+                        test_directory_backdoor);
+    qtest_add_data_func("sn0/address-map/ecc-backdoor", NULL,
+                        test_ecc_backdoor);
 
     return g_test_run();
 }
