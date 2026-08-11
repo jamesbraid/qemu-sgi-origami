@@ -48,7 +48,7 @@
 #define GRAPH_BOARD_SIZE    0xc0
 #define GRAPH_COMPONENTS    0x4400
 #define GRAPH_COMP_STRIDE   0x80
-#define GRAPH_COMPONENTS_N  6
+#define GRAPH_COMPONENTS_N  8
 
 #define BOARD_LOCAL         1
 #define COMP_ENABLED        1
@@ -154,6 +154,12 @@
 #define COMP_TYPE           0x00
 #define COMP_FLAGS          0x02
 #define COMP_CPU_CLOCK      0x3c
+#define COMP_PHYSICAL_ID    0x18
+#define COMP_VIRTUAL_ID     0x1c
+
+#define COMP_TYPE_BRIDGE    5
+#define COMP_TYPE_SCSI      11
+#define COMP_TYPE_IOC3      6
 
 /* Board record fields this file reads. */
 #define BOARD_NEXT          0x00
@@ -165,6 +171,7 @@
 
 #define BOARD_TYPE_NODE     0x11
 #define BOARD_TYPE_MIDPLANE 0x41
+#define BOARD_TYPE_BASE_IO  0x21
 #define BOARD_VERSION_NODE  3      /* every other board type gets two */
 #define BOARD_VERSION_OTHER 2
 
@@ -523,6 +530,67 @@ static void test_memory_layout_matches_addressing_mode(const void *data)
     qtest_quit(qts);
 }
 
+static void test_base_io_components(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t board = GRAPH_BOARDS;
+    bool found = false;
+
+    while (board != 0) {
+        if (qtest_readb(qts, board + BOARD_TYPE) == BOARD_TYPE_BASE_IO) {
+            /*
+             * Four components in this order — the I/O bridge, two disk
+             * controllers, then the I/O controller — matching a real
+             * Origin 200's own captured graph and hardware inventory
+             * (docs/library/boot-logs.md, docs/component-taxonomy.md).
+             */
+            static const uint8_t expected_types[] = {
+                COMP_TYPE_BRIDGE, COMP_TYPE_SCSI, COMP_TYPE_SCSI,
+                COMP_TYPE_IOC3,
+            };
+            uint8_t components = qtest_readb(qts, board + BOARD_COMPONENTS);
+            uint32_t scsi_off[2];
+            unsigned int scsi_seen = 0;
+
+            found = true;
+            g_assert_cmpuint(components, ==, 4);
+
+            for (unsigned int i = 0; i < components; i++) {
+                uint32_t off = qtest_readl(qts, board + BOARD_COMP_LIST +
+                                           i * 4);
+                uint8_t type = qtest_readb(qts, off + COMP_TYPE);
+
+                g_assert_cmpuint(type, ==, expected_types[i]);
+                if (type == COMP_TYPE_SCSI) {
+                    g_assert_cmpuint(scsi_seen, <, 2);
+                    scsi_off[scsi_seen++] = off;
+                }
+            }
+
+            /*
+             * Each disk controller's physical identifier is its PCI device
+             * number and its virtual identifier is its controller number.
+             * A guest's boot-device walk compares both against what the
+             * Bridge's own PCI probe finds, so the graph-index default
+             * that stands in until a storage component exists — harmless
+             * with none — would be wrong the moment two of them appear.
+             */
+            g_assert_cmpuint(qtest_readb(qts, scsi_off[0] + COMP_PHYSICAL_ID),
+                             ==, 0);
+            g_assert_cmpuint(qtest_readl(qts, scsi_off[0] + COMP_VIRTUAL_ID),
+                             ==, 0);
+            g_assert_cmpuint(qtest_readb(qts, scsi_off[1] + COMP_PHYSICAL_ID),
+                             ==, 1);
+            g_assert_cmpuint(qtest_readl(qts, scsi_off[1] + COMP_VIRTUAL_ID),
+                             ==, 1);
+        }
+        board = qtest_readl(qts, board + BOARD_NEXT);
+    }
+
+    g_assert_true(found);
+    qtest_quit(qts);
+}
+
 static void test_board_list(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -641,6 +709,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/firmware/memory-layout-matches-addressing-mode",
                         NULL, test_memory_layout_matches_addressing_mode);
     qtest_add_data_func("sn0/firmware/board-list", NULL, test_board_list);
+    qtest_add_data_func("sn0/firmware/base-io-components", NULL,
+                        test_base_io_components);
 
     return g_test_run();
 }
