@@ -965,9 +965,28 @@ static void sgi_bridge_onewire_answer(SGIBridgeState *s)
 
     memcpy(&s->onewire_out[3], &sgi_bridge_onewire_image[offset],
            NIC_PAGE_SIZE);
-    crc = ~sgi_bridge_onewire_crc(0, (const uint8_t *)
-                                  &sgi_bridge_onewire_image[offset],
-                                  NIC_PAGE_SIZE);
+
+    /*
+     * The block carries its own check over its first thirty bytes, stored
+     * inverted in the last two, so that a check across the whole thirty-two
+     * lands on the fixed residue. This is the check the board-identity reader
+     * runs over the stored bytes before it will trust the part number, and it
+     * is a different check from the framing pair the read protocol appends
+     * below: a block can satisfy the framing and still fail this one, which is
+     * exactly what a page of data with no embedded check does. So it goes into
+     * the block, not after it.
+     */
+    crc = ~sgi_bridge_onewire_crc(0, &s->onewire_out[3], NIC_PAGE_SIZE - 2);
+    s->onewire_out[3 + NIC_PAGE_SIZE - 2] = crc & 0xff;
+    s->onewire_out[3 + NIC_PAGE_SIZE - 1] = crc >> 8;
+
+    /*
+     * Then the framing check the read protocol sends after the block, over the
+     * whole thirty-two bytes as they now stand — the embedded check included —
+     * so it is computed from the answer being sent rather than from the stored
+     * image, which no longer matches in its last two bytes.
+     */
+    crc = ~sgi_bridge_onewire_crc(0, &s->onewire_out[3], NIC_PAGE_SIZE);
     s->onewire_out[3 + NIC_PAGE_SIZE] = crc & 0xff;
     s->onewire_out[4 + NIC_PAGE_SIZE] = crc >> 8;
 
