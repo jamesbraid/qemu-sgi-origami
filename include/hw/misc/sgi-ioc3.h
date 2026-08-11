@@ -115,6 +115,32 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_MAIN_SIZE      (SGI_IOC3_PIN_REG_LAST + 4)
 
 /*
+ * The serial DMA block: a ring base shared by both ports, then seven registers
+ * for each port four bytes apart. It ends where the ethernet block begins, so
+ * the two windows meet without a gap between them.
+ *
+ * A guest reaches this while attaching its serial child even when it goes on
+ * to drive the ports through the byte-wide 16550 windows instead, which is
+ * what both of ours do -- the registers have to answer before a driver gets
+ * far enough to decide it does not want them.
+ */
+#define SGI_IOC3_SDMA_RING_HI       0x0b0
+#define SGI_IOC3_SDMA_RING_LO       0x0b4
+#define SGI_IOC3_SDMA_PORT_A        0x0b8
+#define SGI_IOC3_SDMA_PORT_B        0x0d4
+
+/* Offsets within one port's seven registers, from that port's base. */
+#define SGI_IOC3_SDMA_CONTROL       0x00
+#define SGI_IOC3_SDMA_TX_PRODUCE    0x04
+#define SGI_IOC3_SDMA_TX_CONSUME    0x08
+#define SGI_IOC3_SDMA_RX_PRODUCE    0x0c
+#define SGI_IOC3_SDMA_RX_CONSUME    0x10
+#define SGI_IOC3_SDMA_RX_TIMER      0x14
+#define SGI_IOC3_SDMA_SHADOW        0x18
+
+#define SGI_IOC3_SDMA_BASE          SGI_IOC3_SDMA_RING_HI
+
+/*
  * The ethernet block. Its media access controller is SGI's own design rather
  * than a catalogue part, so the datasheet's register table is the whole
  * specification and there is no vendor document behind it to consult.
@@ -152,6 +178,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_ENET_MII_DATA_W    0x150
 
 #define SGI_IOC3_ENET_BASE          SGI_IOC3_ENET_MAC_CONTROL
+
+/* The serial DMA block runs from its ring base up to where the ethernet
+ * block starts, which is how the two windows meet exactly.
+ */
+#define SGI_IOC3_SDMA_SIZE          (SGI_IOC3_ENET_BASE - SGI_IOC3_SDMA_BASE)
+#define SGI_IOC3_SDMA_REGS          (SGI_IOC3_SDMA_SIZE / 4)
+
 #define SGI_IOC3_ENET_SIZE          (SGI_IOC3_ENET_MII_DATA_W + 4 - \
                                      SGI_IOC3_ENET_BASE)
 #define SGI_IOC3_ENET_REGS          (SGI_IOC3_ENET_SIZE / 4)
@@ -222,6 +255,16 @@ struct SGIIOC3State {
      */
     MemoryRegion enet;
     uint32_t enet_reg[SGI_IOC3_ENET_REGS];
+
+    /*
+     * The serial DMA block, held the same way and for the same reason: nearly
+     * every register is storage, and the few that are not are the ones a
+     * driver cannot place because hardware owns them. No ring is walked and no
+     * character moves through here -- the ports themselves are driven through
+     * their 16550 windows, which is where both guests actually send bytes.
+     */
+    MemoryRegion sdma;
+    uint32_t sdma_reg[SGI_IOC3_SDMA_REGS];
 };
 
 #endif

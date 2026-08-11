@@ -446,6 +446,74 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
     qtest_quit(qts);
 }
 
+/* The serial DMA block: the shared ring base, then each port's registers. */
+#define SDMA_RING_LO      (IOC3_BASE + 0x0b4)
+#define SDMA_A_TX_PRODUCE (IOC3_BASE + 0x0bc)
+#define SDMA_A_TX_CONSUME (IOC3_BASE + 0x0c0)
+#define SDMA_A_RX_PRODUCE (IOC3_BASE + 0x0c4)
+#define SDMA_A_RX_CONSUME (IOC3_BASE + 0x0c8)
+#define SDMA_B_TX_PRODUCE (IOC3_BASE + 0x0d8)
+#define SDMA_B_TX_CONSUME (IOC3_BASE + 0x0dc)
+
+static void test_the_serial_dma_indices_by_owner(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The four index registers are the point of this block and they are not
+     * alike: software advances the ones it owns and hardware advances the
+     * others, so two of the four take a write and two refuse it. They sit
+     * adjacent and differ by one word, which is exactly the arrangement a
+     * model gets wrong by treating the run of them as uniform storage.
+     *
+     * Both directions are asserted for the same pair, because a model that
+     * made every register writable and one that made every register read-only
+     * would each pass half of this and neither would pass both.
+     */
+    qtest_writel(qts, SDMA_A_TX_PRODUCE, 0x40);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x40);
+    qtest_writel(qts, SDMA_A_RX_CONSUME, 0x48);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_CONSUME), ==, 0x48);
+
+    qtest_writel(qts, SDMA_A_TX_CONSUME, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_CONSUME), ==, 0);
+    qtest_writel(qts, SDMA_A_RX_PRODUCE, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_PRODUCE), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_serial_dma_ports_are_distinct(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Two ports, one register layout, twenty-eight bytes apart. Writing each
+     * port's transmit produce index a different value proves the second block
+     * is a second block rather than an alias of the first -- an off-by-one in
+     * the port stride would put both writes in the same place, and a model
+     * with only one port's registers would answer both from it.
+     */
+    qtest_writel(qts, SDMA_A_TX_PRODUCE, 0x18);
+    qtest_writel(qts, SDMA_B_TX_PRODUCE, 0x28);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x18);
+    g_assert_cmphex(qtest_readl(qts, SDMA_B_TX_PRODUCE), ==, 0x28);
+
+    /* The ownership split repeats on the second port, at its own offsets. */
+    qtest_writel(qts, SDMA_B_TX_CONSUME, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_B_TX_CONSUME), ==, 0);
+
+    /* The ring base is shared by both ports and is software's to set. */
+    qtest_writel(qts, SDMA_RING_LO, 0x00003000);
+    g_assert_cmphex(qtest_readl(qts, SDMA_RING_LO), ==, 0x00003000);
+
+    qtest_quit(qts);
+}
+
 /* The ethernet block's registers, at their offsets in the chip's window. */
 #define ENET_INT_STATUS   (IOC3_BASE + 0x0f4)
 #define ENET_INT_ENABLE   (IOC3_BASE + 0x0f8)
@@ -538,6 +606,10 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sn0/ioc3/serial-dma-indices-by-owner", NULL,
+                        test_the_serial_dma_indices_by_owner);
+    qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,
+                        test_the_serial_dma_ports_are_distinct);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-acknowledges", NULL,
                         test_the_ethernet_interrupt_register_acknowledges);
     qtest_add_data_func("sn0/ioc3/ethernet-read-only-registers", NULL,

@@ -225,6 +225,73 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 };
 
 /*
+ * Which of a port's seven serial DMA registers hardware owns. The two index
+ * registers software advances are writable and the two hardware advances are
+ * not, so the pair a driver could confuse are on opposite sides of this: the
+ * transmit produce index is software's and the transmit consume index is the
+ * engine's. The 16550 shadow is a mirror of lines the port drives, so nothing
+ * software writes belongs in it either.
+ *
+ * The shared ring base pair below both ports is writable, which is why an
+ * offset before port A's base is not tested against these.
+ */
+static bool sgi_ioc3_sdma_is_read_only(hwaddr addr)
+{
+    hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
+    hwaddr offset;
+
+    if (reg >= SGI_IOC3_SDMA_PORT_B) {
+        offset = reg - SGI_IOC3_SDMA_PORT_B;
+    } else if (reg >= SGI_IOC3_SDMA_PORT_A) {
+        offset = reg - SGI_IOC3_SDMA_PORT_A;
+    } else {
+        return false;
+    }
+
+    return offset == SGI_IOC3_SDMA_TX_CONSUME ||
+           offset == SGI_IOC3_SDMA_RX_PRODUCE ||
+           offset == SGI_IOC3_SDMA_SHADOW;
+}
+
+static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIIOC3State *s = opaque;
+
+    /*
+     * Every register reads back what is stored, and the hardware-owned ones
+     * stay at zero because nothing advances them: no ring is walked, so the
+     * engine is permanently where it started. A driver reading them sees an
+     * idle channel, which is what an idle channel looks like.
+     */
+    return s->sdma_reg[addr / 4];
+}
+
+static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
+                                unsigned size)
+{
+    SGIIOC3State *s = opaque;
+
+    if (sgi_ioc3_sdma_is_read_only(addr)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3: write to read-only serial DMA register "
+                      "0x%03x\n", (unsigned)(SGI_IOC3_SDMA_BASE + addr));
+        return;
+    }
+
+    s->sdma_reg[addr / 4] = val;
+}
+
+static const MemoryRegionOps sgi_ioc3_sdma_ops = {
+    .read = sgi_ioc3_sdma_read,
+    .write = sgi_ioc3_sdma_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
+/*
  * Read the collision and deferral counters and zero them in the same step,
  * which is what the hardware does and what makes reading them a way to clear
  * them. Separate from the read handler because the clearing is the part worth
@@ -393,6 +460,11 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.enet", SGI_IOC3_ENET_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_ENET_BASE, &s->enet);
 
+    /* The serial DMA block, immediately below the ethernet one. */
+    memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
+                          "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
+    memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
+
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
     /*
@@ -430,6 +502,12 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     memset(s->enet_reg, 0, sizeof(s->enet_reg));
 
     /*
+     * The serial DMA block resets to zero throughout, indices included, which
+     * is what puts both engines back at the start of their rings.
+     */
+    memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
+
+    /*
      * SGI's own register diagnostic lists every register in the chip
      * resetting to zero apart from the PCI identity and revision words,
      * and these three are no exception.
@@ -461,8 +539,8 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -473,6 +551,7 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3State, SGI_IOC3_ENET_REGS),
+        VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
         VMSTATE_END_OF_LIST()
     }
 };
