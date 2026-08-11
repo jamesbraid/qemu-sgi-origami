@@ -605,6 +605,91 @@ static void test_a_window_goes_where_its_base_says(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The address translation table and its two views, stated here as the datasheet
+ * states them rather than as the model computes them.
+ */
+#define ATE_BASE                0x010000
+#define ATE_ENTRIES             128
+#define ATE(n)                  (BRIDGE_BASE + ATE_BASE + (n) * 8)
+#define ATE_UPPER(n)            (ATE(n) + 4)
+#define ATE_LOW_BASE            0x011000
+#define ATE_LOW(n)              (BRIDGE_BASE + ATE_LOW_BASE + (n) * 4)
+
+static void test_translation_entries_are_written_whole(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    static const int entries[] = { 0, 1, 63, 127 };
+    unsigned int i;
+
+    /*
+     * An entry is written as one 64-bit quantity and read back in halves from
+     * two different places: the upper half four bytes into the entry's own
+     * slot, and the lower half through a second region that exists for nothing
+     * else. Both halves of every entry are checked, because a model decoding
+     * only the first region would leave the second dead and a driver reading an
+     * entry back would get nothing.
+     *
+     * All four entries are written before any is read, which is what makes this
+     * a test of an indexed table rather than of one register: a model ignoring
+     * the index would pass a write-then-read-immediately check on every entry
+     * and fail here on all but the last.
+     */
+    for (i = 0; i < ARRAY_SIZE(entries); i++) {
+        qtest_writeq(qts, ATE(entries[i]),
+                     (0xa5a50000ull << 32) | (0x5a5a0000ull + entries[i]));
+    }
+    for (i = 0; i < ARRAY_SIZE(entries); i++) {
+        g_assert_cmphex(qtest_readl(qts, ATE_UPPER(entries[i])), ==,
+                        0xa5a50000u);
+        g_assert_cmphex(qtest_readl(qts, ATE_LOW(entries[i])), ==,
+                        0x5a5a0000u + entries[i]);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_the_lower_half_view_is_read_only(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    qtest_writeq(qts, ATE(0), 0x1234567800abcdefull);
+    g_assert_cmphex(qtest_readl(qts, ATE_LOW(0)), ==, 0x00abcdef);
+
+    /*
+     * A write to the lower-half view must not reach the entry. A chip that
+     * swallowed it would let a driver believe it had changed an entry through
+     * the one address that cannot change one, and the entry it thought it had
+     * changed would go on translating to the old page.
+     */
+    qtest_writel(qts, ATE_LOW(0), 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, ATE_LOW(0)), ==, 0x00abcdef);
+    g_assert_cmphex(qtest_readl(qts, ATE_UPPER(0)), ==, 0x12345678);
+
+    qtest_quit(qts);
+}
+
+static void test_translation_entries_reset_clear(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    unsigned int n;
+
+    /*
+     * Every entry comes up wholly clear, which matters for one bit of it: the
+     * valid bit at the bottom, which says a translation through this entry must
+     * fault rather than reach somewhere. The whole entry is asserted rather
+     * than that bit, because an entry holding a stale page address behind a
+     * clear valid bit is a working translation one write away, and a check on
+     * the valid bit alone cannot see it.
+     */
+    for (n = 0; n < ATE_ENTRIES; n++) {
+        g_assert_cmphex(qtest_readl(qts, ATE_UPPER(n)), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, ATE_LOW(n)), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -637,6 +722,12 @@ int main(int argc, char **argv)
                         test_device_windows_reach_their_cards);
     qtest_add_data_func("sn0/bridge/window-follows-its-base", NULL,
                         test_a_window_goes_where_its_base_says);
+    qtest_add_data_func("sn0/bridge/translation-entries", NULL,
+                        test_translation_entries_are_written_whole);
+    qtest_add_data_func("sn0/bridge/translation-lower-half-read-only", NULL,
+                        test_the_lower_half_view_is_read_only);
+    qtest_add_data_func("sn0/bridge/translation-entries-reset-clear", NULL,
+                        test_translation_entries_reset_clear);
 
     return g_test_run();
 }

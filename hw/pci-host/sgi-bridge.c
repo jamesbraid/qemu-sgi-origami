@@ -89,6 +89,30 @@
 #define BRIDGE_DEVICE_FLUSH(n)  (0x240 + SGI_BRIDGE_REG_SLOT * (n))
 
 /*
+ * The internal address translation table, reachable at two addresses because
+ * neither one alone can do the whole job.
+ *
+ * An entry is 64 bits and is written as one 64-bit quantity, which makes this
+ * table the exception to the chip's rule that every access is a 32-bit
+ * double-word. What can be read back there is only the entry's *upper* half,
+ * as a 32-bit register in the low half of the eight-byte slot — so at the
+ * entry's offset plus four, the same place every other register in this chip
+ * sits. The lower half has nowhere to be read in that region at all, and the
+ * second region exists for it: 128 read-only 32-bit words, one per entry.
+ *
+ * A model decoding only the first region leaves the second dead and a driver
+ * reading an entry back gets nothing. Nothing on the OpenBSD path reads one
+ * back, because that guest declines to use this table on this machine, so
+ * this is a completeness requirement rather than a live one.
+ */
+#define BRIDGE_ATE_BASE         0x010000
+#define BRIDGE_ATE_ENTRY_SIZE   8
+#define BRIDGE_ATE_SIZE         (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_ENTRY_SIZE)
+#define BRIDGE_ATE_LOW_BASE     0x011000
+#define BRIDGE_ATE_LOW_STRIDE   4
+#define BRIDGE_ATE_LOW_SIZE     (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_LOW_STRIDE)
+
+/*
  * PCI type 0 configuration space. Eight devices 4 KB apart, each holding eight
  * functions 256 bytes apart, which is how both guests compute the address:
  * Linux indexes a device array and then a function array, and OpenBSD adds the
@@ -632,6 +656,104 @@ static const MemoryRegionOps sgi_bridge_reg_ops = {
 };
 
 /*
+ * An entry is written whole and read in halves, so what this region accepts is
+ * narrower than a width check can say: a 64-bit write at an entry's own offset,
+ * and a 32-bit read four bytes above it. Every other shape is refused rather
+ * than served, including the two a reader would most likely reach for — a
+ * 32-bit read at the entry's offset, where nothing lives, and a 32-bit write,
+ * which would leave half an entry behind.
+ */
+static bool sgi_bridge_ate_accepts(void *opaque, hwaddr addr, unsigned size,
+                                   bool is_write, MemTxAttrs attrs)
+{
+    bool whole_entry_write = is_write && size == BRIDGE_ATE_ENTRY_SIZE &&
+                             addr % BRIDGE_ATE_ENTRY_SIZE == 0;
+    bool upper_half_read = !is_write && size == 4 &&
+                           addr % BRIDGE_ATE_ENTRY_SIZE == SGI_BRIDGE_REG_DATA;
+
+    if (!whole_entry_write && !upper_half_read) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: %u-byte %s of translation table offset "
+                      "0x%" HWADDR_PRIx "; entries are written whole as 64-bit "
+                      "quantities and only their upper halves read back here\n",
+                      size, is_write ? "write" : "read", addr);
+        return false;
+    }
+    return true;
+}
+
+static uint64_t sgi_bridge_ate_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    return s->ate_entry[addr / BRIDGE_ATE_ENTRY_SIZE] >> 32;
+}
+
+static void sgi_bridge_ate_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    s->ate_entry[addr / BRIDGE_ATE_ENTRY_SIZE] = val;
+}
+
+static const MemoryRegionOps sgi_bridge_ate_ops = {
+    .read = sgi_bridge_ate_read,
+    .write = sgi_bridge_ate_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 8,
+    .valid.accepts = sgi_bridge_ate_accepts,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 8,
+};
+
+/*
+ * The read-only view of the entries' lower halves. A write here is refused
+ * rather than ignored: there is no register to write, and a chip that swallowed
+ * the write would let a driver believe it had changed an entry through the one
+ * address that cannot change one.
+ */
+static bool sgi_bridge_ate_low_accepts(void *opaque, hwaddr addr, unsigned size,
+                                       bool is_write, MemTxAttrs attrs)
+{
+    if (is_write) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: write to translation table lower-half view "
+                      "at 0x%" HWADDR_PRIx ", which is read-only; entries are "
+                      "written whole through the table itself\n", addr);
+        return false;
+    }
+    return true;
+}
+
+static uint64_t sgi_bridge_ate_low_read(void *opaque, hwaddr addr,
+                                        unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    return (uint32_t)s->ate_entry[addr / BRIDGE_ATE_LOW_STRIDE];
+}
+
+static void sgi_bridge_ate_low_write(void *opaque, hwaddr addr, uint64_t val,
+                                     unsigned size)
+{
+    /* Refused before it reached here. */
+    g_assert_not_reached();
+}
+
+static const MemoryRegionOps sgi_bridge_ate_low_ops = {
+    .read = sgi_bridge_ate_low_read,
+    .write = sgi_bridge_ate_low_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .valid.accepts = sgi_bridge_ate_low_accepts,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
+/*
  * Where in PCI configuration space an access through the window lands.
  *
  * The device and function come straight out of the address, and the register
@@ -780,6 +902,14 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
     s->pin_level = 0;
 
     /*
+     * Every entry resets with its valid bit clear, which is the state that says
+     * a translation through it must fault rather than reach somewhere. Clearing
+     * the whole entry rather than the bit is deliberate: a stale page address
+     * behind a clear valid bit is a working translation waiting for one write.
+     */
+    memset(s->ate_entry, 0, sizeof(s->ate_entry));
+
+    /*
      * The windows follow the registers that aim them, so reset re-aims all
      * eight. A slot's register resets selecting PCI memory space with a window
      * base of zero, so every window comes up over the bottom of PCI memory
@@ -855,15 +985,25 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->cfg0, obj, &sgi_bridge_config_ops, s,
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
     memory_region_add_subregion(&s->widget, BRIDGE_CFG0_BASE, &s->cfg0);
+
+    /* The translation table, and the read-only view of its lower halves. */
+    memory_region_init_io(&s->ate, obj, &sgi_bridge_ate_ops, s,
+                          "sgi-bridge.ate", BRIDGE_ATE_SIZE);
+    memory_region_add_subregion(&s->widget, BRIDGE_ATE_BASE, &s->ate);
+    memory_region_init_io(&s->ate_low, obj, &sgi_bridge_ate_low_ops, s,
+                          "sgi-bridge.ate-low", BRIDGE_ATE_LOW_SIZE);
+    memory_region_add_subregion(&s->widget, BRIDGE_ATE_LOW_BASE, &s->ate_low);
 }
 
 static const VMStateDescription vmstate_sgi_bridge = {
     .name = "sgi-bridge",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIBridgeState, SGI_BRIDGE_REG_SLOTS),
         VMSTATE_UINT8(pin_level, SGIBridgeState),
+        VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
+                               SGI_BRIDGE_ATE_ENTRIES, 2),
         VMSTATE_END_OF_LIST()
     }
 };
