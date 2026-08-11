@@ -186,6 +186,7 @@ qtests_mipsel = qtests_mips
 qtests_mips64 = \
   qtests_mips + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-address-map-test',
+                                                   'sn0-bridge-test',
                                                    'sn0-firmware-test',
                                                    'sn0-ioc3-test',
                                                    'sn0-hub-test',
