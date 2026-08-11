@@ -7,12 +7,33 @@
 #define HW_MISC_SGI_IOC3_H
 
 #include "hw/core/irq.h"
-#include "hw/core/sysbus.h"
+#include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3 "sgi-ioc3"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
+
+/*
+ * The identity a guest's config-space read gets. OpenBSD binds its driver on
+ * the vendor/device pair alone and reads nothing else here; mainline Linux
+ * additionally reads the subsystem identity, or — for a Bridge-attached chip
+ * like this one — the synthetic value the Bridge substitutes from the
+ * board's own one-wire line, so this register's own contents only matter on
+ * a path that does not go through the Bridge.
+ */
+#define SGI_IOC3_VENDOR_ID      0x10A9
+#define SGI_IOC3_DEVICE_ID      0x0003
+/*
+ * The reset value of the combined revision-and-class register is
+ * 0xFF000000: class 0xFF ("does not fit any defined class"), sub-class 0x00,
+ * revision 0x00. SGI's own diagnostic checks exactly this value on a fresh
+ * chip and treats the low nibble as unwritable.
+ */
+#define SGI_IOC3_CLASS_ID       0xFF00
+#define SGI_IOC3_REVISION       0x00
+/* The Origin 200's IP29 System Board, the only board this machine models. */
+#define SGI_IOC3_SUBSYSTEM_ID   0xC303
 
 /*
  * One base address register covers the whole chip, and every offset in the
@@ -54,7 +75,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_INT_PASSTHROUGH (SGI_IOC3_INT_SERIAL_A | SGI_IOC3_INT_SERIAL_B)
 
 struct SGIIOC3State {
-    SysBusDevice parent_obj;
+    PCIDevice parent_obj;
 
     /*
      * The chip's whole window. Everything modelled is a subregion of this, and
