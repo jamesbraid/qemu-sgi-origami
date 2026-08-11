@@ -1545,6 +1545,22 @@ static void sn0_init(MachineState *machine)
 
     s->pci_ioc3 = ioc3;
 
+    /*
+     * The controller's second interrupt does not reach the Bridge through
+     * PCI's own INTx routing: sgi_bridge_map_irq() has no rule for it other
+     * than the slot-equals-pin default, which would land it on pin 2
+     * alongside the controller's own (unimplemented) ethernet interrupt
+     * rather than the pin the board actually wires it to. Connected directly
+     * to the Bridge's matching input instead, wired regardless of whether the
+     * bridge is the machine's default path to the controller, the same way
+     * the bridge's fabric link is always set: the wire exists on the real
+     * board whether or not a guest currently reaches the controller through
+     * the bridge's own window.
+     */
+    qdev_connect_gpio_out(DEVICE(ioc3), 0,
+                          qdev_get_gpio_in(DEVICE(&s->io_bridge),
+                                           SN0_IOC3_SUPERIO_PIN));
+
     if (s->io_bridge_present) {
         memory_region_add_subregion_overlap(
             &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),

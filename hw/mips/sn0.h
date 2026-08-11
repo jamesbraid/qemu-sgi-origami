@@ -478,6 +478,17 @@
 #define SN0_IOC3_DEVICE         2         /* the I/O controller's PCI device */
 
 /*
+ * The Bridge pin the board wires the I/O controller's second interrupt to,
+ * derived above from the same PCI occupancy as SN0_IOC3_DEVICE rather than
+ * asserted separately. It does not follow sgi_bridge_map_irq()'s slot-equals-
+ * pin rule for a device's own PCI interrupt, because a real board routes this
+ * one directly rather than through that chip-level default — the machine's
+ * own wiring is what settles it, which is why the constant lives here and not
+ * in the Bridge.
+ */
+#define SN0_IOC3_SUPERIO_PIN    3         /* its second interrupt's Bridge pin */
+
+/*
  * Where firmware places each PCI device's resources, and which of a slot's two
  * spaces its window is pre-aimed at. No source establishes real ARCS PROM's own
  * addresses as a documented fact — but Linux's own platform code

@@ -2019,6 +2019,18 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                                      TYPE_PCI_BUS);
 
     /*
+     * The same eight pins, reachable directly rather than only through a PCI
+     * function's own INTx line. Real board wiring puts more than PCI devices
+     * on this chip's interrupt pins — the base I/O controller's second
+     * interrupt is the case this exists for — and sgi_bridge_set_irq() above
+     * already is the entire mechanism a pin needs: it does not care whether a
+     * transition arrived from the PCI core's own routing or from a plain
+     * wire, so there is nothing to duplicate here, only a second way in.
+     */
+    qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_irq, s, NULL,
+                                        SGI_BRIDGE_PINS);
+
+    /*
      * The configuration window goes in after the bus exists, because reading it
      * is reading the bus.
      */
