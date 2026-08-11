@@ -88,6 +88,15 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define MICROLAN_LEVEL   (1u << 0)
 #define MICROLAN_DONE    (1u << 1)
 
+/*
+ * The timing OpenBSD's bit-banging routine writes for a bus reset and
+ * presence detect: 500 microseconds holding the bus low (bits 10 and up),
+ * 65 microseconds of remainder (bits 2 and up) — see docs/datasheets/ioc3.md's
+ * "GPIO and MicroLAN" section. A real guest's reset slot, not an arbitrary
+ * all-zero write.
+ */
+#define MICROLAN_RESET_SLOT ((500u << 10) | (65u << 2))
+
 #define PIN_CONTROL_SET  (IOC3_BASE + 0x34)
 #define PIN_CONTROL_CLR  (IOC3_BASE + 0x38)
 #define PIN_MICROLAN_ENABLE (1u << 21)
@@ -342,8 +351,18 @@ static void test_a_one_wire_slot_reports_no_part(const void *data)
      * read, write — has to report a high level rather than one that
      * happens to spell "a device pulled the line low", which a guest's own
      * presence check would read as a device being there.
+     *
+     * The slot written is a real reset-and-presence-detect timing, not an
+     * all-zero write. The model as written sets the level unconditionally
+     * regardless of the timing bits, so an all-zero write cannot tell this
+     * test apart from one that classified the pulse width and got a reset
+     * slot right for the wrong reason — it would keep passing if the model
+     * grew that classification and got only the all-zero case right. Using
+     * the encoding a real guest issues (docs/datasheets/ioc3.md's "GPIO
+     * and MicroLAN" section) is the version of this test that stays
+     * meaningful if the model ever does more than answer unconditionally.
      */
-    qtest_writel(qts, MICROLAN_CONTROL, 0);
+    qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
                     MICROLAN_LEVEL);
 
