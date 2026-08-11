@@ -213,6 +213,7 @@
 /* The configuration registers these tests program on a card. */
 #define PCI_COMMAND             0x04
 #define PCI_COMMAND_MEMORY      0x0002
+#define PCI_COMMAND_MASTER      0x0004
 #define PCI_BAR0                0x10
 #define PCI_BAR1                0x14
 
@@ -488,7 +489,7 @@ static void test_ioc3_slot_survives_a_later_reset(const void *data)
      * for the identical reason.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_COMMAND) &
-                    0xffff, ==, PCI_COMMAND_MEMORY);
+                    0xffff, ==, PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     qtest_quit(qts);
 }
