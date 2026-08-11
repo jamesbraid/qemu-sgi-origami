@@ -74,12 +74,23 @@ struct SGIHubState {
     /* Which node this Hub is, which its network-interface status reports. */
     uint32_t nasid;
 
+    /*
+     * The manufacturer this Hub claims in its widget identification. A
+     * candidate value rather than a constant: the two sources that name it
+     * disagree, and nothing on any path we boot reads it, so this is a choice
+     * the machine description makes rather than a fact anyone established.
+     */
+    uint32_t manufacturer;
+
     uint64_t pi_region_present;
     uint32_t pi_calias_size;
     uint64_t pi_int_pend[2];
     uint64_t pi_int_mask[4];
     uint64_t ni_status;
     uint64_t io_link_status;
+    uint64_t io_widget_control;
+    uint64_t io_xtalk_timeout;
+    uint64_t io_xtalk_prescale;
     uint32_t io_bwin[SGI_HUB_BWIN_ENTRIES];
 };
 
