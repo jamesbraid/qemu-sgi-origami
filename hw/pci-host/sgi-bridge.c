@@ -100,6 +100,22 @@
 #define BRIDGE_CFG0_FUNCTION(a) (((a) >> 8) & 7)
 #define BRIDGE_CFG0_REGISTER    0xff
 
+/*
+ * The window each PCI slot is reached through, and the detail every driver gets
+ * wrong once: the first two windows are 2 MB and the remaining six are 1 MB,
+ * so they are not evenly spaced. Linux encodes that as a conditional in a
+ * macro and OpenBSD as an arithmetic expression, and both produce this table.
+ * It is derived from a base and two sizes rather than written out as eight
+ * constants, because eight constants is where the seventh one goes wrong.
+ */
+#define BRIDGE_WINDOW_BASE      0x200000
+#define BRIDGE_WINDOW_LARGE     (2 * MiB)
+#define BRIDGE_WINDOW_SMALL     (1 * MiB)
+#define BRIDGE_WINDOW_LARGE_END 2       /* slots below this get a large one */
+
+/* A slot's window base supplies PCI address bits 31:20. */
+#define BRIDGE_WINDOW_BASE_SHIFT 20
+
 /* Read response buffer allocation, which this model keeps as storage. */
 #define BRIDGE_RRB_EVEN         0x280
 #define BRIDGE_RRB_ODD          0x288
@@ -445,6 +461,67 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         "read response buffer clear", SGI_BRIDGE_WO, 0, 0 },
 };
 
+static hwaddr sgi_bridge_window_size(unsigned int slot)
+{
+    return slot < BRIDGE_WINDOW_LARGE_END ? BRIDGE_WINDOW_LARGE
+                                          : BRIDGE_WINDOW_SMALL;
+}
+
+static hwaddr sgi_bridge_window_offset(unsigned int slot)
+{
+    unsigned int large = MIN(slot, BRIDGE_WINDOW_LARGE_END);
+    unsigned int small = slot - large;
+
+    return BRIDGE_WINDOW_BASE + large * BRIDGE_WINDOW_LARGE +
+           small * BRIDGE_WINDOW_SMALL;
+}
+
+/*
+ * Aim a slot's window where its register says, into the space its register
+ * selects.
+ *
+ * The base names PCI address bits 31:20 and the offset within the window
+ * supplies the rest, which for the two 2 MB windows means bit 20 arrives from
+ * both. This model adds them, which is the arithmetic OpenBSD does: it computes
+ * the window's start as the base shifted left twenty and then accounts for the
+ * window's whole size above it, with no correction for a base whose lowest bit
+ * is set. So a 2 MB window based on an odd megabyte reaches across the 2 MB
+ * boundary above it, and this model and that guest agree about where.
+ *
+ * Which space the window looks into cannot be changed on a region once it
+ * exists, so each slot has two windows at the same address and exactly one of
+ * them is enabled.
+ */
+static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
+{
+    uint32_t control = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+    hwaddr base = (hwaddr)(control & DEV_WINDOW_BASE) <<
+                  BRIDGE_WINDOW_BASE_SHIFT;
+    bool memory = control & DEV_MEMORY_SPACE;
+
+    memory_region_set_alias_offset(&s->device_window_mem[slot], base);
+    memory_region_set_alias_offset(&s->device_window_io[slot], base);
+    memory_region_set_enabled(&s->device_window_mem[slot], memory);
+    memory_region_set_enabled(&s->device_window_io[slot], !memory);
+}
+
+/*
+ * Whether a register slot is one of the eight per-device control registers, and
+ * which device it belongs to. A write to one of them re-aims that slot's
+ * window, so the write path has to recognise them.
+ */
+static bool sgi_bridge_is_device_register(hwaddr addr, unsigned int *slot)
+{
+    hwaddr offset = addr - SGI_BRIDGE_REG_DATA;
+
+    if (offset < BRIDGE_DEVICE(0) ||
+        offset >= BRIDGE_DEVICE(SGI_BRIDGE_DEVICES)) {
+        return false;
+    }
+    *slot = (offset - BRIDGE_DEVICE(0)) / SGI_BRIDGE_REG_SLOT;
+    return true;
+}
+
 static const SGIBridgeReg *sgi_bridge_reg(hwaddr addr)
 {
     hwaddr slot = addr / SGI_BRIDGE_REG_SLOT;
@@ -506,6 +583,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     SGIBridgeState *s = opaque;
     const SGIBridgeReg *reg = sgi_bridge_reg(addr);
     uint32_t *held = &s->reg[addr / SGI_BRIDGE_REG_SLOT];
+    unsigned int slot;
 
     g_assert(reg);
 
@@ -524,6 +602,9 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case SGI_BRIDGE_RW:
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
+        if (sgi_bridge_is_device_register(addr, &slot)) {
+            sgi_bridge_aim_window(s, slot);
+        }
         return;
     }
 
@@ -681,9 +762,10 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
 {
     SGIBridgeState *s = SGI_BRIDGE(obj);
     unsigned int slot;
+    unsigned int i;
 
-    for (slot = 0; slot < SGI_BRIDGE_REG_SLOTS; slot++) {
-        s->reg[slot] = sgi_bridge_regs[slot].reset;
+    for (i = 0; i < SGI_BRIDGE_REG_SLOTS; i++) {
+        s->reg[i] = sgi_bridge_regs[i].reset;
     }
 
     /*
@@ -696,6 +778,16 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
         sgi_bridge_identification(s);
 
     s->pin_level = 0;
+
+    /*
+     * The windows follow the registers that aim them, so reset re-aims all
+     * eight. A slot's register resets selecting PCI memory space with a window
+     * base of zero, so every window comes up over the bottom of PCI memory
+     * space, which is where a slot that nothing has configured points.
+     */
+    for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
+        sgi_bridge_aim_window(s, slot);
+    }
 }
 
 static void sgi_bridge_realize(DeviceState *dev, Error **errp)
@@ -703,6 +795,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     SGIBridgeState *s = SGI_BRIDGE(dev);
     PCIHostState *phb = PCI_HOST_BRIDGE(dev);
     Object *obj = OBJECT(dev);
+    unsigned int slot;
 
     /*
      * The widget's whole crosstalk space is this chip's, and what is not in it
@@ -724,6 +817,30 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      */
     memory_region_init(&s->pci_mmio, obj, "sgi-bridge.pci-mmio", 4 * GiB);
     memory_region_init(&s->pci_io, obj, "sgi-bridge.pci-io", 4 * GiB);
+
+    /*
+     * The eight slot windows, two regions each looking into one of those two
+     * spaces. Both go in at the slot's place in the widget's address space and
+     * reset decides which of the pair answers.
+     */
+    for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
+        g_autofree char *mem_name =
+            g_strdup_printf("sgi-bridge.window%u.mem", slot);
+        g_autofree char *io_name =
+            g_strdup_printf("sgi-bridge.window%u.io", slot);
+
+        memory_region_init_alias(&s->device_window_mem[slot], obj, mem_name,
+                                 &s->pci_mmio, 0,
+                                 sgi_bridge_window_size(slot));
+        memory_region_init_alias(&s->device_window_io[slot], obj, io_name,
+                                 &s->pci_io, 0, sgi_bridge_window_size(slot));
+        memory_region_add_subregion(&s->widget,
+                                    sgi_bridge_window_offset(slot),
+                                    &s->device_window_mem[slot]);
+        memory_region_add_subregion(&s->widget,
+                                    sgi_bridge_window_offset(slot),
+                                    &s->device_window_io[slot]);
+    }
 
     phb->bus = pci_register_root_bus(dev, "pci", sgi_bridge_set_irq,
                                      sgi_bridge_map_irq, s,

@@ -67,6 +67,17 @@ struct SGIBridgeState {
     MemoryRegion pci_io;
 
     /*
+     * A window per PCI slot, through which a processor reaches whatever is in
+     * that slot. Each slot has two of them, aimed at the same place in the
+     * widget's space and looking into the two PCI address spaces, with exactly
+     * one enabled: a window selects memory or I/O space by a bit in the slot's
+     * own register, and a memory region cannot be re-pointed at a different
+     * space once it exists.
+     */
+    MemoryRegion device_window_mem[SGI_BRIDGE_DEVICES];
+    MemoryRegion device_window_io[SGI_BRIDGE_DEVICES];
+
+    /*
      * Every defined register in the local block, one 32-bit word per eight-byte
      * slot, indexed by the slot number. A slot the chip does not define holds
      * nothing and is never read: which slots exist, what each resets to and
