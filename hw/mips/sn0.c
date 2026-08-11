@@ -841,6 +841,13 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
         uint8_t *e = dir + i * SN0_HW_DIR_ENTRY_SIZE;
 
         switch (i) {
+        case SN0_HW_DIR_LAUNCH:
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x08, SN0_LAUNCH_BLOCKS);
+            stq_be_p(e + 0x18, SN0_LAUNCH_DIR_SIZE);
+            stq_be_p(e + 0x20, SN0_LAUNCH_ENTRIES);
+            stq_be_p(e + 0x28, SN0_LAUNCH_STRIDE);
+            break;
         case SN0_HW_DIR_CONFIG_GRAPH:
             stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
             stq_be_p(e + 0x08, SN0_CONFIG_GRAPH);
@@ -871,11 +878,48 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
             stq_be_p(e + 0x20, SN0_NMI_ENTRIES);
             stq_be_p(e + 0x28, SN0_NMI_STRIDE);
             break;
+        case SN0_HW_DIR_FREEMEM:
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x08, SN0_FIRST_FREE);
+            stq_be_p(e + 0x18, SN0_HWDIR_FREEMEM_SIZE);
+            stq_be_p(e + 0x20, 1);
+            break;
+        case SN0_HW_DIR_DEBUG_STACKS:
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x08, SN0_HWDIR_DEBUG_STACKS_BASE);
+            stq_be_p(e + 0x18, SN0_HWDIR_DEBUG_STACKS_SIZE);
+            stq_be_p(e + 0x20, SN0_HWDIR_DEBUG_STACKS_N);
+            stq_be_p(e + 0x28, SN0_HWDIR_DEBUG_STACKS_STRIDE);
+            break;
+        case SN0_HW_DIR_PI_ERROR:
+            stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
+            stq_be_p(e + 0x08, SN0_HWDIR_PI_ERROR_BASE);
+            stq_be_p(e + 0x18, SN0_HWDIR_PI_ERROR_SIZE);
+            stq_be_p(e + 0x20, 1);
+            break;
         default:
             break;
         }
     }
     rom_add_blob_fixed("sn0.hwdir", dir, sizeof(dir), node + SN0_HW_DIRECTORY);
+
+    /*
+     * The launch blocks. Not on the banner path — they matter when a second
+     * processor starts — but the directory advertises them from the start,
+     * so they are written from the start: both blocks carry the launch
+     * signature and are otherwise zeroed, since there is no second processor
+     * to launch yet.
+     */
+    {
+        uint8_t launch[SN0_LAUNCH_ENTRIES][SN0_LAUNCH_STRIDE] = { };
+        int j;
+
+        for (j = 0; j < SN0_LAUNCH_ENTRIES; j++) {
+            stq_be_p(launch[j] + 0x00, SN0_LAUNCH_SIGNATURE);
+        }
+        rom_add_blob_fixed("sn0.launch", launch, sizeof(launch),
+                           node + SN0_LAUNCH_BLOCKS);
+    }
 
     /*
      * The global data area. The node table is the only enumeration of nodes
