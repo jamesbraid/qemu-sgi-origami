@@ -55,7 +55,7 @@
  * so they are stored rather than dropped: no source says they read back zero.
  */
 #define IO_BWIN_MASK            0x1fff
-#define IO_BWIN_SPACE           (1U << 12) /* the other address space */
+#define IO_BWIN_SPACE           (1U << 12) /* set selects I/O space */
 #define IO_BWIN_WIDGET_SHIFT    8
 #define IO_BWIN_WIDGET_MASK     (0xfU << IO_BWIN_WIDGET_SHIFT)
 #define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
@@ -131,22 +131,23 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
     uint64_t slice = (uint64_t)(entry & IO_BWIN_SLICE_MASK)
                      << IO_BWIN_SLICE_SHIFT;
     /*
-     * The space-select bit chooses between the widget's two address spaces, and
-     * this machine models the one the redirection uses. A window asking for
-     * the other one is reported and left reaching nothing rather than aimed
-     * here anyway: a window on the wrong space returns plausible values that
-     * are not the registers the guest asked for, and nothing about a returned
-     * value says which space produced it.
+     * The space-select bit chooses between the widget's memory space, which
+     * this machine models, and its I/O space, which it does not. A window
+     * asking for the I/O space is reported and left reaching nothing rather
+     * than aimed at the memory space anyway: a window on the wrong space
+     * returns plausible values that are not the registers the guest asked for,
+     * and nothing about a returned value says which space produced it.
      *
-     * Which of the two the redirection uses is unestablished, and the value
-     * here is the one the only source addressing this case states. This log
-     * line is how the other possibility would announce itself.
+     * Which value the redirection uses was open and is now settled at memory,
+     * from IRIX programming this entry for this purpose in code compiled for
+     * this machine family. This log line is what the other case would say if a
+     * guest ever asked for it.
      */
     if (entry & IO_BWIN_SPACE) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: big window %u asks for the crosstalk space "
-                      "this machine does not model; it will reach no "
-                      "widget\n", n);
+                      "sgi-hub: big window %u asks for widget %" PRIu64 "'s "
+                      "I/O space, which this machine does not model; it will "
+                      "reach no widget\n", n, widget);
         memory_region_set_enabled(&s->bwin_window[n], false);
         return;
     }
