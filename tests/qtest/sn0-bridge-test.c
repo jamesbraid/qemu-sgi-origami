@@ -477,21 +477,28 @@ static void test_the_target_flush_answers(const void *data)
     qtest_quit(qts);
 }
 
-static void test_the_default_machine_has_no_bridge(const void *data)
+static void test_the_default_machine_has_the_bridge(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * The bridge is an option and the machine without it is the machine the
-     * contract describes, so this guards the option from quietly becoming the
-     * default. It is a weaker assertion than it looks — a qtest cannot tell
-     * a refused access from one that returned zero — so it says the address
-     * does not answer *with the bridge's identity*, which is what would be
-     * there if the chip had been fitted.
+     * This is a contract guard rather than a behavioural one, and the
+     * distinction is why it exists at all: thirty other assertions in this
+     * file prove the bridge works, and none of them says anything about
+     * whether the *default* machine is the one the contract describes. That
+     * is what this holds, and it is why it moves with a sign-off and not
+     * with a fix.
+     *
+     * It was written the other way up — asserting the bridge was absent —
+     * while the chip was being built, so that the option could not quietly
+     * become the machine. It did that job: it is what caught the change that
+     * inverted it. The assertion is the same two reads against the same
+     * constants, with the expectation turned over, because the contract it
+     * guards is now that the bridge is fitted.
      */
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), !=,
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), !=, CONTROL_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
 
     qtest_quit(qts);
 }
@@ -947,12 +954,59 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
 #define DMA_REG_INTERRUPT       0x10
 
 /*
+ * The one-wire bus master to the board identity part, and the fields a driver
+ * touches: the level sampled off the wire, the flag saying a slot finished,
+ * and the two timing fields whose being written is what starts a slot.
+ */
+#define BRIDGE_NIC              0x0b0
+#define NIC_LEVEL               (1u << 0)
+#define NIC_DONE                (1u << 1)
+#define NIC_SAMPLE(us)          ((uint32_t)(us) << 2)
+#define NIC_PULSE(us)           ((uint32_t)(us) << 10)
+
+/*
  * The pin the tests drive. A slot's first interrupt pin goes to the chip pin of
  * the same number, so a source in slot 3 drives pin 3 — which is also the pin
  * the real machine's base I/O controller uses for its second interrupt, so the
  * test exercises the one that matters rather than the convenient one.
  */
 #define INT_TEST_SLOT           3
+
+/*
+ * A write to the timings runs a bit slot, and the slot has finished by the
+ * time the write returns.
+ *
+ * That ordering is the whole contract for a driver, and getting it wrong is
+ * not a wrong value but a hang: every path in the guest's master writes the
+ * timings and then spins reading this register until the finished flag
+ * appears, so a model that decodes the register and never sets that flag
+ * leaves the guest in a loop with nothing to report. An undecoded register
+ * would at least fault and say so.
+ *
+ * The level is asserted as high because nothing is on the bus yet. A part
+ * that was present would pull the wire down through a reset slot, so this
+ * assertion is expected to change when one is fitted — it is here to pin that
+ * the level is answered at all, and to fail loudly rather than silently when
+ * the bus grows something to answer with.
+ */
+static void test_a_write_runs_a_bit_slot(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint32_t nic;
+
+    /* The widths mainline uses to reset the bus. */
+    qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(520) | NIC_SAMPLE(65));
+
+    nic = qtest_readl(qts, REG(BRIDGE_NIC));
+    g_assert_cmphex(nic & NIC_DONE, ==, NIC_DONE);
+    g_assert_cmphex(nic & NIC_LEVEL, ==, NIC_LEVEL);
+
+    /* And the timings read back, so a driver can see what it asked for. */
+    g_assert_cmphex(nic & (NIC_PULSE(0x3ff) | NIC_SAMPLE(0xff)), ==,
+                    NIC_PULSE(520) | NIC_SAMPLE(65));
+
+    qtest_quit(qts);
+}
 
 static void bridge_source_in_slot_three(QTestState *qts)
 {
@@ -1120,8 +1174,8 @@ int main(int argc, char **argv)
                         test_a_read_only_register_stays_put);
     qtest_add_data_func("sn0/bridge/target-flush", NULL,
                         test_the_target_flush_answers);
-    qtest_add_data_func("sn0/bridge/absent-by-default", NULL,
-                        test_the_default_machine_has_no_bridge);
+    qtest_add_data_func("sn0/bridge/present-by-default", NULL,
+                        test_the_default_machine_has_the_bridge);
     qtest_add_data_func("sn0/bridge/configuration-space", NULL,
                         test_configuration_space_reaches_a_card);
     qtest_add_data_func("sn0/bridge/configuration-byte-lanes", NULL,
@@ -1148,6 +1202,8 @@ int main(int argc, char **argv)
                         test_the_enable_register_has_no_bit_31);
     qtest_add_data_func("sn0/bridge/mode-and-device-keep-writes", NULL,
                         test_mode_and_device_keep_what_was_written);
+    qtest_add_data_func("sn0/bridge/one-wire-write-runs-a-slot", NULL,
+                        test_a_write_runs_a_bit_slot);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 

@@ -78,6 +78,31 @@
 #define BRIDGE_RESP_ERR_LOWER   0x068
 #define BRIDGE_TEST_PIN_CONTROL 0x070
 #define BRIDGE_DIRECT_MAP       0x080
+
+/*
+ * The one-wire bus master to the board identity part. Bit 0 is the level
+ * sampled off the wire and bit 1 says the slot has finished; the two timing
+ * fields say how long to hold the wire down and how long to wait before
+ * sampling, both in microseconds, and writing them is what starts a slot.
+ *
+ * A guest drives the whole protocol through this one register, a bit at a
+ * time, so the slot kind has to be recovered from the timings — which is why
+ * the pulse widths below are ranges rather than the values any one guest
+ * writes. Mainline Linux holds the wire down for 520 microseconds to reset it
+ * where OpenBSD uses 500, and a model keyed on either exactly would answer one
+ * guest and not the other. What matters is the sequence of slots, not the
+ * microseconds.
+ */
+#define BRIDGE_NIC              0x0b0
+#define NIC_LEVEL               (1u << 0)
+#define NIC_DONE                (1u << 1)
+#define NIC_SAMPLE_SHIFT        2
+#define NIC_SAMPLE_MASK         (0xffu << NIC_SAMPLE_SHIFT)
+#define NIC_PULSE_SHIFT         10
+#define NIC_PULSE_MASK          (0x3ffu << NIC_PULSE_SHIFT)
+#define NIC_WRITABLE            (NIC_SAMPLE_MASK | NIC_PULSE_MASK)
+
+
 #define BRIDGE_SSRAM_PARITY_ERR 0x090
 #define BRIDGE_ARBITRATION      0x0a0
 #define BRIDGE_BUS_TIMEOUT      0x0c0
@@ -463,6 +488,22 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
     [SGI_BRIDGE_SLOT(BRIDGE_STATUS)] = {
         "status", SGI_BRIDGE_RO, STATUS_PCI_MODE, 0 },
 
+    /*
+     * The one-wire master. The timing fields are the writable part; the level
+     * and the finished flag are answers this model writes into the same word
+     * when a slot runs, which is why they are outside the writable mask.
+     */
+    [SGI_BRIDGE_SLOT(BRIDGE_NIC)] = {
+        "one-wire bus master", SGI_BRIDGE_RW, 0, NIC_WRITABLE },
+    /*
+     * The mask keeps the two status bits out of a guest's reach, and no test
+     * asserts that, because with nothing on the bus it cannot be observed: a
+     * slot runs on every write and sets both bits afterwards, so the register
+     * reads the same whether or not the guest could have written them. It
+     * becomes observable when a part can pull the level low, and the test to
+     * write then is that the level follows the part rather than the write.
+     */
+
     /* No error has been logged, so the error registers read zero. */
     [SGI_BRIDGE_SLOT(BRIDGE_ERR_UPPER)] = {
         "error address upper", SGI_BRIDGE_RO, 0, 0 },
@@ -776,6 +817,29 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+/*
+ * Run one bit slot on the one-wire bus and leave its answer in the register.
+ *
+ * The model completes the slot inside the write that starts it, so a guest
+ * polling for the finished flag sees it set on its first read. Nothing here
+ * reproduces the timings: they are read only to tell the three kinds of slot
+ * apart, because a guest that waited for real microseconds would be waiting on
+ * a wire this machine does not have.
+ *
+ * Nothing is on the bus yet, so the wire idles high and every slot samples
+ * one — including a reset, where a part that was present would pull the wire
+ * down and answer zero instead. That is why the slot kind is not worked out
+ * here: with no part to answer, there is nothing for the timings to select
+ * between, and inventing the classification before the thing it selects for
+ * would be three branches computing one answer.
+ */
+static void sgi_bridge_onewire_slot(SGIBridgeState *s)
+{
+    uint32_t *held = &s->reg[SGI_BRIDGE_SLOT(BRIDGE_NIC)];
+
+    *held |= NIC_DONE | NIC_LEVEL;
+}
+
 static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
                              unsigned size)
 {
@@ -804,6 +868,8 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
         if (sgi_bridge_is_device_register(addr, &slot)) {
             sgi_bridge_aim_window(s, slot);
+        } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_NIC) {
+            sgi_bridge_onewire_slot(s);
         }
         return;
     }
