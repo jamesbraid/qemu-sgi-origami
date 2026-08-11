@@ -272,6 +272,15 @@
                                  BUS_TIMEOUT_PCI_RETRY)
 
 /*
+ * The type 1 configuration register's two fields, which select the bus and the
+ * device a type 1 cycle targets. Everything else in the register is reserved
+ * and reads back clear.
+ */
+#define TYPE1_BUS_NUMBER        (0xffu << 16)
+#define TYPE1_DEVICE_NUMBER     (0x1fu << 11)
+#define TYPE1_WRITABLE          (TYPE1_BUS_NUMBER | TYPE1_DEVICE_NUMBER)
+
+/*
  * A device register, one per PCI slot. Three bits reset set and not two: the
  * memory-or-I/O select at bit 12 is the third, so a slot comes up pointing at
  * PCI memory space rather than I/O space.
@@ -437,13 +446,13 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         BUS_TIMEOUT_WRITABLE },
 
     /*
-     * The type 1 configuration window is not modelled, but the register that
-     * aims it is defined and harmless as storage. Our sources give neither a
-     * field width nor a power-up value, so it takes a whole word and the zero
-     * is this model's choice.
+     * The type 1 configuration window is not modelled — this machine has no
+     * PCI-to-PCI bridge — but the register that aims it is defined, and it is
+     * storage. Its two fields are a bus number and a device number, both
+     * resetting to zero, with reserved bits above and below them.
      */
     [SGI_BRIDGE_SLOT(BRIDGE_PCI_TYPE1_CONFIG)] = {
-        "PCI type 1 configuration", SGI_BRIDGE_RW, 0, 0xffffffffu },
+        "PCI type 1 configuration", SGI_BRIDGE_RW, 0, TYPE1_WRITABLE },
 
     [SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_UPPER)] = {
         "PCI error address upper", SGI_BRIDGE_RO, 0, 0 },
