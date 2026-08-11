@@ -109,9 +109,11 @@
  * OpenBSD uses 500, and a model keyed on either exactly would answer one guest
  * and not the other. Both fall the same side of this line.
  *
- * A written zero and a written one are also different widths, and this model
- * does not yet distinguish them, because nothing it does depends on which was
- * written. It will when the part starts taking commands.
+ * A written zero and a written one are also different widths, and the part
+ * does distinguish them: that is how a guest's commands and page offsets
+ * arrive, a bit per slot. A read uses the same short slot as a written one,
+ * so timing cannot separate those two — the part answers whichever the
+ * conversation is expecting, which is why it tracks where it has got to.
  */
 #define NIC_PULSE_IS_RESET      400
 

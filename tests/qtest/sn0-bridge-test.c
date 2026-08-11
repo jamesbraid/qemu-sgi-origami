@@ -67,6 +67,18 @@
 #define BRIDGE_DIRECT_MAP       0x080
 #define BRIDGE_ARBITRATION      0x0a0
 #define BRIDGE_BUS_TIMEOUT      0x0c0
+
+/*
+ * The one-wire bus master to the board identity part, and the fields a driver
+ * touches: the level sampled off the wire, the flag saying a slot finished,
+ * and the two timing fields whose being written is what starts a slot.
+ */
+#define BRIDGE_NIC              0x0b0
+#define NIC_LEVEL               (1u << 0)
+#define NIC_DONE                (1u << 1)
+#define NIC_SAMPLE(us)          ((uint32_t)(us) << 2)
+#define NIC_PULSE(us)           ((uint32_t)(us) << 10)
+
 #define BRIDGE_PCI_TYPE1_CONFIG 0x0c8
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
 
@@ -396,6 +408,22 @@ static void test_fields_are_the_width_they_should_be(const void *data)
     qtest_writel(qts, REG(BRIDGE_PCI_TYPE1_CONFIG), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_PCI_TYPE1_CONFIG)), ==,
                     TYPE1_WRITABLE);
+
+    /*
+     * The one-wire master's two timing fields are its writable part, and the
+     * two status bits below them are not — they are what the model answers
+     * with, recomputed on every write because a write runs a bit slot. So the
+     * comparison masks them out rather than expecting them clear: they are
+     * legitimately set here, by the slot this write just ran.
+     *
+     * This register reached the sweep late. A one-wire test asserted the same
+     * property and could not fail — the slot sets both status bits after the
+     * writable mask is applied, so it passed whether the mask worked or not —
+     * and removing it left the mask with no coverage at all until here.
+     */
+    qtest_writel(qts, REG(BRIDGE_NIC), 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_NIC)) & ~(NIC_LEVEL | NIC_DONE),
+                    ==, NIC_PULSE(0x3ff) | NIC_SAMPLE(0xff));
 
     /* Bits 31:29 of a device register are reserved and read back clear. */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
@@ -946,16 +974,6 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
 
 #define DMA_REG_INTERRUPT       0x10
 
-/*
- * The one-wire bus master to the board identity part, and the fields a driver
- * touches: the level sampled off the wire, the flag saying a slot finished,
- * and the two timing fields whose being written is what starts a slot.
- */
-#define BRIDGE_NIC              0x0b0
-#define NIC_LEVEL               (1u << 0)
-#define NIC_DONE                (1u << 1)
-#define NIC_SAMPLE(us)          ((uint32_t)(us) << 2)
-#define NIC_PULSE(us)           ((uint32_t)(us) << 10)
 
 /*
  * The pin the tests drive. A slot's first interrupt pin goes to the chip pin of
@@ -967,7 +985,9 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
 
 /*
  * A write to the timings runs a bit slot, and the slot has finished by the
- * time the write returns.
+ * time the write returns. What the slot then answers with depends on where the
+ * conversation has got to; this asserts only that it ran and reported itself
+ * finished.
  *
  * That ordering is the whole contract for a driver, and getting it wrong is
  * not a wrong value but a hang: every path in the guest's master writes the
@@ -976,11 +996,11 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
  * leaves the guest in a loop with nothing to report. An undecoded register
  * would at least fault and say so.
  *
- * The level is asserted as high because nothing is on the bus yet. A part
- * that was present would pull the wire down through a reset slot, so this
- * assertion is expected to change when one is fitted — it is here to pin that
- * the level is answered at all, and to fail loudly rather than silently when
- * the bus grows something to answer with.
+ * The level is not asserted here at all, and that is the division of labour
+ * between this test and the ones below it: what the part answers with is their
+ * subject, and this one's is only that a slot ran and said so. An earlier
+ * version did assert the level, from when nothing was on the bus and the idle
+ * high was the whole answer.
  */
 static void test_a_write_runs_a_bit_slot(const void *data)
 {
