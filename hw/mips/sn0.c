@@ -1405,9 +1405,28 @@ static void sn0_init(MachineState *machine)
      * below is a PCI device that cannot exist without one to realize onto —
      * so the chip is always built, whether or not this machine is asked for
      * an I/O bridge. What "asked for" gates is whether the chip's own
-     * register window is mapped into crosstalk space at all: unmapped, it is
-     * exactly as absent as it always was, because nothing reaches a
-     * MemoryRegion nobody subregioned into anything the guest can address.
+     * register window is mapped into crosstalk space at all.
+     *
+     * That neutrality is about guest reachability specifically, not about
+     * the machine as a whole: unmapped, the chip is exactly as unreachable
+     * as it always was, because nothing reaches a MemoryRegion nobody
+     * subregioned into anything the guest can address. The topology is not
+     * neutral the same way. The bridge and the controller now always exist
+     * in QOM and always take part in reset, whether or not a guest can see
+     * them — a qtest, `info qtree`, or anything else that introspects the
+     * machine sees the always-realized bus even with the option off, which
+     * it did not before this change.
+     *
+     * That has one consequence worth stating plainly because migration is a
+     * core workflow: a snapshot taken on a build from before this change
+     * cannot be loaded on a build from after it, in either direction. Both
+     * devices' own VMStateDescriptions gate this correctly — the bridge and
+     * the controller take part in a machine snapshot only once they exist as
+     * QOM devices, so their state was simply absent from any snapshot taken
+     * before this commit, and the controller's own version bumps since
+     * (task #47) set minimum_version_id equal to version_id, which QEMU
+     * treats as an unconditional reject rather than a best-effort load. This
+     * is not a smaller or larger snapshot; it is an incompatible one.
      *
      * The base I/O controller used to be mapped directly at its crosstalk
      * address, and that direct mapping shadowed the bridge's own window for
