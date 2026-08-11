@@ -28,6 +28,7 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-xbow.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "system/reset.h"
@@ -73,6 +74,17 @@ struct SN0MachineState {
     SGIHubState hub;
     SGIIOC3State ioc3;
     SGIXbowState xbow;
+    SGIBridgeState io_bridge;
+
+    /*
+     * Whether the I/O bridge is present. It is being built, and until it can
+     * carry the base I/O controller on its PCI bus the machine this option
+     * turns on is not the machine the contract describes — so the default is
+     * off and the default machine is unchanged, region for region. What the
+     * option is for is the bridge's own tests, which need the chip reachable
+     * and need nothing else about the machine to move.
+     */
+    bool io_bridge_present;
 
     /*
      * Whether this machine presents firmware of its own; see the class notes.
@@ -1105,6 +1117,40 @@ static void sn0_init(MachineState *machine)
                                     SYS_BUS_DEVICE(&s->ioc3), 0));
 
     /*
+     * The I/O bridge, when this machine is asked for one. It is the chip that
+     * really decodes the address the controller above answers at, and it is
+     * being built; what it can do so far is answer its own register block, so
+     * turning it on adds that block at the bottom of the console widget's
+     * crosstalk space and changes nothing else.
+     *
+     * The controller keeps its direct mapping while both are present, which is
+     * why the bridge's widget goes underneath it rather than over it. That
+     * arrangement is temporary in a specific way worth naming: the controller
+     * is at the address of the bridge's own window for the third device on its
+     * PCI bus, so when the bridge can carry a PCI bus the controller moves onto
+     * it and the overlap goes away rather than being resolved.
+     */
+    if (s->io_bridge_present) {
+        object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge,
+                                TYPE_SGI_BRIDGE);
+        /*
+         * The silicon revision this machine reports for its I/O bridge. It is
+         * a candidate value the machine already states once, for the identity
+         * widget 0 answers with, and that identity is this chip's — so the
+         * chip's own identification register is derived from the same setting
+         * rather than carrying a second copy. Two registers reporting different
+         * revisions for a chip the machine names once would be asserting
+         * something nobody established, and would do it silently.
+         */
+        qdev_prop_set_uint32(DEVICE(&s->io_bridge), "revision",
+                             s->widget0_revision);
+        sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge), &error_fatal);
+        memory_region_add_subregion_overlap(
+            &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge), 0), -1);
+    }
+
+    /*
      * The crossbar's eight device ports, each reached through its own small
      * window onto the first 16 MB of that widget's crosstalk space. All eight
      * decode because all eight exist on the crossbar; the seven with nothing
@@ -1265,6 +1311,16 @@ static void sn0_set_synthesized_firmware(Object *obj, bool value, Error **errp)
     SN0_MACHINE(obj)->synthesized_firmware = value;
 }
 
+static bool sn0_get_io_bridge(Object *obj, Error **errp)
+{
+    return SN0_MACHINE(obj)->io_bridge_present;
+}
+
+static void sn0_set_io_bridge(Object *obj, bool value, Error **errp)
+{
+    SN0_MACHINE(obj)->io_bridge_present = value;
+}
+
 static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -1315,6 +1371,16 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "Present firmware of the machine's own: the structures in low memory, "
         "the call vector and the routines behind it. Turn it off to run a real "
         "firmware image with nothing of ours in its way.");
+
+    object_class_property_add_bool(oc, "io-bridge",
+                                   sn0_get_io_bridge, sn0_set_io_bridge);
+    object_class_property_set_description(oc, "io-bridge",
+        "Fit the I/O bridge, the chip between the crossbar and the PCI bus. "
+        "It is being built and so far answers only its own register block, "
+        "which is what its tests read; the base I/O controller still reaches "
+        "the processor directly rather than through it. Off by default, so "
+        "that the machine this option changes is the one under test and not "
+        "the one the contract describes.");
 
     /*
      * The first of the candidate values. A captured boot of this configuration
