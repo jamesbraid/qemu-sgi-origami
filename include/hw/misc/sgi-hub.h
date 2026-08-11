@@ -74,6 +74,9 @@ struct SGIHubState {
     /* Which node this Hub is, which its network-interface status reports. */
     uint32_t nasid;
 
+    /* How many processor sockets this node has populated. */
+    uint32_t cpus;
+
     /*
      * The manufacturer this Hub claims in its widget identification. A
      * candidate value rather than a constant: the two sources that name it
@@ -86,6 +89,7 @@ struct SGIHubState {
     uint32_t pi_calias_size;
     uint64_t pi_int_pend[2];
     uint64_t pi_int_mask[4];
+    uint8_t pi_cpu_enable[2];
     uint64_t ni_status;
     uint64_t io_link_status;
     uint64_t io_widget_control;
