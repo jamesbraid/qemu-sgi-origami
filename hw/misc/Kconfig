@@ -306,3 +306,7 @@ config QCOM_QDSP6SS_CLK
 
 config SGI_HUB
     bool
+
+config SGI_IOC3
+    bool
+    select SERIAL
