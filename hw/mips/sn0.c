@@ -1799,6 +1799,7 @@ static void sn0_instance_init(Object *obj)
     SN0MachineState *s = SN0_MACHINE(obj);
 
     s->synthesized_firmware = true;
+    s->io_bridge_present = true;
     s->widget0_revision = SN0_WIDGET0_REVISION;
 }
 
@@ -1825,11 +1826,11 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
                                    sn0_get_io_bridge, sn0_set_io_bridge);
     object_class_property_set_description(oc, "io-bridge",
         "Fit the I/O bridge, the chip between the crossbar and the PCI bus. "
-        "It is being built and so far answers only its own register block, "
-        "which is what its tests read; the base I/O controller still reaches "
-        "the processor directly rather than through it. Off by default, so "
-        "that the machine this option changes is the one under test and not "
-        "the one the contract describes.");
+        "On by default, because a real Origin 200 always has one and every "
+        "device on this machine hangs off it: turning it off leaves a board "
+        "with no PCI bus, which is a bring-up aid rather than a machine that "
+        "ever existed. Kept as an option because that aid is still useful "
+        "for isolating a fault to the fabric or to what sits behind it.");
 
     /*
      * The first of the candidate values. A captured boot of this configuration
