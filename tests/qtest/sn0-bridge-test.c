@@ -1014,6 +1014,74 @@ static void test_a_write_runs_a_bit_slot(const void *data)
  * always reads one looks like an empty bus. Only the difference between them
  * says the model is reading the timings rather than returning a constant.
  */
+/*
+ * One slot on the identity bus, and what the wire read. The widths are the
+ * ones mainline uses: a long hold resets, a short one writes a one or reads,
+ * and a middling one writes a zero. A read and a written one are the same slot
+ * — the guest lets the wire go and samples what is there — which is why one
+ * helper serves both.
+ */
+static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
+{
+    qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(pulse) | NIC_SAMPLE(sample));
+    return qtest_readl(qts, REG(BRIDGE_NIC)) & NIC_LEVEL;
+}
+
+#define NIC_RESET(q)    nic_slot((q), 520, 65)
+#define NIC_READ(q)     nic_slot((q), 6, 13)
+#define NIC_WRITE_ONE(q)  nic_slot((q), 6, 13)
+#define NIC_WRITE_ZERO(q) nic_slot((q), 80, 30)
+
+/*
+ * Drive a whole search and read the part's identity out of it.
+ *
+ * This is the exchange a guest performs before it will talk to the part at
+ * all, and it is asserted here rather than left to the boot because the boot
+ * proves it works on one guest with one kernel configuration. The identity
+ * that comes back is compared whole: the family code is what a guest matches
+ * on to decide the part is a memory it can read, and asserting only that would
+ * pass a model that answered the family and then anything at all.
+ */
+static void test_a_search_returns_the_identity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint64_t rom = 0;
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));         /* pulled low: the part is there */
+
+    /* The search command, least-significant bit first. */
+    for (i = 0; i < 8; i++) {
+        if ((0xf0u >> i) & 1) {
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+
+    /*
+     * Each identity bit takes three slots: the bit, its complement, and the
+     * choice written back. The complement is checked every time, because a
+     * model returning a constant would satisfy the bit alone.
+     */
+    for (i = 0; i < 64; i++) {
+        bool bit = NIC_READ(qts);
+        bool complement = NIC_READ(qts);
+
+        g_assert_cmpint(complement, ==, !bit);
+        if (bit) {
+            rom |= 1ULL << i;
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+
+    g_assert_cmphex(rom, ==, 0x360605040302010bULL);
+
+    qtest_quit(qts);
+}
+
 static void test_a_reset_finds_the_part(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1228,6 +1296,8 @@ int main(int argc, char **argv)
                         test_a_write_runs_a_bit_slot);
     qtest_add_data_func("sn0/bridge/one-wire-reset-finds-the-part", NULL,
                         test_a_reset_finds_the_part);
+    qtest_add_data_func("sn0/bridge/one-wire-search-returns-identity", NULL,
+                        test_a_search_returns_the_identity);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
