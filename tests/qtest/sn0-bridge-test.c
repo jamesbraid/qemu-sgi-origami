@@ -210,9 +210,10 @@
 /* What a slot with nothing in it answers, which must not be zero. */
 #define NO_CARD                 0xffffffffu
 
-/* The two configuration registers these tests program on a card. */
+/* The configuration registers these tests program on a card. */
 #define PCI_COMMAND             0x04
 #define PCI_COMMAND_MEMORY      0x0002
+#define PCI_BAR0                0x10
 #define PCI_BAR1                0x14
 
 /*
@@ -433,6 +434,61 @@ static void test_ioc3_slot_is_reassigned_after_reset(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
                     DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
                     (IOC3_PCI_MEM >> 20)); /* base is PCI address bits 31:20 */
+
+    qtest_quit(qts);
+}
+
+/*
+ * The question the codex review raised at the gate: the assignment above is
+ * a legacy reset handler (sn0_assign_pci_resources), registered once from the
+ * machine-init-done notifier, and that registration says nothing on its own
+ * about whether it keeps running after the PCI devices' own resets on every
+ * future reset, or only happened to on this first one.
+ *
+ * It does not need a second reset path to trust: qemu_system_reset() is the
+ * only caller of qemu_devices_reset(), and hw/core/machine.c calls that exact
+ * function for the machine's own first reset, immediately after registration
+ * finishes and before the guest runs a single instruction. A `system_reset`
+ * issued later from the monitor walks the identical, singleton reset
+ * container in the identical, append-only order — nothing in this machine
+ * ever unregisters a reset handler or hot-plugs a device, so the order this
+ * test observes on the second reset is the same order the boot-time
+ * assignment above already depends on, not a distinct claim about the
+ * future. This test is what turns that reading of the reset code into an
+ * observation instead of an inference the datasheet comment would otherwise
+ * be making unchecked.
+ *
+ * Both the bridge's device-window register and the controller's own BAR are
+ * checked, because firmware's job after a reset is two writes, not one: the
+ * bridge has to be aimed and the device has to answer at the address it is
+ * aimed at. A model that reasserted only one of them would still fail a
+ * guest's post-reset console write.
+ */
+static void test_ioc3_slot_survives_a_later_reset(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    qtest_system_reset(qts);
+
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
+                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
+                    (IOC3_PCI_MEM >> 20));
+    g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_BAR0), ==,
+                    IOC3_PCI_MEM);
+    /*
+     * A full-word read, not a halfword one, and that is deliberate: a 16-bit
+     * access to a big-endian config-space dword lands on the byte lanes the
+     * *other* half occupies unless the offset is exclusive-ored with two
+     * first (test_configuration_byte_lanes above is the proof of that, and
+     * this file's own header explains why). Command and status share one
+     * dword at this offset, so reading the whole thing and masking to the
+     * command half sidesteps the byte-lane question rather than getting it
+     * wrong a second time in this same file — the command write firmware
+     * issues elsewhere in this codebase uses the identical whole-word shape
+     * for the identical reason.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_COMMAND) &
+                    0xffff, ==, PCI_COMMAND_MEMORY);
 
     qtest_quit(qts);
 }
@@ -1443,6 +1499,8 @@ int main(int argc, char **argv)
                         test_every_slot_resets_alike);
     qtest_add_data_func("sn0/bridge/ioc3-slot-reassigned-after-reset", NULL,
                         test_ioc3_slot_is_reassigned_after_reset);
+    qtest_add_data_func("sn0/bridge/ioc3-slot-survives-a-later-reset", NULL,
+                        test_ioc3_slot_survives_a_later_reset);
     qtest_add_data_func("sn0/bridge/field-widths", NULL,
                         test_fields_are_the_width_they_should_be);
     qtest_add_data_func("sn0/bridge/device-window-base", NULL,
