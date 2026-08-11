@@ -194,6 +194,29 @@ static void test_upper_half_is_not_the_register(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_revision_is_settable(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,widget0-revision=4");
+
+    /*
+     * The revision is a candidate value — asserted from a captured boot of this
+     * configuration, while another Origin 200's firmware announces a different
+     * one — so it is settable, and two runs can differ in it and in nothing
+     * else. A property nothing reads is a knob that reports success while
+     * changing nothing, so this asserts that turning it reaches the register a
+     * guest reads rather than only the machine's own state.
+     */
+    uint32_t id = qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA);
+
+    g_assert_cmpuint(ID_REVISION(id), ==, 4);
+
+    /* And the rest of the identity is unmoved: one value changed, not two. */
+    g_assert_cmphex(ID_PART(id), ==, BRIDGE_PART);
+    g_assert_cmphex(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -206,6 +229,8 @@ int main(int argc, char **argv)
                         test_small_window_zero_is_not_the_way_in);
     qtest_add_data_func("sn0/xbow/upper-half-of-the-slot", NULL,
                         test_upper_half_is_not_the_register);
+    qtest_add_data_func("sn0/xbow/revision-is-settable", NULL,
+                        test_the_revision_is_settable);
 
     return g_test_run();
 }
