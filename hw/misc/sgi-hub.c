@@ -94,6 +94,19 @@
 #define IO_XTALK_PRESCALE_MASK  0xffffffULL
 
 /*
+ * Whether each processor socket is populated, and whether that processor is
+ * allowed to run. Present is hardware-sensed and read-only: no firmware we
+ * hold ever writes it, so the model derives it from the node's configured
+ * processor count rather than from anything a guest does. Enable resets clear
+ * and real firmware sets it during bring-up, so a guest that reads present
+ * correctly still sees a disabled processor until the firmware acts.
+ */
+#define HUB_PI_CPU_PRESENT_A    0x000040
+#define HUB_PI_CPU_PRESENT_B    0x000048
+#define HUB_PI_CPU_ENABLE_A     0x000050
+#define HUB_PI_CPU_ENABLE_B     0x000058
+
+/*
  * I/O interface: the link to the crossbar, and what this Hub says about it.
  */
 #define HUB_IO_LINK_STATUS      0x400128
@@ -364,6 +377,14 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     switch (addr) {
+    case HUB_PI_CPU_PRESENT_A:
+        return s->cpus >= 1;
+    case HUB_PI_CPU_PRESENT_B:
+        return s->cpus >= 2;
+    case HUB_PI_CPU_ENABLE_A:
+        return s->pi_cpu_enable[0];
+    case HUB_PI_CPU_ENABLE_B:
+        return s->pi_cpu_enable[1];
     case HUB_PI_REGION_PRESENT:
         return s->pi_region_present;
     case HUB_PI_PROCESSOR_NUMBER:
@@ -447,6 +468,12 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     }
 
     switch (addr) {
+    case HUB_PI_CPU_ENABLE_A:
+        s->pi_cpu_enable[0] = val & 1;
+        break;
+    case HUB_PI_CPU_ENABLE_B:
+        s->pi_cpu_enable[1] = val & 1;
+        break;
     case HUB_PI_INT_MODIFY:
         sgi_hub_int_modify(s, val);
         break;
@@ -532,6 +559,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
 
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
+    memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
     memset(s->pi_int_pend, 0, sizeof(s->pi_int_pend));
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
@@ -635,11 +663,12 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(pi_region_present, SGIHubState),
+        VMSTATE_UINT8_ARRAY(pi_cpu_enable, SGIHubState, 2),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
@@ -677,6 +706,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
+    DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),
