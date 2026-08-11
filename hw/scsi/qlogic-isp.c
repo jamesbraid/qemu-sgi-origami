@@ -56,7 +56,13 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define QLOGIC_ISP_VENDOR_ID    0x1077
 #define QLOGIC_ISP_DEVICE_ID    0x1020
 
-/* Revision 5 is the ISP1040C, the fastest member and the one modelled here. */
+/*
+ * Revision 5 is the ISP1040C, the fastest member and the one modelled here.
+ * This is the one value in the file with a real machine behind it rather
+ * than driver source alone: OpenBSD 7.9 prints "rev 0x05" attaching this
+ * adapter on a captured Origin 200 boot, and the firmware's own hardware
+ * inventory on that machine names the same adapters revision 5.
+ */
 #define QLOGIC_ISP_REVISION     0x05
 
 /*
@@ -175,6 +181,12 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
  * which for most registers here is also the reset value and so says nothing.
  * These three do not read zero, so the qtest asserting them is what
  * distinguishes a device that was reset from one that merely answers.
+ *
+ * Two independent sources agree on the exact bytes: OpenBSD's own driver
+ * expects precisely this ASCII after reset, and 86Box's ql_reset_asic
+ * reproduces the same three values in a second, unrelated implementation.
+ * One of those is the guest this fork boots and the other is not derived
+ * from it, which is stronger footing than either source gives alone.
  */
 #define ISP_MAILBOX1_SIGNATURE  0x4953
 #define ISP_MAILBOX2_SIGNATURE  0x5020
@@ -260,6 +272,15 @@ struct QLogicISPState {
  * agreement between the guest and the datasheet, not the secondary model.
  * Zero is what this function sets, and this comment is the record of having
  * chosen it over the alternative rather than never having seen the alternative.
+ *
+ * Every other register this function zeroes — bus configuration 1, bus
+ * interface control and status, the semaphore, the RISC flags, mailbox 0 and
+ * 6/7, and both SXP/RISC banks — is doing so under the datasheet's own
+ * standard for a value nothing confirms: no vendor register table exists for
+ * this part, so zero stands because no driver source contradicts it, not
+ * because a specification states it. The mailbox signature above is the
+ * exception in this function, being driver-confirmed rather than merely
+ * uncontradicted.
  */
 static void qlogic_isp_reset_state(QLogicISPState *s)
 {
