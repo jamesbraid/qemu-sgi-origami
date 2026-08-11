@@ -867,6 +867,169 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
     qtest_quit(qts);
 }
 
+/* The interrupt registers, and the fields these tests drive. */
+#define BRIDGE_INT_STATUS       0x100
+#define BRIDGE_INT_ENABLE       0x108
+#define BRIDGE_INT_MODE         0x118
+#define BRIDGE_INT_DEVICE       0x120
+#define BRIDGE_INT_HOST(n)      (0x130 + 8 * (n))
+
+#define DMA_REG_INTERRUPT       0x10
+
+/*
+ * The pin the tests drive. A slot's first interrupt pin goes to the chip pin of
+ * the same number, so a source in slot 3 drives pin 3 — which is also the pin
+ * the real machine's base I/O controller uses for its second interrupt, so the
+ * test exercises the one that matters rather than the convenient one.
+ */
+#define INT_TEST_SLOT           3
+
+static void bridge_source_in_slot_three(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(INT_TEST_SLOT, 0) + 0x10,
+                 CARD_MMIO(INT_TEST_SLOT));
+    qtest_writel(qts, CFG0(INT_TEST_SLOT, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(INT_TEST_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(INT_TEST_SLOT) >> 20));
+}
+
+static void bridge_drive_pin(QTestState *qts, int level)
+{
+    qtest_writel(qts, WINDOW(INT_TEST_SLOT) + DMA_REG_INTERRUPT, level);
+}
+
+static void test_the_status_register_follows_the_level(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+    unsigned int i;
+
+    bridge_source_in_slot_three(qts);
+
+    /* Nothing is asserting, so nothing reads set. */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==, 0);
+
+    bridge_drive_pin(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    /*
+     * THE assertion this chip's datasheet leads with. The guest re-arms
+     * interrupts in software: at the end of every interrupt it services it
+     * re-reads this register, and acts on its own pin still being set. So the
+     * bit must survive being read, and read again, and read again — a model
+     * that latched it and cleared it on service would tell the guest a device
+     * with a second condition pending had gone quiet, and that device would
+     * never be serviced again. Such a model passes a single read and then
+     * hangs a machine, so the repetition here is the test itself rather than
+     * belt and braces.
+     */
+    for (i = 0; i < 4; i++) {
+        g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                        1u << INT_TEST_SLOT);
+    }
+
+    /*
+     * And writing the register does not clear it either. A chip whose status
+     * could be written would give a guest a way to disagree with its own
+     * hardware about whether a device is still asking to be serviced.
+     */
+    qtest_writel(qts, REG(BRIDGE_INT_STATUS), 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    /* Only the device dropping its level clears it. */
+    bridge_drive_pin(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_enable_register_has_no_bit_31(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    /*
+     * The multiple-error flag at bit 31 of the status word has no enable: the
+     * chip's enable table starts at bit 30. A model implementing the enable as
+     * a plain 32-bit mask over the status word would let a multiple-error
+     * report through a mask a real chip would not, so the bit must refuse to
+     * be set at all.
+     */
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_ENABLE)), ==, 0x7fffffff);
+
+    qtest_quit(qts);
+}
+
+static void test_mode_and_device_keep_what_was_written(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    unsigned int n;
+
+    /*
+     * The guest read-modify-writes both of these when it establishes an
+     * interrupt: it reads the current value, sets the bits for the pin it is
+     * attaching, and writes it back. A model whose read gave zero rather than
+     * the last value written would wipe every previously configured pin each
+     * time, so only the most recently attached device would work — and the
+     * failure would look like a driver bug in whichever attached first.
+     *
+     * So this establishes all eight pins one at a time, the way a guest does,
+     * and checks the accumulated value at the end rather than after each.
+     */
+    for (n = 0; n < BRIDGE_DEVICES; n++) {
+        uint32_t mode = qtest_readl(qts, REG(BRIDGE_INT_MODE));
+        uint32_t device = qtest_readl(qts, REG(BRIDGE_INT_DEVICE));
+
+        qtest_writel(qts, REG(BRIDGE_INT_MODE), mode | (1u << n));
+        qtest_writel(qts, REG(BRIDGE_INT_DEVICE), device | (n << (3 * n)));
+    }
+
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_MODE)), ==, 0xff);
+    for (n = 0; n < BRIDGE_DEVICES; n++) {
+        g_assert_cmpuint((qtest_readl(qts, REG(BRIDGE_INT_DEVICE)) >> (3 * n))
+                         & 7, ==, n);
+    }
+
+    /* Three bits per pin and eight pins, so the top byte stays clear. */
+    qtest_writel(qts, REG(BRIDGE_INT_DEVICE), 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_DEVICE)), ==, 0xffffff);
+
+    qtest_quit(qts);
+}
+
+static void test_the_per_pin_host_registers(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    unsigned int n;
+
+    /*
+     * Each pin has its own: ten bits replacing part of the destination address
+     * and eight naming the bit to set in the host's interrupt register. All
+     * eight are written before any is read, so a model holding one register for
+     * all eight pins fails rather than passing on the last one written.
+     */
+    for (n = 0; n < BRIDGE_DEVICES; n++) {
+        qtest_writel(qts, REG(BRIDGE_INT_HOST(n)), 0xffffffff);
+    }
+    for (n = 0; n < BRIDGE_DEVICES; n++) {
+        /* Bits 31:18 are reserved, so all ones reads back as the two fields. */
+        g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_HOST(n))), ==, 0x3ffff);
+    }
+
+    for (n = 0; n < BRIDGE_DEVICES; n++) {
+        qtest_writel(qts, REG(BRIDGE_INT_HOST(n)), 0x100 + n);
+    }
+    for (n = 0; n < BRIDGE_DEVICES; n++) {
+        g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_HOST(n))), ==,
+                        0x100 + n);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -909,6 +1072,14 @@ int main(int argc, char **argv)
                         test_a_transfer_straddling_a_page);
     qtest_add_data_func("sn0/bridge/invalid-entry-transfers-nothing", NULL,
                         test_an_invalid_entry_transfers_nothing);
+    qtest_add_data_func("sn0/bridge/status-follows-the-level", NULL,
+                        test_the_status_register_follows_the_level);
+    qtest_add_data_func("sn0/bridge/enable-has-no-bit-31", NULL,
+                        test_the_enable_register_has_no_bit_31);
+    qtest_add_data_func("sn0/bridge/mode-and-device-keep-writes", NULL,
+                        test_mode_and_device_keep_what_was_written);
+    qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
+                        test_the_per_pin_host_registers);
 
     return g_test_run();
 }
