@@ -197,13 +197,59 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
  * arguments the command needs, then sets the host interrupt, and the adapter
  * answers by writing a result into mailbox 0 and posting an interrupt. Complete
  * and invalid are the two outcomes every command shares; a command-specific
- * error is any other value, none of which this commit produces yet because it
- * implements the one command OpenBSD's own attach sequence actually issues at
- * this stage — a no-op, used purely as a liveness check.
+ * error is any other value.
  */
-#define ISP_MBOX_CMD_NOP        0x0000
+#define ISP_MBOX_CMD_NOP                0x0000
+#define ISP_MBOX_CMD_EXEC_FIRMWARE      0x0002
+#define ISP_MBOX_CMD_WRITE_RAM_WORD     0x0004
+#define ISP_MBOX_CMD_VERIFY_CHECKSUM    0x0007
+#define ISP_MBOX_CMD_ABOUT_FIRMWARE     0x0008
+#define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
+
 #define ISP_MBOX_COMPLETE       0x4000
 #define ISP_MBOX_INVALID        0x4001
+#define ISP_MBOX_TEST_FAILED    0x4003
+
+/*
+ * The adapter runs QLogic microcode on an internal RISC processor, and the
+ * guest downloads that microcode at every attach — OpenBSD 7.9's qlw always
+ * does, since the build option that would skip it is set only for some Alpha
+ * RAMDISK configurations and never for GENERIC-IP27, the kernel this fork
+ * boots. This model does not run that microcode and must not try: it accepts
+ * the download and answers it, the same way QEMU's other intelligent storage
+ * controllers implement a message interface rather than executing vendor
+ * firmware. Nothing here requires QLogic firmware to be present, distributed
+ * or decoded, which is what makes accept-and-answer the only acceptable
+ * design — the fork ships no vendor firmware.
+ *
+ * The download is one mailbox command per 16-bit word, so it runs thousands
+ * of times per attach; the storage backing it has to be plain and cheap. A
+ * flat array sized to the full 16-bit address space a mailbox argument can
+ * name means every address a guest writes is valid by construction, with no
+ * bounds check needed and no error path for an address a real adapter would
+ * also have to accept.
+ *
+ * This retains what the guest downloads and computes checksums honestly over
+ * it, rather than discarding words and answering success unconditionally.
+ * The download is never executed either way; retaining it buys one thing —
+ * a verify-checksum answered honestly catches a guest that sent a corrupt
+ * image, which an unconditional success cannot. That is a recorded decision
+ * from this device's design review, not a re-derivation of the datasheet's
+ * own text, which frames discarding as the simpler default and retaining as
+ * the fallback if a guest is ever seen to need it.
+ */
+#define ISP_RISC_RAM_WORDS      0x10000
+
+/*
+ * The request count a guest sizes its command queues from. The datasheet
+ * calls this an open question with no source stating a real adapter's
+ * number, and 512 is chosen because it is the driver's own cap — OpenBSD
+ * clamps whatever this command reports to 512 immediately after reading it,
+ * so reporting a larger number changes nothing the guest does, while 512
+ * exercises the ring arithmetic at its actual ceiling instead of leaving
+ * headroom untested.
+ */
+#define ISP_FIRMWARE_STATUS_MAX_REQUESTS 512
 
 /*
  * Host command register. A write carries a command in the top four bits; a
@@ -268,6 +314,7 @@ struct QLogicISPState {
     uint16_t mailbox[ISP_MAILBOX_COUNT];
     uint16_t risc_bank[ISP_SXP_RISC_COUNT];
     uint16_t sxp_bank[ISP_SXP_RISC_COUNT];
+    uint16_t risc_ram[ISP_RISC_RAM_WORDS];    /* Downloaded firmware. */
 };
 
 /*
@@ -336,22 +383,31 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
 
+    /*
+     * The guest re-downloads firmware from scratch after every reset — it is
+     * part of the same attach sequence that follows a soft reset, never
+     * skipped — so nothing depends on RAM surviving one, and zeroing it here
+     * is the same uncontradicted-default choice as every other register this
+     * function clears.
+     */
+    memset(s->risc_ram, 0, sizeof(s->risc_ram));
+
     qlogic_isp_update_irq(s);
 }
 
 /*
- * Runs the one mailbox command this commit implements. The host writes
- * mailbox 0 and sets the host interrupt to mean "a command is ready", which
- * is what calls this; the adapter answers by writing a result into mailbox 0,
- * taking the semaphore lock, posting an interrupt, and letting the line
- * reflect that.
+ * Runs a mailbox command. The host writes mailbox 0 and sets the host
+ * interrupt to mean "a command is ready", which is what calls this; the
+ * adapter answers by writing a result into mailbox 0, taking the semaphore
+ * lock, posting an interrupt, and letting the line reflect that.
  *
- * A no-op is the only command modelled here because it is the only one
- * OpenBSD's own attach sequence issues at this stage: a liveness check with
- * nothing else attached to it. Everything else answers invalid, which is
- * accurate today and will need revisiting one command at a time as later
- * commits give the adapter more to do — not a placeholder that happens to
- * work because nothing yet asks for anything else.
+ * Every command implemented here is one OpenBSD's own attach sequence
+ * actually issues, from the liveness check through firmware download and
+ * bring-up. Everything else still answers invalid, which is accurate today
+ * — the mailbox protocol has no way to leave a command pending — and will
+ * need revisiting one command at a time as later commits give the adapter
+ * more to do, not a placeholder that happens to work because nothing yet
+ * asks for anything else.
  *
  * Processing synchronously, inside the register write that triggers it,
  * matches how QEMU's other message-interface storage controllers handle a
@@ -363,6 +419,85 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
 {
     switch (s->mailbox[0]) {
     case ISP_MBOX_CMD_NOP:
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * The guest sends one of these per 16-bit word of the firmware image, so
+     * this path runs thousands of times per attach. Mailbox 1 is the address,
+     * mailbox 2 the data; every address a uint16_t can name is a valid index
+     * into storage sized to the same range, so there is nothing to validate.
+     */
+    case ISP_MBOX_CMD_WRITE_RAM_WORD:
+        s->risc_ram[s->mailbox[1]] = s->mailbox[2];
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * Mailbox 1 is the base address; the word at base+3 is the image's own
+     * length in words, which is also what the guest's own download loop uses
+     * to know when it has sent the last word — so reading it back here rather
+     * than being told the length separately is what the guest's own protocol
+     * already relies on. The sum is over exactly that many words, wrapping
+     * within the storage rather than erroring on an out-of-range address,
+     * because every address is in range by construction.
+     *
+     * A real ISP1040 firmware image is built so this sum is zero; answering
+     * honestly is what lets a guest that sent a corrupt image see a failure
+     * instead of an unconditional success papering over it.
+     */
+    case ISP_MBOX_CMD_VERIFY_CHECKSUM: {
+        uint16_t start = s->mailbox[1];
+        uint16_t len = s->risc_ram[(uint16_t)(start + 3)];
+        uint16_t sum = 0;
+        uint16_t i;
+
+        for (i = 0; i < len; i++) {
+            sum += s->risc_ram[(uint16_t)(start + i)];
+        }
+
+        s->mailbox[1] = sum;
+        s->mailbox[0] = (sum == 0) ? ISP_MBOX_COMPLETE : ISP_MBOX_TEST_FAILED;
+        break;
+    }
+
+    /*
+     * The download is accepted and answered, never executed — this is the
+     * command after which the guest trusts the mailbox set below is live,
+     * which for this model was already true from reset. Nothing distinguishes
+     * "before" and "after" here because nothing here needs the distinction.
+     */
+    case ISP_MBOX_CMD_EXEC_FIRMWARE:
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * The driver prints this triple and aborts if the command fails, so it
+     * must succeed; the values themselves do not have to match any real
+     * QLogic release; OpenBSD's own attach code only ever prints them; it
+     * does not branch on them for this part. A fixed, plainly synthetic
+     * version costs nothing OpenBSD would notice, against the real cost of
+     * parsing a version string out of the downloaded image the way 86Box
+     * does — worth naming as the road not taken, since it is a deliberate
+     * simplification rather than a gap: 86Box's approach is nicer when the
+     * guest inspects the answer, and this guest does not.
+     */
+    case ISP_MBOX_CMD_ABOUT_FIRMWARE:
+        s->mailbox[1] = 1;
+        s->mailbox[2] = 0;
+        s->mailbox[3] = 0;
+        s->mailbox[6] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * Sizes every queue the guest allocates and its command budget — see
+     * the constant's own comment for why 512 is what is reported.
+     */
+    case ISP_MBOX_CMD_GET_FIRMWARE_STATUS:
+        s->mailbox[1] = 0;
+        s->mailbox[2] = ISP_FIRMWARE_STATUS_MAX_REQUESTS;
+        s->mailbox[3] = 0;
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
@@ -651,8 +786,8 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
         VMSTATE_UINT16(bus_cfg1, QLogicISPState),
@@ -663,6 +798,7 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16_ARRAY(mailbox, QLogicISPState, ISP_MAILBOX_COUNT),
         VMSTATE_UINT16_ARRAY(risc_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
         VMSTATE_UINT16_ARRAY(sxp_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
+        VMSTATE_UINT16_ARRAY(risc_ram, QLogicISPState, ISP_RISC_RAM_WORDS),
         VMSTATE_END_OF_LIST()
     }
 };

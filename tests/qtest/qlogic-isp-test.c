@@ -56,9 +56,18 @@
 #define ISP_MAILBOX2_SIGNATURE  0x5020
 #define ISP_MAILBOX3_SIGNATURE  0x2020
 
-#define ISP_MBOX_CMD_NOP        0x0000
+#define ISP_MBOX_CMD_NOP                 0x0000
+#define ISP_MBOX_CMD_EXEC_FIRMWARE       0x0002
+#define ISP_MBOX_CMD_WRITE_RAM_WORD      0x0004
+#define ISP_MBOX_CMD_VERIFY_CHECKSUM     0x0007
+#define ISP_MBOX_CMD_ABOUT_FIRMWARE      0x0008
+#define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
+
 #define ISP_MBOX_COMPLETE       0x4000
 #define ISP_MBOX_INVALID        0x4001
+#define ISP_MBOX_TEST_FAILED    0x4003
+
+#define ISP_FIRMWARE_STATUS_MAX_REQUESTS 512
 
 #define ISP_BUS_STATUS_INT_REQ      0x0002
 #define ISP_BUS_STATUS_RISC_INT_REQ 0x0004
@@ -682,6 +691,165 @@ static void test_mailbox_invalid_command(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/* Loads mailboxes 0 through 3 and triggers processing; caller reads back. */
+static void qlogic_isp_mbox_call4(QPCIDevice *dev, QPCIBar io, uint16_t mb0,
+                                  uint16_t mb1, uint16_t mb2, uint16_t mb3)
+{
+    qpci_io_writew(dev, io, ISP_MAILBOX(0), mb0);
+    qpci_io_writew(dev, io, ISP_MAILBOX(1), mb1);
+    qpci_io_writew(dev, io, ISP_MAILBOX(2), mb2);
+    qpci_io_writew(dev, io, ISP_MAILBOX(3), mb3);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+}
+
+static void qlogic_isp_ack(QPCIDevice *dev, QPCIBar io)
+{
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, 0);
+}
+
+/*
+ * Builds a tiny firmware image the way the guest's own download loop does —
+ * one write-ram-word command per word, address then data — verifies its
+ * checksum, executes it, and confirms the mailbox engine still answers
+ * afterward. None of this is ever run; accepting and answering it correctly
+ * is the entire contract.
+ *
+ * The image is constructed so its checksum is genuinely zero rather than
+ * asserting success and trusting the model to agree with itself: word 3 is
+ * the length the guest's own loop would have used to know when to stop
+ * sending, and the other three words are chosen so the sum of all four wraps
+ * to zero, which is what a real firmware image built for this checksum
+ * satisfies by construction rather than by accident.
+ */
+static void test_firmware_download(void *obj, void *data,
+                                   QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    const uint16_t base = 0x1000;
+    const uint16_t image[] = { 0x0000, 0x0000, 0xfffc, 0x0004 };
+    size_t i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(image); i++) {
+        qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_WRITE_RAM_WORD,
+                              base + i, image[i], 0);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                        ISP_MBOX_COMPLETE);
+        qlogic_isp_ack(dev, io);
+    }
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_VERIFY_CHECKSUM, base, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(1)), ==, 0);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_EXEC_FIRMWARE, base, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* The mailbox engine answers a plain command the same as before. */
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_NOP, 0, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * A non-zero sum is answered as a failure, with the sum itself in mailbox 1
+ * — what OpenBSD's own driver prints on this path. Without this, a model
+ * that always answered complete would look identical to a correct one on
+ * every image that happens to already sum to zero, which the download test
+ * above uses and would not by itself catch a checksum that never runs.
+ */
+static void test_verify_checksum_failure(void *obj, void *data,
+                                         QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    const uint16_t base = 0x2000;
+    const uint16_t image[] = { 0x0001, 0x0002, 0x0003, 0x0004 };
+    size_t i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(image); i++) {
+        qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_WRITE_RAM_WORD,
+                              base + i, image[i], 0);
+        qlogic_isp_ack(dev, io);
+    }
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_VERIFY_CHECKSUM, base, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_TEST_FAILED);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(1)), ==, 0x000a);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The driver prints this triple and aborts if the command fails, so the only
+ * hard requirement is that it completes; the values are this model's own
+ * declaration rather than a real QLogic release, which the datasheet states
+ * is acceptable for a guest that never inspects them.
+ */
+static void test_about_firmware(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_ABOUT_FIRMWARE, 0, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(6)), ==, 0);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Sizes every queue the guest allocates. 512 is asserted explicitly rather
+ * than just checking the command completes, because the datasheet marks
+ * this value as a recorded decision rather than a driver-confirmed one, and
+ * a qtest is what pins a decision in place against an accidental change.
+ */
+static void test_get_firmware_status(void *obj, void *data,
+                                     QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_GET_FIRMWARE_STATUS, 0, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(2)), ==,
+                    ISP_FIRMWARE_STATUS_MAX_REQUESTS);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -714,6 +882,14 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("mailbox-nop", "qlogic-isp1040", test_mailbox_nop, NULL);
     qos_add_test("mailbox-invalid-command", "qlogic-isp1040",
                  test_mailbox_invalid_command, NULL);
+    qos_add_test("firmware-download", "qlogic-isp1040",
+                 test_firmware_download, NULL);
+    qos_add_test("verify-checksum-failure", "qlogic-isp1040",
+                 test_verify_checksum_failure, NULL);
+    qos_add_test("about-firmware", "qlogic-isp1040",
+                 test_about_firmware, NULL);
+    qos_add_test("get-firmware-status", "qlogic-isp1040",
+                 test_get_firmware_status, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);
