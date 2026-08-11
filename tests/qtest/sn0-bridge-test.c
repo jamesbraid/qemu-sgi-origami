@@ -1146,15 +1146,23 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
 #define NIC_CRC_RESIDUE 0xb001
 
 /*
- * Read a page the way a guest does, and check it the way a guest does.
+ * Read a page the way a guest does, and check it every way a guest does.
  *
- * The two checks are separate on purpose and both are asserted, because they
- * fail for different reasons and a model can pass one while failing the other.
- * The first covers the request *and* the part's answer to it, so it catches a
- * part that answered a page nobody asked for; the second covers the page
- * bytes alone. Both require a fixed residue rather than a value, which is what
- * makes the part's check bytes have to be sent inverted — sending them plain
- * lands on a different residue and a guest rejects the page.
+ * There are three residue checks and a model can pass some while failing
+ * others, so all three are asserted. The first covers the request together
+ * with the part's redirection answer, catching a part that answered a page
+ * nobody asked for. The second covers the block plus the two framing bytes the
+ * read protocol appends, which is what the one-wire slave driver validates as
+ * it caches the page. The third covers the thirty-two stored bytes alone: the
+ * block carries its own check in its last two bytes, and this is the check the
+ * board-identity reader runs over the stored bytes before it will trust the
+ * part number. The second passes whatever those last two stored bytes hold, so
+ * only the third proves the block carries the embedded check a part-number read
+ * needs — the case a page of plain data with correct framing silently fails,
+ * which is what left the real guest unable to read the part number. Each check
+ * requires a fixed residue rather than a value, which is what makes the part
+ * send its check bytes inverted — sending them plain lands on a different
+ * residue and a guest rejects the page.
  */
 static void test_a_page_reads_back_with_its_checks(const void *data)
 {
@@ -1183,11 +1191,19 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
     g_assert_cmphex(exchange[3], ==, 0xff);     /* this page is not moved */
     g_assert_cmphex(nic_crc(0, exchange, 6), ==, NIC_CRC_RESIDUE);
 
-    /* Then the page and its own check. */
+    /* Then the block and the two framing bytes the read protocol appends. */
     for (i = 0; i < sizeof(page); i++) {
         page[i] = nic_read_byte(qts);
     }
     g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+
+    /*
+     * The thirty-two stored bytes on their own — the residue the part-number
+     * reader requires. A block of plain data with no embedded check still
+     * passes the framing check above, so this is the assertion that catches a
+     * part number a guest could read framing-correct but never validate.
+     */
+    g_assert_cmphex(nic_crc(0, page, sizeof(page) - 2), ==, NIC_CRC_RESIDUE);
 
     /* And the bytes are the board's part number, where a guest looks for it. */
     g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
