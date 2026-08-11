@@ -566,27 +566,57 @@ static void test_configuration_space_is_laid_out_right(const void *data)
 }
 
 /*
- * The slots the window tests populate, and why two small ones prove the whole
- * table including the two large windows no card can reach.
+ * Which window each card is reached through, and why those are two separate
+ * things.
  *
- * The layout is two 2 MB windows then six 1 MB ones. Devices 0 and 1 are the
- * large pair and the machine's own SCSI adapters sit in them, so no test card
- * can go there — but the later windows' offsets already encode the earlier
- * windows' sizes. Window 3 is at 0x700000 and window 7 at 0xb00000 only if
- * windows 0 and 1 are 2 MB and window 2 is 1 MB. A card at each end of the
- * small run therefore fails if any window before it is the wrong size, which
- * is what the large pair was here to catch. Far enough apart, still, that a
- * wrong size shows up as a wrong address rather than as an overlap.
+ * A window belongs to a PCI slot, but what it points at is a PCI address that
+ * slot's register supplies, and any card decoding that address answers. So the
+ * window a test drives and the slot its card sits in are independent, and this
+ * table aims a window at a card somewhere else on purpose.
+ *
+ * That independence is what keeps the two large windows covered. The layout is
+ * two 2 MB windows then six 1 MB ones, and devices 0 and 1 are the large
+ * pair — where the machine's own SCSI adapters sit, so no test card can go
+ * there.
+ * Reaching those windows through cards elsewhere tests them anyway. An earlier
+ * version of this table could not, because it read "the window belongs to the
+ * slot" as "the window reaches the slot" and so gave the two large windows up.
+ *
+ * These five pin the whole eight-window table. Both large windows are here
+ * because a wrong size shows up in them first. Windows 2, 3 and 7 are here
+ * because their offsets encode the sizes of every window below them: window 3
+ * sits at 0x700000 and window 7 at 0xb00000 only if windows 0 and 1 are 2 MB
+ * and window 2 is 1 MB, so a model with evenly spaced windows puts both of them
+ * somewhere else.
  */
-static const int populated[] = { 3, EMPTY_SLOT };
-#define POPULATED_SLOTS         ARRAY_SIZE(populated)
+static const struct {
+    int window;
+    int card_slot;
+} window_case[] = {
+    { 0, 3 },               /* a 2 MB window, reached from three slots away */
+    { 1, PROBE_SLOT },      /* the other 2 MB window */
+    { 2, PROBE_SLOT_ABOVE },
+    { 3, DMA_SLOT },
+    { 7, EMPTY_SLOT },
+};
+#define WINDOW_CASES            ARRAY_SIZE(window_case)
 
-static void bridge_aim_window_at_its_card(QTestState *qts, int slot)
+static void bridge_put_card_in_slot(QTestState *qts, int slot)
 {
     qtest_writel(qts, CFG0(slot, 0) + PCI_BAR1, CARD_MMIO(slot));
     qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
+}
+
+static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
+{
+    qtest_writel(qts, REG(BRIDGE_DEVICE(window)),
                  DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
+}
+
+static void bridge_aim_window_at_its_card(QTestState *qts, int slot)
+{
+    bridge_put_card_in_slot(qts, slot);
+    bridge_aim_window_at_card(qts, slot, slot);
 }
 
 static void test_device_windows_reach_their_cards(const void *data)
@@ -594,27 +624,37 @@ static void test_device_windows_reach_their_cards(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
                                  " -device lsi53c895a,addr=3"
                                  " -device lsi53c895a,addr="
+                                 stringify(PROBE_SLOT)
+                                 " -device lsi53c895a,addr="
+                                 stringify(PROBE_SLOT_ABOVE)
+                                 " -device lsi53c895a,addr="
+                                 stringify(DMA_SLOT)
+                                 " -device lsi53c895a,addr="
                                  stringify(EMPTY_SLOT));
     unsigned int i;
 
-    for (i = 0; i < POPULATED_SLOTS; i++) {
-        bridge_aim_window_at_its_card(qts, populated[i]);
+    for (i = 0; i < WINDOW_CASES; i++) {
+        bridge_put_card_in_slot(qts, window_case[i].card_slot);
+        bridge_aim_window_at_card(qts, window_case[i].window,
+                                  window_case[i].card_slot);
     }
 
     /*
      * Every window is written before any is read back, which is the part that
-     * makes this a test of eight separate windows rather than of one. Windows
+     * makes this a test of five separate windows rather than of one. Windows
      * that overlapped in the widget's space, or that all pointed at the same
      * place in PCI space, would each pass a write-then-read-immediately check
      * and fail here, because the last write would be the only one left.
      */
-    for (i = 0; i < POPULATED_SLOTS; i++) {
-        qtest_writel(qts, WINDOW(populated[i]) + CARD_SCRATCH,
-                     0xc0ffee00 + populated[i]);
+    for (i = 0; i < WINDOW_CASES; i++) {
+        qtest_writel(qts, WINDOW(window_case[i].window) + CARD_SCRATCH,
+                     0xc0ffee00 + window_case[i].window);
     }
-    for (i = 0; i < POPULATED_SLOTS; i++) {
-        g_assert_cmphex(qtest_readl(qts, WINDOW(populated[i]) + CARD_SCRATCH),
-                        ==, 0xc0ffee00u + populated[i]);
+    for (i = 0; i < WINDOW_CASES; i++) {
+        g_assert_cmphex(qtest_readl(qts,
+                                    WINDOW(window_case[i].window) +
+                                    CARD_SCRATCH),
+                        ==, 0xc0ffee00u + window_case[i].window);
     }
 
     qtest_quit(qts);
