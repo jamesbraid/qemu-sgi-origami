@@ -143,6 +143,40 @@
 #define IOC3_SCRATCH    (0x600000 + 0x020178 + 7)
 
 /*
+ * The controller is a PCI device on the I/O bridge's bus rather than mapped
+ * directly, so the tests below that use it as a target need the bridge
+ * turned on and need to do the two things a guest's own bus scan would do
+ * before its window reaches anything: give the device a PCI address by
+ * writing its BAR, and aim the window at that same address. The window's
+ * crosstalk-side offset is fixed by slot number, which is why IOC3_SCRATCH
+ * above still names the right place to find it — only the PCI-side address
+ * in between is this test's to choose.
+ */
+#define BRIDGE_BASE      SMALL_WINDOW(CONSOLE_WIDGET)
+#define BRIDGE_REG_DATA  4        /* registers sit at a slot's upper half */
+#define BRIDGE_CFG0_BASE 0x020000
+#define BRIDGE_CFG0_DEVICE_STRIDE 0x1000
+#define BRIDGE_CFG0(device) (BRIDGE_BASE + BRIDGE_CFG0_BASE + \
+                             (device) * BRIDGE_CFG0_DEVICE_STRIDE)
+#define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + BRIDGE_REG_DATA)
+#define DEV_MEMORY_SPACE (1u << 12)
+
+#define PCI_IOC3_DEVICE     2      /* SN0_IOC3_DEVICE, restated for the test */
+#define PCI_COMMAND         0x04
+#define PCI_COMMAND_MEMORY  0x0002
+#define PCI_BAR0            0x10
+#define IOC3_PCI_MMIO       0x10000000u
+
+static void sn0_hub_attach_ioc3(QTestState *qts)
+{
+    qtest_writel(qts, BRIDGE_CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
+    qtest_writel(qts, BRIDGE_CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
+                PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
+                DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+/*
  * The counter runs at 1.25 MHz. Stepping the virtual clock a known distance
  * and asserting the exact number of ticks that fall in it tests the rate, not
  * just that something changed.
@@ -483,7 +517,9 @@ static void test_translation_entry_width(const void *data)
 
 static void test_big_window_follows_its_entry(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_hub_attach_ioc3(qts);
 
     /*
      * Aim big window 0 at the widget the base I/O controller is on, at that
@@ -510,7 +546,9 @@ static void test_big_window_follows_its_entry(const void *data)
 
 static void test_big_window_follows_the_slice_too(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_hub_attach_ioc3(qts);
 
     /*
      * The entry's low five bits choose which 512 MB slice of the widget the
@@ -578,7 +616,9 @@ static void test_a_big_window_may_name_widget_zero(const void *data)
 
 static void test_big_window_naming_an_absent_widget(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_hub_attach_ioc3(qts);
 
     /*
      * How the guests disable a window: there is no valid bit, so they program

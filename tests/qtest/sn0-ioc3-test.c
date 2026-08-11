@@ -16,6 +16,10 @@
  * were wrong together three times before they were right, so the test reads the
  * address out of the graph rather than restating it.
  *
+ * The controller is a PCI device on the I/O bridge's bus, so every test here
+ * asks for the bridge explicitly: without it there is no bus for the
+ * controller to sit on and nothing answers at its crosstalk address at all.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -28,6 +32,38 @@
 #define BRIDGE_DEVICE2  0x600000
 #define IOC3_BASE       (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE2)
+
+/*
+ * The controller is a PCI device now, reached through the bridge's third
+ * device window rather than mapped directly, so a test has to do the two
+ * things a guest's own bus scan would do before that window reaches
+ * anything: give the device a PCI address by writing its BAR, and aim the
+ * window at that same address. The window's crosstalk-side offset is fixed
+ * by slot number, which is why IOC3_BASE above still names the right place
+ * to read the result from — only the PCI-side address in between is this
+ * test's to choose.
+ */
+#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
+#define REG_DATA        4         /* registers sit at a slot's upper half */
+#define BRIDGE_CFG0     0x020000
+#define CFG0_DEVICE_STRIDE 0x1000
+#define CFG0(device)    (BRIDGE_BASE + BRIDGE_CFG0 + (device) * CFG0_DEVICE_STRIDE)
+#define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
+#define DEV_MEMORY_SPACE (1u << 12)
+
+#define PCI_IOC3_DEVICE  2         /* SN0_IOC3_DEVICE, restated for the test */
+#define PCI_COMMAND      0x04
+#define PCI_COMMAND_MEMORY 0x0002
+#define PCI_BAR0         0x10
+#define IOC3_PCI_MMIO    0x10000000u
+
+static void sn0_ioc3_attach(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
+    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
 
 /* The two ports, at their offsets inside the byte-wide SuperIO window. */
 #define SERIAL_A        (IOC3_BASE + 0x020178)
@@ -53,7 +89,9 @@
 
 static void test_ports_are_distinct(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
 
     /*
      * The scratch register holds whatever it is given, so it is the cheapest
@@ -71,7 +109,9 @@ static void test_ports_are_distinct(const void *data)
 
 static void test_registers_are_a_byte_apart(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
 
     /*
      * Line control and modem control are adjacent and both hold what they are
@@ -95,8 +135,10 @@ static void test_registers_are_a_byte_apart(const void *data)
 
 static void test_a_wide_access_is_not_narrowed(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
     uint32_t wide;
+
+    sn0_ioc3_attach(qts);
 
     /*
      * Four distinct bytes across four consecutive registers, then one four-byte
@@ -127,9 +169,11 @@ static void test_a_wide_access_is_not_narrowed(const void *data)
 
 static void test_port_answers_where_the_graph_says(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
     uint64_t advertised = qtest_readq(qts, CONFIG_GRAPH + GRAPH_CONSOLE);
     uint64_t reached;
+
+    sn0_ioc3_attach(qts);
 
     /*
      * The single assertion joining this device to the firmware that describes
@@ -174,7 +218,9 @@ static void test_port_answers_where_the_graph_says(const void *data)
 
 static void test_the_enable_mask_has_two_write_aliases(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
 
     /*
      * One mask behind two addresses, so a guest can turn a source on or off
@@ -203,7 +249,9 @@ static void test_the_enable_mask_has_two_write_aliases(const void *data)
 
 static void test_a_serial_bit_ignores_an_acknowledgement(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
 
     /*
      * The two serial bits are pass-throughs: they follow the 16550's own

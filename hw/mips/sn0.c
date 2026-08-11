@@ -88,17 +88,17 @@ struct SN0MachineState {
     MemoryRegion mem_slot[SN0_MEM_BANK_SLOTS];
 
     SGIHubState hub;
-    SGIIOC3State ioc3;
     SGIXbowState xbow;
     SGIBridgeState io_bridge;
 
     /*
-     * Whether the I/O bridge is present. It is being built, and until it can
-     * carry the base I/O controller on its PCI bus the machine this option
-     * turns on is not the machine the contract describes — so the default is
-     * off and the default machine is unchanged, region for region. What the
-     * option is for is the bridge's own tests, which need the chip reachable
-     * and need nothing else about the machine to move.
+     * Whether the I/O bridge is present. It is being built, and until firmware
+     * can assign the PCI resources a guest expects to already be assigned
+     * (task #43) the machine this option turns on is not one a guest can
+     * actually boot on — so the default is off and the default machine is
+     * unchanged, region for region. What the option is for is the bridge's
+     * own tests, and increasingly real guest boots, which need the chip
+     * reachable and need nothing else about the machine to move.
      */
     bool io_bridge_present;
 
@@ -1163,6 +1163,7 @@ static void sn0_init(MachineState *machine)
     hwaddr node = SN0_NODE_BASE(0);
     Clock *cpuclk;
     MIPSCPU *cpu;
+    PCIDevice *ioc3;
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
@@ -1342,95 +1343,90 @@ static void sn0_init(MachineState *machine)
                        cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
 
     /*
-     * The base-I/O controller, at the crosstalk address the configuration graph
-     * advertises. What is mapped is the chip's whole window, whose base is the
-     * console widget plus the I/O bridge's window for the third device on its
-     * bus. The serial ports sit inside that window at their own offsets, so
-     * port A lands where the graph's console descriptor points and the two
-     * agree by construction rather than by arithmetic done twice.
+     * The I/O bridge. It carries a real PCI bus, and the base I/O controller
+     * below is a PCI device that cannot exist without one to realize onto —
+     * so the chip is always built, whether or not this machine is asked for
+     * an I/O bridge. What "asked for" gates is whether the chip's own
+     * register window is mapped into crosstalk space at all: unmapped, it is
+     * exactly as absent as it always was, because nothing reaches a
+     * MemoryRegion nobody subregioned into anything the guest can address.
      *
-     * The bridge itself is not modelled, so this reaches the chip without the
-     * chip's real parent in the path. That is an interim the machine contract
-     * records as an interim: the address a guest issues is right, the reason it
-     * decodes is not, and it is revisited when the bridge lands.
-     */
-    /*
-     * Announced rather than left to a comment. A temporary arrangement that
-     * nothing says out loud is one somebody later reads as the design, and this
-     * one is deliberately wrong about *why* the address decodes while being
-     * right about the address itself. It says so on every run, and the line
-     * disappears when the bridge makes it true.
-     */
-    if (!s->io_bridge_present) {
-        warn_report("origin200: the base I/O controller is mapped directly at "
-                    "its crosstalk address; the I/O bridge that really decodes "
-                    "it is not modelled yet (an approved interim)");
-    }
-
-    object_initialize_child(OBJECT(machine), "ioc3", &s->ioc3, TYPE_SGI_IOC3);
-    qdev_prop_set_chr(DEVICE(&s->ioc3), "chardev-a", serial_hd(0));
-    sysbus_realize(SYS_BUS_DEVICE(&s->ioc3), &error_fatal);
-    memory_region_add_subregion(&s->xtalk,
-                                SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) +
-                                SN0_BRIDGE_DEVICE2,
-                                sysbus_mmio_get_region(
-                                    SYS_BUS_DEVICE(&s->ioc3), 0));
-
-    /*
-     * The I/O bridge, when this machine is asked for one. It is the chip that
-     * really decodes the address the controller above answers at, and it is
-     * being built; what it can do so far is answer its own register block, so
-     * turning it on adds that block at the bottom of the console widget's
-     * crosstalk space and changes nothing else.
+     * The base I/O controller used to be mapped directly at its crosstalk
+     * address, and that direct mapping shadowed the bridge's own window for
+     * the third device on its bus — a guest programming that window to reach
+     * a different device (the first SCSI adapter's own window landed there)
+     * had its store swallowed by the controller's overlay instead. Putting
+     * the controller on the bus as a real PCI device retires that overlay
+     * when the bridge is asked for: the window belongs to whichever device
+     * is actually there, discovered the same way a guest discovers any other
+     * PCI device, rather than being reserved for one of them in advance.
      *
-     * The controller keeps its direct mapping while both are present, which is
-     * why the bridge's widget goes underneath it rather than over it. That
-     * arrangement is temporary in a specific way worth naming: the controller
-     * is at the address of the bridge's own window for the third device on its
-     * PCI bus, so when the bridge can carry a PCI bus the controller moves onto
-     * it and the overlap goes away rather than being resolved.
+     * The controller's crosstalk-side address does not move either way: the
+     * bridge aims each slot's window by slot number, not by the PCI address
+     * a guest assigns the device's BAR, so the third slot's window sits at
+     * the same offset the configuration graph's console descriptor already
+     * names. With the bridge unasked-for, the controller's BAR is instead
+     * subregioned into that same address directly, bypassing the bridge's
+     * own per-device decode entirely — the same placement a system-bus
+     * device's region would get, and the reason this is not yet a
+     * self-contained fix: task #35's own boot test found that no guest here
+     * assigns PCI resources for itself before it needs its console, so
+     * without this direct placement a guest reached through the bridge
+     * cannot find the controller at all until firmware does that assignment
+     * (task #43). This whole branch — the direct subregion, and the warning
+     * naming it an interim — is deleted once firmware can.
      */
+    object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge,
+                            TYPE_SGI_BRIDGE);
+    /*
+     * The silicon revision this machine reports for its I/O bridge. It is
+     * a candidate value the machine already states once, for the identity
+     * widget 0 answers with, and that identity is this chip's — so the
+     * chip's own identification register is derived from the same setting
+     * rather than carrying a second copy. Two registers reporting different
+     * revisions for a chip the machine names once would be asserting
+     * something nobody established, and would do it silently.
+     */
+    qdev_prop_set_uint32(DEVICE(&s->io_bridge), "revision",
+                         s->widget0_revision);
+    /*
+     * The fabric its interrupt packets travel, and how this machine encodes
+     * a crosstalk destination in it. A pin rise becomes a write to the
+     * Hub's interrupt-modify register on the named node, and it goes
+     * through the machine's own address space rather than by calling into
+     * the Hub — the packet is a real transfer across the bus and modelling
+     * it as a function call would invent a wire and step over the fabric.
+     *
+     * The chip knows the packet's format; this knows where a node's Hub
+     * lives, which is why the encoding arrives from here. Set even when the
+     * bridge is not asked for, because realize requires it and nothing here
+     * ever drives a packet through an unmapped chip's fabric link anyway.
+     */
+    object_property_set_link(OBJECT(&s->io_bridge), "fabric",
+                             OBJECT(system), &error_fatal);
+    qdev_prop_set_uint64(DEVICE(&s->io_bridge), "fabric-base",
+                         SN0_SPACE_XTALK);
+    qdev_prop_set_uint32(DEVICE(&s->io_bridge), "fabric-node-shift",
+                         SN0_NODE_SHIFT);
+    sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge), &error_fatal);
+
+    ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
+    qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_hd(0));
+    pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge)->bus,
+                          &error_fatal);
+
     if (s->io_bridge_present) {
-        object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge,
-                                TYPE_SGI_BRIDGE);
-        /*
-         * The silicon revision this machine reports for its I/O bridge. It is
-         * a candidate value the machine already states once, for the identity
-         * widget 0 answers with, and that identity is this chip's — so the
-         * chip's own identification register is derived from the same setting
-         * rather than carrying a second copy. Two registers reporting different
-         * revisions for a chip the machine names once would be asserting
-         * something nobody established, and would do it silently.
-         */
-        qdev_prop_set_uint32(DEVICE(&s->io_bridge), "revision",
-                             s->widget0_revision);
-        /*
-         * The fabric its interrupt packets travel, and how this machine encodes
-         * a crosstalk destination in it. A pin rise becomes a write to the
-         * Hub's interrupt-modify register on the named node, and it goes
-         * through the machine's own address space rather than by calling into
-         * the Hub — the packet is a real transfer across the bus and modelling
-         * it as a function call would invent a wire and step over the fabric.
-         *
-         * The chip knows the packet's format; this knows where a node's Hub
-         * lives, which is why the encoding arrives from here.
-         */
-        object_property_set_link(OBJECT(&s->io_bridge), "fabric",
-                                 OBJECT(system), &error_fatal);
-        qdev_prop_set_uint64(DEVICE(&s->io_bridge), "fabric-base",
-                             SN0_SPACE_XTALK);
-        qdev_prop_set_uint32(DEVICE(&s->io_bridge), "fabric-node-shift",
-                             SN0_NODE_SHIFT);
-        sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge), &error_fatal);
         memory_region_add_subregion_overlap(
             &s->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge), 0), -1);
 
         /*
          * The two SCSI adapters the base I/O board carries, at the first two
-         * PCI devices. They exist only when the bridge does, because the bus
-         * they sit on is the bridge's: without it there is nowhere to put them
-         * and no address a guest could reach them at.
+         * PCI devices. They exist only when the bridge is asked for, because
+         * a guest can only reach them through the bridge's own per-device
+         * decode — unlike the controller above, nothing here gives them a
+         * direct fallback mapping, so without the bridge there is nowhere a
+         * guest could reach them at.
          *
          * They are created with no drive attached. A machine that invented
          * backing storage would be describing a disk nobody asked for, and the
@@ -1443,6 +1439,15 @@ static void sn0_init(MachineState *machine)
                               PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0),
                               "qlogic-isp1040");
         }
+    } else {
+        warn_report("origin200: the base I/O controller is mapped directly "
+                    "at its crosstalk address; without synthesized firmware "
+                    "to assign it PCI resources the way real ARCS PROM does, "
+                    "the I/O bridge cannot yet carry it to a booting guest "
+                    "(an approved interim, see task #43)");
+        memory_region_add_subregion(&s->xtalk,
+                                    SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) +
+                                    SN0_BRIDGE_DEVICE2, &SGI_IOC3(ioc3)->bar);
     }
 
     /*

@@ -29,7 +29,7 @@
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
-#include "hw/core/sysbus.h"
+#include "hw/pci/pci.h"
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
 
@@ -178,10 +178,19 @@ static const char *const sgi_ioc3_serial_name[SGI_IOC3_SERIAL_PORTS] = {
     "sgi-ioc3.serial-a", "sgi-ioc3.serial-b",
 };
 
-static void sgi_ioc3_realize(DeviceState *dev, Error **errp)
+static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 {
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
+
+    /*
+     * The chip's own PCI interrupt pin belongs to the ethernet block, which
+     * this model does not implement — nothing ever asserts it — but the
+     * config-space byte is cheap to get right and a guest is entitled to
+     * read what a real chip reports there. The SuperIO line a guest actually
+     * cares about on this machine is not this pin at all; see superio_irq.
+     */
+    dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
     memory_region_init(&s->bar, OBJECT(dev), "sgi-ioc3.bar",
                        SGI_IOC3_BAR_SIZE);
@@ -209,7 +218,7 @@ static void sgi_ioc3_realize(DeviceState *dev, Error **errp)
          * SuperIO line, which is what makes the two ports share a line and
          * share a handler.
          */
-        serial->irq = qdev_get_gpio_in(dev, i);
+        serial->irq = qdev_get_gpio_in(DEVICE(dev), i);
     }
 
     /*
@@ -222,8 +231,19 @@ static void sgi_ioc3_realize(DeviceState *dev, Error **errp)
                           "sgi-ioc3.main", SGI_IOC3_MAIN_SIZE);
     memory_region_add_subregion(&s->bar, 0, &s->main);
 
-    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bar);
-    sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->superio_irq);
+    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
+
+    /*
+     * The SuperIO line is not this chip's own PCI interrupt pin: the
+     * contract's ratified pin for it is the base I/O board's own wiring, not
+     * something the Bridge's per-slot PCI routing produces from any pin this
+     * chip could assert. So it stays a plain qdev GPIO output — a real wire a
+     * guest cannot see in configuration space — for the machine to connect
+     * directly to the Bridge pin the board wires it to, the same shape the
+     * previous direct-mapped chip already gave it and unaffected by becoming
+     * a PCI device otherwise.
+     */
+    qdev_init_gpio_out(DEVICE(dev), &s->superio_irq, 1);
 }
 
 static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
@@ -262,9 +282,10 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 2,
-    .minimum_version_id = 1,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
+        VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
         VMSTATE_UINT32_V(int_enable, SGIIOC3State, 2),
         VMSTATE_STRUCT_ARRAY(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS, 0,
@@ -281,11 +302,18 @@ static const Property sgi_ioc3_properties[] = {
 static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
-
-    dc->desc = "SGI IOC3 base I/O controller";
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
-    dc->realize = sgi_ioc3_realize;
+    dc->desc = "SGI IOC3 base I/O controller";
+
+    pc->realize = sgi_ioc3_realize;
+    pc->vendor_id = SGI_IOC3_VENDOR_ID;
+    pc->device_id = SGI_IOC3_DEVICE_ID;
+    pc->revision = SGI_IOC3_REVISION;
+    pc->class_id = SGI_IOC3_CLASS_ID;
+    pc->subsystem_vendor_id = SGI_IOC3_VENDOR_ID;
+    pc->subsystem_id = SGI_IOC3_SUBSYSTEM_ID;
     rc->phases.hold = sgi_ioc3_reset_hold;
     dc->vmsd = &vmstate_sgi_ioc3;
     device_class_set_props(dc, sgi_ioc3_properties);
@@ -294,10 +322,14 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
 static const TypeInfo sgi_ioc3_types[] = {
     {
         .name = TYPE_SGI_IOC3,
-        .parent = TYPE_SYS_BUS_DEVICE,
+        .parent = TYPE_PCI_DEVICE,
         .instance_size = sizeof(SGIIOC3State),
         .instance_init = sgi_ioc3_init,
         .class_init = sgi_ioc3_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { },
+        },
     },
 };
 
