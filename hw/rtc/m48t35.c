@@ -182,8 +182,27 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
             .tm_year = s->staged_year,
         };
 
+        struct tm now;
+
+        /*
+         * The offset has to be measured against the same clock the read path
+         * applies it to, and qemu_timedate_diff() does not do that: it
+         * subtracts the *host* clock unconditionally, while qemu_get_timedate()
+         * reads whichever clock -rtc clock= selected. With the two agreeing --
+         * the default, where both are the host clock -- the difference is
+         * invisible. With them disagreeing, a guest that sets the time reads
+         * back something else, off by however far apart the two clocks were at
+         * the moment it set it.
+         *
+         * Taking the current time through qemu_get_timedate() with no offset
+         * and differencing against that keeps both ends on one clock, whichever
+         * one it is. Both operands go through the same conversion, so the base
+         * cancels; the one case it does not is a daylight-saving boundary
+         * falling between these two calls, which are microseconds apart.
+         */
         s->staging = false;
-        s->time_offset = qemu_timedate_diff(&tm);
+        qemu_get_timedate(&now, 0);
+        s->time_offset = mktimegm(&tm) - mktimegm(&now);
     }
 
     s->cell[M48T35_CONTROL] = val;
