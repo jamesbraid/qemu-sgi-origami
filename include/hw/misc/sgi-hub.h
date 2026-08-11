@@ -79,6 +79,7 @@ struct SGIHubState {
     uint64_t pi_int_pend[2];
     uint64_t pi_int_mask[4];
     uint64_t ni_status;
+    uint64_t io_link_status;
     uint32_t io_bwin[SGI_HUB_BWIN_ENTRIES];
 };
 
