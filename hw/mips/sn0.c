@@ -78,6 +78,8 @@ struct SN0MachineState {
     MemoryRegion hub_regs_node_view;
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;
+    MemoryRegion backdoor_ecc;
+    MemoryRegion backdoor_dir;
 
     /* Crosstalk space, and the small window each widget is reached through. */
     MemoryRegion xtalk;
@@ -1177,6 +1179,28 @@ static void sn0_init(MachineState *machine)
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_HUB,
                                 &s->flash_hub_view);
+
+    /*
+     * The directory and error-correction back doors. Real firmware's own
+     * diagnostics write a pattern through one of these and read it back to
+     * test for stuck directory bits, before it does anything else with the
+     * machine; an unmapped or always-zero range fails that test on a machine
+     * with no such defect. Plain RAM satisfies the only property that
+     * matters here with no decode logic: every address in each window reads
+     * back whatever was last written to it. Machine-lifetime regions, same
+     * as the flash above, so no owner.
+     */
+    memory_region_init_ram(&s->backdoor_ecc, NULL, "sn0.node0.backdoor.ecc",
+                           SN0_BACKDOOR_ECC_SIZE, &error_fatal);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_HUB + node + SN0_BACKDOOR_ECC_HUB,
+                                &s->backdoor_ecc);
+
+    memory_region_init_ram(&s->backdoor_dir, NULL, "sn0.node0.backdoor.dir",
+                           SN0_BACKDOOR_DIR_SIZE, &error_fatal);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_HUB + node + SN0_BACKDOOR_DIR_HUB,
+                                &s->backdoor_dir);
 
     /*
      * A firmware image, if one was supplied, replaces what this file would
