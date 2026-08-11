@@ -1175,29 +1175,38 @@ static void sn0_firmware_reset(void *opaque)
  * Only the controller's window is pre-aimed; see sn0.h for why the two
  * adapters need resources assigned but not a window aimed in advance.
  *
- * Every device gets PCI_COMMAND_MASTER along with its space-decode bits,
- * and this is load-bearing rather than cosmetic: PCI_COMMAND_MASTER gates
- * the qlogic-isp1040's bus_master_as through the generic PCI core's
- * bus_master_enable_region, the same as it would on real hardware, so a
- * device this firmware leaves without it cannot DMA at all. There is no
- * SeaBIOS-equivalent anywhere on this machine — nothing else assigns PCI
- * resources before a guest runs — so this write is the only place mastering
- * can come from for a guest that does not set it itself. Real ARCS PROM
- * sets it at POST the same standard way it sets the space-decode bits, and
- * this is that.
+ * Every device gets PCI_COMMAND_MASTER along with its space-decode bits.
+ * This is neither pure fidelity nor a functional requirement proven on this
+ * machine — both claims have been made and retracted once already, and the
+ * honest position sits between them.
  *
- * OpenBSD's qlw driver happens not to depend on this machine doing it
- * anyway: it maps its BARs through pci_mapreg_map() (sys/dev/pci/pci_map.c),
- * whose internal pci_mapreg_assign() unconditionally ORs
- * PCI_COMMAND_MASTER_ENABLE into the command register as part of mapping
- * any BAR, before the driver's own attach code ever touches
- * PCI_COMMAND_STATUS_REG directly — regardless of whether the BAR arrived
- * already assigned. That covers this one guest's driver, not the machine:
- * nothing here has yet observed a real DMA transfer succeed on this Origin
- * 200 configuration (the ISP1040's mailbox does not come up past reset —
- * task #44 — so OpenBSD's own mastering call is currently unexercised
- * too), and whether Linux's SGI PCI bridge path self-enables mastering the
- * way OpenBSD's does is a wholly separate, open question.
+ * The mechanism is real: PCI_COMMAND_MASTER gates the qlogic-isp1040's
+ * bus_master_as through the generic PCI core's bus_master_enable_region, so
+ * a device this firmware left without it genuinely could not DMA. There is
+ * no SeaBIOS-equivalent anywhere on this machine — nothing else assigns PCI
+ * resources before a guest runs — so firmware setting it is the only place
+ * mastering could come from for a guest that does not set it itself, the
+ * same standard way real ARCS PROM sets it at POST alongside the space-
+ * decode bits.
+ *
+ * But every guest this fork actually runs sets it itself, so the bit is
+ * currently redundant rather than load-bearing. OpenBSD's qlw driver maps
+ * its BARs through pci_mapreg_map() (sys/dev/pci/pci_map.c), whose internal
+ * pci_mapreg_assign() unconditionally ORs PCI_COMMAND_MASTER_ENABLE into
+ * the command register as part of mapping any BAR, before the driver's own
+ * attach code ever touches PCI_COMMAND_STATUS_REG directly. Linux's ISP1040
+ * driver does the equivalent explicitly: pci_set_master(pdev) in probe,
+ * immediately after pci_enable_device() (drivers/scsi/qla1280.c). Neither
+ * guest is depending on this machine to have done it first.
+ *
+ * And no DMA transfer has actually been observed succeeding on this Origin
+ * 200 configuration regardless: the ISP1040's mailbox does not come up past
+ * reset here yet (task #44), so this fix is unexercised by anything this
+ * fork currently boots. Keep it because it is what real firmware does and
+ * because a guest that does not self-enable mastering — none we run today,
+ * but not a closed set — would need it; do not read its presence as
+ * evidence the machine has been proven to DMA correctly, and do not read
+ * its absence-until-now as evidence it did not matter.
  */
 static void sn0_assign_pci_resources(void *opaque)
 {
