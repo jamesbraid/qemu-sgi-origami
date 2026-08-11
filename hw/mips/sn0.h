@@ -76,9 +76,8 @@
  * about one purpose, carried to another on the strength of the mechanism
  * looking the same.
  *
- * So this models the memory space, and a window asking for the other is
- * reported
- * rather than quietly aimed here.
+ * So this models the memory space, and a window asking for the I/O space is
+ * reported rather than quietly aimed here.
  *
  * **The small windows are modelled as reaching the same space, and the argument
  * is the redirection rather than anything about where registers live.** The
