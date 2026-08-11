@@ -49,6 +49,42 @@
 #define SN0_MEM_BANKS       8
 
 /*
+ * Crosstalk address space. A crosstalk address is a widget number and an offset
+ * within that widget and nothing in between: the crossbar routes on the
+ * widget number and carries the offset through untouched. Modeling it as one
+ * container indexed by widget is what stops the two ways of reaching a device
+ * drifting apart, because a small window and a big window then become two
+ * views of one address rather than two sums that have to agree.
+ *
+ * How far a widget's space runs is set by how far a big window can reach into
+ * it. A translation entry supplies crosstalk address bits 33:29, so 32
+ * slices of 512 MB, which is 16 GB.
+ */
+#define SN0_XTALK_WIDGETS       16
+#define SN0_XTALK_WIDGET_SHIFT  34
+#define SN0_XTALK_WIDGET_SIZE   (1ULL << SN0_XTALK_WIDGET_SHIFT)
+#define SN0_XTALK_BASE(widget)  ((hwaddr)(widget) << SN0_XTALK_WIDGET_SHIFT)
+#define SN0_XTALK_SIZE          (SN0_XTALK_WIDGETS * SN0_XTALK_WIDGET_SIZE)
+
+/*
+ * The sixteen small windows fill the bottom sixteenth of a node's crosstalk
+ * window, one per widget, each reaching that widget's first 16 MB.
+ *
+ * Only the crossbar's eight device ports are mapped here. Widget 1 is the Hub,
+ * whose window is node-relative in a way a widget-indexed space cannot express,
+ * so it keeps its own mapping. Widget 0's small window is left to fault
+ * deliberately: a defect on the processor-interface side of the Hub makes it
+ * unreliable on real hardware, both guests expect firmware to have redirected
+ * widget 0 onto the last big window instead, and a guest that reaches for the
+ * broken window should say so loudly rather than quietly work here and diverge
+ * from the machine it is modeling.
+ */
+#define SN0_SMALL_WINDOW_SIZE    (16 * MiB)
+#define SN0_SMALL_WINDOW(widget) ((hwaddr)(widget) * SN0_SMALL_WINDOW_SIZE)
+#define SN0_XTALK_PORT_FIRST     8
+#define SN0_XTALK_PORT_LAST      15
+
+/*
  * The Hub's register window, at both halves of the crossbar's widget 1 small
  * window. The lower half resolves to the reading processor's own node whatever
  * node number the address carries; the upper half names a node.
