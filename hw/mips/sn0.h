@@ -445,6 +445,31 @@
  * twelve bits, so both pass the only check a guest announces.
  */
 #define SN0_BRIDGE_DEVICE2      0x600000  /* the third device's window */
+
+/*
+ * Which PCI devices the base I/O board fills. Two SCSI adapters at devices 0
+ * and 1 and the I/O controller at device 2 — the board carries two adapters
+ * rather than one, and a real machine's own hardware inventory names both.
+ *
+ * These positions carry a consequence beyond naming the slots, which is why
+ * they are constants rather than literals at the one call site. The ratified
+ * Bridge pin for the I/O controller's second interrupt is 3 *because* 3 is the
+ * first empty device on real hardware: OpenBSD scans devices upward, stops at
+ * the first empty one, and uses that index as the pin. A real board fills 0, 1
+ * and 2, so the scan stops at 3.
+ *
+ * Fitting these two is necessary for that and is not sufficient, which is worth
+ * stating because it is easy to read the opposite. This machine's I/O
+ * controller is not on the PCI bus — it is a system-bus device mapped at the
+ * address of the bridge's window for device 2 — so with the adapters fitted the
+ * first empty PCI device is 2 rather than 3, and a guest deriving the pin that
+ * way still gets the wrong answer. Fitting them moves that scan from 0 to 2;
+ * the last step is the controller moving onto the bus, which is the interim the
+ * machine already warns about on every run without a bridge.
+ */
+#define SN0_SCSI_DEVICE0        0         /* first SCSI adapter's PCI device */
+#define SN0_SCSI_DEVICE1        1         /* second SCSI adapter's PCI device */
+#define SN0_SCSI_ADAPTERS       2         /* what the base I/O board carries */
 #define SN0_IOC3_SERIAL_A       0x020178  /* serial port A in the controller */
 #define SN0_CONSOLE_PORT_OFFSET (SN0_BRIDGE_DEVICE2 + SN0_IOC3_SERIAL_A)
 #define SN0_CONSOLE_PORT_MASK   0xfffff   /* the part the guest drives */
