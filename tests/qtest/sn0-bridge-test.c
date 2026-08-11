@@ -171,7 +171,26 @@
  * have no digits in common at all. Said out loud because "assert all four
  * bytes" reads like four independent checks and is two.
  */
-#define PROBE_CARD              " -device lsi53c895a"
+/*
+ * Which PCI devices these tests put their cards in, and why they are named
+ * rather than left to the allocator.
+ *
+ * The machine fits two SCSI adapters at devices 0 and 1, because the base I/O
+ * board carries two, so those devices are never free. That is the occasion for
+ * naming the slots but not the reason: a test that lets the allocator choose
+ * and then reads device 0 is asserting where the allocator puts things, which
+ * is not this chip's behaviour and was one machine change away from breaking
+ * whatever that change happened to be. Every card below says where it goes.
+ *
+ * The slot each test uses is its own, because every test starts its own
+ * machine — a device in one test's slot 7 says nothing about another test's.
+ */
+#define PROBE_SLOT              4  /* the card most tests read */
+#define PROBE_SLOT_ABOVE        5  /* the next device up, for the 4 KB stride */
+#define DMA_SLOT                6  /* the bus-mastering card */
+#define EMPTY_SLOT              7  /* never populated where emptiness is asserted */
+
+#define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
 #define PROBE_VENDOR            0x1000
 #define PROBE_DEVICE            0x0012
 #define PROBE_IDENTITY          (PROBE_VENDOR | (PROBE_DEVICE << 16))
@@ -486,7 +505,7 @@ static void test_configuration_space_reaches_a_card(const void *data)
      * identity double-word as a number, which is what both guests read first
      * and decide whether a slot is occupied from.
      */
-    g_assert_cmphex(qtest_readl(qts, CFG0(0, 0)), ==, PROBE_IDENTITY);
+    g_assert_cmphex(qtest_readl(qts, CFG0(PROBE_SLOT, 0)), ==, PROBE_IDENTITY);
 
     qtest_quit(qts);
 }
@@ -508,12 +527,12 @@ static void test_configuration_byte_lanes(const void *data)
      * the device identifier share no digits, so reading the wrong one cannot
      * pass.
      */
-    g_assert_cmphex(qtest_readw(qts, CFG0(0, 0) + 2), ==, PROBE_VENDOR);
-    g_assert_cmphex(qtest_readw(qts, CFG0(0, 0) + 0), ==, PROBE_DEVICE);
+    g_assert_cmphex(qtest_readw(qts, CFG0(PROBE_SLOT, 0) + 2), ==, PROBE_VENDOR);
+    g_assert_cmphex(qtest_readw(qts, CFG0(PROBE_SLOT, 0) + 0), ==, PROBE_DEVICE);
 
-    g_assert_cmphex(qtest_readb(qts, CFG0(0, 0) + 1), ==,
+    g_assert_cmphex(qtest_readb(qts, CFG0(PROBE_SLOT, 0) + 1), ==,
                     (PROBE_DEVICE >> 0) & 0xff);
-    g_assert_cmphex(qtest_readb(qts, CFG0(0, 0) + 2), ==,
+    g_assert_cmphex(qtest_readb(qts, CFG0(PROBE_SLOT, 0) + 2), ==,
                     (PROBE_VENDOR >> 8) & 0xff);
 
     qtest_quit(qts);
@@ -522,34 +541,44 @@ static void test_configuration_byte_lanes(const void *data)
 static void test_configuration_space_is_laid_out_right(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD
-                                 " -device lsi53c895a,addr=1");
+                                 " -device lsi53c895a,addr="
+                                 stringify(PROBE_SLOT_ABOVE));
 
     /* A device's configuration space is 4 KB above the one below it. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(1, 0)), ==, PROBE_IDENTITY);
+    g_assert_cmphex(qtest_readl(qts, CFG0(PROBE_SLOT_ABOVE, 0)), ==,
+                    PROBE_IDENTITY);
 
     /*
      * And a function's is 256 bytes above the one below it. This card has one
-     * function, so the assertion is that function 1 of slot 0 is *empty* —
+     * function, so the assertion is that its function 1 is *empty* —
      * which is what says the function field decodes at all. A model ignoring
      * it would alias every function onto function 0 and answer with the card's
      * identity eight times over, and no test that only reads function 0 could
      * tell the difference.
      */
-    g_assert_cmphex(qtest_readl(qts, CFG0(0, 1)), ==, NO_CARD);
+    g_assert_cmphex(qtest_readl(qts, CFG0(PROBE_SLOT, 1)), ==, NO_CARD);
 
     /* A slot with no card in it answers all ones, and specifically not zero. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(2, 0)), ==, NO_CARD);
-    g_assert_cmphex(qtest_readl(qts, CFG0(7, 0)), ==, NO_CARD);
+    g_assert_cmphex(qtest_readl(qts, CFG0(DMA_SLOT, 0)), ==, NO_CARD);
+    g_assert_cmphex(qtest_readl(qts, CFG0(EMPTY_SLOT, 0)), ==, NO_CARD);
 
     qtest_quit(qts);
 }
 
 /*
- * The four slots the window tests populate: both large windows, and two of the
- * small ones far enough apart that a wrong window size shows up as a wrong
- * address rather than as an overlap.
+ * The slots the window tests populate, and why two small ones prove the whole
+ * table including the two large windows no card can reach.
+ *
+ * The layout is two 2 MB windows then six 1 MB ones. Devices 0 and 1 are the
+ * large pair and the machine's own SCSI adapters sit in them, so no test card
+ * can go there — but the later windows' offsets already encode the earlier
+ * windows' sizes. Window 3 is at 0x700000 and window 7 at 0xb00000 only if
+ * windows 0 and 1 are 2 MB and window 2 is 1 MB. A card at each end of the
+ * small run therefore fails if any window before it is the wrong size, which
+ * is what the large pair was here to catch. Far enough apart, still, that a
+ * wrong size shows up as a wrong address rather than as an overlap.
  */
-static const int populated[] = { 0, 1, 2, 7 };
+static const int populated[] = { 3, EMPTY_SLOT };
 #define POPULATED_SLOTS         ARRAY_SIZE(populated)
 
 static void bridge_aim_window_at_its_card(QTestState *qts, int slot)
@@ -563,10 +592,9 @@ static void bridge_aim_window_at_its_card(QTestState *qts, int slot)
 static void test_device_windows_reach_their_cards(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
-                                 " -device lsi53c895a,addr=0"
-                                 " -device lsi53c895a,addr=1"
-                                 " -device lsi53c895a,addr=2"
-                                 " -device lsi53c895a,addr=7");
+                                 " -device lsi53c895a,addr=3"
+                                 " -device lsi53c895a,addr="
+                                 stringify(EMPTY_SLOT));
     unsigned int i;
 
     for (i = 0; i < POPULATED_SLOTS; i++) {
@@ -596,9 +624,9 @@ static void test_a_window_goes_where_its_base_says(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
 
-    bridge_aim_window_at_its_card(qts, 0);
-    qtest_writel(qts, WINDOW(0) + CARD_SCRATCH, 0xc0ffee00);
-    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), ==, 0xc0ffee00);
+    bridge_aim_window_at_its_card(qts, PROBE_SLOT);
+    qtest_writel(qts, WINDOW(PROBE_SLOT) + CARD_SCRATCH, 0xc0ffee00);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_SLOT) + CARD_SCRATCH), ==, 0xc0ffee00);
 
     /*
      * Move the window a megabyte up and the card is no longer under it.
@@ -606,9 +634,9 @@ static void test_a_window_goes_where_its_base_says(const void *data)
      * every window onto whatever the card's address happened to be — would
      * pass everything above, because every card is aimed where it lives.
      */
-    qtest_writel(qts, REG(BRIDGE_DEVICE(0)),
-                 DEV_MEMORY_SPACE | ((CARD_MMIO(0) >> 20) + 1));
-    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), !=, 0xc0ffee00);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(PROBE_SLOT)),
+                 DEV_MEMORY_SPACE | ((CARD_MMIO(PROBE_SLOT) >> 20) + 1));
+    g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_SLOT) + CARD_SCRATCH), !=, 0xc0ffee00);
 
     /*
      * And selecting I/O space takes the card out from under it too, since this
@@ -617,13 +645,13 @@ static void test_a_window_goes_where_its_base_says(const void *data)
      * memory space, which is the state a slot resets into and so the state
      * every other test in this file leaves it in.
      */
-    qtest_writel(qts, REG(BRIDGE_DEVICE(0)), CARD_MMIO(0) >> 20);
-    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), !=, 0xc0ffee00);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(PROBE_SLOT)), CARD_MMIO(PROBE_SLOT) >> 20);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_SLOT) + CARD_SCRATCH), !=, 0xc0ffee00);
 
     /* Put it back: the card is there again, so the window moved, not it. */
-    qtest_writel(qts, REG(BRIDGE_DEVICE(0)),
-                 DEV_MEMORY_SPACE | (CARD_MMIO(0) >> 20));
-    g_assert_cmphex(qtest_readl(qts, WINDOW(0) + CARD_SCRATCH), ==, 0xc0ffee00);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(PROBE_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(PROBE_SLOT) >> 20));
+    g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_SLOT) + CARD_SCRATCH), ==, 0xc0ffee00);
 
     qtest_quit(qts);
 }
@@ -720,14 +748,15 @@ static void test_translation_entries_reset_clear(const void *data)
  * machine supports message-signalled interrupts or testing the translation
  * table through another chip's script engine.
  */
-#define DMA_CARD                " -device sgi-bridge-dma-test"
+#define DMA_CARD                " -device sgi-bridge-dma-test,addr=" \
+                                stringify(DMA_SLOT)
 #define DMA_REG_ADDRESS         0x00
 #define DMA_REG_LENGTH          0x04
 #define DMA_REG_SEED            0x08
 #define DMA_REG_GO              0x0c
 
 /* Where the transfer source's own registers are put in PCI memory space. */
-#define DMA_CARD_MMIO           0x10000000u
+#define DMA_CARD_MMIO           CARD_MMIO(DMA_SLOT)
 
 /*
  * The translated window, and the two pages of it this test uses. A page is 4 KB
@@ -763,19 +792,20 @@ static void test_translation_entries_reset_clear(const void *data)
 static void bridge_start_the_transfer_source(QTestState *qts)
 {
     /* Give the source its registers, and let it master the bus. */
-    qtest_writel(qts, CFG0(0, 0) + 0x10, DMA_CARD_MMIO);
-    qtest_writel(qts, CFG0(0, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY | 0x0004);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(0)),
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + 0x10, DMA_CARD_MMIO);
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | 0x0004);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (DMA_CARD_MMIO >> 20));
 }
 
 static void bridge_transfer(QTestState *qts, uint32_t addr, uint32_t length,
                             uint32_t seed)
 {
-    qtest_writel(qts, WINDOW(0) + DMA_REG_ADDRESS, addr);
-    qtest_writel(qts, WINDOW(0) + DMA_REG_LENGTH, length);
-    qtest_writel(qts, WINDOW(0) + DMA_REG_SEED, seed);
-    qtest_writel(qts, WINDOW(0) + DMA_REG_GO, 1);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, addr);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, length);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, seed);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
 }
 
 static void test_a_transfer_straddling_a_page(const void *data)
