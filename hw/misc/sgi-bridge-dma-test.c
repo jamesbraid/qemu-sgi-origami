@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A PCI device that exists to make one assertion about the I/O bridge possible.
+ * A PCI device that exists to make two assertions about the I/O bridge
+ * possible: one about how it translates a transfer, and one about how it
+ * reports an interrupt pin.
  *
  * The bridge's address translation table is the thing a device transfer goes
  * through, and the defect it must not have is translating once per transfer
@@ -64,13 +66,24 @@ struct SGIBridgeDMATestState {
     uint32_t address;
     uint32_t length;
     uint32_t seed;
+
+    /* The level this device is holding its first interrupt pin at. */
+    uint32_t interrupt;
 };
 
 #define REG_ADDRESS     0x00
 #define REG_LENGTH      0x04
 #define REG_SEED        0x08
 #define REG_GO          0x0c
-#define REG_WINDOW      0x10   /* size of the register block */
+/*
+ * Writing here drives this device's first interrupt pin to the level written,
+ * and holds it there. It is a level and not a pulse deliberately: what the
+ * bridge above has to get right is that its status register follows the level
+ * and never latches, and a source that could only pulse could not tell a model
+ * that follows from one that latches — both would show the bit set.
+ */
+#define REG_INTERRUPT   0x10
+#define REG_WINDOW      0x20   /* size of the register block */
 
 /*
  * What the device writes: a byte sequence a test can predict without this file
@@ -118,6 +131,8 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
         return s->length;
     case REG_SEED:
         return s->seed;
+    case REG_INTERRUPT:
+        return s->interrupt;
     default:
         return 0;
     }
@@ -140,6 +155,10 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case REG_GO:
         sgi_bridge_dma_test_go(s);
+        break;
+    case REG_INTERRUPT:
+        s->interrupt = val ? 1 : 0;
+        pci_set_irq(PCI_DEVICE(s), s->interrupt);
         break;
     default:
         break;
@@ -166,6 +185,9 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
 
+    /* Say in configuration space that this device uses its first pin. */
+    pci_config_set_interrupt_pin(dev->config, 1);
+
     memory_region_init_io(&s->mmio, OBJECT(s), &sgi_bridge_dma_test_ops, s,
                           "sgi-bridge-dma-test.mmio", REG_WINDOW);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
@@ -178,6 +200,8 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->address = 0;
     s->length = 0;
     s->seed = 0;
+    s->interrupt = 0;
+    pci_set_irq(PCI_DEVICE(s), 0);
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
@@ -189,6 +213,7 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
         VMSTATE_UINT32(address, SGIBridgeDMATestState),
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
+        VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
         VMSTATE_END_OF_LIST()
     }
 };

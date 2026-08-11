@@ -85,6 +85,37 @@
 #define BRIDGE_PCI_ERR_UPPER    0x0d0
 #define BRIDGE_PCI_ERR_LOWER    0x0d8
 
+/*
+ * The interrupt registers. Their layouts are confirmed against the chip's own
+ * register table field for field, including the one that is an absence: the
+ * enable register's table starts at bit 30, so the multiple-error flag at 31
+ * has no enable at all.
+ */
+#define BRIDGE_INT_STATUS       0x100
+#define BRIDGE_INT_ENABLE       0x108
+#define BRIDGE_INT_RESET        0x110
+#define BRIDGE_INT_MODE         0x118
+#define BRIDGE_INT_DEVICE       0x120
+#define BRIDGE_HOST_ERR_FIELD   0x128
+#define BRIDGE_INT_HOST(n)      (0x130 + SGI_BRIDGE_REG_SLOT * (n))
+
+/* The eight device pins live at the bottom of the status and enable words. */
+#define INT_DEVICE_PINS         0xffu
+/* All a guest may enable: bit 31, the multiple-error flag, has no bit. */
+#define INT_ENABLE_WRITABLE     0x7fffffffu
+/* Seven group bits, each clearing one group of error conditions at once. */
+#define INT_RESET_GROUPS        0x7fu
+/* One bit per pin: send a clearing packet when that pin falls. */
+#define INT_MODE_WRITABLE       0xffu
+/* Three bits per pin naming the device that owns it, eight pins. */
+#define INT_DEVICE_WRITABLE     0xffffffu
+/* A host address field and the bit number to set in the host's register. */
+#define INT_HOST_ADDRESS        (0x3ffu << 8)
+#define INT_HOST_FIELD          0xffu
+#define INT_HOST_WRITABLE       (INT_HOST_ADDRESS | INT_HOST_FIELD)
+/* The bit the chip sets when it reports an error of its own. */
+#define HOST_ERR_FIELD_WRITABLE 0xffu
+
 /* The per-slot registers, eight of each. */
 #define BRIDGE_DEVICE(n)        (0x200 + SGI_BRIDGE_REG_SLOT * (n))
 #define BRIDGE_DEVICE_FLUSH(n)  (0x240 + SGI_BRIDGE_REG_SLOT * (n))
@@ -376,6 +407,7 @@ typedef enum {
     SGI_BRIDGE_RO,      /* writes are a guest error and are reported */
     SGI_BRIDGE_RW,      /* the writable mask says which bits a guest may set */
     SGI_BRIDGE_WO,      /* a strobe: a write is taken, a read gives the reset */
+    SGI_BRIDGE_LIVE,    /* read-only and computed: no storage to go stale */
 } SGIBridgeRegAccess;
 
 /*
@@ -402,6 +434,11 @@ typedef struct SGIBridgeReg {
 } SGIBridgeReg;
 
 #define SGI_BRIDGE_SLOT(offset) ((offset) / SGI_BRIDGE_REG_SLOT)
+
+/* One per interrupt pin: where its packet goes and what bit it sets. */
+#define SGI_BRIDGE_INT_HOST_ROW(n)                                            \
+    [SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(n))] = {                                 \
+        "interrupt host address", SGI_BRIDGE_RW, 0, INT_HOST_WRITABLE }
 
 /* The per-slot rows, which differ only in which slot they are for. */
 #define SGI_BRIDGE_DEVICE_ROW(n)                                              \
@@ -501,6 +538,68 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         "PCI error address upper", SGI_BRIDGE_RO, 0, 0 },
     [SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_LOWER)] = {
         "PCI error address lower", SGI_BRIDGE_RO, 0, 0 },
+
+    /*
+     * The interrupt status register, which is the one register in this chip
+     * that must not be storage.
+     *
+     * Its low eight bits report whether each device is asserting its pin, and
+     * they have to follow that level and never latch. The guest re-arms
+     * interrupts in software: at the end of every interrupt it services it
+     * re-reads this register, and if its own pin is still up — because a
+     * second condition in the same device is pending — it pokes the host
+     * directly to take another one. A model that latched the bit and cleared
+     * it on service would tell that guest a device had gone quiet when it had
+     * not, and the device would never be serviced again. It would also pass a
+     * simple test, and boot, and then hang.
+     *
+     * So this register holds nothing. Its value is composed from the pins each
+     * time it is read, which makes a latching model impossible to write here
+     * rather than merely wrong: there is no bit to latch. The error bits above
+     * the pins read zero because this model produces no errors.
+     */
+    [SGI_BRIDGE_SLOT(BRIDGE_INT_STATUS)] = {
+        "interrupt status", SGI_BRIDGE_LIVE, 0, 0 },
+
+    [SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] = {
+        "interrupt enable", SGI_BRIDGE_RW, 0, INT_ENABLE_WRITABLE },
+
+    /*
+     * Writing a one to a group bit clears every error bit in that group. This
+     * model raises no error bits, so every group is already clear and the write
+     * is a strobe with nothing to do — which is why it is not storage: a
+     * register that read back the ones a guest wrote would say the groups were
+     * still being cleared. Linux writes all seven at start of day.
+     */
+    [SGI_BRIDGE_SLOT(BRIDGE_INT_RESET)] = {
+        "reset interrupt status", SGI_BRIDGE_WO, 0, INT_RESET_GROUPS },
+
+    /*
+     * The mode and device registers are read-modify-written by the guest: it
+     * reads the current value, sets the bits for the pin it is establishing,
+     * and writes it back. A model whose read gave zero rather than the last
+     * value written would wipe every previously configured pin each time a new
+     * interrupt was established, so only the most recently attached device
+     * would work — a failure that looks like a driver bug in whichever device
+     * attached first.
+     */
+    [SGI_BRIDGE_SLOT(BRIDGE_INT_MODE)] = {
+        "interrupt mode", SGI_BRIDGE_RW, 0, INT_MODE_WRITABLE },
+    [SGI_BRIDGE_SLOT(BRIDGE_INT_DEVICE)] = {
+        "interrupt device", SGI_BRIDGE_RW, 0, INT_DEVICE_WRITABLE },
+
+    /* The chip's own error bit. The table gives no power-up value for it. */
+    [SGI_BRIDGE_SLOT(BRIDGE_HOST_ERR_FIELD)] = {
+        "host error field", SGI_BRIDGE_RW, 0, HOST_ERR_FIELD_WRITABLE },
+
+    SGI_BRIDGE_INT_HOST_ROW(0),
+    SGI_BRIDGE_INT_HOST_ROW(1),
+    SGI_BRIDGE_INT_HOST_ROW(2),
+    SGI_BRIDGE_INT_HOST_ROW(3),
+    SGI_BRIDGE_INT_HOST_ROW(4),
+    SGI_BRIDGE_INT_HOST_ROW(5),
+    SGI_BRIDGE_INT_HOST_ROW(6),
+    SGI_BRIDGE_INT_HOST_ROW(7),
 
     SGI_BRIDGE_DEVICE_ROW(0),
     SGI_BRIDGE_DEVICE_ROW(1),
@@ -639,6 +738,26 @@ static bool sgi_bridge_accepts(void *opaque, hwaddr addr, unsigned size,
     return true;
 }
 
+/*
+ * A register whose value is composed when it is read rather than held. The
+ * interrupt status register is the only one, and composing it is what makes it
+ * unable to latch: the pins are read from the devices driving them, so there is
+ * nothing that could go on reading set after a device stopped asserting.
+ */
+static uint32_t sgi_bridge_live(SGIBridgeState *s, hwaddr addr)
+{
+    switch (addr - SGI_BRIDGE_REG_DATA) {
+    case BRIDGE_INT_STATUS:
+        /*
+         * The pins as they are now, and no error bits: this model produces no
+         * errors, so every condition above the pins is clear.
+         */
+        return s->pin_level & INT_DEVICE_PINS;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIBridgeState *s = opaque;
@@ -647,10 +766,14 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
     /* Anything else was refused before it reached here. */
     g_assert(reg);
 
-    if (reg->access == SGI_BRIDGE_WO) {
+    switch (reg->access) {
+    case SGI_BRIDGE_LIVE:
+        return sgi_bridge_live(s, addr);
+    case SGI_BRIDGE_WO:
         return reg->reset;
+    default:
+        return s->reg[addr / SGI_BRIDGE_REG_SLOT];
     }
-    return s->reg[addr / SGI_BRIDGE_REG_SLOT];
 }
 
 static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
@@ -664,6 +787,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     g_assert(reg);
 
     switch (reg->access) {
+    case SGI_BRIDGE_LIVE:
     case SGI_BRIDGE_RO:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge: write of 0x%" PRIx64 " to the read-only %s "
@@ -926,9 +1050,16 @@ static void sgi_bridge_set_irq(void *opaque, int pin, int level)
 
     s->pin_level = deposit32(s->pin_level, pin, 1, level);
 
+    /*
+     * The level is now what the interrupt status register reports, so a guest
+     * reading that register sees this immediately. What is not modelled yet is
+     * the packet the chip sends across the crossbar to the host's own interrupt
+     * register, which needs the machine's interrupt chain to say how a widget
+     * and an offset become an address.
+     */
     qemu_log_mask(LOG_UNIMP,
-                  "sgi-bridge: interrupt pin %d went %s; the model records the "
-                  "level but does not yet deliver it to the hub\n",
+                  "sgi-bridge: interrupt pin %d went %s; the status register "
+                  "reports it, and the packet to the host is not modelled\n",
                   pin, level ? "high" : "low");
 }
 
