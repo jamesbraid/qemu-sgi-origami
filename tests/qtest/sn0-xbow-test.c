@@ -52,6 +52,16 @@
 #define IO_BWIN_STRIDE  8
 #define IO_BWIN_ENTRY(n) (IO_BWIN_TABLE + (n) * IO_BWIN_STRIDE)
 #define IO_BWIN_WIDGET(w) ((uint64_t)(w) << 8)
+#define IO_BWIN_SPACE_IO  (1ULL << 12)
+#define IO_BWIN_SLICE(x)  ((uint64_t)(x))
+
+/*
+ * The entry SGI's firmware writes for this redirection, term by term. The space
+ * bit is the one a model gets backwards without noticing: clear means the
+ * widget's memory space, and a window there reaches the wrong half of widget 0
+ * while both halves exist and answer.
+ */
+#define FIRMWARE_ENTRY  (IO_BWIN_WIDGET(0) | IO_BWIN_SPACE_IO | IO_BWIN_SLICE(0))
 
 #define BIG_WINDOW_SIZE 0x20000000ULL
 #define BIG_WINDOW(n)   (SPACE_XTALK + 0x20000000 + (n) * BIG_WINDOW_SIZE)
@@ -125,9 +135,15 @@ static void test_it_is_where_the_firmware_put_it(const void *data)
      * trusting that the read above went where it looks like it went. Without
      * this, a machine that happened to map widget 0 somewhere else would pass
      * the identity test and would not be the machine either guest expects.
+     *
+     * The whole entry is compared rather than the widget field, because the
+     * space bit is the field this was wrong in: a window on widget 0's memory
+     * space reads plausible values that are not its registers, and every other
+     * assertion in this file would still pass if the identity happened to be
+     * reachable anyway.
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW)),
-                    ==, IO_BWIN_WIDGET(0));
+                    ==, FIRMWARE_ENTRY);
 
     qtest_quit(qts);
 }

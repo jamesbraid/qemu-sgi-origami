@@ -43,6 +43,7 @@ struct SGIHubState {
     /* The seven big windows, as one region for the machine to place. */
     MemoryRegion bwin;
     MemoryRegion bwin_window[SGI_HUB_BWIN_ENTRIES];
+    MemoryRegion bwin_empty;
 
     /*
      * The crosstalk space the windows translate into, and how far apart the

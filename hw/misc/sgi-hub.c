@@ -55,7 +55,7 @@
  * so they are stored rather than dropped: no source says they read back zero.
  */
 #define IO_BWIN_MASK            0x1fff
-#define IO_BWIN_SPACE           (1U << 12) /* the widget's device space */
+#define IO_BWIN_SPACE           (1U << 12) /* set selects I/O space */
 #define IO_BWIN_WIDGET_SHIFT    8
 #define IO_BWIN_WIDGET_MASK     (0xfU << IO_BWIN_WIDGET_SHIFT)
 #define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
@@ -105,11 +105,24 @@ static bool sgi_hub_bwin_entry(hwaddr addr, unsigned int *n)
 }
 
 /*
- * Point a window where its entry says. The entry names a widget and one 512 MB
- * slice of that widget's space, and the window is an alias, so following the
- * entry is moving the alias — a window whose entry names a widget that is not
- * there ends up over an empty part of crosstalk space and stops decoding, which
- * is exactly how the hardware disables one.
+ * Point a window where its entry says. The entry names a widget, one of that
+ * widget's two address spaces and one 512 MB slice of it, and the window is an
+ * alias, so following the entry is moving the alias. A window whose entry names
+ * a widget that is not there, or the space this machine does not model, ends up
+ * over an empty part of crosstalk space — which is how the hardware disables
+ * one, since the table has no valid bit to clear.
+ *
+ * Empty is not the same as absent. An access through a disabled window must be
+ * logged and must not fault: the guests disable windows deliberately, so a
+ * disabled window is the normal case rather than an error, and a gap here would
+ * turn each one into a bus error. What supplies that is a floor beneath the
+ * seven windows, low enough in priority that a window reaching a real widget is
+ * unaffected and only the part of a window resolving to nothing shows it.
+ *
+ * The floor covers the big windows and nothing else. A crossbar port with no
+ * widget on it is a different question with a different right answer — that is
+ * a device we have not modelled rather than a window somebody turned off — and
+ * it keeps faulting.
  */
 static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
 {
@@ -117,34 +130,61 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
     uint64_t widget = (entry & IO_BWIN_WIDGET_MASK) >> IO_BWIN_WIDGET_SHIFT;
     uint64_t slice = (uint64_t)(entry & IO_BWIN_SLICE_MASK)
                      << IO_BWIN_SLICE_SHIFT;
+    uint64_t space;
 
     /*
-     * The space-select bit chooses the widget's device space rather than its
-     * memory space, and our crosstalk space models only the one. A window
-     * asking for the space we do not have decodes to nothing and says so, which
-     * is the same answer this table already gives for a widget that is not
-     * there. Aiming it at the space we do have instead would put every access
-     * through it somewhere plausible and wrong, with one log line at
-     * programming time as the only sign — and a guest cannot tell a plausible
-     * wrong answer from a right one.
+     * The space-select bit picks which of the widget's two address spaces the
+     * window lands on — clear for its memory space, set for its I/O space — and
+     * it is decoded rather than interpreted, because a widget's slot in
+     * crosstalk space is two equal halves with the selector as the slot's top
+     * bit. That is what makes the bit impossible to drop: it is an address bit
+     * on the way through, not a case to handle.
      *
-     * Which value the firmware writes here for the widget 0 redirection is not
-     * in any datasheet we hold, and is a question outstanding with the source
-     * readers. Until it is answered this is the failure that announces itself.
+     * The machine models the I/O half and leaves the memory half empty, so a
+     * window aimed at the wrong space reaches nothing rather than the same
+     * registers by another name. Every entry resets with this bit clear, which
+     * is why the windows start reaching nothing until firmware aims one.
      */
-    if (entry & IO_BWIN_SPACE) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: big window %u selects widget %" PRIu64 "'s "
-                      "device space, which is not modeled; the window will "
-                      "reach nothing\n", n, widget);
-        memory_region_set_enabled(&s->bwin_window[n], false);
-        return;
-    }
+    space = (entry & IO_BWIN_SPACE) ? 1ULL << (s->xtalk_widget_shift - 1) : 0;
 
     memory_region_set_alias_offset(&s->bwin_window[n],
-                                   (widget << s->xtalk_widget_shift) | slice);
-    memory_region_set_enabled(&s->bwin_window[n], true);
+                                   (widget << s->xtalk_widget_shift) | space |
+                                   slice);
 }
+
+/*
+ * The floor beneath the big windows: what a window that reaches no widget
+ * answers. Reported with the window number, because the offset alone says
+ * nothing about which of the seven was disabled.
+ */
+static uint64_t sgi_hub_bwin_empty_read(void *opaque, hwaddr addr,
+                                        unsigned size)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: read of %u bytes through big window %u at offset "
+                  "0x%" HWADDR_PRIx ", which reaches no widget\n", size,
+                  (unsigned)(addr / SGI_HUB_BWIN_SIZE),
+                  (hwaddr)(addr % SGI_HUB_BWIN_SIZE));
+    return 0;
+}
+
+static void sgi_hub_bwin_empty_write(void *opaque, hwaddr addr, uint64_t val,
+                                     unsigned size)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " through big window %u at "
+                  "offset 0x%" HWADDR_PRIx ", which reaches no widget\n", val,
+                  (unsigned)(addr / SGI_HUB_BWIN_SIZE),
+                  (hwaddr)(addr % SGI_HUB_BWIN_SIZE));
+}
+
+static const MemoryRegionOps sgi_hub_bwin_empty_ops = {
+    .read = sgi_hub_bwin_empty_read,
+    .write = sgi_hub_bwin_empty_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+};
 
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -301,6 +341,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
 
     memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",
                        SGI_HUB_BWIN_TOTAL);
+    memory_region_init_io(&s->bwin_empty, OBJECT(dev), &sgi_hub_bwin_empty_ops,
+                          s, "sgi-hub.bigwin.empty", SGI_HUB_BWIN_TOTAL);
+    memory_region_add_subregion_overlap(&s->bwin, 0, &s->bwin_empty, -1);
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         char *name = g_strdup_printf("sgi-hub.bigwin%u", n);
 

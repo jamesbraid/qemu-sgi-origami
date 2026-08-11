@@ -126,6 +126,7 @@ static const MemoryRegionOps sn0_flash_ops = {
     .valid.max_access_size = 8,
 };
 
+
 /*
  * Build what a programmed flash would hold at the addresses a guest reaches
  * before any firmware runs: the entry points it calls by address, and the
@@ -885,7 +886,7 @@ static void sn0_firmware_reset(void *opaque)
                       SN0_SPACE_XTALK + SN0_NODE_BASE(0) +
                       SN0_HUB_LOCAL_WINDOW + SN0_HUB_IO_BWIN_ENTRY(
                           SN0_FIRMWARE_WIDGET0_WINDOW),
-                      SN0_HUB_IO_BWIN_WIDGET(SN0_XBOW_WIDGET),
+                      SN0_FIRMWARE_WIDGET0_ENTRY,
                       MEMTXATTRS_UNSPECIFIED, NULL);
 }
 
@@ -1048,7 +1049,10 @@ static void sn0_init(MachineState *machine)
      * window onto the first 16 MB of that widget's crosstalk space. All eight
      * decode because all eight exist on the crossbar; the seven with nothing
      * attached reach an empty part of crosstalk space and fault, which is what
-     * a port with no widget on it does.
+     * a port with no widget on it does. That is deliberately not the same
+     * answer a disabled big window gives — a disabled window is a normal state
+     * the guests program on purpose, and an empty port is a device we have not
+     * modelled yet, so the second should be loud and the first should not.
      */
     for (w = SN0_XTALK_PORT_FIRST; w <= SN0_XTALK_PORT_LAST; w++) {
         char *name = g_strdup_printf("sn0.node0.xtalk.small%u", w);
