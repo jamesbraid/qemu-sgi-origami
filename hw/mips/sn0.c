@@ -870,6 +870,7 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
  * big window and points all software at that; both guests carry the workaround
  * with a comment saying so, and each expects to find the redirection already
  * done. Ours does it here.
+
  *
  * It has to run at reset rather than at machine creation, because the Hub
  * resets its translation table and would undo it — the same reason the firmware
@@ -985,6 +986,7 @@ static void sn0_init(MachineState *machine)
      * what both guests expect to find already done.
      */
     object_initialize_child(OBJECT(machine), "xbow", &s->xbow, TYPE_SGI_XBOW);
+    qdev_prop_set_uint64(DEVICE(&s->xbow), "span", SN0_XTALK_WIDGET_SIZE);
     qdev_prop_set_uint32(DEVICE(&s->xbow), "part", SN0_WIDGET0_PART);
     qdev_prop_set_uint32(DEVICE(&s->xbow), "manufacturer",
                          SN0_WIDGET0_MANUFACTURER);

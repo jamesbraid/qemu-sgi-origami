@@ -20,17 +20,21 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXbowState, SGI_XBOW)
 
 /*
- * The chip's register file: the widget 0 block, then eight per-link register
- * sets of 0x40 each from 0x0100. The whole range is claimed even though almost
- * none of it is implemented, so that a read of a register this chip really has
- * is reported as a register we have not written rather than as no device.
+ * The chip's register file is the widget 0 block followed by eight per-link
+ * register sets of 0x40 each from 0x0100, ending at 0x300. It claims more than
+ * that: the whole of its widget's crosstalk space, which the machine gives it,
+ * because the widget's space is the chip's whether or not the chip decodes an
+ * address in it. Anything it does not decode is an error condition it reports,
+ * and claiming the space is what lets it report rather than leaving the answer
+ * to whatever the machine happens to have underneath.
  */
-#define SGI_XBOW_REGS_SIZE 0x300
-
 struct SGIXbowState {
     SysBusDevice parent_obj;
 
     MemoryRegion regs;
+
+    /* How much crosstalk space this widget owns, which the machine defines. */
+    uint64_t span;
 
     /* What widget 0 answers with: revision, part number, manufacturer. */
     uint32_t revision;
