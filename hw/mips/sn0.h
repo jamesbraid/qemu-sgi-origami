@@ -156,9 +156,12 @@
  * Hub's processor-interface side, so firmware aims the last big window at
  * widget 0 instead, and both guests expect to find that done.
  *
- * On this machine they find it done by the translation table's reset value,
- * which already names widget 0. Our firmware performs the write anyway, because
- * a real firmware does, and it changes nothing.
+ * They find it done by the translation table's reset value, which already names
+ * widget 0, so the write puts back what is there. That is not a property of our
+ * model: the entry resets to zero, and zero is field for field what the
+ * redirection writes, so a real machine's firmware is doing the same
+ * belt-and-braces write on any machine whose I/O bridge sits behind widget 0.
+ * The Hub I/O interface datasheet carries it.
  */
 #define SN0_HUB_IO_BWIN_TABLE       0x400160
 #define SN0_HUB_IO_BWIN_STRIDE      8

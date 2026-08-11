@@ -871,14 +871,15 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
  * with a comment saying so, and each expects to find the redirection already
  * done. Ours does it here.
  *
- * **It changes nothing on this machine today, and that is worth knowing rather
- * than discovering.** The entry resets to widget zero, first slice, memory
- * space, which is exactly the value the redirection writes — so all seven
- * windows already point at widget zero before any firmware runs, and removing
- * this call would not move the boot by a line. It is kept because a real
- * firmware does it and because the coincidence is a property of one machine's
- * reset values rather than of the mechanism: it stops being a no-op the moment
- * the entry, the widget or the reset value differs.
+ * **It changes nothing, and that is worth knowing rather than discovering.**
+ * The entry resets to widget zero, first slice, memory space, which is field
+ * for field the value the redirection writes — so all seven windows already
+ * point at widget zero before any firmware runs, and removing this call would
+ * not move the boot by a line. Nor is that an artifact of our model: it follows
+ * from the reset value and the field layout, so a real firmware's write is the
+ * same belt-and-braces on any machine whose I/O bridge sits behind widget zero.
+ * Ours is kept for being what a real firmware does, and it stops being a no-op
+ * the moment the entry, the widget or the reset value differs.
  *
  * The consequence for anyone reading a green boot: reaching widget zero proves
  * the translation mechanism and the reset value, and proves nothing whatever
