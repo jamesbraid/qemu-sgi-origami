@@ -25,6 +25,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/core/qdev-properties.h"
@@ -133,8 +134,14 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
 {
     SGIXbowState *s = SGI_XBOW(dev);
 
+    if (!s->span) {
+        error_setg(errp, "the crossbar needs the size of the crosstalk space "
+                         "its widget owns");
+        return;
+    }
+
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_xbow_ops, s,
-                          "sgi-xbow.regs", SGI_XBOW_REGS_SIZE);
+                          "sgi-xbow.regs", s->span);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
 }
 
@@ -159,6 +166,7 @@ static const VMStateDescription vmstate_sgi_xbow = {
  * widget. A machine whose widget 0 is not a Crossbow says so by setting these.
  */
 static const Property sgi_xbow_properties[] = {
+    DEFINE_PROP_UINT64("span", SGIXbowState, span, 0),
     DEFINE_PROP_UINT32("revision", SGIXbowState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIXbowState, part, 0),
     DEFINE_PROP_UINT32("manufacturer", SGIXbowState, manufacturer, 0),
