@@ -251,6 +251,12 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     unsigned int n;
 
     if (sgi_hub_bwin_entry(addr, &n)) {
+        /*
+         * The read-back this implies is a guest requirement rather than a
+         * convention: OpenBSD's large-window allocator reads an entry straight
+         * back after writing it, so a model that acted on a write without
+         * storing it would fail a guest and not only a test.
+         */
         s->io_bwin[n] = val & IO_BWIN_MASK;
         sgi_hub_bwin_follow(s, n);
         return;
@@ -325,11 +331,18 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
      * Every entry resets to zero, which names widget 0 at its first slice in
      * memory space. That is not a disabled window — the table has nothing to
      * disable with — so all seven come out of reset pointing at whatever
-     * widget 0 is, and on this machine nothing ever aims them anywhere else.
+     * widget 0 is, and nothing on this machine aims them anywhere else. Which
+     * is why the firmware's redirection of widget 0 onto the last window writes
+     * a value that entry already holds: reaching widget 0 through a big window
+     * here is the reset state doing it, not the firmware.
      *
-     * Which is why the firmware's redirection of widget 0 onto the last window
-     * writes a value that entry already holds. Reaching widget 0 through a big
-     * window here is the reset state doing it, not the firmware.
+     * **The zero is load-bearing and not merely the documented reset.** A guest
+     * looking for a spare entry decides by reading the widget field and calling
+     * zero free, so an entry resetting to anything else would be read as one
+     * already in use. A Hub that reset these to a plausible non-zero value
+     * would
+     * hand a guest fewer large windows than the machine has, with the shortage
+     * surfacing much later in whichever driver failed to get a mapping.
      */
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         s->io_bwin[n] = 0;
