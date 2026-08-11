@@ -897,10 +897,26 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * to the console switch reads it; it is here because the graph has to
      * describe the machine that was actually built, and because the moment a
      * console works this is what a guest walks looking for one.
+     *
+     * Four components in this order — the I/O bridge, two disk controllers,
+     * then the I/O controller — matching a real Origin 200's own captured
+     * graph and hardware inventory (docs/component-taxonomy.md's captured
+     * `hinv` output, docs/library/boot-logs.md). Each disk controller's
+     * physical identifier is its PCI device number and its virtual
+     * identifier is its controller number: harmless defaults while no
+     * storage component existed, wrong the moment two of them do, because a
+     * guest's boot-device walk compares both against what the Bridge's own
+     * PCI probe finds. The physical identifiers are the same
+     * SN0_SCSI_DEVICE0/1 constants that place the adapters on the bus above,
+     * not values asserted separately that merely happen to agree with them.
      */
-    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 2, 2);
+    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 4, 4);
     sn0_component(graph, 4, 0, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
-    sn0_component(graph, 5, 0, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 5, 0, SN0_COMP_SCSI, SN0_CONSOLE_WIDGET);
+    sn0_component_at(graph, 5)[SN0_COMP_PHYSICAL_ID] = SN0_SCSI_DEVICE0;
+    sn0_component(graph, 6, 1, SN0_COMP_SCSI, SN0_CONSOLE_WIDGET);
+    sn0_component_at(graph, 6)[SN0_COMP_PHYSICAL_ID] = SN0_SCSI_DEVICE1;
+    sn0_component(graph, 7, 0, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
 
     rom_add_blob_fixed("sn0.graph", graph, SN0_CONFIG_GRAPH_SIZE,
                        node + SN0_CONFIG_GRAPH);

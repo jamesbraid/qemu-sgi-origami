@@ -419,8 +419,20 @@
 #define SN0_COMP_MEMORY         3
 #define SN0_COMP_BRIDGE         5
 #define SN0_COMP_IO_CONTROLLER  6
+#define SN0_COMP_SCSI           11
 #define SN0_COMP_MODULE_SERIAL  26
 #define SN0_COMP_ENABLED        1
+
+/*
+ * A component record's physical identifier, at offset 0x18: distinct from
+ * its virtual identifier, and not one of sn0_component()'s own fields
+ * because only a disk controller has a confirmed consumer for it. A guest's
+ * boot-device walk compares this against the PCI device number the Bridge's
+ * own probe finds, so it is each disk controller's PCI device number —
+ * SN0_SCSI_DEVICE0/1, the same constants that place the adapters on the
+ * bus, not a value asserted separately that merely happens to agree.
+ */
+#define SN0_COMP_PHYSICAL_ID    0x18
 
 /*
  * The console's serial port, as an offset within the base-I/O widget. It is a
