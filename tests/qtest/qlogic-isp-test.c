@@ -20,6 +20,11 @@
 #define ISP_REG_ID_LOW      0x00
 #define ISP_REG_ID_HIGH     0x02
 #define ISP_REG_BUS_CFG0    0x04
+#define ISP_REG_BUS_CFG1    0x06
+#define ISP_REG_BUS_CTRL    0x08
+#define ISP_REG_BUS_STATUS  0x0a
+#define ISP_REG_SEMAPHORE   0x0c
+#define ISP_REG_HOST_CMD    0xc0
 
 #define QLOGIC_ISP_VENDOR_ID    0x1077
 #define QLOGIC_ISP_DEVICE_ID    0x1020
@@ -27,6 +32,40 @@
 #define ISP_BUS_CFG0_HWREV      0x0006
 
 #define QLOGIC_ISP_REG_WINDOW_SIZE  0x100
+
+#define ISP_BUS_CFG1_FIFO_MASK      0x0070
+#define ISP_BUS_CFG1_BANK_SELECT    0x0008
+#define ISP_BUS_CFG1_BURST_ENABLE   0x0004
+
+#define ISP_BUS_CTRL_SOFT_RESET     0x0001
+#define ISP_BUS_CTRL_INT_ENABLE     0x0002
+#define ISP_BUS_CTRL_RISC_INT_ENABLE 0x0004
+
+#define ISP_SEMAPHORE_LOCK      0x0001
+#define ISP_SEMAPHORE_STATUS    0x0002
+
+#define ISP_REG_MAILBOX_BASE    0x70
+#define ISP_MAILBOX_COUNT       8
+#define ISP_MAILBOX(n)          (ISP_REG_MAILBOX_BASE + (n) * 2)
+
+/* The queue pointers are these two mailboxes under a second name. */
+#define ISP_REG_REQUEST_QUEUE   (ISP_REG_MAILBOX_BASE + 0x08)
+#define ISP_REG_RESPONSE_QUEUE  (ISP_REG_MAILBOX_BASE + 0x0a)
+
+#define ISP_MAILBOX1_SIGNATURE  0x4953
+#define ISP_MAILBOX2_SIGNATURE  0x5020
+#define ISP_MAILBOX3_SIGNATURE  0x2020
+
+#define ISP_HOST_CMD_SHIFT          12
+#define ISP_HOST_CMD_RESET_RISC     0x1
+#define ISP_HOST_CMD_PAUSE_RISC     0x2
+#define ISP_HOST_CMD_RELEASE_RISC   0x3
+#define ISP_HOST_CMD_SET_HOST_INT   0x5
+#define ISP_HOST_CMD_CLEAR_HOST_INT 0x6
+
+#define ISP_RISC_FLAG_HOST_INT      0x0080
+#define ISP_RISC_FLAG_RESET         0x0040
+#define ISP_RISC_FLAG_PAUSED        0x0020
 
 typedef struct QQlogicIsp QQlogicIsp;
 
@@ -155,6 +194,313 @@ static void test_bus_cfg0_revision(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/*
+ * The mailbox signature is the observable that proves the device was reset.
+ * Every other register in this file resets to zero, which is also what an
+ * uninitialised structure holds, so none of them can tell a device that was
+ * reset from one that merely decodes and answers. These three cannot read zero
+ * by accident.
+ *
+ * Reset reaches a PCI device through its bus, so this also pins the device to a
+ * parent that resets it. A model that grew a bus-less parent would still decode
+ * every register here and still answer them plausibly.
+ */
+static void test_reset_signature(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(1)), ==,
+                    ISP_MAILBOX1_SIGNATURE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(2)), ==,
+                    ISP_MAILBOX2_SIGNATURE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(3)), ==,
+                    ISP_MAILBOX3_SIGNATURE);
+
+    /* The mailboxes the signature does not occupy reset to zero. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==, 0);
+    for (i = 4; i < ISP_MAILBOX_COUNT; i++) {
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==, 0);
+    }
+
+    /* So do the bus interface registers. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CTRL), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The guest writes the soft reset bit and then polls this register up to a
+ * thousand times for the bit to read back clear, failing the attach if it never
+ * does. It also re-initialises the chip, which is asserted here by dirtying
+ * state first and requiring the reset to put it back.
+ *
+ * Asserting the whole register reads zero rather than just the reset bit is
+ * what makes this catch a reset that clears its own bit and nothing else. The
+ * bit alone is the weaker property, and a model that self-clears without
+ * re-initialising would satisfy it.
+ */
+static void test_soft_reset(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    /* Dirty everything the reset is supposed to put back. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, ISP_BUS_CFG1_BURST_ENABLE);
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, ISP_SEMAPHORE_LOCK);
+    qpci_io_writew(dev, io, ISP_MAILBOX(1), 0xdead);
+    qpci_io_writew(dev, io, ISP_MAILBOX(7), 0xbeef);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_PAUSE_RISC << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(1)), ==, 0xdead);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+
+    /* The bit is clear on the first read, and took the rest with it. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CTRL), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(1)), ==,
+                    ISP_MAILBOX1_SIGNATURE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(7)), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Bus configuration 1 round-trips the fields it owns and drops the rest. The
+ * four FIFO threshold encodings are checked individually rather than as a mask,
+ * because the field is three bits wide and a model storing only the bits the
+ * guest happens to set first would pass a single-value check.
+ */
+static void test_bus_cfg1(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    const uint16_t fifo[] = { 0x0010, 0x0020, 0x0030, 0x0040 };
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    for (i = 0; i < (int)ARRAY_SIZE(fifo); i++) {
+        qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, fifo[i]);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==, fifo[i]);
+    }
+
+    /* The combination OpenBSD actually programs: 64 bytes, bursts enabled. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1,
+                   0x0030 | ISP_BUS_CFG1_BURST_ENABLE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==,
+                    0x0030 | ISP_BUS_CFG1_BURST_ENABLE);
+
+    /* The bank select is a bit this register owns, so it survives a write. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, ISP_BUS_CFG1_BANK_SELECT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==,
+                    ISP_BUS_CFG1_BANK_SELECT);
+
+    /* Bits it does not own read back zero rather than whatever was written. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, 0xffff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CFG1), ==,
+                    ISP_BUS_CFG1_FIFO_MASK | ISP_BUS_CFG1_BANK_SELECT |
+                    ISP_BUS_CFG1_BURST_ENABLE);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, 0);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The two interrupt enables are stored and the status register beside them is
+ * read-only. The guest sets both enables in one write, which is the case
+ * asserted first.
+ */
+static void test_bus_ctrl_and_status(void *obj, void *data,
+                                     QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL,
+                   ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CTRL), ==,
+                    ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CTRL), ==, 0);
+
+    /*
+     * Writing every bit sets the two enables and no others. The soft reset bit
+     * is in that write and clears itself, so it does not appear either.
+     */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, 0xffff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CTRL), ==, 0);
+
+    /* The status register ignores writes: no source has posted anything. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_STATUS, 0xffff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The semaphore holds its two bits and the guest releases it by writing the
+ * register back to zero, which is the operation its interrupt acknowledgement
+ * depends on.
+ */
+static void test_semaphore(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, ISP_SEMAPHORE_LOCK);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==,
+                    ISP_SEMAPHORE_LOCK);
+
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==, 0);
+
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, 0xffff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==,
+                    ISP_SEMAPHORE_LOCK | ISP_SEMAPHORE_STATUS);
+
+    qpci_io_writew(dev, io, ISP_REG_SEMAPHORE, 0);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Each mailbox is its own register. Distinct values are written to all eight
+ * and read back afterwards rather than one at a time, so a model decoding them
+ * to one shared register, or dropping the low address bits, fails here instead
+ * of passing eight independent round-trips.
+ */
+static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
+        qpci_io_writew(dev, io, ISP_MAILBOX(i), 0x1000 + i);
+    }
+    for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==,
+                        0x1000 + i);
+    }
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The queue pointers are mailboxes 4 and 5 reached under a second name: the
+ * driver names request-in and request-out at one address and response-in and
+ * response-out at the next, because each address means the host's pointer when
+ * written and the adapter's when read. This asserts they are the same two
+ * registers, which is the fact a model could plausibly get wrong by decoding
+ * them separately, and that they reset to zero.
+ */
+static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 0x0021);
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 0x0043);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0x0021);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0x0043);
+
+    /* Same registers as mailboxes 4 and 5, not a separate decode. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==, 0x0021);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(5)), ==, 0x0043);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The host command register decodes the top four bits of a write and reports
+ * the RISC processor's state on a read. The guest pauses the processor, resets
+ * it and releases it as consecutive steps of its attach, so the release has to
+ * undo both.
+ */
+static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_PAUSE_RISC << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
+                    ISP_RISC_FLAG_PAUSED);
+
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_RESET_RISC << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
+                    ISP_RISC_FLAG_PAUSED | ISP_RISC_FLAG_RESET);
+
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_RELEASE_RISC << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
+                    ISP_RISC_FLAG_HOST_INT);
+
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+
+    /*
+     * Only the top four bits are the command. The same command number in the
+     * low bits must do nothing, which is what pins the decode to a shift rather
+     * than a comparison against the whole value.
+     */
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD, ISP_HOST_CMD_PAUSE_RISC);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -171,6 +517,17 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("window", "qlogic-isp1040", test_window, NULL);
     qos_add_test("bus-cfg0-revision", "qlogic-isp1040",
                  test_bus_cfg0_revision, NULL);
+    qos_add_test("reset-signature", "qlogic-isp1040",
+                 test_reset_signature, NULL);
+    qos_add_test("soft-reset", "qlogic-isp1040", test_soft_reset, NULL);
+    qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
+    qos_add_test("bus-ctrl-and-status", "qlogic-isp1040",
+                 test_bus_ctrl_and_status, NULL);
+    qos_add_test("semaphore", "qlogic-isp1040", test_semaphore, NULL);
+    qos_add_test("mailboxes", "qlogic-isp1040", test_mailboxes, NULL);
+    qos_add_test("queue-pointers", "qlogic-isp1040",
+                 test_queue_pointers, NULL);
+    qos_add_test("host-command", "qlogic-isp1040", test_host_command, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);

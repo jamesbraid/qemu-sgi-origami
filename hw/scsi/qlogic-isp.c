@@ -72,6 +72,11 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_ID_LOW      0x00    /* RO: chip identity, low half. */
 #define ISP_REG_ID_HIGH     0x02    /* RO: chip identity, high half. */
 #define ISP_REG_BUS_CFG0    0x04    /* RO: low four bits are a revision. */
+#define ISP_REG_BUS_CFG1    0x06    /* RW: FIFO threshold and burst enable. */
+#define ISP_REG_BUS_CTRL    0x08    /* RW: soft reset and interrupt enables. */
+#define ISP_REG_BUS_STATUS  0x0a    /* RO: which interrupt is pending. */
+#define ISP_REG_SEMAPHORE   0x0c    /* RW: the mailbox-result lock. */
+#define ISP_REG_HOST_CMD    0xc0    /* RW: command in, RISC state flags out. */
 
 /*
  * Bus configuration 0's hardware-revision field, derived rather than written
@@ -91,15 +96,214 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
  */
 #define ISP_BUS_CFG0_HWREV      (QLOGIC_ISP_REVISION + 1)
 
+/*
+ * The bits bus configuration 1 owns on the PCI variant: a FIFO threshold field,
+ * a global burst enable, and the select that swaps which register bank the
+ * window at 0x80 presents. Writes keep these and drop the rest, so a guest
+ * reading the register back sees only what this part implements.
+ *
+ * The later ISP1080 generation puts a DMA bank select in this register too and
+ * OpenBSD read-modify-writes it, but only down a path it takes for that
+ * generation; on this part it programs the DMA blocks at their own offsets
+ * instead. Dropping those bits here is therefore right for the part modelled
+ * rather than a gap, which is worth saying because the register's field list
+ * looks incomplete beside the driver's header.
+ */
+#define ISP_BUS_CFG1_FIFO_MASK      0x0070
+#define ISP_BUS_CFG1_BANK_SELECT    0x0008
+#define ISP_BUS_CFG1_BURST_ENABLE   0x0004
+#define ISP_BUS_CFG1_WRITE_MASK     (ISP_BUS_CFG1_FIFO_MASK | \
+                                     ISP_BUS_CFG1_BANK_SELECT | \
+                                     ISP_BUS_CFG1_BURST_ENABLE)
+
+/*
+ * Bus interface control. Bit 0 is a soft reset that the adapter clears when it
+ * completes, and the other two are interrupt enables the guest sets together.
+ * The soft reset is a trigger rather than stored state: the guest polls this
+ * register up to a thousand times waiting for the bit to read back clear and
+ * fails the attach if it never does.
+ */
+#define ISP_BUS_CTRL_SOFT_RESET     0x0001
+#define ISP_BUS_CTRL_INT_ENABLE     0x0002
+#define ISP_BUS_CTRL_RISC_INT_ENABLE 0x0004
+#define ISP_BUS_CTRL_WRITE_MASK     (ISP_BUS_CTRL_INT_ENABLE | \
+                                     ISP_BUS_CTRL_RISC_INT_ENABLE)
+
+/* Bus interface status: which kind of interrupt is outstanding. */
+#define ISP_BUS_STATUS_INT_REQ      0x0002
+#define ISP_BUS_STATUS_RISC_INT_REQ 0x0004
+
+/*
+ * The semaphore. The adapter takes the lock when it posts a mailbox result or
+ * an asynchronous event, and the guest releases it by writing the register
+ * back to zero. Taking it is the mailbox engine's business; this commit
+ * implements the register the guest reads and clears.
+ */
+#define ISP_SEMAPHORE_LOCK      0x0001
+#define ISP_SEMAPHORE_STATUS    0x0002
+#define ISP_SEMAPHORE_MASK      (ISP_SEMAPHORE_LOCK | ISP_SEMAPHORE_STATUS)
+
+/*
+ * Eight 16-bit mailboxes. Mailbox 0 carries a command in and its result out;
+ * the rest are arguments and returns selected by per-command bit masks.
+ *
+ * Mailboxes 4 and 5 are also the queue pointers. The driver names four of them
+ * — request in and out, response in and out — at two addresses, because each
+ * address means the host's pointer when written and the adapter's when read.
+ * That naming is a protocol meaning laid over two ordinary registers rather
+ * than a second decode: the hardware stores what is written until the running
+ * firmware overwrites it. With no firmware running yet these are plain
+ * storage, and the ring engine is what gives them the second meaning.
+ */
+#define ISP_REG_MAILBOX_BASE    0x70
+#define ISP_MAILBOX_COUNT       8
+#define ISP_REG_MAILBOX_END     (ISP_REG_MAILBOX_BASE + ISP_MAILBOX_COUNT * 2)
+
+/* The queue pointers, at these offsets from the mailbox base. */
+#define ISP_MAILBOX_REQUEST_QUEUE   4
+#define ISP_MAILBOX_RESPONSE_QUEUE  5
+
+/*
+ * After reset the adapter presents an ASCII signature in mailboxes 1, 2 and 3:
+ * "IS", "P " and two spaces. A model that does not present it sends the guest
+ * down a recovery path rather than failing outright, so this is about keeping
+ * the guest on its ordinary path and its log clean.
+ *
+ * It is also the observable that proves reset ran at all. A PCI device is reset
+ * through its bus, and a device whose registers decode perfectly while its
+ * reset was never called reads every register at its zero-initialised value,
+ * which for most registers here is also the reset value and so says nothing.
+ * These three do not read zero, so the qtest asserting them is what
+ * distinguishes a device that was reset from one that merely answers.
+ */
+#define ISP_MAILBOX1_SIGNATURE  0x4953
+#define ISP_MAILBOX2_SIGNATURE  0x5020
+#define ISP_MAILBOX3_SIGNATURE  0x2020
+
+/*
+ * Host command register. A write carries a command in the top four bits; a
+ * read returns flags describing what the RISC processor is doing.
+ */
+#define ISP_HOST_CMD_SHIFT          12
+#define ISP_HOST_CMD_NOP            0x0
+#define ISP_HOST_CMD_RESET_RISC     0x1
+#define ISP_HOST_CMD_PAUSE_RISC     0x2
+#define ISP_HOST_CMD_RELEASE_RISC   0x3
+#define ISP_HOST_CMD_MASK_PARITY    0x4
+#define ISP_HOST_CMD_SET_HOST_INT   0x5
+#define ISP_HOST_CMD_CLEAR_HOST_INT 0x6
+#define ISP_HOST_CMD_CLEAR_RISC_INT 0x7
+#define ISP_HOST_CMD_BIOS_ENABLE    0x9
+#define ISP_HOST_CMD_ENABLE_PARITY  0xa
+#define ISP_HOST_CMD_PARITY_ERROR   0xe
+
+#define ISP_RISC_FLAG_HOST_INT      0x0080
+#define ISP_RISC_FLAG_RESET         0x0040
+#define ISP_RISC_FLAG_PAUSED        0x0020
+#define ISP_RISC_FLAG_EXTERNAL      0x0010
+
 struct QLogicISPState {
     PCIDevice parent_obj;
 
     MemoryRegion io;    /* Base address register 0, the I/O window. */
     MemoryRegion mmio;  /* Base address register 1, the memory window. */
+
+    uint16_t bus_cfg1;
+    uint16_t bus_ctrl;
+    uint16_t bus_status;
+    uint16_t semaphore;
+    uint16_t risc_flags;    /* What a read of the host command register says. */
+    uint16_t mailbox[ISP_MAILBOX_COUNT];
 };
+
+/*
+ * The state a power-on or a soft reset both land on. The guest's soft reset is
+ * a full re-initialisation of the chip rather than a narrower clear, so it and
+ * the bus reset share this function instead of each clearing its own list of
+ * registers and drifting apart.
+ */
+static void qlogic_isp_reset_state(QLogicISPState *s)
+{
+    s->bus_cfg1 = 0;
+    s->bus_ctrl = 0;
+    s->bus_status = 0;
+    s->semaphore = 0;
+    s->risc_flags = 0;
+
+    memset(s->mailbox, 0, sizeof(s->mailbox));
+    s->mailbox[1] = ISP_MAILBOX1_SIGNATURE;
+    s->mailbox[2] = ISP_MAILBOX2_SIGNATURE;
+    s->mailbox[3] = ISP_MAILBOX3_SIGNATURE;
+}
+
+static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
+{
+    unsigned cmd = val >> ISP_HOST_CMD_SHIFT;
+
+    switch (cmd) {
+    case ISP_HOST_CMD_NOP:
+        break;
+
+    case ISP_HOST_CMD_RESET_RISC:
+        s->risc_flags |= ISP_RISC_FLAG_RESET;
+        break;
+
+    case ISP_HOST_CMD_PAUSE_RISC:
+        s->risc_flags |= ISP_RISC_FLAG_PAUSED;
+        break;
+
+    /*
+     * Releasing the RISC clears the paused flag, which the datasheet states,
+     * and the reset flag, which it does not. The guest resets the processor and
+     * then releases it as consecutive steps of its attach, so a release that
+     * left the reset flag standing would report a processor held in reset for
+     * the rest of the machine's life. That is this model's reading of what
+     * releasing means rather than an observed behaviour.
+     */
+    case ISP_HOST_CMD_RELEASE_RISC:
+        s->risc_flags &= ~(ISP_RISC_FLAG_PAUSED | ISP_RISC_FLAG_RESET);
+        break;
+
+    case ISP_HOST_CMD_SET_HOST_INT:
+        s->risc_flags |= ISP_RISC_FLAG_HOST_INT;
+        break;
+
+    case ISP_HOST_CMD_CLEAR_HOST_INT:
+        s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
+        break;
+
+    /*
+     * Accepted so the guest's attach proceeds, but with nothing behind them
+     * yet: clearing the RISC interrupt is the first half of an interrupt
+     * acknowledgement and there is no interrupt to acknowledge until the
+     * mailbox engine exists, and the parity and BIOS commands control paths
+     * this model does not have.
+     */
+    case ISP_HOST_CMD_CLEAR_RISC_INT:
+    case ISP_HOST_CMD_MASK_PARITY:
+    case ISP_HOST_CMD_BIOS_ENABLE:
+    case ISP_HOST_CMD_ENABLE_PARITY:
+    case ISP_HOST_CMD_PARITY_ERROR:
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp: host command 0x%x accepted, not modelled\n",
+                      cmd);
+        break;
+
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: unknown host command 0x%x\n", cmd);
+        break;
+    }
+}
 
 static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
+    QLogicISPState *s = opaque;
+
+    if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
+        return s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2];
+    }
+
     switch (addr) {
     case ISP_REG_ID_LOW:
         return QLOGIC_ISP_VENDOR_ID;
@@ -107,6 +311,16 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         return QLOGIC_ISP_DEVICE_ID;
     case ISP_REG_BUS_CFG0:
         return ISP_BUS_CFG0_HWREV;
+    case ISP_REG_BUS_CFG1:
+        return s->bus_cfg1;
+    case ISP_REG_BUS_CTRL:
+        return s->bus_ctrl;
+    case ISP_REG_BUS_STATUS:
+        return s->bus_status;
+    case ISP_REG_SEMAPHORE:
+        return s->semaphore;
+    case ISP_REG_HOST_CMD:
+        return s->risc_flags;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "qlogic-isp: read of unimplemented register "
@@ -118,14 +332,48 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
 static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
                                  unsigned size)
 {
+    QLogicISPState *s = opaque;
+
+    if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
+        s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2] = val;
+        return;
+    }
+
     switch (addr) {
+    case ISP_REG_BUS_CFG1:
+        s->bus_cfg1 = val & ISP_BUS_CFG1_WRITE_MASK;
+        break;
+
+    /*
+     * A soft reset takes effect immediately and leaves its own bit clear, so
+     * the guest's poll for the bit to clear succeeds on its first read. It is
+     * applied after the enables are stored so that the reset wins, which is
+     * the order the write itself implies.
+     */
+    case ISP_REG_BUS_CTRL:
+        s->bus_ctrl = val & ISP_BUS_CTRL_WRITE_MASK;
+        if (val & ISP_BUS_CTRL_SOFT_RESET) {
+            qlogic_isp_reset_state(s);
+        }
+        break;
+
+    case ISP_REG_SEMAPHORE:
+        s->semaphore = val & ISP_SEMAPHORE_MASK;
+        break;
+
+    case ISP_REG_HOST_CMD:
+        qlogic_isp_host_command(s, val);
+        break;
+
     case ISP_REG_ID_LOW:
     case ISP_REG_ID_HIGH:
     case ISP_REG_BUS_CFG0:
+    case ISP_REG_BUS_STATUS:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "qlogic-isp: write 0x%04x to read-only register "
                       "0x%02" HWADDR_PRIx "\n", (unsigned)val, addr);
         break;
+
     default:
         qemu_log_mask(LOG_UNIMP,
                       "qlogic-isp: write 0x%04x to unimplemented register "
@@ -142,9 +390,11 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
  * The hardware accepts 16-bit accesses only, and impl is declared alongside
  * valid rather than left to its defaults because the two defaults fail in
  * opposite directions: an undeclared maximum is 4, which would chop a wider
- * access into repeated calls to handlers that later commits give side effects
- * to, and an undeclared minimum is 1. Pinning both ends to two bytes makes one
- * guest access reach the handler exactly once.
+ * access into repeated calls to a handler that now has side effects, and an
+ * undeclared minimum is 1. Pinning both ends to two bytes makes one guest
+ * access reach the handler exactly once, which matters here because a write to
+ * the host command register and a write that soft-resets the chip both act
+ * rather than store.
  */
 static const MemoryRegionOps qlogic_isp_reg_ops = {
     .read = qlogic_isp_reg_read,
@@ -159,6 +409,13 @@ static const MemoryRegionOps qlogic_isp_reg_ops = {
         .max_access_size = 2,
     },
 };
+
+static void qlogic_isp_reset_hold(Object *obj, ResetType type)
+{
+    QLogicISPState *s = QLOGIC_ISP1040(obj);
+
+    qlogic_isp_reset_state(s);
+}
 
 static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 {
@@ -178,10 +435,16 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
+        VMSTATE_UINT16(bus_cfg1, QLogicISPState),
+        VMSTATE_UINT16(bus_ctrl, QLogicISPState),
+        VMSTATE_UINT16(bus_status, QLogicISPState),
+        VMSTATE_UINT16(semaphore, QLogicISPState),
+        VMSTATE_UINT16(risc_flags, QLogicISPState),
+        VMSTATE_UINT16_ARRAY(mailbox, QLogicISPState, ISP_MAILBOX_COUNT),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -190,12 +453,14 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     pc->realize = qlogic_isp_realize;
     pc->vendor_id = QLOGIC_ISP_VENDOR_ID;
     pc->device_id = QLOGIC_ISP_DEVICE_ID;
     pc->revision = QLOGIC_ISP_REVISION;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
+    rc->phases.hold = qlogic_isp_reset_hold;
     dc->vmsd = &vmstate_qlogic_isp;
     dc->desc = "QLogic ISP1040 SCSI host adapter";
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
