@@ -41,6 +41,7 @@ config SGI_SN0
     depends on MIPS64 && TARGET_BIG_ENDIAN
     select SGI_HUB
     select SGI_IOC3
+    select SGI_XBOW
 
 config FULOONG
     bool

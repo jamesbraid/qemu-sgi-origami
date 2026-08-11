@@ -26,8 +26,10 @@
 #include "qemu/datadir.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-ioc3.h"
+#include "hw/misc/sgi-xbow.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
+#include "system/reset.h"
 #include "cpu.h"
 #include "sn0.h"
 
@@ -69,6 +71,7 @@ struct SN0MachineState {
 
     SGIHubState hub;
     SGIIOC3State ioc3;
+    SGIXbowState xbow;
 
     /*
      * Whether this machine presents firmware of its own; see the class notes.
@@ -859,6 +862,42 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
     s->mem_count = n;
 }
 
+/*
+ * The one piece of firmware state that is a register rather than a structure in
+ * memory. Small window 0 is unreliable through a defect on the Hub's
+ * processor-interface side, so a real firmware redirects widget 0 onto the last
+ * big window and points all software at that; both guests carry the workaround
+ * with a comment saying so, and each expects to find the redirection already
+ * done. Ours does it here.
+ *
+ * It has to run at reset rather than at machine creation, because the Hub
+ * resets its translation table and would undo it — the same reason the firmware
+ * structures in memory are loaded by the ROM loader at reset rather than
+ * written once. And it has to run *after* the Hub's own reset, which is what
+ * registering it from the machine-init-done notifier buys: reset handlers run
+ * in registration order, and the bus everything hangs off is registered when
+ * board init has finished, so a handler registered during board init would run
+ * first and be overwritten.
+ */
+static void sn0_firmware_reset(void *opaque)
+{
+    address_space_stq(&address_space_memory,
+                      SN0_SPACE_XTALK + SN0_NODE_BASE(0) +
+                      SN0_HUB_LOCAL_WINDOW + SN0_HUB_IO_BWIN_ENTRY(
+                          SN0_FIRMWARE_WIDGET0_WINDOW),
+                      SN0_HUB_IO_BWIN_WIDGET(SN0_XBOW_WIDGET),
+                      MEMTXATTRS_UNSPECIFIED, NULL);
+}
+
+static void sn0_machine_ready(Notifier *notifier, void *data)
+{
+    qemu_register_reset(sn0_firmware_reset, SN0_MACHINE(qdev_get_machine()));
+}
+
+static Notifier sn0_machine_ready_notifier = {
+    .notify = sn0_machine_ready,
+};
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -936,6 +975,23 @@ static void sn0_init(MachineState *machine)
      * about what it is.
      */
     memory_region_init(&s->xtalk, NULL, "sn0.xtalk", SN0_XTALK_SIZE);
+
+    /*
+     * The crossbar, answering at widget 0 with this machine's identity rather
+     * than a crossbar's own. It is reachable only through a big window: widget
+     * 0's small window is the one a Hub defect makes unreliable, so it is left
+     * unmapped and the firmware aims the last big window here instead, which is
+     * what both guests expect to find already done.
+     */
+    object_initialize_child(OBJECT(machine), "xbow", &s->xbow, TYPE_SGI_XBOW);
+    qdev_prop_set_uint32(DEVICE(&s->xbow), "part", SN0_WIDGET0_PART);
+    qdev_prop_set_uint32(DEVICE(&s->xbow), "manufacturer",
+                         SN0_WIDGET0_MANUFACTURER);
+    qdev_prop_set_uint32(DEVICE(&s->xbow), "revision", SN0_WIDGET0_REVISION);
+    sysbus_realize(SYS_BUS_DEVICE(&s->xbow), &error_fatal);
+    memory_region_add_subregion(&s->xtalk, SN0_XTALK_BASE(SN0_XBOW_WIDGET),
+                                sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->xbow), 0));
 
     /*
      * The Hub's register window, at both halves of the crossbar's widget 1
@@ -1129,6 +1185,10 @@ static void sn0_init(MachineState *machine)
     rom_add_blob_fixed("sn0.firmware.text", fw, SN0_FW_TEXT_SIZE,
                        node + SN0_FW_TEXT_LOCAL);
     g_free(fw);
+
+    if (s->synthesized_firmware) {
+        qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
+    }
 }
 
 static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)

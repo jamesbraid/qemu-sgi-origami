@@ -271,3 +271,6 @@ config SGI_HUB
 config SGI_IOC3
     bool
     select SERIAL
+
+config SGI_XBOW
+    bool

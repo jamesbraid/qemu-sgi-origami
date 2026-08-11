@@ -189,6 +189,7 @@ qtests_mips64 = \
                                                    'sn0-firmware-test',
                                                    'sn0-ioc3-test',
                                                    'sn0-hub-test',
+                                                   'sn0-xbow-test',
                                                    'sn0-model-test'] : [])
 
 qtests_mips64el = qtests_mips

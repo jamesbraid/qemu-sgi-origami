@@ -93,6 +93,43 @@
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
 /*
+ * What answers at widget 0, and what it says it is.
+ *
+ * On a full crossbar this is the Crossbow's own register block, reporting the
+ * part number and manufacturer of a Crossbow — both of which are zero, which is
+ * counter-intuitive and is what a real chip reports. An Origin 200 has a
+ * cut-down crossbar that reports the I/O bridge's identity here instead, and
+ * that is not a detail: both guests read this register first and branch on it.
+ * Seeing the bridge's part number, each concludes the machine has a limited
+ * topology and probes widget 8 alone; seeing a crossbar's, each runs a full
+ * crossbar probe, consults the configuration graph for a probe order and
+ * reaches the same bridge by a different route, printing different things on
+ * the way. So this is the machine's identity rather than a device default,
+ * which is why it is set here.
+ *
+ * The revision is the one field of the three with no source behind it. Nothing
+ * in the reference material gives a power-on value for it, so this is a choice
+ * this file makes rather than a fact, and it is recorded as one.
+ */
+#define SN0_XBOW_WIDGET          0
+#define SN0_WIDGET0_PART         0xc002
+#define SN0_WIDGET0_MANUFACTURER 0x036
+#define SN0_WIDGET0_REVISION     1
+
+/*
+ * The redirection the firmware performs, and the two Hub register fields it
+ * needs to express it. Widget 0's small window is unreliable through a defect
+ * on the Hub's processor-interface side, so firmware aims the last big window
+ * at widget 0 instead. Both guests expect to find that done.
+ */
+#define SN0_HUB_IO_BWIN_TABLE       0x400160
+#define SN0_HUB_IO_BWIN_STRIDE      8
+#define SN0_HUB_IO_BWIN_ENTRY(n)    (SN0_HUB_IO_BWIN_TABLE + \
+                                     (n) * SN0_HUB_IO_BWIN_STRIDE)
+#define SN0_HUB_IO_BWIN_WIDGET(w)   ((uint64_t)(w) << 8)
+#define SN0_FIRMWARE_WIDGET0_WINDOW 6
+
+/*
  * The Hub's register window, at both halves of the crossbar's widget 1 small
  * window. The lower half resolves to the reading processor's own node whatever
  * node number the address carries; the upper half names a node.
