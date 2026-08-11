@@ -46,6 +46,13 @@
 #define ISP_SEMAPHORE_LOCK      0x0001
 #define ISP_SEMAPHORE_STATUS    0x0002
 
+#define ISP_REG_NVRAM        0x0e
+#define ISP_NVRAM_CLOCK      0x0001
+#define ISP_NVRAM_CHIP_SEL   0x0002
+#define ISP_NVRAM_DATA_OUT   0x0004
+#define ISP_NVRAM_DATA_IN    0x0008
+#define ISP_NVRAM_CMD_READ   6
+
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX_COUNT       8
 #define ISP_MAILBOX(n)          (ISP_REG_MAILBOX_BASE + (n) * 2)
@@ -1065,6 +1072,66 @@ static void test_command_round_trip(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/*
+ * Bit-bangs a read of the EEPROM's word 0 the way OpenBSD's driver does —
+ * chip select and clock asserted, the read command and a word address
+ * shifted out, then sixteen clocks reading data-in on each — and checks
+ * every one of those sixteen bits comes back clear. That is what a guest
+ * bit-banging any command or address ever gets from this register: nothing
+ * here drives data-in, so the identifier bytes a real EEPROM would return
+ * can never appear, and the guest's own validation is what turns that into
+ * "nvram corrupt" and its built-in defaults. The register's own contract —
+ * that the three bits it owns round-trip and the fourth never reads set —
+ * is what this test actually pins; it does not need to reproduce the
+ * guest's validation arithmetic to know that arithmetic will fail.
+ */
+static void test_nvram_read_fails(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    int bit;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    /* The three bits this register owns round-trip. */
+    qpci_io_writew(dev, io, ISP_REG_NVRAM,
+                   ISP_NVRAM_CLOCK | ISP_NVRAM_CHIP_SEL | ISP_NVRAM_DATA_OUT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_NVRAM), ==,
+                    ISP_NVRAM_CLOCK | ISP_NVRAM_CHIP_SEL | ISP_NVRAM_DATA_OUT);
+
+    /* Nothing ever asserts data-in, regardless of what else is written. */
+    qpci_io_writew(dev, io, ISP_REG_NVRAM, 0xffff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_NVRAM) & ISP_NVRAM_DATA_IN,
+                    ==, 0);
+
+    /* Assert chip select, then shift out the read command and an address. */
+    qpci_io_writew(dev, io, ISP_REG_NVRAM, ISP_NVRAM_CHIP_SEL);
+    for (bit = 8; bit >= 0; bit--) {
+        uint16_t out = ISP_NVRAM_CHIP_SEL;
+
+        if ((ISP_NVRAM_CMD_READ >> bit) & 1) {
+            out |= ISP_NVRAM_DATA_OUT;
+        }
+        qpci_io_writew(dev, io, ISP_REG_NVRAM, out);
+        qpci_io_writew(dev, io, ISP_REG_NVRAM, out | ISP_NVRAM_CLOCK);
+        qpci_io_writew(dev, io, ISP_REG_NVRAM, out);
+    }
+
+    /* Sixteen more clocks, reading data-in each time: it never sets. */
+    for (bit = 0; bit < 16; bit++) {
+        qpci_io_writew(dev, io, ISP_REG_NVRAM,
+                       ISP_NVRAM_CHIP_SEL | ISP_NVRAM_CLOCK);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_NVRAM) &
+                        ISP_NVRAM_DATA_IN, ==, 0);
+        qpci_io_writew(dev, io, ISP_REG_NVRAM, ISP_NVRAM_CHIP_SEL);
+    }
+
+    qpci_io_writew(dev, io, ISP_REG_NVRAM, 0);
+    qpci_iounmap(dev, io);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -1112,6 +1179,8 @@ static void qlogic_isp_register_nodes(void)
                  test_init_queue_rejects_zero, NULL);
     qos_add_test("command-round-trip", "qlogic-isp1040",
                  test_command_round_trip, NULL);
+    qos_add_test("nvram-read-fails", "qlogic-isp1040",
+                 test_nvram_read_fails, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);

@@ -83,6 +83,7 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_BUS_CTRL    0x08    /* RW: soft reset and interrupt enables. */
 #define ISP_REG_BUS_STATUS  0x0a    /* RO: which interrupt is pending. */
 #define ISP_REG_SEMAPHORE   0x0c    /* RW: the mailbox-result lock. */
+#define ISP_REG_NVRAM       0x0e    /* RW: bit-banged serial EEPROM. */
 #define ISP_REG_HOST_CMD    0xc0    /* RW: command in, RISC state flags out. */
 
 /*
@@ -149,6 +150,29 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_SEMAPHORE_LOCK      0x0001
 #define ISP_SEMAPHORE_STATUS    0x0002
 #define ISP_SEMAPHORE_MASK      (ISP_SEMAPHORE_LOCK | ISP_SEMAPHORE_STATUS)
+
+/*
+ * The NVRAM interface bit-bangs a 128-byte serial EEPROM: the host toggles
+ * clock and chip select and shifts data out on these same three bits, and
+ * the part is supposed to shift data back on the fourth. This model never
+ * asserts that fourth bit, so every bit-banged read the guest performs comes
+ * back as the same fixed pattern regardless of what command or address the
+ * guest thought it was shifting out — indistinguishable, from the guest's
+ * side, from an EEPROM that answers but whose contents fail validation, and
+ * that is deliberate: the datasheet's own recommendation for this register
+ * is to leave data-in low and let the guest's own fallback path handle it,
+ * which OpenBSD does cleanly by printing that the NVRAM is corrupt and
+ * proceeding on built-in defaults. Implementing the shift register and a
+ * plausible 128 bytes behind it would let us set values a real Origin 200's
+ * EEPROM contents were never sourced for; this device does not need to
+ * answer to be correct, only to fail the way real silence would.
+ */
+#define ISP_NVRAM_CLOCK      0x0001
+#define ISP_NVRAM_CHIP_SEL   0x0002
+#define ISP_NVRAM_DATA_OUT   0x0004
+#define ISP_NVRAM_DATA_IN    0x0008
+#define ISP_NVRAM_WRITE_MASK (ISP_NVRAM_CLOCK | ISP_NVRAM_CHIP_SEL | \
+                              ISP_NVRAM_DATA_OUT)
 
 /*
  * Eight 16-bit mailboxes. Mailbox 0 carries a command in and its result out;
@@ -399,6 +423,7 @@ struct QLogicISPState {
     uint16_t bus_ctrl;
     uint16_t bus_status;
     uint16_t semaphore;
+    uint16_t nvram;    /* Echoes the clock/select/data-out bits it was sent. */
     uint16_t risc_flags;    /* What a read of the host command register says. */
     uint16_t mailbox[ISP_MAILBOX_COUNT];
     uint16_t risc_bank[ISP_SXP_RISC_COUNT];
@@ -484,6 +509,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->bus_ctrl = 0;
     s->bus_status = 0;
     s->semaphore = 0;
+    s->nvram = 0;
     s->risc_flags = 0;
 
     memset(s->mailbox, 0, sizeof(s->mailbox));
@@ -1091,6 +1117,8 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         return s->bus_status;
     case ISP_REG_SEMAPHORE:
         return s->semaphore;
+    case ISP_REG_NVRAM:
+        return s->nvram;
     case ISP_REG_HOST_CMD:
         return s->risc_flags;
     default:
@@ -1154,6 +1182,17 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     case ISP_REG_SEMAPHORE:
         s->semaphore = val & ISP_SEMAPHORE_MASK;
+        break;
+
+    /*
+     * Data-in is never part of the write mask, so it can never be stored —
+     * which is what makes a plain readback of this register always show it
+     * clear, without a separate mask on the read path. The guest is only
+     * ever writing what it thinks it is shifting out; nothing here shifts
+     * anything back.
+     */
+    case ISP_REG_NVRAM:
+        s->nvram = val & ISP_NVRAM_WRITE_MASK;
         break;
 
     case ISP_REG_HOST_CMD:
@@ -1233,14 +1272,15 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
         VMSTATE_UINT16(bus_cfg1, QLogicISPState),
         VMSTATE_UINT16(bus_ctrl, QLogicISPState),
         VMSTATE_UINT16(bus_status, QLogicISPState),
         VMSTATE_UINT16(semaphore, QLogicISPState),
+        VMSTATE_UINT16(nvram, QLogicISPState),
         VMSTATE_UINT16(risc_flags, QLogicISPState),
         VMSTATE_UINT16_ARRAY(mailbox, QLogicISPState, ISP_MAILBOX_COUNT),
         VMSTATE_UINT16_ARRAY(risc_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
