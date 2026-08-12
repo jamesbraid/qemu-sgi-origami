@@ -1624,30 +1624,34 @@ static const MemoryRegionOps sgi_bridge_config_ops = {
 /*
  * Which of the eight interrupt pins a PCI function's interrupt reaches.
  *
- * A slot's first interrupt pin goes to the chip pin of the same number, which
- * is not a guess: a real Origin 200 has SCSI controllers at PCI 0 and PCI 1 and
- * a capture shows them taking interrupts 0 and 1. That rule is also what
- * OpenBSD relies on, so it is the one this model implements.
+ * A slot's four legacy interrupt pins fold onto two of the chip's eight in a
+ * fixed pattern: pins A and C reach the pin numbered as the slot, and pins B
+ * and D reach that number with bit two flipped. Eight slots of four pins each
+ * therefore land on eight chip pins with each used twice, which is the whole
+ * point — the chip has eight and the bus offers thirty-two.
  *
- * A function's other three pins are board wiring rather than a chip rule, and
- * the machine's interrupt chain is what settles where each goes — the base
- * I/O controller's second interrupt is the case in point, and it does not
- * follow the rule above. So the other three are reported rather than guessed
- * at: a plausible wrong pin here would deliver an interrupt to the wrong
- * handler and look like a driver bug.
+ * **Neither guest reads this from the chip; both compute it.** Linux folds the
+ * five legal pin values through a switch onto a two-entry table it fills with
+ * the slot number and the slot number exclusive-ored with four, and OpenBSD
+ * writes the same arithmetic directly as a test on the pin's low bit. Two
+ * drivers with no shared code agreeing on the arithmetic is what makes this a
+ * determined fact rather than a convention one of them invented, and it is why
+ * a model may implement it rather than reporting it as board wiring.
+ *
+ * The low-bit test looks inverted between the two and is not: OpenBSD numbers
+ * the pins from one, so its odd pins are A and C, and this interface numbers
+ * them from zero, so its even ones are.
+ *
+ * **This does not cover the base I/O controller's second interrupt**, which
+ * does not travel as a PCI interrupt at all — the machine wires it straight
+ * to the chip pin the interrupt chain ratifies. That routing is the guest's to
+ * compute and the machine's to wire, and nothing here should reproduce it.
  */
 static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 {
     int slot = PCI_SLOT(dev->devfn);
 
-    if (pin != 0) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-bridge: PCI device %d asserted interrupt pin %c, "
-                      "whose wiring to a bridge interrupt pin is the machine's "
-                      "interrupt chain to state and is not modelled; treating "
-                      "it as pin %d\n", slot, 'A' + pin, slot);
-    }
-    return slot;
+    return (pin & 1) ? (slot ^ 4) : slot;
 }
 
 /*
