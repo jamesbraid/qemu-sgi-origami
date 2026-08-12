@@ -234,27 +234,37 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_RESPONSE_QUEUE  (ISP_REG_MAILBOX_BASE + 0x0a)
 
 /*
- * After reset the adapter presents an ASCII signature in mailboxes 1, 2 and 3:
- * "IS", "P " and two spaces. A model that does not present it sends the guest
- * down a recovery path rather than failing outright, so this is about keeping
- * the guest on its ordinary path and its log clean.
+ * After reset the adapter presents an ASCII signature "IS", "P " and two
+ * spaces in mailboxes 1, 2 and 3, plus a fourth, non-ASCII word in mailbox
+ * 4. This was previously documented here as a fact about OpenBSD's driver;
+ * it is not. The pinned OpenBSD/sgi tree's qlw_softreset() never reads
+ * mailboxes 1 through 4 as an identity check at all -- it resets, zeroes
+ * state, and goes straight to a no-op mailbox liveness check. Presenting
+ * this signature is harmless to OpenBSD, which never looks, but it is not
+ * what OpenBSD requires.
  *
- * It is also the observable that proves reset ran at all. A PCI device is reset
- * through its bus, and a device whose registers decode perfectly while its
- * reset was never called reads every register at its zero-initialised value,
- * which for most registers here is also the reset value and so says nothing.
- * These three do not read zero, so the qtest asserting them is what
- * distinguishes a device that was reset from one that merely answers.
+ * What actually requires it, fatally, is Linux's qla1280 driver:
+ * qla1280_chip_diag() reads mailboxes 1 through 4 immediately after reset,
+ * before any mailbox command is issued, and compares them against
+ * PROD_ID_1 through PROD_ID_4 (drivers/scsi/qla1280.h) -- 0x4953, 0x0000 or
+ * 0x5020, 0x2020 and 0x0001. A mismatch on any of the four aborts the
+ * adapter's attach outright ("Wrong product ID"). 86Box's ql_reset_asic
+ * reproduces the identical four values in a second, unrelated
+ * implementation, which is corroboration this is a real hardware fact
+ * about the ISP1040 family rather than one driver's idiosyncrasy.
  *
- * Two independent sources agree on the exact bytes: OpenBSD's own driver
- * expects precisely this ASCII after reset, and 86Box's ql_reset_asic
- * reproduces the same three values in a second, unrelated implementation.
- * One of those is the guest this fork boots and the other is not derived
- * from it, which is stronger footing than either source gives alone.
+ * It is also the observable that proves reset ran at all. A PCI device is
+ * reset through its bus, and a device whose registers decode perfectly
+ * while its reset was never called reads every register at its
+ * zero-initialised value, which for most registers here is also the reset
+ * value and so says nothing. These four do not read zero, so the qtest
+ * asserting them is what distinguishes a device that was reset from one
+ * that merely answers.
  */
 #define ISP_MAILBOX1_SIGNATURE  0x4953
 #define ISP_MAILBOX2_SIGNATURE  0x5020
 #define ISP_MAILBOX3_SIGNATURE  0x2020
+#define ISP_MAILBOX4_SIGNATURE  0x0001
 
 /*
  * The mailbox command protocol: the host writes mailbox 0 and whatever
@@ -581,15 +591,31 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
  * the bus reset share this function instead of each clearing its own list of
  * registers and drifting apart.
  *
- * Mailboxes 4 and 5 are the queue pointers, and this is a place two sources
- * disagree: 86Box's model, evidence about the accept-and-answer approach
- * rather than about register values, sets them to 1 and 7 after reset. But
- * OpenBSD's own reset sequence explicitly zeroes all four queue-pointer names
- * with dedicated writes, and the datasheet's qtest checklist states the same
- * thing independently, so the higher-authority source here is behavioural
- * agreement between the guest and the datasheet, not the secondary model.
- * Zero is what this function sets, and this comment is the record of having
- * chosen it over the alternative rather than never having seen the alternative.
+ * Mailboxes 4 and 5 are the queue pointers, and this is a place an earlier
+ * decision here was wrong and is now corrected against a source that settles
+ * it. 86Box's ql_reset_asic sets them to 1 and 7 after reset. That was
+ * previously rejected in favor of zero, reasoning that OpenBSD's own reset
+ * sequence explicitly zeroes all four queue-pointer names with dedicated
+ * writes and that the datasheet's qtest checklist stated the same thing
+ * independently -- but those two were never independent: the datasheet's
+ * claim was written from watching OpenBSD's driver-side zero-write, not from
+ * a source that observes the raw hardware default, so "OpenBSD does this"
+ * and "the datasheet says this" were one source counted twice. Linux's
+ * qla1280 broke the tie: qla1280_chip_diag() reads mailbox 4 as part of a
+ * fatal product-ID check immediately after reset, before any driver write
+ * reaches it, and requires exactly the value 86Box set. Mailbox 4 is set to
+ * ISP_MAILBOX4_SIGNATURE (0x0001) above for this reason. OpenBSD is
+ * unaffected either way, since qlw_softreset() overwrites this register with
+ * its own zero before ever treating it as a live pointer.
+ *
+ * Mailbox 5 keeps its zero. Nothing we have observed needs 86Box's 7 there:
+ * no guest this fork targets checks it as an identity field the way mailbox
+ * 4 turned out to be, and this register's read path does not consult
+ * s->mailbox[5] at all any more -- ISP_REG_RESPONSE_QUEUE answers from
+ * s->resp_prod, per the response-queue completion-erasure fix. A raw
+ * mailbox[5] reset value would only matter if some future guest read this
+ * offset by its mailbox name before ever touching it as a queue pointer, and
+ * no source we hold shows one doing that.
  *
  * Every other register this function zeroes — bus configuration 1, bus
  * interface control and status, the semaphore, the RISC flags, mailbox 0 and
@@ -615,6 +641,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->mailbox[1] = ISP_MAILBOX1_SIGNATURE;
     s->mailbox[2] = ISP_MAILBOX2_SIGNATURE;
     s->mailbox[3] = ISP_MAILBOX3_SIGNATURE;
+    s->mailbox[4] = ISP_MAILBOX4_SIGNATURE;
 
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));

@@ -68,6 +68,7 @@
 #define ISP_MAILBOX1_SIGNATURE  0x4953
 #define ISP_MAILBOX2_SIGNATURE  0x5020
 #define ISP_MAILBOX3_SIGNATURE  0x2020
+#define ISP_MAILBOX4_SIGNATURE  0x0001
 
 #define ISP_MBOX_CMD_NOP                 0x0000
 #define ISP_MBOX_CMD_EXEC_FIRMWARE       0x0002
@@ -273,7 +274,7 @@ static void test_bus_cfg0_revision(void *obj, void *data,
  * The mailbox signature is the observable that proves the device was reset.
  * Every other register in this file resets to zero, which is also what an
  * uninitialised structure holds, so none of them can tell a device that was
- * reset from one that merely decodes and answers. These three cannot read zero
+ * reset from one that merely decodes and answers. These four cannot read zero
  * by accident.
  *
  * Reset reaches a PCI device through its bus, so this also pins the device to a
@@ -296,10 +297,12 @@ static void test_reset_signature(void *obj, void *data, QGuestAllocator *alloc)
                     ISP_MAILBOX2_SIGNATURE);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(3)), ==,
                     ISP_MAILBOX3_SIGNATURE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==,
+                    ISP_MAILBOX4_SIGNATURE);
 
     /* The mailboxes the signature does not occupy reset to zero. */
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==, 0);
-    for (i = 4; i < ISP_MAILBOX_COUNT; i++) {
+    for (i = 5; i < ISP_MAILBOX_COUNT; i++) {
         g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==, 0);
     }
 
@@ -309,6 +312,39 @@ static void test_reset_signature(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_SEMAPHORE), ==, 0);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Linux's qla1280_chip_diag() runs its own product-ID check straight off
+ * these same four mailboxes, before it issues any mailbox command, and
+ * aborts the adapter's attach outright on a mismatch -- unlike OpenBSD,
+ * which never performs this check at all. Reproduces the exact
+ * PROD_ID_1..PROD_ID_4 comparison from drivers/scsi/qla1280.h (0x4953,
+ * 0x0000 or 0x5020, 0x2020, 0x0001) so a regression here fails as
+ * concretely as the driver's own "Wrong product ID" abort would.
+ */
+static void test_linux_product_id_check(void *obj, void *data,
+                                        QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    uint16_t mbox1, mbox2, mbox3, mbox4;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    mbox1 = qpci_io_readw(dev, io, ISP_MAILBOX(1));
+    mbox2 = qpci_io_readw(dev, io, ISP_MAILBOX(2));
+    mbox3 = qpci_io_readw(dev, io, ISP_MAILBOX(3));
+    mbox4 = qpci_io_readw(dev, io, ISP_MAILBOX(4));
+
+    g_assert_cmphex(mbox1, ==, 0x4953);
+    g_assert_true(mbox2 == 0x0000 || mbox2 == 0x5020);
+    g_assert_cmphex(mbox3, ==, 0x2020);
+    g_assert_cmphex(mbox4, ==, 0x0001);
 
     qpci_iounmap(dev, io);
 }
@@ -561,6 +597,18 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
  * wrote, and this asserts that round-trip and that request-in and mailbox 4
  * are the same register rather than a separate decode.
  *
+ * Request-in resets to ISP_MAILBOX4_SIGNATURE (0x0001), not zero -- the same
+ * value Linux's product-ID check requires there, and the same value 86Box's
+ * ql_reset_asic sets at raw reset. Both OpenBSD and Linux still work with
+ * this: OpenBSD's qlw_softreset() explicitly writes zero to this register as
+ * one of its own reset steps, before ever treating it as a live pointer, so
+ * it never depends on the hardware's own post-reset value either way. This
+ * datasheet previously claimed the queue pointers reset to zero at this
+ * offset; that claim was never checked against a source that observes the
+ * raw hardware value rather than a driver's own subsequent write, and it was
+ * wrong for this one, the same class of mistake as the mailbox-signature
+ * misattribution corrected alongside it.
+ *
  * Response-in (mailbox 5) is not plain storage. A read always answers the
  * adapter's own producer count — still 0 here, since nothing has posted a
  * completion — never whatever the guest just wrote to that address; the
@@ -579,7 +627,8 @@ static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
     qpci_device_enable(dev);
     io = qpci_iomap(dev, 0, NULL);
 
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==,
+                    ISP_MAILBOX4_SIGNATURE);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
 
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 0x0021);
@@ -1794,6 +1843,8 @@ static void qlogic_isp_register_nodes(void)
                  test_bus_cfg0_revision, NULL);
     qos_add_test("reset-signature", "qlogic-isp1040",
                  test_reset_signature, NULL);
+    qos_add_test("linux-product-id-check", "qlogic-isp1040",
+                 test_linux_product_id_check, NULL);
     qos_add_test("soft-reset", "qlogic-isp1040", test_soft_reset, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
     qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
