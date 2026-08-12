@@ -119,9 +119,15 @@
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
 #define ISP_STATUS_OFF_COMPLETION   10
+#define ISP_STATUS_OFF_STATE_FLAGS  12
+#define ISP_STATUS_OFF_SENSE_LEN    18
 #define ISP_STATUS_OFF_SENSE_DATA   32
 
-#define ISP_IOCB_COMPLETE  0x0000
+#define ISP_IOCB_COMPLETE    0x0000
+#define ISP_IOCB_INCOMPLETE  0x0001
+
+#define ISP_STATE_FLAG_GOT_BUS            0x0100
+#define ISP_STATE_FLAGS_ALL_PHASES        0x7f00
 
 #define ISP_SCSI_STATUS_SENSE_VALID 0x0200
 
@@ -1311,6 +1317,185 @@ static void test_command_round_trip(void *obj, void *data,
 }
 
 /*
+ * Every status entry this device posts now zeroes its whole 64-byte slot
+ * before writing into it (task #74/#97's adversarial review), rather than
+ * leaving whatever a previous occupant of that ring slot wrote at any
+ * offset this function does not explicitly set. A two-entry response ring
+ * proves it the way test_reset_signature proves reset ran: not by reading
+ * a value back, since a value that happens to be right could equally mean
+ * "correctly zeroed" or "never overwritten and already zero" -- by first
+ * putting a real, non-zero value where a stale leftover would show up, and
+ * then confirming a later write to the same slot removes it rather than
+ * leaving it standing.
+ *
+ * Slot 0 gets a real sense length and real sense bytes first (test unit
+ * ready's automatic power-on unit attention, the same mechanism
+ * test_command_round_trip uses). Slot 1 gets a clean command. A third
+ * command wraps back onto slot 0, reusing the slot that held real sense
+ * data, and this is the assertion that matters: slot 0 now reports
+ * sense_len zero and thirty-two zero sense bytes, not the unit attention
+ * this same slot held two completions ago. Before the fix this only
+ * happened to hold because sense_len was never written and unit attention
+ * sense data happens to still be present at that offset either way; the
+ * new field is what makes "zeroed" and "never written" distinguishable.
+ */
+static void test_status_entry_clears_stale_bytes(void *obj, void *data,
+                                                  QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   2, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    /* Command 1, into slot 0: the automatic power-on unit attention. */
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAGS_ALL_PHASES);
+    g_assert_cmpint(isp_get16(status, ISP_STATUS_OFF_SENSE_LEN), >, 0);
+    g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + 2] & 0x0f, ==,
+                    UNIT_ATTENTION);
+
+    qlogic_isp_ack(dev, io);
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE,
+                   qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE));
+
+    /* Command 2, into slot 1: clean, no sense. Slot 0 is untouched so far. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+
+    qlogic_isp_ack(dev, io);
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE,
+                   qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE));
+
+    /*
+     * Command 3 wraps the two-entry ring back onto slot 0 -- the slot
+     * command 1's unit attention sense data occupied. Clean again, so if
+     * anything from command 1 survives here it is stale, not this
+     * command's own answer.
+     */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x3);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 3);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x3);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAGS_ALL_PHASES);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SENSE_LEN), ==, 0);
+    for (i = 0; i < 32; i++) {
+        g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + i], ==, 0);
+    }
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Linux's qla1280_return_status() reads state_flags only when the
+ * completion code is incomplete, walking GOT_BUS, GOT_TARGET, SENT_CDB,
+ * TRANSFERRED_DATA, GOT_STATUS and GOT_SENSE in order to decide which of
+ * several specific failure reasons to report -- not just that something
+ * failed. This device's one incomplete completion is "no SCSI device at
+ * the requested target/lun", and the state_flags it reports has to say
+ * exactly that: the bus was reached, nothing past it was.
+ */
+static void test_no_device_incomplete_state_flags(void *obj, void *data,
+                                                   QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    /*
+     * Two entries, not one: the request-in pointer wraps modulo the queue
+     * length (qlogic_isp_process_requests()), and a one-entry queue can
+     * never tell "one new entry has arrived" apart from "nothing has" --
+     * writing 1 wraps straight back to the same 0 the ring already sits at,
+     * so the loop that dispatches new entries never runs at all. The same
+     * reserve-one-slot shape the response ring's own contract already
+     * documents, hit here from the request side by writing this test with
+     * too small a ring the first time.
+     */
+    rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   2, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x9);
+    /* Target 5, lun 0: nothing this qos-graph node attaches there. */
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 5 << 8);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x9);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAG_GOT_BUS);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
  * The round trip above only ever sends test unit ready, which carries no
  * data phase at all — it is not what actually exercises a scatter-gather
  * transfer, and a real driver's target probe issues something that does on
@@ -1897,6 +2082,10 @@ static void qlogic_isp_register_nodes(void)
                  test_init_queue_rejects_zero, NULL);
     qos_add_test("command-round-trip", "qlogic-isp1040",
                  test_command_round_trip, NULL);
+    qos_add_test("status-entry-clears-stale-bytes", "qlogic-isp1040",
+                 test_status_entry_clears_stale_bytes, NULL);
+    qos_add_test("no-device-incomplete-state-flags", "qlogic-isp1040",
+                 test_no_device_incomplete_state_flags, NULL);
     qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
                  test_inquiry_data_transfer, NULL);
     qos_add_test("continuation-entry-segments", "qlogic-isp1040",
