@@ -348,6 +348,15 @@ static void test_processor_number(const void *data)
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
 
+    /*
+     * Real firmware writes here as a logic-analyzer debug convention, not to
+     * store a value — nothing on real hardware ever reads it back, since the
+     * register can only report which processor is asking. The write must be
+     * accepted without disturbing that answer.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER, 0x1111111111111111ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
+
     qtest_quit(qts);
 }
 

@@ -722,6 +722,29 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                        (val & NI_STATUS_WRITABLE);
         break;
     case HUB_PI_PROCESSOR_NUMBER:
+        /*
+         * Refused, and correctly so: real firmware's own headers document
+         * writing this register as a debug convention aimed at something
+         * watching the bus, not at the chip. The standalone firmware's Hub
+         * header offers a macro that stores a fixed pattern here annotated
+         * for a logic analyzer, and the firmware's own low-level header
+         * pairs a store here with a comment pointing the reader at
+         * register-transfer-level simulation logs to find it — this is a
+         * pre-silicon capture mechanism, not a register the guest expects
+         * to hold a value. IRIX's own PCI bridge and Hub I/O drivers use
+         * the same register the same way, storing marker and diagnostic
+         * values with nothing ever read back, because the register reports
+         * the processor number and cannot report anything else. A real
+         * guest doing this is following a documented vendor convention,
+         * not misbehaving, so this logs as unimplemented rather than as a
+         * guest error.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the processor-"
+                      "number register 0x%" HWADDR_PRIx " (a logic-analyzer "
+                      "convention on real firmware, not modelled)\n",
+                      val, addr);
+        break;
     case HUB_PI_INT_PEND0:
     case HUB_PI_INT_PEND1:
         qemu_log_mask(LOG_GUEST_ERROR,
