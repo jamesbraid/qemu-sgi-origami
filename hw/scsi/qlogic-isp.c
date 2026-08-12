@@ -85,6 +85,8 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_BUS_STATUS  0x0a    /* RO: which interrupt is pending. */
 #define ISP_REG_SEMAPHORE   0x0c    /* RW: the mailbox-result lock. */
 #define ISP_REG_NVRAM       0x0e    /* RW: bit-banged serial EEPROM. */
+#define ISP_REG_DMA_CMD_CFG  0x20   /* RW: command DMA block, config register. */
+#define ISP_REG_DMA_DATA_CFG 0x40   /* RW: data DMA block, config register. */
 #define ISP_REG_HOST_CMD    0xc0    /* RW: command in, RISC state flags out. */
 
 /*
@@ -124,6 +126,28 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_BUS_CFG1_WRITE_MASK     (ISP_BUS_CFG1_FIFO_MASK | \
                                      ISP_BUS_CFG1_BANK_SELECT | \
                                      ISP_BUS_CFG1_BURST_ENABLE)
+
+/*
+ * The command and data DMA blocks' config registers, at the base of each
+ * block. Everything else either block carries -- control, status, FIFO
+ * status, transfer count, address -- has no guest on origami's path that
+ * reads or writes it, so only the config register is named and stored; the
+ * rest still falls through to the unimplemented-register logger.
+ *
+ * The one field that matters here is the same burst enable bus
+ * configuration 1 already has a copy of for the SBus variant of this part:
+ * OpenBSD's attach sequence read-modify-writes this bit into both blocks'
+ * config registers whenever the FIFO/burst configuration it already wrote
+ * to bus configuration 1 asked for bursts. Before this register was named,
+ * that read-modify-write's read half always saw zero (the unimplemented
+ * default) rather than a value reflecting what had actually been written,
+ * so a guest that ever reads this register back to check what it set would
+ * see something this device never actually stored -- a gap the OpenBSD
+ * boot path does not depend on, since it never re-reads what it wrote, but
+ * a stricter guest could.
+ */
+#define ISP_DMA_CFG_BURST_ENABLE    0x0002
+#define ISP_DMA_CFG_WRITE_MASK      ISP_DMA_CFG_BURST_ENABLE
 
 /*
  * Bus interface control. Bit 0 is a soft reset that the adapter clears when it
@@ -468,6 +492,8 @@ struct QLogicISPState {
     uint16_t semaphore;
     uint16_t nvram;    /* Echoes the clock/select/data-out bits it was sent. */
     uint16_t risc_flags;    /* What a read of the host command register says. */
+    uint16_t dma_cmd_cfg;    /* Command DMA block's config register. */
+    uint16_t dma_data_cfg;   /* Data DMA block's config register. */
     uint16_t mailbox[ISP_MAILBOX_COUNT];
     uint16_t risc_bank[ISP_SXP_RISC_COUNT];
     uint16_t sxp_bank[ISP_SXP_RISC_COUNT];
@@ -582,6 +608,8 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->semaphore = 0;
     s->nvram = 0;
     s->risc_flags = 0;
+    s->dma_cmd_cfg = 0;
+    s->dma_data_cfg = 0;
 
     memset(s->mailbox, 0, sizeof(s->mailbox));
     s->mailbox[1] = ISP_MAILBOX1_SIGNATURE;
@@ -1373,6 +1401,10 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         return s->semaphore;
     case ISP_REG_NVRAM:
         return s->nvram;
+    case ISP_REG_DMA_CMD_CFG:
+        return s->dma_cmd_cfg;
+    case ISP_REG_DMA_DATA_CFG:
+        return s->dma_data_cfg;
     case ISP_REG_HOST_CMD:
         return s->risc_flags;
     default:
@@ -1465,6 +1497,14 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
      */
     case ISP_REG_NVRAM:
         s->nvram = val & ISP_NVRAM_WRITE_MASK;
+        break;
+
+    case ISP_REG_DMA_CMD_CFG:
+        s->dma_cmd_cfg = val & ISP_DMA_CFG_WRITE_MASK;
+        break;
+
+    case ISP_REG_DMA_DATA_CFG:
+        s->dma_data_cfg = val & ISP_DMA_CFG_WRITE_MASK;
         break;
 
     case ISP_REG_HOST_CMD:
@@ -1562,7 +1602,7 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
  */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 7,
+    .version_id = 8,
     .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
@@ -1572,6 +1612,8 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(semaphore, QLogicISPState),
         VMSTATE_UINT16(nvram, QLogicISPState),
         VMSTATE_UINT16(risc_flags, QLogicISPState),
+        VMSTATE_UINT16_V(dma_cmd_cfg, QLogicISPState, 8),
+        VMSTATE_UINT16_V(dma_data_cfg, QLogicISPState, 8),
         VMSTATE_UINT16_ARRAY(mailbox, QLogicISPState, ISP_MAILBOX_COUNT),
         VMSTATE_UINT16_ARRAY(risc_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
         VMSTATE_UINT16_ARRAY(sxp_bank, QLogicISPState, ISP_SXP_RISC_COUNT),

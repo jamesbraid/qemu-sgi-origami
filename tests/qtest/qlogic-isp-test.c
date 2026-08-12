@@ -39,6 +39,10 @@
 #define ISP_BUS_CFG1_BANK_SELECT    0x0008
 #define ISP_BUS_CFG1_BURST_ENABLE   0x0004
 
+#define ISP_REG_DMA_CMD_CFG   0x20
+#define ISP_REG_DMA_DATA_CFG  0x40
+#define ISP_DMA_CFG_BURST_ENABLE  0x0002
+
 #define ISP_BUS_CTRL_SOFT_RESET     0x0001
 #define ISP_BUS_CTRL_INT_ENABLE     0x0002
 #define ISP_BUS_CTRL_RISC_INT_ENABLE 0x0004
@@ -392,6 +396,54 @@ static void test_bus_cfg1(void *obj, void *data, QGuestAllocator *alloc)
                     ISP_BUS_CFG1_BURST_ENABLE);
 
     qpci_io_writew(dev, io, ISP_REG_BUS_CFG1, 0);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The command and data DMA blocks' config registers, at the base of each
+ * block. Only the burst-enable bit is on any boot path this device targets;
+ * the two blocks are independent storage, not two names for one value, and
+ * the read-modify-write OpenBSD's own attach sequence performs must see
+ * back whatever it just wrote rather than the unimplemented-register
+ * default of zero.
+ */
+static void test_dma_block_cfg(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    /* Resets to zero. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_CMD_CFG), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG), ==, 0);
+
+    /* The exact read-modify-write OpenBSD performs on each block. */
+    qpci_io_writew(dev, io, ISP_REG_DMA_CMD_CFG,
+                   qpci_io_readw(dev, io, ISP_REG_DMA_CMD_CFG) |
+                   ISP_DMA_CFG_BURST_ENABLE);
+    qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CFG,
+                   qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG) |
+                   ISP_DMA_CFG_BURST_ENABLE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_CMD_CFG), ==,
+                    ISP_DMA_CFG_BURST_ENABLE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG), ==,
+                    ISP_DMA_CFG_BURST_ENABLE);
+
+    /* The two blocks are independent: clearing one leaves the other set. */
+    qpci_io_writew(dev, io, ISP_REG_DMA_CMD_CFG, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_CMD_CFG), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG), ==,
+                    ISP_DMA_CFG_BURST_ENABLE);
+
+    /* Reserved bits read back zero rather than whatever was written. */
+    qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CFG, 0xffff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG), ==,
+                    ISP_DMA_CFG_BURST_ENABLE);
+
+    qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CFG, 0);
     qpci_iounmap(dev, io);
 }
 
@@ -1744,6 +1796,7 @@ static void qlogic_isp_register_nodes(void)
                  test_reset_signature, NULL);
     qos_add_test("soft-reset", "qlogic-isp1040", test_soft_reset, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
+    qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
     qos_add_test("bus-ctrl-and-status", "qlogic-isp1040",
                  test_bus_ctrl_and_status, NULL);
     qos_add_test("semaphore", "qlogic-isp1040", test_semaphore, NULL);
