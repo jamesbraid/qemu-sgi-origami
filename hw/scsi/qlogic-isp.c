@@ -463,6 +463,10 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
 #define ISP_STATUS_OFF_COMPLETION   10
+#define ISP_STATUS_OFF_STATE_FLAGS  12
+#define ISP_STATUS_OFF_STATUS_FLAGS 14
+#define ISP_STATUS_OFF_RSP_LEN      16
+#define ISP_STATUS_OFF_SENSE_LEN    18
 #define ISP_STATUS_OFF_RESID        20
 #define ISP_STATUS_OFF_SENSE_DATA   32
 #define ISP_STATUS_SENSE_MAX        32
@@ -472,6 +476,41 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_IOCB_COMPLETE            0x0000
 #define ISP_IOCB_INCOMPLETE          0x0001
 #define ISP_IOCB_DATA_UNDERRUN       0x0015
+
+/*
+ * State flags: which phases of the transaction the adapter actually
+ * reached, read by OpenBSD's and Linux's drivers alike only when the
+ * completion code is incomplete, to decide what kind of failure this was
+ * rather than treat every incomplete command the same way. Confirmed
+ * byte-identical (offset 12, this bit layout) against both qlwreg.h's
+ * struct qlw_iocb_status and qla1280.h's struct response -- two
+ * independent drivers agreeing on the wire format of a part neither
+ * vendor documented for us. Linux's qla1280_return_status() walks this
+ * ladder top to bottom on an incomplete completion: no bus reached is
+ * DID_NO_CONNECT, bus reached but no target is DID_BAD_TARGET, target
+ * reached but the CDB, transfer, status or sense phase failed is
+ * DID_ERROR. A model that leaves this field unwritten hands back
+ * whatever a previous occupant of the ring slot left, so an incomplete
+ * completion is misreported as whichever failure those stale bits
+ * happen to spell -- this device's only current incomplete completion
+ * (no SCSI device at the requested target/lun) reported as a plausible
+ * but wrong reason instead of DID_BAD_TARGET, the one that is actually
+ * true.
+ */
+#define ISP_STATE_FLAG_GOT_BUS            0x0100
+#define ISP_STATE_FLAG_GOT_TARGET         0x0200
+#define ISP_STATE_FLAG_SENT_CDB           0x0400
+#define ISP_STATE_FLAG_TRANSFERRED_DATA   0x0800
+#define ISP_STATE_FLAG_GOT_STATUS         0x1000
+#define ISP_STATE_FLAG_GOT_SENSE          0x2000
+#define ISP_STATE_FLAG_TRANSFER_COMPLETE  0x4000
+#define ISP_STATE_FLAGS_ALL_PHASES  (ISP_STATE_FLAG_GOT_BUS | \
+                                     ISP_STATE_FLAG_GOT_TARGET | \
+                                     ISP_STATE_FLAG_SENT_CDB | \
+                                     ISP_STATE_FLAG_TRANSFERRED_DATA | \
+                                     ISP_STATE_FLAG_GOT_STATUS | \
+                                     ISP_STATE_FLAG_GOT_SENSE | \
+                                     ISP_STATE_FLAG_TRANSFER_COMPLETE)
 
 /*
  * A status entry the response ring had no room for. Real hardware never
@@ -488,6 +527,7 @@ typedef struct QLogicISPPendingStatus {
     uint32_t handle;
     uint16_t scsi_status;
     uint16_t completion;
+    uint16_t state_flags;
     uint32_t resid;
     uint8_t sense[ISP_STATUS_SENSE_MAX];
     int sense_len;
@@ -1084,15 +1124,36 @@ static bool qlogic_isp_resp_has_room(QLogicISPState *s)
  * Only called once the caller has confirmed a slot is free
  * (qlogic_isp_resp_has_room()): this is the write, not the decision of
  * whether it is safe to make.
+ *
+ * The whole 64-byte slot is zeroed before anything is written into it. This
+ * ring is reused, and a slot's previous occupant leaves real bytes behind at
+ * every offset this function does not explicitly overwrite. Response length
+ * (offset 16, "time" in Linux's own struct and "rsp_len" in OpenBSD's — the
+ * two names disagree, but neither driver reads this offset anywhere in
+ * either source, so it is written zero along with everything else rather
+ * than guessed) and the eight FCP-response/reserved bytes at offset 24 are
+ * two fields with no confirmed reader; zeroing the whole slot first covers
+ * them the same way it covers status_flags, so a future guest that does
+ * read one of them sees a defined value rather than a previous command's
+ * leftovers, without this function needing to know what that value should
+ * be. sense_len and state_flags are the two fields a confirmed reader
+ * exists for — Linux's driver, in both cases (see their own definitions).
  */
 static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
                                        uint16_t scsi_status,
-                                       uint16_t completion, uint32_t resid,
+                                       uint16_t completion,
+                                       uint16_t state_flags, uint32_t resid,
                                        const uint8_t *sense, int sense_len)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     hwaddr addr = qlogic_isp_resp_entry_addr(s, s->resp_prod);
+    uint8_t zero[ISP_QUEUE_ENTRY_SIZE];
     uint8_t hdr[4] = { ISP_ENTRY_TYPE_STATUS, 1, 0, 0 };
+    uint16_t clamped_sense_len = sense_len > 0
+                                  ? MIN(sense_len, ISP_STATUS_SENSE_MAX) : 0;
+
+    memset(zero, 0, sizeof(zero));
+    pci_dma_write(pci, addr, zero, sizeof(zero));
 
     pci_dma_write(pci, addr, hdr, sizeof(hdr));
     stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_HANDLE, handle,
@@ -1101,16 +1162,16 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
                    MEMTXATTRS_UNSPECIFIED);
     stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_COMPLETION, completion,
                    MEMTXATTRS_UNSPECIFIED);
+    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_STATE_FLAGS, state_flags,
+                   MEMTXATTRS_UNSPECIFIED);
+    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_SENSE_LEN, clamped_sense_len,
+                   MEMTXATTRS_UNSPECIFIED);
     stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_RESID, resid,
                    MEMTXATTRS_UNSPECIFIED);
 
-    if (sense_len > 0) {
-        uint8_t buf[ISP_STATUS_SENSE_MAX];
-
-        memset(buf, 0, sizeof(buf));
-        memcpy(buf, sense, MIN(sense_len, ISP_STATUS_SENSE_MAX));
-        pci_dma_write(pci, addr + ISP_STATUS_OFF_SENSE_DATA, buf,
-                      sizeof(buf));
+    if (clamped_sense_len > 0) {
+        pci_dma_write(pci, addr + ISP_STATUS_OFF_SENSE_DATA, sense,
+                      clamped_sense_len);
     }
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
@@ -1134,7 +1195,8 @@ static void qlogic_isp_drain_pending_status(QLogicISPState *s)
            (pending = QTAILQ_FIRST(&s->pending_status)) != NULL) {
         QTAILQ_REMOVE(&s->pending_status, pending, next);
         qlogic_isp_post_one_status(s, pending->handle, pending->scsi_status,
-                                   pending->completion, pending->resid,
+                                   pending->completion, pending->state_flags,
+                                   pending->resid,
                                    pending->sense_len > 0 ? pending->sense
                                                            : NULL,
                                    pending->sense_len);
@@ -1155,8 +1217,8 @@ static void qlogic_isp_drain_pending_status(QLogicISPState *s)
  */
 static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
                                    uint16_t scsi_status, uint16_t completion,
-                                   uint32_t resid, const uint8_t *sense,
-                                   int sense_len)
+                                   uint16_t state_flags, uint32_t resid,
+                                   const uint8_t *sense, int sense_len)
 {
     if (s->resp_len == 0) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1185,6 +1247,7 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
         pending->handle = handle;
         pending->scsi_status = scsi_status;
         pending->completion = completion;
+        pending->state_flags = state_flags;
         pending->resid = resid;
         pending->sense_len = sense_len > 0
                               ? MIN(sense_len, ISP_STATUS_SENSE_MAX) : 0;
@@ -1195,7 +1258,8 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
         return;
     }
 
-    qlogic_isp_post_one_status(s, handle, scsi_status, completion, resid,
+    qlogic_isp_post_one_status(s, handle, scsi_status, completion,
+                               state_flags, resid,
                                sense, sense_len);
 }
 
@@ -1215,8 +1279,18 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
 
     completion = resid ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
 
+    /*
+     * state_flags is only read by either guest driver when the completion
+     * code is incomplete (see the constants' own comment); this path never
+     * produces that code, so the exact value here is unobserved either way.
+     * The full set of phase bits is written anyway, since it is the true
+     * record of what happened -- every phase this model has, this command
+     * actually went through -- rather than an arbitrary placeholder chosen
+     * because nothing currently reads it.
+     */
     qlogic_isp_post_status(s, req->handle, scsi_status, completion,
-                           resid, sense, sense_len);
+                           ISP_STATE_FLAGS_ALL_PHASES, resid, sense,
+                           sense_len);
 
     scsi_req_unref(req->sreq);
     qemu_sglist_destroy(&req->qsg);
@@ -1344,8 +1418,20 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
 
     sdev = scsi_device_find(&s->bus, 0, target, lun);
     if (!sdev) {
-        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE, 0,
-                               NULL, 0);
+        /*
+         * The one call site in this file that produces an incomplete
+         * completion, which is exactly the code both guest drivers read
+         * state_flags to interpret. What actually happened here is that
+         * this adapter looked for a device at the requested target and lun
+         * and found none -- it reached the bus, so ISP_STATE_FLAG_GOT_BUS
+         * is true, but got no further, so nothing past it is. Linux's own
+         * qla1280_return_status() walks exactly this ladder and reports
+         * DID_BAD_TARGET for precisely this bit pattern, which is the
+         * correct reason and not the plausible-but-wrong one a previous
+         * ring slot's leftover bits would have produced.
+         */
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                               ISP_STATE_FLAG_GOT_BUS, 0, NULL, 0);
         return;
     }
 
