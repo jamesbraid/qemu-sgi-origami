@@ -559,7 +559,7 @@ static void sn0_build_flash(uint8_t *flash)
     stq_be_p(config + 0x18, SN0_HUB_FREQ_HZ);
     stq_be_p(config + 0x20, SN0_RTC_FREQ_HZ);
     stl_be_p(config + 0x28, 1);                    /* error correction on */
-    stl_be_p(config + 0x2c, 15);                   /* flash read timing */
+    stl_be_p(config + 0x2c, 8);                    /* flash read timing */
     stl_be_p(config + 0x30, SN0_MACHINE_TYPE);
     stl_be_p(config + 0x34, 0);                    /* checksum adjustment */
     stl_be_p(config + 0x38, 0);                    /* flash program count */
