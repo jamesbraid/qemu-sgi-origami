@@ -104,6 +104,31 @@
  */
 #define HUB_MD_INDICATOR_0      0x220050  /* real firmware's diagnostic LED, CPU A */
 #define HUB_MD_INDICATOR_1      0x220058  /* same, CPU B */
+
+/*
+ * Slot identity and microcontroller status: read-only signals sampled off the
+ * board, and the register real firmware polls before it touches the boot flash.
+ *
+ * The boot flash's ready signal appears at two bit positions, and the register
+ * table this machine's variant comes from states that the two are the same
+ * signal rather than two separate ones. Both are reported ready here, because
+ * firmware waiting on either and never seeing it waits forever — the failure is
+ * a boot that stops with nothing logged, which is the same shape as a crosstalk
+ * link that never comes up.
+ *
+ * Every other field samples something this board does not have — a second
+ * board's master/slave sense, a bus-fault line, a jumper identity and a
+ * processor-speed strap — so they read clear, and no test asserts them. The
+ * register table declares no reset value for any field in either variant, which
+ * is what a read-only status register sampling external signals looks like, so
+ * what the absent signals read is this machine's decision rather than a
+ * transcribed one.
+ */
+#define HUB_MD_SLOT_ID_USTAT    0x220048
+#define MD_SLOT_FLASH_READY_LOW  (1ULL << 0)
+#define MD_SLOT_FLASH_READY_HIGH (1ULL << 4)
+#define MD_SLOT_FLASH_READY     (MD_SLOT_FLASH_READY_LOW | \
+                                 MD_SLOT_FLASH_READY_HIGH)
 #define IO_XTALK_TIMEOUT_MASK   0xffULL
 #define IO_XTALK_PRESCALE_MASK  0xffffffULL
 
@@ -593,6 +618,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->io_link_status;
     case HUB_NI_STATUS:
         return s->ni_status;
+    case HUB_MD_SLOT_ID_USTAT:
+        return MD_SLOT_FLASH_READY;
     case HUB_MD_I2C_CTRL:
         return I2C_STATUS_IDLE;
     case HUB_MD_I2C_DATA:
