@@ -1496,6 +1496,74 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
 }
 
 /*
+ * Linux's 64-bit command entry (qla1280.h's cmd_a64_entry_t, entry type 9)
+ * is a request-queue entry type this model does not implement -- the
+ * live-confirmed failure from adversarial review task #74/#97 finding
+ * #2/#4: a real Linux/IP27 boot posts one of these and then waits forever
+ * for a completion this adapter used to silently never send, because the
+ * request-processing loop's default case consumed the entry and moved on
+ * without answering it. This test does not exercise the fix that would
+ * make a 64-bit command actually work -- no data moves and no SCSI
+ * command reaches a target -- it exercises the guarantee that the guest
+ * is told INCOMPLETE for the handle it is actually waiting on, using the
+ * offset every entry type carrying a handle places it at (confirmed
+ * against cmd_a64_entry_t: offset 4, identical to the 32-bit request
+ * entry this model implements). state_flags is zero: no phase of the
+ * command was understood well enough to claim otherwise.
+ */
+#define ISP_ENTRY_TYPE_COMMAND_A64 0x09
+
+static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
+                                                     QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    /*
+     * Two entries, not one, for the same reason
+     * test_no_device_incomplete_state_flags needs them: the request-in
+     * pointer wraps modulo the queue length, and a one-entry queue can
+     * never tell "one new entry has arrived" apart from "nothing has".
+     */
+    rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   2, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x64);
+
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x64);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==, 0);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
  * The round trip above only ever sends test unit ready, which carries no
  * data phase at all — it is not what actually exercises a scatter-gather
  * transfer, and a real driver's target probe issues something that does on
@@ -2086,6 +2154,8 @@ static void qlogic_isp_register_nodes(void)
                  test_status_entry_clears_stale_bytes, NULL);
     qos_add_test("no-device-incomplete-state-flags", "qlogic-isp1040",
                  test_no_device_incomplete_state_flags, NULL);
+    qos_add_test("unrecognized-entry-type-incomplete", "qlogic-isp1040",
+                 test_unrecognized_entry_type_incomplete, NULL);
     qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
                  test_inquiry_data_transfer, NULL);
     qos_add_test("continuation-entry-segments", "qlogic-isp1040",
