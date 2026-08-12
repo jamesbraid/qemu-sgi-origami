@@ -1188,8 +1188,10 @@ static void sn0_firmware_reset(void *opaque)
  * this from the machine-init-done notifier, the same as that function, puts
  * it after the devices whose reset would otherwise undo it.
  *
- * Only the controller's window is pre-aimed; see sn0.h for why the two
- * adapters need resources assigned but not a window aimed in advance.
+ * Every device's window is pre-aimed, not only the controller's; see sn0.h
+ * for why an earlier version of this function left the two adapters with
+ * resources assigned but no window aimed, and for the guest that premise
+ * did not hold for.
  *
  * Every device gets PCI_COMMAND_MASTER along with its space-decode bits.
  * This is neither pure fidelity nor a functional requirement proven on this
@@ -1251,6 +1253,8 @@ static void sn0_assign_pci_resources(void *opaque)
         pci_default_write_config(s->pci_scsi[slot], PCI_COMMAND,
                                  PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
                                  PCI_COMMAND_MASTER, 2);
+        sgi_bridge_assign_window(&s->io_bridge, SN0_SCSI_DEVICE0 + slot,
+                                 mem_base, true);
     }
 }
 

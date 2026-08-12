@@ -509,12 +509,29 @@
  * internals. Memory and I/O space are independent regions in this Bridge, so
  * a memory BAR and an I/O BAR sharing the same numeric offset do not collide.
  *
- * Only the controller's window is pre-aimed. It carries the console, which a
- * guest reaches before it has run any code of its own that could aim a window
- * itself — real ARCS PROM does this as part of POST. The two adapters need no
- * such arrangement: a guest's own driver aims their windows when it attaches,
- * the same way OpenBSD's qlw already does, so firmware only has to give them
- * PCI resources that look assigned rather than reachable in advance.
+ * Every device's window is pre-aimed, matching its own BAR, the same way real
+ * ARCS PROM aims all of them as part of POST — not only the controller's,
+ * which carries the console and so has to be reachable before a guest has
+ * run any code of its own. An earlier version of this firmware aimed only
+ * the controller's window, on the theory that a guest's own driver aims the
+ * other two when it attaches. That is true of OpenBSD's qlw, which manages
+ * the Bridge's per-device window base itself (its xbridge driver's "devio"
+ * machinery) as part of ordinary PCI resource allocation — but it is not
+ * true of Linux's driver pair for this hardware. `pci-xtalk-bridge.c` sets
+ * `pci_set_flags(PCI_PROBE_ONLY)` unconditionally, so its generic PCI core
+ * never reassigns a BAR — it trusts firmware to have already placed the
+ * value there, the same way it trusts firmware for every other machine that
+ * flag exists for. And `bridge_probe()`'s per-slot loop writes only the
+ * byte-swap-direction bit into each device's Bridge register; it never
+ * touches the field that selects which PCI address the window is aimed at.
+ * So on Linux the two adapters' windows are left aimed at their reset value
+ * — PCI address zero, both memory-space-selected, both stacked on top of
+ * each other — regardless of what their BARs say. A guest that enumerates
+ * the bus, reads back the identity each adapter's config space reports (a
+ * separate Bridge mechanism, unaffected by this), and then touches a real
+ * register through the mapped BAR finds nothing at the address the window
+ * actually reaches. Aiming every device's window here, not only the
+ * console's, is what real firmware does and is what both guests need.
  *
  * None of these addresses is zero, which is worth stating because it very
  * nearly was: generic PCI code refuses to map a BAR that resolves to address

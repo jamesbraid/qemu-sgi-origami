@@ -212,6 +212,7 @@
 
 /* The configuration registers these tests program on a card. */
 #define PCI_COMMAND             0x04
+#define PCI_COMMAND_IO          0x0001
 #define PCI_COMMAND_MEMORY      0x0002
 #define PCI_COMMAND_MASTER      0x0004
 #define PCI_BAR0                0x10
@@ -359,29 +360,44 @@ static void test_reset_state(const void *data)
 }
 
 /*
- * The base I/O controller's slot. Firmware assigns it PCI resources and aims
- * its window at them after every reset (task #43), so this is the one slot
- * whose register does not stay at the raw hardware reset value once the
- * machine has actually reset — see the exclusion below.
+ * The base I/O controller's slot and the two SCSI adapters'. Firmware assigns
+ * each of them PCI resources and aims its window at them after every reset,
+ * so these are the slots whose register does not stay at the raw hardware
+ * reset value once the machine has actually reset — see the exclusion below.
+ *
+ * The two adapters were not always in this list. An earlier version of this
+ * firmware aimed only the controller's window, on the theory that a guest's
+ * own driver aims the other two when it attaches — true of OpenBSD's qlw,
+ * which manages the Bridge's per-device window itself, and false of Linux's
+ * driver pair for this hardware, whose PCI core trusts firmware to have
+ * already placed a reachable value in the BAR and never touches the window
+ * register that makes it reachable. A guest of the second kind enumerated
+ * the bus, read back an identity that looked right, and then found nothing
+ * behind either adapter's BAR — the two mechanisms are that separate. See
+ * hw/mips/sn0.h for the full account.
  */
 #define IOC3_SLOT 2
+#define SCSI0_SLOT 0
+#define SCSI1_SLOT 1
 
 /*
- * Where firmware places the controller's memory BAR — SN0_PCI_IOC3_MEM in
- * hw/mips/sn0.h, restated here because this file does not include machine
- * headers. Not a hardware fact; see that constant's own comment for why it
- * is not zero, and see it for why this is the console widget's own base
- * plus the third device window's offset rather than an arbitrary low
- * address: OpenBSD's own platform code expects a PCI address inside the
- * bus resource window it declares, not merely a non-zero one, and this is
- * the value that satisfies it. Written as the sum of those two named parts,
- * not folded into one number, so a change to either announces itself here
- * instead of leaving a restated constant silently wrong — which is exactly
- * what a bare 0x100000 did the first time this was written, caught only by
- * this file's own reset-value test failing against a real, live-built
- * machine.
+ * Where firmware places each device's memory BAR — SN0_PCI_IOC3_MEM and
+ * friends in hw/mips/sn0.h, restated here because this file does not include
+ * machine headers. Not a hardware fact; see those constants' own comments
+ * for why none of them is zero, and see them for why each is the console
+ * widget's own base plus that device's window offset rather than an
+ * arbitrary low address: OpenBSD's own platform code expects a PCI address
+ * inside the bus resource window it declares, not merely a non-zero one, and
+ * this is the value that satisfies it. Written as the sum of those two named
+ * parts, not folded into one number, so a change to either announces itself
+ * here instead of leaving a restated constant silently wrong — which is
+ * exactly what a bare 0x100000 did the first time this was written, caught
+ * only by this file's own reset-value test failing against a real,
+ * live-built machine.
  */
 #define IOC3_PCI_MEM ((8 << 24) + 0x600000)
+#define SCSI0_PCI_MEM ((8 << 24) + 0x200000)
+#define SCSI1_PCI_MEM ((8 << 24) + 0x400000)
 
 static void test_every_slot_resets_alike(const void *data)
 {
@@ -400,15 +416,16 @@ static void test_every_slot_resets_alike(const void *data)
      * is made deliberately: an unspecified field that silently changes value is
      * worth a failing test, and the failure says which model changed.
      *
-     * The controller's own slot is skipped here on purpose, not missed: task
-     * #43's firmware assigns it a window immediately after this same reset,
-     * so by the time a qtest can read anything the register already reflects
-     * that assignment rather than the raw hardware default every other slot
-     * still shows. test_ioc3_slot_is_reassigned_after_reset below is the
-     * assertion for what it becomes instead.
+     * These three slots are skipped here on purpose, not missed: firmware
+     * assigns each of them a window immediately after this same reset, so by
+     * the time a qtest can read anything the register already reflects that
+     * assignment rather than the raw hardware default every other slot still
+     * shows. test_ioc3_slot_is_reassigned_after_reset and
+     * test_scsi_slots_are_reassigned_after_reset below are the assertions
+     * for what they become instead.
      */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
-        if (n == IOC3_SLOT) {
+        if (n == IOC3_SLOT || n == SCSI0_SLOT || n == SCSI1_SLOT) {
             continue;
         }
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(n))), ==,
@@ -435,6 +452,45 @@ static void test_ioc3_slot_is_reassigned_after_reset(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
                     DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
                     (IOC3_PCI_MEM >> 20)); /* base is PCI address bits 31:20 */
+
+    qtest_quit(qts);
+}
+
+/*
+ * The two adapters' half of the same exclusion, checked together rather than
+ * as two copies of the same test: a loop that assigns one slot's address to
+ * both, or the second slot's address to neither, produces two rows that look
+ * individually plausible and only disagree with each other. Both the device
+ * window and the memory BAR it should now answer at are checked for each
+ * slot, the same pair the IOC3 test above checks, because firmware's job
+ * here is the same two writes for a fixable reason rather than an accident
+ * of what the loop happened to do: an aimed window with no assigned BAR
+ * behind it decodes to nothing, and an assigned BAR with no aimed window is
+ * exactly the defect this test exists to catch a regression of.
+ */
+static void test_scsi_slots_are_reassigned_after_reset(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(SCSI0_SLOT))), ==,
+                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
+                    (SCSI0_PCI_MEM >> 20));
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(SCSI1_SLOT))), ==,
+                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
+                    (SCSI1_PCI_MEM >> 20));
+
+    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI0_SLOT, 0) + PCI_BAR1), ==,
+                    SCSI0_PCI_MEM);
+    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI1_SLOT, 0) + PCI_BAR1), ==,
+                    SCSI1_PCI_MEM);
+
+    /* Same whole-word-then-mask shape as the IOC3 command readback above. */
+    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI0_SLOT, 0) + PCI_COMMAND) &
+                    0xffff, ==,
+                    PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI1_SLOT, 0) + PCI_COMMAND) &
+                    0xffff, ==,
+                    PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     qtest_quit(qts);
 }
@@ -576,8 +632,16 @@ static void test_a_device_window_base_survives(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(0))) &
                     DEV_WINDOW_BASE, ==, 0x123u);
 
-    /* And writing one slot's register leaves the other seven alone. */
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(1))), ==, DEVICE_RESET);
+    /*
+     * And writing one slot's register leaves the others alone. Checked
+     * against EMPTY_SLOT rather than slot 1: firmware now aims slot 1's own
+     * window at boot (it is one of the machine's own SCSI adapters), so its
+     * register no longer sits at the bare hardware reset value this
+     * assertion wants for an untouched slot, the same reason the window-case
+     * table above keeps the machine's own SCSI slots out of its rotation.
+     */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(EMPTY_SLOT))), ==,
+                    DEVICE_RESET);
 
     qtest_quit(qts);
 }
@@ -1509,6 +1573,8 @@ int main(int argc, char **argv)
                         test_every_slot_resets_alike);
     qtest_add_data_func("sn0/bridge/ioc3-slot-reassigned-after-reset", NULL,
                         test_ioc3_slot_is_reassigned_after_reset);
+    qtest_add_data_func("sn0/bridge/scsi-slots-reassigned-after-reset", NULL,
+                        test_scsi_slots_are_reassigned_after_reset);
     qtest_add_data_func("sn0/bridge/ioc3-slot-survives-a-later-reset", NULL,
                         test_ioc3_slot_survives_a_later_reset);
     qtest_add_data_func("sn0/bridge/field-widths", NULL,
