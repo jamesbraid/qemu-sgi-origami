@@ -1504,11 +1504,39 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         case ISP_ENTRY_TYPE_MARKER:
             break;
 
+        /*
+         * An entry type this model does not implement -- Linux's 64-bit
+         * command and continuation entries (types 9 and 0xA, qla1280.h's
+         * cmd_a64_entry_t and cont_a64_entry) are the confirmed case, live
+         * on a real 64-bit Linux boot, adversarial review task #74/#97
+         * finding #2/#4. Consuming it silently and posting nothing left
+         * the guest waiting forever on a handle this adapter had already
+         * stepped past -- the same shape as the completion-erasure bug,
+         * a command with no possible answer, reached from the other end.
+         *
+         * The handle is read at the same offset every entry type that
+         * carries one uses (confirmed directly against qla1280.h's
+         * cmd_a64_entry_t, which places it at offset 4 exactly like the
+         * 32-bit command entry this model does implement) and answered
+         * incomplete with no phase bits set, since nothing about this
+         * entry was understood well enough to say more than that. This
+         * does not make the entry type work -- a 64-bit guest still gets
+         * no data moved -- it only stops the guest waiting on a completion
+         * that would otherwise never come.
+         */
         default:
             qemu_log_mask(LOG_GUEST_ERROR,
                           "qlogic-isp: unexpected request entry type "
                           "0x%02x at index %u\n", entry_type,
                           s->rqst_cons);
+            {
+                uint32_t handle;
+
+                ldl_le_pci_dma(pci, addr + ISP_REQ_OFF_HANDLE, &handle,
+                              MEMTXATTRS_UNSPECIFIED);
+                qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                                       0, 0, NULL, 0);
+            }
             break;
         }
 
