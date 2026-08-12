@@ -559,6 +559,8 @@ static void test_the_ps2_ports_read_empty(const void *data)
 #define SDMA_A_RX_CONSUME (IOC3_BASE + 0x0c8)
 #define SDMA_B_TX_PRODUCE (IOC3_BASE + 0x0d8)
 #define SDMA_B_TX_CONSUME (IOC3_BASE + 0x0dc)
+#define SDMA_A_SHADOW     (IOC3_BASE + 0x0d0)
+#define SDMA_B_SHADOW     (IOC3_BASE + 0x0ec)
 
 static void test_the_serial_dma_indices_by_owner(const void *data)
 {
@@ -615,6 +617,27 @@ static void test_the_serial_dma_ports_are_distinct(const void *data)
     /* The ring base is shared by both ports and is software's to set. */
     qtest_writel(qts, SDMA_RING_LO, 0x00003000);
     g_assert_cmphex(qtest_readl(qts, SDMA_RING_LO), ==, 0x00003000);
+
+    qtest_quit(qts);
+}
+
+static void test_the_serial_dma_shadow_is_read_only(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The 16550 shadow is hardware's own mirror of live UART lines, not
+     * software's to set. OpenBSD writes zero to both ports' shadows on
+     * every boot while putting the ports into pass-through mode, and the
+     * real chip discards that the same way this model does: the write
+     * leaves no mark.
+     */
+    qtest_writel(qts, SDMA_A_SHADOW, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_SHADOW), ==, 0);
+    qtest_writel(qts, SDMA_B_SHADOW, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_B_SHADOW), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1198,6 +1221,8 @@ int main(int argc, char **argv)
                         test_the_serial_dma_indices_by_owner);
     qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,
                         test_the_serial_dma_ports_are_distinct);
+    qtest_add_data_func("sn0/ioc3/serial-dma-shadow-is-read-only", NULL,
+                        test_the_serial_dma_shadow_is_read_only);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-acknowledges", NULL,
                         test_the_ethernet_interrupt_register_acknowledges);
     qtest_add_data_func("sn0/ioc3/ethernet-read-only-registers", NULL,
