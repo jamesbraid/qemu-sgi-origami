@@ -1512,6 +1512,22 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
  * command was understood well enough to claim otherwise.
  */
 #define ISP_ENTRY_TYPE_COMMAND_A64 0x09
+#define ISP_ENTRY_TYPE_CONTINUE_A64 0x0a
+
+/*
+ * cont_a64_entry (qla1280.h) is the other live-confirmed entry type from the
+ * same finding, and it does not carry a handle at all: its offset 4 is
+ * dseg_0_address's low 32 bits -- the start of a DMA buffer address, a
+ * completely different meaning from ISP_REQ_OFF_HANDLE at the same offset in
+ * every entry type that does carry one. Answering it as though it were a
+ * handle would be strictly worse than the original silent-hang bug: it would
+ * complete an arbitrary in-flight command (whichever handle the address
+ * happens to collide with) instead of the one actually waiting. This offset
+ * is named separately from ISP_REQ_OFF_HANDLE, even though both are 4, so a
+ * reader sees the two are the same number for unrelated reasons rather than
+ * one constant doing double duty.
+ */
+#define ISP_CONT_A64_OFF_DSEG0_LOW 4
 
 static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
                                                      QGuestAllocator *alloc)
@@ -1558,6 +1574,114 @@ static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
                     ISP_IOCB_INCOMPLETE);
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==, 0);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * fabric-dev's review of the fix above (task #106) confirmed it is correct
+ * only because of something nothing tested: qlogic_isp_process_requests()
+ * advances rqst_cons by the dispatched entry's own entry_count, so a
+ * COMMAND_A64_TYPE entry with a CONTINUE_A64_TYPE entry in the next slot
+ * has its continuation consumed as part of the same dispatch -- the
+ * continuation never reaches the default case as an entry of its own. If
+ * that advance ever regressed to a plain +1, the continuation WOULD reach
+ * the default case next, and this model would read
+ * ISP_CONT_A64_OFF_DSEG0_LOW as a handle: the low 32 bits of a DMA buffer
+ * address, misread as the identifier of whichever in-flight command that
+ * value happens to collide with. That is a silent, spurious I/O failure
+ * on an unrelated healthy command -- worse than the hang this fix
+ * replaced, because nothing would name the cause.
+ *
+ * This test is the one that would fail if that regression happened:
+ * exactly one completion posted, carrying the command's own handle, not
+ * two, and not the continuation's DMA address.
+ *
+ * "Exactly one" is asserted two ways, not just via the response-queue
+ * producer count: that count catches a second post through modular
+ * arithmetic (two posts into a two-entry ring leave the producer back at
+ * 0, and 0 happens not to equal 1), which stops working the moment the
+ * ring size changes. Poisoning the second response slot before the
+ * dispatch and reading it back afterward is the direct property this
+ * test actually means: that slot was never written at all.
+ */
+static void test_unrecognized_entry_type_consumes_continuation(void *obj,
+                                                                void *data,
+                                                                QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t cont[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t poison[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    /*
+     * The request ring is 3 entries, not 2: this command occupies both of a
+     * 2-entry ring's slots, so writing producer=2 would wrap modulo 2 back
+     * to 0 -- indistinguishable from rqst_cons, which also starts at 0, so
+     * the dispatch loop would never run at all. A 3-entry ring makes
+     * producer=2 distinct from cons=0, the same reserve-past-the-command
+     * shape every other test here already uses for a one-entry command.
+     * The response ring stays at 2: only one completion is ever expected,
+     * and the second slot exists solely as the poisoned witness below.
+     */
+    rqst_addr = guest_alloc(alloc, 3 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   3, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Poison the second response slot so an unwanted write to it is visible. */
+    memset(poison, 0xaa, sizeof(poison));
+    qtest_memwrite(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, poison,
+                   sizeof(poison));
+
+    /* Slot 0: the command, entry_count 2 -- this entry plus one continuation. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[1] = 2;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x64);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+
+    /*
+     * Slot 1: the continuation. A DMA buffer address at offset 4, far from
+     * the command's real handle (0x64), so a wrong-handle regression fails
+     * loudly rather than passing by coincidence.
+     */
+    memset(cont, 0, sizeof(cont));
+    cont[0] = ISP_ENTRY_TYPE_CONTINUE_A64;
+    cont[1] = 1;
+    isp_put32(cont, ISP_CONT_A64_OFF_DSEG0_LOW, 0xdeadbeef);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, cont, sizeof(cont));
+
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    /* Exactly one completion: the continuation must not dispatch on its own. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x64);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+
+    /* The direct property: the second slot was never touched. */
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmpint(memcmp(status, poison, sizeof(poison)), ==, 0);
 
     qlogic_isp_ack(dev, io);
     qpci_iounmap(dev, io);
@@ -2156,6 +2280,9 @@ static void qlogic_isp_register_nodes(void)
                  test_no_device_incomplete_state_flags, NULL);
     qos_add_test("unrecognized-entry-type-incomplete", "qlogic-isp1040",
                  test_unrecognized_entry_type_incomplete, NULL);
+    qos_add_test("unrecognized-entry-type-consumes-continuation",
+                 "qlogic-isp1040",
+                 test_unrecognized_entry_type_consumes_continuation, NULL);
     qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
                  test_inquiry_data_transfer, NULL);
     qos_add_test("continuation-entry-segments", "qlogic-isp1040",
