@@ -53,6 +53,35 @@
 #define SN0_ARGV_ADDR   0x800
 #define SN0_ARGV_STRING (SN0_ARGV_ADDR + 0x40)
 
+/*
+ * The standard MIPS ECOFF object layout: documented publicly in binutils'
+ * COFF/ECOFF support and used by SGI's own pre-ELF toolchain among others,
+ * not SGI-proprietary. Every offset below is cross-checked directly against
+ * a real sashARCS binary -- see
+ * docs/library/irix-sash-direct-load-proposal.md for the byte trace.
+ */
+#define ECOFF_MAGIC_MIPSEB        0x0163
+#define ECOFF_FILEHDR_SIZE        20
+#define ECOFF_FILEHDR_MAGIC_OFF   0x00   /* uint16 */
+#define ECOFF_FILEHDR_NSCNS_OFF   0x02   /* uint16 */
+#define ECOFF_FILEHDR_OPTHDR_OFF  0x10   /* uint16 */
+#define ECOFF_AOUTHDR_OMAGIC      0407   /* fixed-address, unrelocated */
+#define ECOFF_AOUTHDR_MAGIC_OFF   0x00   /* uint16, within the optional header */
+#define ECOFF_AOUTHDR_ENTRY_OFF   0x10   /* uint32 */
+#define ECOFF_AOUTHDR_GPVALUE_OFF 0x34   /* uint32, the o32 ABI gp base */
+#define ECOFF_SCNHDR_SIZE         40
+#define ECOFF_SCNHDR_VADDR_OFF    0x0c   /* uint32, within each section header */
+#define ECOFF_SCNHDR_SIZE_OFF     0x10   /* uint32 */
+#define ECOFF_SCNHDR_SCNPTR_OFF   0x14   /* uint32 */
+
+/*
+ * Scratch layout for a direct-loaded sashARCS's argv/envp/stack: computed
+ * from the image's own extent, never a fixed address, since the two IRIX
+ * releases this project holds ship differently sized images.
+ */
+#define SN0_SASH_SCRATCH_GAP  (1 * MiB)
+#define SN0_SASH_STACK_SIZE   (64 * KiB)
+
 /* What the firmware configuration block says about this machine. */
 #define SN0_CPU_FREQ_HZ   180000000
 #define SN0_HUB_FREQ_HZ   90000000
@@ -341,6 +370,162 @@ static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
                        true, argc,
                        true, argv,
                        false, 0,
+                       false, 0,
+                       entry);
+}
+
+/*
+ * Which of the two loaders a -kernel file needs. An OpenBSD or Linux kernel
+ * is ELF64; sashARCS is the one other format this machine loads directly,
+ * told apart by its own file-format magic in the first two bytes.
+ */
+static bool sn0_kernel_file_is_ecoff(const char *filename)
+{
+    uint8_t magic[2];
+    FILE *f = fopen(filename, "rb");
+    bool is_ecoff;
+
+    if (!f) {
+        return false;
+    }
+    is_ecoff = fread(magic, 1, sizeof(magic), f) == sizeof(magic) &&
+              lduw_be_p(magic) == ECOFF_MAGIC_MIPSEB;
+    fclose(f);
+    return is_ecoff;
+}
+
+/*
+ * Parse a genuine SGI sashARCS-format ECOFF image and place its sections in
+ * guest memory. sashARCS links as a fixed-address OMAGIC executable with a
+ * real entry point -- unlike its ELF64 sibling sash64, which is a
+ * relocatable object with none -- so this is a plain "read each section to
+ * its linked address, zero bss" load, the same shape load_elf already does
+ * for a kernel. See docs/library/irix-sash-direct-load-proposal.md for the
+ * mechanism this reproduces and why no CP0 or TLB setup belongs here.
+ *
+ * Returns the entry point, the o32 ABI gp-register value the image expects,
+ * and the physical extent it occupies, for the same free-memory-descriptor
+ * bookkeeping the ELF kernel path keeps.
+ */
+static void sn0_load_ecoff(const char *filename, hwaddr node,
+                           uint64_t *entry, uint64_t *gp_value,
+                           uint64_t *low, uint64_t *high)
+{
+    g_autofree uint8_t *buf = NULL;
+    int64_t file_size;
+    unsigned int nscns, opthdr, i;
+    uint32_t scnhdr_base, aout_magic;
+
+    file_size = get_image_size(filename, &error_fatal);
+    if (file_size < ECOFF_FILEHDR_SIZE) {
+        error_report("origin200: '%s' is too small to be an ECOFF image",
+                     filename);
+        exit(EXIT_FAILURE);
+    }
+
+    buf = g_malloc(file_size);
+    if (load_image_size(filename, buf, file_size) != file_size) {
+        error_report("origin200: cannot read '%s'", filename);
+        exit(EXIT_FAILURE);
+    }
+
+    if (lduw_be_p(buf + ECOFF_FILEHDR_MAGIC_OFF) != ECOFF_MAGIC_MIPSEB) {
+        error_report("origin200: '%s' is not a big-endian MIPS ECOFF image",
+                     filename);
+        exit(EXIT_FAILURE);
+    }
+
+    nscns = lduw_be_p(buf + ECOFF_FILEHDR_NSCNS_OFF);
+    opthdr = lduw_be_p(buf + ECOFF_FILEHDR_OPTHDR_OFF);
+    if (opthdr < ECOFF_AOUTHDR_GPVALUE_OFF + 4) {
+        error_report("origin200: '%s' has too small an ECOFF optional "
+                     "header", filename);
+        exit(EXIT_FAILURE);
+    }
+
+    aout_magic = lduw_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_MAGIC_OFF);
+    if (aout_magic != ECOFF_AOUTHDR_OMAGIC) {
+        error_report("origin200: '%s' is not an OMAGIC ECOFF executable "
+                     "(sashARCS loads directly; its relocatable sibling "
+                     "sash64 needs a linker, not this loader)", filename);
+        exit(EXIT_FAILURE);
+    }
+
+    *entry = ldl_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_ENTRY_OFF);
+    *gp_value = ldl_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_GPVALUE_OFF);
+    *low = UINT64_MAX;
+    *high = 0;
+
+    scnhdr_base = ECOFF_FILEHDR_SIZE + opthdr;
+    for (i = 0; i < nscns; i++) {
+        uint8_t *scn = buf + scnhdr_base + i * ECOFF_SCNHDR_SIZE;
+        uint32_t vaddr = ldl_be_p(scn + ECOFF_SCNHDR_VADDR_OFF);
+        uint32_t size = ldl_be_p(scn + ECOFF_SCNHDR_SIZE_OFF);
+        uint32_t scnptr = ldl_be_p(scn + ECOFF_SCNHDR_SCNPTR_OFF);
+        g_autofree char *name = g_strdup_printf("sn0.sash.section%u", i);
+
+        if (size == 0) {
+            continue;
+        }
+        if (scnptr != 0) {
+            /* Real data -- text, rdata, data. Copy it as the header says. */
+            if (scnptr + (uint64_t)size > file_size) {
+                error_report("origin200: '%s' section %u runs past the "
+                             "end of the file", filename, i);
+                exit(EXIT_FAILURE);
+            }
+            rom_add_blob_fixed(name, buf + scnptr, size, node + vaddr);
+        } else {
+            /* bss and its kin: zero-filled, nothing in the file to copy. */
+            g_autofree uint8_t *zero = g_malloc0(size);
+
+            rom_add_blob_fixed(name, zero, size, node + vaddr);
+        }
+
+        *low = MIN(*low, (uint64_t)vaddr);
+        *high = MAX(*high, (uint64_t)vaddr + size);
+    }
+
+    if (*high == 0) {
+        error_report("origin200: '%s' has no loadable sections", filename);
+        exit(EXIT_FAILURE);
+    }
+}
+
+/*
+ * Hand a directly-loaded sashARCS the same registers the real ARCS
+ * client_start routine hands a standalone program: argc/argv/environ in
+ * a0-a2, a fresh stack in sp. Unlike sn0_build_kernel_handoff, this leaves
+ * CP0 Status untouched -- the real handoff chain never sets it either, so
+ * the CPU keeps whatever addressing mode it has out of reset, which is
+ * unmapped kuseg: exactly what a 32-bit link address like sashARCS's needs
+ * with no TLB entry at all. See
+ * docs/library/irix-sash-direct-load-proposal.md.
+ *
+ * gp is not part of that handoff convention, but a 32-bit o32 ABI program
+ * needs it correct before its first gp-relative load -- which its own
+ * startup code makes with nothing else set up yet -- so it is loaded here
+ * explicitly, from the value the image's own header carries.
+ */
+static void sn0_build_sash_handoff(uint8_t *flash, uint8_t *fw,
+                                   hwaddr fw_vaddr, uint64_t entry,
+                                   uint64_t gp_value, unsigned argc,
+                                   hwaddr argv, hwaddr envp, hwaddr sp)
+{
+    void *p = fw + SN0_FW_BOOTLOADER;
+
+    sn0_flash_jump_to_bootloader(flash, fw_vaddr);
+
+    stl_be_p(p, 0x3c1c0000 | ((gp_value >> 16) & 0xffff)); /* lui gp, hi16 */
+    p = (uint8_t *)p + 4;
+    stl_be_p(p, 0x379c0000 | (gp_value & 0xffff));         /* ori gp, gp, lo16 */
+    p = (uint8_t *)p + 4;
+
+    bl_gen_jump_kernel(&p,
+                       true, sp,
+                       true, argc,
+                       true, argv,
+                       true, envp,
                        false, 0,
                        entry);
 }
