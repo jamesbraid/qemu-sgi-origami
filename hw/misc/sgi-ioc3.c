@@ -123,6 +123,298 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
     pci_set_irq(PCI_DEVICE(s), level);
 }
 
+/*
+ * The one-wire ethernet-address part behind the MicroLAN engine above. See
+ * docs/datasheets/ioc3.md's "The ethernet-address part's read protocol" for
+ * the command bytes, the CRC conventions and which guest relies on what --
+ * this is the model built against that section, not a re-derivation of it.
+ *
+ * The state machine's shape mirrors the Bridge's board-identity one-wire
+ * (hw/pci-host/sgi-bridge.c): a reset, a ROM-selection phase, a function
+ * command, a two-byte target address, then an answer shifted back out one
+ * bit at a time. Two things differ from the Bridge's part. This bus's guest
+ * — OpenBSD's owmac — addresses the part with a Match ROM rather than a
+ * Skip ROM, so selection has to compare a real identifier rather than
+ * assume the only part on the bus. And the part answers two different
+ * function commands for the same read, one framed to a shorter, unchecked
+ * response and one to a longer, checked one, rather than the Bridge's
+ * single extended-read command.
+ */
+
+/*
+ * The Dallas/Maxim one-wire eight-bit CRC: polynomial x^8+x^5+x^4+1,
+ * reflected form 0x8c, seeded at zero and sent as computed -- unlike the
+ * sixteen-bit CRC below, this one is not sent inverted. Confirmed bit-for-
+ * bit against both guests' own lookup tables (OpenBSD's crc8_table in
+ * sys/dev/onewire/onewire_subr.c, Linux's w1_crc8_table in
+ * drivers/w1/w1_io.c), which are identical table for table; this is a
+ * public one-wire-standard algorithm computed bit-serially rather than
+ * either table reproduced.
+ */
+static uint8_t sgi_ioc3_onewire_crc8(uint8_t crc, const uint8_t *data,
+                                     unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * The standard sixteen-bit one-wire CRC (polynomial 0x8005, reflected
+ * 0xa001, seeded at zero) -- the same algorithm the Bridge's board-identity
+ * part already implements, reused here for the ethernet-address page's own
+ * embedded check. Confirmed against Linux's crc16() (include/linux/crc16.h
+ * states the same polynomial and seed) and against the fixed residue
+ * 0xb001 its ioc3eth_get_mac_addr() requires.
+ */
+static uint16_t sgi_ioc3_onewire_crc16(uint16_t crc, const uint8_t *data,
+                                       unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * The part's fixed sixty-four-bit ROM identifier: family 0x91, the serial
+ * number's required top twelve bits 0x5e7 followed by this model's own
+ * choice for the rest, and a CRC-8 computed over those seven bytes rather
+ * than hand-derived -- see the datasheet section named above for which
+ * parts of this are required and which are a modelling choice.
+ */
+static uint64_t sgi_ioc3_onewire_rom_id(void)
+{
+    uint8_t rom[7];
+    uint64_t serial = SGI_IOC3_ONEWIRE_SERIAL;
+    unsigned int i;
+    uint8_t crc;
+
+    rom[0] = SGI_IOC3_ONEWIRE_FAMILY;
+    for (i = 0; i < 6; i++) {
+        rom[1 + i] = (serial >> (8 * i)) & 0xff;
+    }
+    crc = sgi_ioc3_onewire_crc8(0, rom, sizeof(rom));
+
+    return (uint64_t)rom[0] | ((uint64_t)rom[1] << 8) |
+           ((uint64_t)rom[2] << 16) | ((uint64_t)rom[3] << 24) |
+           ((uint64_t)rom[4] << 32) | ((uint64_t)rom[5] << 40) |
+           ((uint64_t)rom[6] << 48) | ((uint64_t)crc << 56);
+}
+
+/*
+ * Assemble what the part sends back for the function command now held in
+ * onewire_command, once the two-byte target address has arrived. The
+ * status read and the two memory reads share the same framing -- a CRC-8
+ * of the three-byte echo, then the requested bytes -- and differ only in
+ * which bytes follow and whether a trailing CRC-8 is appended.
+ */
+static void sgi_ioc3_onewire_answer(SGIIOC3State *s)
+{
+    uint8_t echo[3];
+    uint8_t page[SGI_IOC3_ONEWIRE_PAGE_SIZE];
+    uint16_t crc16;
+    unsigned int i;
+
+    echo[0] = s->onewire_command;
+    echo[1] = s->onewire_args[0];
+    echo[2] = s->onewire_args[1];
+    s->onewire_out[0] = sgi_ioc3_onewire_crc8(0, echo, sizeof(echo));
+
+    if (s->onewire_command == SGI_IOC3_ONEWIRE_FN_READ_STATUS) {
+        /*
+         * No page of this model's memory is ever redirected, so every
+         * status byte reads 0xff -- which is what tells owmem_redirect()'s
+         * loop to stop on its first look and hand owmac_read_page() the
+         * page it asked for, rather than an address this model actually
+         * remaps. OpenBSD only ever asks for offset 0x0001; every other
+         * address answering the same way is this model's choice, not a
+         * second observed fact.
+         */
+        memset(&s->onewire_out[1], 0xff, SGI_IOC3_ONEWIRE_STATUS_SIZE);
+        s->onewire_out_len = 1 + SGI_IOC3_ONEWIRE_STATUS_SIZE;
+        s->onewire_outbit = 0;
+        s->onewire_phase = SGI_IOC3_ONEWIRE_ANSWER;
+        return;
+    }
+
+    /*
+     * Both memory-read commands answer the same page regardless of the
+     * address requested: OpenBSD's owmac and Linux's w1_ds2502_read_page
+     * both always ask for page zero, the only page this part needs to
+     * hold.
+     */
+    page[0] = 0x0a;                       /* the fixed marker both guests require */
+    memset(&page[1], 0, 4);               /* unconstrained by either guest */
+    for (i = 0; i < 6; i++) {
+        page[10 - i] = s->eth.conf.macaddr.a[i];
+    }
+    crc16 = ~sgi_ioc3_onewire_crc16(0, page, 11);
+    page[11] = crc16 & 0xff;
+    page[12] = crc16 >> 8;
+    memset(&page[13], 0, SGI_IOC3_ONEWIRE_PAGE_SIZE - 13);
+
+    memcpy(&s->onewire_out[1], page, sizeof(page));
+    s->onewire_out[1 + sizeof(page)] =
+        sgi_ioc3_onewire_crc8(0, page, sizeof(page));
+
+    s->onewire_out_len = SGI_IOC3_ONEWIRE_ANSWER_SIZE;
+    s->onewire_outbit = 0;
+    s->onewire_phase = SGI_IOC3_ONEWIRE_ANSWER;
+}
+
+/*
+ * Run one bit slot on the one-wire bus and leave its answer in the level
+ * bit sgi_ioc3_main_write packs back into the register. The pulse field
+ * (bits 10 and up of the write) tells a reset from an ordinary slot; every
+ * other phase transition below follows the sequence of slots rather than
+ * their timing, the same design the Bridge's identical machinery uses and
+ * for the same reason -- nothing a guest driver does can tell this model's
+ * instant completion apart from the real microseconds.
+ */
+static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
+{
+    uint32_t pulse = val >> SGI_IOC3_ONEWIRE_PULSE_SHIFT;
+    bool level = true;
+
+    if (pulse >= SGI_IOC3_ONEWIRE_PULSE_RESET) {
+        /* A reset. The part holds the wire down, which a guest reads as
+         * presence, and forgets whatever conversation was in progress.
+         */
+        s->onewire_phase = SGI_IOC3_ONEWIRE_COMMAND;
+        s->onewire_bit = 0;
+        s->onewire_command = 0;
+        s->onewire_outbit = 0;
+        level = false;
+    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_COMMAND) {
+        /* A ROM command, least-significant bit first. */
+        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
+            s->onewire_command |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            switch (s->onewire_command) {
+            case SGI_IOC3_ONEWIRE_ROM_SEARCH:
+                s->onewire_phase = SGI_IOC3_ONEWIRE_SEARCH;
+                break;
+            case SGI_IOC3_ONEWIRE_ROM_SKIP:
+                /* One part on this bus, and the guest says so rather than
+                 * naming it -- Linux's w1 core takes this path whenever
+                 * only one device is registered.
+                 */
+                s->onewire_command = 0;
+                s->onewire_phase = SGI_IOC3_ONEWIRE_FUNCTION;
+                break;
+            case SGI_IOC3_ONEWIRE_ROM_MATCH:
+                /* OpenBSD's owmac always addresses the part this way,
+                 * never by Skip ROM -- see the datasheet section named
+                 * above.
+                 */
+                s->onewire_match = 0;
+                s->onewire_phase = SGI_IOC3_ONEWIRE_MATCH;
+                break;
+            default:
+                s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
+                break;
+            }
+        }
+    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_SEARCH) {
+        /* A search asks for each bit of the identity three slots at a
+         * time: the bit, its complement, then the guest's choice. With a
+         * single part on the bus every choice matches what was offered.
+         */
+        unsigned int step = s->onewire_bit % 3;
+        unsigned int index = s->onewire_bit / 3;
+        bool bit = (sgi_ioc3_onewire_rom_id() >> index) & 1;
+
+        if (step == 0) {
+            level = bit;
+        } else if (step == 1) {
+            level = !bit;
+        }
+
+        if (++s->onewire_bit == 64 * 3) {
+            s->onewire_bit = 0;
+            s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
+        }
+    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_MATCH) {
+        /* The sixty-four bits of a Match ROM, least-significant bit
+         * first. A part that does not match stops answering until the
+         * next reset, real one-wire semantics for the general case of
+         * more than one part on a bus.
+         */
+        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
+            s->onewire_match |= 1ULL << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 64) {
+            s->onewire_bit = 0;
+            s->onewire_command = 0;
+            s->onewire_phase = (s->onewire_match == sgi_ioc3_onewire_rom_id()) ?
+                               SGI_IOC3_ONEWIRE_FUNCTION : SGI_IOC3_ONEWIRE_IDLE;
+        }
+    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_FUNCTION) {
+        /* The function asked of the selected part, a bit at a time. */
+        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
+            s->onewire_command |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            s->onewire_argn = 0;
+            s->onewire_args[0] = 0;
+            s->onewire_args[1] = 0;
+            switch (s->onewire_command) {
+            case SGI_IOC3_ONEWIRE_FN_READ_MEMORY:
+            case SGI_IOC3_ONEWIRE_FN_READ_MEMORY_CRC:
+            case SGI_IOC3_ONEWIRE_FN_READ_STATUS:
+                s->onewire_phase = SGI_IOC3_ONEWIRE_OFFSET;
+                break;
+            default:
+                s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
+                break;
+            }
+        }
+    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_OFFSET) {
+        /* Two bytes of target address, low first, still one slot per bit. */
+        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
+            s->onewire_args[s->onewire_argn] |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            if (++s->onewire_argn == 2) {
+                sgi_ioc3_onewire_answer(s);
+            }
+        }
+    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_ANSWER) {
+        /* Shifting the answer back, least-significant bit of each byte
+         * first. The guest reads with the same short slot it uses to
+         * write a one, so there is nothing to tell apart here: whatever
+         * it does, the part is sending.
+         */
+        unsigned int byte = s->onewire_outbit / 8;
+
+        level = (s->onewire_out[byte] >> (s->onewire_outbit % 8)) & 1;
+        if (++s->onewire_outbit == (unsigned int)s->onewire_out_len * 8) {
+            s->onewire_outbit = 0;
+            s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
+        }
+    }
+
+    s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
+                          SGI_IOC3_MICROLAN_DONE |
+                          (level ? SGI_IOC3_MICROLAN_LEVEL : 0);
+}
+
 static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
@@ -200,16 +492,10 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
          * both OpenBSD's and Linux's drivers without reproducing microsecond
          * delays neither one can tell apart from an instant one.
          *
-         * No part answers on this bus yet (task #13), which for every slot
-         * type here means the bus stays at its idle high level: an unasked
-         * reset sees no presence pulse, and a read slot sees no device
-         * pulling the line low. Reporting that level is what "no part
-         * responds" means at the register a guest actually reads, and it is
-         * what keeps a guest's own presence check correctly negative rather
-         * than silently positive.
+         * What answers is the ethernet-address part's transaction state
+         * machine below, driven one slot at a time.
          */
-        s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
-                              SGI_IOC3_MICROLAN_LEVEL | SGI_IOC3_MICROLAN_DONE;
+        sgi_ioc3_onewire_slot(s, (uint32_t)val);
         break;
     case SGI_IOC3_PIN_CONTROL_SET:
         s->pin_control |= val;

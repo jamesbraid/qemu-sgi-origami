@@ -74,19 +74,69 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
  * even be attempted — see docs/datasheets/ioc3.md's "GPIO and MicroLAN"
  * section for the full register semantics this models.
  *
- * The bus itself answers silently: every slot completes (never leaving a
- * guest polling forever) but no part responds, which is a known, already
- * -documented interim rather than a guess — see that datasheet section's
- * "the bus must answer" discussion, and task #13, which owns fitting the
- * real ethernet-address part this chip should present. A slot that never
- * finishes is what this file has to rule out; what the slot reports when
- * it does finish is a separate, larger piece of work.
+ * The bus carries one part, the ethernet-address memory both guests need to
+ * bring up a usable station address — see that datasheet's "The
+ * ethernet-address part's read protocol" section for the transaction this
+ * register drives and the one-wire state machine below implements.
  */
 #define SGI_IOC3_MICROLAN_CONTROL 0x30
 #define SGI_IOC3_MICROLAN_LEVEL (1u << 0)   /* sampled from the bus */
 #define SGI_IOC3_MICROLAN_DONE  (1u << 1)   /* hardware sets this when done */
 #define SGI_IOC3_MICROLAN_TIMING (~(SGI_IOC3_MICROLAN_LEVEL | \
                                     SGI_IOC3_MICROLAN_DONE))
+
+/*
+ * A write's pulse field (bits 10 and up, microseconds holding the bus low)
+ * is what tells a reset slot from an ordinary read/write-one/write-zero
+ * slot apart; nothing here tries to reproduce microseconds, only to bin a
+ * guest's own timings the way a real slot would land. See the datasheet
+ * section named above for both guests' actual timing constants, all of
+ * which fall well clear of this boundary.
+ */
+#define SGI_IOC3_ONEWIRE_PULSE_SHIFT  10
+#define SGI_IOC3_ONEWIRE_PULSE_RESET  400 /* at or above: a reset */
+#define SGI_IOC3_ONEWIRE_PULSE_ZERO   40  /* at or above (below reset): a zero */
+
+/* ROM-selection commands, and the two guests' different ways of using them:
+ * Linux's w1 core sends Skip ROM whenever only one device is registered,
+ * which is always true of this bus; OpenBSD's owmac driver always sends
+ * Match ROM instead, never Skip ROM. Both must work.
+ */
+#define SGI_IOC3_ONEWIRE_ROM_SEARCH   0xf0
+#define SGI_IOC3_ONEWIRE_ROM_SKIP     0xcc
+#define SGI_IOC3_ONEWIRE_ROM_MATCH    0x55
+
+/* Function commands once a part is selected. The two memory-read commands
+ * are the same operation under two names -- OpenBSD's owmac issues the
+ * plain one, Linux's w1_ds2502_read_page the CRC-named one -- and both are
+ * answered identically. Read Status is OpenBSD-only, for the redirection
+ * table its owmac_read_redirect() reads before trusting a page.
+ */
+#define SGI_IOC3_ONEWIRE_FN_READ_MEMORY      0xf0
+#define SGI_IOC3_ONEWIRE_FN_READ_MEMORY_CRC  0xc3
+#define SGI_IOC3_ONEWIRE_FN_READ_STATUS      0xaa
+
+/* The part's fixed identity: family 0x91 (the custom bit set over type
+ * 0x11) with the serial number's top twelve bits 0x5e7, both required by
+ * OpenBSD's owmac_match() and observed on real hardware. The remaining
+ * serial bits are this model's own choice, not a transcription of a real
+ * unit's serial number -- see the datasheet section named above.
+ */
+#define SGI_IOC3_ONEWIRE_FAMILY  0x91
+#define SGI_IOC3_ONEWIRE_SERIAL  0x5e7000000001ULL
+
+#define SGI_IOC3_ONEWIRE_PAGE_SIZE   32
+#define SGI_IOC3_ONEWIRE_STATUS_SIZE 4
+#define SGI_IOC3_ONEWIRE_ANSWER_SIZE (1 + SGI_IOC3_ONEWIRE_PAGE_SIZE + 1)
+
+/* States the one-wire transaction sits in between a reset and the next one. */
+#define SGI_IOC3_ONEWIRE_IDLE      0  /* nothing asked since the last reset */
+#define SGI_IOC3_ONEWIRE_COMMAND   1  /* taking the eight bits of a ROM command */
+#define SGI_IOC3_ONEWIRE_SEARCH    2  /* answering a search for parts */
+#define SGI_IOC3_ONEWIRE_MATCH     3  /* taking the 64 bits of a Match ROM */
+#define SGI_IOC3_ONEWIRE_FUNCTION  4  /* selected; taking a function command */
+#define SGI_IOC3_ONEWIRE_OFFSET    5  /* taking the two bytes of a target address */
+#define SGI_IOC3_ONEWIRE_ANSWER    6  /* shifting a prepared answer back out */
 
 /*
  * The pin control register has two write-only aliases over one word, the
@@ -250,6 +300,26 @@ struct SGIIOC3State {
     uint32_t microlan_control;
     uint32_t pin_control;
     uint32_t pin_data;
+
+    /*
+     * The one-wire transaction state machine sitting behind the MicroLAN
+     * engine above, driving the ethernet-address part -- see
+     * docs/datasheets/ioc3.md's "The ethernet-address part's read
+     * protocol". Not part of this device's migrated state, the same
+     * choice the Bridge's identical machinery already makes: a
+     * transaction caught mid-slot by a migration is one a guest retries
+     * from a reset, and every field here reads as "idle" at its zero
+     * value.
+     */
+    uint8_t onewire_phase;
+    uint8_t onewire_bit;
+    uint8_t onewire_command;
+    uint64_t onewire_match;
+    uint8_t onewire_args[2];
+    uint8_t onewire_argn;
+    uint8_t onewire_out[SGI_IOC3_ONEWIRE_ANSWER_SIZE];
+    uint8_t onewire_out_len;
+    uint16_t onewire_outbit;
 
     /*
      * The ethernet block: registers, engine, network backend and
