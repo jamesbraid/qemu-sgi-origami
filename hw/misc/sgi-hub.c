@@ -29,6 +29,7 @@
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qemu/host-utils.h"
+#include "trace.h"
 
 /* Processor interface, at the base of the window. */
 #define HUB_PI_REGION_PRESENT   0x000018  /* which memory regions exist */
@@ -101,8 +102,8 @@
  * registers directly, which is why only these two exist here: real firmware's
  * own diagnostics are the first guest that writes them.
  */
-#define HUB_MD_INDICATOR_0      0x220050  /* documented purpose unestablished */
-#define HUB_MD_INDICATOR_1      0x220058  /* same layout, the table's second */
+#define HUB_MD_INDICATOR_0      0x220050  /* real firmware's diagnostic LED, CPU A */
+#define HUB_MD_INDICATOR_1      0x220058  /* same, CPU B */
 #define IO_XTALK_TIMEOUT_MASK   0xffULL
 #define IO_XTALK_PRESCALE_MASK  0xffffffULL
 
@@ -618,6 +619,197 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+/*
+ * Real firmware's diagnostic progress codes, one per boot stage, from the
+ * PROM's own progress-LED enumeration (stand/arcs/IP27prom/prom_leds.h,
+ * IRIX 6.5.7) -- transcribed as facts in our own words, not the vendor's
+ * identifiers or comments, per docs/datasheets/hub-memory-directory.md.
+ * A NULL entry is a code the source itself marks reserved or unused.
+ */
+static const char *const sgi_hub_led_progress[0x61] = {
+    [0x00] = "processor reset",
+    [0x01] = "initializing the CPU",
+    [0x02] = "testing the floating-point unit",
+    [0x03] = "running the TLB test",
+    [0x04] = "testing the instruction cache",
+    [0x05] = "testing the data cache",
+    [0x06] = "testing the secondary cache",
+    [0x07] = "flushing caches",
+    [0x08] = "checking the Hub's local registers",
+    [0x09] = "checking the Hub's configuration",
+    [0x0a] = "invalidating the instruction cache",
+    [0x0b] = "invalidating the data cache",
+    [0x0c] = "invalidating the secondary cache",
+    [0x0d] = "early main() entry",
+    [0x0e] = "measuring processor speed",
+    [0x0f] = "processor speed measured",
+    [0x10] = "initializing the data cache",
+    [0x11] = "initializing the instruction cache",
+    [0x12] = "initializing coprocessor 0",
+    [0x13] = "flushing the TLB",
+    [0x14] = "clearing cache tags",
+    [0x15] = "UART init failed (one path)",
+    [0x16] = "initializing the Hub",
+    [0x17] = "UART init failed (another path)",
+    [0x18] = "UART init failed, no clock detected",
+    [0x19] = "Hub initialization complete",
+    [0x1a] = "probing the system controller",
+    [0x1b] = "probing the Junk UART",
+    [0x1c] = "console device probing complete",
+    [0x1d] = "initializing the UART",
+    [0x1e] = "UART initialization complete",
+    [0x1f] = "checking the Hub chip",
+    [0x20] = "entering POD diagnostics",
+    [0x21] = "running the POD diagnostic loop",
+    [0x22] = "at the POD command prompt",
+    [0x23] = "POD mode",
+    [0x24] = "arbitrating for local resources",
+    [0x25] = "initializing the system controller",
+    [0x26] = "arbitrating for boot-master status",
+    [0x27] = "elected boot master",
+    [0x28] = "waiting at a synchronization barrier",
+    [0x29] = "checking the primary data cache",
+    [0x2a] = "setting up the boot stack",
+    [0x2b] = "entering main()",
+    [0x2c] = "loading the I/O-board firmware",
+    [0x2d] = "checking secondary cache RAM",
+    [0x2e] = "checking secondary cache tags",
+    [0x2f] = "entering slave-processor mode",
+    [0x30] = "jumping into the loaded firmware",
+    [0x31] = "handling a non-maskable interrupt",
+    [0x32] = "slave processor invalidating instruction/data caches",
+    [0x33] = "slave processor invalidating the secondary cache",
+    [0x34] = "writing the configuration entry",
+    [0x35] = "initializing the real-time clock",
+    [0x36] = "real-time clock initialization complete",
+    [0x37] = "taking a hardware lock",
+    [0x38] = "synchronization barrier cleared",
+    [0x39] = "hardware lock acquired",
+    [0x3a] = "initializing the flash PROM",
+    [0x3b] = "flash PROM initialization complete",
+    [0x3c] = "jumping to code running from RAM, uncached",
+    [0x3d] = "running from uncached RAM, confirmed",
+    [0x3e] = "jumping to code running from RAM, cached",
+    [0x3f] = "running from cached RAM, confirmed",
+    [0x40] = "switching the stack to RAM",
+    [0x41] = "stack running from RAM, confirmed",
+    [0x42] = "signalling a slave processor",
+    [0x43] = "calling into a slave processor's routine",
+    [0x44] = "a slave processor's routine returned",
+    [0x45] = "waiting in the processor-launch loop",
+    [0x46] = "processor-launch interrupt received",
+    [0x47] = "calling the launched routine",
+    [0x48] = "processor launch complete",
+    [0x49] = "computing the UART base address",
+    [0x4a] = "beginning memory/directory unit setup",
+    [0x4b] = "configuring the memory/directory unit",
+    [0x4c] = "starting I2C bus initialization",
+    [0x4d] = "I2C bus initialization complete",
+    [0x4e] = "beginning configuration-graph construction",
+    [0x4f] = "discovering I/O widgets",
+    [0x50] = "writing the Hub's own configuration entry",
+    [0x51] = "writing a router's configuration entry",
+    [0x52] = "initializing I/O devices",
+    [0x53] = "locating the console device",
+    [0x54] = "console device located",
+    [0x55] = NULL, /* reserved (source marks this value avoid-use) */
+    [0x56] = "I/O device initialization complete",
+    [0x57] = NULL, /* reserved/scratch (source names, does not use) */
+    [0x58] = NULL, /* reserved/scratch (source names, does not use) */
+    [0x59] = NULL, /* reserved/scratch (source names, does not use) */
+    [0x5a] = "I/O widget discovery complete",
+    [0x5b] = "setting up the non-maskable-interrupt path",
+    [0x5c] = "testing interrupts",
+    [0x5d] = "resetting I/O devices",
+    [0x5e] = "confirmed the CPU came out of reset",
+    [0x5f] = "about to reset the I2C bus",
+    [0x60] = "I2C bus reset complete",
+};
+
+/*
+ * Real firmware's diagnosed-failure codes, from the same source. Codes
+ * outside 0x00-0x60 and 0x81-0xb5 are not part of this enumeration at all --
+ * see sgi_hub_led_decode().
+ */
+static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
+    [0x00] = "floating-point unit failed self-test", /* 0x81 */
+    [0x01] = "restarting after failure", /* 0x82 */
+    [0x02] = "instruction cache failed self-test", /* 0x83 */
+    [0x03] = "data cache failed self-test", /* 0x84 */
+    [0x04] = "secondary cache failed self-test", /* 0x85 */
+    [0x05] = "processor disabled by another processor", /* 0x86 */
+    [0x06] = "real-time counter is broken", /* 0x87 */
+    [0x07] = "ECC error", /* 0x88 */
+    [0x08] = "unexpected extended TLB miss", /* 0x89 */
+    [0x09] = "unexpected user TLB miss", /* 0x8a */
+    [0x0a] = "unexpected kernel TLB miss", /* 0x8b */
+    [0x0b] = "unhandled general exception", /* 0x8c */
+    [0x0c] = "unimplemented-instruction exception", /* 0x8d */
+    [0x0d] = "cache error exception", /* 0x8e */
+    [0x0e] = "the operating system requested this code", /* 0x8f */
+    [0x0f] = "Hub interrupt self-test failed", /* 0x90 */
+    [0x10] = "Hub local-register self-test failed", /* 0x91 */
+    [0x11] = "Hub configuration self-test failed", /* 0x92 */
+    [0x12] = "a node reported non-premium unexpectedly", /* 0x93 */
+    [0x13] = NULL, /* 0x94: reserved (a POD re-entry via NMI was requested) */
+    [0x14] = "Hub UART initialization failed", /* 0x95 */
+    [0x15] = "Hub cross-processor interrupt self-test failed", /* 0x96 */
+    [0x16] = "main() returned unexpectedly", /* 0x97 */
+    [0x17] = "no local memory found", /* 0x98 */
+    [0x18] = "an I2C condition that should be impossible occurred", /* 0x99 */
+    [0x19] = "this processor is disabled by an environment variable", /* 0x9a */
+    [0x1a] = "a memory download failed", /* 0x9b */
+    [0x1b] = "could not set the core-debug register", /* 0x9c */
+    [0x1c] = "I/O widget discovery failed", /* 0x9d */
+    [0x1d] = "writing the Hub's configuration entry failed", /* 0x9e */
+    [0x1e] = "writing a router's configuration entry failed", /* 0x9f */
+    [0x1f] = "Hub I/O interface initialization failed", /* 0xa0 */
+    [0x20] = "node configuration-graph construction failed", /* 0xa1 */
+    [0x21] = "router chip failed diagnostics", /* 0xa2 */
+    [0x22] = "a fabric link failed diagnostics", /* 0xa3 */
+    [0x23] = "Hub chip failed its built-in self-test", /* 0xa4 */
+    [0x24] = "router chip failed its built-in self-test", /* 0xa5 */
+    [0x25] = "waiting for a reset to complete", /* 0xa6 */
+    [0x26] = "low-level fabric protocol failed after reset", /* 0xa7 */
+    [0x27] = "low-level fabric protocol never came up after reset", /* 0xa8 */
+    [0x28] = "no good local memory found", /* 0xa9 */
+    [0x29] = NULL, /* 0xaa: reserved (source marks this value avoid-use) */
+    [0x2a] = "fabric/network discovery failed", /* 0xab */
+    [0x2b] = "node-id calculation failed", /* 0xac */
+    [0x2c] = "route calculation failed", /* 0xad */
+    [0x2d] = "route distribution failed", /* 0xae */
+    [0x2e] = "node-id distribution failed", /* 0xaf */
+    [0x2f] = "boot master assigned no node id", /* 0xb0 */
+    [0x30] = "module-id arbitration failed", /* 0xb1 */
+    [0x31] = "an SN0 node mixed with an SN00 node", /* 0xb2 */
+    [0x32] = "a partition-configuration error", /* 0xb3 */
+    [0x33] = "an error copying mode bits", /* 0xb4 */
+    [0x34] = "an error calculating the backplane frequency", /* 0xb5 */
+};
+
+/*
+ * Decode a value written to an indicator register into the diagnostic
+ * meaning real firmware gives it, when it has one. is_failure distinguishes
+ * a diagnosed failure from ordinary boot progress; the return value is NULL
+ * for anything the enumeration does not cover, which includes both the
+ * reserved slots the source itself sets aside and getc_timeout()'s own,
+ * unrelated flashing pattern (0x80 XORed against a per-device bit pattern,
+ * documented in docs/datasheets/hub-memory-directory.md) -- so an
+ * undecoded value is not automatically a fault, only an unenumerated one.
+ */
+static const char *sgi_hub_led_decode(uint8_t code, bool *is_failure)
+{
+    *is_failure = false;
+    if (code <= 0x60) {
+        return sgi_hub_led_progress[code];
+    }
+    if (code >= 0x81 && code <= 0xb5) {
+        *is_failure = true;
+        return sgi_hub_led_failure[code - 0x81];
+    }
+    return NULL;
+}
+
 static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                           unsigned size)
 {
@@ -768,17 +960,31 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_MD_INDICATOR_0:
     case HUB_MD_INDICATOR_1:
-        /*
-         * Write-only, and a boot issues the write, so the model has to accept
-         * it. What it should do beyond that is unestablished: two guests write
-         * different values here for two different stated purposes and neither
-         * is "indicator", so there is no behaviour to implement and nothing is
-         * stored for a guest to read back. Logged rather than silent, the same
-         * as any other register whose meaning nobody has established.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to indicator register "
-                      "0x%" HWADDR_PRIx ", no behaviour modelled\n", val, addr);
+        {
+            /*
+             * Write-only: the register carries no state for a guest to read
+             * back, on real hardware or here, so nothing is stored. Every
+             * write is traced unconditionally -- decoded when the value is
+             * one of real firmware's own progress or failure codes,
+             * flagged undecoded otherwise, never silent either way. A run
+             * with the trace event armed and no output means no write
+             * reached this register at all, not that one went unlogged.
+             */
+            unsigned int cpu = (addr == HUB_MD_INDICATOR_1);
+            uint8_t code = val & 0xff;
+            bool is_failure = false;
+            const char *meaning = sgi_hub_led_decode(code, &is_failure);
+
+            if (meaning) {
+                trace_sgi_hub_led(cpu, code, is_failure ? "FAILURE" : "progress",
+                                   meaning);
+            } else {
+                trace_sgi_hub_led(cpu, code, "undecoded",
+                                   "not one of real firmware's progress or "
+                                   "failure codes -- may be a guest OS write "
+                                   "or getc_timeout()'s flash pattern");
+            }
+        }
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
