@@ -276,12 +276,15 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_CMD_NOP                0x0000
 #define ISP_MBOX_CMD_EXEC_FIRMWARE      0x0002
 #define ISP_MBOX_CMD_WRITE_RAM_WORD     0x0004
+#define ISP_MBOX_CMD_MAILBOX_REG_TEST   0x0006
 #define ISP_MBOX_CMD_VERIFY_CHECKSUM    0x0007
 #define ISP_MBOX_CMD_ABOUT_FIRMWARE     0x0008
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE     0x0010
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE     0x0011
 #define ISP_MBOX_CMD_BUS_RESET          0x0018
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
+#define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64  0x0052
+#define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64  0x0053
 #define ISP_MBOX_CMD_SET_INITIATOR_ID      0x0030
 #define ISP_MBOX_CMD_SET_SELECTION_TIMEOUT 0x0031
 #define ISP_MBOX_CMD_SET_RETRY_COUNT       0x0032
@@ -603,10 +606,19 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
  * and "the datasheet says this" were one source counted twice. Linux's
  * qla1280 broke the tie: qla1280_chip_diag() reads mailbox 4 as part of a
  * fatal product-ID check immediately after reset, before any driver write
- * reaches it, and requires exactly the value 86Box set. Mailbox 4 is set to
- * ISP_MAILBOX4_SIGNATURE (0x0001) above for this reason. OpenBSD is
+ * reaches it, and requires exactly the value 86Box set. OpenBSD is
  * unaffected either way, since qlw_softreset() overwrites this register with
  * its own zero before ever treating it as a live pointer.
+ *
+ * Mailbox 4's signature lives in rqst_cons, not in s->mailbox[4]: a read of
+ * that address answers from rqst_cons directly (see qlogic_isp_reg_read()),
+ * the same in-and-out-share-one-address shape as mailbox 5 below, so the
+ * plain array storage behind it is never consulted on the way out and
+ * setting it here would only be cosmetic. rqst_cons is what a guest checking
+ * this adapter's identity before any queue exists actually reads, and it is
+ * also exactly what a guest reads once a real request queue is live and
+ * recomputing free space from this same address — one field serving both
+ * purposes because both purposes read the one register a real adapter has.
  *
  * Mailbox 5 keeps its zero. Nothing we have observed needs 86Box's 7 there:
  * no guest this fork targets checks it as an identity field the way mailbox
@@ -641,7 +653,6 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->mailbox[1] = ISP_MAILBOX1_SIGNATURE;
     s->mailbox[2] = ISP_MAILBOX2_SIGNATURE;
     s->mailbox[3] = ISP_MAILBOX3_SIGNATURE;
-    s->mailbox[4] = ISP_MAILBOX4_SIGNATURE;
 
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
@@ -666,7 +677,15 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->resp_base = 0;
     s->rqst_len = 0;
     s->resp_len = 0;
-    s->rqst_cons = 0;
+    /*
+     * ISP_MAILBOX4_SIGNATURE, not 0: rqst_cons backs a read of this same
+     * address both before any queue exists (Linux's product-ID check) and
+     * after one is live (the request-in queue pointer), and before
+     * ISP_MBOX_CMD_INIT_REQ_QUEUE runs, rqst_len is 0, so nothing here
+     * actually treats this as a live consumer position yet. INIT_REQ_QUEUE
+     * resets it to a real 0 itself once the queue it belongs to exists.
+     */
+    s->rqst_cons = ISP_MAILBOX4_SIGNATURE;
     s->resp_prod = 0;
     s->resp_cons = 0;
 
@@ -715,6 +734,22 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
      */
     case ISP_MBOX_CMD_WRITE_RAM_WORD:
         s->risc_ram[s->mailbox[1]] = s->mailbox[2];
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * A wraparound self-test: whatever the guest writes into mailboxes 1
+     * through 7 along with this command is expected back unchanged, proving
+     * the mailbox path round-trips before the guest trusts anything else
+     * over it. Linux's qla1280_chip_diag() issues this unconditionally,
+     * immediately after the product-ID check and before firmware download,
+     * with a fixed walking pattern (0xAAAA, 0x5555, 0xAA55, 0x55AA, 0xA5A5,
+     * 0x5A5A, 0x2525) and treats a mismatch as a dead adapter. There is
+     * nothing to compute: the values are already sitting in s->mailbox[] by
+     * the time this command runs, so completing without touching them is
+     * the whole implementation.
+     */
+    case ISP_MBOX_CMD_MAILBOX_REG_TEST:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
@@ -818,7 +853,19 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    case ISP_MBOX_CMD_INIT_REQ_QUEUE: {
+    /*
+     * The plain opcode and its A64 counterpart are two numbers for the same
+     * operation on this hardware, not two protocols: OpenBSD's qlw_attach()
+     * issues QLW_MBOX_INIT_REQ_QUEUE (0x10) and composes the queue's base
+     * address across mailboxes 2, 3, 6 and 7 with qlw_mbox_putaddr(); Linux's
+     * qla1280_init_rings() issues MBC_INIT_REQUEST_QUEUE_A64 (0x52) instead
+     * -- its own source comments out the plain opcode rather than using it --
+     * and composes the identical 64-bit address across the identical four
+     * mailboxes. Only the opcode number differs between the two guests, so
+     * both fall into this one case rather than needing separate logic.
+     */
+    case ISP_MBOX_CMD_INIT_REQ_QUEUE:
+    case ISP_MBOX_CMD_INIT_REQ_QUEUE_A64: {
         uint64_t addr = ISP_MBOX_ADDR_TOP(s->mailbox) |
                         ISP_MBOX_ADDR_HIGH(s->mailbox) |
                         ISP_MBOX_ADDR_MID(s->mailbox) |
@@ -837,7 +884,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
     }
 
-    case ISP_MBOX_CMD_INIT_RSP_QUEUE: {
+    case ISP_MBOX_CMD_INIT_RSP_QUEUE:
+    case ISP_MBOX_CMD_INIT_RSP_QUEUE_A64: {
         uint64_t addr = ISP_MBOX_ADDR_TOP(s->mailbox) |
                         ISP_MBOX_ADDR_HIGH(s->mailbox) |
                         ISP_MBOX_ADDR_MID(s->mailbox) |
@@ -1396,6 +1444,34 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
      */
     if (addr == ISP_REG_RESPONSE_QUEUE) {
         return s->resp_prod;
+    }
+
+    /*
+     * The request queue has the identical in-and-out-share-one-address shape
+     * as the response queue, with the two directions swapped: the guest is
+     * the producer here, and a read must answer this adapter's own consumer
+     * position, never the guest's own last write. Linux recomputes its free
+     * request-ring space from exactly this read (qla1280_start_scsi(),
+     * qla1280.c) as `cnt - ha->req_ring_index`, where ha->req_ring_index is
+     * the driver's own locally-tracked producer and cnt is what this read
+     * returns -- if a read answered back the guest's own write instead, the
+     * two would be equal on every recalculation and the driver would compute
+     * a free-space boundary that reflects nothing this adapter has actually
+     * consumed. rqst_cons is this adapter's consumer position; answered
+     * directly rather than through s->mailbox[], which qlogic_isp_process_
+     * requests() still reads for the guest's producer value on the way in.
+     *
+     * This was the one queue direction the original response-queue fix did
+     * not carry over, because that fix was written against the response-
+     * queue failure that had actually been observed. It stayed masked here
+     * because completions are normally consumed eagerly enough that producer
+     * and consumer read as equal regardless of which one this returned;
+     * the backpressure that fix introduced -- holding a completion when the
+     * response ring has no room -- is what finally makes the two differ
+     * often enough for a real guest to notice.
+     */
+    if (addr == ISP_REG_REQUEST_QUEUE) {
+        return s->rqst_cons;
     }
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {

@@ -550,17 +550,21 @@ static void test_semaphore(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Each mailbox is its own register. Distinct values are written to seven of
+ * Each mailbox is its own register. Distinct values are written to six of
  * the eight and read back afterwards rather than one at a time, so a model
  * decoding them to one shared register, or dropping the low address bits,
- * fails here instead of passing seven independent round-trips.
+ * fails here instead of passing six independent round-trips.
  *
- * Mailbox 5 is excluded: it is the response queue's in/out pointer under a
- * second name, and it is not plain storage — a read always answers the
- * adapter's own producer count, never whatever was last written here, by
- * the datasheet's own requirement. test_queue_pointers covers its actual
- * contract; a plain write-then-read-back here would assert the bug this
- * device used to have.
+ * Mailboxes 4 and 5 are excluded: both are queue pointers under a second
+ * name (request-in and response-in respectively), and neither is plain
+ * storage — a read always answers this adapter's own position in that
+ * direction, never whatever was last written here, by the datasheet's own
+ * in-and-out-share-one-address requirement for both queues. Mailbox 5 has
+ * been excluded since the response-queue completion-erasure fix; mailbox 4
+ * joined it once the adversarial review (task #74) found the same defect
+ * still open on the request queue. test_queue_pointers covers both
+ * registers' actual contract; a plain write-then-read-back here would
+ * assert the bug this device used to have.
  */
 static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -573,13 +577,13 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
     io = qpci_iomap(dev, 0, NULL);
 
     for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
-        if (i == 5) {
+        if (i == 4 || i == 5) {
             continue;
         }
         qpci_io_writew(dev, io, ISP_MAILBOX(i), 0x1000 + i);
     }
     for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
-        if (i == 5) {
+        if (i == 4 || i == 5) {
             continue;
         }
         g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==,
@@ -592,10 +596,14 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 
 /*
  * The queue pointers are mailboxes 4 and 5 reached under a second name, and
- * the two are not symmetric. Request-in (mailbox 4) really is plain storage:
- * the guest is the only writer, so a read answers back whatever it last
- * wrote, and this asserts that round-trip and that request-in and mailbox 4
- * are the same register rather than a separate decode.
+ * both now share the identical in-and-out-share-one-address shape: a write
+ * is the guest's producer advance, and a read always answers this adapter's
+ * own consumer position, never whatever the guest last wrote. Response-in
+ * had this from the completion-erasure fix; request-in did not, until the
+ * adversarial review (task #74) caught it as the same defect on the other
+ * queue -- previously it fell through to plain storage on read, so a guest
+ * recomputing free request-ring space (Linux's qla1280_start_scsi() does
+ * exactly this) read back its own last write and learned nothing real.
  *
  * Request-in resets to ISP_MAILBOX4_SIGNATURE (0x0001), not zero -- the same
  * value Linux's product-ID check requires there, and the same value 86Box's
@@ -608,6 +616,17 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
  * raw hardware value rather than a driver's own subsequent write, and it was
  * wrong for this one, the same class of mistake as the mailbox-signature
  * misattribution corrected alongside it.
+ *
+ * With no request queue configured (rqst_len == 0 throughout this test), a
+ * write to request-in still updates the guest-producer storage internally
+ * (qlogic_isp_process_requests() reads it once a real queue exists), but
+ * qlogic_isp_process_requests() itself no-ops on an unconfigured ring, so
+ * this adapter's own consumer position never advances. A read answering the
+ * write back would be indistinguishable from a read answering rqst_cons
+ * once a real ring is configured and fully drains every write synchronously
+ * -- the two coincide there, which is exactly why this bug stayed masked --
+ * so an unconfigured ring is the one place in this file that can show a read
+ * genuinely sourcing from rqst_cons and not from an echo of the write.
  *
  * Response-in (mailbox 5) is not plain storage. A read always answers the
  * adapter's own producer count — still 0 here, since nothing has posted a
@@ -634,10 +653,14 @@ static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 0x0021);
     qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 0x0043);
 
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0x0021);
+    /* Neither read reflects the write just sent to that same address. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==,
+                    ISP_MAILBOX4_SIGNATURE);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
 
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==, 0x0021);
+    /* The mailbox name is the same address, so it reads the same answer. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==,
+                    ISP_MAILBOX4_SIGNATURE);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(5)), ==, 0);
 
     qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
