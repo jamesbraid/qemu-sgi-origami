@@ -45,6 +45,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/queue.h"
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
 #include "migration/vmstate.h"
@@ -181,10 +182,22 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
  * Mailboxes 4 and 5 are also the queue pointers. The driver names four of them
  * — request in and out, response in and out — at two addresses, because each
  * address means the host's pointer when written and the adapter's when read.
- * That naming is a protocol meaning laid over two ordinary registers rather
- * than a second decode: the hardware stores what is written until the running
- * firmware overwrites it. With no firmware running yet these are plain
- * storage, and the ring engine is what gives them the second meaning.
+ *
+ * The request side really is plain storage: the guest publishes its producer
+ * count by writing mailbox 4, and the adapter is the only reader, so a read
+ * of that address answering back whatever was last written is correct — it
+ * always is what was last written, by the only writer there is.
+ *
+ * The response side is not symmetric and is not plain storage. Mailbox 5 is
+ * the adapter's producer count when read and the guest's consumer
+ * acknowledgement when written, and the datasheet is explicit that a guest's
+ * ack write must never be able to overwrite the adapter's own published
+ * count: the two land at the same address only because one direction is the
+ * read and the other the write, not because they share one number. A read of
+ * this address answers from the adapter's own producer state directly; a
+ * write to it records the guest's consumer position and never touches that
+ * state. See the response-queue handling in qlogic_isp_reg_read(),
+ * qlogic_isp_reg_write() and qlogic_isp_post_status() below.
  */
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX_COUNT       8
@@ -423,6 +436,26 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_IOCB_INCOMPLETE          0x0001
 #define ISP_IOCB_DATA_UNDERRUN       0x0015
 
+/*
+ * A status entry the response ring had no room for. Real hardware never
+ * builds this list — the datasheet's own words are that it never reaches the
+ * full case — but a model with no bus latency can, and dropping a completion
+ * on the floor there would only relocate the same lost-completion bug onto
+ * whichever command lost the race. Queued here, it waits for
+ * qlogic_isp_drain_pending() to post it once the guest's next acknowledgement
+ * frees a slot; nothing about the SCSI request itself needs to stay alive for
+ * that, since the backend has already finished it by the time this is built.
+ */
+typedef struct QLogicISPPendingStatus {
+    QTAILQ_ENTRY(QLogicISPPendingStatus) next;
+    uint32_t handle;
+    uint16_t scsi_status;
+    uint16_t completion;
+    uint32_t resid;
+    uint8_t sense[ISP_STATUS_SENSE_MAX];
+    int sense_len;
+} QLogicISPPendingStatus;
+
 struct QLogicISPState {
     PCIDevice parent_obj;
 
@@ -448,6 +481,17 @@ struct QLogicISPState {
     uint16_t resp_len;
     uint16_t rqst_cons;    /* Next request entry this device will read. */
     uint16_t resp_prod;    /* Next response slot this device will write. */
+    uint16_t resp_cons;    /* Next response slot the guest has acknowledged. */
+
+    /*
+     * Completions the response ring had no room for when they were ready to
+     * post. Not covered by vmstate: a migration landing while this is
+     * non-empty loses the queued completions, the same gap this device
+     * already has for every other in-flight SCSI request, and the condition
+     * these exist for is one the datasheet itself says real hardware never
+     * reaches.
+     */
+    QTAILQ_HEAD(, QLogicISPPendingStatus) pending_status;
 };
 
 /*
@@ -486,6 +530,23 @@ static void qlogic_isp_update_irq(QLogicISPState *s)
                   ISP_BUS_STATUS_RISC_INT_REQ) != 0;
 
     pci_set_irq(PCI_DEVICE(s), level);
+}
+
+/*
+ * Frees every completion still waiting for response-ring room, without
+ * posting them. Shared by the two places that re-initialise the response
+ * queue's state from under a non-empty list — a chip reset and the
+ * mailbox command that re-initialises the response queue on its own — so
+ * neither has to duplicate the walk.
+ */
+static void qlogic_isp_drop_pending_status(QLogicISPState *s)
+{
+    QLogicISPPendingStatus *pending;
+
+    while ((pending = QTAILQ_FIRST(&s->pending_status)) != NULL) {
+        QTAILQ_REMOVE(&s->pending_status, pending, next);
+        g_free(pending);
+    }
 }
 
 /*
@@ -552,6 +613,14 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->resp_len = 0;
     s->rqst_cons = 0;
     s->resp_prod = 0;
+    s->resp_cons = 0;
+
+    /*
+     * Same reasoning as the queue state above: the driver re-initialises the
+     * response queue after every reset, so nothing queued from before it is
+     * ever going to be acted on.
+     */
+    qlogic_isp_drop_pending_status(s);
 
     qlogic_isp_update_irq(s);
 }
@@ -727,7 +796,14 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->resp_base = addr;
         s->resp_len = s->mailbox[1];
         s->resp_prod = 0;
-        s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE] = 0;
+        s->resp_cons = 0;
+        /*
+         * No write to mailbox[ISP_MAILBOX_RESPONSE_QUEUE] here: a read of
+         * that address answers from resp_prod directly (see
+         * qlogic_isp_reg_read()), so the plain storage backing it is never
+         * consulted and reinitialising it would only be cosmetic.
+         */
+        qlogic_isp_drop_pending_status(s);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
     }
@@ -877,37 +953,43 @@ static hwaddr qlogic_isp_resp_entry_addr(QLogicISPState *s, uint16_t index)
 }
 
 /*
- * Posts a status entry and raises the interrupt that tells the host it is
- * there. Unlike a mailbox result, an I/O completion does not take the
- * semaphore lock — the driver's own decode order depends on that, reading
- * the semaphore first and only falling through to bus interface status when
- * it finds the lock clear — so this sets only the status bits, never the
- * semaphore.
- *
- * The response queue is a ring the adapter alone produces into; nothing
- * here needs to track what the host has consumed; writing the new
- * response-in value into mailbox 5 is the entire handoff; the host's own
- * write of the same value back is how it acknowledges having read up to
- * that point, and this device does not need to notice that write for
- * anything.
+ * Whether the response ring has room for one more entry without the
+ * producer catching up to the consumer. Reserve one slot so producer equal
+ * to consumer always means empty, never full — the datasheet's own
+ * requirement: a ring that reserves nothing cannot tell the two apart, and a
+ * full ring left indistinguishable from an empty one is exactly how a
+ * completion goes missing without the guest or the adapter doing anything
+ * wrong. A response queue nobody has initialised yet (resp_len == 0) has no
+ * room by construction, checked here rather than left to divide by zero.
  */
-static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
-                                   uint16_t scsi_status, uint16_t completion,
-                                   uint32_t resid, const uint8_t *sense,
-                                   int sense_len)
+static bool qlogic_isp_resp_has_room(QLogicISPState *s)
+{
+    if (s->resp_len == 0) {
+        return false;
+    }
+    return (s->resp_prod + 1) % s->resp_len != s->resp_cons;
+}
+
+/*
+ * Writes one status entry into the ring and raises the interrupt that tells
+ * the host it is there. Unlike a mailbox result, an I/O completion does not
+ * take the semaphore lock — the driver's own decode order depends on that,
+ * reading the semaphore first and only falling through to bus interface
+ * status when it finds the lock clear — so this sets only the status bits,
+ * never the semaphore.
+ *
+ * Only called once the caller has confirmed a slot is free
+ * (qlogic_isp_resp_has_room()): this is the write, not the decision of
+ * whether it is safe to make.
+ */
+static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
+                                       uint16_t scsi_status,
+                                       uint16_t completion, uint32_t resid,
+                                       const uint8_t *sense, int sense_len)
 {
     PCIDevice *pci = PCI_DEVICE(s);
-    hwaddr addr;
+    hwaddr addr = qlogic_isp_resp_entry_addr(s, s->resp_prod);
     uint8_t hdr[4] = { ISP_ENTRY_TYPE_STATUS, 1, 0, 0 };
-
-    if (s->resp_len == 0) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "qlogic-isp: status posted before the response "
-                      "queue was initialised\n");
-        return;
-    }
-
-    addr = qlogic_isp_resp_entry_addr(s, s->resp_prod);
 
     pci_dma_write(pci, addr, hdr, sizeof(hdr));
     stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_HANDLE, handle,
@@ -929,10 +1011,75 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
     }
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
-    s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE] = s->resp_prod;
 
     s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
     qlogic_isp_update_irq(s);
+}
+
+/*
+ * Posts every completion still waiting for room, oldest first, until either
+ * none are left or the ring is full again. The only event that can turn a
+ * full ring back into one with room is the guest's own acknowledgement, so
+ * this is called from the response-queue register's write handler and
+ * nowhere else.
+ */
+static void qlogic_isp_drain_pending_status(QLogicISPState *s)
+{
+    QLogicISPPendingStatus *pending;
+
+    while (qlogic_isp_resp_has_room(s) &&
+           (pending = QTAILQ_FIRST(&s->pending_status)) != NULL) {
+        QTAILQ_REMOVE(&s->pending_status, pending, next);
+        qlogic_isp_post_one_status(s, pending->handle, pending->scsi_status,
+                                   pending->completion, pending->resid,
+                                   pending->sense_len > 0 ? pending->sense
+                                                           : NULL,
+                                   pending->sense_len);
+        g_free(pending);
+    }
+}
+
+/*
+ * Posts a status entry, unless the response ring has no room for it right
+ * now. Real hardware never reaches that case — it completes one command at
+ * a time with real bus latency between them — but a model with no such
+ * latency can post more completions than the guest has acknowledged, and
+ * the datasheet's own requirement is to hold the surplus rather than let a
+ * new completion overwrite one the guest has not consumed yet or drop it on
+ * the floor: either loses the completion exactly the way this whole bug
+ * report started. Held completions post as soon as
+ * qlogic_isp_drain_pending_status() sees room again.
+ */
+static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
+                                   uint16_t scsi_status, uint16_t completion,
+                                   uint32_t resid, const uint8_t *sense,
+                                   int sense_len)
+{
+    if (s->resp_len == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: status posted before the response "
+                      "queue was initialised\n");
+        return;
+    }
+
+    if (!qlogic_isp_resp_has_room(s)) {
+        QLogicISPPendingStatus *pending = g_new0(QLogicISPPendingStatus, 1);
+
+        pending->handle = handle;
+        pending->scsi_status = scsi_status;
+        pending->completion = completion;
+        pending->resid = resid;
+        pending->sense_len = sense_len > 0
+                              ? MIN(sense_len, ISP_STATUS_SENSE_MAX) : 0;
+        if (pending->sense_len > 0) {
+            memcpy(pending->sense, sense, pending->sense_len);
+        }
+        QTAILQ_INSERT_TAIL(&s->pending_status, pending, next);
+        return;
+    }
+
+    qlogic_isp_post_one_status(s, handle, scsi_status, completion, resid,
+                               sense, sense_len);
 }
 
 static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
@@ -1170,6 +1317,18 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
 {
     QLogicISPState *s = opaque;
 
+    /*
+     * The response-in value must always be this adapter's own current
+     * producer count, never whatever a guest last wrote to this address —
+     * the datasheet is explicit that plain storage shared with the guest's
+     * ack write reproduces the exact aliasing reserve-one-slot exists to
+     * prevent. resp_prod is that count; it is answered directly rather than
+     * through s->mailbox[], which this address no longer backs.
+     */
+    if (addr == ISP_REG_RESPONSE_QUEUE) {
+        return s->resp_prod;
+    }
+
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
         return s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2];
     }
@@ -1214,6 +1373,24 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
                                  unsigned size)
 {
     QLogicISPState *s = opaque;
+
+    /*
+     * The guest's write here is its acknowledgement of everything up to the
+     * value it read, not a courtesy the adapter can ignore or a value it can
+     * store over its own published producer count — the two share this
+     * address only because one direction is the read and the other the
+     * write. Recorded into resp_cons, never into s->mailbox[], which this
+     * address no longer backs. Wrapped defensively the same way the
+     * request-in value is, since nothing here can assume a guest write is
+     * already a valid ring index.
+     */
+    if (addr == ISP_REG_RESPONSE_QUEUE) {
+        if (s->resp_len != 0) {
+            s->resp_cons = val % s->resp_len;
+        }
+        qlogic_isp_drain_pending_status(s);
+        return;
+    }
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
         s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2] = val;
@@ -1347,13 +1524,31 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
 
+    QTAILQ_INIT(&s->pending_status);
+
     scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev),
                  &qlogic_isp_scsi_info);
 }
 
+/*
+ * Version 7 adds resp_cons: before this fix the response-queue register was
+ * plain storage shared with the guest's ack write, so nothing tracked the
+ * guest's consumer position separately and there was no field for it to
+ * migrate. A stream from an older version has no value to give it; it is
+ * accepted anyway, at 0, because a freshly-migrated guest that has not yet
+ * acknowledged anything is exactly what resp_cons == 0 already means, and
+ * demanding version 7 to migrate this device at all would be a much larger
+ * cost for the same outcome.
+ *
+ * Pending completions queued for lack of ring room (QLogicISPPendingStatus)
+ * are not migrated. A migration landing while that list is non-empty loses
+ * them — the same gap this device already has for every other in-flight
+ * SCSI request, and the condition that fills the list is one the datasheet
+ * itself says real hardware never reaches.
+ */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
@@ -1373,6 +1568,7 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(resp_len, QLogicISPState),
         VMSTATE_UINT16(rqst_cons, QLogicISPState),
         VMSTATE_UINT16(resp_prod, QLogicISPState),
+        VMSTATE_UINT16_V(resp_cons, QLogicISPState, 7),
         VMSTATE_END_OF_LIST()
     }
 };
