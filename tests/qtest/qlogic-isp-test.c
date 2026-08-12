@@ -1627,6 +1627,100 @@ static void test_ack_does_not_erase_a_later_completion(void *obj, void *data,
     g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
 }
 
+/*
+ * A completion held for lack of ring room must re-signal the guest once it
+ * finally posts, not just update the adapter's internal state silently.
+ *
+ * Fills a four-entry response ring to its reserve-one-slot capacity with
+ * three real completions, nothing acknowledged, so a fourth has nowhere to
+ * post and is held. Clears the interrupt the way a real driver's handler
+ * does before checking anything further, so the checks that follow mean
+ * something rather than passing on bits a completion earlier in the test
+ * already set. The held completion must stay silent — no producer
+ * movement, no interrupt — until the guest's next acknowledgement frees a
+ * slot; only then does it post, and posting must raise the interrupt
+ * again. A retry that writes a correct status entry but leaves bus_status
+ * untouched would be a completion the driver has no reason to go looking
+ * for, indistinguishable from one that never finished.
+ */
+static void test_held_completion_resignals_on_drain(void *obj, void *data,
+                                                     QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   8, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    /* Three real completions fill the ring to its reserve-one-slot limit;
+     * nothing acknowledged, so resp_cons is still 0. */
+    for (i = 0; i < 3; i++) {
+        isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x3000 + i);
+        qtest_memwrite(qts, rqst_addr + i * ISP_QUEUE_ENTRY_SIZE,
+                       entry, sizeof(entry));
+        qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, i + 1);
+    }
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 3);
+
+    /* Clear the interrupt without acknowledging any ring position, the way
+     * a driver's handler clears RISC_INT_REQ before it is done reading. */
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+
+    /* A fourth command has nowhere to post: (resp_prod + 1) % resp_len
+     * would land exactly on the still-untouched resp_cons. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x3003);
+    qtest_memwrite(qts, rqst_addr + 3 * ISP_QUEUE_ENTRY_SIZE,
+                   entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 4);
+
+    /* Held, not lost and not yet announced: the producer has not moved and
+     * the interrupt this device raises on every real post has not fired. */
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 3);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+
+    /* The guest acknowledges one entry -- the only event that can free
+     * room for the held completion to drain. */
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 1);
+
+    /* The decisive check: the drained completion re-signals the guest. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    /* And its data actually landed, rather than the interrupt alone. */
+    qtest_memread(qts, resp_addr + 3 * ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x3003);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -1686,6 +1780,8 @@ static void qlogic_isp_register_nodes(void)
                  test_four_completions_do_not_read_as_empty, NULL);
     qos_add_test("ack-does-not-erase-completion", "qlogic-isp1040",
                  test_ack_does_not_erase_a_later_completion, NULL);
+    qos_add_test("held-completion-resignals-on-drain", "qlogic-isp1040",
+                 test_held_completion_resignals_on_drain, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);
