@@ -79,11 +79,19 @@
 #define IO_WIDGET_CONTROL   0x400020
 #define IO_XTALK_TIMEOUT    0x4003b8
 #define IO_XTALK_PRESCALE   0x4003c0
+#define IO_SCRATCH_0        0x400150
+#define IO_SCRATCH_1        0x400158
+#define IO_SCRATCH_MASK     0x0000000f00f11fffULL
+#define IO_ICRB_C_BASE      0x4004f0  /* slot 7's C register */
+#define IO_ICRB_C_STRIDE    0x20
+#define IO_ICRB_C_LAST_OFF  (IO_ICRB_C_BASE + 7 * IO_ICRB_C_STRIDE) /* slot 14 */
 #define IO_LINK_STATUS      0x400128
 #define MD_INDICATOR_0      0x220050
 #define MD_INDICATOR_1      0x220058
 #define MD_I2C_DATA         0x220000
 #define MD_I2C_CTRL         0x220008
+#define MD_PERF_CNT0        0x210010
+#define MD_PERF_CNT_MASK    0x00000000000fffffULL
 #define I2C_STATUS_IDLE     0x81  /* pending-interrupt-not | bus-not-busy */
 #define NI_STATUS           0x600000
 
@@ -1041,6 +1049,91 @@ static void test_the_crosstalk_timeouts(const void *data)
     qtest_quit(qts);
 }
 
+static void test_io_scratch_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Real firmware's own boot reads register 0 234 times against 6 writes —
+     * the most-touched register this Hub had no model for at all. Plain
+     * masked storage: SGI's own register table and mainline Linux's header
+     * agree on the mask byte-for-byte, and nothing establishes what firmware
+     * keeps there, only where the bits are.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_1), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + IO_SCRATCH_0, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==,
+                    IO_SCRATCH_MASK);
+
+    qtest_writeq(qts, HUB_LOCAL + IO_SCRATCH_1, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_1), ==,
+                    IO_SCRATCH_MASK);
+
+    /* The two are independent storage, not aliases of one register. */
+    qtest_writeq(qts, HUB_LOCAL + IO_SCRATCH_0, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_1), ==,
+                    IO_SCRATCH_MASK);
+
+    qtest_quit(qts);
+}
+
+static void test_md_perf_cnt0(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Real firmware's own boot reads this specifically 144 times against 23
+     * writes — repeated resets and re-samples, a benchmark or timed
+     * diagnostic loop. This model counts no real hardware event, so a write
+     * is stored and read back rather than incremented; a self-test that
+     * resets the counter and checks the reset stuck gets a truthful answer,
+     * one that expects the count to advance on its own does not.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + MD_PERF_CNT0, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0), ==,
+                    MD_PERF_CNT_MASK);
+
+    qtest_quit(qts);
+}
+
+static void test_io_icrb_c_family(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t addr;
+
+    /*
+     * Slots 7 through 14's C register — the only part of the fifteen-slot,
+     * four-register Incoming Crosstalk Request Buffer array real firmware's
+     * own boot measurably reads (four times each, a diagnostic sweep, not a
+     * wait on any one). No slot has ever tracked a real incoming crosstalk
+     * transaction, so every field a real C register would hold reads zero;
+     * writing one is refused, matching real hardware, where this state comes
+     * from a transaction in flight rather than from software.
+     */
+    for (addr = IO_ICRB_C_BASE; addr <= IO_ICRB_C_LAST_OFF;
+         addr += IO_ICRB_C_STRIDE) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
+        qtest_writeq(qts, HUB_LOCAL + addr, ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
+    }
+
+    /*
+     * An address one stride short of the family, and one stride past it,
+     * both read zero too — but that is the unimplemented-register default,
+     * not evidence either is part of the modelled family, since both paths
+     * answer zero. Nothing observable through this interface distinguishes
+     * them; the boundary itself is asserted by sgi_hub_icrb_c_entry()'s own
+     * range check, exercised here only by covering the family it accepts.
+     */
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1078,6 +1171,11 @@ int main(int argc, char **argv)
                         test_the_flash_ready_signal_reads_ready_at_both_bits);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
+    qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,
+                        test_io_scratch_registers);
+    qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
+    qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
+                        test_io_icrb_c_family);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,
                         test_the_crosstalk_link_reports_up);
     qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,

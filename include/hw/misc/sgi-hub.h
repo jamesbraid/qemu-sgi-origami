@@ -134,6 +134,12 @@ struct SGIHubState {
     uint64_t io_xtalk_timeout;
     uint64_t io_xtalk_prescale;
     uint32_t io_bwin[SGI_HUB_BWIN_ENTRIES];
+
+    /* The I/O interface's two general-purpose scratch registers. */
+    uint64_t io_scratch[2];
+
+    /* Memory/directory performance counter 0. */
+    uint64_t md_perf_cnt0;
 };
 
 #endif /* HW_MISC_SGI_HUB_H */

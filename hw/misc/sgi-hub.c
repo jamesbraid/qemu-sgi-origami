@@ -97,6 +97,53 @@
 #define HUB_IO_XTALK_PRESCALE   0x4003c0
 
 /*
+ * The I/O interface's two general-purpose scratch registers — named that in
+ * every source that names them at all, with no other behaviour attached. Real
+ * firmware's own boot measurably reads register 0 234 times against 6 writes,
+ * far more than any register with a hardware side effect this Hub carries, and
+ * SGI's own machine-readable Hub register table (hwreg_hub.hwreg) and current
+ * mainline Linux (hubio.h) agree byte-for-byte on the field layout: four
+ * sub-fields packed into one 36-bit word, with everything above bit 35 read as
+ * zero. Real firmware uses this as its own private state, most likely a
+ * boot-sequencing flag this model has no other way to see — the same shape as
+ * the console-ready bits found elsewhere in this Hub, a software convention
+ * riding on hardware storage rather than a hardware behaviour of its own. The
+ * masked bits are the only thing establishable from any source; what the
+ * firmware stores there is not.
+ */
+#define HUB_IO_SCRATCH_0        0x400150
+#define HUB_IO_SCRATCH_1        0x400158
+#define IO_SCRATCH_MASK         0x0000000f00f11fffULL
+
+/*
+ * The Incoming Crosstalk Request Buffer array: fifteen slots (0 through 0xE),
+ * four sub-registers each, tracking one outstanding incoming crosstalk
+ * transaction per slot while it is in flight. SGI's own register table admits
+ * it never finished documenting any of the sixty — every entry across all
+ * fifteen slots and all four sub-registers says only "the definition for this
+ * register is not available." Mainline Linux's hubio.h fills the gap with the
+ * real field layout: sub-register C alone carries a read count, a priority
+ * count and prescalar, a BTE operation flag, a combined push-address/byte-
+ * enable field, a supplemental field, and barrier/response/GBR bits — entirely
+ * per-transaction metadata, nothing that reports the slot's own state (that is
+ * sub-register A's "valid" bit, per the same header).
+ *
+ * Real firmware's own boot measurably reads only slots 7 through 14's C
+ * sub-register, four times each — a diagnostic sweep of the array's upper
+ * half, not a wait on any one of them. Implemented only that far, matching
+ * what is measured rather than the whole sixty-register array: this model has
+ * never generated a real incoming crosstalk transaction for any slot to track,
+ * so every field a real slot's C register would hold is honestly zero, the
+ * same reasoning this Hub already applies to the widget status register's
+ * error and retry counts. Not stored — there is nothing to keep and nothing
+ * a guest ever writes here on real hardware.
+ */
+#define HUB_IO_ICRB_C_BASE      0x4004f0  /* slot 7's C register */
+#define HUB_IO_ICRB_C_STRIDE    0x20      /* one slot to the next */
+#define HUB_IO_ICRB_C_FIRST     7
+#define HUB_IO_ICRB_C_LAST      14
+
+/*
  * Memory and directory interface. Both guests we boot read memory size
  * through the synthesized configuration graph rather than this unit's
  * registers directly, which is why only these two exist here: real firmware's
@@ -131,6 +178,27 @@
                                  MD_SLOT_FLASH_READY_HIGH)
 #define IO_XTALK_TIMEOUT_MASK   0xffULL
 #define IO_XTALK_PRESCALE_MASK  0xffffffULL
+
+/*
+ * The first of the memory/directory unit's six hardware performance counters
+ * (IRIX's own hubmd.h and mainline Linux's agree: a 20-bit event counter,
+ * selected by a sibling register this model does not implement). Real
+ * firmware's own boot measurably reads this one specifically 144 times
+ * against 23 writes — repeated resets and re-samples, the shape of a
+ * benchmark or a timed diagnostic loop, not a single setup-then-poll.
+ *
+ * This model counts no real hardware event: nothing here tracks memory or
+ * directory bus activity for a counter to report, so inventing an increment
+ * would be fabricating a measurement rather than modelling one. Answered as
+ * plain storage instead — a write sets the count a real diagnostic would read
+ * back, and the register never advances on its own. Honest for a boot-time
+ * self-test that resets and re-reads to check the register behaves, and
+ * unable to satisfy anything that depends on the count actually changing
+ * between two reads with no write between them; nothing on our boot path is
+ * known to do that.
+ */
+#define HUB_MD_PERF_CNT0        0x210010
+#define MD_PERF_CNT_MASK        0x00000000000fffffULL  /* 20-bit counter */
 
 /*
  * The PCF8584 I2C-bus controller chip real firmware drives heavily during
@@ -325,6 +393,30 @@ static bool sgi_hub_bwin_entry(hwaddr addr, unsigned int *n)
 
     *n = off / HUB_IO_BWIN_STRIDE;
     return true;
+}
+
+/*
+ * Whether addr is one of the measured slots' C register — slots 7 through 14
+ * only, matching real firmware's own measured access pattern rather than the
+ * full fifteen-slot array. The addr < base check comes first so the
+ * subtraction below never wraps before the range is known good.
+ */
+static bool sgi_hub_icrb_c_entry(hwaddr addr)
+{
+    hwaddr off;
+    unsigned int slot;
+
+    if (addr < HUB_IO_ICRB_C_BASE) {
+        return false;
+    }
+
+    off = addr - HUB_IO_ICRB_C_BASE;
+    if (off % HUB_IO_ICRB_C_STRIDE) {
+        return false;
+    }
+
+    slot = HUB_IO_ICRB_C_FIRST + off / HUB_IO_ICRB_C_STRIDE;
+    return slot <= HUB_IO_ICRB_C_LAST;
 }
 
 /*
@@ -553,6 +645,13 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     if (sgi_hub_bwin_entry(addr, &n)) {
         return s->io_bwin[n];
     }
+    if (sgi_hub_icrb_c_entry(addr)) {
+        /*
+         * No slot has ever tracked a real incoming crosstalk transaction, so
+         * every field a real slot's C register would hold is honestly zero.
+         */
+        return 0;
+    }
 
     switch (addr) {
     case HUB_PI_RT_COUNT:
@@ -614,12 +713,18 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->io_xtalk_timeout;
     case HUB_IO_XTALK_PRESCALE:
         return s->io_xtalk_prescale;
+    case HUB_IO_SCRATCH_0:
+        return s->io_scratch[0];
+    case HUB_IO_SCRATCH_1:
+        return s->io_scratch[1];
     case HUB_IO_LINK_STATUS:
         return s->io_link_status;
     case HUB_NI_STATUS:
         return s->ni_status;
     case HUB_MD_SLOT_ID_USTAT:
         return MD_SLOT_FLASH_READY;
+    case HUB_MD_PERF_CNT0:
+        return s->md_perf_cnt0;
     case HUB_MD_I2C_CTRL:
         return I2C_STATUS_IDLE;
     case HUB_MD_I2C_DATA:
@@ -854,6 +959,18 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         sgi_hub_bwin_follow(s, n);
         return;
     }
+    if (sgi_hub_icrb_c_entry(addr)) {
+        /*
+         * Real hardware fills this from a crosstalk transaction in flight, not
+         * from a guest write; nothing on any path we boot writes here, and
+         * there is nothing to keep even if one did.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-hub: write of 0x%" PRIx64 " to the read-only "
+                      "incoming-request-buffer register 0x%" HWADDR_PRIx "\n",
+                      val, addr);
+        return;
+    }
 
     switch (addr) {
     case HUB_PI_RT_COUNT:
@@ -920,6 +1037,20 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_IO_XTALK_PRESCALE:
         s->io_xtalk_prescale = val & IO_XTALK_PRESCALE_MASK;
+        break;
+    case HUB_IO_SCRATCH_0:
+        s->io_scratch[0] = val & IO_SCRATCH_MASK;
+        break;
+    case HUB_IO_SCRATCH_1:
+        s->io_scratch[1] = val & IO_SCRATCH_MASK;
+        break;
+    case HUB_MD_PERF_CNT0:
+        /*
+         * A real self-test resets the counter before a measurement pass;
+         * accepted and stored so the read that follows sees what was written,
+         * with no counting behaviour attached (see the definition above).
+         */
+        s->md_perf_cnt0 = val & MD_PERF_CNT_MASK;
         break;
     case HUB_IO_WIDGET_ID:
     case HUB_IO_WIDGET_STATUS:
@@ -1078,6 +1209,9 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->io_widget_control = IO_WIDGET_CONTROL_RESET;
     s->io_xtalk_timeout = 0;
     s->io_xtalk_prescale = 0;
+    s->io_scratch[0] = 0;
+    s->io_scratch[1] = 0;
+    s->md_perf_cnt0 = 0;
 
     /*
      * Every entry resets to zero, which names widget 0 at its first slice in
@@ -1174,7 +1308,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 7,
+    .version_id = 8,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1199,6 +1333,8 @@ static const VMStateDescription vmstate_sgi_hub = {
          * reset put them, which is where a machine that had no table had them.
          */
         VMSTATE_UINT32_ARRAY_V(io_bwin, SGIHubState, SGI_HUB_BWIN_ENTRIES, 2),
+        VMSTATE_UINT64_ARRAY_V(io_scratch, SGIHubState, 2, 8),
+        VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
         VMSTATE_END_OF_LIST()
     }
 };
