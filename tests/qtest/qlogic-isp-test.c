@@ -462,10 +462,17 @@ static void test_semaphore(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Each mailbox is its own register. Distinct values are written to all eight
- * and read back afterwards rather than one at a time, so a model decoding them
- * to one shared register, or dropping the low address bits, fails here instead
- * of passing eight independent round-trips.
+ * Each mailbox is its own register. Distinct values are written to seven of
+ * the eight and read back afterwards rather than one at a time, so a model
+ * decoding them to one shared register, or dropping the low address bits,
+ * fails here instead of passing seven independent round-trips.
+ *
+ * Mailbox 5 is excluded: it is the response queue's in/out pointer under a
+ * second name, and it is not plain storage — a read always answers the
+ * adapter's own producer count, never whatever was last written here, by
+ * the datasheet's own requirement. test_queue_pointers covers its actual
+ * contract; a plain write-then-read-back here would assert the bug this
+ * device used to have.
  */
 static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -478,9 +485,15 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
     io = qpci_iomap(dev, 0, NULL);
 
     for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
+        if (i == 5) {
+            continue;
+        }
         qpci_io_writew(dev, io, ISP_MAILBOX(i), 0x1000 + i);
     }
     for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
+        if (i == 5) {
+            continue;
+        }
         g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==,
                         0x1000 + i);
     }
@@ -490,12 +503,20 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * The queue pointers are mailboxes 4 and 5 reached under a second name: the
- * driver names request-in and request-out at one address and response-in and
- * response-out at the next, because each address means the host's pointer when
- * written and the adapter's when read. This asserts they are the same two
- * registers, which is the fact a model could plausibly get wrong by decoding
- * them separately, and that they reset to zero.
+ * The queue pointers are mailboxes 4 and 5 reached under a second name, and
+ * the two are not symmetric. Request-in (mailbox 4) really is plain storage:
+ * the guest is the only writer, so a read answers back whatever it last
+ * wrote, and this asserts that round-trip and that request-in and mailbox 4
+ * are the same register rather than a separate decode.
+ *
+ * Response-in (mailbox 5) is not plain storage. A read always answers the
+ * adapter's own producer count — still 0 here, since nothing has posted a
+ * completion — never whatever the guest just wrote to that address; the
+ * datasheet is explicit that letting a guest's write overwrite the
+ * adapter's published count is the bug this device used to have. The
+ * guest's write is recorded as its consumer position instead, which this
+ * test has no completion to make observable; that half of the contract is
+ * test_ack_does_not_erase_a_later_completion's job.
  */
 static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -513,11 +534,10 @@ static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
     qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 0x0043);
 
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0x0021);
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0x0043);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
 
-    /* Same registers as mailboxes 4 and 5, not a separate decode. */
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==, 0x0021);
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(5)), ==, 0x0043);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(5)), ==, 0);
 
     qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
     qpci_iounmap(dev, io);
@@ -1476,6 +1496,137 @@ static void test_nvram_read_fails(void *obj, void *data, QGuestAllocator *alloc)
     qpci_iounmap(dev, io);
 }
 
+/*
+ * Four completions with nothing acknowledged, on a four-entry response ring.
+ *
+ * This is the shape the adapter's own datasheet names: the driver issues each
+ * command as its own doorbell, and a model with no bus latency can complete all
+ * of them before the guest reads the response queue once. A ring that tracks no
+ * acknowledged position and reserves no slot wraps its producer back onto the
+ * consumer, and producer equal to consumer is how every driver spells *empty* —
+ * so four posted completions become invisible and the guest sleeps.
+ *
+ * The request ring is given eight entries so that only the response side is
+ * under test.
+ */
+static void test_four_completions_do_not_read_as_empty(void *obj, void *data,
+                                                       QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   8, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    for (i = 0; i < 4; i++) {
+        isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1000 + i);
+        qtest_memwrite(qts, rqst_addr + i * ISP_QUEUE_ENTRY_SIZE,
+                       entry, sizeof(entry));
+    }
+
+    /* One doorbell per command, which is how the driver issues them. */
+    for (i = 0; i < 4; i++) {
+        qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, i + 1);
+    }
+
+    /*
+     * Nothing has been acknowledged, so four entries are outstanding and the
+     * producer must not have come to rest on the consumer.
+     */
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), !=, 0);
+}
+
+/*
+ * The guest's acknowledgement must not erase a completion posted behind it.
+ *
+ * The response queue's in and out pointers share one address: the adapter
+ * publishes its producer there and the driver writes its consumer there. The
+ * driver reads the producer once at the top of its handler and writes that same
+ * value back as its acknowledgement at the end, so any completion landing in
+ * between is one the adapter published into storage the driver is about to
+ * overwrite with an older number.
+ *
+ * The ring is given eight entries so that a wrap cannot be the cause; this is
+ * about the shared address alone.
+ */
+static void test_ack_does_not_erase_a_later_completion(void *obj, void *data,
+                                                       QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t first_read;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   8, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   8, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2001);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    /* The driver reads the producer once, at the top of its handler. */
+    first_read = qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE);
+    g_assert_cmpuint(first_read, ==, 1);
+
+    /* A second completion lands while the handler is still running. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2002);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    /* The driver finishes and acknowledges what it read: one entry. */
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, first_read);
+
+    /*
+     * The adapter has two completions posted. The next read of the producer
+     * must be the adapter's own count, not the number the driver just wrote.
+     */
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -1531,6 +1682,10 @@ static void qlogic_isp_register_nodes(void)
                  test_continuation_entry_segments, NULL);
     qos_add_test("nvram-read-fails", "qlogic-isp1040",
                  test_nvram_read_fails, NULL);
+    qos_add_test("four-completions-not-empty", "qlogic-isp1040",
+                 test_four_completions_do_not_read_as_empty, NULL);
+    qos_add_test("ack-does-not-erase-completion", "qlogic-isp1040",
+                 test_ack_does_not_erase_a_later_completion, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);
