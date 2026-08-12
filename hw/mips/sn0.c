@@ -1922,7 +1922,45 @@ static void sn0_init(MachineState *machine)
      * test and every guest we care about uses. Booting from a disk is the
      * firmware's job and arrives with the disk.
      */
-    if (machine->kernel_filename) {
+    if (machine->kernel_filename && sn0_kernel_file_is_ecoff(machine->kernel_filename)) {
+        uint64_t entry, gp_value, low, high;
+        hwaddr scratch, argv0_str, argv_array, envp_array, sp;
+        size_t name_len = strlen(machine->kernel_filename) + 1;
+        uint32_t argv0_ptr, zero32 = 0;
+
+        sn0_load_ecoff(machine->kernel_filename, node,
+                       &entry, &gp_value, &low, &high);
+
+        /*
+         * argv/envp/stack for the handoff, in sash's own node-local address
+         * space (added to node only where memory is actually populated
+         * below), placed a fixed gap above wherever this image's own
+         * sections ended -- never a hard-coded address, since the two IRIX
+         * releases this project holds ship differently sized sashARCS
+         * images.
+         */
+        scratch = ROUND_UP(high, SN0_SASH_SCRATCH_GAP) + SN0_SASH_SCRATCH_GAP;
+        argv0_str = scratch;
+        argv_array = argv0_str + ROUND_UP(name_len, sizeof(uint32_t));
+        envp_array = argv_array + 2 * sizeof(uint32_t);
+        sp = ROUND_UP(envp_array + sizeof(uint32_t), 16) + SN0_SASH_STACK_SIZE;
+
+        argv0_ptr = cpu_to_be32(argv0_str);
+        rom_add_blob_fixed("sn0.sash.argv0", machine->kernel_filename,
+                           name_len, node + argv0_str);
+        rom_add_blob_fixed("sn0.sash.argv", &argv0_ptr, sizeof(argv0_ptr),
+                           node + argv_array);
+        rom_add_blob_fixed("sn0.sash.argv.nul", &zero32, sizeof(zero32),
+                           node + argv_array + sizeof(uint32_t));
+        rom_add_blob_fixed("sn0.sash.envp.nul", &zero32, sizeof(zero32),
+                           node + envp_array);
+
+        sn0_build_sash_handoff(flash, fw, fw_vaddr, entry, gp_value, 1,
+                               argv_array, envp_array, sp);
+
+        kernel_page = low / 0x1000;
+        kernel_pages = (high - low + 0xfff) / 0x1000;
+    } else if (machine->kernel_filename) {
         uint64_t entry, low, high;
         ssize_t size = load_elf(machine->kernel_filename, NULL,
                                 sn0_elf_to_phys, NULL, &entry, &low, &high,
