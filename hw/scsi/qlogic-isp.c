@@ -1065,6 +1065,20 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
     if (!qlogic_isp_resp_has_room(s)) {
         QLogicISPPendingStatus *pending = g_new0(QLogicISPPendingStatus, 1);
 
+        /*
+         * Real hardware never reaches this — the datasheet's own words —
+         * so a driver that gets here is either far outrunning the
+         * acknowledgement pace any real adapter's bus latency would allow,
+         * or the guest's own request pacing has a bug. Loud on purpose:
+         * this path is unreachable under any driver this model currently
+         * boots, and holding the completion rather than dropping it must
+         * not also make the condition invisible if it ever does fire.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: response queue full, holding handle "
+                      "0x%08" PRIx32 " until the guest acknowledges\n",
+                      handle);
+
         pending->handle = handle;
         pending->scsi_status = scsi_status;
         pending->completion = completion;
