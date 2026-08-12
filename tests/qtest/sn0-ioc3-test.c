@@ -1312,13 +1312,21 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
     word1 = qtest_readl(qts, rxbuf + 4);
     qtest_memread(qts, rxbuf + 66, landed, sizeof(landed));
 
-    /* Valid, and the eleven-bit byte count matches what was sent. */
+    /*
+     * Valid, and the eleven-bit byte count matches what was sent plus the
+     * four-byte FCS a real MAC would have captured alongside it -- QEMU's
+     * net layer never delivers one, but both guests' drivers read this
+     * field as the wire length including it (OpenBSD's iec_rxintr checks
+     * it against ETHER_MIN_LEN before ever subtracting ETHER_CRC_LEN), so
+     * the model has to add the four phantom bytes back to match what real
+     * hardware would report here.
+     */
     g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
-    g_assert_cmphex((word0 >> 16) & 0x7ff, ==, sizeof(frame));
+    g_assert_cmphex((word0 >> 16) & 0x7ff, ==, sizeof(frame) + 4);
 
     /* The split length field reassembles to the same count. */
     g_assert_cmphex((((word1 >> 16) & 0x3ff) << 3) | ((word1 >> 12) & 0x7),
-                    ==, sizeof(frame));
+                    ==, sizeof(frame) + 4);
 
     /* An all-ones destination is reported as broadcast. */
     g_assert_cmphex(word1 & (1u << 27), ==, (1u << 27));

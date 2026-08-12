@@ -95,7 +95,7 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
                                     size_t size)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
-    uint32_t consume, offset, mcr, word0, word1, lenlo, lenhi;
+    uint32_t consume, offset, mcr, word0, word1, lenlo, lenhi, wire_len;
     uint64_t ring_base, buf_addr;
 
     if (!sgi_ioc3_eth_can_receive(nc)) {
@@ -119,12 +119,28 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
     offset = ((mcr & SGI_IOC3_ENET_MCR_RXOFF_MASK) >>
              SGI_IOC3_ENET_MCR_RXOFF_SHIFT) * 2;
 
+    /*
+     * Both guests read this length field as the wire length including the
+     * four-byte FCS a real MAC captures alongside the frame -- OpenBSD's
+     * iec_rxintr() checks it against ETHER_MIN_LEN before ever subtracting
+     * ETHER_CRC_LEN, and IRIX's own if_ef.c computes rlen = BYTECNT -
+     * ETHER_CRCSZ the same way, independently. QEMU's net layer never
+     * delivers a trailing CRC -- there is no physical layer here to produce
+     * one -- so the length reported has to add the four phantom bytes back
+     * to match what real hardware would say, even though only `size` bytes
+     * of real payload follow. Without this, any frame at or under the wire
+     * minimum reports four bytes short, fails the guest's own minimum-length
+     * check, and is silently dropped -- exactly the frames a DHCP exchange's
+     * short broadcast packets tend to be.
+     */
+    wire_len = (uint32_t)size + 4;
+
     word0 = SGI_IOC3_ENET_RXH_VALID |
-           (((uint32_t)size << SGI_IOC3_ENET_RXH_BYTECNT_SHIFT) &
+           ((wire_len << SGI_IOC3_ENET_RXH_BYTECNT_SHIFT) &
             SGI_IOC3_ENET_RXH_BYTECNT_MASK);
 
-    lenlo = (uint32_t)size & 0x7u;
-    lenhi = ((uint32_t)size >> 3) & 0x3ffu;
+    lenlo = wire_len & 0x7u;
+    lenhi = (wire_len >> 3) & 0x3ffu;
     word1 = SGI_IOC3_ENET_RXE_GOODPKT |
            (lenlo << SGI_IOC3_ENET_RXE_LEN_LO_SHIFT) |
            (lenhi << SGI_IOC3_ENET_RXE_LEN_HI_SHIFT);
