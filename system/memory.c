@@ -427,6 +427,25 @@ static int get_cpu_index(void)
     return -1;
 }
 
+/*
+ * The trace events below carried no notion of which guest instruction
+ * caused the access they record, which is fine for reads/writes QEMU's -d
+ * masks already flag as unusual (LOG_UNIMP, LOG_GUEST_ERROR fire from the
+ * fault site, which is a PC) but left a *successful* access anonymous. The
+ * CPUClass get_pc() hook every target already implements for gdbstub is
+ * the existing, target-agnostic way to ask "what is the current CPU
+ * executing right now" without forcing single-step mode. Called only from
+ * inside the same trace_event_get_state_backends() guard the two call
+ * sites below already use, so it costs nothing when the event is off.
+ */
+static uint64_t get_cpu_pc(void)
+{
+    if (current_cpu) {
+        return current_cpu->cc->get_pc(current_cpu);
+    }
+    return 0;
+}
+
 static MemTxResult  memory_region_read_accessor(MemoryRegion *mr,
                                                 hwaddr addr,
                                                 uint64_t *value,
@@ -443,7 +462,7 @@ static MemTxResult  memory_region_read_accessor(MemoryRegion *mr,
     } else if (trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_READ)) {
         hwaddr abs_addr = memory_region_to_absolute_addr(mr, addr);
         trace_memory_region_ops_read(get_cpu_index(), mr, abs_addr, tmp, size,
-                                     memory_region_name(mr));
+                                     memory_region_name(mr), get_cpu_pc());
     }
     memory_region_shift_read_access(value, shift, mask, tmp);
     return MEMTX_OK;
@@ -466,7 +485,7 @@ static MemTxResult memory_region_read_with_attrs_accessor(MemoryRegion *mr,
     } else if (trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_READ)) {
         hwaddr abs_addr = memory_region_to_absolute_addr(mr, addr);
         trace_memory_region_ops_read(get_cpu_index(), mr, abs_addr, tmp, size,
-                                     memory_region_name(mr));
+                                     memory_region_name(mr), get_cpu_pc());
     }
     memory_region_shift_read_access(value, shift, mask, tmp);
     return r;
@@ -487,7 +506,7 @@ static MemTxResult memory_region_write_accessor(MemoryRegion *mr,
     } else if (trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_WRITE)) {
         hwaddr abs_addr = memory_region_to_absolute_addr(mr, addr);
         trace_memory_region_ops_write(get_cpu_index(), mr, abs_addr, tmp, size,
-                                      memory_region_name(mr));
+                                      memory_region_name(mr), get_cpu_pc());
     }
     mr->ops->write(mr->opaque, addr, tmp, size);
     return MEMTX_OK;
@@ -508,7 +527,7 @@ static MemTxResult memory_region_write_with_attrs_accessor(MemoryRegion *mr,
     } else if (trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_WRITE)) {
         hwaddr abs_addr = memory_region_to_absolute_addr(mr, addr);
         trace_memory_region_ops_write(get_cpu_index(), mr, abs_addr, tmp, size,
-                                      memory_region_name(mr));
+                                      memory_region_name(mr), get_cpu_pc());
     }
     return mr->ops->write_with_attrs(mr->opaque, addr, tmp, size, attrs);
 }
