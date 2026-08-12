@@ -93,6 +93,16 @@ static void sn0_ioc3_attach(QTestState *qts)
  */
 #define BRIDGE_INT_STATUS (BRIDGE_BASE + 0x100 + REG_DATA)
 #define BRIDGE_PIN_SUPERIO (1u << 3)   /* SN0_IOC3_SUPERIO_PIN, restated */
+/*
+ * The ethernet block's interrupt has no direct wire of its own -- unlike the
+ * SuperIO one above, it travels this chip's ordinary PCI interrupt pin (PIN_A,
+ * config space byte PCI_INTERRUPT_PIN) through the Bridge's default INTx
+ * routing. sgi_bridge_map_irq() computes that routing as the slot number for
+ * an even (A/C) pin, and the controller sits at PCI slot 2, so this is the
+ * pin sgi_bridge_map_irq(dev, 0) gives -- not an independent constant, a
+ * restatement of what that routing does for this one slot and pin.
+ */
+#define BRIDGE_PIN_ETH (1u << 2)
 
 /* The MicroLAN engine and the pin block it shares a window with. */
 #define MICROLAN_CONTROL (IOC3_BASE + 0x30)
@@ -1322,6 +1332,69 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The register-only ack test above checks that a write clears the status bits
+ * it names; it does not check that the line those bits gate actually follows.
+ * A model that cleared the register without recomputing the line would pass
+ * that test and still leave a real guest's interrupt permanently asserted --
+ * the driver's own acknowledge write clears the source, the line stays high
+ * from whatever set it, and the very next dispatch finds an asserted line
+ * with nothing left in the register to explain it, which every guest here
+ * reports as a spurious interrupt rather than diagnosing as a stuck one. This
+ * sends a real inline frame requesting a completion interrupt (the same path
+ * test_the_ethernet_transmit_sends_inline_frame uses to reach the same bits),
+ * then checks the Bridge's own interrupt status for the pin that path's own
+ * PCI routing lands on -- live, the same way the SuperIO line's test checks
+ * it -- before and after the guest's acknowledge write.
+ */
+static void test_the_ethernet_interrupt_line_drops_when_acknowledged(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[14] = { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00 };
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+    qtest_writel(qts, ENET_INT_ENABLE, ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
+
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, 0);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    /* The frame the engine sent is drained so the socket does not hold it
+     * open across the assertion below; its content is already covered by
+     * test_the_ethernet_transmit_sends_inline_frame. */
+    {
+        uint8_t drained[64];
+        net_socket_recv_frame(sv[0], drained, sizeof(drained));
+    }
+
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+
+    qtest_writel(qts, ENET_INT_STATUS,
+                ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
+
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_the_media_interface_never_reads_busy(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1852,6 +1925,8 @@ int main(int argc, char **argv)
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
                         test_the_ethernet_receive_delivers_a_frame);
+    qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
+                        test_the_ethernet_interrupt_line_drops_when_acknowledged);
     qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
                         test_the_media_interface_never_reads_busy);
     qtest_add_data_func("sn0/ioc3/buffer-ram-halves-are-distinct", NULL,
