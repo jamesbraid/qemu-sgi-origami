@@ -37,6 +37,15 @@
 #define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
 #define HUB_BY_NODE     (SPACE_XTALK + 0x01800000)
 
+/*
+ * The slot-identity register, and the boot flash's ready signal at both of the
+ * bit positions it appears at. Asserting only one would pass against a model
+ * that reports ready at that one and hangs firmware polling the other.
+ */
+#define MD_SLOT_ID_USTAT            0x220048
+#define MD_SLOT_FLASH_READY_LOW     (1ULL << 0)
+#define MD_SLOT_FLASH_READY_HIGH    (1ULL << 4)
+
 #define PI_REGION_PRESENT   0x000018
 #define PI_PROCESSOR_NUMBER 0x000020
 #define PI_CALIAS_SIZE      0x000028
@@ -177,6 +186,37 @@ static void sn0_hub_attach_ioc3(QTestState *qts)
                 PCI_COMMAND_MEMORY);
     qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+/*
+ * Real firmware polls the boot flash's ready signal before it touches the
+ * flash, and the signal is reported at two bit positions that the register
+ * table states are the same signal. Both must read ready out of reset: a model
+ * reporting only one leaves firmware polling the other waiting forever, and
+ * that failure is a boot that stops with nothing logged rather than an error.
+ *
+ * Asserting both is the point. Either bit alone is a weaker property than the
+ * one that has to hold, and a model setting only the bit a one-sided test names
+ * would pass it while still hanging the firmware that reads the other.
+ *
+ * Nothing else in this register is asserted. The remaining fields sample a
+ * second board's master/slave sense, a bus-fault line, a jumper identity and a
+ * processor-speed strap — signals this machine does not have — and the register
+ * table declares no reset value for any of them, so an assertion here would
+ * certify a choice rather than a fact.
+ */
+static void test_the_flash_ready_signal_reads_ready_at_both_bits(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t slot = qtest_readq(qts, HUB_LOCAL + MD_SLOT_ID_USTAT);
+
+    g_assert_cmphex(slot & MD_SLOT_FLASH_READY_LOW, ==,
+                    MD_SLOT_FLASH_READY_LOW);
+    g_assert_cmphex(slot & MD_SLOT_FLASH_READY_HIGH, ==,
+                    MD_SLOT_FLASH_READY_HIGH);
+
+    qtest_quit(qts);
 }
 
 /*
@@ -1034,6 +1074,8 @@ int main(int argc, char **argv)
                         test_the_hub_identifies_itself_on_the_crossbar);
     qtest_add_data_func("sn0/hub/widget-control-reset", NULL,
                         test_the_widget_control_reset_values);
+    qtest_add_data_func("sn0/hub/flash-ready-at-both-bits", NULL,
+                        test_the_flash_ready_signal_reads_ready_at_both_bits);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,
