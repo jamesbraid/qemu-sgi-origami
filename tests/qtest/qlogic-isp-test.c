@@ -106,6 +106,11 @@
 #define ISP_ENTRY_TYPE_REQUEST      0x01
 #define ISP_ENTRY_TYPE_CONTINUATION 0x02
 #define ISP_ENTRY_TYPE_STATUS       0x03
+/* EXTENDED_CMD_TYPE (qla1280.h): real, documented, and "Unused by the
+ * driver!" per its own struct comment -- a genuinely safe stand-in for
+ * "an entry type this model does not implement" now that COMMAND_A64_TYPE
+ * (0x09) is one this model does. */
+#define ISP_ENTRY_TYPE_EXTENDED_CMD 0x05
 
 #define ISP_CONT_OFF_SEGS 8
 #define ISP_CONT_SEGS     7
@@ -118,6 +123,29 @@
 #define ISP_REQ_OFF_CDB          20
 #define ISP_REQ_OFF_SEGS         32
 #define ISP_SEG_SIZE             8
+
+/*
+ * The 64-bit addressing pair (datasheet's "64-bit addressing entries"
+ * section): Linux/IP27's only request format. LUN and target are two
+ * separate bytes, not one packed word; each segment is 12 bytes (a 64-bit
+ * address as two 32-bit words, low half first, then a 32-bit length)
+ * instead of 8; two inline segments instead of four; five per continuation
+ * instead of seven.
+ */
+#define ISP_ENTRY_TYPE_COMMAND_A64  0x09
+#define ISP_ENTRY_TYPE_CONTINUE_A64 0x0a
+
+#define ISP_A64_REQ_OFF_LUN      8
+#define ISP_A64_REQ_OFF_TARGET   9
+#define ISP_A64_REQ_OFF_CDBLEN   10
+#define ISP_A64_REQ_OFF_TIMEOUT  16
+#define ISP_A64_REQ_OFF_SEGCOUNT 18
+#define ISP_A64_REQ_OFF_CDB      20
+#define ISP_A64_REQ_OFF_SEGS     40
+#define ISP_A64_SEG_SIZE         12
+
+#define ISP_A64_CONT_OFF_SEGS 4
+#define ISP_A64_CONT_SEGS     5
 
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
@@ -1527,39 +1555,21 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
 }
 
 /*
- * Linux's 64-bit command entry (qla1280.h's cmd_a64_entry_t, entry type 9)
- * is a request-queue entry type this model does not implement -- the
- * live-confirmed failure from adversarial review task #74/#97 finding
- * #2/#4: a real Linux/IP27 boot posts one of these and then waits forever
- * for a completion this adapter used to silently never send, because the
- * request-processing loop's default case consumed the entry and moved on
- * without answering it. This test does not exercise the fix that would
- * make a 64-bit command actually work -- no data moves and no SCSI
- * command reaches a target -- it exercises the guarantee that the guest
- * is told INCOMPLETE for the handle it is actually waiting on, using the
- * offset every entry type carrying a handle places it at (confirmed
- * against cmd_a64_entry_t: offset 4, identical to the 32-bit request
- * entry this model implements). state_flags is zero: no phase of the
- * command was understood well enough to claim otherwise.
+ * Originally exercised with COMMAND_A64_TYPE (0x09) as the example
+ * unrecognized entry type -- the live-confirmed failure from adversarial
+ * review task #74/#97 finding #2/#4, where a real Linux/IP27 boot posted
+ * one of these and waited forever for a completion this adapter used to
+ * silently never send, because the request-processing loop's default case
+ * consumed the entry and moved on without answering it. 0x09 stopped being
+ * a usable example the moment task #114 implemented it for real: it is now
+ * COMMAND_A64_TYPE handled by qlogic_isp_handle_request_a64(), not the
+ * default case, so this test switched to EXTENDED_CMD_TYPE (0x05) --
+ * genuinely unimplemented, per Linux's own struct comment on it. The
+ * property under test is unchanged: the guest is told INCOMPLETE for the
+ * handle it is actually waiting on, using the offset every entry type
+ * carrying a handle places it at, rather than left waiting on an entry the
+ * model silently consumed.
  */
-#define ISP_ENTRY_TYPE_COMMAND_A64 0x09
-#define ISP_ENTRY_TYPE_CONTINUE_A64 0x0a
-
-/*
- * cont_a64_entry (qla1280.h) is the other live-confirmed entry type from the
- * same finding, and it does not carry a handle at all: its offset 4 is
- * dseg_0_address's low 32 bits -- the start of a DMA buffer address, a
- * completely different meaning from ISP_REQ_OFF_HANDLE at the same offset in
- * every entry type that does carry one. Answering it as though it were a
- * handle would be strictly worse than the original silent-hang bug: it would
- * complete an arbitrary in-flight command (whichever handle the address
- * happens to collide with) instead of the one actually waiting. This offset
- * is named separately from ISP_REQ_OFF_HANDLE, even though both are 4, so a
- * reader sees the two are the same number for unrelated reasons rather than
- * one constant doing double duty.
- */
-#define ISP_CONT_A64_OFF_DSEG0_LOW 4
-
 static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
                                                      QGuestAllocator *alloc)
 {
@@ -1592,7 +1602,7 @@ static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
     qlogic_isp_ack(dev, io);
 
     memset(entry, 0, sizeof(entry));
-    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[0] = ISP_ENTRY_TYPE_EXTENDED_CMD;
     entry[1] = 1;
     isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x64);
 
@@ -1614,16 +1624,22 @@ static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
  * fabric-dev's review of the fix above (task #106) confirmed it is correct
  * only because of something nothing tested: qlogic_isp_process_requests()
  * advances rqst_cons by the dispatched entry's own entry_count, so a
- * COMMAND_A64_TYPE entry with a CONTINUE_A64_TYPE entry in the next slot
- * has its continuation consumed as part of the same dispatch -- the
- * continuation never reaches the default case as an entry of its own. If
- * that advance ever regressed to a plain +1, the continuation WOULD reach
- * the default case next, and this model would read
- * ISP_CONT_A64_OFF_DSEG0_LOW as a handle: the low 32 bits of a DMA buffer
- * address, misread as the identifier of whichever in-flight command that
- * value happens to collide with. That is a silent, spurious I/O failure
- * on an unrelated healthy command -- worse than the hang this fix
- * replaced, because nothing would name the cause.
+ * multi-slot entry has its later slots consumed as part of the same
+ * dispatch -- they never reach the default case as an entry of their own.
+ * Originally built with COMMAND_A64_TYPE (0x09) as the "command", which
+ * stopped being a usable example once task #114 implemented it for real;
+ * switched to EXTENDED_CMD_TYPE (0x05), still genuinely unimplemented. The
+ * second slot keeps CONTINUE_A64_TYPE's real shape, since what it actually
+ * is never matters here -- entry_count skips it regardless -- and it is
+ * the concrete case that motivates the test: CONTINUE_A64_TYPE's offset 4
+ * is a DMA buffer address's low 32 bits, not a handle, confirmed against
+ * qla1280.h's struct cont_a64_entry. If the entry_count advance ever
+ * regressed to a plain +1, that second slot WOULD reach the default case
+ * next, and this model would read that address as a handle: the identifier
+ * of whichever in-flight command that value happens to collide with. That
+ * is a silent, spurious I/O failure on an unrelated healthy command --
+ * worse than the hang this fix replaced, because nothing would name the
+ * cause.
  *
  * This test is the one that would fail if that regression happened:
  * exactly one completion posted, carrying the command's own handle, not
@@ -1682,7 +1698,7 @@ static void test_unrecognized_entry_type_consumes_continuation(void *obj,
 
     /* Slot 0: the command, entry_count 2 -- this entry plus one continuation. */
     memset(entry, 0, sizeof(entry));
-    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[0] = ISP_ENTRY_TYPE_EXTENDED_CMD;
     entry[1] = 2;
     isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x64);
     qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
@@ -1695,7 +1711,7 @@ static void test_unrecognized_entry_type_consumes_continuation(void *obj,
     memset(cont, 0, sizeof(cont));
     cont[0] = ISP_ENTRY_TYPE_CONTINUE_A64;
     cont[1] = 1;
-    isp_put32(cont, ISP_CONT_A64_OFF_DSEG0_LOW, 0xdeadbeef);
+    isp_put32(cont, ISP_A64_CONT_OFF_SEGS, 0xdeadbeef);
     qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, cont, sizeof(cont));
 
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
@@ -1949,6 +1965,243 @@ static void test_continuation_entry_segments(void *obj, void *data,
      */
     memset(entry, 0, sizeof(entry));
     entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x3);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr + 3 * ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 4);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 3);
+
+    qtest_memread(qts, resp_addr + 2 * ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x3);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Task #114: the real Linux/IP27 disk-boot gate. task #106 made an
+ * unrecognized COMMAND_A64_TYPE entry fail visibly instead of hanging the
+ * guest forever, but visibly failing is not the same as working -- Linux
+ * never falls back to the type-0 format on this architecture (confirmed:
+ * QLA_64BIT_PTR follows CONFIG_ARCH_DMA_ADDR_T_64BIT, which every 64-bit
+ * kernel sets, with no runtime alternative), so every SCSI command a real
+ * Linux/IP27 boot issues past firmware load is this format. This test is
+ * the A64 counterpart of test_inquiry_data_transfer above: same inquiry,
+ * same "does not crash, actually moves bytes" bar, through the A64 fields
+ * confirmed against qla1280.h's cmd_a64_entry_t -- one inline 12-byte
+ * segment, low 32 bits of the address first.
+ */
+static void test_a64_inquiry_data_transfer(void *obj, void *data,
+                                           QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr, data_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t inquiry[36];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    data_addr = guest_alloc(alloc, sizeof(inquiry));
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* First command absorbs the power-on unit attention, same as above. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qlogic_isp_ack(dev, io);
+
+    /* Second command: a real inquiry with a 64-bit-addressed data-in segment. */
+    memset(inquiry, 0xff, sizeof(inquiry));
+    qtest_memwrite(qts, data_addr, inquiry, sizeof(inquiry));
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 1);
+    entry[ISP_REQ_OFF_CDB + 0] = INQUIRY;
+    entry[ISP_REQ_OFF_CDB + 4] = sizeof(inquiry);    /* allocation length */
+    isp_put32(entry, ISP_A64_REQ_OFF_SEGS + 0, (uint32_t)data_addr);
+    isp_put32(entry, ISP_A64_REQ_OFF_SEGS + 4, (uint32_t)(data_addr >> 32));
+    isp_put32(entry, ISP_A64_REQ_OFF_SEGS + 8, sizeof(inquiry));
+
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x2);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qtest_memread(qts, data_addr, inquiry, sizeof(inquiry));
+    g_assert_cmphex(inquiry[0], ==, 0x00);
+    g_assert_cmpint(memcmp(&inquiry[8], "QEMU    ", 8), ==, 0);
+    g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The A64 counterpart of test_continuation_entry_segments above: the same
+ * "the boundary itself gets exercised" shape, but crossing at two inline
+ * segments instead of four, since that is where the A64 format's own
+ * inline capacity ends (confirmed against cmd_a64_entry_t: two 12-byte
+ * segments, not four 8-byte ones). Splits the inquiry into two inline
+ * pieces that exactly fill the request entry's own capacity, then one
+ * more in a continuation entry, at non-adjacent guest-memory destinations
+ * for the same reason the type-0 version uses non-adjacent ones: a model
+ * that only worked because the pieces happened to be contiguous would be
+ * passing for the wrong reason.
+ */
+static void test_a64_continuation_entry_segments(void *obj, void *data,
+                                                  QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint64_t piece[3];
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t cont[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t inquiry[36];
+    size_t i;
+    const uint8_t piece_len[3] = { 16, 16, 4 };
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    for (i = 0; i < 3; i++) {
+        piece[i] = guest_alloc(alloc, 64);   /* deliberately not adjacent */
+    }
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Slot 0: absorb the power-on unit attention, same as every test above. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qlogic_isp_ack(dev, io);
+
+    /*
+     * Slots 1 and 2: the inquiry itself, three segments, two ring entries.
+     * Poison every destination first so a segment the model never writes
+     * shows up as 0xff instead of the zeroed guest_alloc default.
+     */
+    for (i = 0; i < 3; i++) {
+        uint8_t poison[64];
+        memset(poison, 0xff, sizeof(poison));
+        qtest_memwrite(qts, piece[i], poison, sizeof(poison));
+    }
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
+    entry[1] = 2;    /* this entry plus one continuation. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 3);
+    entry[ISP_REQ_OFF_CDB + 0] = INQUIRY;
+    entry[ISP_REQ_OFF_CDB + 4] = sizeof(inquiry);
+    for (i = 0; i < 2; i++) {
+        int off = ISP_A64_REQ_OFF_SEGS + i * ISP_A64_SEG_SIZE;
+
+        isp_put32(entry, off + 0, (uint32_t)piece[i]);
+        isp_put32(entry, off + 4, (uint32_t)(piece[i] >> 32));
+        isp_put32(entry, off + 8, piece_len[i]);
+    }
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+
+    memset(cont, 0, sizeof(cont));
+    cont[0] = ISP_ENTRY_TYPE_CONTINUE_A64;
+    cont[1] = 1;
+    isp_put32(cont, ISP_A64_CONT_OFF_SEGS + 0, (uint32_t)piece[2]);
+    isp_put32(cont, ISP_A64_CONT_OFF_SEGS + 4, (uint32_t)(piece[2] >> 32));
+    isp_put32(cont, ISP_A64_CONT_OFF_SEGS + 8, piece_len[2]);
+    qtest_memwrite(qts, rqst_addr + 2 * ISP_QUEUE_ENTRY_SIZE, cont,
+                   sizeof(cont));
+
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 3);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                 sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x2);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Reassemble the three DMA'd pieces and check them like one buffer. */
+    for (i = 0; i < 3; i++) {
+        qtest_memread(qts, piece[i], inquiry + (i < 2 ? i * 16 : 32),
+                     piece_len[i]);
+    }
+    g_assert_cmphex(inquiry[0], ==, 0x00);
+    g_assert_cmpint(memcmp(&inquiry[8], "QEMU    ", 8), ==, 0);
+    g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
+
+    /*
+     * Slot 3: the ring walker must have advanced rqst_cons by this A64
+     * command's entry_count (2), exactly as the type-0 version of this
+     * check already proves for the type-0 format -- this is the same
+     * property, exercised through the format that actually reaches this
+     * code on a real Linux/IP27 boot.
+     */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
     entry[1] = 1;
     isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x3);
     isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
@@ -2318,6 +2571,10 @@ static void qlogic_isp_register_nodes(void)
                  test_inquiry_data_transfer, NULL);
     qos_add_test("continuation-entry-segments", "qlogic-isp1040",
                  test_continuation_entry_segments, NULL);
+    qos_add_test("a64-inquiry-data-transfer", "qlogic-isp1040",
+                 test_a64_inquiry_data_transfer, NULL);
+    qos_add_test("a64-continuation-entry-segments", "qlogic-isp1040",
+                 test_a64_continuation_entry_segments, NULL);
     qos_add_test("nvram-read-fails", "qlogic-isp1040",
                  test_nvram_read_fails, NULL);
     qos_add_test("four-completions-not-empty", "qlogic-isp1040",
