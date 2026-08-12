@@ -10,6 +10,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
 #include "hw/rtc/m48t35.h"
+#include "hw/net/dp83840.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3 "sgi-ioc3"
@@ -220,11 +221,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_ENET_MII_BUSY      (1u << 11)
 
 /*
- * No physical-layer chip answers. A driver scans all thirty-two addresses
- * reading identifier registers, and an absent one reads as all-ones on a real
- * bus, so that is what a read returns.
+ * An address with no transceiver on it reads as all-ones, which is what a
+ * driver scanning the thirty-two addresses takes as "nothing here". The board
+ * has exactly one transceiver and every other address must answer this way, or
+ * the scan stops at the wrong one.
  */
 #define SGI_IOC3_ENET_MII_ABSENT    0xffffu
+
+/*
+ * How the management control register carries a request: the register number
+ * in the low five bits and the transceiver address above it. A read is asked
+ * for explicitly; a write is what the register means without that bit.
+ */
+#define SGI_IOC3_ENET_MII_REG_MASK  0x1fu
+#define SGI_IOC3_ENET_MII_PHY_SHIFT 5
+#define SGI_IOC3_ENET_MII_PHY_MASK  0x1fu
 
 /*
  * The ethernet buffer RAM, reached through the diagnostic window that gives
@@ -313,6 +324,23 @@ struct SGIIOC3State {
      */
     MemoryRegion enet;
     uint32_t enet_reg[SGI_IOC3_ENET_REGS];
+
+    /*
+     * The transceiver on the far end of the management registers. It is a
+     * child of this chip because that is the only way to it: no address of its
+     * own, reached by a guest writing an address and a register number here.
+     */
+    DP83840State phy;
+
+    /*
+     * The two halves of a management transfer. The word a read request
+     * fetched, held until the guest reads the data register, and the word a
+     * guest loaded before issuing a write. They are separate registers on the
+     * chip and separate here, because a driver loads one and reads the other
+     * without the two ever meeting.
+     */
+    uint16_t mii_data;
+    uint16_t mii_data_w;
 
     /*
      * The serial DMA block, held the same way and for the same reason: nearly
