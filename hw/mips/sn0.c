@@ -853,10 +853,24 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
  * was standing in for as long as each type had exactly one member appearing
  * first. Add a second processor, or a second component of any type, and the
  * two numbers stop agreeing.
+ *
+ * `physical_id` is a third identifier again, and it is a parameter rather than
+ * something a caller may add afterwards because leaving it out is exactly the
+ * defect this signature exists to prevent. Real firmware writes it for every
+ * component type and each type means something different by it: a processor's
+ * is its processor index, a Hub's is its node identifier, a memory bank's is
+ * its bank index, the I/O bridge's is its widget number, and a disk or I/O
+ * controller's is its PCI device number. It shares a record with `widget`,
+ * which for most types is a different number for a different purpose, so a
+ * model that writes only one of the two is wrong in a way that reads as
+ * plausible: the guest that skips a component and the guest that addresses the
+ * wrong widget both look like ordinary machines. The vendor's own firmware
+ * reads this field and not `widget` to learn which widget the I/O bridge is,
+ * and a zero there sends it to widget zero.
  */
 static void sn0_component(uint8_t *graph, unsigned int index,
                           unsigned int virtual_id, uint8_t type,
-                          uint8_t widget)
+                          uint8_t physical_id, uint8_t widget)
 {
     uint8_t *c = graph + (SN0_GRAPH_COMPONENTS - SN0_CONFIG_GRAPH) +
                  index * SN0_GRAPH_COMP_STRIDE;
@@ -865,6 +879,7 @@ static void sn0_component(uint8_t *graph, unsigned int index,
     c[0x01] = 1;                                /* record version */
     /* Not optional: a component without this is skipped by every consumer. */
     c[0x02] = SN0_COMP_ENABLED;
+    c[SN0_COMP_PHYSICAL_ID] = physical_id;
     c[0x20] = widget;
     stl_be_p(c + 0x1c, virtual_id);
     /*
@@ -1015,9 +1030,18 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     /* Board 0: the node board, with a processor, a Hub and a memory bank. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
               SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3, 3);
-    sn0_component(graph, 0, 0, SN0_COMP_PROCESSOR, 0);  /* processor 0 */
-    sn0_component(graph, 1, 0, SN0_COMP_HUB, 0);
-    sn0_component(graph, 2, 0, SN0_COMP_MEMORY, 0);
+    /*
+     * The three physical identifiers here are all zero on this machine and all
+     * mean different things: the processor's is its processor index, the Hub's
+     * is its node identifier, and the memory bank's is its bank index. They
+     * agree only because this machine has one processor on one node with one
+     * populated bank, so writing them is worth doing precisely because it
+     * changes nothing observable — each stops being right at a different
+     * moment, and a second component of any of these types is the moment.
+     */
+    sn0_component(graph, 0, 0, SN0_COMP_PROCESSOR, 0, 0); /* processor 0 */
+    sn0_component(graph, 1, 0, SN0_COMP_HUB, 0, 0);
+    sn0_component(graph, 2, 0, SN0_COMP_MEMORY, 0, 0);
 
     /*
      * The processor's own fields, which are the only source a guest has for its
@@ -1089,7 +1113,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
               SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1, 0);
-    sn0_component(graph, 3, 0, SN0_COMP_MODULE_SERIAL, 0);
+    sn0_component(graph, 3, 0, SN0_COMP_MODULE_SERIAL, 0, 0);
 
     /*
      * Board 2: the base-I/O board, and the end of the list. Nothing on the path
@@ -1100,22 +1124,33 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * Four components in this order — the I/O bridge, two disk controllers,
      * then the I/O controller — matching a real Origin 200's own captured
      * graph and hardware inventory (docs/component-taxonomy.md's captured
-     * `hinv` output, docs/library/boot-logs.md). Each disk controller's
-     * physical identifier is its PCI device number and its virtual
-     * identifier is its controller number: harmless defaults while no
-     * storage component existed, wrong the moment two of them do, because a
-     * guest's boot-device walk compares both against what the Bridge's own
-     * PCI probe finds. The physical identifiers are the same
-     * SN0_SCSI_DEVICE0/1 constants that place the adapters on the bus above,
-     * not values asserted separately that merely happen to agree with them.
+     * `hinv` output, docs/library/boot-logs.md). Every component on this board
+     * hangs off the same widget and each carries a different physical
+     * identifier, which is what makes the two fields easy to confuse and worth
+     * stating together here.
+     *
+     * The I/O bridge's physical identifier is its widget number. The vendor's
+     * own firmware reads that field, not the widget field beside it, to learn
+     * which widget its bridge is, and then addresses the bridge's error
+     * registers through whatever it finds — so a zero here sends the firmware
+     * to widget zero and it faults there.
+     *
+     * Each disk and I/O controller's physical identifier is its PCI device
+     * number, and its virtual identifier is its controller number. A guest's
+     * boot-device walk compares both against what the Bridge's own PCI probe
+     * finds. These are the same SN0_SCSI_DEVICE0/1 and SN0_IOC3_DEVICE
+     * constants that place those devices on the bus above, not values asserted
+     * separately that merely happen to agree with them.
      */
     sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 4, 4);
-    sn0_component(graph, 4, 0, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET);
-    sn0_component(graph, 5, 0, SN0_COMP_SCSI, SN0_CONSOLE_WIDGET);
-    sn0_component_at(graph, 5)[SN0_COMP_PHYSICAL_ID] = SN0_SCSI_DEVICE0;
-    sn0_component(graph, 6, 1, SN0_COMP_SCSI, SN0_CONSOLE_WIDGET);
-    sn0_component_at(graph, 6)[SN0_COMP_PHYSICAL_ID] = SN0_SCSI_DEVICE1;
-    sn0_component(graph, 7, 0, SN0_COMP_IO_CONTROLLER, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 4, 0, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET,
+                  SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 5, 0, SN0_COMP_SCSI, SN0_SCSI_DEVICE0,
+                  SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 6, 1, SN0_COMP_SCSI, SN0_SCSI_DEVICE1,
+                  SN0_CONSOLE_WIDGET);
+    sn0_component(graph, 7, 0, SN0_COMP_IO_CONTROLLER, SN0_IOC3_DEVICE,
+                  SN0_CONSOLE_WIDGET);
 
     rom_add_blob_fixed("sn0.graph", graph, SN0_CONFIG_GRAPH_SIZE,
                        node + SN0_CONFIG_GRAPH);
