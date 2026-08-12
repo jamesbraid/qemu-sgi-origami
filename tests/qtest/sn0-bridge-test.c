@@ -1559,6 +1559,73 @@ static void test_the_per_pin_host_registers(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The fold from a slot's four bus interrupt pins onto the chip's eight.
+ *
+ * Pins A and C reach the chip pin numbered as the slot; pins B and D reach that
+ * number with bit two flipped. Both guests compute this rather than reading it,
+ * and they agree: one folds the five legal pin values through a switch onto a
+ * two-entry table holding the slot and the slot exclusive-ored with four, the
+ * other tests the pin's low bit and picks between the same two. Neither shares
+ * code with the other, which is what makes it a fact about the hardware rather
+ * than one project's convention.
+ *
+ * Nothing on this board asserts B or C — the disk controllers use pin A only,
+ * and the I/O controller's second interrupt does not travel as a bus interrupt
+ * at all — so a model folding every pin onto the slot passes every boot this
+ * fork runs. It is still wrong, and a card that used pin B would deliver to the
+ * pin its neighbour four slots away owns.
+ */
+static void test_the_interrupt_pins_fold(const void *data)
+{
+    static const struct {
+        const char *pin;        /* what the card declares, A through D */
+        int slot;
+        int expect;             /* the chip pin it must reach */
+    } fold[] = {
+        { "1", 3, 3 },          /* A -> the slot */
+        { "2", 3, 7 },          /* B -> the slot with bit two flipped */
+        { "3", 3, 3 },          /* C -> the slot again */
+        { "4", 3, 7 },          /* D -> flipped again */
+        { "2", 6, 2 },          /* and the flip runs downward too */
+    };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(fold); i++) {
+        g_autofree char *cmd =
+            g_strdup_printf("%s -device sgi-bridge-dma-test,addr=%d,"
+                            "interrupt-pin=%s", MACHINE_WITH_BRIDGE,
+                            fold[i].slot, fold[i].pin);
+        QTestState *qts = qtest_init(cmd);
+
+        /*
+         * Reach the card through its own slot's window and raise its pin. The
+         * transfer source keeps its registers in the first base address
+         * register, not the second the probe card uses.
+         */
+        qtest_writel(qts, CFG0(fold[i].slot, 0) + PCI_BAR0,
+                     CARD_MMIO(fold[i].slot));
+        qtest_writel(qts, CFG0(fold[i].slot, 0) + PCI_COMMAND,
+                     PCI_COMMAND_MEMORY);
+        qtest_writel(qts, REG(BRIDGE_DEVICE(fold[i].slot)),
+                     DEV_MEMORY_SPACE | (CARD_MMIO(fold[i].slot) >> 20));
+
+        g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==, 0);
+
+        qtest_writel(qts, WINDOW(fold[i].slot) + DMA_REG_INTERRUPT, 1);
+
+        /*
+         * The whole status word, not the expected bit alone. A model that lit
+         * the right pin *and* another would pass a mask check and would be
+         * delivering one device's interrupt to two handlers.
+         */
+        g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                        1u << fold[i].expect);
+
+        qtest_quit(qts);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1607,6 +1674,8 @@ int main(int argc, char **argv)
                         test_a_transfer_straddling_a_page);
     qtest_add_data_func("sn0/bridge/invalid-entry-transfers-nothing", NULL,
                         test_an_invalid_entry_transfers_nothing);
+    qtest_add_data_func("sn0/bridge/interrupt-pins-fold", NULL,
+                        test_the_interrupt_pins_fold);
     qtest_add_data_func("sn0/bridge/status-follows-the-level", NULL,
                         test_the_status_register_follows_the_level);
     qtest_add_data_func("sn0/bridge/enable-has-no-bit-31", NULL,

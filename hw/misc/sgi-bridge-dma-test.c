@@ -38,6 +38,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
@@ -67,8 +68,17 @@ struct SGIBridgeDMATestState {
     uint32_t length;
     uint32_t seed;
 
-    /* The level this device is holding its first interrupt pin at. */
+    /* The level this device is holding its interrupt pin at. */
     uint32_t interrupt;
+
+    /*
+     * Which of the four legacy interrupt pins this device declares, A through
+     * D as one through four. A real device has this fixed in silicon; here it
+     * is settable, because the thing a bridge test needs to vary is which pin
+     * arrives — the fold from four bus pins onto the chip's eight is what is
+     * under test, and one pin cannot show it.
+     */
+    uint8_t interrupt_pin;
 };
 
 #define REG_ADDRESS     0x00
@@ -185,8 +195,8 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
 
-    /* Say in configuration space that this device uses its first pin. */
-    pci_config_set_interrupt_pin(dev->config, 1);
+    /* Say in configuration space which pin this device uses. */
+    pci_config_set_interrupt_pin(dev->config, s->interrupt_pin);
 
     memory_region_init_io(&s->mmio, OBJECT(s), &sgi_bridge_dma_test_ops, s,
                           "sgi-bridge-dma-test.mmio", REG_WINDOW);
@@ -214,8 +224,13 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
+        VMSTATE_UINT8(interrupt_pin, SGIBridgeDMATestState),
         VMSTATE_END_OF_LIST()
     }
+};
+
+static const Property sgi_bridge_dma_test_properties[] = {
+    DEFINE_PROP_UINT8("interrupt-pin", SGIBridgeDMATestState, interrupt_pin, 1),
 };
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
@@ -231,6 +246,7 @@ static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
     dc->desc = "transfer source for testing a host bridge's translation";
     dc->vmsd = &vmstate_sgi_bridge_dma_test;
     rc->phases.hold = sgi_bridge_dma_test_reset_hold;
+    device_class_set_props(dc, sgi_bridge_dma_test_properties);
     /*
      * A command line may ask for it; no machine builds one. It is not on any
      * category list, because it belongs to none of them.
