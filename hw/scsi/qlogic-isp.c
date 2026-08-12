@@ -459,6 +459,46 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_SEG_SIZE            8
 
 /*
+ * The 64-bit addressing pair, Linux's only request format (datasheet's "64-bit
+ * addressing entries" section). Confirmed directly against qla1280.h: offsets
+ * 0-31 of cmd_a64_entry_t -- header, handle, the device word, cdb_len,
+ * control_flags, reserved, timeout, dseg_count, and the 12-byte CDB -- are
+ * byte-identical to the type-0 format's struct cmd_entry, field for field.
+ * ISP_REQ_OFF_HANDLE/_DEVICE/_CDBLEN/_SEGCOUNT/_CDB above are reused as-is;
+ * this is the same header both formats share, not a coincidence of two
+ * formats independently landing on the same numbers. Only the segment area
+ * from offset 32 on differs, because A64 needs the extra room a 64-bit
+ * address costs.
+ */
+#define ISP_A64_ENTRY_TYPE_COMMAND    0x09
+#define ISP_A64_ENTRY_TYPE_CONTINUE   0x0a
+
+#define ISP_A64_REQ_OFF_SEGS        40
+#define ISP_A64_REQ_SEGS_INLINE     2
+
+/*
+ * A 64-bit segment: a 64-bit address as two 32-bit words, low half first
+ * (confirmed from qla1280_64bit_start_scsi()'s own write order --
+ * lower_32_bits() before upper_32_bits(), the same convention this file's
+ * A64 mailbox address macros already use), then a 32-bit length.
+ */
+#define ISP_A64_SEG_SIZE            12
+
+/*
+ * A64 continuation entry: no handle, no reserved gap -- five wider segments
+ * start immediately at offset 4, where a command entry's handle would be.
+ * Reading this offset as a handle is what made an unrecognized-entry
+ * continuation dangerous rather than merely incomplete (task #106/#74
+ * adversarial review): it is the low half of a DMA buffer address here, not
+ * an identifier, so a continuation entry must never be dispatched on its
+ * own -- entry_count always steps the ring walker past it as part of the
+ * command that owns it, the same mechanism that already skips type-0
+ * continuation entries.
+ */
+#define ISP_A64_CONT_OFF_SEGS        4
+#define ISP_A64_CONT_SEGS            5
+
+/*
  * A status entry, written by the adapter. Sense data validity rides in the
  * SCSI status word's own bit 9 rather than a separate flag, which is easy to
  * miss because nothing about the field's name says so.
@@ -1475,6 +1515,113 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
 }
 
 /*
+ * The A64 counterpart of qlogic_isp_read_segments(): two inline segments
+ * instead of four, five per continuation instead of seven, each one 12
+ * bytes instead of 8 because it carries a 64-bit address. The two 32-bit
+ * words composing that address are combined low half first, matching
+ * qla1280_64bit_start_scsi()'s own write order (confirmed in the datasheet's
+ * "64-bit addressing entries" section) -- the same convention this file's
+ * A64 mailbox address macros already use for queue-init addresses.
+ */
+static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
+                                         hwaddr rqst_addr, uint8_t entry_count,
+                                         uint16_t seg_count)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t collected = 0;
+    uint16_t cont_index = s->rqst_cons;
+    int conts_left = entry_count - 1;
+    int i;
+
+    for (i = 0; i < ISP_A64_REQ_SEGS_INLINE && collected < seg_count; i++) {
+        hwaddr seg_addr = rqst_addr + ISP_A64_REQ_OFF_SEGS
+                           + i * ISP_A64_SEG_SIZE;
+        uint32_t lo, hi, len;
+
+        ldl_le_pci_dma(pci, seg_addr, &lo, MEMTXATTRS_UNSPECIFIED);
+        ldl_le_pci_dma(pci, seg_addr + 4, &hi, MEMTXATTRS_UNSPECIFIED);
+        ldl_le_pci_dma(pci, seg_addr + 8, &len, MEMTXATTRS_UNSPECIFIED);
+        qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
+        collected++;
+    }
+
+    while (collected < seg_count && conts_left > 0) {
+        hwaddr cont_addr;
+
+        cont_index = (cont_index + 1) % s->rqst_len;
+        cont_addr = qlogic_isp_rqst_entry_addr(s, cont_index);
+
+        for (i = 0; i < ISP_A64_CONT_SEGS && collected < seg_count; i++) {
+            hwaddr seg_addr = cont_addr + ISP_A64_CONT_OFF_SEGS
+                               + i * ISP_A64_SEG_SIZE;
+            uint32_t lo, hi, len;
+
+            ldl_le_pci_dma(pci, seg_addr, &lo, MEMTXATTRS_UNSPECIFIED);
+            ldl_le_pci_dma(pci, seg_addr + 4, &hi, MEMTXATTRS_UNSPECIFIED);
+            ldl_le_pci_dma(pci, seg_addr + 8, &len, MEMTXATTRS_UNSPECIFIED);
+            qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
+            collected++;
+        }
+        conts_left--;
+    }
+}
+
+/*
+ * The A64 counterpart of qlogic_isp_handle_request(): same dispatch, same
+ * incomplete-on-no-device answer, and the same header fields at the same
+ * offsets (handle, device, cdb_len, seg_count, cdb) -- confirmed
+ * byte-identical to the type-0 format through offset 31, so this reuses
+ * the type-0 offset constants directly rather than a parallel set that
+ * would just repeat the same numbers under new names. Only the segment
+ * area past offset 31 needs A64-specific handling.
+ */
+static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
+                                          uint8_t entry_count)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint32_t handle;
+    uint16_t device;
+    uint8_t target, lun;
+    uint16_t cdb_len;
+    uint16_t seg_count;
+    uint8_t cdb[ISP_REQ_CDB_LEN];
+    SCSIDevice *sdev;
+    QLogicISPRequest *req;
+
+    ldl_le_pci_dma(pci, addr + ISP_REQ_OFF_HANDLE, &handle,
+                  MEMTXATTRS_UNSPECIFIED);
+    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_DEVICE, &device,
+                    MEMTXATTRS_UNSPECIFIED);
+    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_CDBLEN, &cdb_len,
+                    MEMTXATTRS_UNSPECIFIED);
+    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_SEGCOUNT, &seg_count,
+                    MEMTXATTRS_UNSPECIFIED);
+    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+
+    target = ISP_DEVICE_TARGET(device);
+    lun = ISP_DEVICE_LUN(device);
+
+    sdev = scsi_device_find(&s->bus, 0, target, lun);
+    if (!sdev) {
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                               ISP_STATE_FLAG_GOT_BUS, 0, NULL, 0);
+        return;
+    }
+
+    req = g_new0(QLogicISPRequest, 1);
+    req->dev = s;
+    req->handle = handle;
+    pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
+    qlogic_isp_read_segments_a64(s, &req->qsg, addr, entry_count, seg_count);
+
+    req->sreq = scsi_req_new(sdev, 0, lun, cdb,
+                             MIN(cdb_len, sizeof(cdb)), req);
+    if (scsi_req_enqueue(req->sreq)) {
+        scsi_req_continue(req->sreq);
+    }
+}
+
+/*
  * Walks every new entry between where this device last stopped reading and
  * the request-in index the host just wrote, which is what a write to that
  * register means: process everything posted since the last time. A marker
@@ -1527,28 +1674,32 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
             qlogic_isp_handle_request(s, addr, entry_count);
             break;
 
+        /*
+         * Linux/IP27's only request format (task #114, datasheet's "64-bit
+         * addressing entries" section) -- COMMAND_A64_TYPE is entry type 9.
+         * Real hardware and this model agree that its continuation entries
+         * (CONTINUE_A64_TYPE, 0xA) are never dispatched independently: the
+         * entry_count advance below steps the ring walker past them, the
+         * same mechanism that already skips the type-0 pair's continuation
+         * entries, and qlogic_isp_read_segments_a64() is what actually
+         * visits them.
+         */
+        case ISP_A64_ENTRY_TYPE_COMMAND:
+            qlogic_isp_handle_request_a64(s, addr, entry_count);
+            break;
+
         case ISP_ENTRY_TYPE_MARKER:
             break;
 
         /*
-         * An entry type this model does not implement -- Linux's 64-bit
-         * command and continuation entries (types 9 and 0xA, qla1280.h's
-         * cmd_a64_entry_t and cont_a64_entry) are the confirmed case, live
-         * on a real 64-bit Linux boot, adversarial review task #74/#97
-         * finding #2/#4. Consuming it silently and posting nothing left
-         * the guest waiting forever on a handle this adapter had already
-         * stepped past -- the same shape as the completion-erasure bug,
-         * a command with no possible answer, reached from the other end.
-         *
-         * The handle is read at the same offset every entry type that
-         * carries one uses (confirmed directly against qla1280.h's
-         * cmd_a64_entry_t, which places it at offset 4 exactly like the
-         * 32-bit command entry this model does implement) and answered
-         * incomplete with no phase bits set, since nothing about this
-         * entry was understood well enough to say more than that. This
-         * does not make the entry type work -- a 64-bit guest still gets
-         * no data moved -- it only stops the guest waiting on a completion
-         * that would otherwise never come.
+         * An entry type this model does not implement. Answered incomplete
+         * with the handle read at the offset every entry type carrying one
+         * uses (offset 4) rather than consumed silently -- the fail-visibly
+         * fix from adversarial review task #74/#97 finding #2/#4, which
+         * this default case existed to cover before COMMAND_A64_TYPE got a
+         * real implementation above. A CONTINUE_A64_TYPE entry never reaches
+         * here on its own (see the comment on the command case), so offset 4
+         * is safe to read as a handle for whatever unimplemented type does.
          */
         default:
             qemu_log_mask(LOG_GUEST_ERROR,
