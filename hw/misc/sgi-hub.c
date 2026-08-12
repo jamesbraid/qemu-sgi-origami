@@ -107,6 +107,32 @@
 #define IO_XTALK_PRESCALE_MASK  0xffffffULL
 
 /*
+ * The PCF8584 I2C-bus controller chip real firmware drives heavily during
+ * bring-up (docs/datasheets/hub-memory-directory.md has the register-level
+ * detail; this is a third-party chip with a public interface, not an SGI
+ * one). Real firmware's own driver spends the large majority of one boot
+ * polling exactly these two addresses, in bursts each bounded by its own
+ * I2C timeout, because nothing on the shared bus this model does not
+ * simulate — the embedded system controller, sensors — ever answers.
+ *
+ * The chip itself is real hardware on every Origin 200; what's absent is
+ * everything else on the bus. So the honest answer is the controller
+ * reporting itself present, initialised and idle — not a bus error, and
+ * not silence, either of which would claim a fault condition that isn't
+ * there. Modelled only to that depth: this is not a protocol state
+ * machine, so a guest that expects real acknowledgement traffic (a
+ * genuine device answering, not just an idle bus) still times out, the
+ * same as it does today. Two specific driver loops shorten because of it
+ * — see the datasheet — and one stays timeout-bound, because it is
+ * genuinely waiting for a device this model does not have.
+ */
+#define HUB_MD_I2C_DATA         0x220000  /* PCF8584 selected register */
+#define HUB_MD_I2C_CTRL         0x220008  /* PCF8584 control/status (S1) */
+#define I2C_STA_PIN             0x80      /* pending interrupt NOT (ready) */
+#define I2C_STA_BNB             0x01      /* bus not busy */
+#define I2C_STATUS_IDLE         (I2C_STA_PIN | I2C_STA_BNB)
+
+/*
  * Whether each processor socket is populated, and whether that processor is
  * allowed to run. Present is hardware-sensed and read-only: no firmware we
  * hold ever writes it, so the model derives it from the node's configured
@@ -566,6 +592,15 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->io_link_status;
     case HUB_NI_STATUS:
         return s->ni_status;
+    case HUB_MD_I2C_CTRL:
+        return I2C_STATUS_IDLE;
+    case HUB_MD_I2C_DATA:
+        /*
+         * Never changes on its own, which is what i2c_probe() (the driver's
+         * own bus-presence check) reads this for: a real device answering
+         * would make consecutive reads differ, and nothing here does.
+         */
+        return 0;
     case HUB_PI_INT_MODIFY:
         /*
          * Write-only: the register is an instruction rather than a value, and
@@ -692,6 +727,21 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-hub: write of 0x%" PRIx64 " to the read-only "
                       "register 0x%" HWADDR_PRIx "\n", val, addr);
+        break;
+    case HUB_MD_I2C_DATA:
+    case HUB_MD_I2C_CTRL:
+        /*
+         * Accepted rather than refused, since a boot issues these — real
+         * firmware's own reset sequence writes the control register within
+         * microseconds of power-on. Not stored: this model answers reads
+         * with a fixed idle status rather than reflecting what was last
+         * written, so there is nothing to keep. Logged at the same tier as
+         * the indicator registers below, a real access with no behaviour
+         * modelled beyond accepting it.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to I2C register "
+                      "0x%" HWADDR_PRIx ", no protocol modelled\n", val, addr);
         break;
     case HUB_MD_INDICATOR_0:
     case HUB_MD_INDICATOR_1:
