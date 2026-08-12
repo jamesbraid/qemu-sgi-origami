@@ -84,6 +84,16 @@
 #define CONSOLE_PORT_MASK   0xfffff     /* the offset the guest drives */
 #define CONSOLE_PORT_LIMIT  0x380       /* at or above: the later controller */
 #define CONSOLE_WIDGET      8
+
+/*
+ * Where each device on the base-I/O board sits on the Bridge's PCI bus, which
+ * is also what the configuration graph reports as that component's physical
+ * identifier. Named here rather than written as bare numbers so a device
+ * moving on the bus fails this test rather than passing it quietly.
+ */
+#define SCSI_DEVICE0        0
+#define SCSI_DEVICE1        1
+#define IOC3_DEVICE         2
 #define CONSOLE_BAUD        9600
 
 #define GDA                 0x11000
@@ -156,6 +166,7 @@
 #define COMP_CPU_CLOCK      0x3c
 #define COMP_PHYSICAL_ID    0x18
 #define COMP_VIRTUAL_ID     0x1c
+#define COMP_WIDGET_ID      0x20
 
 #define COMP_TYPE_BRIDGE    5
 #define COMP_TYPE_SCSI      11
@@ -543,46 +554,51 @@ static void test_base_io_components(const void *data)
              * controllers, then the I/O controller — matching a real
              * Origin 200's own captured graph and hardware inventory
              * (docs/library/boot-logs.md, docs/component-taxonomy.md).
+             *
+             * Every field each record carries is asserted rather than the
+             * one that motivated writing the check, because the defect this
+             * covers was one identifier being right while the identifier
+             * beside it in the same record was zero. A test that asserts
+             * only the field just corrected passes on exactly the machine
+             * that has the bug in its neighbour.
+             *
+             * The three identifiers mean three different things. The
+             * physical identifier is the widget number for the I/O bridge
+             * and the PCI device number for each controller — the vendor's
+             * own firmware reads that field, not the widget field, to learn
+             * which widget its bridge is. The widget identifier is the same
+             * for all four because they hang off one widget. The virtual
+             * identifier is the ordinal among components of that type.
              */
-            static const uint8_t expected_types[] = {
-                COMP_TYPE_BRIDGE, COMP_TYPE_SCSI, COMP_TYPE_SCSI,
-                COMP_TYPE_IOC3,
+            static const struct {
+                uint8_t type;
+                uint8_t physical_id;
+                uint8_t widget_id;
+                uint32_t virtual_id;
+            } expected[] = {
+                { COMP_TYPE_BRIDGE, CONSOLE_WIDGET, CONSOLE_WIDGET, 0 },
+                { COMP_TYPE_SCSI,   SCSI_DEVICE0,   CONSOLE_WIDGET, 0 },
+                { COMP_TYPE_SCSI,   SCSI_DEVICE1,   CONSOLE_WIDGET, 1 },
+                { COMP_TYPE_IOC3,   IOC3_DEVICE,    CONSOLE_WIDGET, 0 },
             };
             uint8_t components = qtest_readb(qts, board + BOARD_COMPONENTS);
-            uint32_t scsi_off[2];
-            unsigned int scsi_seen = 0;
 
             found = true;
-            g_assert_cmpuint(components, ==, 4);
+            g_assert_cmpuint(components, ==, G_N_ELEMENTS(expected));
 
             for (unsigned int i = 0; i < components; i++) {
                 uint32_t off = qtest_readl(qts, board + BOARD_COMP_LIST +
                                            i * 4);
-                uint8_t type = qtest_readb(qts, off + COMP_TYPE);
 
-                g_assert_cmpuint(type, ==, expected_types[i]);
-                if (type == COMP_TYPE_SCSI) {
-                    g_assert_cmpuint(scsi_seen, <, 2);
-                    scsi_off[scsi_seen++] = off;
-                }
+                g_assert_cmpuint(qtest_readb(qts, off + COMP_TYPE), ==,
+                                 expected[i].type);
+                g_assert_cmpuint(qtest_readb(qts, off + COMP_PHYSICAL_ID), ==,
+                                 expected[i].physical_id);
+                g_assert_cmpuint(qtest_readb(qts, off + COMP_WIDGET_ID), ==,
+                                 expected[i].widget_id);
+                g_assert_cmpuint(qtest_readl(qts, off + COMP_VIRTUAL_ID), ==,
+                                 expected[i].virtual_id);
             }
-
-            /*
-             * Each disk controller's physical identifier is its PCI device
-             * number and its virtual identifier is its controller number.
-             * A guest's boot-device walk compares both against what the
-             * Bridge's own PCI probe finds, so the graph-index default
-             * that stands in until a storage component exists — harmless
-             * with none — would be wrong the moment two of them appear.
-             */
-            g_assert_cmpuint(qtest_readb(qts, scsi_off[0] + COMP_PHYSICAL_ID),
-                             ==, 0);
-            g_assert_cmpuint(qtest_readl(qts, scsi_off[0] + COMP_VIRTUAL_ID),
-                             ==, 0);
-            g_assert_cmpuint(qtest_readb(qts, scsi_off[1] + COMP_PHYSICAL_ID),
-                             ==, 1);
-            g_assert_cmpuint(qtest_readl(qts, scsi_off[1] + COMP_VIRTUAL_ID),
-                             ==, 1);
         }
         board = qtest_readl(qts, board + BOARD_NEXT);
     }
