@@ -54,6 +54,7 @@
 #define PCI_IOC3_DEVICE  2         /* SN0_IOC3_DEVICE, restated for the test */
 #define PCI_COMMAND      0x04
 #define PCI_COMMAND_MEMORY 0x0002
+#define PCI_COMMAND_MASTER 0x0004
 #define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
 
@@ -703,6 +704,284 @@ static void test_the_ethernet_read_only_registers(const void *data)
     qtest_quit(qts);
 }
 
+/* The MAC control register and the two DMA rings it gates. */
+#define MAC_CONTROL       (IOC3_BASE + 0x0f0)
+#define RX_RING_HI        (IOC3_BASE + 0x100)
+#define RX_RING_LO        (IOC3_BASE + 0x104)
+#define RX_CONSUME        (IOC3_BASE + 0x10c)
+#define RX_PRODUCE        (IOC3_BASE + 0x110)
+#define TX_RING_HI        (IOC3_BASE + 0x128)
+#define TX_RING_LO        (IOC3_BASE + 0x12c)
+#define TX_CONSUME        (IOC3_BASE + 0x130)
+#define TX_PRODUCE        (IOC3_BASE + 0x134)
+
+#define MCR_TX_DMA_EN     (1u << 13)
+#define MCR_TX_EN         (1u << 14)
+#define MCR_RX_DMA_EN     (1u << 15)
+#define MCR_RX_EN         (1u << 16)
+
+/* The receive buffer offset field holds the distance from the buffer's
+ * start to where the frame begins, in sixteen-bit halfwords -- see
+ * ioc3.md's ethernet register table. 33 halfwords (66 bytes) is what
+ * OpenBSD's own driver programs: eight bytes for the two header words
+ * this engine writes, plus its own alignment padding.
+ */
+#define MCR_RXOFF_SHIFT   3
+#define MCR_RXOFF(halfwords) ((uint32_t)(halfwords) << MCR_RXOFF_SHIFT)
+
+#define ENET_INT_TX_EMPTY    (1u << 16)
+#define ENET_INT_TX_COMPLETE (1u << 22)
+#define ENET_INT_RX_THRESHOLD (1u << 1)
+
+#define TX_CONSUME_IDLE   (1u << 31)
+
+/* Transmit descriptor command-word bits and buffer-count-word fields. */
+#define TXD_INT_DONE      (1u << 12)
+#define TXD_DATA_VALID    (1u << 16)
+#define TXD_BUF1_VALID    (1u << 17)
+#define TXD_BUF2_VALID    (1u << 18)
+#define TXD_BUF1_LEN_SHIFT 8
+#define TXD_BUF2_LEN_SHIFT 20
+#define TXD_DATA_OFFSET   16
+
+/* A region of guest RAM well clear of the firmware's own configuration
+ * graph (at 0x4000), used as scratch space for descriptors and buffers.
+ */
+#define RAM_SCRATCH       0x00100000
+
+/*
+ * Attach the controller with a live network backend: a connected socket
+ * pair, one end handed to the guest as -netdev, the other kept by the test.
+ * -nic rather than -netdev is what makes qemu_configure_nic_device's legacy
+ * lookup find it, the same mechanism a real command line uses to hand this
+ * on-board controller its backend.
+ *
+ * The plain register tests never need the bus-master bit -- a guest CPU
+ * reading or writing a register does not go through it, only a device's own
+ * DMA does, and sn0_ioc3_attach was written before this file had any. Real
+ * firmware sets both bits together (see the datasheet's console bring-up
+ * section), so this sets the one sn0_ioc3_attach leaves out.
+ */
+static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
+{
+    QTestState *qts;
+    char *args = g_strdup_printf("-M origin200,io-bridge=on "
+                                 "-nic socket,fd=%d,id=n0", host_fd);
+
+    qts = qtest_init(args);
+    g_free(args);
+    sn0_ioc3_attach(qts);
+    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
+                PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    return qts;
+}
+
+/*
+ * A bound on how long the test's end of the pair will block for a frame
+ * that is late rather than never coming. qemu_send_packet on this backend
+ * does not guarantee the write reaches the socket inside the same call
+ * that triggered it, so a plain recv could block on a delivery that is
+ * still in flight through the main loop rather than one that failed.
+ */
+static void net_socket_set_recv_timeout(int fd, int seconds)
+{
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
+                    ==, 0);
+}
+
+/* The framing net_socket_send uses: a four-byte network-order length ahead
+ * of each packet, in both directions over the connected socket.
+ */
+static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
+{
+    uint32_t hdr = htonl((uint32_t)len);
+
+    g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
+}
+
+static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint32_t hdr;
+    size_t len;
+
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    len = ntohl(hdr);
+    g_assert_cmpint(len, <=, buf_size);
+    g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
+    return len;
+}
+
+static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[14] = { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00 };
+    uint8_t received[64];
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    /*
+     * One descriptor: the command word says fourteen bytes, all of them
+     * inline, and asks for a completion interrupt; the buffer-count word's
+     * low seven bits repeat the inline length, which is what the engine
+     * actually reads to know how much of the inline area to take.
+     */
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+
+    /* The doorbell: one descriptor further than the ring base. */
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(frame));
+    g_assert_cmpmem(received, got, frame, sizeof(frame));
+
+    g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==,
+                    (128u | TX_CONSUME_IDLE));
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
+                    (ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE), ==,
+                    ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t buf1[6] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
+    uint8_t buf2[4] = { 0x0a, 0x0b, 0x0c, 0x0d };
+    uint8_t expect[10];
+    uint8_t received[64];
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t buf1_addr = RAM_SCRATCH + 0x1000;
+    uint32_t buf2_addr = RAM_SCRATCH + 0x2000;
+
+    memcpy(expect, buf1, sizeof(buf1));
+    memcpy(expect + sizeof(buf1), buf2, sizeof(buf2));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    qtest_memwrite(qts, buf1_addr, buf1, sizeof(buf1));
+    qtest_memwrite(qts, buf2_addr, buf2, sizeof(buf2));
+
+    /*
+     * No inline data this time -- both validity flags name an out-of-line
+     * buffer instead, which is the path a frame too large for the inline
+     * area alone takes. Buffer one is read before buffer two, matching the
+     * order the two validity flags are given in.
+     */
+    qtest_writel(qts, desc + 0, sizeof(expect) | TXD_BUF1_VALID |
+                TXD_BUF2_VALID);
+    qtest_writel(qts, desc + 4, (sizeof(buf1) << TXD_BUF1_LEN_SHIFT) |
+                (sizeof(buf2) << TXD_BUF2_LEN_SHIFT));
+    qtest_writel(qts, desc + 8, 0);
+    qtest_writel(qts, desc + 12, buf1_addr);
+    qtest_writel(qts, desc + 16, 0);
+    qtest_writel(qts, desc + 20, buf2_addr);
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(expect));
+    g_assert_cmpmem(received, got, expect, sizeof(expect));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_the_ethernet_receive_delivers_a_frame(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xde, 0xad };
+    uint8_t landed[sizeof(frame)];
+    uint32_t ring = RAM_SCRATCH;
+    uint32_t rxbuf = RAM_SCRATCH + 0x4000;
+    uint32_t word0, word1;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL,
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+
+    /* One buffer address at the ring's first entry. */
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+
+    /* Supplying it is what makes the engine willing to receive at all. */
+    qtest_writel(qts, RX_PRODUCE, 8);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+    /*
+     * Delivery happens on the main loop noticing the socket is readable,
+     * which is not synchronous with the send above; poll a live register
+     * with a generous bound rather than assume the first look already
+     * shows it.
+     */
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) != 0) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    word0 = qtest_readl(qts, rxbuf + 0);
+    word1 = qtest_readl(qts, rxbuf + 4);
+    qtest_memread(qts, rxbuf + 66, landed, sizeof(landed));
+
+    /* Valid, and the eleven-bit byte count matches what was sent. */
+    g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
+    g_assert_cmphex((word0 >> 16) & 0x7ff, ==, sizeof(frame));
+
+    /* The split length field reassembles to the same count. */
+    g_assert_cmphex((((word1 >> 16) & 0x3ff) << 3) | ((word1 >> 12) & 0x7),
+                    ==, sizeof(frame));
+
+    /* An all-ones destination is reported as broadcast. */
+    g_assert_cmphex(word1 & (1u << 27), ==, (1u << 27));
+
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
+                    ENET_INT_RX_THRESHOLD, ==, ENET_INT_RX_THRESHOLD);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_the_media_interface_never_reads_busy(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1227,6 +1506,12 @@ int main(int argc, char **argv)
                         test_the_ethernet_interrupt_register_acknowledges);
     qtest_add_data_func("sn0/ioc3/ethernet-read-only-registers", NULL,
                         test_the_ethernet_read_only_registers);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-sends-inline-frame", NULL,
+                        test_the_ethernet_transmit_sends_inline_frame);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
+                        NULL, test_the_ethernet_transmit_gathers_two_buffers);
+    qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
+                        test_the_ethernet_receive_delivers_a_frame);
     qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
                         test_the_media_interface_never_reads_busy);
     qtest_add_data_func("sn0/ioc3/buffer-ram-halves-are-distinct", NULL,

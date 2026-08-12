@@ -46,6 +46,7 @@ config SGI_SN0
     select SGI_BRIDGE_DMA_TEST
     select SGI_HUB
     select SGI_IOC3
+    select SGI_IOC3_ETH
     select SGI_XBOW
 
 config FULOONG
