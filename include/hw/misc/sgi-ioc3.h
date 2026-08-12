@@ -10,7 +10,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
 #include "hw/rtc/m48t35.h"
-#include "hw/net/dp83840.h"
+#include "hw/net/sgi-ioc3-eth.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3 "sgi-ioc3"
@@ -56,8 +56,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
  * The chip presents two interrupt outputs rather than one — an ethernet line
  * and a SuperIO line — and each has its own status and enable pair. This is the
  * SuperIO pair, and the register-level reason the two outputs are separate is
- * that this status register has no ethernet bit in it at all. Only the SuperIO
- * line is modelled: the ethernet block does not exist here.
+ * that this status register has no ethernet bit in it at all. The ethernet
+ * pair lives in the ethernet block's own window and drives the chip's
+ * ordinary PCI interrupt pin rather than a wire of its own, unlike this one.
  *
  * The enable mask has two write aliases over one register, so that a guest can
  * turn a source on or off without a read-modify-write.
@@ -163,79 +164,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SDMA_BASE          SGI_IOC3_SDMA_RING_HI
 
 /*
- * The ethernet block. Its media access controller is SGI's own design rather
- * than a catalogue part, so the datasheet's register table is the whole
- * specification and there is no vendor document behind it to consult.
- *
- * This is a window of its own rather than an extension of the main one,
- * because the offsets between the pin registers and this block belong to the
- * parallel port, the PS/2 controller and the serial DMA engines, none of which
- * are modelled. Widening the main window would turn those into zeros; leaving
- * a hole keeps an access to them reported, which is this device's stated rule.
- */
-#define SGI_IOC3_ENET_MAC_CONTROL   0x0f0
-#define SGI_IOC3_ENET_INT_STATUS    0x0f4
-#define SGI_IOC3_ENET_INT_ENABLE    0x0f8
-#define SGI_IOC3_ENET_RX_CONTROL    0x0fc
-#define SGI_IOC3_ENET_RX_RING_HI    0x100
-#define SGI_IOC3_ENET_RX_RING_LO    0x104
-#define SGI_IOC3_ENET_RX_BARRIER    0x108
-#define SGI_IOC3_ENET_RX_CONSUME    0x10c
-#define SGI_IOC3_ENET_RX_PRODUCE    0x110
-#define SGI_IOC3_ENET_RX_TIMER      0x114
-#define SGI_IOC3_ENET_TX_CONTROL    0x118
-#define SGI_IOC3_ENET_RANDOM_SEED   0x11c
-#define SGI_IOC3_ENET_COUNTERS      0x120
-#define SGI_IOC3_ENET_BUFFER_INDEX  0x124
-#define SGI_IOC3_ENET_TX_RING_HI    0x128
-#define SGI_IOC3_ENET_TX_RING_LO    0x12c
-#define SGI_IOC3_ENET_TX_CONSUME    0x130
-#define SGI_IOC3_ENET_TX_PRODUCE    0x134
-#define SGI_IOC3_ENET_MAC_ADDR_HI   0x138
-#define SGI_IOC3_ENET_MAC_ADDR_LO   0x13c
-#define SGI_IOC3_ENET_HASH_HI       0x140
-#define SGI_IOC3_ENET_HASH_LO       0x144
-#define SGI_IOC3_ENET_MII_CONTROL   0x148
-#define SGI_IOC3_ENET_MII_DATA_R    0x14c
-#define SGI_IOC3_ENET_MII_DATA_W    0x150
-
-#define SGI_IOC3_ENET_BASE          SGI_IOC3_ENET_MAC_CONTROL
-
-/* The serial DMA block runs from its ring base up to where the ethernet
- * block starts, which is how the two windows meet exactly.
+ * The ethernet block sits behind SGI_IOC3_ENET_BASE (hw/net/sgi-ioc3-eth.h)
+ * in the chip's window, but the block itself -- registers, engine, network
+ * backend and transceiver -- is its own device now (hw/net/sgi-ioc3-eth.c,
+ * docs/component-taxonomy.md). What stays here is the one thing a sibling
+ * block still needs: where the serial DMA window ends, which is where the
+ * ethernet one begins, so this is derived from that device's own base
+ * rather than restating the offset.
  */
 #define SGI_IOC3_SDMA_SIZE          (SGI_IOC3_ENET_BASE - SGI_IOC3_SDMA_BASE)
 #define SGI_IOC3_SDMA_REGS          (SGI_IOC3_SDMA_SIZE / 4)
-
-#define SGI_IOC3_ENET_SIZE          (SGI_IOC3_ENET_MII_DATA_W + 4 - \
-                                     SGI_IOC3_ENET_BASE)
-#define SGI_IOC3_ENET_REGS          (SGI_IOC3_ENET_SIZE / 4)
-
-/* Bit 10 of the media-independent interface control register starts a read,
- * and bit 11 reads back as busy while one is in flight. Nothing here takes
- * time, so a read is complete by the time the guest can look and busy never
- * reads set -- a driver that polls it therefore stops on its first look
- * rather than running its timeout out.
- */
-#define SGI_IOC3_ENET_MII_READ      (1u << 10)
-#define SGI_IOC3_ENET_MII_BUSY      (1u << 11)
-
-/*
- * An address with no transceiver on it reads as all-ones, which is what a
- * driver scanning the thirty-two addresses takes as "nothing here". The board
- * has exactly one transceiver and every other address must answer this way, or
- * the scan stops at the wrong one.
- */
-#define SGI_IOC3_ENET_MII_ABSENT    0xffffu
-
-/*
- * How the management control register carries a request: the register number
- * in the low five bits and the transceiver address above it. A read is asked
- * for explicitly; a write is what the register means without that bit.
- */
-#define SGI_IOC3_ENET_MII_REG_MASK  0x1fu
-#define SGI_IOC3_ENET_MII_PHY_SHIFT 5
-#define SGI_IOC3_ENET_MII_PHY_MASK  0x1fu
 
 /*
  * The ethernet buffer RAM, reached through the diagnostic window that gives
@@ -314,33 +252,14 @@ struct SGIIOC3State {
     uint32_t pin_data;
 
     /*
-     * The ethernet block, held as one array indexed by register rather than as
-     * two dozen named fields. Almost every register in it is plain storage a
-     * driver writes and reads back, and the few that are not are handled by
-     * name at their offsets, so naming the rest individually would add bulk
-     * without adding meaning. The block moves no packets: it exists so that a
-     * guest configuring the controller finds registers where the hardware has
-     * them, which is what its attach needs and all that is claimed here.
+     * The ethernet block: registers, engine, network backend and
+     * transceiver, all of it in hw/net/sgi-ioc3-eth.c now. A child of this
+     * chip because that is the topology -- the block has no address of its
+     * own, reached only through a window inside this chip's BAR -- the same
+     * reason the real-time clock below is a child rather than a machine
+     * device the chip merely forwards to.
      */
-    MemoryRegion enet;
-    uint32_t enet_reg[SGI_IOC3_ENET_REGS];
-
-    /*
-     * The transceiver on the far end of the management registers. It is a
-     * child of this chip because that is the only way to it: no address of its
-     * own, reached by a guest writing an address and a register number here.
-     */
-    DP83840State phy;
-
-    /*
-     * The two halves of a management transfer. The word a read request
-     * fetched, held until the guest reads the data register, and the word a
-     * guest loaded before issuing a write. They are separate registers on the
-     * chip and separate here, because a driver loads one and reads the other
-     * without the two ever meeting.
-     */
-    uint16_t mii_data;
-    uint16_t mii_data_w;
+    SGIIOC3EthState eth;
 
     /*
      * The serial DMA block, held the same way and for the same reason: nearly

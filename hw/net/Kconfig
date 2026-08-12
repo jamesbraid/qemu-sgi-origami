@@ -65,6 +65,9 @@ config SMC91C111
 config DP83840
     bool
 
+config SGI_IOC3_ETH
+    bool
+
 config LAN9118_PHY
     bool
 

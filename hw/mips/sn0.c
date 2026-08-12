@@ -1778,6 +1778,15 @@ static void sn0_init(MachineState *machine)
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
     qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_hd(0));
+    /*
+     * The controller's ethernet block is the machine's only network device,
+     * so it claims whichever -netdev/-nic the command line names for it (or
+     * none, if the guest is not being asked to reach a network this run).
+     * The block is a child device (hw/net/sgi-ioc3-eth.c) that carries the
+     * NIC properties itself, not the controller's own PCI function, so this
+     * targets that child rather than ioc3 directly.
+     */
+    qemu_configure_nic_device(DEVICE(&SGI_IOC3(ioc3)->eth), true, NULL);
     pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge)->bus,
                           &error_fatal);
 
@@ -1787,8 +1796,9 @@ static void sn0_init(MachineState *machine)
      * The controller's second interrupt does not reach the Bridge through
      * PCI's own INTx routing: sgi_bridge_map_irq() has no rule for it other
      * than the slot-equals-pin default, which would land it on pin 2
-     * alongside the controller's own (unimplemented) ethernet interrupt
-     * rather than the pin the board actually wires it to. Connected directly
+     * alongside the controller's own ethernet interrupt, reached through the
+     * chip's ordinary PCI interrupt pin, rather than the pin the board
+     * actually wires the second one to. Connected directly
      * to the Bridge's matching input instead, wired regardless of whether the
      * bridge is the machine's default path to the controller, the same way
      * the bridge's fabric link is always set: the wire exists on the real
