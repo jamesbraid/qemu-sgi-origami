@@ -192,7 +192,8 @@ qtests_mips64 = \
                                                    'sn0-qlogic-isp-test',
                                                    'sn0-hub-test',
                                                    'sn0-xbow-test',
-                                                   'sn0-model-test'] : [])
+                                                   'sn0-model-test',
+                                                   'sn0-migration-test'] : [])
 
 qtests_mips64el = qtests_mips
 
