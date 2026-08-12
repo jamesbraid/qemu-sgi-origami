@@ -397,33 +397,28 @@ static void test_a_one_wire_slot_always_finishes(const void *data)
     qtest_quit(qts);
 }
 
-static void test_a_one_wire_slot_reports_no_part(const void *data)
+static void test_a_one_wire_reset_finds_the_ethernet_address_part(
+    const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
     sn0_ioc3_attach(qts);
 
     /*
-     * No part answers this bus yet (task #13 is the separate work of
-     * fitting one), and the level a guest samples is how "no part" reaches
-     * a driver: an idle one-wire bus stays high, so every slot — reset,
-     * read, write — has to report a high level rather than one that
-     * happens to spell "a device pulled the line low", which a guest's own
-     * presence check would read as a device being there.
-     *
-     * The slot written is a real reset-and-presence-detect timing, not an
-     * all-zero write. The model as written sets the level unconditionally
-     * regardless of the timing bits, so an all-zero write cannot tell this
-     * test apart from one that classified the pulse width and got a reset
-     * slot right for the wrong reason — it would keep passing if the model
-     * grew that classification and got only the all-zero case right. Using
-     * the encoding a real guest issues (docs/datasheets/ioc3.md's "GPIO
-     * and MicroLAN" section) is the version of this test that stays
-     * meaningful if the model ever does more than answer unconditionally.
+     * Task #13: the bus now carries a part, the ethernet-address memory
+     * docs/datasheets/ioc3.md's "The ethernet-address part's read
+     * protocol" section specifies. A reset finds it: the wire is
+     * open-drain and idles high, and the part answers a reset by pulling
+     * it low, which a guest reads as presence. Before this task the same
+     * slot reported a high level, which is what "no part" means at this
+     * register -- this test now asserts the opposite for the same reason
+     * the Bridge's identical test does: a guest that gets this wrong
+     * either talks to a bus it should treat as empty or gives up on one
+     * that has a part on it.
      */
     qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
-                    MICROLAN_LEVEL);
+                    0);
 
     qtest_quit(qts);
 }
@@ -431,7 +426,18 @@ static void test_a_one_wire_slot_reports_no_part(const void *data)
 static void test_one_wire_slot_preserves_the_timing_written(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
-    uint32_t timing = 0x12345678 & ~(MICROLAN_LEVEL | MICROLAN_DONE);
+    /*
+     * A pulse of 5 microseconds -- comfortably below both the write-zero
+     * and reset thresholds the datasheet section named above sets out, so
+     * this lands as an ordinary short slot rather than colliding with the
+     * ethernet-address part's own reset-presence or write-zero handling.
+     * Bits 0 and 1 are set in the write to prove hardware overwrites them
+     * rather than passing them through; the remaining bits are otherwise
+     * arbitrary, to prove the timing field is stored rather than
+     * interpreted beyond its pulse-duration meaning.
+     */
+    uint32_t written = (5u << 10) | (0x9eu << 2) | 0x3u;
+    uint32_t timing = written & ~(MICROLAN_LEVEL | MICROLAN_DONE);
 
     sn0_ioc3_attach(qts);
 
@@ -439,9 +445,14 @@ static void test_one_wire_slot_preserves_the_timing_written(const void *data)
      * Bits 0 and 1 are hardware's to set, not a mask the guest's own value
      * happens to already carry — this writes a pattern with both of them
      * set in the guest's own value and checks the readback still shows
-     * exactly what hardware decides, not a blind copy of the write.
+     * exactly what hardware decides, not a blind copy of the write. With
+     * no reset since the bus attached, an ordinary short slot this early
+     * finds the part in its idle phase, which does not drive the wire, so
+     * the level reads high exactly as it would if nothing were there --
+     * this test is about the timing field, not about what the part
+     * answers, which the tests below cover.
      */
-    qtest_writel(qts, MICROLAN_CONTROL, 0x12345678);
+    qtest_writel(qts, MICROLAN_CONTROL, written);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL), ==,
                     timing | MICROLAN_LEVEL | MICROLAN_DONE);
 
@@ -774,6 +785,335 @@ static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     return qts;
+}
+
+/*
+ * The ethernet-address one-wire part: task #13, docs/datasheets/ioc3.md's
+ * "The ethernet-address part's read protocol". This bus is fixed to carry
+ * one part, so a plain -nic attach is enough -- these tests need a known
+ * MAC address to check the part against, which is what the explicit mac=
+ * gives them; the socket backend is otherwise unused, the same pattern
+ * sn0_ioc3_attach_with_netdev above uses for the ethernet ring tests.
+ */
+static QTestState *sn0_ioc3_attach_with_mac(int host_fd, const char *mac)
+{
+    QTestState *qts;
+    char *args = g_strdup_printf("-M origin200,io-bridge=on "
+                                 "-nic socket,fd=%d,id=n0,mac=%s",
+                                 host_fd, mac);
+
+    qts = qtest_init(args);
+    g_free(args);
+    sn0_ioc3_attach(qts);
+    return qts;
+}
+
+static const uint8_t onewire_test_mac[6] = { 0x52, 0x54, 0x00, 0x11, 0x22, 0x33 };
+#define ONEWIRE_TEST_MAC_STR "52:54:00:11:22:33"
+
+/* One bus slot, returning the level sampled -- the same helper shape
+ * sn0-bridge-test.c's nic_slot() uses for the Bridge's identical engine.
+ */
+static bool onewire_slot(QTestState *qts, unsigned int pulse,
+                         unsigned int sample)
+{
+    qtest_writel(qts, MICROLAN_CONTROL, (pulse << 10) | (sample << 2));
+    return qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL;
+}
+
+/* The widths OpenBSD's and Linux's one-wire masters both use, per the
+ * datasheet's "GPIO and MicroLAN" section: a reset finds presence, a read
+ * and a written one share a slot, and a written zero is a longer low pulse.
+ */
+#define ONEWIRE_RESET(q)      onewire_slot((q), 520, 65)
+#define ONEWIRE_READ(q)       onewire_slot((q), 6, 13)
+#define ONEWIRE_WRITE_ONE(q)  onewire_slot((q), 6, 13)
+#define ONEWIRE_WRITE_ZERO(q) onewire_slot((q), 80, 30)
+
+static void onewire_write_byte(QTestState *qts, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if ((byte >> i) & 1) {
+            ONEWIRE_WRITE_ONE(qts);
+        } else {
+            ONEWIRE_WRITE_ZERO(qts);
+        }
+    }
+}
+
+static uint8_t onewire_read_byte(QTestState *qts)
+{
+    unsigned int i;
+    uint8_t byte = 0;
+
+    for (i = 0; i < 8; i++) {
+        if (ONEWIRE_READ(qts)) {
+            byte |= 1u << i;
+        }
+    }
+    return byte;
+}
+
+/* The standard Dallas/Maxim one-wire eight-bit CRC: polynomial 0x8c
+ * reflected, seeded at zero, sent as computed -- see the datasheet section
+ * named above. A different algorithm and a different transmission
+ * convention from the Bridge test file's sixteen-bit nic_crc(), which is
+ * why this is its own function rather than a shared one.
+ */
+static uint8_t onewire_crc8(uint8_t crc, const uint8_t *data, unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/* The standard one-wire sixteen-bit CRC, same algorithm and convention as
+ * sn0-bridge-test.c's nic_crc() -- reused here rather than shared across
+ * files, since qtest files in this tree do not share helper code.
+ */
+static uint16_t onewire_crc16(uint16_t crc, const uint8_t *data,
+                              unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * Drive a whole search and read the part's identity out of it -- the same
+ * exchange OpenBSD's onewire(4) and the Linux w1 core both perform before
+ * they will address the part at all. The family byte and the serial
+ * number's required top twelve bits are checked; the low bits of the
+ * serial number are this model's own choice and are not asserted.
+ */
+static void test_a_search_finds_the_ethernet_address_part(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint64_t rom = 0;
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    g_assert_false(ONEWIRE_RESET(qts));    /* pulled low: the part is there */
+
+    onewire_write_byte(qts, 0xf0);         /* Search ROM */
+    for (i = 0; i < 64; i++) {
+        bool bit = ONEWIRE_READ(qts);
+        bool complement = ONEWIRE_READ(qts);
+
+        g_assert_cmpint(complement, ==, !bit);
+        if (bit) {
+            rom |= 1ULL << i;
+            ONEWIRE_WRITE_ONE(qts);
+        } else {
+            ONEWIRE_WRITE_ZERO(qts);
+        }
+    }
+
+    g_assert_cmphex(rom & 0xff, ==, 0x91);              /* family */
+    g_assert_cmphex((rom >> 44) & 0xfff, ==, 0x5e7);    /* serial prefix */
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A Match ROM that names a different part must leave this one unselected --
+ * OpenBSD's owmac always addresses the part this way, never by Skip ROM
+ * (unlike Linux, which only ever sees one device and takes the Skip ROM
+ * path), so a model that only handles Skip ROM would work for one guest and
+ * silently never answer the other. The unselected part's reply to a
+ * function command that follows is the bus's own idle-high byte, not a
+ * real CRC-8 answer -- 0xff, distinguishable from a genuine leading CRC-8
+ * only by knowing what a genuine one is, which the next test establishes.
+ */
+static void test_a_wrong_match_rom_leaves_the_part_unselected(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint64_t wrong_rom = 0x0000005e70000091ULL; /* right family, wrong rest */
+    uint8_t leading;
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    ONEWIRE_RESET(qts);
+    onewire_write_byte(qts, 0x55);   /* Match ROM */
+    for (i = 0; i < 8; i++) {
+        onewire_write_byte(qts, (wrong_rom >> (8 * i)) & 0xff);
+    }
+    onewire_write_byte(qts, 0xf0);   /* Read Memory, if this landed */
+    onewire_write_byte(qts, 0x00);
+    onewire_write_byte(qts, 0x00);
+    leading = onewire_read_byte(qts);
+    g_assert_cmphex(leading, ==, 0xff);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Read the page holding the station address, the way each guest actually
+ * does it: OpenBSD's owmac_read_page() selects with a Match ROM and reads
+ * memory with the plain Read Memory command (0xf0); Linux's
+ * w1_ds2502_read_page() selects with a Skip ROM (its w1 core takes that
+ * path whenever only one device is registered) and reads memory with the
+ * Read Memory-with-CRC command (0xc3). Both must answer identically.
+ */
+static void read_ethernet_address_page(QTestState *qts, bool use_match_rom,
+                                       uint8_t cmd, uint8_t *leading_crc,
+                                       uint8_t page[32], uint8_t *trailing_crc)
+{
+    unsigned int i;
+
+    ONEWIRE_RESET(qts);
+    if (use_match_rom) {
+        uint64_t rom = 0;
+
+        onewire_write_byte(qts, 0xf0);     /* Search ROM, to learn the id */
+        for (i = 0; i < 64; i++) {
+            bool bit = ONEWIRE_READ(qts);
+
+            ONEWIRE_READ(qts);              /* the complement, unused here */
+            if (bit) {
+                rom |= 1ULL << i;
+                ONEWIRE_WRITE_ONE(qts);
+            } else {
+                ONEWIRE_WRITE_ZERO(qts);
+            }
+        }
+        ONEWIRE_RESET(qts);
+        onewire_write_byte(qts, 0x55);     /* Match ROM */
+        for (i = 0; i < 8; i++) {
+            onewire_write_byte(qts, (rom >> (8 * i)) & 0xff);
+        }
+    } else {
+        onewire_write_byte(qts, 0xcc);     /* Skip ROM */
+    }
+
+    onewire_write_byte(qts, cmd);
+    onewire_write_byte(qts, 0x00);         /* target address, low */
+    onewire_write_byte(qts, 0x00);         /* target address, high */
+
+    *leading_crc = onewire_read_byte(qts);
+    for (i = 0; i < 32; i++) {
+        page[i] = onewire_read_byte(qts);
+    }
+    *trailing_crc = onewire_read_byte(qts);
+}
+
+static void assert_ethernet_address_page(QTestState *qts, bool use_match_rom,
+                                         uint8_t cmd)
+{
+    uint8_t leading, page[32], trailing;
+    uint8_t echo[3] = { cmd, 0x00, 0x00 };
+    uint8_t got_mac[6];
+    unsigned int i;
+
+    read_ethernet_address_page(qts, use_match_rom, cmd, &leading, page,
+                               &trailing);
+
+    g_assert_cmphex(leading, ==, onewire_crc8(0, echo, sizeof(echo)));
+    g_assert_cmphex(page[0], ==, 0x0a);
+
+    /* Bytes 5..10 hold the station address reversed: byte 10 is the first
+     * octet, byte 5 the last -- see the datasheet section named above.
+     */
+    for (i = 0; i < 6; i++) {
+        got_mac[i] = page[10 - i];
+    }
+    g_assert_cmpmem(got_mac, sizeof(got_mac), onewire_test_mac,
+                    sizeof(onewire_test_mac));
+
+    g_assert_cmphex(onewire_crc16(0, page, 13), ==, 0xb001);
+    g_assert_cmphex(trailing, ==, onewire_crc8(0, page, 32));
+}
+
+static void test_reading_the_page_via_read_memory(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    /* OpenBSD's owmac: Match ROM, then the plain Read Memory command. */
+    assert_ethernet_address_page(qts, true, 0xf0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_reading_the_page_via_read_memory_crc(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    /* Linux's w1_ds2502_read_page: Skip ROM, then Read Memory-with-CRC. */
+    assert_ethernet_address_page(qts, false, 0xc3);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The redirection table owmac_read_redirect() reads before it trusts a
+ * page: OpenBSD always asks for status offset 0x0001, and the part answers
+ * with four bytes of 0xff, which is what tells owmem_redirect()'s loop to
+ * stop immediately rather than fail -- see the datasheet section named
+ * above for why the model does not track real redirection at all.
+ */
+static void test_read_status_returns_no_redirection(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t leading;
+    uint8_t status[4];
+    uint8_t echo[3] = { 0xaa, 0x01, 0x00 };
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    ONEWIRE_RESET(qts);
+    onewire_write_byte(qts, 0xcc);   /* one part on the bus */
+    onewire_write_byte(qts, 0xaa);   /* Read Status */
+    onewire_write_byte(qts, 0x01);   /* the offset owmac always asks for */
+    onewire_write_byte(qts, 0x00);
+
+    leading = onewire_read_byte(qts);
+    g_assert_cmphex(leading, ==, onewire_crc8(0, echo, sizeof(echo)));
+
+    for (i = 0; i < 4; i++) {
+        status[i] = onewire_read_byte(qts);
+    }
+    g_assert_cmphex(status[0], ==, 0xff);
+    g_assert_cmphex(status[1], ==, 0xff);
+    g_assert_cmphex(status[2], ==, 0xff);
+    g_assert_cmphex(status[3], ==, 0xff);
+
+    qtest_quit(qts);
+    close(sv[0]);
 }
 
 /*
@@ -1547,10 +1887,20 @@ int main(int argc, char **argv)
                         test_port_answers_where_the_graph_says);
     qtest_add_data_func("sn0/ioc3/one-wire-slot-always-finishes", NULL,
                         test_a_one_wire_slot_always_finishes);
-    qtest_add_data_func("sn0/ioc3/one-wire-slot-reports-no-part", NULL,
-                        test_a_one_wire_slot_reports_no_part);
+    qtest_add_data_func("sn0/ioc3/one-wire-reset-finds-the-part", NULL,
+                        test_a_one_wire_reset_finds_the_ethernet_address_part);
     qtest_add_data_func("sn0/ioc3/one-wire-slot-preserves-timing", NULL,
                         test_one_wire_slot_preserves_the_timing_written);
+    qtest_add_data_func("sn0/ioc3/one-wire-search-finds-the-part", NULL,
+                        test_a_search_finds_the_ethernet_address_part);
+    qtest_add_data_func("sn0/ioc3/one-wire-wrong-match-rom-unselects", NULL,
+                        test_a_wrong_match_rom_leaves_the_part_unselected);
+    qtest_add_data_func("sn0/ioc3/one-wire-read-memory", NULL,
+                        test_reading_the_page_via_read_memory);
+    qtest_add_data_func("sn0/ioc3/one-wire-read-memory-crc", NULL,
+                        test_reading_the_page_via_read_memory_crc);
+    qtest_add_data_func("sn0/ioc3/one-wire-read-status-no-redirection", NULL,
+                        test_read_status_returns_no_redirection);
     qtest_add_data_func("sn0/ioc3/pin-control-two-aliases", NULL,
                         test_pin_control_has_two_write_aliases);
     qtest_add_data_func("sn0/ioc3/pin-register-reaches-data-word", NULL,
