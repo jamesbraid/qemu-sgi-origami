@@ -460,3 +460,5 @@ launch_update_write(void) ""
 vmlaunch_reset_enter(void) ""
 vm_launchupdate_finalize(void) ""
 restore_host_x86_igvm(void) ""
+# sgi-hub.c
+sgi_hub_led(unsigned int cpu, uint8_t code, const char *kind, const char *meaning) "CPU %u: 0x%02x (%s: %s)"
