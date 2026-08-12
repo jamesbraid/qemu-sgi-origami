@@ -415,8 +415,15 @@ static uint64_t sgi_ioc3_enet_read(void *opaque, hwaddr addr, unsigned size)
         return s->enet_reg[index] & ~SGI_IOC3_ENET_MII_BUSY;
 
     case SGI_IOC3_ENET_MII_DATA_R:
-        /* No physical-layer chip answers; an absent one reads all-ones. */
-        return SGI_IOC3_ENET_MII_ABSENT;
+        /*
+         * The word the last read request fetched. Which transceiver answered
+         * is decided when the request is made rather than here, because that
+         * is when the guest names an address: a driver scanning for a
+         * transceiver writes each address in turn and reads this register
+         * after each, and an address with nothing on it has to read as
+         * all-ones or the scan stops at the first one it tries.
+         */
+        return s->mii_data;
 
     default:
         return s->enet_reg[index];
@@ -441,6 +448,39 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
          * source it was acknowledging never goes away.
          */
         s->enet_reg[index] &= ~(uint32_t)val;
+        return;
+
+    case SGI_IOC3_ENET_MII_CONTROL: {
+        unsigned int phy = (val >> SGI_IOC3_ENET_MII_PHY_SHIFT) &
+                           SGI_IOC3_ENET_MII_PHY_MASK;
+        unsigned int reg = val & SGI_IOC3_ENET_MII_REG_MASK;
+
+        /*
+         * A management request. The read bit says which direction, and the
+         * data register on the write side has already been loaded by the time
+         * a write request arrives -- that is the order both drivers use.
+         *
+         * Only the one address the board wires answers. Every other address
+         * reads all-ones, which is what a scan takes as an empty address, and
+         * is why a model answering everywhere would be found at address zero
+         * and print a line no real machine prints.
+         */
+        if (val & SGI_IOC3_ENET_MII_READ) {
+            s->mii_data = phy == DP83840_ADDRESS
+                          ? dp83840_read(&s->phy, reg)
+                          : SGI_IOC3_ENET_MII_ABSENT;
+        } else if (phy == DP83840_ADDRESS) {
+            dp83840_write(&s->phy, reg, s->mii_data_w);
+        }
+
+        s->enet_reg[index] = val;
+        return;
+    }
+
+    case SGI_IOC3_ENET_MII_DATA_W:
+        /* Loaded before the request that sends it. */
+        s->mii_data_w = val;
+        s->enet_reg[index] = val;
         return;
 
     case SGI_IOC3_ENET_COUNTERS:
@@ -604,6 +644,10 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * and answer perfectly while every reset value stays at whatever the
      * allocation left there, which is a defect nothing warns about.
      */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->phy), errp)) {
+        return;
+    }
+
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->rtc), errp)) {
         return;
     }
@@ -646,6 +690,8 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
      * that came up enabled would be one no driver had asked to run.
      */
     memset(s->enet_reg, 0, sizeof(s->enet_reg));
+    s->mii_data = SGI_IOC3_ENET_MII_ABSENT;
+    s->mii_data_w = 0;
 
     /*
      * The serial DMA block resets to zero throughout, indices included, which
@@ -694,13 +740,15 @@ static void sgi_ioc3_init(Object *obj)
         object_initialize_child(obj, "serial[*]", &s->serial[i], TYPE_SERIAL);
     }
 
+    object_initialize_child(obj, "phy", &s->phy, TYPE_DP83840);
+
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
 }
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 8,
-    .minimum_version_id = 8,
+    .version_id = 9,
+    .minimum_version_id = 9,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -714,6 +762,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
         VMSTATE_UINT32(kbc_control, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
+        VMSTATE_UINT16(mii_data, SGIIOC3State),
+        VMSTATE_UINT16(mii_data_w, SGIIOC3State),
         VMSTATE_END_OF_LIST()
     }
 };

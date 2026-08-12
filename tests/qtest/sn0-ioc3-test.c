@@ -1037,9 +1037,160 @@ static void test_the_clock_storage_holds_a_write(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The management interface, and the transceiver on the far end of it. A guest
+ * reaches the transceiver only through these two registers: it writes an
+ * address and a register number here and reads the answer back.
+ */
+#define MII_CONTROL     (IOC3_BASE + 0x148)
+#define MII_DATA_R      (IOC3_BASE + 0x14c)
+#define MII_DATA_W      (IOC3_BASE + 0x150)
+#define MII_READ        (1u << 10)
+
+#define PHY_ADDRESS     31
+
+static uint16_t phy_read(QTestState *qts, unsigned int phy, unsigned int reg)
+{
+    qtest_writel(qts, MII_CONTROL, MII_READ | (phy << 5) | reg);
+    return qtest_readl(qts, MII_DATA_R) & 0xffff;
+}
+
+static void phy_write(QTestState *qts, unsigned int phy, unsigned int reg,
+                      uint16_t val)
+{
+    qtest_writel(qts, MII_DATA_W, val);
+    qtest_writel(qts, MII_CONTROL, (phy << 5) | reg);
+}
+
+static void test_the_transceiver_answers_at_one_address(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int phy, answered = 0;
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Every address, not just the right one. Both drivers walk all thirty-two
+     * and stop at the first that answers, so a model answering everywhere is
+     * found at address zero and the guest prints an address no real machine
+     * prints. A boot cannot catch that -- it stops at the first answer and
+     * carries on happily -- so the count is the assertion.
+     */
+    for (phy = 0; phy < 32; phy++) {
+        if (phy_read(qts, phy, 2) != 0xffff) {
+            g_assert_cmpuint(phy, ==, PHY_ADDRESS);
+            answered++;
+        }
+    }
+
+    g_assert_cmpuint(answered, ==, 1);
+
+    qtest_quit(qts);
+}
+
+static void test_the_transceiver_identity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The exact words, not merely something plausible. An identity that only
+     * passes the cruder of the two scans still fails the table match that
+     * decides which driver binds, and the failure shows up as a console line
+     * naming the wrong part -- or naming none.
+     */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 2), ==, 0x2000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 3), ==, 0x5c01);
+
+    qtest_quit(qts);
+}
+
+static void test_the_transceiver_reset_is_self_clearing(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * A driver writes reset and then polls for the bit to clear. Left set, it
+     * holds the attach in a loop until the timeout expires.
+     */
+    phy_write(qts, PHY_ADDRESS, 0, 0x8000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0) & 0x8000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_transceiver_reports_a_usable_link(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint16_t status, advertise, partner;
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The driver's whole route to a media type, in the order it takes it. Each
+     * step can be satisfied on its own by a model that still leaves the guest
+     * reporting no media at all, which is why they are asserted together
+     * rather than one standing for the rest.
+     */
+    phy_write(qts, PHY_ADDRESS, 0, 0x1000);   /* enable autonegotiation */
+
+    /* Read twice, as the driver does, and assert the union has a link. */
+    status = phy_read(qts, PHY_ADDRESS, 1) | phy_read(qts, PHY_ADDRESS, 1);
+    g_assert_cmphex(status & 0x0004, ==, 0x0004);   /* link */
+    g_assert_cmphex(status & 0x0020, ==, 0x0020);   /* autoneg complete */
+
+    /* The far end can autonegotiate, which is the route the driver trusts. */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 6) & 0x0001, ==, 0x0001);
+
+    /*
+     * And the two advertisements have a full-duplex hundred-megabit link in
+     * common. The driver intersects them and reads the media out of the
+     * result, so an empty intersection is a link with no usable media on it.
+     */
+    advertise = phy_read(qts, PHY_ADDRESS, 4);
+    partner = phy_read(qts, PHY_ADDRESS, 5);
+    g_assert_cmphex(advertise & partner & 0x0100, ==, 0x0100);
+
+    qtest_quit(qts);
+}
+
+static void test_the_transceiver_configuration_register(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Read-modify-written once on a media change and never read back for a
+     * decision, so storage is the whole contract -- and the only place it is
+     * checked at all, since no boot depends on it.
+     */
+    phy_write(qts, PHY_ADDRESS, 0x17, 0x0526);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x17), ==, 0x0526);
+
+    /* Its low bits report the transceiver's own address. */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x19) & 0x1f, ==, PHY_ADDRESS);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+
+    qtest_add_data_func("sn0/ioc3/phy-answers-at-one-address", NULL,
+                        test_the_transceiver_answers_at_one_address);
+    qtest_add_data_func("sn0/ioc3/phy-identity", NULL,
+                        test_the_transceiver_identity);
+    qtest_add_data_func("sn0/ioc3/phy-reset-self-clearing", NULL,
+                        test_the_transceiver_reset_is_self_clearing);
+    qtest_add_data_func("sn0/ioc3/phy-reports-a-usable-link", NULL,
+                        test_the_transceiver_reports_a_usable_link);
+    qtest_add_data_func("sn0/ioc3/phy-configuration-register", NULL,
+                        test_the_transceiver_configuration_register);
 
     qtest_add_data_func("sn0/ioc3/ps2-ports-read-empty", NULL,
                         test_the_ps2_ports_read_empty);

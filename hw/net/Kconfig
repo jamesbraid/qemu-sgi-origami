@@ -62,6 +62,9 @@ config VMXNET3_PCI
 config SMC91C111
     bool
 
+config DP83840
+    bool
+
 config LAN9118_PHY
     bool
 
