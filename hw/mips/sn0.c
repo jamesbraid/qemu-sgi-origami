@@ -295,15 +295,29 @@ static uint64_t sn0_elf_to_phys(void *opaque, uint64_t addr)
  * rather than an absolute one. Both addresses are in the same region of the
  * flash, so that reaches.
  */
+/*
+ * Point the real reset vector at the bootloader stub in fw. Every handoff
+ * this machine builds shares this: whichever one wrote the stub, this is
+ * what makes the CPU reach it out of reset. The jump has to be two
+ * instructions, which is all the eight bytes between flash entry points
+ * allow, so it is region-relative rather than absolute -- both addresses
+ * are in the same region of the flash, so that reaches.
+ */
+static void sn0_flash_jump_to_bootloader(uint8_t *flash, hwaddr fw_vaddr)
+{
+    hwaddr target = fw_vaddr + SN0_FW_BOOTLOADER;
+
+    stl_be_p(flash, 0x08000000 | ((target >> 2) & 0x03ffffff)); /* j target */
+    stl_be_p(flash + 4, 0);                                     /* delay slot */
+}
+
 static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
                                      hwaddr fw_vaddr, uint64_t entry,
                                      unsigned argc, hwaddr argv)
 {
     void *p = fw + SN0_FW_BOOTLOADER;
-    hwaddr target = fw_vaddr + SN0_FW_BOOTLOADER;
 
-    stl_be_p(flash, 0x08000000 | ((target >> 2) & 0x03ffffff)); /* j target */
-    stl_be_p(flash + 4, 0);                                     /* delay slot */
+    sn0_flash_jump_to_bootloader(flash, fw_vaddr);
 
     /*
      * Hand over in 64-bit kernel mode. A kernel is linked into the unmapped
