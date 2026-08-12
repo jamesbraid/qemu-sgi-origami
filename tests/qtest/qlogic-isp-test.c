@@ -84,9 +84,12 @@
 #define ISP_MBOX_CMD_SET_CLOCK_RATE         0x0034
 #define ISP_MBOX_CMD_SET_ACTIVE_NEGATION    0x0035
 #define ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP   0x0036
+#define ISP_MBOX_CMD_SET_PCI_CONTROL        0x0037
 #define ISP_MBOX_CMD_SET_TARGET_PARAMETERS  0x0038
 #define ISP_MBOX_CMD_SET_DEVICE_QUEUE       0x0039
+#define ISP_MBOX_CMD_SET_SYSTEM_PARAMETER   0x0045
 #define ISP_MBOX_CMD_SET_FIRMWARE_FEATURES  0x004a
+#define ISP_MBOX_CMD_SET_DATA_OVERRUN_RECOVERY 0x005a
 
 #define ISP_MBOX_COMPLETE       0x4000
 #define ISP_MBOX_INVALID        0x4001
@@ -1121,6 +1124,34 @@ static void test_config_setters(void *obj, void *data, QGuestAllocator *alloc)
     qlogic_isp_ack(dev, io);
 
     qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_DEVICE_QUEUE, 0, 32, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /*
+     * Three more, issued only by Linux's qla1280_nvram_config() (confirmed
+     * directly against qla1280.c) and never by OpenBSD's qlw.c (confirmed by
+     * an exhaustive grep of the file, not a name search that merely failed
+     * to find a call site). Unlike the group above, Linux's own caller
+     * discards qla1280_nvram_config()'s returned status outright, so
+     * whether this model answers complete or invalid here is not
+     * load-bearing for either guest -- these are included anyway so the
+     * model's behavior matches what a real adapter would answer to a
+     * documented command, rather than logging every one of them as
+     * unmodelled noise.
+     */
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_PCI_CONTROL, 2, 2, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_SYSTEM_PARAMETER, 0, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_DATA_OVERRUN_RECOVERY,
+                          2, 0, 0);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
                     ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);

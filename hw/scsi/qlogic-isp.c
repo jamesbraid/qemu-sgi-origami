@@ -292,9 +292,12 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_CMD_SET_CLOCK_RATE         0x0034
 #define ISP_MBOX_CMD_SET_ACTIVE_NEGATION    0x0035
 #define ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP   0x0036
+#define ISP_MBOX_CMD_SET_PCI_CONTROL        0x0037
 #define ISP_MBOX_CMD_SET_TARGET_PARAMETERS  0x0038
 #define ISP_MBOX_CMD_SET_DEVICE_QUEUE       0x0039
+#define ISP_MBOX_CMD_SET_SYSTEM_PARAMETER   0x0045
 #define ISP_MBOX_CMD_SET_FIRMWARE_FEATURES  0x004a
+#define ISP_MBOX_CMD_SET_DATA_OVERRUN_RECOVERY 0x005a
 
 #define ISP_MBOX_COMPLETE           0x4000
 #define ISP_MBOX_INVALID            0x4001
@@ -890,6 +893,29 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     case ISP_MBOX_CMD_SET_INITIATOR_ID:
     case ISP_MBOX_CMD_SET_TARGET_PARAMETERS:
     case ISP_MBOX_CMD_SET_DEVICE_QUEUE:
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * Three more config setters, issued only by Linux's qla1280_nvram_config()
+     * (PCI DMA burst enables, the ISP parameter word, and the SCSI-bus-reset
+     * data-overrun recovery mode) and previously unmodelled, which fell into
+     * the default case below and answered invalid. Unlike the group above,
+     * an invalid answer here cannot be load-bearing for either guest: OpenBSD's
+     * qlwreg.h defines all three of these opcodes but qlw.c never issues any of
+     * them (confirmed by an exhaustive grep of the file, not a name search that
+     * merely failed to find a call site), and Linux's own caller,
+     * qla1280_initialize_adapter(), calls qla1280_nvram_config() and discards
+     * its returned status outright -- the OR of every mailbox result inside it,
+     * including these three, is never assigned to anything the adapter-init
+     * path checks. Answering invalid was pure noise: harmless to both drivers,
+     * logged as an error nonetheless. Treating them the same as the group
+     * above -- accepted, nothing tracked -- matches what both guests already
+     * demonstrate about their own indifference to the result.
+     */
+    case ISP_MBOX_CMD_SET_PCI_CONTROL:
+    case ISP_MBOX_CMD_SET_SYSTEM_PARAMETER:
+    case ISP_MBOX_CMD_SET_DATA_OVERRUN_RECOVERY:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
