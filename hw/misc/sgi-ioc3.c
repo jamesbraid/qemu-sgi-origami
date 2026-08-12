@@ -302,32 +302,31 @@ static const MemoryRegionOps sgi_ioc3_kbc_ops = {
 };
 
 /*
- * Which of a port's seven serial DMA registers hardware owns. The two index
- * registers software advances are writable and the two hardware advances are
- * not, so the pair a driver could confuse are on opposite sides of this: the
- * transmit produce index is software's and the transmit consume index is the
- * engine's. The 16550 shadow is a mirror of lines the port drives, so nothing
- * software writes belongs in it either.
+ * Which of a port's seven serial DMA registers hardware owns, as an offset
+ * from that port's base. The two index registers software advances are
+ * writable and the two hardware advances are not, so the pair a driver could
+ * confuse are on opposite sides of this: the transmit produce index is
+ * software's and the transmit consume index is the engine's. The 16550
+ * shadow is a mirror of lines the port drives, so nothing software writes
+ * belongs in it either -- but unlike the two indices, a write to it is not a
+ * sign of driver confusion about who owns what: see the write handler below.
  *
  * The shared ring base pair below both ports is writable, which is why an
- * offset before port A's base is not tested against these.
+ * offset before port A's base reports itself as belonging to neither port.
  */
-static bool sgi_ioc3_sdma_is_read_only(hwaddr addr)
+static bool sgi_ioc3_sdma_port_offset(hwaddr addr, hwaddr *offset)
 {
     hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
-    hwaddr offset;
 
     if (reg >= SGI_IOC3_SDMA_PORT_B) {
-        offset = reg - SGI_IOC3_SDMA_PORT_B;
+        *offset = reg - SGI_IOC3_SDMA_PORT_B;
+        return true;
     } else if (reg >= SGI_IOC3_SDMA_PORT_A) {
-        offset = reg - SGI_IOC3_SDMA_PORT_A;
-    } else {
-        return false;
+        *offset = reg - SGI_IOC3_SDMA_PORT_A;
+        return true;
     }
 
-    return offset == SGI_IOC3_SDMA_TX_CONSUME ||
-           offset == SGI_IOC3_SDMA_RX_PRODUCE ||
-           offset == SGI_IOC3_SDMA_SHADOW;
+    return false;
 }
 
 static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
@@ -347,12 +346,36 @@ static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     SGIIOC3State *s = opaque;
+    hwaddr offset;
 
-    if (sgi_ioc3_sdma_is_read_only(addr)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-ioc3: write to read-only serial DMA register "
-                      "0x%03x\n", (unsigned)(SGI_IOC3_SDMA_BASE + addr));
-        return;
+    if (sgi_ioc3_sdma_port_offset(addr, &offset)) {
+        if (offset == SGI_IOC3_SDMA_SHADOW) {
+            /*
+             * OpenBSD writes zero here on every boot, alongside the port's
+             * control register, to put the port into pass-through mode
+             * before attaching its 16550 driver -- and never reads the
+             * value back on that path. The real chip discards a write here
+             * the same way: the shadow is hardware's own mirror of the
+             * lines the port drives, recomputed regardless of what software
+             * last stored, so there is nothing to log. Logging it would
+             * fire on every OpenBSD boot for a write that is neither a
+             * driver bug nor observable.
+             */
+            return;
+        }
+
+        if (offset == SGI_IOC3_SDMA_TX_CONSUME ||
+            offset == SGI_IOC3_SDMA_RX_PRODUCE) {
+            /*
+             * These two are the engine's side of the ring. No driver in any
+             * of the three trees we hold writes them, so unlike the shadow
+             * above, a write here is a real anomaly worth surfacing.
+             */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc3: write to read-only serial DMA register "
+                          "0x%03x\n", (unsigned)(SGI_IOC3_SDMA_BASE + addr));
+            return;
+        }
     }
 
     s->sdma_reg[addr / 4] = val;
