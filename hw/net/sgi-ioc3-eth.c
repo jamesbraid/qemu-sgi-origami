@@ -341,8 +341,22 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
          * the ethernet line that it produced on the serial one -- a driver
          * writes back the bits it just read, the write sets them instead of
          * clearing them, and the source it was acknowledging never goes away.
+         *
+         * Clearing the register alone is not enough: the line this block
+         * drives is level-triggered from status & enable, computed in
+         * sgi_ioc3_enet_update_irq, and nothing else re-derives it. Skipping
+         * that call here would leave the line exactly as high as it was
+         * before the write -- correct for every register that does not gate
+         * the interrupt, and silently wrong for the one that does, since a
+         * guest's own acknowledge write would clear the bits it just read
+         * without ever lowering the line it read them because of. The next
+         * level-triggered assertion then finds an already-asserted line and
+         * the guest's interrupt dispatcher reports it unclaimed, forever,
+         * because by the time the handler reads the register again there is
+         * nothing left in it to explain the line still being high.
          */
         s->enet_reg[index] &= ~(uint32_t)val;
+        sgi_ioc3_enet_update_irq(s);
         return;
 
     case SGI_IOC3_ENET_MII_CONTROL: {
