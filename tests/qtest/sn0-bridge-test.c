@@ -147,8 +147,22 @@
 #define DEV_PAGE_CROSS_CHECK    (1u << 27)
 #define DEV_MEMORY_SPACE        (1u << 12)
 #define DEV_WINDOW_BASE         0xfffu
-#define DEVICE_RESET            (DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | \
-                                 DEV_MEMORY_SPACE)
+/*
+ * What each device register holds at reset, as the firmware's own sanity
+ * diagnostic states it: that diagnostic prints the value it expected beside the
+ * value it read, for each of the eight devices in turn, and these are the eight
+ * it expects.
+ *
+ * Written out as literals on purpose. The model computes them from a rule --
+ * two megabytes of window each for the first two devices and one for the rest,
+ * laid end to end -- and a test recomputing that rule would assert the formula
+ * against itself and pass whatever both were changed to. These are the numbers
+ * a real firmware asked for.
+ */
+static const uint32_t device_reset[8] = {
+    0x18001000, 0x18001002, 0x18001004, 0x18001005,
+    0x18001006, 0x18001007, 0x18001008, 0x18001009,
+};
 /* Bits 28 down to 12 are defined, and so are the twelve of the window base. */
 #define DEVICE_WRITABLE         0x1fffffffu
 
@@ -399,7 +413,7 @@ static void test_reset_state(const void *data)
 #define SCSI0_PCI_MEM ((8 << 24) + 0x200000)
 #define SCSI1_PCI_MEM ((8 << 24) + 0x400000)
 
-static void test_every_slot_resets_alike(const void *data)
+static void test_each_slot_resets_to_its_own_window(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     int n;
@@ -410,11 +424,18 @@ static void test_every_slot_resets_alike(const void *data)
      * space. All eight are checked rather than the first, because a table
      * written out by hand is where one row goes missing.
      *
-     * The twelve-bit window base has no specified power-up value, and comparing
-     * the whole word asserts our model's zero as well as the three specified
-     * bits. That is a claim about this model rather than about the chip, and it
-     * is made deliberately: an unspecified field that silently changes value is
-     * worth a failing test, and the failure says which model changed.
+     * The twelve-bit window base has no power-up value in the specification --
+     * its register table refers to a mapping chapter instead of giving one --
+     * so the value asserted here comes from the firmware, which states all
+     * eight and rejects a Bridge holding anything else.
+     *
+     * Only five of the eight can be checked here, and that is a real gap rather
+     * than a choice: the three slots below are assigned a window by firmware
+     * immediately after this same reset, so by the time a qtest can read them
+     * the register already holds the assignment and the reset value it briefly
+     * had is not observable from here. Their expected values are in the table
+     * above for the record, and the assertions for what they become instead are
+     * the reassignment tests further down.
      *
      * These three slots are skipped here on purpose, not missed: firmware
      * assigns each of them a window immediately after this same reset, so by
@@ -429,7 +450,7 @@ static void test_every_slot_resets_alike(const void *data)
             continue;
         }
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(n))), ==,
-                        DEVICE_RESET);
+                        device_reset[n]);
     }
 
     qtest_quit(qts);
@@ -641,7 +662,7 @@ static void test_a_device_window_base_survives(const void *data)
      * table above keeps the machine's own SCSI slots out of its rotation.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(EMPTY_SLOT))), ==,
-                    DEVICE_RESET);
+                    device_reset[EMPTY_SLOT]);
 
     qtest_quit(qts);
 }
@@ -2088,8 +2109,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/upper-half-of-the-slot", NULL,
                         test_upper_half_of_the_slot);
     qtest_add_data_func("sn0/bridge/reset-state", NULL, test_reset_state);
-    qtest_add_data_func("sn0/bridge/every-slot-resets-alike", NULL,
-                        test_every_slot_resets_alike);
+    qtest_add_data_func("sn0/bridge/each-slot-resets-to-its-own-window", NULL,
+                        test_each_slot_resets_to_its_own_window);
     qtest_add_data_func("sn0/bridge/ioc3-slot-reassigned-after-reset", NULL,
                         test_ioc3_slot_is_reassigned_after_reset);
     qtest_add_data_func("sn0/bridge/scsi-slots-reassigned-after-reset", NULL,

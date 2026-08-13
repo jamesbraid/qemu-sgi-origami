@@ -541,8 +541,32 @@
 #define DEV_MEMORY_SPACE        BIT(12)
 #define DEV_WINDOW_BASE         0xfffu
 
-#define DEVICE_RESET            (DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | \
-                                 DEV_MEMORY_SPACE)
+/*
+ * Each device's window comes up already aimed at that device's own default
+ * region, and the regions are not all the same size: devices 0 and 1 get two
+ * megabytes each and devices 2 through 7 get one. Laid end to end from PCI
+ * address zero, that puts device n's window at 2n megabytes for the first two
+ * and n+2 for the rest, which is what this field holds — it supplies PCI
+ * address bits 31:20, so a megabyte is one count.
+ *
+ * The specification does not give this field a power-up value. Its register
+ * table states a reset value for every other field and, for this one, refers to
+ * its address-mapping chapter instead — and that chapter describes which of
+ * these bits drive which address bits rather than what they start as. So the
+ * value here does not come from the specification.
+ *
+ * It comes from the firmware, which states all eight and rejects a Bridge whose
+ * registers hold anything else: its sanity diagnostic prints the value it
+ * expected beside the value it read, for each device in turn. The eight it
+ * expects are exactly the layout above. That the increments step by two for the
+ * first two devices and by one thereafter is the same two-megabyte split the
+ * ASIC specification's mapping table and OpenBSD's own header both describe,
+ * which is why this is a reading of three agreeing sources rather than a
+ * pattern fitted to eight numbers.
+ */
+#define DEVICE_WINDOW_RESET(n)  ((n) < 2 ? 2 * (n) : (n) + 2)
+#define DEVICE_RESET(n)         (DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | \
+                                 DEV_MEMORY_SPACE | DEVICE_WINDOW_RESET(n))
 #define DEVICE_WRITABLE         (DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | \
                                  DEV_FORCE_PCI_PARITY | DEV_VIRTUAL_ENABLE | \
                                  DEV_WGATHER_TRANSLATED | DEV_WGATHER_DIRECT | \
@@ -601,7 +625,7 @@ typedef struct SGIBridgeReg {
 /* The per-slot rows, which differ only in which slot they are for. */
 #define SGI_BRIDGE_DEVICE_ROW(n)                                              \
     [SGI_BRIDGE_SLOT(BRIDGE_DEVICE(n))] = {                                   \
-        "device", SGI_BRIDGE_RW, DEVICE_RESET, DEVICE_WRITABLE }
+        "device", SGI_BRIDGE_RW, DEVICE_RESET(n), DEVICE_WRITABLE }
 #define SGI_BRIDGE_DEVICE_FLUSH_ROW(n)                                        \
     [SGI_BRIDGE_SLOT(BRIDGE_DEVICE_FLUSH(n))] = {                             \
         "device write request buffer flush", SGI_BRIDGE_RO, 0, 0 }
