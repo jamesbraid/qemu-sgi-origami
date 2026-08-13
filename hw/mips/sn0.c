@@ -32,6 +32,7 @@
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "system/reset.h"
+#include "trace/control.h"
 #include "cpu.h"
 #include "sn0.h"
 
@@ -164,6 +165,13 @@ struct SN0MachineState {
      * fitting it unasked would hide the two real candidates behind it.
      */
     bool junk_uart_present;
+
+    /*
+     * Whether the firmware's boot-progress indicator is shown; see the class
+     * notes. On by default, because it is the only thing this machine prints
+     * while the firmware is still deciding which console to talk to.
+     */
+    bool debug_leds;
 
     /*
      * Whether this machine presents firmware of its own; see the class notes.
@@ -1752,6 +1760,48 @@ static Notifier sn0_machine_ready_notifier = {
     .notify = sn0_machine_ready,
 };
 
+/*
+ * Make the firmware's boot-progress indicator visible without the operator
+ * having to know it exists.
+ *
+ * The Hub emits every write to its indicator register as the trace event
+ * sgi_hub_led, decoded against real firmware's own progress and failure
+ * codes. A trace event is off by default by construction, so that signal --
+ * the only progress this machine reports while the firmware is still
+ * deciding which console to talk to -- reached only somebody who already
+ * knew to ask for it by name. This turns it on for them.
+ *
+ * ONE LINE IS ENOUGH, AND IT IS WORTH SAYING WHY, because the log backend
+ * makes it look like two are needed: trace_sgi_hub_led() emits only if the
+ * event's dynamic state is set AND qemu_loglevel_mask(LOG_TRACE). The second
+ * is already true on every run. qemu_init() calls
+ * qemu_set_log_filename_flags() unconditionally, not only when -d was given,
+ * and qemu_set_log_internal() force-sets LOG_TRACE whenever the log trace
+ * backend is compiled in -- which also makes qemu_loglevel non-zero, so the
+ * destination opens, defaulting to stderr and honouring -D. Raising the log
+ * level here as well changes nothing; it was tried, and a bare run emits the
+ * codes with it removed.
+ *
+ * Going through the trace event rather than printing directly keeps the
+ * emitted line byte-identical, which matters because it is parsed: the
+ * landing boot gate ratchets on the set of codes a known-good boot reaches,
+ * and the boot-progress decoder reads the same text. Printing the same
+ * information by a second route would have given those two parsers a format
+ * to diverge on for no gain.
+ */
+static void sn0_show_indicator_codes(Error **errp)
+{
+    TraceEvent *ev = trace_event_name("sgi_hub_led");
+
+    if (!ev) {
+        error_setg(errp, "the sgi_hub_led trace event is missing, so the "
+                         "firmware's boot-progress indicator cannot be "
+                         "shown; build with it or pass debug-leds=off");
+        return;
+    }
+    trace_event_set_state_dynamic(ev, true);
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -1764,6 +1814,16 @@ static void sn0_init(MachineState *machine)
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
     unsigned int w, slot;
+
+    /*
+     * Fatal rather than a warning if this cannot be armed: a machine that
+     * silently fails to show the codes is indistinguishable from firmware
+     * that never wrote one, and that ambiguity is the whole defect being
+     * fixed here.
+     */
+    if (s->debug_leds) {
+        sn0_show_indicator_codes(&error_fatal);
+    }
 
     if (machine->ram_size > SN0_NODE_SIZE) {
         error_report("origin200: a node holds at most %" PRIu64 " bytes of "
@@ -2475,6 +2535,16 @@ static void sn0_set_junk_uart(Object *obj, bool value, Error **errp)
     SN0_MACHINE(obj)->junk_uart_present = value;
 }
 
+static bool sn0_get_debug_leds(Object *obj, Error **errp)
+{
+    return SN0_MACHINE(obj)->debug_leds;
+}
+
+static void sn0_set_debug_leds(Object *obj, bool value, Error **errp)
+{
+    SN0_MACHINE(obj)->debug_leds = value;
+}
+
 static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -2505,6 +2575,7 @@ static void sn0_instance_init(Object *obj)
 
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
+    s->debug_leds = true;
     s->widget0_revision = SN0_WIDGET0_REVISION;
 }
 
@@ -2548,6 +2619,18 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "so fitting it unasked would hide the two real candidates behind "
         "it. On, it takes the second character device, not the first, "
         "which stays the base I/O controller's.");
+
+    object_class_property_add_bool(oc, "debug-leds",
+                                   sn0_get_debug_leds, sn0_set_debug_leds);
+    object_class_property_set_description(oc, "debug-leds",
+        "Show the firmware's boot-progress indicator, decoded. Real firmware "
+        "writes a one-byte code to the Hub before each stage of power-on "
+        "self-test, which on a real Origin 200 drives the front-panel LEDs "
+        "and is the only progress this machine reports while the firmware is "
+        "still deciding which console to talk to -- so it is on by default, "
+        "and turning it off buys a quieter stderr and nothing else. The "
+        "codes go to the log destination, meaning stderr unless -D names a "
+        "file.");
 
     /*
      * The first of the candidate values. A captured boot of this configuration

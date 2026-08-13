@@ -598,6 +598,80 @@ static void test_md_indicator_registers(const void *data)
 }
 
 /*
+ * The boot-progress indicator is shown without being asked for.
+ *
+ * WHY THIS ASSERTS THE OUTPUT AND NOT THE MACHINE PROPERTY. Reading back
+ * debug-leds=on would prove only that a bool survived being set. What has to
+ * hold is that a decoded line actually arrives, so that is what this checks.
+ *
+ * WHY -D DOES NOT HAND THE TEST ITS ANSWER. -D chooses where the codes go,
+ * nothing more: it cannot enable the sgi_hub_led trace event, and that event
+ * is the only thing standing between this machine and a silent boot. So a
+ * build whose machine has stopped arming the event fails here even with -D
+ * present. That was worth establishing rather than assuming -- an earlier
+ * draft of this file also raised the log level from the machine, and this
+ * test passed with that removed, because the log level is already set on
+ * every run. The redundant call went; this test kept its teeth.
+ *
+ * NOTE WHAT IS ABSENT FROM THE COMMAND LINE: no -d and no -trace. If this
+ * test ever needs one to pass, the default has regressed, which is the point.
+ * qemu_log_unlock() flushes each line, so the file can be read while the
+ * machine is still up.
+ */
+static void test_md_indicator_shown_by_default(const void *data)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn0-led-XXXXXX.log", g_get_tmp_dir());
+    g_autofree char *found = NULL;
+    g_autoptr(GError) err = NULL;
+    QTestState *qts;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -D %s", log);
+    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_0, 0x01);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, &err));
+    g_assert_no_error(err);
+
+    /*
+     * The decoded text, not merely the code: the decode is what made this
+     * signal worth showing by default, and a line reading only the raw byte
+     * would satisfy a substring check on "0x01" while having lost it.
+     */
+    g_assert_nonnull(strstr(found, "sgi_hub_led CPU 0: 0x01 "
+                                   "(progress: initializing the CPU)"));
+
+    g_assert_cmpint(g_unlink(log), ==, 0);
+}
+
+/*
+ * ... and stays silent when told to be. The option is the escape hatch for
+ * anyone who wants a quiet stderr, so it has to actually silence the thing.
+ */
+static void test_md_indicator_suppressed(const void *data)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn0-led-off-XXXXXX.log", g_get_tmp_dir());
+    g_autofree char *found = NULL;
+    QTestState *qts;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200,debug-leds=off -D %s", log);
+    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_0, 0x01);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_null(strstr(found, "sgi_hub_led"));
+
+    g_assert_cmpint(g_unlink(log), ==, 0);
+}
+
+/*
  * Real firmware's own presence test: write 0x55 to the scratch register,
  * write zero to the interrupt-enable register so the bus is not left
  * floating, and read the scratch register back. Both accesses are 64 bits
@@ -1461,6 +1535,10 @@ int main(int argc, char **argv)
                         test_writes_the_guest_makes);
     qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
                         test_md_indicator_registers);
+    qtest_add_data_func("sn0/hub/md-indicator-shown-by-default", NULL,
+                        test_md_indicator_shown_by_default);
+    qtest_add_data_func("sn0/hub/md-indicator-suppressed", NULL,
+                        test_md_indicator_suppressed);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
                         test_junk_uart_absent_by_default);
     qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
