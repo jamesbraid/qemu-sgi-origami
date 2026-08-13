@@ -566,6 +566,14 @@ typedef struct MIPSOcteonCryptoState {
     QTree *llm64;
 } MIPSOcteonCryptoState;
 
+/*
+ * The TagLo bits writable on a processor whose definition does not say.
+ * This is the mask this code applied unconditionally before TagLo became
+ * a per-processor property, kept so that adding the property changed no
+ * existing model's behaviour.
+ */
+#define CP0_TAGLO_RW_BITMASK_GENERIC 0xFFFFFCF6
+
 typedef struct CPUArchState {
     TCState active_tc;
     CPUMIPSFPUContext active_fpu;
@@ -1078,6 +1086,7 @@ typedef struct CPUArchState {
     uint32_t llnewval_wp;
     uint64_t CP0_LLAddr_rw_bitmask;
     int CP0_LLAddr_shift;
+    int32_t CP0_TagLo_rw_bitmask;
 /*
  * CP0 Register 18
  */

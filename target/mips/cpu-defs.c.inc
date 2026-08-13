@@ -599,6 +599,24 @@ const mips_def_t mips_defs[] =
         .CP0_Config1 = (1 << CP0C1_FP) | (63 << CP0C1_MMU),
         .CP0_LLAddr_rw_bitmask = 0xFFFFFFFF,
         .CP0_LLAddr_shift = 0,
+        /*
+         * Every bit of TagLo is writable and reads back what was written.
+         * The R10000 manual states this twice about this register, in the
+         * body of its TagLo and TagHi section and again in that section's
+         * own footnote: the register is a 32-bit read/write register, and a
+         * value written by MTC0 can be retrieved by MFC0 unless a CACHE
+         * instruction has modified the content in between. The stated reason
+         * is compatibility with an operating system that used the register
+         * as scratch, which is why it holds bits no cache tag field claims.
+         *
+         * The generic mask drops bits 0, 3, 8 and 9, and on this processor
+         * all four are defined for a primary instruction cache tag: tag
+         * parity, the least-recently-used bit, and two bits of the physical
+         * address the tag carries. The vendor firmware's cache self-test
+         * writes a tag, stores it, loads it back and compares, so dropping
+         * those bits made that test fail against this model.
+         */
+        .CP0_TagLo_rw_bitmask = 0xFFFFFFFF,
         .SYNCI_Step = 32,
         .CCRes = 2,
         /*

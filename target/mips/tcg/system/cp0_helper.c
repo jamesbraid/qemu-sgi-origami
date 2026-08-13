@@ -1475,7 +1475,7 @@ void helper_mtc0_taglo(CPUMIPSState *env, target_ulong arg1)
          */
         env->CP0_TagLo = arg1;
     } else {
-        env->CP0_TagLo = arg1 & 0xFFFFFCF6;
+        env->CP0_TagLo = arg1 & env->CP0_TagLo_rw_bitmask;
     }
 }
 

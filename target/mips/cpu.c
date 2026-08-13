@@ -266,6 +266,17 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     env->CP0_LLAddr_rw_bitmask = env->cpu_model->CP0_LLAddr_rw_bitmask
                                  << env->cpu_model->CP0_LLAddr_shift;
     env->CP0_LLAddr_shift = env->cpu_model->CP0_LLAddr_shift;
+    /*
+     * A processor whose definition says nothing about TagLo keeps the mask
+     * this code applied to every processor before any of them said otherwise.
+     * Zero is not a meaningful definition for it -- a TagLo no bit of which
+     * can be written is not a register any processor has -- so zero reads as
+     * unset rather than as a definition, and only a model stating its own
+     * behaviour departs from the historical one.
+     */
+    env->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask ?
+                                env->cpu_model->CP0_TagLo_rw_bitmask :
+                                CP0_TAGLO_RW_BITMASK_GENERIC;
     env->SYNCI_Step = env->cpu_model->SYNCI_Step;
     env->CCRes = env->cpu_model->CCRes;
     env->CP0_Status_rw_bitmask = env->cpu_model->CP0_Status_rw_bitmask;
