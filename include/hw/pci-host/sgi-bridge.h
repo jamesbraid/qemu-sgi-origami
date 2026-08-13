@@ -219,6 +219,24 @@ struct SGIBridgeState {
     uint16_t onewire_status;
 
     /*
+     * What the identity part holds, text and the check each page carries in
+     * its own last two bytes, assembled at reset. Both of the commands that
+     * read this memory return these bytes; they differ only in what they frame
+     * them with, which is why the check is stored here rather than added to an
+     * answer.
+     */
+    uint8_t onewire_rom[64];
+
+    /*
+     * Where an unframed read started, and the check over everything it will
+     * send. The stream runs from that address to the end of the data memory,
+     * so its length is known from the address alone and the check can be
+     * worked out in one pass when the read begins.
+     */
+    uint16_t onewire_read;
+    uint8_t onewire_end[2];
+
+    /*
      * The level each of the eight interrupt pins is being driven to by whatever
      * is in that slot. This is the state the interrupt status register reports,
      * and it is kept as the devices' levels rather than as a latched word
