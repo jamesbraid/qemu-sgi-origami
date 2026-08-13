@@ -106,6 +106,20 @@
 #define I2C_STATUS_IDLE     0x81  /* pending-interrupt-not | bus-not-busy */
 #define NI_STATUS           0x600000
 
+/*
+ * The junk-bus UART: eight registers, the standard 16550 order, one
+ * register per eight-byte stride at the top half of the second
+ * microcontroller/UART block. Real firmware's own presence probe touches
+ * only the interrupt-enable register (index 1) and the scratch register
+ * (index 7, the eighth); the other six are untested here, matching what the
+ * probe itself exercises.
+ */
+#define MD_JUNKUART_BASE     0x2200c0
+#define MD_JUNKUART_IER      (MD_JUNKUART_BASE + 0x08)  /* index 1 */
+#define MD_JUNKUART_SCRATCH  (MD_JUNKUART_BASE + 0x38)  /* index 7 */
+#define MD_JUNKUART_BELOW    (MD_JUNKUART_BASE - 0x08)  /* one stride short */
+#define MD_JUNKUART_ABOVE    (MD_JUNKUART_BASE + 0x40)  /* one stride past index 7 */
+
 #define NI_MORE_NODES   (1ULL << 18)
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
@@ -521,6 +535,91 @@ static void test_i2c_block_answers_idle(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_DATA), ==, 0);
     qtest_writeq(qts, HUB_LOCAL + MD_I2C_DATA, 0xe0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_DATA), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Real firmware's own presence test: write 0x55 to the scratch register,
+ * write zero to the interrupt-enable register so the bus is not left
+ * floating, and read the scratch register back. Both accesses are 64 bits
+ * wide -- the firmware's own instruction encoding, not a narrow access a
+ * memory system widened -- so the write and the read-back use the same
+ * width real firmware does, which is what lets the read-back distinguish a
+ * model whose implementation access width is undeclared (called twice per
+ * access) from a correct one.
+ */
+static void junkuart_presence_probe(QTestState *qts, uint8_t *readback)
+{
+    qtest_writeq(qts, HUB_LOCAL + MD_JUNKUART_SCRATCH, 0x55);
+    qtest_writeq(qts, HUB_LOCAL + MD_JUNKUART_IER, 0x00);
+    qtest_memread(qts, HUB_LOCAL + MD_JUNKUART_SCRATCH, readback, 8);
+}
+
+/*
+ * The default machine has no such part -- a shipped Origin 200 does not
+ * either -- and real firmware's console-selection routine treats this port
+ * as its highest-priority candidate, stopping at the first one that
+ * answers. A model that let the probe pass by accident would silently hide
+ * the two real console candidates behind it, so the default machine must
+ * fail this exactly the way real hardware without the part does.
+ *
+ * Asserted as the eight raw bytes of the read-back rather than through a
+ * numeric helper, and paired with the fitted case below: a model with the
+ * wrong declared endianness answers all zeroes on a fitted port too, the
+ * same answer this absent case gives, so this test alone cannot tell a
+ * correct model from a byte-swapped one.
+ */
+static void test_junk_uart_absent_by_default(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t readback[8];
+    static const uint8_t absent[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    junkuart_presence_probe(qts, readback);
+    g_assert_cmpmem(readback, sizeof(readback), absent, sizeof(absent));
+
+    qtest_quit(qts);
+}
+
+/*
+ * Asked for by name, the port answers exactly the way real firmware's probe
+ * checks: the byte written sits at the bottom of the 64-bit word, which on
+ * this big-endian target is the last of the eight raw bytes. This is the
+ * direction that fails if the region were declared little-endian -- the
+ * 16550's write path keeps the low byte of what it is handed, and a
+ * byte-swapped 0x55 has none, so a byte-swapped model would answer all
+ * zeroes here instead.
+ */
+static void test_junk_uart_fitted_answers_present(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,junk-uart=on");
+    uint8_t readback[8];
+    static const uint8_t present[8] = { 0, 0, 0, 0, 0, 0, 0, 0x55 };
+
+    junkuart_presence_probe(qts, readback);
+    g_assert_cmpmem(readback, sizeof(readback), present, sizeof(present));
+
+    qtest_quit(qts);
+}
+
+/*
+ * One register-stride short of the block, and one stride past its eighth
+ * register, both belong to the surrounding, unimplemented part of this
+ * register group rather than to the port. A region drawn one entry too wide
+ * would answer correctly everywhere the presence probe above looks while
+ * also covering an address that belongs to something else, and neither
+ * direction of that probe would catch it.
+ */
+static void test_junk_uart_range_is_exact(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,junk-uart=on");
+
+    qtest_writeq(qts, HUB_LOCAL + MD_JUNKUART_BELOW, 0x55);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_JUNKUART_BELOW), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + MD_JUNKUART_ABOVE, 0x55);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_JUNKUART_ABOVE), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1270,6 +1369,12 @@ int main(int argc, char **argv)
                         test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/i2c-block-answers-idle", NULL,
                         test_i2c_block_answers_idle);
+    qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
+                        test_junk_uart_absent_by_default);
+    qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
+                        test_junk_uart_fitted_answers_present);
+    qtest_add_data_func("sn0/hub/junk-uart-range-is-exact", NULL,
+                        test_junk_uart_range_is_exact);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,
                         test_status_field_access);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
