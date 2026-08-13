@@ -98,6 +98,18 @@
 #define PROBE_WINDOW_OFFSET      0x400000
 #define WINDOW(offset)           (BRIDGE_BASE + (offset))
 
+/*
+ * The board identity part's one-wire register, and the slot widths a guest
+ * drives it with — again this file's own copy, matching how the other
+ * sn0-*-test.c files stand alone.
+ */
+#define BRIDGE_NIC               0x0b0
+#define NIC_LEVEL                (1u << 0)
+#define NIC_SAMPLE(us)           ((uint32_t)(us) << 2)
+#define NIC_PULSE(us)            ((uint32_t)(us) << 10)
+#define NIC_ROM_IDENTITY         0x360605040302010bULL
+#define NIC_CRC_RESIDUE          0xb001
+
 static void bridge_put_card_in_slot(QTestState *qts, int slot)
 {
     qtest_writel(qts, CFG0(slot, 0) + PCI_BAR1, CARD_MMIO(slot));
@@ -196,12 +208,145 @@ static void test_a_device_window_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
+{
+    qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(pulse) | NIC_SAMPLE(sample));
+    return qtest_readl(qts, REG(BRIDGE_NIC)) & NIC_LEVEL;
+}
+
+#define NIC_RESET(q)      nic_slot((q), 520, 65)
+#define NIC_READ(q)       nic_slot((q), 6, 13)
+#define NIC_WRITE_ONE(q)  nic_slot((q), 6, 13)
+#define NIC_WRITE_ZERO(q) nic_slot((q), 80, 30)
+
+static void nic_write_byte(QTestState *qts, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if ((byte >> i) & 1) {
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+}
+
+static uint8_t nic_read_byte(QTestState *qts)
+{
+    uint8_t byte = 0;
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if (NIC_READ(qts)) {
+            byte |= 1u << i;
+        }
+    }
+    return byte;
+}
+
+static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * A device with a conversation in it has state a snapshot at rest cannot
+ * see, and this file could not see it either.
+ *
+ * The existing test migrates a machine whose devices are between accesses,
+ * where everything that matters is already in a register. The board identity
+ * part is not like that: a guest drives it one bit per register write, so
+ * which phase it is in, how many bits of the current byte have arrived, what
+ * they spell, and how far through an answer it is all live between accesses
+ * and none of it is in any register. A snapshot taken at rest restores that
+ * correctly by accident, because at rest there is nothing to restore.
+ *
+ * So this reads half a page on the source and the other half on the
+ * destination, and checks the two halves as one page. The part number spans
+ * the boundary and the page's own check covers all thirty-two bytes, so a
+ * destination that came up having forgotten the conversation cannot produce
+ * a page that passes -- it answers the idle wire instead, and idle reads as
+ * ones.
+ *
+ * This fork has more than one device with a conversation in it, and the
+ * general point is the reason to keep this test rather than the particular
+ * bytes: a migration test that only ever snapshots at rest certifies a
+ * property weaker than the one that has to hold.
+ */
+static void test_a_conversation_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t page[32];
+    unsigned int i;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_WITH_BRIDGE);
+
+    /* Address the part by name, then ask for the first page. */
+    g_assert_false(NIC_RESET(from));
+    nic_write_byte(from, 0x55);
+    for (i = 0; i < 64; i++) {
+        if ((NIC_ROM_IDENTITY >> i) & 1) {
+            NIC_WRITE_ONE(from);
+        } else {
+            NIC_WRITE_ZERO(from);
+        }
+    }
+    nic_write_byte(from, 0xf0);
+    nic_write_byte(from, 0x00);
+    nic_write_byte(from, 0x00);
+
+    /* Half the page here... */
+    for (i = 0; i < 16; i++) {
+        page[i] = nic_read_byte(from);
+    }
+
+    dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    migrate_stopped_vm(from, uri);
+
+    /* ...and the rest there, mid-byte-stream, with nothing re-sent. */
+    for (i = 16; i < sizeof(page); i++) {
+        page[i] = nic_read_byte(to);
+    }
+
+    /*
+     * Checked as one page rather than byte by byte: the part number spans
+     * the halves and the page's own check covers all of it, so this is the
+     * whole value and not a property of it.
+     */
+    g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
+    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/migration/device-window-survives-migration",
                         NULL, test_a_device_window_survives_migration);
+    qtest_add_data_func("sn0/migration/conversation-survives-migration",
+                        NULL, test_a_conversation_survives_migration);
 
     return g_test_run();
 }
