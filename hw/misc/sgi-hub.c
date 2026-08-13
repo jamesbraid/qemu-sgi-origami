@@ -1474,9 +1474,18 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     /*
      * The entry-level system controller: a real board on the same I2C bus,
      * not something the Hub reaches through a window, so an ordinary
-     * addressed slave on the chip's own bus is the whole of the wiring.
+     * addressed slave on the chip's own bus is nearly the whole of the
+     * wiring -- it also needs to know how many processors' arbitration
+     * signals to rotate through, which is this node's own populated count.
      */
-    i2c_slave_create_simple(s->i2c.bus, TYPE_SGI_ELSC, SGI_ELSC_ADDR);
+    {
+        I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
+
+        qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
+        if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
+            return;
+        }
+    }
 
     for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);
