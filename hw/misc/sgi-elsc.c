@@ -62,28 +62,26 @@ static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
  * That bound is a model invariant on what this device may emit, not
  * something a guest can trigger, so it is asserted rather than logged.
  *
- * The framed packet starts at txbuf[1], not txbuf[0]. The PCF8584's own
- * receive pipeline (hw/i2c/pcf8584.c) fetches one byte from whichever slave
- * answered before the driver ever reads the data register, and hands that
- * byte back on the driver's first read -- which is the discarded read
- * docs/datasheets/pcf8584-elsc.md describes: "the driver reads the data
- * register once and throws the byte away... a model that answers it with
- * the first response byte shifts the entire packet by one." That discard
- * consumes whatever this device put on the wire first, so txbuf[0] has to
- * be a byte firmware was always going to throw away, and the length byte
- * firmware actually keeps has to be the one after it.
+ * The framed packet starts at txbuf[0]. An earlier version of this device
+ * put a throwaway byte ahead of it, reasoning that the PCF8584's receive
+ * pipeline discarded a byte from whichever slave answered. It does not:
+ * the discard docs/datasheets/pcf8584-elsc.md describes is the driver's
+ * first read returning the address-and-direction byte the chip's own data
+ * register already held, before any response byte has arrived -- the
+ * Philips product specification attaches the transfer to the read, not
+ * the start (hw/i2c/pcf8584.c). A responder's own first byte was never at
+ * risk, and this device does not need to protect it.
  */
 static void elsc_frame_response(SGIElscState *s, const char *text,
                                 unsigned text_len)
 {
     g_assert(text_len <= SGI_ELSC_MAX_TEXT);
 
-    s->txbuf[0] = 0;    /* consumed by the chip's own pipeline discard */
-    s->txbuf[1] = text_len;
-    memcpy(&s->txbuf[2], text, text_len);
-    s->txbuf[text_len + 2] =
-        (uint8_t)(-(int)elsc_checksum(&s->txbuf[1], text_len + 1));
-    s->txlen = text_len + 3;
+    s->txbuf[0] = text_len;
+    memcpy(&s->txbuf[1], text, text_len);
+    s->txbuf[text_len + 1] =
+        (uint8_t)(-(int)elsc_checksum(s->txbuf, text_len + 1));
+    s->txlen = text_len + 2;
     s->txpos = 0;
 }
 
@@ -473,7 +471,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
         VMSTATE_UINT8_ARRAY(rxbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
         VMSTATE_UINT32(rxlen, SGIElscState),
-        VMSTATE_UINT8_ARRAY(txbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
+        VMSTATE_UINT8_ARRAY(txbuf, SGIElscState, SGI_ELSC_MAX_FRAME),
         VMSTATE_UINT32(txlen, SGIElscState),
         VMSTATE_UINT32(txpos, SGIElscState),
         VMSTATE_TIMER_PTR(arb_timer, SGIElscState),

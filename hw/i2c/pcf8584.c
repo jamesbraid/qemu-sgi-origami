@@ -110,16 +110,16 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
         return;
     }
 
-    if (recv) {
-        /*
-         * The chip's receive pipeline runs one byte ahead of the register.
-         * Fetch the first byte now; the driver's next read of the data
-         * register returns whatever the register already held and starts the
-         * byte after it, which is why real firmware reads once and discards
-         * the result after the address phase.
-         */
-        s->data = i2c_recv(s->bus);
-    }
+    /*
+     * No fetch here even when recv is set. The Philips datasheet attaches
+     * the transfer to the *read* of the data register, not to the start:
+     * the driver's first read after a read-direction address returns
+     * whatever the register already holds -- the address-and-direction
+     * byte just written to generate this start -- and that read is what
+     * moves the first real byte in. pcf8584_read_data() already implements
+     * exactly that pattern (hold, then fetch); the register simply keeps
+     * its current value here rather than being written to.
+     */
     pcf8584_complete(s, false);
 }
 

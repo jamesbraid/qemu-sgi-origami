@@ -65,12 +65,12 @@ static unsigned build_request(uint8_t *buf, const char *text)
  * reads back the response into resp (its own length byte first, discovered
  * from the wire rather than assumed) and returns how many bytes that was.
  *
- * The read side discards one byte before the response's own length byte,
- * not because the protocol has a preamble but because the chip's own
- * receive pipeline (hw/i2c/pcf8584.c) fetches one byte ahead and hands it
- * back on the driver's first read -- the same mechanic the closing
- * invalid-address sequence exercises, here driving a real slave instead of
- * a test fixture.
+ * The read side discards one byte before the response's own length byte --
+ * not a byte the ELSC sent, but this chip's own data register as it stood
+ * before the read-direction start, which is what the driver's first read
+ * after such a start always returns (hw/i2c/pcf8584.c). The same mechanic
+ * the closing invalid-address sequence exercises, here driving a real
+ * slave instead of a test fixture.
  */
 static unsigned elsc_transact(QTestState *qts, const uint8_t *req,
                               unsigned req_len, uint8_t *resp,
