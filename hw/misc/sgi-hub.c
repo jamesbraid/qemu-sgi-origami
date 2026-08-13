@@ -34,6 +34,7 @@
 #include "qemu/timer.h"
 #include "qemu/host-utils.h"
 #include "system/system.h"
+#include "system/runstate.h"
 #include "trace.h"
 
 /* Processor interface, at the base of the window. */
@@ -428,6 +429,26 @@
 
 /* Network interface. */
 #define HUB_NI_STATUS           0x600000  /* status, revision and identity */
+
+/*
+ * The port reset register. Three separate resets share it and only one of them
+ * is this machine's: bit 7 sends a warm reset out over the inter-node link, bit
+ * 1 resets that link, and **bit 0 resets this entire Hub** — which on a
+ * single-node machine is the machine.
+ *
+ * **Three consumers write it and they disagree about the companion bits**,
+ * which is why the local-reset bit is tested on its own. Linux's reboot path
+ * writes bits 7 and 0 together. OpenBSD writes bits 1 and 0. Real firmware's
+ * early self-reset writes 0x81 — bits 7 and 0 — just before reporting
+ * that it is waiting for a reset to complete, measured on both PROM images
+ * this project boots rather than inferred from either.
+ *
+ * **The protection register at 0x60_0010 is deliberately not consulted.**
+ * OpenBSD arms it before resetting and Linux does not, so requiring it would
+ * reset for one guest and silently ignore the other.
+ */
+#define HUB_NI_PORT_RESET       0x600008
+#define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
  * The status register's fields. Only three of them matter to a booting guest,
@@ -1253,6 +1274,28 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
          */
         s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
                        (val & NI_STATUS_WRITABLE);
+        break;
+    case HUB_NI_PORT_RESET:
+        /*
+         * The local-reset bit is tested on its own because the three things
+         * that write this register set different companions alongside it, and
+         * a model keyed to any one of their values would ignore the others.
+         *
+         * The other bits are accepted and dropped: they reset the inter-node
+         * link, which this machine does not have, and send a warm reset to a
+         * neighbour it does not have either.
+         *
+         * **Nothing was reset here before, and a guest could not tell.** The
+         * write landed in the local window, matched no register, and was
+         * logged as unimplemented — so firmware that resets itself and halts
+         * carried on into the code that runs *after* the reset, on a machine
+         * that had not been reset. It reaches the branch the firmware intends
+         * to reach, in the one state the firmware guarantees it is never in
+         * there.
+         */
+        if (val & NI_PORT_RESET_LOCAL) {
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
         break;
     case HUB_PI_PROCESSOR_NUMBER:
         /*
