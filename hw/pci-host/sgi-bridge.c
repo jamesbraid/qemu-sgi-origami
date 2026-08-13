@@ -139,6 +139,7 @@
 #define NIC_PHASE_OFFSET        4   /* taking the two bytes of a page offset */
 #define NIC_PHASE_ANSWER        5   /* shifting a page's answer back out */
 #define NIC_PHASE_MATCH         6   /* taking the identity a guest is naming */
+#define NIC_PHASE_STATUS        7   /* shifting the status memory back out */
 
 /*
  * The commands this part answers, by the numbers the bus assigns them.
@@ -155,6 +156,32 @@
 #define NIC_CMD_MATCH_ROM       0x55
 #define NIC_CMD_SKIP_ROM        0xcc
 #define NIC_CMD_READ_MEMORY     0xa5
+#define NIC_CMD_READ_STATUS     0xaa
+
+/*
+ * The part's status memory, which is separate from the memory holding the
+ * board's part number and is read with its own command. It carries the bits
+ * that write-protect each page, the bits that protect each page's redirection
+ * byte, a bitmap the part's own filesystem software uses, and the redirection
+ * bytes themselves — which say, per page, whether that page's data is still
+ * where it looks like it is or has been superseded by another page.
+ *
+ * Every byte of ours reads as unprogrammed, and that is a fact about the
+ * technology rather than a convenient default. The memory is EPROM: a bit
+ * leaves the factory set and programming can only clear it, so a part whose
+ * status memory was never written reads ones everywhere. The addresses the
+ * part does not implement read the same. In a redirection byte that value is
+ * the one that says the page is valid where it sits, which is what our part
+ * needs to say — its one programmed page is the board identity, and nothing
+ * has ever superseded it.
+ *
+ * A status page is eight bytes and the last address is 0x13f; the part sends
+ * a page's worth of data and then a check pair, page after page, until the end
+ * of the status memory or until the guest resets.
+ */
+#define NIC_STATUS_UNPROGRAMMED 0xff
+#define NIC_STATUS_PAGE         8
+#define NIC_STATUS_LAST         0x13f
 
 /*
  * The page a guest reads at a time, and what the part sends back for one: a
@@ -1232,6 +1259,67 @@ static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
 };
 
 /*
+ * Fill in one status page's worth of answer: the bytes themselves, then the
+ * check pair the part appends when it reaches the end of the page.
+ *
+ * The check covers the command and both address bytes as well as the data,
+ * but only for the first page — the part clears its check generator at each
+ * page boundary and the pages after the first are checked over their data
+ * alone. That asymmetry is the part's, not a simplification: the status memory
+ * can be programmed after the fact, so a check stored with the data could not
+ * stay valid, and the part computes one per page as it sends instead.
+ */
+static void sgi_bridge_onewire_status_page(SGIBridgeState *s, bool first)
+{
+    unsigned int end = s->onewire_status | (NIC_STATUS_PAGE - 1);
+    uint8_t request[3];
+    uint16_t crc = 0;
+    unsigned int n = 0;
+
+    while (s->onewire_status + n <= end) {
+        s->onewire_out[n] = NIC_STATUS_UNPROGRAMMED;
+        n++;
+    }
+
+    if (first) {
+        request[0] = NIC_CMD_READ_STATUS;
+        request[1] = s->onewire_args[0];
+        request[2] = s->onewire_args[1];
+        crc = sgi_bridge_onewire_crc(0, request, sizeof(request));
+    }
+    crc = ~sgi_bridge_onewire_crc(crc, s->onewire_out, n);
+    s->onewire_out[n++] = crc & 0xff;
+    s->onewire_out[n++] = crc >> 8;
+
+    trace_sgi_bridge_onewire_status(s->onewire_status, first);
+    s->onewire_status = end + 1;
+    s->onewire_outlen = n;
+    s->onewire_outbit = 0;
+}
+
+/*
+ * Start a status read at the address the guest asked for.
+ *
+ * An address past the end of the status memory has nothing to send, so the
+ * part is left idle and the guest reads ones. That is what it would get from
+ * a part that had run off the end of the memory, and is what this part gives
+ * for every address it does not implement anyway.
+ */
+static void sgi_bridge_onewire_status_answer(SGIBridgeState *s)
+{
+    s->onewire_status = s->onewire_args[0] | (s->onewire_args[1] << 8);
+
+    if (s->onewire_status > NIC_STATUS_LAST) {
+        trace_sgi_bridge_onewire_status(s->onewire_status, true);
+        s->onewire_phase = NIC_PHASE_IDLE;
+        return;
+    }
+
+    sgi_bridge_onewire_status_page(s, true);
+    s->onewire_phase = NIC_PHASE_STATUS;
+}
+
+/*
  * Assemble everything the guest will read for one page, once it has finished
  * asking. Built in one go rather than a byte at a time because the checks span
  * the request as well as the answer, so none of it is known until the last
@@ -1429,7 +1517,8 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             s->onewire_argn = 0;
             s->onewire_args[0] = 0;
             s->onewire_args[1] = 0;
-            if (s->onewire_command == NIC_CMD_READ_MEMORY) {
+            if (s->onewire_command == NIC_CMD_READ_MEMORY ||
+                s->onewire_command == NIC_CMD_READ_STATUS) {
                 s->onewire_phase = NIC_PHASE_OFFSET;
             } else {
                 /* Same silence as an unanswered rom command, one step later. */
@@ -1448,7 +1537,29 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
             if (++s->onewire_argn == 2) {
-                sgi_bridge_onewire_answer(s);
+                if (s->onewire_command == NIC_CMD_READ_STATUS) {
+                    sgi_bridge_onewire_status_answer(s);
+                } else {
+                    sgi_bridge_onewire_answer(s);
+                }
+            }
+        }
+    } else if (s->onewire_phase == NIC_PHASE_STATUS) {
+        /*
+         * The status memory goes out a page at a time, each page followed by
+         * its own check pair, and the part carries on into the next page for
+         * as long as the guest keeps reading. Running off the end leaves it
+         * idle, which the guest reads as ones.
+         */
+        unsigned int byte = s->onewire_outbit / 8;
+
+        level = (s->onewire_out[byte] >> (s->onewire_outbit % 8)) & 1;
+        if (++s->onewire_outbit == s->onewire_outlen * 8) {
+            if (s->onewire_status > NIC_STATUS_LAST) {
+                s->onewire_outbit = 0;
+                s->onewire_phase = NIC_PHASE_IDLE;
+            } else {
+                sgi_bridge_onewire_status_page(s, false);
             }
         }
     } else if (s->onewire_phase == NIC_PHASE_ANSWER) {

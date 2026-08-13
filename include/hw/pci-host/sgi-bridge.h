@@ -208,6 +208,15 @@ struct SGIBridgeState {
      */
     uint8_t onewire_out[37];
     uint16_t onewire_outbit;
+    uint8_t onewire_outlen;
+
+    /*
+     * Where a status read has got to. The status memory is read page by page
+     * with a check pair after each, for as long as the guest keeps reading, so
+     * the part remembers the next page rather than assembling the whole
+     * memory: it is forty pages and a guest reads one or two of them.
+     */
+    uint16_t onewire_status;
 
     /*
      * The level each of the eight interrupt pins is being driven to by whatever
