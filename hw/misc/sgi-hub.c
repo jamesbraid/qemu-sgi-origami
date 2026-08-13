@@ -1031,10 +1031,11 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
  * meaning real firmware gives it, when it has one. is_failure distinguishes
  * a diagnosed failure from ordinary boot progress; the return value is NULL
  * for anything the enumeration does not cover, which includes both the
- * reserved slots the source itself sets aside and getc_timeout()'s own,
- * unrelated flashing pattern (0x80 XORed against a per-device bit pattern,
- * documented in docs/datasheets/hub-memory-directory.md) -- so an
- * undecoded value is not automatically a fault, only an unenumerated one.
+ * reserved slots the source itself sets aside and the unrelated pattern the
+ * firmware flashes while it waits for a character (0x80 XORed against a
+ * per-device bit pattern, documented in
+ * docs/datasheets/hub-memory-directory.md) -- so an undecoded value is not
+ * automatically a fault, only an unenumerated one.
  */
 static const char *sgi_hub_led_decode(uint8_t code, bool *is_failure)
 {
@@ -1307,7 +1308,7 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                 trace_sgi_hub_led(cpu, code, "undecoded",
                                    "not one of real firmware's progress or "
                                    "failure codes -- may be a guest OS write "
-                                   "or getc_timeout()'s flash pattern");
+                                   "or the firmware's character-wait flash");
             }
         }
         break;
