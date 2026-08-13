@@ -121,13 +121,23 @@ struct SN0MachineState {
     SGIBridgeState io_bridge;
 
     /*
-     * Whether the I/O bridge is present. It is being built, and until firmware
-     * can assign the PCI resources a guest expects to already be assigned
-     * (task #43) the machine this option turns on is not one a guest can
-     * actually boot on — so the default is off and the default machine is
-     * unchanged, region for region. What the option is for is the bridge's
-     * own tests, and increasingly real guest boots, which need the chip
-     * reachable and need nothing else about the machine to move.
+     * Whether the I/O bridge is fitted. **On by default**, because a real
+     * Origin 200 always has one and every device on this machine hangs off
+     * it — both disk adapters, the base I/O controller with its serial ports,
+     * its ethernet and its keyboard controller, and the clock on its byte
+     * bus. Turning it off leaves a board that never existed.
+     *
+     * It was off by default once, and the reason is worth keeping because it
+     * says what would have to change to flip it back: the bridge was not
+     * merely absent from the default machine, it was worse than absent, since
+     * OpenBSD used to enumerate further with it fitted and then stop in its
+     * debugger. That is no longer the trade — measured rather than assumed,
+     * with the byte-bus clock modelled OpenBSD 7.9 GENERIC-IP27 reaches the
+     * same prompt either way and attaches twenty devices against eight, a
+     * strict superset with no bus error in the run.
+     *
+     * The option stays because that bring-up aid is still useful for
+     * isolating a fault to the fabric or to what sits behind it.
      */
     bool io_bridge_present;
 
