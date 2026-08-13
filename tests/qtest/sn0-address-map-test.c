@@ -17,6 +17,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "libqtest.h"
 
 /* Node zero's window, and the space the Hub answers uncached references in. */
@@ -210,6 +211,58 @@ static void test_node_memory(const void *data)
     qtest_quit(qts);
 }
 
+/* One bank's real stride, matching hw/mips/sn0.h's SN0_MEM_BANK_SIZE. */
+#define MEM_BANK_SIZE   0x20000000ULL
+
+/*
+ * A config that spans two banks unevenly: 768 MiB is one full 512 MiB bank
+ * plus a 256 MiB remainder in the second. -m 512M alone (test_node_memory,
+ * above) and any single-bank size take the machine's other branch entirely
+ * — one region, no loop — so neither one ever runs the per-bank alias loop
+ * this checks. A size that is an exact multiple of two full banks would run
+ * the loop but never exercise MIN(remaining, SN0_MEM_BANK_SIZE) actually
+ * clamping to less than a full bank; an uneven second bank is the smallest
+ * config where both that clamp and the second bank's alias offset into
+ * machine->ram (bank_offset = ram_size - remaining, not i * SN0_MEM_BANK_SIZE)
+ * have to be right for both writes below to read back correctly.
+ */
+static void test_multi_bank_memory(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 768M");
+
+    /* Bank 0 backed for its own full 512 MiB, to the last double word. */
+    qtest_writeq(qts, NODE0 + MEM_BANK_SIZE - 8, 0xb0b0b0b0b0b0b0b0ULL);
+    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE - 8), ==,
+                    0xb0b0b0b0b0b0b0b0ULL);
+
+    /* Bank 1 starts at its own base, one full bank stride up. */
+    qtest_writeq(qts, NODE0 + MEM_BANK_SIZE, 0xb1b1b1b1b1b1b1b1ULL);
+    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE), ==,
+                    0xb1b1b1b1b1b1b1b1ULL);
+
+    /*
+     * Bank 1 backed for only its real 256 MiB (768 MiB total minus the 512
+     * MiB bank 0 already took), to the last double word of that -- not the
+     * full 512 MiB bank 1's own stride would otherwise allow.
+     */
+    qtest_writeq(qts, NODE0 + MEM_BANK_SIZE + 256 * MiB - 8,
+                0xb2b2b2b2b2b2b2b2ULL);
+    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE + 256 * MiB - 8),
+                    ==, 0xb2b2b2b2b2b2b2b2ULL);
+
+    /*
+     * The three patterns above land in three different bytes of the one
+     * underlying machine->ram object once bank_offset is right (0, 512 MiB
+     * minus 8, and 768 MiB minus 8 into it) -- reading bank 0's pattern back
+     * unchanged after writing bank 1's is what catches bank 1 having been
+     * aliased onto the same bytes as bank 0 instead of its own.
+     */
+    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE - 8), ==,
+                    0xb0b0b0b0b0b0b0b0ULL);
+
+    qtest_quit(qts);
+}
+
 /*
  * Write a pattern at a handful of addresses across a back-door window and
  * confirm each reads back unchanged. The offsets are the start of the
@@ -264,6 +317,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/address-map/flash-read-only", NULL,
                         test_flash_is_read_only);
     qtest_add_data_func("sn0/address-map/node-memory", NULL, test_node_memory);
+    qtest_add_data_func("sn0/address-map/multi-bank-memory", NULL,
+                        test_multi_bank_memory);
     qtest_add_data_func("sn0/address-map/directory-backdoor", NULL,
                         test_directory_backdoor);
     qtest_add_data_func("sn0/address-map/ecc-backdoor", NULL,
