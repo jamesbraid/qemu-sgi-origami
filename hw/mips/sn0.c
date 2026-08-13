@@ -114,7 +114,7 @@ struct SN0MachineState {
     /* Crosstalk space, and the small window each widget is reached through. */
     MemoryRegion xtalk;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
-    MemoryRegion mem_slot[SN0_MEM_BANK_SLOTS];
+    MemoryRegion mem_bank[SN0_MEM_BANKS];
 
     SGIHubState hub;
     SGIXbowState xbow;
@@ -1545,27 +1545,41 @@ static void sn0_init(MachineState *machine)
      * placed at window zero.
      */
     /*
-     * Place memory where the guest's own arithmetic looks for it. The
-     * configuration graph advertises a single bank of everything the machine
-     * has, and a guest reading that bank spreads anything larger than one slot
-     * a quarter to each of the bank's four slots. Mapping it as one run
-     * instead leaves the upper slots advertised and unbacked, which is exactly
-     * what a guest allocating high walks off the end of.
+     * Place memory the way real per-bank DIMM population does: each bank
+     * backed as one contiguous run from its own base up to however much of
+     * the requested total it holds, with the remainder of that bank's stride
+     * and every bank past the last one populated left entirely unbacked.
+     * Real hardware never backs a bank in smaller, evenly-sized pieces
+     * spread across its own address range -- confirmed against the real
+     * PROM's own bring-up source, which builds one aggregate size per bank
+     * from its physical SIMM positions, and independently against OpenBSD's
+     * own per-bank memory structure, which holds one size per bank and has
+     * no field for a partial bank. A prior version of this code split the
+     * total evenly across four fixed-size pieces regardless of how much of
+     * each was actually requested, which left a real gap inside the address
+     * range of the first bank alone -- exactly the shape neither source
+     * shows on real hardware, and exactly where a guest walking every bank
+     * by its physical size would reach unbacked space partway through the
+     * first one instead of cleanly at the boundary of the last requested
+     * bank.
      */
-    if (machine->ram_size <= SN0_MEM_SLOT_SIZE) {
+    if (machine->ram_size <= SN0_MEM_BANK_SIZE) {
         memory_region_add_subregion(system, node, machine->ram);
     } else {
-        uint64_t per_slot = machine->ram_size / SN0_MEM_BANK_SLOTS;
+        uint64_t remaining = machine->ram_size;
         unsigned int i;
 
-        for (i = 0; i < SN0_MEM_BANK_SLOTS; i++) {
-            g_autofree char *name = g_strdup_printf("sn0.node0.ram.slot%u", i);
+        for (i = 0; i < SN0_MEM_BANKS && remaining > 0; i++) {
+            uint64_t this_bank = MIN(remaining, SN0_MEM_BANK_SIZE);
+            uint64_t bank_offset = machine->ram_size - remaining;
+            g_autofree char *name = g_strdup_printf("sn0.node0.ram.bank%u", i);
 
-            memory_region_init_alias(&s->mem_slot[i], OBJECT(machine), name,
-                                     machine->ram, i * per_slot, per_slot);
+            memory_region_init_alias(&s->mem_bank[i], OBJECT(machine), name,
+                                     machine->ram, bank_offset, this_bank);
             memory_region_add_subregion(system,
-                                        node + (hwaddr)i * SN0_MEM_SLOT_SIZE,
-                                        &s->mem_slot[i]);
+                                        node + (hwaddr)i * SN0_MEM_BANK_SIZE,
+                                        &s->mem_bank[i]);
+            remaining -= this_bank;
         }
     }
 
