@@ -961,13 +961,21 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     }
     if (sgi_hub_icrb_c_entry(addr)) {
         /*
-         * Real hardware fills this from a crosstalk transaction in flight, not
-         * from a guest write; nothing on any path we boot writes here, and
-         * there is nothing to keep even if one did.
+         * Real hardware fills this from a crosstalk transaction in flight,
+         * not from a guest write, so there is nothing to keep even when one
+         * arrives. Real firmware does write here, though -- measured across
+         * both machine configurations, PROM writes 0x0 to every one of these
+         * eight registers early in every boot, well before either console
+         * fault fires. That is some generic range clear sweeping past a
+         * register it has no reason to know is special, not a guest asking
+         * this register to do anything; a real slot's C register would
+         * ignore the write the same way. Unimplemented, not misbehaviour.
          */
-        qemu_log_mask(LOG_GUEST_ERROR,
+        qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: write of 0x%" PRIx64 " to the read-only "
-                      "incoming-request-buffer register 0x%" HWADDR_PRIx "\n",
+                      "incoming-request-buffer register 0x%" HWADDR_PRIx
+                      " (real firmware writes 0x0 here every boot; not "
+                      "modelled)\n",
                       val, addr);
         return;
     }
