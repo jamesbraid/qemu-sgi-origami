@@ -219,6 +219,60 @@
  * dropped from full to zero, all at once.
  */
 #define HUB_MD_CONFIG           0x200018
+
+/*
+ * The node's one-wire bus master. Firmware programs the timing of one bit
+ * slot, starts it with a write, and polls for the completion bit; the level
+ * sampled from the wire arrives beside it.
+ *
+ * **The register is 34 bits wide and that is a correctness requirement, not
+ * trivia.** The upper timing phase occupies bits 33:27, so a value the
+ * firmware writes genuinely sets bit 32. Truncating to 32 bits does not drop
+ * a spare bit — it rewrites that phase field from 44 to 12, a timing
+ * parameter wrong by nearly four, with every field below it intact and
+ * looking perfectly reasonable. No fault, nothing to notice.
+ *
+ * **There is no bus behind this yet, and answering as though there were is
+ * worse than the stall.** A model that reports completion without a bus hands
+ * firmware a fabricated identity part: every bit it clocks out answered by
+ * whatever constant we chose, assembled into a serial number that was never
+ * on any wire. The stall announces itself; the fabrication does not. So this
+ * accepts the timing parameters and starts nothing.
+ *
+ * **Starting a transaction clears the completion bit**, which is what makes
+ * the reset value not matter for correctness. The two documents that describe
+ * this register disagree about whether completion resets set or clear, both
+ * unsourced — and either way the firmware's own request clears it and the
+ * poll spins, so the failure stays loud while the bus does not exist.
+ */
+#define HUB_MD_ONEWIRE          0x2000a8
+#define MD_ONEWIRE_RXDATA       (1ULL << 0)
+#define MD_ONEWIRE_DONE         (1ULL << 1)
+#define MD_ONEWIRE_SAMPLE       (0xffULL << 2)
+#define MD_ONEWIRE_PULSE        (0x3ffULL << 10)
+#define MD_ONEWIRE_PHASE_LO     (0x7fULL << 20)
+#define MD_ONEWIRE_PHASE_HI     (0x7fULL << 27)
+
+/*
+ * Everything except the two status bits is the guest's to set; the completion
+ * and received-data bits are the device's to report, so a write never sets
+ * them.
+ */
+#define MD_ONEWIRE_WRITABLE     (MD_ONEWIRE_SAMPLE | MD_ONEWIRE_PULSE | \
+                                 MD_ONEWIRE_PHASE_LO | MD_ONEWIRE_PHASE_HI)
+
+/*
+ * Both timing phases at the value our memory/directory datasheet records for
+ * them. **The one-wire datasheet is the authority on this register's fields
+ * and does not carry this constant**, while instructing a test to assert the
+ * actual value rather than merely a non-zero one — so this is taken from the
+ * other page and the discrepancy is reported rather than papered over. A
+ * wrong constant here is a wrong value in a register no booting guest reads,
+ * and it does not affect the poll either way.
+ */
+#define MD_ONEWIRE_PHASE_INIT   0x31ULL
+#define MD_ONEWIRE_RESET        ((MD_ONEWIRE_PHASE_INIT << 20) | \
+                                 (MD_ONEWIRE_PHASE_INIT << 27))
 #define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
 #define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
 
@@ -860,6 +914,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return MD_SLOT_FLASH_READY;
     case HUB_MD_CONFIG:
         return s->md_config;
+    case HUB_MD_ONEWIRE:
+        return s->md_onewire;
     case HUB_MD_PERF_CNT0:
         return s->md_perf_cnt0;
     case HUB_PI_INT_MODIFY:
@@ -1216,6 +1272,16 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_MD_CONFIG:
         s->md_config = val & MD_CONFIG_MASK;
         break;
+    case HUB_MD_ONEWIRE:
+        /*
+         * A write programs the timing and starts a bit slot. Nothing drives
+         * the wire, so the slot never finishes: the completion bit goes clear
+         * and stays clear, and firmware polling for it waits forever. That is
+         * the intended behaviour until this bus has a master and a part, and
+         * it is deliberately louder than the alternative.
+         */
+        s->md_onewire = val & MD_ONEWIRE_WRITABLE;
+        break;
     case HUB_MD_PERF_CNT0:
         /*
          * A real self-test resets the counter before a measurement pass;
@@ -1425,6 +1491,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->io_scratch[1] = 0;
     s->md_perf_cnt0 = 0;
     s->md_config = MD_CONFIG_RESET;
+    s->md_onewire = MD_ONEWIRE_RESET;
 
     /*
      * Every entry resets to zero, which names widget 0 at its first slice in
@@ -1570,7 +1637,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 10,
+    .version_id = 11,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1598,6 +1665,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY_V(io_scratch, SGIHubState, 2, 8),
         VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
         VMSTATE_UINT64_V(md_config, SGIHubState, 9),
+        VMSTATE_UINT64_V(md_onewire, SGIHubState, 11),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         VMSTATE_END_OF_LIST()
     }

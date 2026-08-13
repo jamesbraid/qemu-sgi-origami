@@ -160,6 +160,12 @@ struct SGIHubState {
     uint64_t md_config;
 
     /*
+     * The node's one-wire bus master. Thirty-four bits wide, so it does not
+     * fit a word: the upper timing phase reaches bit 33.
+     */
+    uint64_t md_onewire;
+
+    /*
      * The junk-bus UART: a real NS16550-compatible serial interface in this
      * unit's own register space that a shipped Origin 200 does not have —
      * SGI fits one only for manufacturing and bring-up. origami can fit one
