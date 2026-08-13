@@ -278,40 +278,6 @@
 #define SN0_HUB_NODE_WINDOW  0x01800000
 
 /*
- * The bring-up serial port, an NS16550-compatible interface on the Hub's junk
- * bus. Eight standard 16550 registers inside the Hub's own register window, one
- * register per eight bytes rather than one per byte, which is the alignment the
- * junk bus wants. The public Linux header arch/mips/include/asm/sn/sn0/hubmd.h
- * names the sixteen-register block these sit in, MD_UREG1_0 through
- * MD_UREG1_15, and gives each offset; this interface takes the upper eight.
- *
- * A shipped Origin 200 has no such part — SGI's PROM documentation calls it a
- * manufacturing and bring-up fitting — so the machine leaves it out unless it
- * is asked for. Fitting it is not a free addition either: real firmware tries
- * this port first of all its console candidates and stops at the first that
- * answers, so a machine that answers here gets its console here and never
- * reaches the two candidates a real machine uses.
- */
-#define SN0_JUNK_UART_OFFSET    0x2200c0  /* Hub-local, MD_UREG1_8 */
-#define SN0_JUNK_UART_REGSHIFT  3         /* one register per eight bytes */
-
-/*
- * The port's reference oscillator. SGI's driver forms its divisor latch from
- * 12 MHz and the standard sixteen samples per bit, and asks for 9600 baud.
- *
- * QEMU's 16550 wants that already divided by sixteen, which is not what the
- * argument's name suggests: it computes the line rate as the value it was
- * given divided by the divisor latch alone. Handing it the oscillator would
- * make it report a rate sixteen times too fast to whatever is behind the
- * character device, which costs nothing against a pipe and produces garbage
- * against a real serial port -- the one case a bring-up instrument is for.
- * Every other machine in the tree that drives a 16550 from a named crystal
- * writes the division at the call for the same reason.
- */
-#define SN0_JUNK_UART_CLOCK_HZ  12000000
-#define SN0_JUNK_UART_SAMPLES   16
-
-/*
  * The boot flash: one megabyte, and the guest sees it two ways. The processor's
  * reset vector reaches it as node-local physical 0x1fc00000 through the
  * compatibility segments, and the Hub special space reaches the same bytes at

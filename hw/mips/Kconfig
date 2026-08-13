@@ -42,7 +42,6 @@ config SGI_SN0
     select DP83840
     select M48T35
     select QLOGIC_ISP_SCSI_PCI
-    select SERIAL_MM
     select SGI_BRIDGE
     select SGI_BRIDGE_DMA_TEST
     select SGI_HUB
