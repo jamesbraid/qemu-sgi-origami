@@ -293,15 +293,25 @@ static uint8_t elsc_recv(I2CSlave *i2c)
 /*
  * The signal pair a processor watches for is derived, not fixed: 0x70 * 2
  * plus twice the node's own slot index plus a live read of the Hub's
- * processor-number register, and signal2 is signal1 with bit 3 set. This
- * machine is single-node, so the slot term is 0, and PI_CPU_NUM is not
- * modelled -- see docs/datasheets/pcf8584-elsc.md. Computing one value from
- * that chain would be one wrong term away from a silent hang; rotating
- * through every populated processor's signal in turn is correct whatever
- * the chain would have produced, which is what a real super-master does
- * anyway.
+ * processor-number register, and signal2 computed as signal1 + 8. The
+ * resulting processor code has to fit in three bits: signal2 is signal1
+ * with bit 3 set, so a code of eight or more would make one processor's
+ * "message waiting" numerically identical to a different, lower-numbered
+ * processor's "nothing waiting" -- ds-hub's answer to the width this file
+ * originally left open. Eight is also exactly what the protocol's
+ * addressable space supplies, four node slots of two processors each, and
+ * the firmware's own configuration for the family's larger machines
+ * confirms it by name, excluding any node slot whose code would exceed
+ * seven from ever using the controller at all. See
+ * docs/datasheets/pcf8584-elsc.md.
+ *
+ * A real controller cannot know in advance which of the eight codes are
+ * actually populated, so it offers all eight in turn regardless -- what a
+ * real controller doling out time slices does anyway -- independent of how
+ * many of those codes this specific model backs with a real input queue.
  */
-#define ELSC_SIGNAL_BASE 0xe0   /* 0x70 * 2 */
+#define ELSC_SIGNAL_BASE       0xe0   /* 0x70 * 2 */
+#define ELSC_SIGNAL_CODE_COUNT 8      /* three-bit processor code */
 
 static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
 {
@@ -377,18 +387,18 @@ static void elsc_arb_step(void *opaque)
     }
 
     /*
-     * Whether this slot has console input queued decides signal1 versus
+     * Whether this code has console input queued decides signal1 versus
      * signal2 -- signal2 is what tells the driver's transaction helper a
      * "get" will find something, and withholding it for an empty queue is
-     * the correct behaviour, not a missing feature. Only slot 0 has a real
-     * queue: console selection reaches processor 0, and a second
-     * processor's own input path is not modelled, so every other slot
-     * always presents signal1.
+     * the correct behaviour, not a missing feature. Only processor code 0
+     * has a real queue: the ASCII protocol's "get"/"acp" selector is
+     * hardcoded to it, and a second processor's own input path is not
+     * modelled, so every other code always presents signal1.
      */
-    elsc_broadcast(s, elsc_signal_byte(s->arb_slot,
-                   s->arb_slot == 0 && s->rx_queue_len > 0));
+    elsc_broadcast(s, elsc_signal_byte(s->arb_code,
+                   s->arb_code == 0 && s->rx_queue_len > 0));
     s->arb_present = false;
-    s->arb_slot = (s->arb_slot + 1) % s->num_cpus;
+    s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
     timer_mod(s->arb_timer, now + ELSC_ARB_HOLD_US);
 }
 
@@ -444,7 +454,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->rxlen = 0;
     s->txlen = 0;
     s->txpos = 0;
-    s->arb_slot = 0;
+    s->arb_code = 0;
     s->arb_present = false;
     s->rx_queue_len = 0;
     s->in_escape = false;
@@ -465,8 +475,8 @@ static void elsc_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
         VMSTATE_UINT8_ARRAY(rxbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
@@ -475,7 +485,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT32(txlen, SGIElscState),
         VMSTATE_UINT32(txpos, SGIElscState),
         VMSTATE_TIMER_PTR(arb_timer, SGIElscState),
-        VMSTATE_UINT32(arb_slot, SGIElscState),
+        VMSTATE_UINT32(arb_code, SGIElscState),
         VMSTATE_BOOL(arb_present, SGIElscState),
         VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
         VMSTATE_UINT32(rx_queue_len, SGIElscState),

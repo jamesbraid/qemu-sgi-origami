@@ -66,8 +66,17 @@ struct SGIElscState {
      */
     I2CBus *bus;
     QEMUTimer *arb_timer;
-    uint32_t num_cpus;   /* how many processor signals to rotate through */
-    uint32_t arb_slot;   /* which processor's signal this cycle presents */
+    /*
+     * Kept as a Hub-supplied property, but no longer sizes the rotation --
+     * the rotation always covers all eight architectural processor codes
+     * regardless of how many this machine populates (see elsc_arb_step()
+     * in hw/misc/sgi-elsc.c for why). This device implements one real
+     * console-input queue, for processor code 0, matching the ASCII
+     * protocol's own hardcoded selector; num_cpus has no further effect
+     * until a second real queue exists to answer for a second code.
+     */
+    uint32_t num_cpus;
+    uint32_t arb_code;    /* which of the eight processor codes this cycle presents */
     bool arb_present;    /* false: showing the gap; true: holding the signal */
 
     /*

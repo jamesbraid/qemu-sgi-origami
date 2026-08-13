@@ -171,9 +171,14 @@ static void test_unimplemented_command_gets_err_cmd(const void *data)
     qtest_quit(qts);
 }
 
-/* Processor 0's signal pair on a single-node, single-processor machine
- * (-M origin200 defaults to one CPU): 0x70 * 2 plus processor_code 0, and
- * signal2 with bit 3 set. */
+/*
+ * Processor code 0's own pair: 0x70 * 2 plus processor_code 0, and signal2
+ * as signal1 + 8. This is the one code this device backs with a real
+ * input queue (see hw/misc/sgi-elsc.c), and it is one of the eight the
+ * broadcast's rotation presents in turn -- the wait helpers below
+ * correctly treat every other code's pulse as "not mine" and keep
+ * waiting, exactly as firmware does for time slices that are not its own.
+ */
 #define ARB_SIGNAL1 0xe0
 #define ARB_SIGNAL2 0xe8
 
@@ -300,6 +305,48 @@ static void test_arbitration_repeats(const void *data)
     second = arb_wait_for_signal(qts);
     g_assert_cmphex(second, ==, first);
     arb_assert_held(qts, second, ARB_HOLD_ASSERT_NS);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The rotation has to actually visit more than one processor code, not
+ * just eventually settle on the one this file's own helpers wait for --
+ * the two tests above only prove code 0's own pair eventually appears,
+ * which a model stuck on that one code, exactly like the bug this device
+ * once had, would also satisfy. Built from the datasheet's own account of
+ * the protocol's addressable space (docs/datasheets/pcf8584-elsc.md): four
+ * node slots of two processors each give processor codes 0 through 7, and
+ * a correct broadcaster offers all eight regardless of how many this
+ * machine populates. Code 1's pair (0xe1/0xe9) is checked concretely
+ * rather than "anything other than code 0", so a regression that swaps
+ * one wrong fixed code for another still fails this test.
+ */
+static void test_arbitration_visits_other_processor_codes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    bool saw_code_0 = false, saw_code_1 = false;
+    int i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    /* One full eight-code cycle is at most a few milliseconds; step
+     * through several cycles' worth with margin so timing choices inside
+     * the model don't make this test fragile. */
+    for (i = 0; i < ARB_MAX_STEPS && !(saw_code_0 && saw_code_1); i++) {
+        uint64_t observed = read_data(qts);
+
+        if (observed == 0xe0 || observed == 0xe8) {
+            saw_code_0 = true;
+        }
+        if (observed == 0xe1 || observed == 0xe9) {
+            saw_code_1 = true;
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+
+    g_assert_true(saw_code_0);
+    g_assert_true(saw_code_1);
 
     qtest_quit(qts);
 }
@@ -681,6 +728,8 @@ int main(int argc, char **argv)
                         test_arbitration_three_loop_wait);
     qtest_add_data_func("sn0/elsc/arbitration-repeats", NULL,
                         test_arbitration_repeats);
+    qtest_add_data_func("sn0/elsc/arbitration-visits-other-processor-codes",
+                        NULL, test_arbitration_visits_other_processor_codes);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
