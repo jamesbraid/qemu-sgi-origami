@@ -264,31 +264,115 @@ static void test_multi_bank_memory(const void *data)
 }
 
 /*
- * Write a pattern at a handful of addresses across a back-door window and
- * confirm each reads back unchanged. The offsets are the start of the
- * window, one in the middle, and the last aligned double word, rather than
- * one address at the base, because a region sized wrong at the top is a
- * different bug from one that never held state at all.
+ * One bank's stride within a back-door window: an even eight-way split of
+ * the 1 GB window, matching hw/mips/sn0.h's SN0_BACKDOOR_BANK_STRIDE.
  */
-static void check_backdoor_round_trip(QTestState *qts, uint64_t base)
+#define BACKDOOR_BANK_STRIDE   0x8000000ULL  /* 128 MiB */
+
+/*
+ * The firmware's own classification pattern: 0x55 repeated across a
+ * doubleword. Real firmware's presence probe writes this to an entry,
+ * writes zero eight bytes further on (never compared against anything,
+ * there only to disturb the shared data lines), and reads the first
+ * location back -- premium format if the low 48 bits survived, standard
+ * format if only the low 16 did, absent if neither did.
+ */
+#define BACKDOOR_PATTERN       0x5555555555555555ULL
+#define BACKDOOR_PATTERN_LOW16 0x5555ULL
+#define BACKDOOR_PATTERN_LOW48 0x0000555555555555ULL
+
+/*
+ * A populated entry's real storage is only as wide as this machine's
+ * directory format: the low sixteen bits of each eight-byte-aligned entry
+ * round-trip, and the other six do not survive being written, whatever
+ * they were written as. Checked at the bank's own base, one entry into the
+ * middle of it, and its last aligned entry -- rather than one address at
+ * the base -- because a populated region sized wrong at its own top is a
+ * different bug from one that never held state at all. The pattern is
+ * folded with the bank index so that two banks written in the same test
+ * cannot pass by aliasing onto each other's bytes.
+ */
+static void check_backdoor_entry(QTestState *qts, uint64_t base,
+                                 unsigned int bank)
 {
-    static const uint64_t offsets[] = { 0x0, 0x12345678, BACKDOOR_SIZE - 8 };
+    uint64_t bank_base = base + (uint64_t)bank * BACKDOOR_BANK_STRIDE;
+    static const uint64_t offsets[] = { 0x0, 0x1234560,
+                                        BACKDOOR_BANK_STRIDE - 8 };
     unsigned int i;
 
     for (i = 0; i < G_N_ELEMENTS(offsets); i++) {
-        uint64_t addr = base + offsets[i];
-        uint64_t pattern = 0xdaedbaefdaedbaefULL ^ offsets[i];
+        uint64_t addr = bank_base + offsets[i];
+        uint64_t written = (0xdaedbaefdaedba00ULL ^ offsets[i]) + bank;
+        uint64_t readback;
 
-        qtest_writeq(qts, addr, pattern);
-        g_assert_cmphex(qtest_readq(qts, addr), ==, pattern);
+        qtest_writeq(qts, addr, written);
+        readback = qtest_readq(qts, addr);
+
+        g_assert_cmphex(readback & 0xffffULL, ==, written & 0xffffULL);
+        g_assert_cmphex(readback & ~0xffffULL, ==, 0);
     }
 }
 
+/*
+ * Real firmware's own presence probe, run against a bank this machine
+ * populates: write the pattern to the entry, write zero eight bytes on,
+ * read the entry back. Assert the classification the probe reaches --
+ * standard format, this machine's own, per SGI's manual stating the
+ * Origin 200 carries no premium directory memory -- not the value that
+ * produces it. The low sixteen bits are the part the contract fixes; the
+ * rest is only required to disagree with the wide mask, so this checks
+ * that disagreement rather than a specific value.
+ */
+static void check_backdoor_standard_format(QTestState *qts, uint64_t addr)
+{
+    uint64_t readback;
+
+    qtest_writeq(qts, addr, BACKDOOR_PATTERN);
+    qtest_writeq(qts, addr + 8, 0);
+    readback = qtest_readq(qts, addr);
+
+    g_assert_cmphex(readback & 0xffffULL, ==, BACKDOOR_PATTERN_LOW16);
+    g_assert_cmphex(readback & 0xffffffffffffULL, !=, BACKDOOR_PATTERN_LOW48);
+}
+
+/*
+ * Real firmware's own presence probe, run against a bank this machine does
+ * not populate: write the pattern, write zero eight bytes on, read back.
+ * It calls a bank present only when the pattern survives; for a bank that
+ * does not exist, real hardware has nothing behind either write to land
+ * in, so the low sixteen bits -- the part either format needs to survive
+ * -- must not come back as the pattern wrote them. Assert the
+ * classification the probe reaches, not what the location actually reads
+ * as: that value is this model's own arbitrary choice (recorded beside
+ * sn0_backdoor_absent_ops in hw/mips/sn0.c), and asserting it would freeze
+ * a modelling choice as though it were a contract.
+ */
+static void check_backdoor_absent(QTestState *qts, uint64_t addr)
+{
+    uint64_t readback;
+
+    qtest_writeq(qts, addr, BACKDOOR_PATTERN);
+    qtest_writeq(qts, addr + 8, 0);
+    readback = qtest_readq(qts, addr);
+
+    g_assert_cmphex(readback & 0xffffULL, !=, BACKDOOR_PATTERN_LOW16);
+}
+
+/*
+ * The default machine populates one bank (the default -m is one bank's own
+ * stride, SN0_MEM_BANK_SIZE): bank 0 round-trips its low sixteen bits and
+ * classifies standard format, and both the very next bank and the top of
+ * the window -- the two ends of the absent range -- must classify absent
+ * rather than silently answering as populated memory.
+ */
 static void test_directory_backdoor(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    check_backdoor_round_trip(qts, BACKDOOR_DIR);
+    check_backdoor_entry(qts, BACKDOOR_DIR, 0);
+    check_backdoor_standard_format(qts, BACKDOOR_DIR);
+    check_backdoor_absent(qts, BACKDOOR_DIR + BACKDOOR_BANK_STRIDE);
+    check_backdoor_absent(qts, BACKDOOR_DIR + BACKDOOR_SIZE - 8);
 
     qtest_quit(qts);
 }
@@ -297,7 +381,50 @@ static void test_ecc_backdoor(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    check_backdoor_round_trip(qts, BACKDOOR_ECC);
+    check_backdoor_entry(qts, BACKDOOR_ECC, 0);
+    check_backdoor_standard_format(qts, BACKDOOR_ECC);
+    check_backdoor_absent(qts, BACKDOOR_ECC + BACKDOOR_BANK_STRIDE);
+    check_backdoor_absent(qts, BACKDOOR_ECC + BACKDOOR_SIZE - 8);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same 768 MiB configuration as test_multi_bank_memory: bank 0 full,
+ * bank 1 partial, both genuinely populated, bank 2 and beyond not. What this
+ * adds beyond that test is proof the back door tracks how many banks a
+ * configuration actually has rather than hard-coding "bank 0 only" --
+ * bank 1's own share of the back door has to round-trip here although it
+ * does not on the default machine above, and bank 0's pattern has to
+ * survive bank 1 being written, which a model aliasing every populated
+ * bank onto the same bytes would not show.
+ */
+static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
+{
+    const uint64_t isolation_pattern = 0x00000000000012f0ULL;
+
+    check_backdoor_entry(qts, base, 0);
+    check_backdoor_standard_format(qts, base);
+    check_backdoor_entry(qts, base, 1);
+    check_backdoor_standard_format(qts, base + BACKDOOR_BANK_STRIDE);
+
+    /* Bank 0's own entry, written last so nothing after this touches it,
+     * must survive bank 1 being written -- which a model aliasing every
+     * populated bank onto the same bytes would not show. */
+    qtest_writeq(qts, base, isolation_pattern);
+    check_backdoor_entry(qts, base, 1);
+    g_assert_cmphex(qtest_readq(qts, base) & 0xffffULL, ==,
+                    isolation_pattern & 0xffffULL);
+
+    check_backdoor_absent(qts, base + 2 * BACKDOOR_BANK_STRIDE);
+}
+
+static void test_backdoor_tracks_populated_banks(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 768M");
+
+    check_backdoor_multi_bank(qts, BACKDOOR_DIR);
+    check_backdoor_multi_bank(qts, BACKDOOR_ECC);
 
     qtest_quit(qts);
 }
@@ -323,6 +450,8 @@ int main(int argc, char **argv)
                         test_directory_backdoor);
     qtest_add_data_func("sn0/address-map/ecc-backdoor", NULL,
                         test_ecc_backdoor);
+    qtest_add_data_func("sn0/address-map/backdoor-tracks-populated-banks",
+                        NULL, test_backdoor_tracks_populated_banks);
 
     return g_test_run();
 }
