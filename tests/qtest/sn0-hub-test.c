@@ -53,6 +53,9 @@
 #define PI_RT_COMPARE_A     0x000108
 #define PI_RT_PENDING_A     0x000120
 #define PI_RT_ENABLE_A      0x000140
+#define PI_RT_LOCAL_CTRL       0x000160
+#define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
+#define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
 
 /*
  * The Hub's outgoing lines, by the order it registers them: the two pending
@@ -1187,6 +1190,32 @@ static void test_md_dimm_init(const void *data)
     qtest_quit(qts);
 }
 
+static void test_pi_rt_local_ctrl(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Bit 16 (internal clock select) resets set; bit 15 and bits 14:8
+     * (network-clock observation) are read-only and this model has no
+     * network-wide clock to observe, so they are outside the writable mask
+     * and always read zero. Real firmware writes 0x10000 (bit 16 alone) and
+     * 0x10047 (bit 16, a maximum count of 35 at bits 7:1, and bit 0
+     * enabling the network clock) -- both round-trip through the mask.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL), ==,
+                    PI_RT_LOCAL_CTRL_RESET);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL, 0x10047ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL), ==,
+                    0x10047ULL);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL), ==,
+                    PI_RT_LOCAL_CTRL_MASK);
+
+    qtest_quit(qts);
+}
+
 static void test_io_icrb_c_family(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1270,6 +1299,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);
     qtest_add_data_func("sn0/hub/md-dimm-init", NULL, test_md_dimm_init);
+    qtest_add_data_func("sn0/hub/pi-rt-local-ctrl", NULL, test_pi_rt_local_ctrl);
     qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
                         test_io_icrb_c_family);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,

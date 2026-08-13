@@ -316,6 +316,26 @@
 #define PI_RT_MASK              (((uint64_t)1 << 52) - 1)
 
 /*
+ * The counter's own clock control (docs/datasheets/hub-processor-interface.md
+ * has the full field account). Bit 16 selects the Hub's internal clock over
+ * the network-wide one and resets set; bits 7:1 hold a maximum count and bit
+ * 0 enables the network clock, both writable; bit 15 and bits 14:8 observe
+ * the network-wide clock and are read-only. This model has no network-wide
+ * clock to observe -- a single-node machine has nothing crosstalk-connected
+ * driving one -- so those bits are not part of the writable mask and always
+ * read zero, the same reasoning already applied to every other status field
+ * nothing on this model ever sets. Plain masked storage for the rest:
+ * nothing on our boot path is known to depend on the counter's rate tracking
+ * whatever this register is programmed to, and the counter's 1.25 MHz rate
+ * is independently corroborated three ways already (the shipped firmware's
+ * own configuration block, OpenBSD's registered frequency, Linux's hard-
+ * coded tick), all agreeing before this register was ever read back.
+ */
+#define HUB_PI_RT_LOCAL_CTRL    0x000160
+#define PI_RT_LOCAL_CTRL_MASK   0x100ffULL
+#define PI_RT_LOCAL_CTRL_RESET  0x10000ULL
+
+/*
  * I/O interface: the link to the crossbar, and what this Hub says about it.
  */
 #define HUB_IO_LINK_STATUS      0x400128
@@ -740,6 +760,7 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     case HUB_PI_RT_PENDING_B: return s->pi_rt_pending[1];
     case HUB_PI_RT_ENABLE_A:  return s->pi_rt_enable[0];
     case HUB_PI_RT_ENABLE_B:  return s->pi_rt_enable[1];
+    case HUB_PI_RT_LOCAL_CTRL: return s->pi_rt_local_ctrl;
     case HUB_PI_CPU_PRESENT_A:
         return s->cpus >= 1;
     case HUB_PI_CPU_PRESENT_B:
@@ -1115,6 +1136,9 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         s->pi_rt_enable[addr == HUB_PI_RT_ENABLE_B] = val & 1;
         sgi_hub_update_irq(s);
         break;
+    case HUB_PI_RT_LOCAL_CTRL:
+        s->pi_rt_local_ctrl = val & PI_RT_LOCAL_CTRL_MASK;
+        break;
     case HUB_PI_CPU_ENABLE_A:
         s->pi_cpu_enable[0] = val & 1;
         break;
@@ -1326,6 +1350,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_rt_compare, 0, sizeof(s->pi_rt_compare));
     memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
     memset(s->pi_rt_enable, 0, sizeof(s->pi_rt_enable));
+    s->pi_rt_local_ctrl = PI_RT_LOCAL_CTRL_RESET;
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
         timer_del(s->rt_timer[n]);
     }
@@ -1461,7 +1486,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 9,
+    .version_id = 10,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1489,6 +1514,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY_V(io_scratch, SGIHubState, 2, 8),
         VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
         VMSTATE_UINT64_V(md_config, SGIHubState, 9),
+        VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         VMSTATE_END_OF_LIST()
     }
 };

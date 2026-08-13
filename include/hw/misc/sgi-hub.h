@@ -126,6 +126,9 @@ struct SGIHubState {
     uint8_t pi_rt_pending[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_enable[SGI_HUB_PROCESSORS];
 
+    /* The counter's clock control -- bit 16 resets set, see the definition. */
+    uint64_t pi_rt_local_ctrl;
+
     QEMUTimer *rt_timer[SGI_HUB_PROCESSORS];
     SGIHubCounterLine rt_line[SGI_HUB_PROCESSORS];
     uint64_t ni_status;
