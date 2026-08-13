@@ -50,6 +50,7 @@
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
+#include "trace.h"
 
 /*
  * The data half of an eight-byte register slot. Every access this model serves
@@ -1235,7 +1236,10 @@ static void sgi_bridge_onewire_answer(SGIBridgeState *s)
     uint16_t crc;
 
     if (offset > sizeof(sgi_bridge_onewire_image) - NIC_PAGE_SIZE) {
+        trace_sgi_bridge_onewire_page(offset, true);
         offset = 0;             /* a page this part does not have */
+    } else {
+        trace_sgi_bridge_onewire_page(offset, false);
     }
 
     request[0] = NIC_CMD_READ_MEMORY;
@@ -1291,6 +1295,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
          * presence, and forgets whatever conversation was in progress: the
          * next thing it expects is a command.
          */
+        trace_sgi_bridge_onewire_reset(s->onewire_phase, s->onewire_outbit);
         s->onewire_phase = NIC_PHASE_COMMAND;
         s->onewire_bit = 0;
         s->onewire_command = 0;
@@ -1307,6 +1312,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         }
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
+            trace_sgi_bridge_onewire_command(s->onewire_command);
             switch (s->onewire_command) {
             case NIC_CMD_SEARCH_ROM:
                 s->onewire_phase = NIC_PHASE_SEARCH;
@@ -1321,6 +1327,19 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
                 s->onewire_phase = NIC_PHASE_FUNCTION;
                 break;
             default:
+                /*
+                 * A command this part does not answer. The wire is open-drain
+                 * and idles high, so the guest reads ones for the rest of
+                 * the transaction and cannot tell an unimplemented command
+                 * from a part that is not there. A silent default here cost
+                 * a boot: real firmware addressed this part by name, read
+                 * ones back for every byte it then clocked, and nothing
+                 * anywhere reported that a command had been dropped.
+                 */
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-bridge: one-wire rom command 0x%02x is not "
+                              "answered by the board identity part\n",
+                              s->onewire_command);
                 s->onewire_phase = NIC_PHASE_IDLE;
                 break;
             }
@@ -1347,6 +1366,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         if (++s->onewire_bit == NIC_ROM_BITS * 3) {
             s->onewire_bit = 0;
             s->onewire_phase = NIC_PHASE_IDLE;
+            trace_sgi_bridge_onewire_search_done(NIC_ROM_IDENTITY);
         }
     } else if (s->onewire_phase == NIC_PHASE_FUNCTION) {
         /* The function asked of the selected part, a bit at a time. */
@@ -1355,11 +1375,20 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         }
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
+            trace_sgi_bridge_onewire_function(s->onewire_command);
             s->onewire_argn = 0;
             s->onewire_args[0] = 0;
             s->onewire_args[1] = 0;
-            s->onewire_phase = s->onewire_command == NIC_CMD_READ_MEMORY ?
-                               NIC_PHASE_OFFSET : NIC_PHASE_IDLE;
+            if (s->onewire_command == NIC_CMD_READ_MEMORY) {
+                s->onewire_phase = NIC_PHASE_OFFSET;
+            } else {
+                /* Same silence as an unanswered rom command, one step later. */
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-bridge: one-wire memory function 0x%02x is "
+                              "not answered by the board identity part\n",
+                              s->onewire_command);
+                s->onewire_phase = NIC_PHASE_IDLE;
+            }
         }
     } else if (s->onewire_phase == NIC_PHASE_OFFSET) {
         /* Two bytes of page offset, low first, still one slot per bit. */
@@ -1385,6 +1414,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         if (++s->onewire_outbit == NIC_ANSWER_SIZE * 8) {
             s->onewire_outbit = 0;
             s->onewire_phase = NIC_PHASE_IDLE;
+            trace_sgi_bridge_onewire_answer_done(NIC_ANSWER_SIZE);
         }
     }
 

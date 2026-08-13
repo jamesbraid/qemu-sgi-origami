@@ -80,3 +80,11 @@ elroy_pci_config_data_read(uint64_t addr, int size, uint64_t val) "addr 0x%"PRIx
 elroy_pci_config_data_write(uint64_t addr, int size, uint64_t val) "addr 0x%"PRIx64" size %d val 0x%"PRIx64
 iosapic_reg_write(uint64_t reg_select, int size, uint64_t val) "reg_select 0x%"PRIx64" size %d val 0x%"PRIx64
 iosapic_reg_read(uint64_t reg_select, int size, uint64_t val) "reg_select 0x%"PRIx64" size %d val 0x%"PRIx64
+
+# sgi-bridge.c
+sgi_bridge_onewire_reset(unsigned phase, unsigned outbit) "reset arrived in phase %u, %u answer bits sent"
+sgi_bridge_onewire_command(uint8_t cmd) "rom command 0x%02x"
+sgi_bridge_onewire_search_done(uint64_t rom) "search answered rom identity 0x%016" PRIx64
+sgi_bridge_onewire_function(uint8_t fn) "memory function 0x%02x"
+sgi_bridge_onewire_page(unsigned offset, bool clamped) "page offset 0x%04x clamped %d"
+sgi_bridge_onewire_answer_done(unsigned bytes) "answer of %u bytes fully shifted out"
