@@ -990,7 +990,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     uint8_t *console = graph + SN0_GRAPH_CONSOLE_OFF;
     uint8_t *cpu, *hub, *mem;
     uint64_t total_mb = machine->ram_size / MiB;
-    uint64_t chip;
+    uint64_t widget;
 
     stq_be_p(graph + 0x00, SN0_GRAPH_MAGIC);
     /* The structure version, which real firmware writes as zero. */
@@ -1013,30 +1013,61 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * first while wrong for the second gives a guest that identifies its
      * console correctly and then drives an address that answers nothing.
      *
-     * All three base fields are derived from one chip address rather than
-     * composed separately, because composing them separately is how the device
-     * window came to be present in one of them and missing from the other two.
-     * The three are read by different guests for different purposes, so a
+     * All three base fields share one root rather than being composed
+     * separately, because composing them separately is how the device window
+     * came to be present in one of them and missing from the other two. The
+     * three are read by different guests for different purposes, so a
      * correction applied to one does not announce itself to the others.
+     *
+     * **The root is the widget, not the device window, and that is the whole
+     * of this arrangement.** Two of the three fields do live inside the
+     * controller's own window on the bus; the configuration base does not. It
+     * is a *sibling* of that window in the bridge's widget space, at a lower
+     * offset. Rooted at the device window, the correct configuration address
+     * is not merely unwritten — it is unreachable, and every value the code
+     * could express is wrong. Rooted at the widget, each field names its own
+     * offset and the shared terms still have one source, so a correction to
+     * the widget number or the space base reaches all three.
      */
-    chip = 0x9200000000000000ULL |
-           ((uint64_t)SN0_CONSOLE_WIDGET << 24) | SN0_BRIDGE_DEVICE2;
+    widget = 0x9200000000000000ULL | SN0_PCI_WIDGET_BASE;
+
+    /*
+     * Every term is a compile-time constant, so the composition is checked
+     * where a wrong one cannot be built rather than only where it can be
+     * caught. That is worth more here than a test would be: the three fields
+     * are read by different guests and one of them by no guest we boot, so a
+     * test can only fail for whichever field somebody thought to cover.
+     *
+     * The serial-port base is the term with a capture behind it, and the whole
+     * width is compared. Its low twelve bits alone are the controller's
+     * generation and its low twenty the register offset, so a check on either
+     * accepts values wrong in the part it does not look at — which is
+     * how two wrong values reached this field before.
+     */
+    QEMU_BUILD_BUG_ON((0x9200000000000000ULL | SN0_PCI_WIDGET_BASE |
+                       SN0_CONSOLE_PORT_OFFSET) != 0x9200000008620178ULL);
 
     /*
      * The serial-port base, which OpenBSD splits into a bus and a register
      * offset. This is the field carrying the generation trap in its low twelve
      * bits.
      */
-    stq_be_p(console + 0x00, chip | SN0_IOC3_SERIAL_A);
+    stq_be_p(console + 0x00, widget | SN0_CONSOLE_PORT_OFFSET);
 
     /*
-     * The configuration base. No consumer for this field is known and nothing
-     * has been observed in it, so the chip's own base is a choice rather than
-     * a measurement: the least surprising value, given the fields either side
-     * of it are chip-relative. Written down as an open question rather than
-     * left looking settled.
+     * The configuration base: the controller's type 0 PCI configuration
+     * window, which the vendor kernel's own controller-reset path follows as a
+     * pointer into configuration space. Not the chip's memory base, which is
+     * what this field held until the two were told apart — the same value as
+     * the field below it, and wrong by the whole device window.
+     *
+     * Still derived rather than captured: nothing has been observed in this
+     * field on real hardware. What makes the derivation checkable without one
+     * is that the geometry is public — mainline Linux gives the bridge's type
+     * 0 base and its per-device stride in arch/mips/include/asm/pci/bridge.h,
+     * with a macro composing them exactly as the bridge's header here does.
      */
-    stq_be_p(console + 0x08, chip);
+    stq_be_p(console + 0x08, widget | SGI_BRIDGE_CFG0_DEVICE(SN0_IOC3_DEVICE));
 
     /*
      * The memory base, the one field in this descriptor Linux reads. It takes
@@ -1047,7 +1078,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * physical one. Wrong here, Linux takes a bus error or spins forever on a
      * transmitter-empty bit that never sets, and both look like a silent boot.
      */
-    stq_be_p(console + 0x10, chip);
+    stq_be_p(console + 0x10, widget | SN0_BRIDGE_DEVICE2);
     stw_be_p(console + 0x18, SN0_CONSOLE_BAUD);
     stl_be_p(console + 0x1c, 0);                /* console type */
     stw_be_p(console + 0x20, 0);                /* node identifier */

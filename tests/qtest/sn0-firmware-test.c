@@ -86,6 +86,15 @@
 #define CONSOLE_WIDGET      8
 
 /*
+ * The controller's type 0 PCI configuration window, which is a sibling of its
+ * memory window in the bridge's widget space, not something inside it —
+ * the bridge's type 0 base plus the device's own 4 KB slot. Written out whole
+ * rather than composed from the two fields either side of it, because the
+ * defect this covers was precisely that it had been composed from them.
+ */
+#define CONSOLE_CFG_IN_WIDGET   0x022000
+
+/*
  * Where each device on the base-I/O board sits on the Bridge's PCI bus, which
  * is also what the configuration graph reports as that component's physical
  * identifier. Named here rather than written as bare numbers so a device
@@ -252,6 +261,33 @@ static void test_console_descriptor(const void *data)
      */
     g_assert_cmphex(qtest_readq(qts, console + 0x10) + IOC3_SERIAL_A, ==,
                     qtest_readq(qts, console + 0x00));
+
+    /*
+     * The configuration base, which the vendor kernel follows as a pointer
+     * into PCI configuration space. Asserted as a whole value rather than as a
+     * relationship, and that is the difference from the two fields above: they
+     * are offset from one another, so a relationship catches them drifting
+     * apart, while this one is a sibling of the memory window rather than
+     * anything inside it and has nothing to be offset from.
+     *
+     * The defect it covers is exactly the composition that could not express
+     * it. This field held the memory base — the same value as the field above
+     * — because all three shared a root that already included the device
+     * window, and the configuration window sits below that window rather than
+     * within it, so no value reachable from that root was right. A check
+     * relating it to either neighbour would have been satisfied by the wrong
+     * value it was written to replace.
+     */
+    g_assert_cmphex(qtest_readq(qts, console + 0x08) & 0xffffff, ==,
+                    CONSOLE_CFG_IN_WIDGET);
+
+    /* And it must not be the memory base, which is what it used to be. */
+    g_assert_cmphex(qtest_readq(qts, console + 0x08), !=,
+                    qtest_readq(qts, console + 0x10));
+
+    /* Same widget and same space as its siblings, whatever the offset. */
+    g_assert_cmphex(qtest_readq(qts, console + 0x08) >> 24, ==,
+                    qtest_readq(qts, console + 0x10) >> 24);
 
     g_assert_cmphex(qtest_readw(qts, console + 0x18), ==, CONSOLE_BAUD);
     g_assert_cmphex(qtest_readb(qts, console + 0x22), ==, CONSOLE_WIDGET);
