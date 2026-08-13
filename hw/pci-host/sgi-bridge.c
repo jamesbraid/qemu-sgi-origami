@@ -2421,7 +2421,7 @@ static int sgi_bridge_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_bridge = {
     .name = "sgi-bridge",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = sgi_bridge_post_load,
     .fields = (const VMStateField[]) {
@@ -2429,6 +2429,28 @@ static const VMStateDescription vmstate_sgi_bridge = {
         VMSTATE_UINT8(pin_level, SGIBridgeState),
         VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
                                SGI_BRIDGE_ATE_ENTRIES, 2),
+        /*
+         * The conversation with the board identity part. A guest drives it
+         * one bit per register write, so all of this lives between accesses
+         * and none of it is recoverable from any register.
+         *
+         * What is deliberately absent is the stored image itself: it is
+         * assembled from constant data at reset, which the destination has
+         * already done before it takes anything in, so migrating it would
+         * send bytes the other end can only reproduce identically.
+         */
+        VMSTATE_UINT8_V(onewire_phase, SGIBridgeState, 3),
+        VMSTATE_UINT8_V(onewire_bit, SGIBridgeState, 3),
+        VMSTATE_UINT8_V(onewire_command, SGIBridgeState, 3),
+        VMSTATE_UINT8_ARRAY_V(onewire_args, SGIBridgeState, 2, 3),
+        VMSTATE_UINT8_V(onewire_argn, SGIBridgeState, 3),
+        VMSTATE_UINT64_V(onewire_match, SGIBridgeState, 3),
+        VMSTATE_UINT8_ARRAY_V(onewire_out, SGIBridgeState, 37, 3),
+        VMSTATE_UINT16_V(onewire_outbit, SGIBridgeState, 3),
+        VMSTATE_UINT8_V(onewire_outlen, SGIBridgeState, 3),
+        VMSTATE_UINT16_V(onewire_status, SGIBridgeState, 3),
+        VMSTATE_UINT16_V(onewire_read, SGIBridgeState, 3),
+        VMSTATE_UINT8_ARRAY_V(onewire_end, SGIBridgeState, 2, 3),
         VMSTATE_END_OF_LIST()
     }
 };
