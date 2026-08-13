@@ -578,7 +578,27 @@ static void test_writes_the_guest_makes(const void *data)
 
 static void test_md_indicator_registers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    /*
+     * DO NOT DROP debug-leds=off, AND THE REASON IS NOT NOISE. The codes are
+     * shown by default now, and the value written below is a real firmware
+     * failure code -- deliberately, because a register test should use a
+     * value the hardware really sees. Left on, this test prints that code
+     * into the suite log on every run, from a register write that has
+     * nothing to do with any firmware.
+     *
+     * That matters because the code is load-bearing elsewhere: whether it
+     * still fires is a live question for the firmware-parity work, and it is
+     * answered by searching logs. A suite log that emits it unprompted turns
+     * every such search into a false positive, and a bare code in a log
+     * carries no hint of where it came from -- which is precisely what a
+     * search returns.
+     *
+     * This test is about what the register does, not about what the machine
+     * displays, so turning the display off scopes it correctly rather than
+     * working around anything. The two tests below own the display, and both
+     * send their output to a private file for the same reason.
+     */
+    QTestState *qts = qtest_init("-M origin200,debug-leds=off");
 
     /*
      * Write-only: real firmware's own diagnostics write here and the model
