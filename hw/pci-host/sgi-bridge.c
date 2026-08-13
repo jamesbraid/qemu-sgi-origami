@@ -1908,6 +1908,7 @@ static uint64_t sgi_bridge_config_read(void *opaque, hwaddr addr, unsigned size)
      * of them reads as nothing being there. Zero would be a real device whose
      * vendor identifier happened to be zero.
      */
+    trace_sgi_bridge_config_read(addr, size);
     return pci_data_read(phb->bus, sgi_bridge_config_address(addr, size), size);
 }
 
@@ -1916,6 +1917,7 @@ static void sgi_bridge_config_write(void *opaque, hwaddr addr, uint64_t val,
 {
     PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
 
+    trace_sgi_bridge_config_write(addr, size, val);
     pci_data_write(phb->bus, sgi_bridge_config_address(addr, size), val, size);
 }
 
