@@ -75,6 +75,16 @@ struct PCF8584State {
     bool transfer;
     bool recv;                  /* current direction is slave-to-master */
     bool start_pending;         /* a repeated start awaits its address byte */
+
+    /*
+     * The 7-bit address the open transfer is matched against, valid only
+     * while transfer is set. Tracked so a repeated start can tell whether
+     * it targets the same device (an ordinary direction change) or a
+     * different one (the protocol's own closing invalid-address step),
+     * which QEMU's I2C core cannot distinguish on its own once a transfer
+     * is already open -- see pcf8584_start() in hw/i2c/pcf8584.c.
+     */
+    uint8_t cur_addr7;
 };
 
 #endif /* HW_I2C_PCF8584_H */
