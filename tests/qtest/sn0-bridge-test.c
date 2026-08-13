@@ -1397,6 +1397,150 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
     qtest_quit(qts);
 }
 
+/* Drive a search and return the identity the part hands back. */
+static uint64_t nic_search_for_identity(QTestState *qts)
+{
+    uint64_t rom = 0;
+    unsigned int i;
+
+    nic_write_byte(qts, 0xf0);
+    for (i = 0; i < 64; i++) {
+        bool bit = NIC_READ(qts);
+        bool complement = NIC_READ(qts);
+
+        g_assert_cmpint(complement, ==, !bit);
+        if (bit) {
+            rom |= 1ULL << i;
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+    return rom;
+}
+
+/* Name an identity, sixty-four bits of it, least-significant first. */
+static void nic_match_identity(QTestState *qts, uint64_t rom)
+{
+    unsigned int i;
+
+    nic_write_byte(qts, 0x55);
+    for (i = 0; i < 64; i++) {
+        if ((rom >> i) & 1) {
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+}
+
+/*
+ * Read the first page from a part that is already selected, and check it every
+ * way a guest does. This is the same page and the same three residues the
+ * skip-addressed read asserts; what varies between the two callers is how the
+ * part was selected, which is the thing under test.
+ */
+static void nic_read_first_page(QTestState *qts)
+{
+    uint8_t exchange[6];
+    uint8_t page[34];
+    unsigned int i;
+
+    exchange[0] = 0xa5;
+    exchange[1] = 0x00;
+    exchange[2] = 0x00;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, exchange[i]);
+    }
+
+    for (i = 3; i < 6; i++) {
+        exchange[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(exchange[3], ==, 0xff);
+    g_assert_cmphex(nic_crc(0, exchange, 6), ==, NIC_CRC_RESIDUE);
+
+    for (i = 0; i < sizeof(page); i++) {
+        page[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+    g_assert_cmphex(nic_crc(0, page, sizeof(page) - 2), ==, NIC_CRC_RESIDUE);
+    g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
+}
+
+/*
+ * The whole exchange real firmware performs, end to end: find the part, name
+ * it, and read its page.
+ *
+ * The page read this asserts is the same one the skip-addressed test asserts,
+ * and that is deliberate rather than duplication — the two differ only in how
+ * the part was selected, and selecting it the other way is what the firmware
+ * does and what this model did not answer. A suite holding only the
+ * skip-addressed read establishes that a page can be read when the part is
+ * addressed without being named, which is true and weaker than the property
+ * that has to hold.
+ *
+ * The identity fed to the match is the one the search just returned rather
+ * than a literal, so this also asserts the two halves agree: a model that
+ * offered one identity to a search and accepted a different one from a match
+ * would pass each of them separately.
+ */
+static void test_a_named_part_reads_back_its_page(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint64_t rom;
+
+    g_assert_false(NIC_RESET(qts));
+    rom = nic_search_for_identity(qts);
+    g_assert_cmphex(rom, ==, 0x360605040302010bULL);
+
+    /* The reset between the search and the match, as firmware sends it. */
+    g_assert_false(NIC_RESET(qts));
+    nic_match_identity(qts, rom);
+
+    nic_read_first_page(qts);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Naming an identity that is not this part's leaves it deselected until the
+ * next reset.
+ *
+ * This is what stops the test above from passing a model that never compares
+ * the sixty-four bits at all and selects whatever names it. That model reads
+ * back a correct page here too, so the pair is what carries the property and
+ * neither half does alone. The check is that the wire idles high for the
+ * function byte and every byte after it, which is what an unselected part
+ * leaves behind.
+ */
+static void test_naming_another_part_deselects_this_one(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+
+    /* One bit different from this part's identity, in the serial number. */
+    nic_match_identity(qts, 0x360605040302010bULL ^ (1ULL << 40));
+
+    /* Ask the deselected part to read a page anyway. */
+    nic_write_byte(qts, 0xa5);
+    nic_write_byte(qts, 0x00);
+    nic_write_byte(qts, 0x00);
+
+    /*
+     * Six bytes of redirection and check pair, then the whole block: a part
+     * that answered would put a zero somewhere in all of that, because the
+     * page carries a part number and two checks over it. An open-drain wire
+     * with nothing driving it reads high for every one.
+     */
+    for (i = 0; i < 40; i++) {
+        g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
+    }
+
+    qtest_quit(qts);
+}
+
 static void test_a_reset_finds_the_part(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1690,6 +1834,10 @@ int main(int argc, char **argv)
                         test_a_search_returns_the_identity);
     qtest_add_data_func("sn0/bridge/one-wire-page-reads-back", NULL,
                         test_a_page_reads_back_with_its_checks);
+    qtest_add_data_func("sn0/bridge/one-wire-named-part-reads-back", NULL,
+                        test_a_named_part_reads_back_its_page);
+    qtest_add_data_func("sn0/bridge/one-wire-naming-another-deselects", NULL,
+                        test_naming_another_part_deselects_this_one);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 

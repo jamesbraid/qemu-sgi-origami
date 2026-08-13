@@ -138,13 +138,21 @@
 #define NIC_PHASE_FUNCTION      3   /* selected; taking a function command */
 #define NIC_PHASE_OFFSET        4   /* taking the two bytes of a page offset */
 #define NIC_PHASE_ANSWER        5   /* shifting a page's answer back out */
+#define NIC_PHASE_MATCH         6   /* taking the identity a guest is naming */
 
 /*
- * The commands this part answers, by the numbers the bus assigns them. A guest
- * with one part on the bus skips the addressing step rather than naming the
- * part, which is why the skip is here and a match is not.
+ * The commands this part answers, by the numbers the bus assigns them.
+ *
+ * There are two ways to address a part and this file answered only one of them
+ * until 2026-08-12, on the reasoning that a guest with a single part on the bus
+ * would skip the addressing step rather than name the part. That is one guest's
+ * habit and not the bus's rule: real firmware searches the bus, learns the
+ * identity the search hands back, resets, and then names that identity. That
+ * is the ordinary discovery form, and this part answered it by going deaf.
+ * So both are here, and a command that is neither says so rather than idling.
  */
 #define NIC_CMD_SEARCH_ROM      0xf0
+#define NIC_CMD_MATCH_ROM       0x55
 #define NIC_CMD_SKIP_ROM        0xcc
 #define NIC_CMD_READ_MEMORY     0xa5
 
@@ -1317,6 +1325,15 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             case NIC_CMD_SEARCH_ROM:
                 s->onewire_phase = NIC_PHASE_SEARCH;
                 break;
+            case NIC_CMD_MATCH_ROM:
+                /*
+                 * The guest is about to name a part by its whole identity. The
+                 * part takes all sixty-four bits before it can know whether it
+                 * is the one being addressed, so nothing is decided here.
+                 */
+                s->onewire_match = 0;
+                s->onewire_phase = NIC_PHASE_MATCH;
+                break;
             case NIC_CMD_SKIP_ROM:
                 /*
                  * The guest has one part on this bus and says so rather than
@@ -1367,6 +1384,39 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             s->onewire_bit = 0;
             s->onewire_phase = NIC_PHASE_IDLE;
             trace_sgi_bridge_onewire_search_done(NIC_ROM_IDENTITY);
+        }
+    } else if (s->onewire_phase == NIC_PHASE_MATCH) {
+        /*
+         * The identity the guest is naming, least-significant bit first, the
+         * same order a search hands it back in. The guest is writing, so what
+         * it samples is the idle wire.
+         *
+         * A part that is not the one named stops answering until the next
+         * reset, which is how a bus with several parts on it leaves exactly one
+         * selected. On this bus there is one part, so a mismatch means the
+         * guest named something that is not here — and it reads back the same
+         * silence a part that is absent would give, which is why the mismatch
+         * is reported rather than left to look like nothing happened.
+         */
+        if (pulse < NIC_PULSE_IS_ZERO) {
+            s->onewire_match |= 1ULL << s->onewire_bit;
+        }
+        if (++s->onewire_bit == NIC_ROM_BITS) {
+            s->onewire_bit = 0;
+            if (s->onewire_match == NIC_ROM_IDENTITY) {
+                s->onewire_phase = NIC_PHASE_FUNCTION;
+                s->onewire_command = 0;
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-bridge: one-wire match names identity "
+                              "0x%016" PRIx64 ", but the board identity part "
+                              "is 0x%016" PRIx64 "\n",
+                              s->onewire_match, (uint64_t)NIC_ROM_IDENTITY);
+                s->onewire_phase = NIC_PHASE_IDLE;
+            }
+            trace_sgi_bridge_onewire_match(s->onewire_match,
+                                           s->onewire_phase ==
+                                           NIC_PHASE_FUNCTION);
         }
     } else if (s->onewire_phase == NIC_PHASE_FUNCTION) {
         /* The function asked of the selected part, a bit at a time. */

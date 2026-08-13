@@ -193,6 +193,14 @@ struct SGIBridgeState {
     uint8_t onewire_argn;
 
     /*
+     * The identity a guest is naming when it addresses this part by name
+     * rather than skipping the addressing step. It arrives a bit at a time
+     * like everything else here, and nothing can be decided about it until all
+     * sixty-four have, so the part collects them before comparing.
+     */
+    uint64_t onewire_match;
+
+    /*
      * What the part is shifting back: a page's answer, assembled whole when
      * the guest finishes asking for it. The answer is the redirection byte and
      * its check pair, then the page, then the page's check pair — thirty-seven

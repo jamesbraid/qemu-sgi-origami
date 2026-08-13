@@ -88,3 +88,4 @@ sgi_bridge_onewire_search_done(uint64_t rom) "search answered rom identity 0x%01
 sgi_bridge_onewire_function(uint8_t fn) "memory function 0x%02x"
 sgi_bridge_onewire_page(unsigned offset, bool clamped) "page offset 0x%04x clamped %d"
 sgi_bridge_onewire_answer_done(unsigned bytes) "answer of %u bytes fully shifted out"
+sgi_bridge_onewire_match(uint64_t rom, bool selected) "match names rom identity 0x%016" PRIx64 " selected %d"
