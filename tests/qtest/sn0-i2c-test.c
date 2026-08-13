@@ -30,9 +30,9 @@
 #define CTL_STO  0x02
 #define CTL_ACK  0x01
 
-#define STA_PIN  0x80
-#define STA_LRB  0x08
-#define STA_BNB  0x01
+#define I2C_PCF_PIN  0x80
+#define I2C_PCF_LRB  0x08
+#define I2C_PCF_BB  0x01
 
 static void test_register_selection_matrix(const void *data)
 {
@@ -141,7 +141,7 @@ static void test_init_sequence_leaves_eso_and_address(const void *data)
     /* The serial interface is enabled: the control/status address now
      * answers the status half, idle. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL), ==,
-                    STA_PIN | STA_BNB);
+                    I2C_PCF_PIN | I2C_PCF_BB);
 
     /* And the real address is still there once ESO is cleared to look. */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN);
@@ -184,7 +184,7 @@ static void test_liveness_probe_silent_chip_is_stable(const void *data)
  * kept passing against a model that always started fresh on the control
  * write, using whatever stale byte the data register still held from the
  * transaction being closed rather than the 0xfe written after it. That
- * model reached no device at all, but qtest_readq(I2C_CTRL) & STA_LRB read
+ * model reached no device at all, but qtest_readq(I2C_CTRL) & I2C_PCF_LRB read
  * 0 anyway -- QEMU's i2c_send() loops over the bus's currently-matched
  * device list, and an empty list makes the loop body never run, so its
  * accumulated return value stays the zero it was initialised to. Bug and
@@ -215,8 +215,8 @@ static void test_closing_invalid_address_shift_and_order(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x12);        /* addr 0x09, write */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & STA_LRB, ==,
-                    STA_LRB);                              /* NAKed: empty */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB, ==,
+                    I2C_PCF_LRB);                    /* NAKed: empty */
 
     /* The closing repeated start: control first, with PIN deliberately
      * absent, then the address byte -- then three bytes only this test
