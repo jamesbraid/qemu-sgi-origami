@@ -1541,6 +1541,93 @@ static void test_naming_another_part_deselects_this_one(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Read the part's status memory, which is the first thing real firmware asks
+ * this part for and is a separate memory from the one holding the part number.
+ *
+ * Every byte of it reads as unprogrammed, so the bytes alone would pass
+ * against a model that ignored the address entirely and against one that put
+ * the page boundary in the wrong place. What separates those is the check
+ * pair, and it is asserted twice for two different reasons.
+ *
+ * The read starts partway into a page, so the first check covers four bytes
+ * and not eight -- a model ending the page anywhere else lands on a different
+ * residue. And the first check covers the command and both address bytes as
+ * well as the data while the second covers its page's data alone, because the
+ * part clears its check generator at each page boundary. A model using one
+ * basis for both fails whichever of the two it did not choose.
+ */
+static void test_the_status_memory_reads_back_by_the_page(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t first[9];
+    uint8_t next[10];
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+
+    /*
+     * Read status, from four bytes into the page that holds the redirection
+     * byte for the first data page. A non-zero high address byte is deliberate:
+     * with every data byte reading the same, the address is visible only
+     * through the check, so a model dropping the high byte passes everything
+     * else.
+     */
+    first[0] = 0xaa;
+    first[1] = 0x04;
+    first[2] = 0x01;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, first[i]);
+    }
+
+    /* Four bytes to the end of the page, then the check over all of it. */
+    for (i = 3; i < 7; i++) {
+        first[i] = nic_read_byte(qts);
+        g_assert_cmphex(first[i], ==, 0xff);
+    }
+    first[7] = nic_read_byte(qts);
+    first[8] = nic_read_byte(qts);
+    g_assert_cmphex(nic_crc(0, first, sizeof(first)), ==, NIC_CRC_RESIDUE);
+
+    /* The part carries on into the next page for as long as a guest reads. */
+    for (i = 0; i < 8; i++) {
+        next[i] = nic_read_byte(qts);
+        g_assert_cmphex(next[i], ==, 0xff);
+    }
+    next[8] = nic_read_byte(qts);
+    next[9] = nic_read_byte(qts);
+    g_assert_cmphex(nic_crc(0, next, sizeof(next)), ==, NIC_CRC_RESIDUE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Past the end of the status memory there is nothing to send, and the part
+ * leaves the wire alone. This is the same silence an absent part gives, which
+ * is the right answer here and is why it is asserted rather than assumed: a
+ * model that answered a page for an address it does not have would hand a
+ * guest eight plausible bytes and a check that agreed with them.
+ */
+static void test_status_past_the_end_answers_nothing(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+
+    nic_write_byte(qts, 0xaa);
+    nic_write_byte(qts, 0x00);
+    nic_write_byte(qts, 0x02);          /* 0x200, past the last status byte */
+
+    for (i = 0; i < 12; i++) {
+        g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
+    }
+
+    qtest_quit(qts);
+}
+
 static void test_a_reset_finds_the_part(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1838,6 +1925,10 @@ int main(int argc, char **argv)
                         test_a_named_part_reads_back_its_page);
     qtest_add_data_func("sn0/bridge/one-wire-naming-another-deselects", NULL,
                         test_naming_another_part_deselects_this_one);
+    qtest_add_data_func("sn0/bridge/one-wire-status-reads-by-page", NULL,
+                        test_the_status_memory_reads_back_by_the_page);
+    qtest_add_data_func("sn0/bridge/one-wire-status-past-the-end", NULL,
+                        test_status_past_the_end_answers_nothing);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
