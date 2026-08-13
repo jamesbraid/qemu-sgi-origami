@@ -27,7 +27,6 @@
 #include "qemu/datadir.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-ioc3.h"
-#include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
@@ -117,8 +116,15 @@ struct SN0MachineState {
     MemoryRegion mem_bank[SN0_MEM_BANKS];
 
     SGIHubState hub;
-    SGIXbowState xbow;
     SGIBridgeState io_bridge;
+
+    /*
+     * Widget 0, which on this machine is the I/O bridge seen a second time
+     * rather than a device of its own. Held here because a MemoryRegion has
+     * one parent, so the second view of the bridge's widget space has to be an
+     * alias with its own storage.
+     */
+    MemoryRegion widget0;
 
     /*
      * Whether the I/O bridge is fitted. **On by default**, because a real
@@ -137,7 +143,10 @@ struct SN0MachineState {
      * strict superset with no bus error in the run.
      *
      * The option stays because that bring-up aid is still useful for
-     * isolating a fault to the fabric or to what sits behind it.
+     * isolating a fault to the fabric or to what sits behind it. **It does not
+     * gate widget 0**, which is aliased unconditionally: turning the option off
+     * must not stop widget 0 answering, or a bring-up aid becomes a machine
+     * OpenBSD panics on.
      */
     bool io_bridge_present;
 
@@ -1655,26 +1664,10 @@ static void sn0_init(MachineState *machine)
     memory_region_init(&s->xtalk, NULL, "sn0.xtalk", SN0_XTALK_SIZE);
 
     /*
-     * The crossbar, answering at widget 0 with this machine's identity rather
-     * than a crossbar's own. It is reachable only through a big window: widget
-     * 0's small window is the one a Hub defect makes unreliable, so it is left
-     * unmapped and the guests reach widget 0 through the last big window
-     * instead, which is what they expect to find already arranged.
-     *
-     * What arranges it is the translation table's reset value rather than our
-     * firmware's write, which puts back the value already there. The firmware
-     * call is kept for being what a real firmware does.
+     * Nothing is built for widget 0, because on this machine widget 0 is not a
+     * device. It is the I/O bridge answering a second time, and what puts it
+     * there is an alias built once the bridge exists, below.
      */
-    object_initialize_child(OBJECT(machine), "xbow", &s->xbow, TYPE_SGI_XBOW);
-    qdev_prop_set_uint64(DEVICE(&s->xbow), "span", SN0_XTALK_WIDGET_SIZE);
-    qdev_prop_set_uint32(DEVICE(&s->xbow), "part", SN0_WIDGET0_PART);
-    qdev_prop_set_uint32(DEVICE(&s->xbow), "manufacturer",
-                         SN0_WIDGET0_MANUFACTURER);
-    qdev_prop_set_uint32(DEVICE(&s->xbow), "revision", s->widget0_revision);
-    sysbus_realize(SYS_BUS_DEVICE(&s->xbow), &error_fatal);
-    memory_region_add_subregion(&s->xtalk, SN0_XTALK_BASE(SN0_XBOW_WIDGET),
-                                sysbus_mmio_get_region(
-                                    SYS_BUS_DEVICE(&s->xbow), 0));
 
     /*
      * The Hub's register window, at both halves of the crossbar's widget 1
@@ -1769,13 +1762,14 @@ static void sn0_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge,
                             TYPE_SGI_BRIDGE);
     /*
-     * The silicon revision this machine reports for its I/O bridge. It is
-     * a candidate value the machine already states once, for the identity
-     * widget 0 answers with, and that identity is this chip's — so the
-     * chip's own identification register is derived from the same setting
-     * rather than carrying a second copy. Two registers reporting different
-     * revisions for a chip the machine names once would be asserting
-     * something nobody established, and would do it silently.
+     * The silicon revision of the I/O bridge fitted to this machine. It is a
+     * candidate value rather than a fact about the machine type — two real
+     * Origin 200s report different revisions — so the command line can set it
+     * and two runs can differ in it and in nothing else.
+     *
+     * It reaches widget 0 as well as widget 8 without being written twice,
+     * because those are one chip and this is the one place the machine says
+     * which chip it fitted.
      */
     qdev_prop_set_uint32(DEVICE(&s->io_bridge), "revision",
                          s->widget0_revision);
@@ -1799,6 +1793,44 @@ static void sn0_init(MachineState *machine)
     qdev_prop_set_uint32(DEVICE(&s->io_bridge), "fabric-node-shift",
                          SN0_NODE_SHIFT);
     sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge), &error_fatal);
+
+    /*
+     * Widget 0, which is this same bridge and not a second device.
+     *
+     * A real Origin 200 has no crossbar. The Hub has one crosstalk link with
+     * the bridge on the far end of it, and with no switch in between there is
+     * nothing to route by widget number — so every widget address the Hub
+     * emits arrives at the same chip. SGI's own firmware says so where it
+     * probes that link: a directly connected bridge can be given whichever
+     * widget number the firmware chooses, and it chooses 8, avoiding 0 because
+     * something about error handling there is a problem. Widget 8 is therefore
+     * an agreement between two firmware routines rather than a position.
+     *
+     * So this is an alias and not a device. Every guest reads widget 0's
+     * identification register first and decides what kind of machine it is on
+     * from the answer, and a separate responder holding a copy of the bridge's
+     * identity would be two objects asserting one chip's — which cannot be
+     * kept in step by inspection, only by remembering to. An alias cannot
+     * disagree: there is nothing there to hold a second opinion.
+     *
+     * Unconditional, unlike the mapping at widget 8 below. The bridge chip is
+     * always built and the machine option decides only whether its own widget
+     * answers, so widget 0 keeps answering with the option off. That matters:
+     * OpenBSD panics outright if widget 0's identification register does not
+     * read, so gating this would turn a development option into a machine no
+     * guest can boot.
+     *
+     * Widgets 9 through 15 are deliberately not aliased here. Real hardware
+     * would answer at those addresses too, by the same argument, but nothing
+     * reaches for them and making an absent widget answer would remove the
+     * only signal that tells one from a present one.
+     */
+    memory_region_init_alias(&s->widget0, NULL, "sn0.xtalk.widget0",
+                             sysbus_mmio_get_region(
+                                 SYS_BUS_DEVICE(&s->io_bridge), 0),
+                             0, SGI_BRIDGE_WIDGET_SIZE);
+    memory_region_add_subregion(&s->xtalk, SN0_XTALK_BASE(SN0_WIDGET0),
+                                &s->widget0);
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
     qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_hd(0));
@@ -1873,30 +1905,37 @@ static void sn0_init(MachineState *machine)
     }
 
     /*
-     * Widget 0's small window, which Linux reads the crossbar's identification
-     * register through — by name, with the raw address macro, rather than the
+     * Widget 0's small window, which Linux reads the identification register
+     * through — by name, with the raw address macro, rather than the
      * substituting helper that would have sent it to big window 6. OpenBSD
      * takes that other path, so both have to work and both have to reach the
-     * same device: this alias and big window 6 are two views of one widget.
+     * same device: this alias and big window 6 are two views of one widget,
+     * and that widget is itself a second view of the I/O bridge.
      */
-    memory_region_init_alias(&s->small_window[SN0_XBOW_WIDGET], NULL,
+    memory_region_init_alias(&s->small_window[SN0_WIDGET0], NULL,
                              "sn0.node0.xtalk.small0", &s->xtalk,
-                             SN0_XTALK_BASE(SN0_XBOW_WIDGET),
+                             SN0_XTALK_BASE(SN0_WIDGET0),
                              SN0_SMALL_WINDOW_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node +
-                                SN0_SMALL_WINDOW(SN0_XBOW_WIDGET),
-                                &s->small_window[SN0_XBOW_WIDGET]);
+                                SN0_SMALL_WINDOW(SN0_WIDGET0),
+                                &s->small_window[SN0_WIDGET0]);
 
     /*
-     * The crossbar's eight device ports, each reached through its own small
+     * The eight crosstalk port numbers, each reached through its own small
      * window onto the first 16 MB of that widget's crosstalk space. All eight
-     * decode because all eight exist on the crossbar; the seven with nothing
-     * attached reach an empty part of crosstalk space and fault, which is what
-     * a port with no widget on it does. That is deliberately not the same
-     * answer a disabled big window gives — a disabled window is a normal state
-     * the guests program on purpose, and an empty port is a device we have not
-     * modelled yet, so the second should be loud and the first should not.
+     * windows decode because the address space has all eight; the seven with
+     * nothing behind them reach an empty part of crosstalk space and fault.
+     *
+     * On real hardware they would not fault — with no crossbar there is nothing
+     * routing by widget number, so a directly connected bridge answers at every
+     * one of these addresses. Modelling that would make an absent widget
+     * indistinguishable from a present one, and nothing reaches for them, so
+     * this diverges deliberately rather than by omission.
+     *
+     * A fault here is deliberately not the same answer a disabled big window
+     * gives — a disabled window is a normal state the guests program on
+     * purpose, and an unmodelled widget should be loud.
      */
     for (w = SN0_XTALK_PORT_FIRST; w <= SN0_XTALK_PORT_LAST; w++) {
         char *name = g_strdup_printf("sn0.node0.xtalk.small%u", w);
@@ -2187,10 +2226,11 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
                               sn0_get_widget0_revision,
                               sn0_set_widget0_revision, NULL, NULL);
     object_class_property_set_description(oc, "widget0-revision",
-        "The silicon revision crosstalk widget 0 reports. Both guests treat a "
-        "revision below four as having a byte-swapping defect and avoid that "
-        "widget's PCI I/O space, so this changes behaviour and not only a "
-        "printed line.");
+        "The silicon revision of the I/O bridge, which is what crosstalk "
+        "widget 0 and widget 8 both report because they are one chip. Both "
+        "guests treat a revision below four as having a byte-swapping defect "
+        "and avoid that widget's PCI I/O space, so this changes behaviour and "
+        "not only a printed line.");
 }
 
 static const TypeInfo origin200_type = {
