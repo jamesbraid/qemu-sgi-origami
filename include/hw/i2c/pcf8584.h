@@ -36,13 +36,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 #define PCF8584_CTL_ACK     0x01    /* acknowledge received bytes */
 
 /* Status register, read side. Shares the address with the control register. */
-#define PCF8584_STA_PIN     0x80    /* pending interrupt NOT: set means busy */
-#define PCF8584_STA_STS     0x20    /* stop detected, slave receive mode */
-#define PCF8584_STA_BER     0x10    /* bus error */
-#define PCF8584_STA_LRB     0x08    /* last received acknowledge bit */
-#define PCF8584_STA_AAS     0x04    /* addressed as slave */
-#define PCF8584_STA_LAB     0x02    /* lost arbitration */
-#define PCF8584_STA_BNB     0x01    /* bus not busy */
+#define I2C_PCF_PIN     0x80    /* pending interrupt NOT: set means busy */
+#define I2C_PCF_STS     0x20    /* stop detected, slave receive mode */
+#define I2C_PCF_BER     0x10    /* bus error */
+#define I2C_PCF_LRB     0x08    /* last received acknowledge bit */
+#define I2C_PCF_AAS     0x04    /* addressed as slave */
+#define I2C_PCF_LAB     0x02    /* lost arbitration */
+#define I2C_PCF_BB      0x01    /* bus not busy */
 
 struct PCF8584State {
     SysBusDevice parent_obj;

@@ -26,8 +26,8 @@
 #define CTL_STO  0x02
 #define CTL_ACK  0x01
 
-#define STA_LRB  0x08
-#define STA_BNB  0x01
+#define I2C_PCF_LRB  0x08
+#define I2C_PCF_BB  0x01
 
 #define ELSC_ADDR 0x08
 
@@ -83,7 +83,8 @@ static unsigned elsc_transact(QTestState *qts, const uint8_t *req,
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & STA_LRB, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, 0);
 
     for (i = 0; i < req_len; i++) {
         qtest_writeq(qts, HUB_LOCAL + I2C_DATA, req[i]);
@@ -205,7 +206,8 @@ static void arb_wait_for_absence(QTestState *qts)
         uint64_t data = read_data(qts);
         uint64_t status = read_status(qts);
 
-        if ((status & STA_BNB) && data != ARB_SIGNAL1 && data != ARB_SIGNAL2) {
+        if ((status & I2C_PCF_BB) &&
+            data != ARB_SIGNAL1 && data != ARB_SIGNAL2) {
             return;
         }
         qtest_clock_step(qts, ARB_STEP_NS);
@@ -223,7 +225,8 @@ static uint8_t arb_wait_for_signal(QTestState *qts)
         uint64_t data = read_data(qts);
         uint64_t status = read_status(qts);
 
-        if ((status & STA_BNB) && (data == ARB_SIGNAL1 || data == ARB_SIGNAL2)) {
+        if ((status & I2C_PCF_BB) &&
+            (data == ARB_SIGNAL1 || data == ARB_SIGNAL2)) {
             return (uint8_t)data;
         }
         qtest_clock_step(qts, ARB_STEP_NS);
@@ -243,7 +246,7 @@ static void arb_assert_held(QTestState *qts, uint8_t value, int64_t hold_ns)
     while (held < hold_ns) {
         qtest_clock_step(qts, ARB_STEP_NS);
         held += ARB_STEP_NS;
-        g_assert_true((read_status(qts) & STA_BNB) != 0);
+        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
         g_assert_cmphex(read_data(qts), ==, value);
     }
 }

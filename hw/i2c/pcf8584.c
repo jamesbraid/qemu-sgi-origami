@@ -56,7 +56,7 @@ static void pcf8584_update_irq(PCF8584State *s)
      * honest rather than because anything drives it today.
      */
     bool level = (s->control & PCF8584_CTL_ENI) &&
-                 !(s->status & PCF8584_STA_PIN);
+                 !(s->status & I2C_PCF_PIN);
 
     qemu_set_irq(s->irq, level);
 }
@@ -64,11 +64,11 @@ static void pcf8584_update_irq(PCF8584State *s)
 /* Mark the byte transfer finished, recording whether the far end acked. */
 static void pcf8584_complete(PCF8584State *s, bool nacked)
 {
-    s->status &= ~PCF8584_STA_PIN;
+    s->status &= ~I2C_PCF_PIN;
     if (nacked) {
-        s->status |= PCF8584_STA_LRB;
+        s->status |= I2C_PCF_LRB;
     } else {
-        s->status &= ~PCF8584_STA_LRB;
+        s->status &= ~I2C_PCF_LRB;
     }
     pcf8584_update_irq(s);
 }
@@ -81,7 +81,7 @@ static void pcf8584_stop(PCF8584State *s)
     s->transfer = false;
     s->recv = false;
     s->start_pending = false;
-    s->status |= PCF8584_STA_BNB;
+    s->status |= I2C_PCF_BB;
 }
 
 /*
@@ -95,7 +95,7 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
     int rc;
 
     s->recv = recv;
-    s->status &= ~PCF8584_STA_BNB;
+    s->status &= ~I2C_PCF_BB;
 
     rc = i2c_start_transfer(s->bus, addr >> 1, recv);
     s->transfer = true;
@@ -148,7 +148,7 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
         return;
     }
 
-    s->status |= PCF8584_STA_PIN;
+    s->status |= I2C_PCF_PIN;
     rc = i2c_send(s->bus, val);
     s->data = val;
     pcf8584_complete(s, rc != 0);
@@ -189,18 +189,18 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
          * to select a configuration register, so it must not disturb a
          * transfer by itself.
          */
-        s->status |= PCF8584_STA_PIN;
-        s->status &= ~(PCF8584_STA_BER | PCF8584_STA_LAB | PCF8584_STA_AAS);
+        s->status |= I2C_PCF_PIN;
+        s->status &= ~(I2C_PCF_BER | I2C_PCF_LAB | I2C_PCF_AAS);
     }
 
     if (val & PCF8584_CTL_STA) {
         if (s->transfer) {
             /* Repeated start: the address byte has not been written yet. */
             s->start_pending = true;
-            s->status |= PCF8584_STA_PIN;
+            s->status |= I2C_PCF_PIN;
         } else {
             /* First start: the address is already staged in the register. */
-            s->status |= PCF8584_STA_PIN;
+            s->status |= I2C_PCF_PIN;
             pcf8584_start(s, s->data);
         }
         return;
@@ -208,7 +208,7 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
 
     if (val & PCF8584_CTL_STO) {
         pcf8584_stop(s);
-        s->status |= PCF8584_STA_PIN;
+        s->status |= I2C_PCF_PIN;
         pcf8584_update_irq(s);
         return;
     }
@@ -232,7 +232,7 @@ static uint64_t pcf8584_read(void *opaque, hwaddr addr, unsigned size)
         if (s->control & PCF8584_CTL_ESO) {
             return s->status;
         }
-        return (s->control & ~PCF8584_STA_PIN) | (s->status & PCF8584_STA_PIN);
+        return (s->control & ~I2C_PCF_PIN) | (s->status & I2C_PCF_PIN);
     }
 
     switch (pcf8584_selected(s)) {
@@ -350,7 +350,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->data = 0;
     s->control = 0;
     /* Out of reset the chip is idle and the bus is free. */
-    s->status = PCF8584_STA_PIN | PCF8584_STA_BNB;
+    s->status = I2C_PCF_PIN | I2C_PCF_BB;
     s->transfer = false;
     s->recv = false;
     s->start_pending = false;
