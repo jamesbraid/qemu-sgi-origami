@@ -1,4 +1,5 @@
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
+system_ss.add(when: 'CONFIG_SGI_ELSC', if_true: files('sgi-elsc.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
 system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_BRIDGE_DMA_TEST', if_true: files('sgi-bridge-dma-test.c'))

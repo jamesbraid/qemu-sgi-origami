@@ -208,8 +208,11 @@ static void test_closing_invalid_address_shift_and_order(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
 
     /* Open an ordinary transaction to some other, unanswered address, so a
-     * transfer is active -- the precondition every repeated start needs. */
-    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x10);        /* addr 0x08, write */
+     * transfer is active -- the precondition every repeated start needs.
+     * 0x08 is the ELSC's own address now that it exists on the bus and
+     * would ACK, which would defeat this precondition, so this uses an
+     * address nothing on the machine answers. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x12);        /* addr 0x09, write */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & STA_LRB, ==,
