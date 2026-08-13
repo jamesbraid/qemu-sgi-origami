@@ -702,4 +702,23 @@
 #define SN0_CONFIG_OFFSET   0x60
 #define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
 
+/*
+ * The processor mode bits this board drives into its R10000 at reset, and the
+ * same word the firmware configuration block advertises. Real firmware's very
+ * first check reads the word out of that block, compares it against what the
+ * processor actually latched, and reports "an error copying mode bits" if the
+ * two disagree — so the board and the block have to be saying the same thing,
+ * and the way to guarantee that is for there to be one of them.
+ *
+ * **The processor does not accept these from software.** The R10000 user
+ * manual gives bits 24:0 of the configuration register as taken from the mode
+ * bit settings during a reset sequence, driven in over the system interface;
+ * bits above that are hardwired, including both primary cache sizes. So this
+ * is something the machine hands the processor at reset, not something a guest
+ * writes — and a model that let a write stick here would pass the firmware's
+ * check while describing a processor that does not exist.
+ */
+#define SN0_PROCESSOR_MODE_BITS 0x1211a785
+#define SN0_PROCESSOR_MODE_MASK 0x01ffffff  /* bits 24:0, latched at reset */
+
 #endif /* HW_MIPS_SN0_H */

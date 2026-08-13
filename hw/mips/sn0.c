@@ -742,7 +742,7 @@ static void sn0_build_flash(uint8_t *flash)
      * anything this model acts on.
      */
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
-    stl_be_p(config + 0x04, 0x1211a785);           /* processor reset mode */
+    stl_be_p(config + 0x04, SN0_PROCESSOR_MODE_BITS);
     stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
     stq_be_p(config + 0x10, SN0_CPU_FREQ_HZ);
     stq_be_p(config + 0x18, SN0_HUB_FREQ_HZ);
@@ -1629,6 +1629,34 @@ static void sn0_firmware_reset(void *opaque)
 }
 
 /*
+ * The mode bits this board drives into its processor, which the R10000 latches
+ * into the low twenty-five bits of its configuration register while reset is
+ * asserted. Real firmware's first act is to check them: it reads the word out
+ * of the flash configuration block, compares it against what the register
+ * actually holds, and reports "an error copying mode bits" if they differ.
+ *
+ * **Driven from the same constant the flash block advertises, because two
+ * copies of one board fact is the defect this check exists to catch.** A board
+ * whose processor latched something other than what its own configuration
+ * block claims is exactly the fault condition; a model with two constants can
+ * produce it by editing one of them.
+ *
+ * It runs at reset rather than at machine creation because the processor's own
+ * reset restores the register from the CPU model's defaults, which describe a
+ * generic R10000 and cannot know this board's word. Registered from the
+ * machine-init-done notifier for the same ordering reason as the handler
+ * above: reset handlers run in registration order and this one has to follow
+ * the processor's.
+ */
+static void sn0_mode_bits_reset(void *opaque)
+{
+    CPUMIPSState *env = &MIPS_CPU(first_cpu)->env;
+
+    env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
+                       (SN0_PROCESSOR_MODE_BITS & SN0_PROCESSOR_MODE_MASK);
+}
+
+/*
  * The PCI resources real ARCS PROM assigns at POST (task #43): a BAR for
  * each attached device, and the I/O bridge's own per-device window pre-aimed
  * at the base I/O controller's, so a guest can reach its console before it
@@ -1715,6 +1743,7 @@ static void sn0_assign_pci_resources(void *opaque)
 static void sn0_machine_ready(Notifier *notifier, void *data)
 {
     qemu_register_reset(sn0_firmware_reset, SN0_MACHINE(qdev_get_machine()));
+    qemu_register_reset(sn0_mode_bits_reset, NULL);
     qemu_register_reset(sn0_assign_pci_resources,
                         SN0_MACHINE(qdev_get_machine()));
 }
