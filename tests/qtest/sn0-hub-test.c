@@ -589,6 +589,42 @@ static void test_junk_uart_range_is_exact(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Every device that claims a character device claims a different one.
+ *
+ * **This is the one thing about the bring-up port no other case in this file
+ * can see, and the reason is structural rather than an oversight.** Every
+ * other case starts a machine with no character devices at all, so a device
+ * asking for one gets nothing, two devices asking for the *same* one both get
+ * nothing, and the conflict never forms. This suite stayed green throughout a
+ * period when fitting the optional port and supplying the backends aborted the
+ * machine before it started.
+ *
+ * So this case supplies them: three null backends, which is what the machine
+ * wants with the optional port fitted -- the base I/O controller's port A, the
+ * system controller, and the bring-up port. If any two devices name the same
+ * index, QEMU refuses at realize and qtest_init never returns a machine, so
+ * reaching the assertion at all is most of the result. The assertion then only
+ * has to show the port is genuinely there rather than quietly skipped.
+ *
+ * It has to be a test rather than a rule because the defect exists at no
+ * single call site: each device names an index that is correct on its own, and
+ * the fault is only the relationship between two of them, in two different
+ * files -- which is precisely what reading either one cannot show.
+ */
+static void test_every_chardev_claim_is_distinct(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,junk-uart=on "
+                                 "-serial null -serial null -serial null");
+    uint8_t readback[8];
+    static const uint8_t present[8] = { 0, 0, 0, 0, 0, 0, 0, 0x55 };
+
+    junkuart_presence_probe(qts, readback);
+    g_assert_cmpmem(readback, sizeof(readback), present, sizeof(present));
+
+    qtest_quit(qts);
+}
+
 static void test_status_field_access(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1338,6 +1374,8 @@ int main(int argc, char **argv)
                         test_junk_uart_fitted_answers_present);
     qtest_add_data_func("sn0/hub/junk-uart-range-is-exact", NULL,
                         test_junk_uart_range_is_exact);
+    qtest_add_data_func("sn0/hub/chardev-claims-are-distinct", NULL,
+                        test_every_chardev_claim_is_distinct);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,
                         test_status_field_access);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
