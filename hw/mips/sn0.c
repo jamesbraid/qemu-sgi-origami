@@ -1783,11 +1783,13 @@ static Notifier sn0_machine_ready_notifier = {
  * codes with it removed.
  *
  * Going through the trace event rather than printing directly keeps the
- * emitted line byte-identical, which matters because it is parsed: the
- * landing boot gate ratchets on the set of codes a known-good boot reaches,
- * and the boot-progress decoder reads the same text. Printing the same
- * information by a second route would have given those two parsers a format
- * to diverge on for no gain.
+ * emitted line byte-identical, which matters because it is parsed:
+ * tools/boot-gate ratchets on the set of codes a known-good boot reaches and
+ * matches this text with a regular expression. Three runner tools also name
+ * the event on their own command lines to arm it, which is harmless now that
+ * it is armed here, and is kept so they still work against binaries built
+ * before this. Printing the same information by a second route would have
+ * given that parser a format to diverge from for no gain.
  */
 static void sn0_show_indicator_codes(Error **errp)
 {
