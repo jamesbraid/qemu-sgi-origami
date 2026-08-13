@@ -1300,14 +1300,23 @@ static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
  * right if the table it would otherwise have been reverse-engineered against
  * changes.
  *
- * The six bytes before the field name are OUR CHOICE and not an observation.
- * Nothing establishes what a real board puts there. They are spaces because a
- * space is inert to both readers — dropped by the positional one, and neither
- * a field name nor a terminator to the scanning one — and because a zero byte
- * would end the text early for any reader that treats the page as a string.
+ * Byte five is a semicolon and it is LOAD-BEARING rather than padding. The
+ * scanning reader compares at position zero, and on a miss skips past the next
+ * semicolon and compares again. With no semicolon at five, that first miss
+ * skips past the terminator at twenty-three instead, lands at twenty-four, and
+ * never tries offset six at all. A field name sitting correctly at six is then
+ * never reached, and the lookup returns the same empty answer a page carrying
+ * no field name gives. One byte is the difference between this page working and
+ * only looking as though it does.
+ *
+ * Bytes zero to four are a free choice and nothing establishes what a real
+ * board puts there. They are spaces because a space is inert to both
+ * readers — dropped by the positional one, and neither a field name nor a
+ * terminator to the scanning one — and because a zero byte would end the
+ * text early for any reader that treats the page as a string.
  */
 static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
-    [0]  = ' ', ' ', ' ', ' ', ' ', ' ',
+    [0]  = ' ', ' ', ' ', ' ', ' ', ';',
     [6]  = 'P', 'a', 'r', 't', ':',
     [11] = '0', '3', '0', '-', '1', '2', '4', '4', '-', '0', '0', '1',
     [23] = ';', ' ', ' ', ' ', ' ', ' ', ' ',
