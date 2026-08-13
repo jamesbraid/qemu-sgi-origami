@@ -22,6 +22,7 @@
 #define CTL_ACK  0x01
 
 #define STA_LRB  0x08
+#define STA_BNB  0x01
 
 #define ELSC_ADDR 0x08
 
@@ -164,6 +165,137 @@ static void test_unimplemented_command_gets_err_cmd(const void *data)
     qtest_quit(qts);
 }
 
+/* Processor 0's signal pair on a single-node, single-processor machine
+ * (-M origin200 defaults to one CPU): 0x70 * 2 plus processor_code 0, and
+ * signal2 with bit 3 set. */
+#define ARB_SIGNAL1 0xe0
+#define ARB_SIGNAL2 0xe8
+
+#define ARB_STEP_NS       (10 * 1000)
+#define ARB_MAX_STEPS     2000
+#define ARB_HOLD_ASSERT_NS (260 * 1000)  /* past the 250us threshold */
+
+static uint64_t read_status(QTestState *qts)
+{
+    return qtest_readq(qts, HUB_LOCAL + I2C_CTRL);
+}
+
+static uint64_t read_data(QTestState *qts)
+{
+    return qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+}
+
+/*
+ * Loop 1 of the real wait: step the clock until the bus reports not-busy
+ * and the data register holds neither signal value. This is the loop a
+ * model that parks a signal byte and never clears it hangs in forever --
+ * skipping straight to "wait for the signal" would pass such a model, so
+ * this is asserted as its own step rather than folded into the next one.
+ */
+static void arb_wait_for_absence(QTestState *qts)
+{
+    int i;
+
+    for (i = 0; i < ARB_MAX_STEPS; i++) {
+        uint64_t data = read_data(qts);
+        uint64_t status = read_status(qts);
+
+        if ((status & STA_BNB) && data != ARB_SIGNAL1 && data != ARB_SIGNAL2) {
+            return;
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+    g_assert_not_reached();
+}
+
+/* Loop 2: step the clock until the bus reports not-busy and the data
+ * register holds signal1 or signal2, and report which. */
+static uint8_t arb_wait_for_signal(QTestState *qts)
+{
+    int i;
+
+    for (i = 0; i < ARB_MAX_STEPS; i++) {
+        uint64_t data = read_data(qts);
+        uint64_t status = read_status(qts);
+
+        if ((status & STA_BNB) && (data == ARB_SIGNAL1 || data == ARB_SIGNAL2)) {
+            return (uint8_t)data;
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+    g_assert_not_reached();
+    return 0;
+}
+
+/* Loop 3: step the clock in small increments, asserting the same value
+ * holds and the bus stays not-busy at every step, for at least the 250us
+ * threshold. A model that only pulses briefly, or that lets some other
+ * value leak in mid-hold, fails here rather than in loop 1 or 2. */
+static void arb_assert_held(QTestState *qts, uint8_t value, int64_t hold_ns)
+{
+    int64_t held = 0;
+
+    while (held < hold_ns) {
+        qtest_clock_step(qts, ARB_STEP_NS);
+        held += ARB_STEP_NS;
+        g_assert_true((read_status(qts) & STA_BNB) != 0);
+        g_assert_cmphex(read_data(qts), ==, value);
+    }
+}
+
+/*
+ * The real three-loop wait, driven exactly as the firmware drives it: an
+ * absence has to be observed before a signal is trusted, and the signal
+ * then has to hold past the threshold without changing. Deliberately not
+ * synchronised to when the rotation's own cycle happens to start -- the
+ * test does not know or control that, which is what makes loop 1 a real
+ * assertion here rather than a formality: whatever phase realize happened
+ * to leave the model in, this has to walk through absence, signal,
+ * threshold in that order before it is satisfied.
+ */
+static void test_arbitration_three_loop_wait(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t sig;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    arb_wait_for_absence(qts);
+    sig = arb_wait_for_signal(qts);
+    g_assert(sig == ARB_SIGNAL1 || sig == ARB_SIGNAL2);
+    arb_assert_held(qts, sig, ARB_HOLD_ASSERT_NS);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The rotation is free-running rather than one-shot: after one full
+ * gap-then-hold cycle completes and the value changes away, the same
+ * three-loop wait succeeds again on the next cycle. This is what backs the
+ * datasheet's "a signal that drops before the hold expires sends the
+ * firmware back to waiting, and the wait then completes on the next
+ * full-length assertion" -- a model that only ever pulses once would leave
+ * this second wait hanging.
+ */
+static void test_arbitration_repeats(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t first, second;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    arb_wait_for_absence(qts);
+    first = arb_wait_for_signal(qts);
+    arb_assert_held(qts, first, ARB_HOLD_ASSERT_NS);
+
+    arb_wait_for_absence(qts);
+    second = arb_wait_for_signal(qts);
+    g_assert_cmphex(second, ==, first);
+    arb_assert_held(qts, second, ARB_HOLD_ASSERT_NS);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -176,6 +308,10 @@ int main(int argc, char **argv)
                         test_bad_request_checksum_gets_err_csum);
     qtest_add_data_func("sn0/elsc/unimplemented-command-gets-err-cmd", NULL,
                         test_unimplemented_command_gets_err_cmd);
+    qtest_add_data_func("sn0/elsc/arbitration-three-loop-wait", NULL,
+                        test_arbitration_three_loop_wait);
+    qtest_add_data_func("sn0/elsc/arbitration-repeats", NULL,
+                        test_arbitration_repeats);
 
     ret = g_test_run();
 

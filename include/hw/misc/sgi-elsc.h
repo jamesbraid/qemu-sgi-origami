@@ -10,6 +10,7 @@
 #define HW_MISC_SGI_ELSC_H
 
 #include "hw/i2c/i2c.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_ELSC "sgi-elsc"
@@ -51,6 +52,19 @@ struct SGIElscState {
     uint8_t txbuf[SGI_ELSC_MAX_FRAME + 1];
     uint32_t txlen;
     uint32_t txpos;
+
+    /*
+     * The arbitration broadcast: the mechanism that lets this super-master
+     * and every node's Hub share one bus with no real I2C multi-master
+     * support. Free-running from realize for as long as the machine runs,
+     * independent of whether any guest is currently polling for it -- see
+     * elsc_arb_step() in hw/misc/sgi-elsc.c.
+     */
+    I2CBus *bus;
+    QEMUTimer *arb_timer;
+    uint32_t num_cpus;   /* how many processor signals to rotate through */
+    uint32_t arb_slot;   /* which processor's signal this cycle presents */
+    bool arb_present;    /* false: showing the gap; true: holding the signal */
 };
 
 #endif /* HW_MISC_SGI_ELSC_H */
