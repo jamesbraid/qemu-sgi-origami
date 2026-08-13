@@ -1704,6 +1704,48 @@ static void nic_extended_page(QTestState *qts, uint16_t offset, uint8_t *out)
  * straight from one page into the next is what proves the unframed stream puts
  * nothing between them.
  */
+/*
+ * The scanning reader's own loop, transcribed rather than described: compare a
+ * field name at the current position, and on a miss skip past the next
+ * semicolon and compare again, until the page runs out.
+ *
+ * THIS IS THE ASSERTION THE BYTE COMPARISONS CANNOT MAKE, and the page shipped
+ * broken for exactly that reason. Every other check here asks whether the right
+ * characters are at the right offsets, and they all passed on a page whose
+ * field name was unreachable: the first miss at position zero skipped past
+ * the terminator at twenty-three and resumed at twenty-four, so offset six
+ * was never compared and the lookup returned nothing. A check on where a
+ * thing sits cannot express whether the consumer can walk to it, because
+ * that depends on what comes before it.
+ */
+static bool page_field(const uint8_t *page, unsigned int len,
+                       const char *name, char *out)
+{
+    unsigned int pos = 0, n = strlen(name);
+
+    while (pos < len) {
+        unsigned int i;
+
+        if (pos + n <= len && memcmp(&page[pos], name, n) == 0) {
+            unsigned int j = 0;
+
+            for (i = pos + n; i < len && page[i] != ';'; i++) {
+                out[j++] = page[i];
+            }
+            out[j] = 0;
+            return true;
+        }
+        for (i = pos; i < len && page[i] != ';'; i++) {
+            /* skip to the next delimiter */
+        }
+        if (i >= len) {
+            return false;
+        }
+        pos = i + 1;
+    }
+    return false;
+}
+
 static void test_the_unframed_read_matches_the_framed_one(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1765,6 +1807,16 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
      */
     g_assert_cmpmem(&plain[6], 5, "Part:", 5);
     g_assert_cmpint(plain[23], ==, ';');
+
+    /*
+     * And the scanning reader can actually reach it. Byte five is a semicolon
+     * so that this reader's first miss resumes at six rather than skipping the
+     * field entirely -- which is the difference between this page working and
+     * only looking as though it does, and is invisible to every assertion
+     * above.
+     */
+    g_assert_true(page_field(plain, 30, "Part:", partnum));
+    g_assert_cmpstr(partnum, ==, "030-1244-001");
 
     g_assert_cmpmem(&plain[11], 12, "030-1244-001", 12);
     g_assert_cmphex(nic_crc(0, &plain[0], 32), ==, NIC_CRC_RESIDUE);
