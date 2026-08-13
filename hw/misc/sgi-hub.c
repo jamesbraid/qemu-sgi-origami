@@ -1061,10 +1061,26 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         s->md_perf_cnt0 = val & MD_PERF_CNT_MASK;
         break;
     case HUB_IO_WIDGET_ID:
-    case HUB_IO_WIDGET_STATUS:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-hub: write of 0x%" PRIx64 " to the read-only widget "
                       "register 0x%" HWADDR_PRIx "\n", val, addr);
+        break;
+    case HUB_IO_WIDGET_STATUS:
+        /*
+         * Split from the identification register above, which a guest has no
+         * business writing at all. This one is status: the error flag, the
+         * retry count and the outstanding-request count are exactly the state
+         * firmware clears before it starts using the link, and the shipped
+         * PROM writes zero here once during power-on, on every boot. Refused
+         * because this model never sets any of those bits, so there is nothing
+         * for a clear to do and the register reads zero either way — but a
+         * clear at power-on is the register being used as designed, so it logs
+         * as unimplemented rather than as guest misbehaviour.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the widget status "
+                      "register 0x%" HWADDR_PRIx " (firmware clears this at "
+                      "power-on; nothing here ever sets it)\n", val, addr);
         break;
     case HUB_IO_LINK_STATUS:
         s->io_link_status = (s->io_link_status & ~IO_LINK_WRITABLE) |
