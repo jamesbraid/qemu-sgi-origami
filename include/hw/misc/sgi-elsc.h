@@ -11,6 +11,7 @@
 
 #include "hw/i2c/i2c.h"
 #include "qemu/timer.h"
+#include "chardev/char-fe.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_ELSC "sgi-elsc"
@@ -28,6 +29,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
  */
 #define SGI_ELSC_MAX_TEXT   94
 #define SGI_ELSC_MAX_FRAME  (SGI_ELSC_MAX_TEXT + 2)
+
+/*
+ * Console input queued from the AUX serial port, waiting for the next
+ * "get". Sized well past one frame's worth so a burst of typed input
+ * ahead of a slow poller does not lose characters immediately -- a model
+ * choice, not a hardware fact; nothing read for the datasheet says how
+ * deep the real queue is.
+ */
+#define SGI_ELSC_RX_QUEUE_SIZE 256
 
 struct SGIElscState {
     I2CSlave parent_obj;
@@ -65,6 +75,25 @@ struct SGIElscState {
     uint32_t num_cpus;   /* how many processor signals to rotate through */
     uint32_t arb_slot;   /* which processor's signal this cycle presents */
     bool arb_present;    /* false: showing the gap; true: holding the signal */
+
+    /*
+     * The AUX serial port: a real RS-232 connector, cabled with only
+     * transmit, receive and ground (docs/datasheets/pcf8584-elsc.md), and
+     * multiplexed with the checksummed command channel above by one rule
+     * on the input side -- a byte sequence beginning 0x14 is a controller
+     * command and is never queued; everything else is. Console selection
+     * currently reaches only processor 0, so all queued input answers
+     * "get" with selector 0; a second processor's own input path is not
+     * modelled.
+     */
+    CharFrontend chr;
+    uint8_t rx_queue[SGI_ELSC_RX_QUEUE_SIZE];
+    uint32_t rx_queue_len;
+    bool in_escape;   /* discarding a controller command typed on the line */
+
+    /* Supervisor mode gates the destructive commands (page 124 of the
+     * Origin 200 Owner's Guide); "pas" sets it, factory default "none". */
+    bool supervisor;
 };
 
 #endif /* HW_MISC_SGI_ELSC_H */

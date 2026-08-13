@@ -26,12 +26,14 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "chardev/char.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qemu/host-utils.h"
+#include "system/system.h"
 #include "trace.h"
 
 /* Processor interface, at the base of the window. */
@@ -1475,13 +1477,18 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * The entry-level system controller: a real board on the same I2C bus,
      * not something the Hub reaches through a window, so an ordinary
      * addressed slave on the chip's own bus is nearly the whole of the
-     * wiring -- it also needs to know how many processors' arbitration
-     * signals to rotate through, which is this node's own populated count.
+     * wiring. It also needs to know how many processors' arbitration
+     * signals to rotate through (this node's own populated count), and the
+     * chardev behind its AUX serial port -- the second -serial device, so
+     * it does not contend with the IOC3's own first port or the
+     * synthesized-firmware console shortcut, both of which claim
+     * serial_hd(0).
      */
     {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
 
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
+        qdev_prop_set_chr(DEVICE(elsc), "chardev", serial_hd(1));
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
             return;
         }

@@ -8,6 +8,11 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #define SPACE_XTALK     0x20000000000ULL
 #define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
@@ -296,6 +301,223 @@ static void test_arbitration_repeats(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The AUX serial port, for "acp" output: a ring-buffer chardev captures
+ * whatever this device writes out, which is enough to verify the output
+ * direction without needing a live connection -- QMP's ringbuf-write and
+ * this device's own chr_write both land in the same buffer, and nothing
+ * here needs to feed the device anything, so the asymmetry does not
+ * matter for this test.
+ */
+static void test_acp_command_writes_to_console(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -serial none "
+        "-chardev ringbuf,id=aux,size=4096 -serial chardev:aux");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    QDict *rb;
+    const char *captured;
+
+    req_len = build_request(req, "acp 0 hi");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    /* "hi" is two characters, accepted count in hex is "2": "ok 2". */
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+
+    /*
+     * Not qtest_qmp_assert_success_ref(): it hands back response["return"]
+     * unwrapped as a QDict via qdict_get_qdict(), which is the right tool
+     * for a command whose result is itself an object but returns NULL for
+     * ringbuf-read's bare string result -- silently, since qobject_ref()
+     * on NULL is not a crash by itself. It only became one two lines
+     * later, dereferencing that NULL as if it were a dict. Kept as a
+     * cautionary comment because the failure was a segfault with no
+     * assertion message pointing at the cause.
+     */
+    rb = qtest_qmp(
+        qts, "{'execute': 'ringbuf-read', "
+             "'arguments': {'device': 'aux', 'size': 64}}");
+    g_assert(qdict_haskey(rb, "return"));
+    captured = qdict_get_str(rb, "return");
+    g_assert_cmpstr(captured, ==, "hi");
+    qobject_unref(rb);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The AUX serial port, for console input: a loopback TCP socket standing
+ * in for the real cable, following the same host-socket pattern
+ * tests/qtest/ipmi-bt-test.c uses for its own external chardev -- bind and
+ * listen before qtest_init, then accept once QEMU connects out to the
+ * port named on its command line. Unlike the ringbuf above, this
+ * direction needs a live connection: bytes have to reach this device's
+ * receive callback, not just accumulate in a buffer nothing reads from.
+ */
+static int aux_listen(uint16_t *port)
+{
+    struct sockaddr_in addr = { 0 };
+    socklen_t addrlen = sizeof(addr);
+    int lfd;
+
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+
+    lfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    g_assert(lfd >= 0);
+    g_assert(bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    g_assert(getsockname(lfd, (struct sockaddr *)&addr, &addrlen) == 0);
+    *port = ntohs(addr.sin_port);
+    g_assert(listen(lfd, 1) == 0);
+    return lfd;
+}
+
+static int aux_accept(int lfd)
+{
+    fd_set readfds;
+    struct timeval tv = { .tv_sec = 10 };
+    int fd, val;
+
+    FD_ZERO(&readfds);
+    FD_SET(lfd, &readfds);
+    g_assert_cmpint(select(lfd + 1, &readfds, NULL, NULL, &tv), ==, 1);
+    fd = accept(lfd, NULL, 0);
+    g_assert(fd >= 0);
+    val = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
+    return fd;
+}
+
+static void aux_write(int fd, const char *text)
+{
+    size_t len = strlen(text);
+
+    g_assert_cmpint(write(fd, text, len), ==, (ssize_t)len);
+}
+
+static void test_get_returns_queued_console_input(const void *data)
+{
+    uint16_t port;
+    int lfd = aux_listen(&port);
+    g_autofree char *args = g_strdup_printf(
+        "-M origin200 -serial none "
+        "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:aux", port);
+    QTestState *qts = qtest_init(args);
+    int fd = aux_accept(lfd);
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    aux_write(fd, "hello");
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    /* Wait for the rotation to notice the queue and present signal2 --
+     * proof the arbitration byte really does depend on queue state, not
+     * just that "get" happens to answer correctly when asked. */
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    req_len = build_request(req, "get");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], >=, 6 + 5);
+    g_assert(memcmp(&resp[1], "acp 0 hello", 11) == 0);
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
+ * The escape split: a byte sequence beginning 0x14 is a controller
+ * command and is discarded through the next line terminator, never
+ * reaching "get"; everything else is queued and does. Asserting only the
+ * positive half -- that typed text reaches "get" -- would pass a model
+ * that never implements the escape at all, so this checks both.
+ */
+static void test_escape_byte_is_not_queued(const void *data)
+{
+    uint16_t port;
+    int lfd = aux_listen(&port);
+    g_autofree char *args = g_strdup_printf(
+        "-M origin200 -serial none "
+        "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:aux", port);
+    QTestState *qts = qtest_init(args);
+    int fd = aux_accept(lfd);
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /* A single \r as the terminator, matching a real terminal in raw
+     * serial mode rather than a host line ending -- what specifically
+     * ends an escaped command is not stated anywhere read for the
+     * datasheet, so this is the model's own choice and the one this test
+     * exercises, not a claim about a CRLF pair. */
+    aux_write(fd, "AB\x14zzz\rCD");
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    req_len = build_request(req, "get");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 6 + 4);
+    g_assert(memcmp(&resp[1], "acp 0 ABCD", 10) == 0);
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
+ * Supervisor gating: a protected command answers "err perm" before "pas",
+ * and succeeds once the correct password has been given; "pas" itself
+ * rejects a password that is not exactly four characters.
+ */
+static void test_supervisor_gating(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /* Protected before authenticating. */
+    req_len = build_request(req, "rst");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 8);
+    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+
+    /* A password of the wrong length. */
+    req_len = build_request(req, "pas ab");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /* The factory-default password, exactly four characters. */
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Protected command now succeeds. */
+    req_len = build_request(req, "rst");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -312,6 +534,14 @@ int main(int argc, char **argv)
                         test_arbitration_three_loop_wait);
     qtest_add_data_func("sn0/elsc/arbitration-repeats", NULL,
                         test_arbitration_repeats);
+    qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
+                        test_acp_command_writes_to_console);
+    qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
+                        test_get_returns_queued_console_input);
+    qtest_add_data_func("sn0/elsc/escape-byte-is-not-queued", NULL,
+                        test_escape_byte_is_not_queued);
+    qtest_add_data_func("sn0/elsc/supervisor-gating", NULL,
+                        test_supervisor_gating);
 
     ret = g_test_run();
 
