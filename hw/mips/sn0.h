@@ -138,17 +138,22 @@
  * The sixteen small windows fill the bottom sixteenth of a node's crosstalk
  * window, one per widget, each reaching that widget's first 16 MB.
  *
- * Widget 0 and the crossbar's eight device ports are mapped here. Widget 1 is
+ * Widget 0 and the eight crosstalk port numbers are mapped here. Widget 1 is
  * the Hub, whose window is node-relative in a way a widget-indexed space cannot
  * express, so it keeps its own mapping.
  *
  * **Widget 0's small window has to decode, and this said the opposite until a
- * guest proved otherwise.** A defect is recorded against that window and
- * firmware redirects widget 0 onto the last big window because of it — which
- * led to leaving the small window unmapped so that anything reaching for it
- * would say so loudly. Linux reaches for it, deliberately, with the address
- * macro whose name says raw, and took a bus error on a machine built to that
- * reasoning.
+ * guest proved otherwise.** Firmware redirects widget 0 onto the last big
+ * window, and a defect against the small window was taken as the reason — which
+ * led to leaving that window unmapped so anything reaching for it would say so
+ * loudly. Linux reaches for it, deliberately, with the address macro whose name
+ * says raw, and took a bus error on a machine built to that reasoning.
+ *
+ * **What the defect actually is has never been established, and two accounts
+ * disagree.** SGI's firmware says it avoids widget 0 because of a problem with
+ * error handling there, without saying what the problem is; this tree has
+ * elsewhere claimed a Hub defect in the small window. Nobody has shown they are
+ * the same thing, and neither is needed to justify what this code does.
  *
  * **The two guests use different paths and the machine owes both.** Linux reads
  * widget 0 through this small window; OpenBSD redirects to big window 6 through
@@ -171,31 +176,36 @@
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
 /*
- * What answers at widget 0, and what it says it is.
+ * What answers at widget 0, and why there is no identity constant here.
  *
- * On a full crossbar this is the Crossbow's own register block, reporting the
- * part number and manufacturer of a Crossbow — both of which are zero, which is
- * counter-intuitive and is what a real chip reports. An Origin 200 has a
- * cut-down crossbar that reports the I/O bridge's identity here instead, and
- * that is not a detail: both guests read this register first and branch on it.
- * Seeing the bridge's part number, each concludes the machine has a limited
- * topology and probes widget 8 alone; seeing a crossbar's, each runs a full
- * crossbar probe, consults the configuration graph for a probe order and
- * reaches the same bridge by a different route, printing different things on
- * the way. So this is the machine's identity rather than a device default,
- * which is why it is set here.
+ * A real Origin 200 has no crossbar. The Hub has one crosstalk link with the
+ * I/O bridge on the far end, and with no switch in between nothing routes by
+ * widget number, so every widget address the Hub emits reaches the same chip.
+ * SGI's own firmware says so where it probes that link: a directly connected
+ * bridge can be given whichever widget number the firmware chooses, and it
+ * chooses 8, avoiding 0 because something about error handling there is a
+ * problem. Widget 8 is an agreement between two firmware routines, not a place
+ * the bridge sits.
  *
- * The revision was a choice this file made until it was sourced: a captured
- * OpenBSD 7.9 GENERIC-IP27 boot on a real Origin 200 of this configuration
- * announces revision 3 at both widget 0 and widget 8. It is a value the guest
- * prints and also one it acts on — below revision four it treats the bridge as
- * having a byte-swapping defect and avoids that widget's PCI I/O space
- * altogether — so the earlier guess of 1 took the same branch by luck while
- * printing a line no capture would match.
+ * So widget 0 reports the bridge's part number and manufacturer because it *is*
+ * the bridge, and those values live on the bridge rather than here. Every guest
+ * reads this register first and branches on it — a bridge's identity means a
+ * restricted topology and a probe of widget 8 alone, a Crossbow's means a full
+ * crossbar probe through the configuration graph — so getting it wrong changes
+ * what kind of machine a guest thinks it is on.
+ *
+ * The revision stays here because it is not the chip's to know. It varies
+ * between real machines: a captured OpenBSD 7.9 GENERIC-IP27 boot on a real
+ * Origin 200 announces revision 3 at both widget 0 and widget 8, and another
+ * real machine's own firmware inventory reports revision 4. That reads as a
+ * property of the silicon fitted to a unit rather than of the machine type,
+ * which is why it is a settable option and why nothing here claims to have
+ * settled it. It is a value a guest prints and also one it acts on — below
+ * revision four it treats the bridge as having a byte-swapping defect and
+ * avoids that widget's PCI I/O space altogether — so an earlier guess of 1 took
+ * the same branch by luck while printing a line no capture would match.
  */
-#define SN0_XBOW_WIDGET          0
-#define SN0_WIDGET0_PART         0xc002
-#define SN0_WIDGET0_MANUFACTURER 0x036
+#define SN0_WIDGET0              0
 #define SN0_WIDGET0_REVISION     3
 /* The identification field is four bits wide. */
 #define SN0_WIDGET0_REVISION_MAX 0xf
@@ -251,7 +261,7 @@
  * somebody changes how the register is initialised.
  */
 #define SN0_FIRMWARE_WIDGET0_SLICE  0
-#define SN0_FIRMWARE_WIDGET0_ENTRY  (SN0_HUB_IO_BWIN_WIDGET(SN0_XBOW_WIDGET) | \
+#define SN0_FIRMWARE_WIDGET0_ENTRY  (SN0_HUB_IO_BWIN_WIDGET(SN0_WIDGET0) | \
                                      SN0_HUB_IO_BWIN_SLICE( \
                                          SN0_FIRMWARE_WIDGET0_SLICE))
 

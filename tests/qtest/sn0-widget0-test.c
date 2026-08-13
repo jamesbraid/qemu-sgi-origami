@@ -1,24 +1,22 @@
 /*
- * The crossbar's register block, which answers at crosstalk widget 0.
+ * Crosstalk widget 0, which on an Origin 200 is the I/O bridge answering a
+ * second time rather than a device of its own.
  *
- * Only one register in it is load-bearing, and it is load-bearing for something
- * larger than a register: both guests read widget 0's identification register
- * first and decide what kind of machine they are on from the answer. An Origin
- * 200 does not report a crossbar there, it reports the I/O bridge's identity,
- * and a guest that reads a crossbar's identity instead takes a different probe
- * path entirely. So these assertions are about the machine's identity as much
- * as about a device.
+ * One register in it is load-bearing for something larger than a register:
+ * every guest reads widget 0's identification register first and decides what
+ * kind of machine it is on from the answer. An Origin 200 has no crossbar, so
+ * what answers is the bridge, and a guest reading a crossbar's identity instead
+ * takes a different probe path entirely. These assertions are about the
+ * machine's identity as much as about a device.
  *
- * Widget 0 is reached only through a big window here. Its small window is the
- * one a Hub defect makes unreliable on real hardware, so the machine leaves it
- * unmapped and the guests reach widget 0 through the last big window instead —
- * which is the arrangement both expect, and the arrangement these tests
- * exercise, because testing the identity through a path no guest uses would
- * prove the register right and the machine unreachable.
+ * Both windows onto widget 0 are exercised, because the two guests use
+ * different ones. Linux reads the small window directly; OpenBSD redirects to
+ * the last big window. Testing one path only would prove the register right and
+ * the machine unreachable for whichever guest uses the other.
  *
- * What puts the window there is the translation table's reset value, not the
- * firmware's redirection, which writes the value the entry already holds. No
- * assertion below can tell those apart, and one of them says so.
+ * What puts the big window there is the translation table's reset value, not
+ * the firmware's redirection, which writes the value the entry already holds.
+ * No assertion below can tell those apart, and one of them says so.
  *
  * One limit of these tests, stated because it would otherwise be assumed away:
  * where the machine is supposed to raise a bus error, a qtest cannot see one.
@@ -71,6 +69,13 @@
  */
 #define FIRMWARE_ENTRY  (IO_BWIN_WIDGET(0) | IO_BWIN_SLICE(0))
 
+#define SMALL_WINDOW_SIZE 0x1000000ULL
+#define SMALL_WINDOW(w)   (SPACE_XTALK + (w) * SMALL_WINDOW_SIZE)
+
+/* The widget number SGI's firmware picks for a directly connected bridge. */
+#define BRIDGE_WIDGET   8
+#define BRIDGE_WINDOW   SMALL_WINDOW(BRIDGE_WIDGET)
+
 #define BIG_WINDOW_SIZE 0x20000000ULL
 #define BIG_WINDOW(n)   (SPACE_XTALK + 0x20000000 + (n) * BIG_WINDOW_SIZE)
 
@@ -84,8 +89,17 @@
  * the address both guests' headers name and the address the boot was measured
  * reading.
  */
-#define XBOW_IDENTIFICATION 0x0000
-#define REG_DATA            4
+#define WIDGET_IDENTIFICATION 0x0000
+#define REG_DATA              4
+
+/*
+ * A read/write register of the bridge's, used to show that both windows reach
+ * one chip rather than two chips agreeing. The request time-out register holds
+ * a twenty-bit reload value and running it does nothing observable here, which
+ * is what makes it safe to write from a test.
+ */
+#define BRIDGE_REQUEST_TIMEOUT 0x0028
+#define REQUEST_TIMEOUT_MASK   0xfffffu
 
 #define ID_REVISION(v)      (((v) >> 28) & 0xf)
 #define ID_PART(v)          (((v) >> 12) & 0xffff)
@@ -103,7 +117,7 @@
 static void test_identity_is_the_bridges(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
-    uint32_t id = qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA);
+    uint32_t id = qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA);
 
     /*
      * The part number is what each guest branches on. Assert the whole
@@ -173,8 +187,8 @@ static void test_upper_half_is_not_the_register(const void *data)
      * register is, which is the kind of thing that only surfaces when something
      * later composes an address from it.
      */
-    g_assert_cmphex(qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION), !=,
-                    qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA));
+    g_assert_cmphex(qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION), !=,
+                    qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA));
 
     qtest_quit(qts);
 }
@@ -191,7 +205,7 @@ static void test_the_revision_is_settable(const void *data)
      * changing nothing, so this asserts that turning it reaches the register a
      * guest reads rather than only the machine's own state.
      */
-    uint32_t id = qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA);
+    uint32_t id = qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA);
 
     g_assert_cmpuint(ID_REVISION(id), ==, 4);
 
@@ -221,9 +235,9 @@ static void test_both_windows_reach_one_device(const void *data)
      * was left unmapped on the strength of a claim about both guests that was
      * only ever true of one, and Linux found it with a bus error.
      */
-    through_small = qtest_readl(qts, SPACE_XTALK + XBOW_IDENTIFICATION +
+    through_small = qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
                                 REG_DATA);
-    through_big = qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA);
+    through_big = qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA);
 
     g_assert_cmphex(through_small, ==, through_big);
 
@@ -252,12 +266,87 @@ static void test_both_windows_reach_one_device(const void *data)
      */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW),
                  IO_BWIN_WIDGET(IO_BWIN_ABSENT_WIDGET));
-    g_assert_cmphex(qtest_readl(qts, WIDGET0 + XBOW_IDENTIFICATION + REG_DATA),
+    g_assert_cmphex(qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA),
                     !=, through_big);
 
     /* The small window is unaffected: it does not go through a translation. */
-    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + XBOW_IDENTIFICATION +
+    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
                                 REG_DATA), ==, through_small);
+
+    qtest_quit(qts);
+}
+
+static void test_widget_0_is_the_bridge_itself(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint32_t reset, written;
+
+    /*
+     * The assertion the earlier tests could not make, and the reason they could
+     * not: comparing one *read-only* value through two windows cannot show that
+     * the two windows reach one device. Two devices configured to report the
+     * same identity pass it. Widget 0 used to be a separate model with a single
+     * read-only register, so nothing a test could put in through one window was
+     * readable through the other, and the limitation was recorded rather than
+     * closed.
+     *
+     * Widget 0 is now the I/O bridge's own widget space, seen a second time, so
+     * the bridge's writable registers are reachable through it and state put in
+     * through one window has to come out of the other. That is the property
+     * that distinguishes one chip from two dressed alike.
+     *
+     * Widget 8 is where the firmware puts the bridge and widget 0 is the same
+     * chip, so this writes through one and reads through the other. Which
+     * direction hardly matters; using the same window for both would assert
+     * nothing.
+     */
+    reset = qtest_readl(qts, BRIDGE_WINDOW + BRIDGE_REQUEST_TIMEOUT + REG_DATA);
+    g_assert_cmphex(reset, ==,
+                    qtest_readl(qts, SPACE_XTALK + BRIDGE_REQUEST_TIMEOUT +
+                                REG_DATA));
+
+    /*
+     * A value that is not the reset value, so the read below cannot pass by
+     * finding what was already there. Masked to the field's width because the
+     * register keeps only twenty bits and a wider write would read back
+     * truncated, which would fail this test for a reason that is not the one it
+     * is asking about.
+     */
+    written = (reset ^ 0x5a5a5u) & REQUEST_TIMEOUT_MASK;
+    g_assert_cmphex(written, !=, reset);
+
+    qtest_writel(qts, BRIDGE_WINDOW + BRIDGE_REQUEST_TIMEOUT + REG_DATA,
+                 written);
+
+    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + BRIDGE_REQUEST_TIMEOUT +
+                                REG_DATA), ==, written);
+
+    /*
+     * And through the big window as well, which is the path OpenBSD takes. All
+     * three addresses are one register.
+     */
+    g_assert_cmphex(qtest_readl(qts, WIDGET0 + BRIDGE_REQUEST_TIMEOUT +
+                                REG_DATA), ==, written);
+
+    qtest_quit(qts);
+}
+
+static void test_widget_0_answers_without_the_bridge_option(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=off");
+
+    /*
+     * The machine option decides whether the bridge answers at its own widget.
+     * It must not decide whether widget 0 answers, because OpenBSD panics
+     * outright when widget 0's identification register does not read — so
+     * gating the alias on it would turn a development option into a machine no
+     * guest can boot, and nothing else here would notice.
+     */
+    uint32_t id = qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
+                              REG_DATA);
+
+    g_assert_cmphex(ID_PART(id), ==, BRIDGE_PART);
+    g_assert_cmphex(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
 
     qtest_quit(qts);
 }
@@ -266,15 +355,19 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("sn0/xbow/identity-is-the-bridges", NULL,
+    qtest_add_data_func("sn0/widget0/identity-is-the-bridges", NULL,
                         test_identity_is_the_bridges);
-    qtest_add_data_func("sn0/xbow/reached-through-the-last-big-window", NULL,
+    qtest_add_data_func("sn0/widget0/is-the-bridge-itself", NULL,
+                        test_widget_0_is_the_bridge_itself);
+    qtest_add_data_func("sn0/widget0/answers-without-the-bridge-option", NULL,
+                        test_widget_0_answers_without_the_bridge_option);
+    qtest_add_data_func("sn0/widget0/reached-through-the-last-big-window", NULL,
                         test_it_is_where_the_firmware_put_it);
-    qtest_add_data_func("sn0/xbow/both-windows-reach-one-device", NULL,
+    qtest_add_data_func("sn0/widget0/both-windows-reach-one-device", NULL,
                         test_both_windows_reach_one_device);
-    qtest_add_data_func("sn0/xbow/upper-half-of-the-slot", NULL,
+    qtest_add_data_func("sn0/widget0/upper-half-of-the-slot", NULL,
                         test_upper_half_is_not_the_register);
-    qtest_add_data_func("sn0/xbow/revision-is-settable", NULL,
+    qtest_add_data_func("sn0/widget0/revision-is-settable", NULL,
                         test_the_revision_is_settable);
 
     return g_test_run();
