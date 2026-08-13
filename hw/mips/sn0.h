@@ -313,17 +313,46 @@
 /*
  * The directory and error-correction back doors, reached through Hub special
  * space above the boot flash windows. Real firmware's own memory and
- * directory diagnostics write a pattern through here and read it back to
- * test for stuck bits; a range that answers with anything other than what
- * was last written there fails that test on a healthy machine. We model no
+ * directory diagnostics use these windows for two things at once: testing a
+ * location it already trusts is populated for stuck bits, and -- the same
+ * read-back, against two masks of different width -- discovering whether a
+ * bank exists at all and which directory format it carries. We model no
  * coherence directory and no error correction, so the addresses carry no
- * meaning beyond that round trip, and each window is sized to the full
- * offset range the guest's own address macros can produce within it.
+ * meaning beyond what that classification needs.
+ *
+ * A bank the board does not wire has no directory or ECC storage behind its
+ * share of these windows on real hardware, so nothing written there may
+ * survive being read back: real firmware's probe reads that failure as
+ * absence, before it ever touches that bank's ordinary memory. A bank the
+ * board does wire has real storage, but only as wide as this machine's own
+ * directory format -- SGI's manual states the Origin 200 carries none of
+ * the richer, premium format a larger machine has, so a populated entry
+ * here must keep only the low sixteen bits of whatever is written to it.
+ * Each window is therefore width-limited storage (sn0_backdoor_populated_ops
+ * in sn0.c) for however many of the eight banks this configuration actually
+ * populates, and a fixed, non-RAM floor for the rest (sn0_backdoor_absent_ops).
  */
 #define SN0_BACKDOOR_ECC_HUB  0x80000000  /* node offset within Hub special */
 #define SN0_BACKDOOR_ECC_SIZE (1 * GiB)
 #define SN0_BACKDOOR_DIR_HUB  0xc0000000  /* node offset within Hub special */
 #define SN0_BACKDOOR_DIR_SIZE (1 * GiB)
+
+/*
+ * How much of a back-door window one memory bank's directory/ECC entries
+ * occupy: an even eight-way split of the 1 GB window, 128 MB per bank in
+ * the same bank index order ordinary memory uses. Confirmed rather than
+ * chosen -- a back-door entry's address is the physical address it
+ * describes, shifted right by two (the window is the node's 4 GB memory
+ * space compressed four to one) and masked to the window, so the bank bits
+ * are carried straight through and land each bank on a 128 MB slice by
+ * construction. The masks and the stride are both named in the public
+ * Linux headers for this platform, so this is a shared fact rather than a
+ * reading of the vendor's private tree; it also happens to land on the
+ * same 128 MB quantum SN0_MEM_SLOT_SIZE already uses for a bank's four
+ * reporting slots, worth recording as corroboration between two otherwise
+ * unrelated corners of this machine's address map.
+ */
+#define SN0_BACKDOOR_BANK_STRIDE (SN0_BACKDOOR_ECC_SIZE / SN0_MEM_BANKS)
 
 /*
  * Ten entry points at the start of the flash, eight bytes apart. A guest calls

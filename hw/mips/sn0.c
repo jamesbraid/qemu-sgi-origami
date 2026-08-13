@@ -108,7 +108,14 @@ struct SN0MachineState {
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;
     MemoryRegion backdoor_ecc;
+    MemoryRegion backdoor_ecc_absent;
     MemoryRegion backdoor_dir;
+    MemoryRegion backdoor_dir_absent;
+    /* Backing storage for the populated share of each window above --
+     * see sn0_backdoor_populated_ops for why these are plain buffers
+     * rather than a RAM-backed region. */
+    uint8_t *backdoor_ecc_data;
+    uint8_t *backdoor_dir_data;
 
     /* Crosstalk space, and the small window each widget is reached through. */
     MemoryRegion xtalk;
@@ -295,6 +302,161 @@ static const MemoryRegionOps sn0_lboot_ops = {
     .valid.max_access_size = 8,
 };
 
+/*
+ * The floor beneath a back-door window: what a directory or ECC entry for a
+ * bank this configuration does not populate answers. Real firmware's presence
+ * probe writes a test pattern, writes zero through the same data lines, and
+ * reads back; it calls a bank absent exactly when neither value survives, so
+ * this must accept both writes and echo neither.
+ *
+ * The value returned is a modelling choice, not a fact about the machine --
+ * the vendor source says an absent bank's data lines float, so nothing
+ * architectural constrains the answer beyond "not zero and not whatever
+ * pattern the probe wrote." 0xa5 repeated is arbitrary, chosen only to be
+ * visually distinct from either all-zero or an all-ones fill in a trace.
+ *
+ * impl sizes are declared explicitly (matching valid) so an eight-byte guest
+ * access reaches this callback once. Left unset, the maximum defaults to
+ * four and the memory core would split it into two four-byte calls -- and
+ * because both halves resolve to the same fixed value, nothing about that
+ * split would show up as wrong here the way it would on a register with a
+ * side effect. Declared anyway, on the general rule rather than because
+ * this specific handler would misbehave without it.
+ */
+#define SN0_BACKDOOR_ABSENT_VALUE 0xa5a5a5a5a5a5a5a5ULL
+
+static uint64_t sn0_backdoor_absent_read(void *opaque, hwaddr addr,
+                                         unsigned size)
+{
+    return SN0_BACKDOOR_ABSENT_VALUE;
+}
+
+static void sn0_backdoor_absent_write(void *opaque, hwaddr addr,
+                                      uint64_t val, unsigned size)
+{
+    /*
+     * Accepted and dropped. A bank that is not there has nothing behind
+     * this address for the write to change, which is the whole point --
+     * and real firmware's own sizing walk runs with no fault guard here,
+     * so refusing or faulting the write would break the one routine that
+     * has nothing to catch it.
+     */
+}
+
+static const MemoryRegionOps sn0_backdoor_absent_ops = {
+    .read = sn0_backdoor_absent_read,
+    .write = sn0_backdoor_absent_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+/*
+ * A populated bank's own share of a back-door window -- real storage, but
+ * only as wide as this machine's directory format actually is. SGI's own
+ * manual states the Origin 200 carries no premium directory memory, the
+ * additional hardware a larger machine has; ours is the plainer format
+ * throughout. Real firmware's presence probe tells the two apart by how
+ * much of a written pattern survives a read: the richer format's entry
+ * keeps all six bytes of its low 48 bits, the plainer format's keeps only
+ * its low two. A backing store that remembers every byte it is given, as
+ * plain RAM does, keeps all of them regardless -- which is what made every
+ * populated bank here answer "premium format" whether or not the machine
+ * has any.
+ *
+ * So this remembers everything a guest writes, to whatever width and
+ * alignment it writes it, but a read reveals only the low sixteen bits of
+ * each eight-byte-aligned entry; the other six always come back as zero,
+ * never as what was stored there, because the hardware has no storage
+ * there to come back from. Writing the discarded bytes is accepted rather
+ * than refused -- real firmware's own restore step (the probe saves an
+ * entry, overwrites it, classifies it, then writes the saved value back)
+ * writes all eight, and a plainer-format entry's real two bytes have to
+ * survive that restore correctly, which this does; the other six are
+ * harmless to store since nothing ever reads them back.
+ *
+ * Backed by a plain heap buffer rather than memory_region_init_ram because
+ * the masking has to happen on every read, and a RAM-backed region answers
+ * reads directly out of guest-visible memory with no callback in the way.
+ * The buffer is machine-lifetime, freed with the process, same as the
+ * flash and the other back-door pieces above -- and, like them, it does
+ * not currently migrate: this content is diagnostic scratch a guest never
+ * relies on surviving a snapshot (the datasheet already says the back
+ * door "carries no meaning beyond a plain round trip"), so the gap is
+ * recorded here rather than closed.
+ */
+static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
+                                            unsigned size)
+{
+    const uint8_t *p = (const uint8_t *)opaque + addr;
+    uint64_t raw;
+    unsigned int i;
+
+    switch (size) {
+    case 1:
+        raw = ldub_p(p);
+        break;
+    case 2:
+        raw = lduw_be_p(p);
+        break;
+    case 4:
+        raw = ldl_be_p(p);
+        break;
+    case 8:
+        raw = ldq_be_p(p);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    /*
+     * Byte i of this access sits at addr + i and occupies bits
+     * [8*(size-1-i), 8*(size-1-i)+7] of the big-endian value just read.
+     * The low two bytes of each eight-byte-aligned entry -- (addr+i) & 7
+     * equal to 6 or 7 -- are real; the rest read as zero.
+     */
+    for (i = 0; i < size; i++) {
+        if (((addr + i) & 7) < 6) {
+            raw &= ~(0xffULL << (8 * (size - 1 - i)));
+        }
+    }
+    return raw;
+}
+
+static void sn0_backdoor_populated_write(void *opaque, hwaddr addr,
+                                         uint64_t val, unsigned size)
+{
+    uint8_t *p = (uint8_t *)opaque + addr;
+
+    switch (size) {
+    case 1:
+        stb_p(p, val);
+        break;
+    case 2:
+        stw_be_p(p, val);
+        break;
+    case 4:
+        stl_be_p(p, val);
+        break;
+    case 8:
+        stq_be_p(p, val);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static const MemoryRegionOps sn0_backdoor_populated_ops = {
+    .read = sn0_backdoor_populated_read,
+    .write = sn0_backdoor_populated_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
 
 /*
  * Build what a programmed flash would hold at the addresses a guest reaches
@@ -1611,6 +1773,16 @@ static void sn0_init(MachineState *machine)
      * first one instead of cleanly at the boundary of the last requested
      * bank.
      */
+    /*
+     * How many of the eight bank slots this configuration actually
+     * populates. Computed once and shared with the back-door windows below
+     * -- both derive bank presence from machine->ram_size, and computing it
+     * twice would risk the two disagreeing about which banks exist.
+     */
+    unsigned int populated_banks = MIN(SN0_MEM_BANKS,
+                                       DIV_ROUND_UP(machine->ram_size,
+                                                    SN0_MEM_BANK_SIZE));
+
     if (machine->ram_size <= SN0_MEM_BANK_SIZE) {
         memory_region_add_subregion(system, node, machine->ram);
     } else {
@@ -1667,23 +1839,64 @@ static void sn0_init(MachineState *machine)
      * The directory and error-correction back doors. Real firmware's own
      * diagnostics write a pattern through one of these and read it back to
      * test for stuck directory bits, before it does anything else with the
-     * machine; an unmapped or always-zero range fails that test on a machine
-     * with no such defect. Plain RAM satisfies the only property that
-     * matters here with no decode logic: every address in each window reads
-     * back whatever was last written to it. Machine-lifetime regions, same
-     * as the flash above, so no owner.
+     * machine -- and the very same probe is how firmware first learns which
+     * banks exist and what directory format each one carries: the width of
+     * a location's real storage, not merely whether it has any, is what the
+     * probe's two-mask comparison reads off. A floor of fixed, non-RAM
+     * storage (sn0_backdoor_absent_ops) covers each whole 1 GB window at
+     * lower priority than everything else added into it; width-limited
+     * storage (sn0_backdoor_populated_ops) for however many of the eight
+     * banks this configuration populates layers on top at the default
+     * priority and wins wherever the two overlap, the same floor-then-window
+     * arrangement the Hub's own big windows already use (hw/misc/sgi-hub.c).
+     * Machine-lifetime regions and buffers, same as the flash above, so no
+     * owner and no explicit free.
      */
-    memory_region_init_ram(&s->backdoor_ecc, NULL, "sn0.node0.backdoor.ecc",
-                           SN0_BACKDOOR_ECC_SIZE, &error_fatal);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_HUB + node + SN0_BACKDOOR_ECC_HUB,
-                                &s->backdoor_ecc);
+    memory_region_init_io(&s->backdoor_ecc_absent, NULL,
+                          &sn0_backdoor_absent_ops, NULL,
+                          "sn0.node0.backdoor.ecc.absent",
+                          SN0_BACKDOOR_ECC_SIZE);
+    memory_region_add_subregion_overlap(system,
+                                        SN0_SPACE_HUB + node +
+                                            SN0_BACKDOOR_ECC_HUB,
+                                        &s->backdoor_ecc_absent, -1);
+    if (populated_banks > 0) {
+        uint64_t populated_size = (uint64_t)populated_banks *
+                                  SN0_BACKDOOR_BANK_STRIDE;
 
-    memory_region_init_ram(&s->backdoor_dir, NULL, "sn0.node0.backdoor.dir",
-                           SN0_BACKDOOR_DIR_SIZE, &error_fatal);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_HUB + node + SN0_BACKDOOR_DIR_HUB,
-                                &s->backdoor_dir);
+        s->backdoor_ecc_data = g_malloc0(populated_size);
+        memory_region_init_io(&s->backdoor_ecc, NULL,
+                              &sn0_backdoor_populated_ops,
+                              s->backdoor_ecc_data,
+                              "sn0.node0.backdoor.ecc", populated_size);
+        memory_region_add_subregion(system,
+                                    SN0_SPACE_HUB + node +
+                                        SN0_BACKDOOR_ECC_HUB,
+                                    &s->backdoor_ecc);
+    }
+
+    memory_region_init_io(&s->backdoor_dir_absent, NULL,
+                          &sn0_backdoor_absent_ops, NULL,
+                          "sn0.node0.backdoor.dir.absent",
+                          SN0_BACKDOOR_DIR_SIZE);
+    memory_region_add_subregion_overlap(system,
+                                        SN0_SPACE_HUB + node +
+                                            SN0_BACKDOOR_DIR_HUB,
+                                        &s->backdoor_dir_absent, -1);
+    if (populated_banks > 0) {
+        uint64_t populated_size = (uint64_t)populated_banks *
+                                  SN0_BACKDOOR_BANK_STRIDE;
+
+        s->backdoor_dir_data = g_malloc0(populated_size);
+        memory_region_init_io(&s->backdoor_dir, NULL,
+                              &sn0_backdoor_populated_ops,
+                              s->backdoor_dir_data,
+                              "sn0.node0.backdoor.dir", populated_size);
+        memory_region_add_subregion(system,
+                                    SN0_SPACE_HUB + node +
+                                        SN0_BACKDOOR_DIR_HUB,
+                                    &s->backdoor_dir);
+    }
 
     /*
      * A firmware image, if one was supplied, replaces what this file would
