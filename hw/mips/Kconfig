@@ -45,6 +45,7 @@ config SGI_SN0
     select QLOGIC_ISP_SCSI_PCI
     select SGI_BRIDGE
     select SGI_BRIDGE_DMA_TEST
+    select SGI_ELSC
     select SGI_HUB
     select SGI_IOC3
     select SGI_IOC3_ETH

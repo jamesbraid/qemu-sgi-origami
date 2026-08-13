@@ -24,6 +24,7 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/misc/sgi-elsc.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
@@ -1469,6 +1470,13 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(
         &s->regs, HUB_MD_I2C_BASE,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->i2c), 0), 1);
+
+    /*
+     * The entry-level system controller: a real board on the same I2C bus,
+     * not something the Hub reaches through a window, so an ordinary
+     * addressed slave on the chip's own bus is the whole of the wiring.
+     */
+    i2c_slave_create_simple(s->i2c.bus, TYPE_SGI_ELSC, SGI_ELSC_ADDR);
 
     for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);

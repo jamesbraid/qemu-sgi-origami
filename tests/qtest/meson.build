@@ -192,6 +192,7 @@ qtests_mips64 = \
                                                    'sn0-qlogic-isp-test',
                                                    'sn0-hub-test',
                                                    'sn0-i2c-test',
+                                                   'sn0-elsc-test',
                                                    'sn0-widget0-test',
                                                    'sn0-model-test',
                                                    'sn0-migration-test',
