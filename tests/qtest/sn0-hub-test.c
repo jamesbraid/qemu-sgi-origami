@@ -92,6 +92,9 @@
 #define MD_I2C_CTRL         0x220008
 #define MD_PERF_CNT0        0x210010
 #define MD_PERF_CNT_MASK    0x00000000000fffffULL
+#define MD_CONFIG           0x200018
+#define MD_CONFIG_MASK      0x003fffffffffffffULL
+#define MD_CONFIG_RESET     0x001e7fbc3fffffffULL
 #define I2C_STATUS_IDLE     0x81  /* pending-interrupt-not | bus-not-busy */
 #define NI_STATUS           0x600000
 
@@ -1111,6 +1114,32 @@ static void test_md_perf_cnt0(const void *data)
     qtest_quit(qts);
 }
 
+static void test_md_config(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * The reset value is the fact that matters here: it is not zero, and a
+     * model that zeroed it would misreport eight empty banks, an enabled
+     * error-correction bit the hardware leaves ignored, a cleared
+     * directory-format bit that resets set, and a dropped reply-guarantee
+     * count, all at once. Real firmware both reads and writes this register
+     * (measured, three distinct values each, this session) so a plain
+     * masked round trip is asserted alongside the reset value.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_CONFIG), ==,
+                    MD_CONFIG_RESET);
+
+    qtest_writeq(qts, HUB_LOCAL + MD_CONFIG, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_CONFIG), ==,
+                    MD_CONFIG_MASK);
+
+    qtest_writeq(qts, HUB_LOCAL + MD_CONFIG, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_CONFIG), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_io_icrb_c_family(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1191,6 +1220,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,
                         test_io_scratch_registers);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
+    qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
                         test_io_icrb_c_family);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,
