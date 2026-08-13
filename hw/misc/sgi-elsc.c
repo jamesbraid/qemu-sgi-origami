@@ -12,24 +12,27 @@
  * chosen so the whole packet -- length through checksum, inclusive -- sums
  * to zero modulo 256.
  *
- * Only "ver" is answered for real at this milestone; everything else in
- * the ASCII vocabulary answers "err cmd", which is load-bearing rather than
- * a placeholder -- the console-selection routine issues a DIP-switch read
- * before it ever probes this device as a console, and it tolerates a
- * negative reply but not a stalled bus. The console pass-through comes
- * later.
+ * "ver", "get", "acp" (both directions) and "pas" are answered for real;
+ * everything else in the ASCII vocabulary answers "err cmd", which is
+ * load-bearing rather than a placeholder -- the console-selection routine
+ * issues a DIP-switch read before it ever probes this device as a
+ * console, and it tolerates a negative reply but not a stalled bus.
  *
  * This device also drives the arbitration broadcast that lets it and every
  * node's Hub share one bus with no real I2C multi-master mechanism: a
  * free-running rotation, one processor's signal per cycle, that presents an
  * observable gap before each signal and holds it once presented -- see
- * elsc_arb_step().
+ * elsc_arb_step(). And it is the far end of the AUX serial port: characters
+ * typed there queue for "get" unless they are an escaped controller command,
+ * and "acp" output commands write straight to it -- see elsc_receive() and
+ * elsc_handle_acp_command().
  */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 
 /*
@@ -89,12 +92,116 @@ static void elsc_frame_response_str(SGIElscState *s, const char *text)
     elsc_frame_response(s, text, strlen(text));
 }
 
+/*
+ * "get": the console-input poll. The response's first six bytes are a
+ * fixed "acp " plus a processor-selector digit plus a space -- firmware
+ * checks only those first four and copies the payload starting at byte
+ * six, discarding bytes four and five unread, so the shape has to be
+ * exactly that even though only four of the six are ever inspected. This
+ * device reaches only processor 0, so the selector is always "0".
+ *
+ * A "get" this device answers is a "get" the driver was always going to
+ * send: the arbitration wait withholds signal2 -- see elsc_arb_step() --
+ * whenever the queue is empty, and the driver's own transaction helper
+ * never puts "get" on the bus at all unless it saw signal2. Answering an
+ * empty queue with an empty payload here is therefore for a case real
+ * firmware does not create, not the queue-empty response firmware reads.
+ */
+static void elsc_handle_get(SGIElscState *s)
+{
+    char buf[SGI_ELSC_MAX_TEXT];
+    unsigned payload_max = SGI_ELSC_MAX_TEXT - 6;
+    unsigned n = s->rx_queue_len < payload_max ? s->rx_queue_len : payload_max;
+
+    memcpy(buf, "acp 0 ", 6);
+    memcpy(&buf[6], s->rx_queue, n);
+    elsc_frame_response(s, buf, 6 + n);
+
+    memmove(s->rx_queue, &s->rx_queue[n], s->rx_queue_len - n);
+    s->rx_queue_len -= n;
+}
+
+/*
+ * "acp <selector> <characters>": the console-output flush, the same
+ * mnemonic as the "get" response but now as a command. Answered
+ * "ok <count>", count in hexadecimal and never zero for a non-empty
+ * write -- a bare "ok" parses as zero accepted and livelocks the
+ * firmware's output queue, which is why this always answers the count
+ * form rather than the bare success elsewhere in this file. Accepting
+ * every character submitted is the simple correct answer, and this
+ * device has no reason to accept fewer.
+ */
+static void elsc_handle_acp_command(SGIElscState *s, const char *text,
+                                    unsigned len)
+{
+    char resp[8];
+    unsigned n;
+
+    if (len < 6) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+
+    n = len - 6;
+    if (n > 86) {
+        n = 86;   /* "at most 86 characters per transaction" */
+    }
+    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)&text[6], n);
+
+    snprintf(resp, sizeof(resp), "ok %x", n);
+    elsc_frame_response_str(s, resp);
+}
+
+/*
+ * "pas <4 characters>": enter supervisor mode if the password matches the
+ * one configured (factory default "none", and this model implements no
+ * way to change it), which gates the destructive commands below.
+ */
+static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
+{
+    if (len != 8 || text[3] != ' ') {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    if (memcmp(&text[4], "none", 4) == 0) {
+        s->supervisor = true;
+        elsc_frame_response_str(s, "ok");
+    } else {
+        elsc_frame_response_str(s, "err perm");
+    }
+}
+
 /* Dispatch one fully-received, checksum- and length-checked request, and
  * frame its reply. */
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
         elsc_frame_response_str(s, "ok " SGI_ELSC_VERSION);
+        return;
+    }
+    if (len == 3 && memcmp(text, "get", 3) == 0) {
+        elsc_handle_get(s);
+        return;
+    }
+    if (len >= 4 && memcmp(text, "acp ", 4) == 0) {
+        elsc_handle_acp_command(s, text, len);
+        return;
+    }
+    if (len >= 3 && memcmp(text, "pas", 3) == 0) {
+        elsc_handle_pas(s, text, len);
+        return;
+    }
+    if (len == 3 && memcmp(text, "rst", 3) == 0) {
+        /* A minimal protected command, to exercise supervisor gating --
+         * not a claim that "rst" is the real vocabulary's reset mnemonic,
+         * which is not established by anything read for the datasheet. */
+        if (!s->supervisor) {
+            elsc_frame_response_str(s, "err perm");
+            return;
+        }
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-elsc: reset requested, not modelled\n");
+        elsc_frame_response_str(s, "ok");
         return;
     }
 
@@ -275,14 +382,61 @@ static void elsc_arb_step(void *opaque)
      * Whether this slot has console input queued decides signal1 versus
      * signal2 -- signal2 is what tells the driver's transaction helper a
      * "get" will find something, and withholding it for an empty queue is
-     * the correct behaviour, not a missing feature. No queue exists yet at
-     * this milestone, so every slot always presents signal1; the console
-     * path adds the real condition here.
+     * the correct behaviour, not a missing feature. Only slot 0 has a real
+     * queue: console selection reaches processor 0, and a second
+     * processor's own input path is not modelled, so every other slot
+     * always presents signal1.
      */
-    elsc_broadcast(s, elsc_signal_byte(s->arb_slot, false));
+    elsc_broadcast(s, elsc_signal_byte(s->arb_slot,
+                   s->arb_slot == 0 && s->rx_queue_len > 0));
     s->arb_present = false;
     s->arb_slot = (s->arb_slot + 1) % s->num_cpus;
     timer_mod(s->arb_timer, now + ELSC_ARB_HOLD_US);
+}
+
+/*
+ * The AUX line's one multiplexing rule (Origin 200 Owner's Guide, page
+ * 132): a byte sequence beginning 0x14 is the controller's own command and
+ * is never queued for "get"; everything else is. What ends an escaped
+ * command is not stated anywhere read for the datasheet -- a human types
+ * commands and presumably terminates them with Enter -- so this discards
+ * through the next line terminator as a model choice, not an observed
+ * behaviour, and it is the only part of this rule that is.
+ */
+static void elsc_receive(void *opaque, const uint8_t *buf, int size)
+{
+    SGIElscState *s = opaque;
+    int i;
+
+    for (i = 0; i < size; i++) {
+        uint8_t c = buf[i];
+
+        if (s->in_escape) {
+            if (c == '\r' || c == '\n') {
+                s->in_escape = false;
+            }
+            continue;
+        }
+        if (c == 0x14) {
+            s->in_escape = true;
+            continue;
+        }
+        if (s->rx_queue_len < sizeof(s->rx_queue)) {
+            s->rx_queue[s->rx_queue_len++] = c;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-elsc: console input queue full, byte "
+                          "dropped\n");
+        }
+    }
+}
+
+static int elsc_can_receive(void *opaque)
+{
+    SGIElscState *s = opaque;
+    uint32_t room = sizeof(s->rx_queue) - s->rx_queue_len;
+
+    return room < 32 ? (int)room : 32;
 }
 
 static void elsc_reset_hold(Object *obj, ResetType type)
@@ -294,6 +448,9 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->txpos = 0;
     s->arb_slot = 0;
     s->arb_present = false;
+    s->rx_queue_len = 0;
+    s->in_escape = false;
+    s->supervisor = false;
 }
 
 static void elsc_realize(DeviceState *dev, Error **errp)
@@ -303,6 +460,9 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
     timer_mod(s->arb_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
+
+    qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
+                             NULL, NULL, s, NULL, true);
 }
 
 static const VMStateDescription vmstate_sgi_elsc = {
@@ -319,12 +479,17 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_TIMER_PTR(arb_timer, SGIElscState),
         VMSTATE_UINT32(arb_slot, SGIElscState),
         VMSTATE_BOOL(arb_present, SGIElscState),
+        VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
+        VMSTATE_UINT32(rx_queue_len, SGIElscState),
+        VMSTATE_BOOL(in_escape, SGIElscState),
+        VMSTATE_BOOL(supervisor, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
 };
 
 static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_UINT32("num-cpus", SGIElscState, num_cpus, 1),
+    DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
 
 static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
