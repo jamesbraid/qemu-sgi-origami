@@ -230,19 +230,21 @@ static void test_closing_invalid_address_shift_and_order(const void *data)
 
     /*
      * A fresh, ordinary read of 0x7f. i2c-echo answers with exactly the
-     * three bytes it was sent, in order -- but this chip's own receive
-     * pipeline holds the first of them from the start condition itself and
-     * only surfaces it on the *next* read (docs/datasheets/pcf8584-elsc.md:
-     * "the driver reads the data register once and throws the byte away"),
-     * so the read sequence here is one discard followed by two assertions,
-     * not three. Getting that count wrong here would be the exact
-     * off-by-one the datasheet warns a receiving model can introduce --
-     * applied to this test's own bookkeeping rather than to pcf8584.c.
+     * three bytes it was sent, in order. The discarded first read returns
+     * this chip's own data register as it stood before this start -- the
+     * 0xff address-and-direction byte just written below -- and it is that
+     * read, not the start condition, that fetches the first real byte
+     * (docs/datasheets/pcf8584-elsc.md: "the driver reads the data
+     * register once and throws the byte away"; hw/i2c/pcf8584.c attaches
+     * the fetch to the read, per the Philips product specification). So
+     * the sequence is one discard of stale chip state, then all three
+     * echoed bytes in order.
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xff);        /* addr 0x7f, read */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);          /* discarded: 0xaa */
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);          /* discarded: 0xff */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0xaa);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0xbb);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);      /* clear ACK: last byte */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0xcc);

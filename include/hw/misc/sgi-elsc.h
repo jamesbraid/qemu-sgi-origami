@@ -52,14 +52,8 @@ struct SGIElscState {
     uint8_t rxbuf[SGI_ELSC_MAX_FRAME + 1];
     uint32_t rxlen;
 
-    /*
-     * The response being read back, built once the request is complete.
-     * One byte longer than the frame it holds: byte 0 is not part of the
-     * framed packet, it is what the PCF8584's own receive pipeline consumes
-     * as its discarded first read (see elsc_frame_response() in
-     * hw/misc/sgi-elsc.c), so the real length byte is byte 1.
-     */
-    uint8_t txbuf[SGI_ELSC_MAX_FRAME + 1];
+    /* The response being read back, built once the request is complete. */
+    uint8_t txbuf[SGI_ELSC_MAX_FRAME];
     uint32_t txlen;
     uint32_t txpos;
 
