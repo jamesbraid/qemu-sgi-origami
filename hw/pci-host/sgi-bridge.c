@@ -1066,6 +1066,18 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
     uint8_t bytes[4] = { 0 };
     uint64_t val;
 
+    /*
+     * Both window regions declare an implementation maximum of four bytes, so
+     * the memory system splits anything wider before it arrives and this
+     * buffer is exactly the right size. The compiler cannot see that cap, and
+     * the size-dispatching load below expands to include its eight-byte case,
+     * so at any optimisation level above none the array-bounds check reports a
+     * read partly outside the buffer. Stating the bound here is what makes it
+     * visible. Widening the buffer would silence the same message by making a
+     * real overflow possible if those declarations ever changed.
+     */
+    assert(size <= sizeof(bytes));
+
     address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
 #if HOST_BIG_ENDIAN
     val = ldn_be_p(bytes, size);
@@ -1086,6 +1098,9 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
                     sgi_bridge_window_correct(addr, size) : addr;
     hwaddr target = s->device_window_base[slot] + offset;
     uint8_t bytes[4];
+
+    /* The same four-byte implementation cap the read path relies on. */
+    assert(size <= sizeof(bytes));
 
     if (sgi_bridge_leaf_value_was_swapped(space, target, size, true)) {
         val = bswap64(val) >> (64 - size * 8);
