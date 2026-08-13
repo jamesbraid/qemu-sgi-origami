@@ -92,3 +92,5 @@ sgi_bridge_onewire_match(uint64_t rom, bool selected) "match names rom identity 
 sgi_bridge_onewire_status(unsigned addr, bool first) "status memory page at 0x%03x first %d"
 sgi_bridge_onewire_plain(unsigned at, bool have) "unframed read from 0x%04x have %d"
 sgi_bridge_onewire_plain_done(unsigned at) "unframed read from 0x%04x reached the end"
+sgi_bridge_config_read(uint64_t addr, unsigned size) "type-0 config read at 0x%04" PRIx64 " size %u"
+sgi_bridge_config_write(uint64_t addr, unsigned size, uint64_t val) "type-0 config write at 0x%04" PRIx64 " size %u value 0x%" PRIx64
