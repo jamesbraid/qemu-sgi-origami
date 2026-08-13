@@ -47,6 +47,7 @@ struct mips_def_t {
     target_ulong CP0_LLAddr_rw_bitmask;
     int CP0_LLAddr_shift;
     int32_t CP0_TagLo_rw_bitmask;
+    int32_t CP0_ECC_rw_bitmask;
     int32_t SYNCI_Step;
     /*
      * @CCRes: rate at which the coprocessor 0 counter increments

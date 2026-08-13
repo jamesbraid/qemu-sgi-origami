@@ -1087,6 +1087,7 @@ typedef struct CPUArchState {
     uint64_t CP0_LLAddr_rw_bitmask;
     int CP0_LLAddr_shift;
     int32_t CP0_TagLo_rw_bitmask;
+    int32_t CP0_ECC_rw_bitmask;
 /*
  * CP0 Register 18
  */

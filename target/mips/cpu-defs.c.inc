@@ -617,6 +617,26 @@ const mips_def_t mips_defs[] =
          * those bits made that test fail against this model.
          */
         .CP0_TagLo_rw_bitmask = 0xFFFFFFFF,
+        /*
+         * Coprocessor 0 register 26 is this processor's ECC register, and it
+         * is ten bits wide: bit 9 is the parity bit for a secondary cache
+         * quadword, and bits 8:0 carry that quadword's nine ECC bits, with a
+         * primary data cache's four parity bits and a primary instruction
+         * cache's single parity bit occupying the low end of the same nine.
+         * Bits 31:10 are reserved, and the manual says they must be written
+         * as zeroes and return zeroes when read. The R10000 manual calls it a
+         * 10-bit read/write register in that section's opening sentence.
+         *
+         * Not the same answer as TagLo above, which is why the manual was
+         * read rather than the previous fix repeated. TagLo is promised to
+         * round-trip all thirty-two bits; this register is promised ten.
+         *
+         * Naming any writable bits here also selects plain register behaviour
+         * for register 26, because the field semantics QEMU otherwise applies
+         * to it belong to a different processor's register of the same number
+         * and would discard nine of these ten bits.
+         */
+        .CP0_ECC_rw_bitmask = 0x3FF,
         .SYNCI_Step = 32,
         .CCRes = 2,
         /*

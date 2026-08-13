@@ -1452,9 +1452,24 @@ void helper_mtc0_performance0(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_errctl(CPUMIPSState *env, target_ulong arg1)
 {
-    int32_t wst = arg1 & (1 << CP0EC_WST);
-    int32_t spr = arg1 & (1 << CP0EC_SPR);
-    int32_t itc = env->itc_tag ? (arg1 & (1 << CP0EC_ITC)) : 0;
+    int32_t wst, spr, itc;
+
+    /*
+     * Coprocessor 0 register 26 is not the same register on every processor.
+     * Where a model names writable bits it is a plain read/write register --
+     * the R10000's ECC register, which a cache operation loads from and stores
+     * to and which carries no control fields at all. The field semantics below
+     * belong to the other register that lives at this number, and applying them
+     * to this one silently discards nearly everything written.
+     */
+    if (env->CP0_ECC_rw_bitmask) {
+        env->CP0_ErrCtl = arg1 & env->CP0_ECC_rw_bitmask;
+        return;
+    }
+
+    wst = arg1 & (1 << CP0EC_WST);
+    spr = arg1 & (1 << CP0EC_SPR);
+    itc = env->itc_tag ? (arg1 & (1 << CP0EC_ITC)) : 0;
 
     env->CP0_ErrCtl = wst | spr | itc;
 

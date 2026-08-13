@@ -277,6 +277,14 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     env->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask ?
                                 env->cpu_model->CP0_TagLo_rw_bitmask :
                                 CP0_TAGLO_RW_BITMASK_GENERIC;
+    /*
+     * Coprocessor 0 register 26 is two different registers depending on the
+     * processor. Where a definition names writable bits, the register is a
+     * plain masked read/write one -- what the R10000 calls its ECC register.
+     * Where it says nothing, the register keeps the field semantics this
+     * code has always given it, so no existing model changes.
+     */
+    env->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
     env->SYNCI_Step = env->cpu_model->SYNCI_Step;
     env->CCRes = env->cpu_model->CCRes;
     env->CP0_Status_rw_bitmask = env->cpu_model->CP0_Status_rw_bitmask;
