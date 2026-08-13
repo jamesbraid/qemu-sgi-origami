@@ -1676,8 +1676,18 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     nic_extended_page(qts, 0, &framed[0]);
     nic_extended_page(qts, 32, &framed[32]);
 
+    /*
+     * Addressed by name, which is how the firmware does it and which is the
+     * case that distinguishes a part tracking the conversation from one
+     * dispatching on the byte. 0xf0 means SEARCH ROM before a part is
+     * addressed and READ MEMORY after, and 0x55 is MATCH ROM before and a
+     * status write after -- the same two bytes, opposite meanings, decided by
+     * where in the exchange they arrive. Reaching this read through a skip
+     * would exercise a path this firmware never takes and would leave the
+     * reused byte untested at the point it is actually ambiguous.
+     */
     g_assert_false(NIC_RESET(qts));
-    nic_write_byte(qts, 0xcc);
+    nic_match_identity(qts, 0x360605040302010bULL);
     nic_write_byte(qts, 0xf0);
     nic_write_byte(qts, 0x00);
     nic_write_byte(qts, 0x00);
