@@ -1272,19 +1272,45 @@ static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
 }
 
 /*
- * What the identity part holds. A guest takes the bytes at offsets eleven
- * through twenty-nine and thirty-two through thirty-seven, drops the spaces,
- * and reads the result as the board's part number — which selects the routine
- * that decides where this board's second interrupt lands.
+ * What the identity part holds. Two guests read these same sixty-four bytes
+ * and want different things from them, and the layout below is what satisfies
+ * both at once.
  *
- * The value is what a real Origin 200 reports, traced through the firmware
- * that reads it, rather than a number chosen to produce a wanted mapping. The
- * difference matters even though both would work: this one stays right if the
- * table it would otherwise have been reverse-engineered against changes.
+ * One takes the bytes at offsets eleven through twenty-nine and thirty-two
+ * through thirty-seven positionally, drops the spaces, and reads the result as
+ * the board's part number — which selects the routine that decides where this
+ * board's second interrupt lands. It compares only the leading part number, so
+ * anything after that prefix is free.
+ *
+ * The other scans the whole page as text for named fields written as a name, a
+ * colon, a value and a semicolon, and takes the part number from the field
+ * named for it. A page carrying a bare number satisfies the first guest and is
+ * invisible to the second, which is what this page held before: the name it
+ * searches for was absent, its lookup returned empty, and an empty answer is
+ * that classifier's default rather than its error.
+ *
+ * The two are reconciled by arithmetic rather than by compromise. The field
+ * name is five bytes, so placing it at offsets six through ten puts its value
+ * at offset eleven — exactly where the positional read begins. One string,
+ * both readers, neither degraded.
+ *
+ * The part number is what a real Origin 200 reports, traced through the
+ * firmware that reads it, rather than a number chosen to produce a wanted
+ * mapping. The difference matters even though both would work: this one stays
+ * right if the table it would otherwise have been reverse-engineered against
+ * changes.
+ *
+ * The six bytes before the field name are OUR CHOICE and not an observation.
+ * Nothing establishes what a real board puts there. They are spaces because a
+ * space is inert to both readers — dropped by the positional one, and neither
+ * a field name nor a terminator to the scanning one — and because a zero byte
+ * would end the text early for any reader that treats the page as a string.
  */
 static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
+    [0]  = ' ', ' ', ' ', ' ', ' ', ' ',
+    [6]  = 'P', 'a', 'r', 't', ':',
     [11] = '0', '3', '0', '-', '1', '2', '4', '4', '-', '0', '0', '1',
-    [23] = ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    [23] = ';', ' ', ' ', ' ', ' ', ' ', ' ',
     [32] = ' ', ' ', ' ', ' ', ' ', ' ',
 };
 
