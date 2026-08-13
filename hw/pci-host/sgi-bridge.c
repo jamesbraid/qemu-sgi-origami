@@ -344,9 +344,14 @@
  * functions 256 bytes apart, which is how both guests compute the address:
  * Linux indexes a device array and then a function array, and OpenBSD adds the
  * device shifted left twelve to the function shifted left eight.
+ *
+ * The base and the per-device stride are the chip's public geometry and live
+ * in its header, because the machine names a device's configuration window
+ * too — the console descriptor hands firmware one. Only the decode of an
+ * incoming address is private to this file.
  */
-#define BRIDGE_CFG0_BASE        0x020000
-#define BRIDGE_CFG0_SIZE        (32 * KiB)
+#define BRIDGE_CFG0_SIZE        (SGI_BRIDGE_DEVICES * \
+                                 SGI_BRIDGE_CFG0_DEVICE_SIZE)
 #define BRIDGE_CFG0_DEVICE(a)   (((a) >> 12) & 7)
 #define BRIDGE_CFG0_FUNCTION(a) (((a) >> 8) & 7)
 #define BRIDGE_CFG0_REGISTER    0xff
@@ -2378,7 +2383,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      */
     memory_region_init_io(&s->cfg0, obj, &sgi_bridge_config_ops, s,
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
-    memory_region_add_subregion(&s->widget, BRIDGE_CFG0_BASE, &s->cfg0);
+    memory_region_add_subregion(&s->widget, SGI_BRIDGE_CFG0_BASE, &s->cfg0);
 
     /*
      * The translation every device on this bus transfers through, and the

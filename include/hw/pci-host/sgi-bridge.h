@@ -47,6 +47,24 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
 #define SGI_BRIDGE_REG_SLOTS    (SGI_BRIDGE_REGS_DEFINED / SGI_BRIDGE_REG_SLOT)
 
 /*
+ * Type 0 PCI configuration space: one 4 KB window per device, at a fixed
+ * offset inside the widget.
+ *
+ * Public rather than private to the chip because the machine has to name a
+ * device's configuration address as well — the console descriptor hands
+ * firmware one of these windows — and a second copy of this arithmetic in the
+ * machine is a copy that can drift from the decode that answers it.
+ *
+ * Mainline Linux carries the same geometry in the same shape, in
+ * arch/mips/include/asm/pci/bridge.h: a base of 0x20000, a per-device stride
+ * of 0x1000, and a macro composing the two.
+ */
+#define SGI_BRIDGE_CFG0_BASE        0x020000
+#define SGI_BRIDGE_CFG0_DEVICE_SIZE 0x001000
+#define SGI_BRIDGE_CFG0_DEVICE(n)   (SGI_BRIDGE_CFG0_BASE + \
+                                     (n) * SGI_BRIDGE_CFG0_DEVICE_SIZE)
+
+/*
  * The eight PCI device slots, which are also the eight interrupt pins. A slot's
  * INTA is wired to the pin of the same number, which is the rule OpenBSD relies
  * on and which two SCSI controllers on a real Origin 200 confirm: the device at
