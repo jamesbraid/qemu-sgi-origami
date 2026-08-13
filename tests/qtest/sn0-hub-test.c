@@ -430,6 +430,99 @@ static void test_processor_number(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The node's one-wire bus master: what it holds at reset, that a wide value
+ * survives it, and that a write does not report the slot finished.
+ *
+ * There is no bus behind this register yet, and that bounds what these
+ * assertions can be worth. The datasheet's checklist also asks that the
+ * received-data bit reflect what an attached responder drove, and differ
+ * between a responder driving one and zero -- NOT ASSERTED HERE, because
+ * nothing is attached to differ. A test that checked only completion would
+ * pass a model with no bus at all, which is exactly what this is, so saying
+ * which half is covered matters more than usual.
+ */
+#define MD_ONEWIRE          0x2000a8
+#define MD_ONEWIRE_RXDATA   (1ULL << 0)
+#define MD_ONEWIRE_DONE     (1ULL << 1)
+#define MD_ONEWIRE_PHASE_LO (0x7fULL << 20)
+#define MD_ONEWIRE_PHASE_HI (0x7fULL << 27)
+
+/*
+ * Both phases at 0x31. The one-wire datasheet is the authority on this
+ * register and does not carry the constant while asking that a test assert
+ * the actual value; this is the value the memory/directory page records, and
+ * the gap is reported rather than hidden behind a weaker assertion.
+ */
+#define MD_ONEWIRE_RESET    ((0x31ULL << 20) | (0x31ULL << 27))
+
+static void test_the_one_wire_master_resets_to_its_timing(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* The whole word, not merely non-zero, and not merely the phase fields. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE), ==,
+                    MD_ONEWIRE_RESET);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The upper timing phase reaches bit 33, so a written value genuinely sets
+ * bit 32. A model that keeps this register in a 32-bit word passes every
+ * other assertion here while rewriting that field from 44 to 12 -- a timing
+ * parameter wrong by nearly four, with everything below it intact and
+ * plausible. This is the assertion that catches it, and it is the reason the
+ * width is a build requirement rather than a note.
+ */
+static void test_the_one_wire_master_keeps_its_wide_field(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t wide = (44ULL << 27) | (0x2cULL << 20) | (0x321ULL << 10) |
+                    (0x04ULL << 2);
+
+    /*
+     * 44 in the upper phase is the datasheet's own worked example, and it is
+     * chosen because it sets bit 32: truncated to a word it reads back as 12.
+     */
+    g_assert_cmphex(wide & (1ULL << 32), ==, 1ULL << 32);
+    qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE, wide);
+
+    g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
+                      MD_ONEWIRE_PHASE_HI) >> 27, ==, 44);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
+                    MD_ONEWIRE_PHASE_LO, ==, 0x2cULL << 20);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Starting a slot must not report it finished. Asserted as the *not yet*
+ * case on purpose: a model that sets completion immediately satisfies any
+ * test that only checks completion eventually, and reporting completion
+ * without a bus is how firmware is handed a fabricated identity part -- every
+ * bit answered by whatever constant we chose. The stall this leaves is loud;
+ * that fabrication would be silent.
+ */
+static void test_starting_a_slot_does_not_report_it_finished(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t after;
+
+    qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
+                 MD_ONEWIRE_RESET | (0x321ULL << 10));
+
+    after = qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE);
+    g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, 0);
+    g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, 0);
+
+    /* And it stays clear -- a poll gets the same answer, which is the stall. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
+                    MD_ONEWIRE_DONE, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_reset_values(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1432,6 +1525,12 @@ int main(int argc, char **argv)
                         test_interrupt_number_selects_the_bank);
     qtest_add_data_func("sn0/hub/masked-pending-raises-nothing", NULL,
                         test_a_masked_pending_bit_raises_nothing);
+    qtest_add_data_func("sn0/hub/one-wire-resets-to-its-timing", NULL,
+                        test_the_one_wire_master_resets_to_its_timing);
+    qtest_add_data_func("sn0/hub/one-wire-keeps-its-wide-field", NULL,
+                        test_the_one_wire_master_keeps_its_wide_field);
+    qtest_add_data_func("sn0/hub/one-wire-start-is-not-finish", NULL,
+                        test_starting_a_slot_does_not_report_it_finished);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
 
