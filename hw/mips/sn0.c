@@ -1725,14 +1725,29 @@ static void sn0_init(MachineState *machine)
                              &error_fatal);
     /*
      * The junk-bus UART, off unless the operator asked for it by name. It
-     * takes the second character device, not the first: the first belongs to
-     * the base I/O controller's port A and to the synthesized firmware's own
-     * console, and two frontends cannot share one backend.
+     * takes the *third* character device. The first belongs to the base I/O
+     * controller's port A and to the synthesized firmware's own console; the
+     * second belongs to the system controller, which every Origin 200 has and
+     * which this machine therefore always fits.
+     *
+     * **It moved here from the second, and the reason is worth keeping.** This
+     * port was given the second device when nothing else used it, and the
+     * system controller then landed and took the same one. Two frontends
+     * cannot share a backend, so enabling this port *and* supplying a second
+     * -serial aborted the machine before it started. Only that combination
+     * fails: with no second -serial both claims resolve to nothing and the
+     * collision never forms, which is why every qtest passes — they supply no
+     * character devices at all.
+     *
+     * **The part that moved is the one that is off by default**, so the
+     * machine anyone gets without asking keeps its device indices where they
+     * were. An option should not renumber the parts a real machine has.
      */
     qdev_prop_set_bit(DEVICE(&s->hub), "junk-uart", s->junk_uart_present);
-    if (s->junk_uart_present && serial_hd(1)) {
+    if (s->junk_uart_present && serial_hd(SN0_JUNK_UART_CHARDEV)) {
         object_property_set_link(OBJECT(&s->hub), "junk-uart-chardev",
-                                 OBJECT(serial_hd(1)), &error_fatal);
+                                 OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
+                                 &error_fatal);
     }
     sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
 
@@ -1883,7 +1898,8 @@ static void sn0_init(MachineState *machine)
                                 &s->widget0);
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
-    qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_hd(0));
+    qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
+                      serial_hd(SN0_IOC3_CHARDEV));
     /*
      * The controller's ethernet block is the machine's only network device,
      * so it claims whichever -netdev/-nic the command line names for it (or
@@ -2054,7 +2070,7 @@ static void sn0_init(MachineState *machine)
         uint64_t private_vector[SN0_ARCS_PRIVATE_ENTRIES];
         hwaddr trap_vaddr = (hwaddr)(int32_t)(0xa0000000 + SN0_ARCS_TRAP_LOCAL);
 
-        s->console = serial_hd(0);
+        s->console = serial_hd(SN0_IOC3_CHARDEV);
 
         memory_region_init_io(&s->arcs_trap, NULL, &sn0_arcs_ops, s,
                               "sn0.arcs.trap", SN0_ARCS_TRAP_SIZE);
