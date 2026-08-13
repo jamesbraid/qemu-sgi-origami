@@ -1911,6 +1911,12 @@ static void sn0_init(MachineState *machine)
      * takes that other path, so both have to work and both have to reach the
      * same device: this alias and big window 6 are two views of one widget,
      * and that widget is itself a second view of the I/O bridge.
+     *
+     * Each window is the only one its guest uses, which is what makes forgetting
+     * one cheap to do and expensive to find: **a machine that maps one and
+     * forgets the other passes every check written against the guest that uses
+     * the one it mapped.** This project shipped exactly that once, with the
+     * small window unmapped, and Linux found it with a bus error.
      */
     memory_region_init_alias(&s->small_window[SN0_WIDGET0], NULL,
                              "sn0.node0.xtalk.small0", &s->xtalk,
