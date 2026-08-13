@@ -197,6 +197,25 @@
  * between two reads with no write between them; nothing on our boot path is
  * known to do that.
  */
+/*
+ * The memory configuration register: eight per-bank descriptors, a
+ * reply-guarantee count, the directory-format and error-correction-ignore
+ * bits, an arbitration bit, an I/O-protection enable, a memory-module select
+ * and two timing-field pairs (docs/datasheets/hub-memory-directory.md has
+ * the full field-by-field account, dual-sourced against SGI's own composite
+ * reset-defaults constant). Modelled as plain masked storage -- nothing on
+ * our boot path is known to depend on a write here changing what memory
+ * this model presents, so there is no derived behaviour to add, only the
+ * value a guest reads back. The reset value is the one fact that matters:
+ * it is not zero, and a model that zeroed it would misreport eight empty
+ * banks, an enabled error-correction bit the hardware leaves ignored, a
+ * cleared directory-format bit that resets set, and a reply-guarantee count
+ * dropped from full to zero, all at once.
+ */
+#define HUB_MD_CONFIG           0x200018
+#define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
+#define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
+
 #define HUB_MD_PERF_CNT0        0x210010
 #define MD_PERF_CNT_MASK        0x00000000000fffffULL  /* 20-bit counter */
 
@@ -269,6 +288,7 @@
  * I/O interface: the link to the crossbar, and what this Hub says about it.
  */
 #define HUB_IO_LINK_STATUS      0x400128
+#define HUB_IO_ERROR_CLEAR      0x4001f8
 
 /*
  * The link state is two bits with a counter-intuitive encoding: zero means the
@@ -723,6 +743,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->ni_status;
     case HUB_MD_SLOT_ID_USTAT:
         return MD_SLOT_FLASH_READY;
+    case HUB_MD_CONFIG:
+        return s->md_config;
     case HUB_MD_PERF_CNT0:
         return s->md_perf_cnt0;
     case HUB_MD_I2C_CTRL:
@@ -1052,6 +1074,9 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_IO_SCRATCH_1:
         s->io_scratch[1] = val & IO_SCRATCH_MASK;
         break;
+    case HUB_MD_CONFIG:
+        s->md_config = val & MD_CONFIG_MASK;
+        break;
     case HUB_MD_PERF_CNT0:
         /*
          * A real self-test resets the counter before a measurement pass;
@@ -1085,6 +1110,22 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_IO_LINK_STATUS:
         s->io_link_status = (s->io_link_status & ~IO_LINK_WRITABLE) |
                             (val & IO_LINK_WRITABLE);
+        break;
+    case HUB_IO_ERROR_CLEAR:
+        /*
+         * Documented effect: writing a bit clears the corresponding error
+         * latch, including the widget status register's unrecoverable-state
+         * bit. This model has no error latches to clear -- the widget status
+         * read above always answers zero because nothing here ever raises an
+         * error in the first place -- so there is nothing this write could
+         * change. Real firmware writes here as part of its normal error-
+         * handling path (measured this session, three writes per boot), not
+         * as a guest asking for something we should be doing and are not.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the error clear "
+                      "register 0x%" HWADDR_PRIx " (nothing here ever "
+                      "latches an error to clear)\n", val, addr);
         break;
     case HUB_NI_STATUS:
         /*
@@ -1236,6 +1277,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->io_scratch[0] = 0;
     s->io_scratch[1] = 0;
     s->md_perf_cnt0 = 0;
+    s->md_config = MD_CONFIG_RESET;
 
     /*
      * Every entry resets to zero, which names widget 0 at its first slice in
@@ -1332,7 +1374,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1359,6 +1401,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT32_ARRAY_V(io_bwin, SGIHubState, SGI_HUB_BWIN_ENTRIES, 2),
         VMSTATE_UINT64_ARRAY_V(io_scratch, SGIHubState, 2, 8),
         VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
+        VMSTATE_UINT64_V(md_config, SGIHubState, 9),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -140,6 +140,9 @@ struct SGIHubState {
 
     /* Memory/directory performance counter 0. */
     uint64_t md_perf_cnt0;
+
+    /* Memory/directory configuration register. Reset value is not zero. */
+    uint64_t md_config;
 };
 
 #endif /* HW_MISC_SGI_HUB_H */
