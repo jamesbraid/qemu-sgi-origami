@@ -579,24 +579,29 @@ static void test_writes_the_guest_makes(const void *data)
 static void test_md_indicator_registers(const void *data)
 {
     /*
-     * DO NOT DROP debug-leds=off, AND THE REASON IS NOT NOISE. The codes are
-     * shown by default now, and the value written below is a real firmware
-     * failure code -- deliberately, because a register test should use a
-     * value the hardware really sees. Left on, this test prints that code
-     * into the suite log on every run, from a register write that has
-     * nothing to do with any firmware.
+     * THE VALUES BELOW ARE DELIBERATELY MEANINGLESS, AND THAT IS THE POINT.
+     * sgi_hub_led_decode() decodes 0x00-0x60 as progress and 0x81-0xb5 as
+     * failures, so 0xff and 0xfe decode to nothing and cannot be mistaken
+     * for a code any firmware ever emitted.
      *
-     * That matters because the code is load-bearing elsewhere: whether it
-     * still fires is a live question for the firmware-parity work, and it is
-     * answered by searching logs. A suite log that emits it unprompted turns
-     * every such search into a false positive, and a bare code in a log
-     * carries no hint of where it came from -- which is precisely what a
-     * search returns.
+     * This test used to write 0xb4, which names a real failure -- whether
+     * that failure still fires is a live question elsewhere, and it is a
+     * question answered by searching logs. Once the codes were shown by
+     * default, every run of the suite printed it, so a search for it found a
+     * register test rather than a firmware. An artifact containing the
+     * string it exists to test for corrupts every search over itself, and a
+     * bare code in a log carries no hint of where it came from -- which is
+     * exactly what a search returns.
      *
-     * This test is about what the register does, not about what the machine
-     * displays, so turning the display off scopes it correctly rather than
-     * working around anything. The two tests below own the display, and both
-     * send their output to a private file for the same reason.
+     * A value with no meaning cannot collide however visible the output
+     * later becomes, which is why the value changed rather than the
+     * visibility. The register is write-only and stores nothing, so what is
+     * written is irrelevant to what this test checks; the test below that
+     * does need a real code asserts on it in a private file.
+     *
+     * debug-leds=off stays as well, for the narrower reason that this test
+     * covers what the register does rather than what the machine displays,
+     * and the suite log is better with no indicator lines in it at all.
      */
     QTestState *qts = qtest_init("-M origin200,debug-leds=off");
 
@@ -608,10 +613,10 @@ static void test_md_indicator_registers(const void *data)
      * opposite — the write is accepted, and a read still returns the
      * unimplemented default rather than echoing what was written.
      */
-    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_0, 0xb4);
+    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_0, 0xff);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_INDICATOR_0), ==, 0);
 
-    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_1, 0x1);
+    qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_1, 0xfe);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_INDICATOR_1), ==, 0);
 
     qtest_quit(qts);
