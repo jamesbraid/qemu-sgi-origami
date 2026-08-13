@@ -1350,6 +1350,29 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
  * send its check bytes inverted — sending them plain lands on a different
  * residue and a guest rejects the page.
  */
+/*
+ * Assemble the part number the way the positional reader does: two fixed
+ * ranges, spaces dropped, terminated. Written out rather than hand-computed so
+ * that a change to the page is checked against the derivation a guest performs
+ * and not against a string somebody expected it to produce.
+ */
+static void partnum_from_page(const uint8_t *page, char *out)
+{
+    unsigned int i, j = 0;
+
+    for (i = 0; i < 19; i++) {
+        if (page[i + 11] != ' ') {
+            out[j++] = page[i + 11];
+        }
+    }
+    for (i = 0; i < 6; i++) {
+        if (page[i + 32] != ' ') {
+            out[j++] = page[i + 32];
+        }
+    }
+    out[j] = 0;
+}
+
 static void test_a_page_reads_back_with_its_checks(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1391,8 +1414,23 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
      */
     g_assert_cmphex(nic_crc(0, page, sizeof(page) - 2), ==, NIC_CRC_RESIDUE);
 
-    /* And the bytes are the board's part number, where a guest looks for it. */
-    g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
+    /*
+     * The page has two readers and each is asserted separately, because a
+     * layout can satisfy one and be invisible to the other — which is the
+     * state this page was in.
+     *
+     * The positional reader spans both pages, so its derivation is reproduced
+     * in the test that reads the whole memory rather than here, where only the
+     * first page is in hand.
+     */
+    /*
+     * The scanning reader, which finds the part number only through a field
+     * name. Asserted at its offset because that offset is the whole point:
+     * the name is five bytes and has to end where the positional read begins,
+     * or one of the two readers loses.
+     */
+    g_assert_cmpmem(&page[6], 5, "Part:", 5);
+    g_assert_cmpint(page[11 + 12], ==, ';');
 
     qtest_quit(qts);
 }
@@ -1671,6 +1709,7 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
     uint8_t framed[64];
     uint8_t plain[64];
+    char partnum[26];
     unsigned int i;
 
     nic_extended_page(qts, 0, &framed[0]);
@@ -1697,7 +1736,36 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
 
     g_assert_cmpmem(plain, sizeof(plain), framed, sizeof(framed));
 
-    /* And what both of them return is a part number with a valid check. */
+    /*
+     * And what both of them return satisfies both of the page's readers.
+     *
+     * The positional reader is reproduced rather than described: its two fixed
+     * ranges, its dropped spaces, and the prefix it compares. Running the
+     * derivation is what makes this a test of the value a guest arrives at
+     * rather than of bytes sitting where somebody expected them, and the two
+     * ranges span both pages, which is why it is asserted here.
+     *
+     * SAID PLAINLY BECAUSE IT WAS TRIED: this assertion has never been watched
+     * failing. Every corruption that would trip it — a displaced part number,
+     * a wrong byte within it, a field string moved to the start of the page —
+     * trips one of the byte comparisons above or in the page-read test first,
+     * and the suite stops there. So it is not the tripwire for this layout and
+     * should not be read as one. It earns its place by expressing the guest's
+     * own computation, which stays correct if the layout is ever rearranged,
+     * where a byte-offset comparison would quietly need rewriting to match.
+     */
+    partnum_from_page(plain, partnum);
+    g_assert_true(g_str_has_prefix(partnum, "030-1244-"));
+
+    /*
+     * The scanning reader finds the part number only through a field name, and
+     * the name has to end exactly where the positional read begins or one of
+     * the two readers loses. That is the arithmetic this page is built on, so
+     * it is asserted at its offset rather than searched for.
+     */
+    g_assert_cmpmem(&plain[6], 5, "Part:", 5);
+    g_assert_cmpint(plain[23], ==, ';');
+
     g_assert_cmpmem(&plain[11], 12, "030-1244-001", 12);
     g_assert_cmphex(nic_crc(0, &plain[0], 32), ==, NIC_CRC_RESIDUE);
     g_assert_cmphex(nic_crc(0, &plain[32], 32), ==, NIC_CRC_RESIDUE);
