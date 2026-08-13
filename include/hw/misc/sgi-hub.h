@@ -166,6 +166,15 @@ struct SGIHubState {
     uint64_t md_onewire;
 
     /*
+     * The bit slot a write to the one-wire master starts. A slot takes time on
+     * a real bus, and completion must not be reported from inside the write:
+     * a model that finishes instantly satisfies any test that only checks
+     * completion eventually, which is precisely the check the datasheet warns
+     * is too weak.
+     */
+    QEMUTimer *md_onewire_timer;
+
+    /*
      * The junk-bus UART: a real NS16550-compatible serial interface in this
      * unit's own register space that a shipped Origin 200 does not have —
      * SGI fits one only for manufacturing and bring-up. origami can fit one

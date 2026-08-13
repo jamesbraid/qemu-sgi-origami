@@ -516,9 +516,53 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
     g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, 0);
     g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, 0);
 
-    /* And it stays clear -- a poll gets the same answer, which is the stall. */
+    /*
+     * And it stays clear while the slot is still running. This is *not yet*
+     * rather than *never*: the virtual clock does not advance on its own in a
+     * qtest, so nothing here moves the slot along, which is exactly what makes
+     * this the before case.
+     */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
                     MD_ONEWIRE_DONE, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * An empty bus is a defined state with a defined signature, not an absence of
+ * behaviour. The line is open-drain with a pull-up: idle is high, a part
+ * signals by pulling it low, so with nothing attached the master drives its
+ * pulse, releases, samples a line nothing is holding down, and reads one --
+ * and completion signals normally, because the master's own timing ran.
+ *
+ * **This asserts a deliberate stand-in, not the hardware.** A real Origin 200
+ * almost certainly has a part on this line; which part is unestablished, and
+ * modelling none is the only statement available that is not a fabrication.
+ * When a responder lands, the received bit becomes whatever it drove and this
+ * test changes with it -- so it is written to fail loudly at that point rather
+ * than to keep passing against a bus that has gained a part.
+ */
+static void test_an_empty_bus_completes_and_reads_one(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t after;
+
+    qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
+                 MD_ONEWIRE_RESET | (0x321ULL << 10));
+
+    /*
+     * Run the slot out. The duration is this model's choice, not a hardware
+     * figure -- the datasheet states the timing encodings have no established
+     * meaning in real time -- so step generously rather than to an exact edge.
+     */
+    qtest_clock_step(qts, 1000 * 1000);
+
+    after = qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE);
+    g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, MD_ONEWIRE_DONE);
+    g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, MD_ONEWIRE_RXDATA);
+
+    /* The programmed timing is untouched by running a slot. */
+    g_assert_cmphex(after & MD_ONEWIRE_PHASE_HI, ==, 0x31ULL << 27);
 
     qtest_quit(qts);
 }
@@ -1634,6 +1678,8 @@ int main(int argc, char **argv)
                         test_the_one_wire_master_keeps_its_wide_field);
     qtest_add_data_func("sn0/hub/one-wire-start-is-not-finish", NULL,
                         test_starting_a_slot_does_not_report_it_finished);
+    qtest_add_data_func("sn0/hub/one-wire-empty-bus-reads-one", NULL,
+                        test_an_empty_bus_completes_and_reads_one);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
 

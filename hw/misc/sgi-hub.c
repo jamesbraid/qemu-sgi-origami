@@ -270,6 +270,18 @@
  * wrong constant here is a wrong value in a register no booting guest reads,
  * and it does not affect the poll either way.
  */
+/*
+ * How long a bit slot takes before completion is reported. **Chosen, not
+ * derived.** The one-wire datasheet states plainly that what the timing values
+ * mean in real time, as opposed to as encodings, is not established — so
+ * computing a duration from the programmed pulse width and sample point would
+ * manufacture a number that looks derived and is not. What the contract
+ * actually requires is only that a slot does not complete inside the write, so
+ * this is a nominal delay long enough to be a real interval and short enough
+ * that a polling firmware is not slowed by it.
+ */
+#define MD_ONEWIRE_SLOT_NS      1000
+
 #define MD_ONEWIRE_PHASE_INIT   0x31ULL
 #define MD_ONEWIRE_RESET        ((MD_ONEWIRE_PHASE_INIT << 20) | \
                                  (MD_ONEWIRE_PHASE_INIT << 27))
@@ -808,6 +820,32 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
  * re-arming at the match point risks a zero-length interval that would fire
  * forever. The guests that use the comparator rewrite it from every handler.
  */
+/*
+ * A bit slot finished.
+ *
+ * **Nothing is attached to this bus, and that is a state the protocol defines
+ * rather than an absence of behaviour.** The line is open-drain with a pull-up:
+ * idle is high, and a part signals by pulling it low. So the master drives its
+ * pulse, releases, samples a line nothing is holding down, and reads one —
+ * every slot, and completion signals normally, because the master's own timing
+ * ran whether or not anybody answered.
+ *
+ * **This is a deliberate stand-in and must not be read as a model of the
+ * hardware.** SGI's own firmware manual says every board type carries an
+ * identity part, including the node card, so a real Origin 200 almost
+ * certainly has one on this line. What is not established is *which* part —
+ * and modelling no part is the only statement available that is not a
+ * fabrication. Attaching an invented responder, or one borrowed from another
+ * board, would turn a visible absence into a plausible identity that nothing
+ * downstream could tell was invented.
+ */
+static void sgi_hub_onewire_slot_done(void *opaque)
+{
+    SGIHubState *s = opaque;
+
+    s->md_onewire |= MD_ONEWIRE_DONE | MD_ONEWIRE_RXDATA;
+}
+
 static void sgi_hub_rt_expire(void *opaque)
 {
     SGIHubCounterLine *line = opaque;
@@ -1274,13 +1312,17 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_MD_ONEWIRE:
         /*
-         * A write programs the timing and starts a bit slot. Nothing drives
-         * the wire, so the slot never finishes: the completion bit goes clear
-         * and stays clear, and firmware polling for it waits forever. That is
-         * the intended behaviour until this bus has a master and a part, and
-         * it is deliberately louder than the alternative.
+         * A write programs the timing and starts a bit slot.
+         *
+         * The two status bits are the device's to report, so the write cannot
+         * set them: starting a transaction clears completion, and it reads
+         * clear until the slot finishes. That is the property the contract
+         * rests on, and it holds whichever of the disputed reset values is
+         * right.
          */
         s->md_onewire = val & MD_ONEWIRE_WRITABLE;
+        timer_mod(s->md_onewire_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MD_ONEWIRE_SLOT_NS);
         break;
     case HUB_MD_PERF_CNT0:
         /*
@@ -1608,6 +1650,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);
     }
+    s->md_onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                       sgi_hub_onewire_slot_done, s);
+
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->rt_irq[n]);
         s->rt_line[n].hub = s;
@@ -1637,7 +1682,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 11,
+    .version_id = 12,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1666,6 +1711,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
         VMSTATE_UINT64_V(md_config, SGIHubState, 9),
         VMSTATE_UINT64_V(md_onewire, SGIHubState, 11),
+        VMSTATE_TIMER_PTR_V(md_onewire_timer, SGIHubState, 12),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         VMSTATE_END_OF_LIST()
     }
