@@ -15,6 +15,7 @@
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "hw/core/sysbus.h"
+#include "hw/i2c/pcf8584.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
@@ -58,6 +59,17 @@ struct SGIHubState {
     SysBusDevice parent_obj;
 
     MemoryRegion regs;
+
+    /*
+     * The real PCF8584 I2C-bus controller, mapped over this window's I2C
+     * data/control-status addresses at a higher priority than sgi_hub_ops
+     * answers directly -- see sgi_hub_realize() and
+     * docs/datasheets/pcf8584-elsc.md. Embedded rather than reached through
+     * the machine, because the bus it masters (the ELSC, the identity
+     * EEPROM) belongs to this node and nothing outside the Hub needs to
+     * name it.
+     */
+    PCF8584State i2c;
 
     /* The seven big windows, as one region for the machine to place. */
     MemoryRegion bwin;

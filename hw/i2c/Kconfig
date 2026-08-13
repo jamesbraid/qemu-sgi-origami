@@ -6,6 +6,10 @@ config I2C_DEVICES
     # to any board's i2c bus
     bool
 
+config PCF8584
+    bool
+    select I2C
+
 config SMBUS
     bool
     select I2C

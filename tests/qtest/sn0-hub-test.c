@@ -91,8 +91,6 @@
 #define IO_LINK_STATUS      0x400128
 #define MD_INDICATOR_0      0x220050
 #define MD_INDICATOR_1      0x220058
-#define MD_I2C_DATA         0x220000
-#define MD_I2C_CTRL         0x220008
 #define MD_PERF_CNT0        0x210010
 #define MD_PERF_CNT_MASK    0x00000000000fffffULL
 #define MD_CONFIG           0x200018
@@ -103,7 +101,6 @@
 #define MD_ERROR_LAST_OFF   (MD_ERROR_BASE + 7 * MD_ERROR_STRIDE) /* MD_MISC_ERROR_CLR */
 #define MD_MEM_DIMM_INIT    0x200090
 #define MD_DIR_DIMM_INIT    0x200098
-#define I2C_STATUS_IDLE     0x81  /* pending-interrupt-not | bus-not-busy */
 #define NI_STATUS           0x600000
 
 /*
@@ -503,38 +500,6 @@ static void test_md_indicator_registers(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + MD_INDICATOR_1, 0x1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_INDICATOR_1), ==, 0);
-
-    qtest_quit(qts);
-}
-
-static void test_i2c_block_answers_idle(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-
-    /*
-     * The controller chip is real hardware on every Origin 200; what is
-     * absent is everything else on the shared bus this model does not
-     * simulate. So the status half reads chip-ready-and-bus-free rather
-     * than the generic unimplemented default (which a driver's own wait
-     * loop would otherwise never see clear), and it does not change no
-     * matter what a guest writes to the same register — this is a fixed
-     * idle answer, not stored state.
-     */
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_CTRL), ==,
-                    I2C_STATUS_IDLE);
-    qtest_writeq(qts, HUB_LOCAL + MD_I2C_CTRL, 0x44);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_CTRL), ==,
-                    I2C_STATUS_IDLE);
-
-    /*
-     * The data register never changes on its own, which is what the real
-     * driver's bus-presence probe actually reads it for: consecutive reads
-     * differing is how it tells a live device from an empty bus.
-     */
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_DATA), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_DATA), ==, 0);
-    qtest_writeq(qts, HUB_LOCAL + MD_I2C_DATA, 0xe0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_I2C_DATA), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1367,8 +1332,6 @@ int main(int argc, char **argv)
                         test_writes_the_guest_makes);
     qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
                         test_md_indicator_registers);
-    qtest_add_data_func("sn0/hub/i2c-block-answers-idle", NULL,
-                        test_i2c_block_answers_idle);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
                         test_junk_uart_absent_by_default);
     qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
