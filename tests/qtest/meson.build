@@ -193,7 +193,8 @@ qtests_mips64 = \
                                                    'sn0-hub-test',
                                                    'sn0-widget0-test',
                                                    'sn0-model-test',
-                                                   'sn0-migration-test'] : [])
+                                                   'sn0-migration-test',
+                                                   'sn0-snapshot-test'] : [])
 
 qtests_mips64el = qtests_mips
 
