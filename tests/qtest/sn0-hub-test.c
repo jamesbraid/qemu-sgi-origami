@@ -95,6 +95,11 @@
 #define MD_CONFIG           0x200018
 #define MD_CONFIG_MASK      0x003fffffffffffffULL
 #define MD_CONFIG_RESET     0x001e7fbc3fffffffULL
+#define MD_ERROR_BASE       0x200050
+#define MD_ERROR_STRIDE     8
+#define MD_ERROR_LAST_OFF   (MD_ERROR_BASE + 7 * MD_ERROR_STRIDE) /* MD_MISC_ERROR_CLR */
+#define MD_MEM_DIMM_INIT    0x200090
+#define MD_DIR_DIMM_INIT    0x200098
 #define I2C_STATUS_IDLE     0x81  /* pending-interrupt-not | bus-not-busy */
 #define NI_STATUS           0x600000
 
@@ -1140,6 +1145,48 @@ static void test_md_config(const void *data)
     qtest_quit(qts);
 }
 
+static void test_md_error_cluster(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t addr;
+
+    /*
+     * The four error registers and their four clear aliases, evenly strided
+     * eight bytes apart. mtest_basic reads all four aliases before running a
+     * memory or directory test and aborts if any valid bit is set, so these
+     * eight must read zero unconditionally -- this model never raises any
+     * of the errors they would report, so zero is also the honest answer,
+     * not merely the one the test needs. Writes are refused (there is
+     * nothing to keep) without changing the read.
+     */
+    for (addr = MD_ERROR_BASE; addr <= MD_ERROR_LAST_OFF;
+         addr += MD_ERROR_STRIDE) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
+        qtest_writeq(qts, HUB_LOCAL + addr, ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_md_dimm_init(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Write-only in both dual sources, no readable bits declared at all, so
+     * there is no state a qtest can read back to confirm. What this asserts
+     * is that both addresses are handled (accepted, not routed to some
+     * other case or left to the generic unimplemented path by mistake) and
+     * that writing the exact pattern real firmware's per-DIMM sweep uses
+     * does not abort the machine.
+     */
+    qtest_writeq(qts, HUB_LOCAL + MD_MEM_DIMM_INIT, 0xf00000029ULL);
+    qtest_writeq(qts, HUB_LOCAL + MD_DIR_DIMM_INIT, 0xf00000029ULL);
+
+    qtest_quit(qts);
+}
+
 static void test_io_icrb_c_family(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1221,6 +1268,8 @@ int main(int argc, char **argv)
                         test_io_scratch_registers);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
+    qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);
+    qtest_add_data_func("sn0/hub/md-dimm-init", NULL, test_md_dimm_init);
     qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
                         test_io_icrb_c_family);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,

@@ -216,6 +216,37 @@
 #define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
 #define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
 
+/*
+ * The four error registers -- directory, protocol, memory, miscellaneous --
+ * and their four read-only clear aliases, eight bytes above each, evenly
+ * strided across 0x200050 through 0x200088. None declares a reset value in
+ * SGI's own table, which this datasheet's own convention reads as a
+ * read-only status register sampling external signals -- here, an error
+ * this model never raises. Real firmware's mtest_basic reads every alias
+ * before running a memory or directory test and aborts with "Unable to
+ * clear memory errors" if any valid bit is set, so answering zero
+ * unconditionally is not a placeholder, it is what the one guest that reads
+ * these needs. Writes (the aliases' own documented use is a read that is
+ * inferred, not proven, to clear) are accepted and logged as unimplemented.
+ */
+#define HUB_MD_ERROR_BASE       0x200050
+#define HUB_MD_ERROR_STRIDE     8
+#define HUB_MD_ERROR_LAST_OFF   (HUB_MD_ERROR_BASE + 7 * HUB_MD_ERROR_STRIDE) /* MD_MISC_ERROR_CLR */
+
+/*
+ * The two per-DIMM mode-initialisation registers. Both dual-sourced
+ * (mainline Linux's hubmd.h, SGI's own table) as write-only: a four-bit
+ * DIMM_SELECT field at bits 35:32 and a twelve-bit DIMM_MODE field at bits
+ * 11:0, no readable bits declared at all. Real firmware writes both
+ * sixteen times each, DIMM_SELECT stepping 0x0 through 0xf while DIMM_MODE
+ * holds a constant value -- one iteration per DIMM slot. Accepted and
+ * unstored: real hardware's DIMM mode setting has no functional signature
+ * on a machine whose transfers complete instantly, and nothing declares
+ * either field readable for a model to answer regardless.
+ */
+#define HUB_MD_MEM_DIMM_INIT    0x200090
+#define HUB_MD_DIR_DIMM_INIT    0x200098
+
 #define HUB_MD_PERF_CNT0        0x210010
 #define MD_PERF_CNT_MASK        0x00000000000fffffULL  /* 20-bit counter */
 
@@ -437,6 +468,24 @@ static bool sgi_hub_icrb_c_entry(hwaddr addr)
 
     slot = HUB_IO_ICRB_C_FIRST + off / HUB_IO_ICRB_C_STRIDE;
     return slot <= HUB_IO_ICRB_C_LAST;
+}
+
+/*
+ * Whether addr is one of the eight memory/directory error-cluster registers
+ * -- the four error registers and their four clear aliases, evenly strided
+ * eight bytes apart from HUB_MD_ERROR_BASE. All eight answer identically
+ * (always zero), so one range check serves all of them.
+ */
+static bool sgi_hub_md_error_entry(hwaddr addr)
+{
+    hwaddr off;
+
+    if (addr < HUB_MD_ERROR_BASE || addr > HUB_MD_ERROR_LAST_OFF) {
+        return false;
+    }
+
+    off = addr - HUB_MD_ERROR_BASE;
+    return (off % HUB_MD_ERROR_STRIDE) == 0;
 }
 
 /*
@@ -669,6 +718,15 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         /*
          * No slot has ever tracked a real incoming crosstalk transaction, so
          * every field a real slot's C register would hold is honestly zero.
+         */
+        return 0;
+    }
+    if (sgi_hub_md_error_entry(addr)) {
+        /*
+         * This model never raises a memory, directory, protocol or
+         * miscellaneous error, so every field any of these eight registers
+         * would hold is honestly zero -- which is also what mtest_basic
+         * requires before it will run at all.
          */
         return 0;
     }
@@ -998,6 +1056,35 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                       "incoming-request-buffer register 0x%" HWADDR_PRIx
                       " (real firmware writes 0x0 here every boot; not "
                       "modelled)\n",
+                      val, addr);
+        return;
+    }
+    if (sgi_hub_md_error_entry(addr)) {
+        /*
+         * The plain registers are documented read-only; the aliases are
+         * inferred, not proven, to clear on read rather than on write. This
+         * model never sets an error bit in the first place, so there is
+         * nothing for either kind of write to change -- accepted and logged
+         * as unimplemented, not as guest misbehaviour.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the memory/"
+                      "directory error-cluster register 0x%" HWADDR_PRIx
+                      " (nothing here ever latches an error to clear)\n",
+                      val, addr);
+        return;
+    }
+    if (addr == HUB_MD_MEM_DIMM_INIT || addr == HUB_MD_DIR_DIMM_INIT) {
+        /*
+         * Write-only in both dual sources, and real hardware's DIMM mode
+         * setting has no functional signature on a machine whose transfers
+         * complete instantly. Real firmware writes here as its own per-DIMM
+         * programming sweep, not as a guest asking for unbuilt behaviour.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the DIMM mode "
+                      "initialisation register 0x%" HWADDR_PRIx " (write-"
+                      "only; no functional signature on this model)\n",
                       val, addr);
         return;
     }
