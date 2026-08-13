@@ -25,7 +25,6 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "qemu/datadir.h"
-#include "hw/char/serial-mm.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-xbow.h"
@@ -136,18 +135,6 @@ struct SN0MachineState {
      * Whether this machine presents firmware of its own; see the class notes.
      */
     bool synthesized_firmware;
-
-    /*
-     * Whether the bring-up serial port is fitted on the Hub's junk bus. Off by
-     * default, and that default is load-bearing rather than cautious: real
-     * firmware probes this port before every other console candidate and stops
-     * at the first that answers, so a machine that answers here has its console
-     * here and never reaches the system controller or the base I/O controller.
-     * A real Origin 200 has no such part, so leaving it out is also the honest
-     * machine; the option exists because this is the one console whose probe
-     * needs nothing else on the machine working first.
-     */
-    bool junk_uart;
 
     /* Where the firmware's console output goes. */
     Chardev *console;
@@ -1703,41 +1690,6 @@ static void sn0_init(MachineState *machine)
                        cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
 
     /*
-     * The bring-up serial port, when the machine has been asked for one. Stock
-     * QEMU's memory-mapped 16550 with the register spacing the junk bus uses
-     * and the clock SGI's own driver divides; nothing about the part is ours
-     * except where it sits and what it is wired to.
-     *
-     * It goes inside the Hub's register region rather than beside it in the
-     * address space, and that is deliberate. The machine maps that one region
-     * twice — once at an address resolving to the reading processor's own
-     * node, once at an address naming a node — so a port placed inside it is
-     * reached both ways, as a chip on the Hub's local bus would be. Placing
-     * it in the address space instead would answer at one view and not the
-     * other, and no amount of testing along the firmware's own path would
-     * catch that: real firmware only ever uses the node-local view.
-     *
-     * No interrupt line. SGI's driver disables every interrupt source when it
-     * configures the port and moves characters by polling the line-status
-     * register; it carries no handler for this port. A line here would be
-     * state nothing on this machine drives or reads.
-     *
-     * The port takes the second character device rather than the first. The
-     * first belongs to the base I/O controller's port A and to the synthesized
-     * firmware's console, two frontends cannot share one backend, and moving
-     * either of them aside to make room would change the default machine to
-     * fit an option that is off by default. With no second -serial the port
-     * still answers its registers and simply has nowhere to put a character,
-     * which is what the presence probe needs and all that a qtest exercises.
-     */
-    if (s->junk_uart) {
-        serial_mm_init(&s->hub.regs, SN0_JUNK_UART_OFFSET,
-                       SN0_JUNK_UART_REGSHIFT, NULL,
-                       SN0_JUNK_UART_CLOCK_HZ / SN0_JUNK_UART_SAMPLES,
-                       serial_hd(1), DEVICE_BIG_ENDIAN);
-    }
-
-    /*
      * The I/O bridge. It carries a real PCI bus, and the base I/O controller
      * below is a PCI device that cannot exist without one to realize onto —
      * so the chip is always built, whether or not this machine is asked for
@@ -2136,16 +2088,6 @@ static void sn0_set_io_bridge(Object *obj, bool value, Error **errp)
     SN0_MACHINE(obj)->io_bridge_present = value;
 }
 
-static bool sn0_get_junk_uart(Object *obj, Error **errp)
-{
-    return SN0_MACHINE(obj)->junk_uart;
-}
-
-static void sn0_set_junk_uart(Object *obj, bool value, Error **errp)
-{
-    SN0_MACHINE(obj)->junk_uart = value;
-}
-
 static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -2176,7 +2118,6 @@ static void sn0_instance_init(Object *obj)
 
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
-    s->junk_uart = false;
     s->widget0_revision = SN0_WIDGET0_REVISION;
 }
 
@@ -2208,19 +2149,6 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "with no PCI bus, which is a bring-up aid rather than a machine that "
         "ever existed. Kept as an option because that aid is still useful "
         "for isolating a fault to the fabric or to what sits behind it.");
-
-    object_class_property_add_bool(oc, "junk-uart",
-                                   sn0_get_junk_uart, sn0_set_junk_uart);
-    object_class_property_set_description(oc, "junk-uart",
-        "Fit the bring-up serial port on the Hub's junk bus, a 16550 that SGI "
-        "documents as a manufacturing and bring-up fitting and that no shipped "
-        "Origin 200 carries. Off by default, and turning it on changes more "
-        "than it adds: real firmware probes this port before every other "
-        "console candidate and takes the first that answers, so the console "
-        "moves here and the system controller and the base I/O controller are "
-        "never reached. It is the only console whose probe needs nothing else "
-        "on the machine working first, which is what makes it useful for "
-        "bring-up. Give it a second -serial to see its output.");
 
     /*
      * The first of the candidate values. A captured boot of this configuration
