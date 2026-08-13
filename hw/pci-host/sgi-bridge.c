@@ -140,6 +140,7 @@
 #define NIC_PHASE_ANSWER        5   /* shifting a page's answer back out */
 #define NIC_PHASE_MATCH         6   /* taking the identity a guest is naming */
 #define NIC_PHASE_STATUS        7   /* shifting the status memory back out */
+#define NIC_PHASE_READ          8   /* streaming the data memory, unframed */
 
 /*
  * The commands this part answers, by the numbers the bus assigns them.
@@ -156,7 +157,31 @@
 #define NIC_CMD_MATCH_ROM       0x55
 #define NIC_CMD_SKIP_ROM        0xcc
 #define NIC_CMD_READ_MEMORY     0xa5
+#define NIC_CMD_READ_PLAIN      0xf0
 #define NIC_CMD_READ_STATUS     0xaa
+
+/*
+ * Two commands read the same data memory and they frame it differently, which
+ * is the whole reason the check a guest validates has to be *stored* rather
+ * than produced on the way out.
+ *
+ * The extended read walks page redirection and sends, per page, a redirection
+ * byte, a check over the request, the page, and a check over the page. The
+ * plain read sends nothing but the stored bytes, from the address asked for to
+ * the end of the data memory, and a check over all of it at the very end. So a
+ * page's own embedded check — the one the board-identity reader validates
+ * before it will trust a part number — is not framing that either command
+ * adds. It is programmed into the last two bytes of the page at the factory,
+ * and both commands return it because both return what is stored.
+ *
+ * The data memory is sixty-four pages of thirty-two bytes. That size is not a
+ * free choice: the status memory this part answers carries one redirection
+ * byte per page and has sixty-four of them, so a smaller data memory would
+ * contradict the status memory the model already serves.
+ */
+#define NIC_DATA_PAGES          64
+#define NIC_DATA_SIZE           (NIC_DATA_PAGES * NIC_PAGE_SIZE)
+#define NIC_UNPROGRAMMED        0xff
 
 /*
  * The part's status memory, which is separate from the memory holding the
@@ -1259,6 +1284,85 @@ static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
 };
 
 /*
+ * What this part actually holds, assembled from the programmed text and the
+ * check each page carries in its own last two bytes.
+ *
+ * The check has to live here rather than be added to an answer, because two
+ * different commands read this memory with different framing and both must
+ * return the same bytes for a page. It was produced on the way out of the
+ * extended read before, which was right for that command and would have sent a
+ * plain read the raw text with zeros where the check belongs.
+ *
+ * Everything past the programmed pages reads as unprogrammed, which is what an
+ * EPROM that was never written there says.
+ */
+static void sgi_bridge_onewire_build_rom(SGIBridgeState *s)
+{
+    unsigned int page;
+
+    memset(s->onewire_rom, NIC_UNPROGRAMMED, sizeof(s->onewire_rom));
+    memcpy(s->onewire_rom, sgi_bridge_onewire_image,
+           sizeof(sgi_bridge_onewire_image));
+
+    for (page = 0; page < NIC_PAGES; page++) {
+        uint8_t *at = &s->onewire_rom[page * NIC_PAGE_SIZE];
+        uint16_t crc = ~sgi_bridge_onewire_crc(0, at, NIC_PAGE_SIZE - 2);
+
+        at[NIC_PAGE_SIZE - 2] = crc & 0xff;
+        at[NIC_PAGE_SIZE - 1] = crc >> 8;
+    }
+}
+
+/* One byte of the data memory, wherever it falls. */
+static uint8_t sgi_bridge_onewire_data(SGIBridgeState *s, unsigned int at)
+{
+    return at < sizeof(s->onewire_rom) ? s->onewire_rom[at]
+                                       : NIC_UNPROGRAMMED;
+}
+
+/*
+ * Start a plain read, which sends stored bytes from the address asked for and
+ * keeps going to the end of the data memory. The check comes only at that end,
+ * over the command, both address bytes and every byte sent, so it is worked
+ * out here in one pass rather than carried along a slot at a time. A guest
+ * that resets before the end never sees it, which is the ordinary case: the
+ * part number sits in the first two pages and nobody reads two kilobytes to
+ * find it.
+ */
+static void sgi_bridge_onewire_plain_answer(SGIBridgeState *s)
+{
+    unsigned int at = s->onewire_args[0] | (s->onewire_args[1] << 8);
+    uint8_t request[3];
+    uint16_t crc;
+    unsigned int i;
+
+    request[0] = NIC_CMD_READ_PLAIN;
+    request[1] = s->onewire_args[0];
+    request[2] = s->onewire_args[1];
+
+    trace_sgi_bridge_onewire_plain(at, at < NIC_DATA_SIZE);
+
+    if (at >= NIC_DATA_SIZE) {
+        s->onewire_phase = NIC_PHASE_IDLE;
+        return;
+    }
+
+    crc = sgi_bridge_onewire_crc(0, request, sizeof(request));
+    for (i = at; i < NIC_DATA_SIZE; i++) {
+        uint8_t byte = sgi_bridge_onewire_data(s, i);
+
+        crc = sgi_bridge_onewire_crc(crc, &byte, 1);
+    }
+    crc = ~crc;
+
+    s->onewire_read = at;
+    s->onewire_end[0] = crc & 0xff;
+    s->onewire_end[1] = crc >> 8;
+    s->onewire_outbit = 0;
+    s->onewire_phase = NIC_PHASE_READ;
+}
+
+/*
  * Fill in one status page's worth of answer: the bytes themselves, then the
  * check pair the part appends when it reaches the end of the page.
  *
@@ -1348,8 +1452,7 @@ static void sgi_bridge_onewire_answer(SGIBridgeState *s)
     s->onewire_out[1] = crc & 0xff;
     s->onewire_out[2] = crc >> 8;
 
-    memcpy(&s->onewire_out[3], &sgi_bridge_onewire_image[offset],
-           NIC_PAGE_SIZE);
+    memcpy(&s->onewire_out[3], &s->onewire_rom[offset], NIC_PAGE_SIZE);
 
     /*
      * The block carries its own check over its first thirty bytes, stored
@@ -1358,18 +1461,14 @@ static void sgi_bridge_onewire_answer(SGIBridgeState *s)
      * runs over the stored bytes before it will trust the part number, and it
      * is a different check from the framing pair the read protocol appends
      * below: a block can satisfy the framing and still fail this one, which is
-     * exactly what a page of data with no embedded check does. So it goes into
-     * the block, not after it.
-     */
-    crc = ~sgi_bridge_onewire_crc(0, &s->onewire_out[3], NIC_PAGE_SIZE - 2);
-    s->onewire_out[3 + NIC_PAGE_SIZE - 2] = crc & 0xff;
-    s->onewire_out[3 + NIC_PAGE_SIZE - 1] = crc >> 8;
-
-    /*
-     * Then the framing check the read protocol sends after the block, over the
-     * whole thirty-two bytes as they now stand — the embedded check included —
-     * so it is computed from the answer being sent rather than from the stored
-     * image, which no longer matches in its last two bytes.
+     * exactly what a page of data with no embedded check does. It arrives
+     * here already inside the block because it is part of what the part
+     * holds: the plain read returns the same bytes with none of this framing
+     * around them, so a check this command manufactured would exist for only
+     * one of the two ways a guest can ask.
+     *
+     * The framing check the read protocol sends after the block covers the
+     * whole thirty-two bytes, the embedded check included.
      */
     crc = ~sgi_bridge_onewire_crc(0, &s->onewire_out[3], NIC_PAGE_SIZE);
     s->onewire_out[3 + NIC_PAGE_SIZE] = crc & 0xff;
@@ -1518,7 +1617,8 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             s->onewire_args[0] = 0;
             s->onewire_args[1] = 0;
             if (s->onewire_command == NIC_CMD_READ_MEMORY ||
-                s->onewire_command == NIC_CMD_READ_STATUS) {
+                s->onewire_command == NIC_CMD_READ_STATUS ||
+                s->onewire_command == NIC_CMD_READ_PLAIN) {
                 s->onewire_phase = NIC_PHASE_OFFSET;
             } else {
                 /* Same silence as an unanswered rom command, one step later. */
@@ -1539,10 +1639,36 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             if (++s->onewire_argn == 2) {
                 if (s->onewire_command == NIC_CMD_READ_STATUS) {
                     sgi_bridge_onewire_status_answer(s);
+                } else if (s->onewire_command == NIC_CMD_READ_PLAIN) {
+                    sgi_bridge_onewire_plain_answer(s);
                 } else {
                     sgi_bridge_onewire_answer(s);
                 }
             }
+        }
+    } else if (s->onewire_phase == NIC_PHASE_READ) {
+        /*
+         * Stored bytes, one after another, with nothing between them: no
+         * redirection byte and no per-page check, because this command frames
+         * nothing. The two bytes after the end of the data memory are the
+         * check over everything sent, and past those the part goes quiet.
+         */
+        unsigned int at = s->onewire_read + s->onewire_outbit / 8;
+        unsigned int bit = s->onewire_outbit % 8;
+        uint8_t byte;
+
+        if (at < NIC_DATA_SIZE) {
+            byte = sgi_bridge_onewire_data(s, at);
+        } else {
+            byte = s->onewire_end[at - NIC_DATA_SIZE];
+        }
+        level = (byte >> bit) & 1;
+
+        if (++s->onewire_outbit ==
+            (NIC_DATA_SIZE + 2 - s->onewire_read) * 8) {
+            s->onewire_outbit = 0;
+            s->onewire_phase = NIC_PHASE_IDLE;
+            trace_sgi_bridge_onewire_plain_done(s->onewire_read);
         }
     } else if (s->onewire_phase == NIC_PHASE_STATUS) {
         /*
@@ -2116,6 +2242,7 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
     s->onewire_phase = NIC_PHASE_IDLE;
     s->onewire_bit = 0;
     s->onewire_command = 0;
+    sgi_bridge_onewire_build_rom(s);
 
     /*
      * The one register whose reset value the table cannot hold, because it is

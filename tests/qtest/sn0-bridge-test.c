@@ -1628,6 +1628,97 @@ static void test_status_past_the_end_answers_nothing(const void *data)
     qtest_quit(qts);
 }
 
+/* Read one page the framed way and keep the thirty-two stored bytes. */
+static void nic_extended_page(QTestState *qts, uint16_t offset, uint8_t *out)
+{
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+    nic_write_byte(qts, 0xa5);
+    nic_write_byte(qts, offset & 0xff);
+    nic_write_byte(qts, offset >> 8);
+
+    for (i = 0; i < 3; i++) {
+        nic_read_byte(qts);             /* redirection byte and its check */
+    }
+    for (i = 0; i < 32; i++) {
+        out[i] = nic_read_byte(qts);
+    }
+}
+
+/*
+ * The unframed read returns the same bytes the framed one does.
+ *
+ * This is the property, and it is asserted as whole pages rather than as
+ * something about them, because every weaker version of it was already true of
+ * a model that got it wrong. The check each page carries in its own last two
+ * bytes is what a board-identity reader validates before trusting a part
+ * number, and it belongs to the stored data: the framed command wraps the page
+ * in a redirection byte and a check pair, the unframed one sends the bytes and
+ * nothing else, and a page's embedded check has to survive both. A model
+ * producing that check while framing an answer satisfies the framed read
+ * completely and hands the unframed read the raw text with holes where the
+ * check belongs.
+ *
+ * Both pages are compared because the part number spans the first and the
+ * second page carries the rest of the assembled string, and because reading
+ * straight from one page into the next is what proves the unframed stream puts
+ * nothing between them.
+ */
+static void test_the_unframed_read_matches_the_framed_one(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t framed[64];
+    uint8_t plain[64];
+    unsigned int i;
+
+    nic_extended_page(qts, 0, &framed[0]);
+    nic_extended_page(qts, 32, &framed[32]);
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+    nic_write_byte(qts, 0xf0);
+    nic_write_byte(qts, 0x00);
+    nic_write_byte(qts, 0x00);
+    for (i = 0; i < sizeof(plain); i++) {
+        plain[i] = nic_read_byte(qts);
+    }
+
+    g_assert_cmpmem(plain, sizeof(plain), framed, sizeof(framed));
+
+    /* And what both of them return is a part number with a valid check. */
+    g_assert_cmpmem(&plain[11], 12, "030-1244-001", 12);
+    g_assert_cmphex(nic_crc(0, &plain[0], 32), ==, NIC_CRC_RESIDUE);
+    g_assert_cmphex(nic_crc(0, &plain[32], 32), ==, NIC_CRC_RESIDUE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Past the pages this part has programmed, the data memory reads as an EPROM
+ * nobody wrote to. Asserted because the alternative a model falls into is
+ * wrapping back to the start, which would hand a guest a second, spurious copy
+ * of the part number at an address that does not hold one.
+ */
+static void test_the_data_past_the_image_is_unprogrammed(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+    nic_write_byte(qts, 0xf0);
+    nic_write_byte(qts, 0x40);          /* the first page after the image */
+    nic_write_byte(qts, 0x00);
+
+    for (i = 0; i < 32; i++) {
+        g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
+    }
+
+    qtest_quit(qts);
+}
+
 static void test_a_reset_finds_the_part(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1929,6 +2020,10 @@ int main(int argc, char **argv)
                         test_the_status_memory_reads_back_by_the_page);
     qtest_add_data_func("sn0/bridge/one-wire-status-past-the-end", NULL,
                         test_status_past_the_end_answers_nothing);
+    qtest_add_data_func("sn0/bridge/one-wire-unframed-matches-framed", NULL,
+                        test_the_unframed_read_matches_the_framed_one);
+    qtest_add_data_func("sn0/bridge/one-wire-data-past-the-image", NULL,
+                        test_the_data_past_the_image_is_unprogrammed);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
