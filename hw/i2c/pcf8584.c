@@ -92,12 +92,37 @@ static void pcf8584_stop(PCF8584State *s)
 static void pcf8584_start(PCF8584State *s, uint8_t addr)
 {
     bool recv = addr & 1;
+    uint8_t addr7 = addr >> 1;
     int rc;
+
+    /*
+     * QEMU's I2C core only rescans the bus for a matching slave when no
+     * device is currently matched (hw/i2c/core.c's i2c_do_start_transfer):
+     * once a transfer is open, a repeated start delivers its event to
+     * whichever slave is already matched, on the assumption that a
+     * repeated start targets the same device and only changes direction --
+     * true for this protocol's own write-then-read commands, but not true
+     * of the closing invalid-address step, which is a repeated start to a
+     * genuinely different address. Left alone, that step does not get
+     * refused by an empty bus; it keeps talking to whichever real device
+     * the transfer was already open with, and that device answers,
+     * because from its own event handler's point of view nothing told it
+     * the address changed. Ending the old match explicitly whenever the
+     * address itself changes forces a real rescan for the new one; a
+     * same-address repeated start (ordinary direction changes) still
+     * leaves the current match alone, which existing transactions depend
+     * on -- ending unconditionally would deliver I2C_FINISH to a slave
+     * that is still mid-command.
+     */
+    if (s->transfer && addr7 != s->cur_addr7) {
+        i2c_end_transfer(s->bus);
+    }
+    s->cur_addr7 = addr7;
 
     s->recv = recv;
     s->status &= ~I2C_PCF_BB;
 
-    rc = i2c_start_transfer(s->bus, addr >> 1, recv);
+    rc = i2c_start_transfer(s->bus, addr7, recv);
     s->transfer = true;
 
     if (rc) {
@@ -354,6 +379,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->transfer = false;
     s->recv = false;
     s->start_pending = false;
+    s->cur_addr7 = 0;
     pcf8584_update_irq(s);
 }
 
@@ -388,6 +414,7 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL(transfer, PCF8584State),
         VMSTATE_BOOL(recv, PCF8584State),
         VMSTATE_BOOL(start_pending, PCF8584State),
+        VMSTATE_UINT8(cur_addr7, PCF8584State),
         VMSTATE_END_OF_LIST()
     },
 };

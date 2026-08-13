@@ -521,6 +521,150 @@ static void test_supervisor_gating(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A NAK'd, single-byte-direction transaction to an address nothing answers,
+ * arbitrated first -- what the sixteen boot-path reads of the identity
+ * EEPROM at 0x57 look like at the register level. That device is a separate
+ * part at its own addresses and is out of this milestone's scope; this
+ * checks only that a run of transactions nothing answers, each preceded by
+ * a real arbitration wait, leaves the model in a state that can still run
+ * the transaction after it -- not the EEPROM's own behaviour, which this
+ * does not model.
+ *
+ * A plain address NAK never reaches the data phase, so it does not get the
+ * closing invalid-address step: docs/datasheets/pcf8584-elsc.md says that
+ * step is only for a transaction that completed its data phase, and an
+ * address-only NAK is one of the paths that skips it.
+ */
+static void firmware_style_naked_probe(QTestState *qts, uint8_t addr7)
+{
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (addr7 << 1) | 0);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB, ==,
+                    I2C_PCF_LRB);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+}
+
+/*
+ * One full ELSC command exactly as firmware drives it, not as
+ * elsc_transact() drives it: arbitrate first, then the combined
+ * write-then-read transaction, and -- staying in the same transfer, not
+ * stopping and reopening one -- the closing repeated start to the invalid
+ * address every transaction that completes its data phase ends with,
+ * control written before the address, which must NAK. Only then the real
+ * stop. elsc_transact() above stops right after reading the response
+ * because most of this file's tests are about the response content and
+ * the closing step is exercised on its own in sn0-i2c-test.c; this
+ * function exists because task 6's actual open question -- would firmware
+ * reach this device and accept it -- depends on the whole chain holding
+ * together in the order and shape firmware really uses, not on any one
+ * piece of it in isolation.
+ */
+static unsigned firmware_style_command(QTestState *qts, const uint8_t *req,
+                                       unsigned req_len, uint8_t *resp,
+                                       unsigned resp_cap)
+{
+    unsigned i, total;
+
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB, ==, 0);
+
+    for (i = 0; i < req_len; i++) {
+        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, req[i]);
+    }
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);  /* discarded */
+
+    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    total = (unsigned)resp[0] + 2;
+    g_assert_cmpuint(total, <=, resp_cap);
+    for (i = 1; i < total; i++) {
+        if (i == total - 1) {
+            qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);  /* NAK last */
+        }
+        resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    }
+
+    /* The closing invalid-address step, still inside this transfer:
+     * control first, PIN deliberately absent, then the address byte. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xfe);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB, ==,
+                    I2C_PCF_LRB);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+
+    return total;
+}
+
+/*
+ * The question task 6 leaves open until this test answers it: not "does the
+ * register contract work" -- the tests above already establish that -- but
+ * "if firmware reached this device, would it accept it". Built from
+ * docs/datasheets/pcf8584-elsc.md's own account of the forced sequence for
+ * a boot that reaches and accepts the system-controller console, not from
+ * what this file's own helpers happen to do, because a test written against
+ * the implementation can only ever agree with it:
+ *
+ *   sixteen reads of the identity EEPROM at 0x57 (represented here by
+ *   three, since that device is out of scope and the point is only that
+ *   NAK'd traffic ahead of the real probe does not destabilise anything);
+ *   then rsw to the ELSC, whose failure is tolerated;
+ *   then ver, which must return a correctly framed, correctly checksummed
+ *   response beginning "ok".
+ *
+ * Each real transaction is arbitrated first and closed with the
+ * invalid-address step, in that order, because firmware runs the
+ * arbitration wait before every real transaction and the closing step
+ * after every one that completes its data phase -- not because this test
+ * needed them, but because a boot that skipped either would not look like
+ * this to the model at all.
+ *
+ * "Accept" is checked as firmware's own parser checks it, not as "some
+ * response arrived": the acceptance condition is a checksum-valid packet
+ * whose text begins "ok" followed by a space or a terminator, and nothing
+ * weaker than that would have been rejected on real hardware.
+ */
+static void test_boot_acceptance_sequence(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len, resp_len, i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    for (i = 0; i < 3; i++) {
+        firmware_style_naked_probe(qts, 0x57);
+    }
+
+    req_len = build_request(req, "rsw");
+    resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+
+    req_len = build_request(req, "ver");
+    resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], >=, 2);
+    g_assert(resp[1] == 'o' && resp[2] == 'k');
+    g_assert(resp[0] == 2 || resp[3] == ' ');
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -545,6 +689,8 @@ int main(int argc, char **argv)
                         test_escape_byte_is_not_queued);
     qtest_add_data_func("sn0/elsc/supervisor-gating", NULL,
                         test_supervisor_gating);
+    qtest_add_data_func("sn0/elsc/boot-acceptance-sequence", NULL,
+                        test_boot_acceptance_sequence);
 
     ret = g_test_run();
 
