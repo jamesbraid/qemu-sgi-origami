@@ -123,11 +123,11 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
      * Both guests read this length field as the wire length including the
      * four-byte FCS a real MAC captures alongside the frame -- OpenBSD's
      * iec_rxintr() checks it against ETHER_MIN_LEN before ever subtracting
-     * ETHER_CRC_LEN, and IRIX's own if_ef.c computes rlen = BYTECNT -
-     * ETHER_CRCSZ the same way, independently. QEMU's net layer never
-     * delivers a trailing CRC -- there is no physical layer here to produce
-     * one -- so the length reported has to add the four phantom bytes back
-     * to match what real hardware would say, even though only `size` bytes
+     * ETHER_CRC_LEN, and IRIX's own ethernet driver subtracts the same
+     * four-byte CRC length from the same field, independently. QEMU's net
+     * layer never delivers a trailing CRC -- there is no physical layer here
+     * to produce one -- so the length reported has to add the phantom bytes
+     * back to match what real hardware would say, even though only `size` bytes
      * of real payload follow. Without this, any frame at or under the wire
      * minimum reports four bytes short, fails the guest's own minimum-length
      * check, and is silently dropped -- exactly the frames a DHCP exchange's
