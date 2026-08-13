@@ -1027,6 +1027,16 @@ static void test_the_widget_control_reset_values(const void *data)
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_WIDGET_STATUS), ==, 0);
 
+    /*
+     * Real firmware clears this register during power-on. The model has no bit
+     * to clear, so the write is refused — and it must not disturb the answer,
+     * which is what a guest reading back after its own clear would check. All
+     * ones rather than the zero firmware writes, so that a refusal is what the
+     * assertion actually measures.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_WIDGET_STATUS, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_WIDGET_STATUS), ==, 0);
+
     qtest_quit(qts);
 }
 
@@ -1113,7 +1123,14 @@ static void test_io_icrb_c_family(const void *data)
      * wait on any one). No slot has ever tracked a real incoming crosstalk
      * transaction, so every field a real C register would hold reads zero;
      * writing one is refused, matching real hardware, where this state comes
-     * from a transaction in flight rather than from software.
+     * from a transaction in flight rather than from a guest store.
+     *
+     * Firmware does write here — it clears the whole array at power-on, zero
+     * to every register — so the refusal is about where the state comes from,
+     * not about software never storing to it. All ones is the value to write
+     * in this assertion rather than the zero firmware writes, because zero
+     * into a register that already reads zero would pass whether or not the
+     * write was refused.
      */
     for (addr = IO_ICRB_C_BASE; addr <= IO_ICRB_C_LAST_OFF;
          addr += IO_ICRB_C_STRIDE) {
