@@ -151,6 +151,14 @@ struct SN0MachineState {
     bool io_bridge_present;
 
     /*
+     * Whether the junk-bus UART is fitted; see the class notes. Off by
+     * default, because a shipped Origin 200 has no such part and because
+     * real firmware treats it as the highest-priority console candidate —
+     * fitting it unasked would hide the two real candidates behind it.
+     */
+    bool junk_uart_present;
+
+    /*
      * Whether this machine presents firmware of its own; see the class notes.
      */
     bool synthesized_firmware;
@@ -1684,6 +1692,17 @@ static void sn0_init(MachineState *machine)
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&s->hub), "xtalk", OBJECT(&s->xtalk),
                              &error_fatal);
+    /*
+     * The junk-bus UART, off unless the operator asked for it by name. It
+     * takes the second character device, not the first: the first belongs to
+     * the base I/O controller's port A and to the synthesized firmware's own
+     * console, and two frontends cannot share one backend.
+     */
+    qdev_prop_set_bit(DEVICE(&s->hub), "junk-uart", s->junk_uart_present);
+    if (s->junk_uart_present && serial_hd(1)) {
+        object_property_set_link(OBJECT(&s->hub), "junk-uart-chardev",
+                                 OBJECT(serial_hd(1)), &error_fatal);
+    }
     sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
 
     /*
@@ -2157,6 +2176,16 @@ static void sn0_set_io_bridge(Object *obj, bool value, Error **errp)
     SN0_MACHINE(obj)->io_bridge_present = value;
 }
 
+static bool sn0_get_junk_uart(Object *obj, Error **errp)
+{
+    return SN0_MACHINE(obj)->junk_uart_present;
+}
+
+static void sn0_set_junk_uart(Object *obj, bool value, Error **errp)
+{
+    SN0_MACHINE(obj)->junk_uart_present = value;
+}
+
 static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -2218,6 +2247,18 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "with no PCI bus, which is a bring-up aid rather than a machine that "
         "ever existed. Kept as an option because that aid is still useful "
         "for isolating a fault to the fabric or to what sits behind it.");
+
+    object_class_property_add_bool(oc, "junk-uart",
+                                   sn0_get_junk_uart, sn0_set_junk_uart);
+    object_class_property_set_description(oc, "junk-uart",
+        "Fit the junk-bus UART, a real NS16550-compatible serial interface "
+        "in the Hub's own register space that a shipped Origin 200 does not "
+        "have -- SGI fits one only for manufacturing and bring-up. Off by "
+        "default: real firmware treats this port as its highest-priority "
+        "console candidate and stops probing at the first one that answers, "
+        "so fitting it unasked would hide the two real candidates behind "
+        "it. On, it takes the second character device, not the first, "
+        "which stays the base I/O controller's.");
 
     /*
      * The first of the candidate values. A captured boot of this configuration

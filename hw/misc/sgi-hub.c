@@ -26,6 +26,8 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/char/serial-mm.h"
+#include "chardev/char.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qemu/host-utils.h"
@@ -275,6 +277,27 @@
 #define I2C_STA_PIN             0x80      /* pending interrupt NOT (ready) */
 #define I2C_STA_BNB             0x01      /* bus not busy */
 #define I2C_STATUS_IDLE         (I2C_STA_PIN | I2C_STA_BNB)
+
+/*
+ * The junk-bus UART: a real NS16550-compatible serial interface at the upper
+ * half of this same eight-register block, one register per eight-byte stride
+ * rather than the chip's own one-byte spacing -- the spacing belongs to the
+ * junk bus, not to the NS16550. A shipped Origin 200 has no such part; when
+ * origami is asked to fit one, sgi_hub_realize() places it here as a
+ * subregion, and its own register handler answers this range instead of the
+ * unimplemented default below. Left unfitted, nothing claims this range and
+ * every one of these eight offsets reads and writes exactly like any other
+ * undefined register in this group.
+ */
+#define HUB_MD_JUNKUART_BASE    0x2200c0
+#define HUB_MD_JUNKUART_REGSHIFT 3        /* eight-byte stride, junk-bus rule */
+#define HUB_MD_JUNKUART_OSC_HZ  12000000  /* the port's reference crystal */
+/* What QEMU's 16550 wants for its clock argument: the oscillator already
+ * divided by sixteen, not the raw crystal rate. Passing the crystal rate
+ * here breaks no boot test -- it only changes the line rate the model
+ * reports to whatever sits behind the character device, which is invisible
+ * against a pipe and garbage against a real serial port. */
+#define HUB_MD_JUNKUART_CLOCK   (HUB_MD_JUNKUART_OSC_HZ / 16)
 
 /*
  * Whether each processor socket is populated, and whether that processor is
@@ -1454,6 +1477,22 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                           "sgi-hub.regs", SGI_HUB_WINDOW_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
 
+    if (s->junk_uart_present) {
+        /*
+         * Placed as a subregion of s->regs itself, not mapped separately
+         * beside it: this window is mapped twice by the machine, once at an
+         * address resolving to the reading processor's own node and once
+         * naming a node explicitly, and only a subregion of the Hub's own
+         * register region answers both the way every other register here
+         * already does. No interrupt line -- nothing on this machine drives
+         * or reads one, and the port is polled, matching every other device
+         * on this bus that has no interrupt to offer.
+         */
+        serial_mm_init(&s->regs, HUB_MD_JUNKUART_BASE,
+                       HUB_MD_JUNKUART_REGSHIFT, NULL, HUB_MD_JUNKUART_CLOCK,
+                       s->junk_uart_chr, DEVICE_BIG_ENDIAN);
+    }
+
     for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);
     }
@@ -1544,6 +1583,9 @@ static const Property sgi_hub_properties[] = {
                        xtalk_widget_shift, 0),
     DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_BOOL("junk-uart", SGIHubState, junk_uart_present, false),
+    DEFINE_PROP_LINK("junk-uart-chardev", SGIHubState, junk_uart_chr,
+                     TYPE_CHARDEV, Chardev *),
 };
 
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)

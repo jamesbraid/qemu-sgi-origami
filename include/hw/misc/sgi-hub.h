@@ -146,6 +146,20 @@ struct SGIHubState {
 
     /* Memory/directory configuration register. Reset value is not zero. */
     uint64_t md_config;
+
+    /*
+     * The junk-bus UART: a real NS16550-compatible serial interface in this
+     * unit's own register space that a shipped Origin 200 does not have —
+     * SGI fits one only for manufacturing and bring-up. origami can fit one
+     * on purpose, off by default, because its presence probe is the one
+     * console candidate that needs no other device working: real firmware
+     * treats it as the highest-priority candidate and stops probing at the
+     * first one that answers, so fitting it unasked would hide the two real
+     * candidates behind it. Unfitted, the range it would occupy answers the
+     * same unimplemented default as the rest of this register group.
+     */
+    bool junk_uart_present;
+    Chardev *junk_uart_chr;
 };
 
 #endif /* HW_MISC_SGI_HUB_H */
