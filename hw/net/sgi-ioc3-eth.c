@@ -118,6 +118,19 @@ static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
                           " only an immediate timeout is\n", reload);
         }
     }
+    /*
+     * UNOBSERVED: whether the watermark is crossed at "at or below" or at
+     * "strictly below". Neither driver settles it. OpenBSD programs its whole
+     * available count, so the first delivered frame crosses under either
+     * reading, and it enables the receive timer as well, so it would be
+     * prompted even if this source never fired. Linux never enables this
+     * source at all. So no guest we run can tell the two apart, and nothing
+     * in the sources says which the silicon does. The inclusive form is the
+     * one taken here because it is what a low watermark usually means, and
+     * that is a convention rather than a measurement. What would settle it:
+     * a driver that enables this source alone and programs a watermark below
+     * its supply, or a vendor statement about the comparison.
+     */
     if (available <= threshold) {
         sources |= SGI_IOC3_ENET_INT_RX_THRESHOLD;
     }
