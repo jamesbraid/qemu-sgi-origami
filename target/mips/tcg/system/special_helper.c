@@ -155,30 +155,56 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
     if (env->insn_flags & INSN_R10K) {
         /*
          * The CPU definition fixes the R10000 secondary cache at the Origin
-         * 200 reset-mode value: 1 MiB, two ways, and 128-byte blocks.  Index
-         * tag operations use the translated physical address for the set and
-         * address bit zero for the way.  TagHi's MRU bit is set-wide; its low
-         * physical-tag nibble belongs to the selected way.
+         * 200 reset-mode value: 1 MiB, two ways, and 128-byte blocks.  Its
+         * index diagnostic operations use the translated physical address
+         * and address bit zero selects the way.
          */
-        if (cache_type == 3 &&
-            (cache_operation == 0b001 || cache_operation == 0b010)) {
+        if (cache_type == 3 && (cache_operation == 0b001 ||
+                               cache_operation == 0b010 ||
+                               cache_operation == 0b110 ||
+                               cache_operation == 0b111)) {
             hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
                                                       GETPC());
-            unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
-                               (R10K_SCACHE_SETS - 1);
             unsigned int way = paddr & 1;
-            unsigned int tag = set * R10K_SCACHE_WAYS + way;
 
-            if (cache_operation == 0b010) { /* Index Store Tag */
-                env->r10k_scache_taglo[tag] =
-                    env->CP0_TagLo & R10K_SCACHE_TAGLO_MASK;
-                env->r10k_scache_taghi[tag] =
-                    env->CP0_TagHi & R10K_SCACHE_TAGHI_MASK;
-                env->r10k_scache_mru[set] = extract32(env->CP0_TagHi, 31, 1);
-            } else { /* Index Load Tag */
-                env->CP0_TagLo = env->r10k_scache_taglo[tag];
-                env->CP0_TagHi = env->r10k_scache_taghi[tag] |
-                    ((uint32_t)env->r10k_scache_mru[set] << 31);
+            if (cache_operation == 0b001 || cache_operation == 0b010) {
+                unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
+                                   (R10K_SCACHE_SETS - 1);
+                unsigned int tag = set * R10K_SCACHE_WAYS + way;
+
+                /* TagHi's MRU bit is set-wide; its tag nibble is per-way. */
+                if (cache_operation == 0b010) { /* Index Store Tag */
+                    env->r10k_scache_taglo[tag] =
+                        env->CP0_TagLo & R10K_SCACHE_TAGLO_MASK;
+                    env->r10k_scache_taghi[tag] =
+                        env->CP0_TagHi & R10K_SCACHE_TAGHI_MASK;
+                    env->r10k_scache_mru[set] =
+                        extract32(env->CP0_TagHi, 31, 1);
+                } else { /* Index Load Tag */
+                    env->CP0_TagLo = env->r10k_scache_taglo[tag];
+                    env->CP0_TagHi = env->r10k_scache_taghi[tag] |
+                        ((uint32_t)env->r10k_scache_mru[set] << 31);
+                }
+            } else {
+                unsigned int quad_set = (paddr / 16) &
+                    (R10K_SCACHE_QUADWORDS / R10K_SCACHE_WAYS - 1);
+                unsigned int quad = quad_set * R10K_SCACHE_WAYS + way;
+                unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
+
+                if (cache_operation == 0b111) { /* Index Store Data */
+                    env->r10k_scache_data[quad * 2] = 0;
+                    env->r10k_scache_data[quad * 2 + 1] = 0;
+                    env->r10k_scache_data[dword] =
+                        (uint64_t)(uint32_t)env->CP0_TagHi << 32 |
+                        (uint32_t)env->CP0_TagLo;
+                    env->r10k_scache_ecc[quad] = env->CP0_ErrCtl & 0x3ff;
+                } else { /* Index Load Data */
+                    uint64_t data = env->r10k_scache_data[dword];
+
+                    env->CP0_TagLo = (uint32_t)data;
+                    env->CP0_TagHi = data >> 32;
+                    env->CP0_ErrCtl = env->r10k_scache_ecc[quad];
+                }
             }
         }
         return;
