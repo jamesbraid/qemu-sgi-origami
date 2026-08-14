@@ -2045,6 +2045,7 @@ static void sn0_init(MachineState *machine)
     hwaddr node = SN0_NODE_BASE(0);
     MIPSCPU *cpu;
     PCIDevice *ioc3;
+    NICInfo *nd;
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
@@ -2467,11 +2468,22 @@ static void sn0_init(MachineState *machine)
     qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
                       serial_hd(SN0_IOC3_CHARDEV));
     /*
-     * The controller's ethernet block is the machine's only network device
-     * and claims whichever -netdev/-nic the command line names for it, but
-     * the chip does that for itself in its own realize now, so there is
-     * nothing to do here beyond realizing it.
+     * The controller's ethernet block is the machine's only network device.
+     * It claims the command-line backend itself, so the board only adjusts
+     * the automatic address before that claim: QEMU supplies the unique
+     * suffix, while this on-board IOC3 needs SGI's OUI because the PROM reads
+     * it from the one-wire part before it starts the network loader. An
+     * explicit mac= is a replacement part's programmed identity and stays
+     * intact.
      */
+    nd = qemu_find_nic_info(TYPE_SGI_IOC3_ETH, true, NULL);
+    if (nd) {
+        if (!nd->macaddr_explicit) {
+            nd->macaddr.a[0] = 0x08;
+            nd->macaddr.a[1] = 0x00;
+            nd->macaddr.a[2] = 0x69;
+        }
+    }
     pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge)->bus,
                           &error_fatal);
 
