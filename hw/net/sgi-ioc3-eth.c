@@ -62,6 +62,15 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
     qemu_set_irq(s->irq, (status & enable) != 0);
 }
 
+static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s)
+{
+    memset(s->enet_reg, 0, sizeof(s->enet_reg));
+    s->mii_data = SGI_IOC3_ENET_MII_ABSENT;
+    s->mii_data_w = 0;
+    s->rx_timer_armed = false;
+    sgi_ioc3_enet_update_irq(s);
+}
+
 /*
  * Whether the receive engine has anywhere to put a frame: the two enable
  * bits set and a buffer supplied that hardware has not already consumed.
@@ -568,6 +577,15 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         }
         return;
 
+    case SGI_IOC3_ENET_MAC_CONTROL:
+        if (val & SGI_IOC3_ENET_MCR_RESET) {
+            sgi_ioc3_eth_reset_registers(s);
+            return;
+        }
+        s->enet_reg[index] = val;
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        return;
+
     case SGI_IOC3_ENET_RX_PRODUCE:
         /*
          * Bit 31 puts the receive timer in service and the rest is the
@@ -579,8 +597,6 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         if (val & SGI_IOC3_ENET_RPIR_ARM) {
             s->rx_timer_armed = true;
         }
-        /* fall through */
-    case SGI_IOC3_ENET_MAC_CONTROL:
         /*
          * Either write can be the one that makes a buffer available: a fresh
          * produce index, or the enable bits in the control register turning
@@ -660,11 +676,7 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
      * register, whose transmit and receive enables sit in it: a block that
      * came up enabled would be one no driver had asked to run.
      */
-    memset(s->enet_reg, 0, sizeof(s->enet_reg));
-    s->mii_data = SGI_IOC3_ENET_MII_ABSENT;
-    s->mii_data_w = 0;
-    s->rx_timer_armed = false;
-    sgi_ioc3_enet_update_irq(s);
+    sgi_ioc3_eth_reset_registers(s);
 }
 
 static void sgi_ioc3_eth_init(Object *obj)
