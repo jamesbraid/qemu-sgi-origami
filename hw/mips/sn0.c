@@ -123,6 +123,7 @@ typedef struct SN0NodeState {
 
     MemoryRegion flash;
     MemoryRegion flash_hub_view;
+    MemoryRegion flash_rboot_view;
     MemoryRegion hub_regs_node_view;
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;
@@ -277,13 +278,12 @@ static const MemoryRegionOps sn0_flash_ops = {
 };
 
 /*
- * The Hub special view of the boot flash, LBOOT, is 256 MB decoding a 1 MB
- * chip: a real chip-select ignores the offset bits above its own size, so the
- * chip's contents repeat every 1 MB across the whole window. Expressed here as
- * the decode dropping those bits — masking the offset down to the flash's own
- * size before reaching it — rather than as 256 separate aliases naming the
- * same repeat, because that is what the hardware does and a guest's own code
- * genuinely lands on offsets past the first repeat.
+ * The Hub special views of the boot flash, LBOOT and RBOOT, are each 256 MB
+ * decoding a 1 MB chip. A real chip-select ignores the offset bits above its
+ * own size, so the chip's contents repeat every 1 MB across either window.
+ * Expressed here as the decode dropping those bits rather than as 256 separate
+ * aliases naming the same repeat, because that is what the hardware does and
+ * a guest's own code genuinely lands on offsets past the first repeat.
  *
  * Reached through the flash's own backing memory directly, not through its
  * device ops: the flash is a ROM device, answering reads from that backing
@@ -292,7 +292,7 @@ static const MemoryRegionOps sn0_flash_ops = {
  * through the ops instead would reach the same stub every unprogrammed
  * access reports through, and read back nothing.
  */
-static uint64_t sn0_lboot_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
 {
     SN0MachineState *s = opaque;
     const uint8_t *p = memory_region_get_ram_ptr(&s->node0.flash) +
@@ -318,8 +318,8 @@ static uint64_t sn0_lboot_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
-static void sn0_lboot_write(void *opaque, hwaddr addr, uint64_t val,
-                            unsigned size)
+static void sn0_boot_mirror_write(void *opaque, hwaddr addr, uint64_t val,
+                                  unsigned size)
 {
     qemu_log_mask(LOG_UNIMP,
                   "sn0: ignoring write of 0x%" PRIx64 " to boot flash "
@@ -327,9 +327,9 @@ static void sn0_lboot_write(void *opaque, hwaddr addr, uint64_t val,
                   "programming the flash is not modeled\n", val, addr);
 }
 
-static const MemoryRegionOps sn0_lboot_ops = {
-    .read = sn0_lboot_read,
-    .write = sn0_lboot_write,
+static const MemoryRegionOps sn0_boot_mirror_ops = {
+    .read = sn0_boot_mirror_read,
+    .write = sn0_boot_mirror_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -2049,11 +2049,24 @@ static void sn0_init(MachineState *machine)
      * the same bytes a real chip's address decode would.
      */
     memory_region_init_io(&s->node0.flash_hub_view, OBJECT(&s->node0),
-                          &sn0_lboot_ops, s,
+                          &sn0_boot_mirror_ops, s,
                           "sn0.node0.flash.hub", SN0_LBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_HUB,
                                 &s->node0.flash_hub_view);
+
+    /*
+     * RBOOT is the node-explicit view of that same boot PROM. Firmware uses
+     * it when code carries a NASID rather than implicitly naming the local
+     * Hub, including when it reads the IP27 configuration block after moving
+     * into cached RAM.
+     */
+    memory_region_init_io(&s->node0.flash_rboot_view, OBJECT(&s->node0),
+                          &sn0_boot_mirror_ops, s,
+                          "sn0.node0.flash.rboot", SN0_RBOOT_SIZE);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_HUB + node + SN0_FLASH_RBOOT,
+                                &s->node0.flash_rboot_view);
 
     /*
      * The directory and error-correction back doors. Real firmware's own

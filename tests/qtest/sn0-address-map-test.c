@@ -3,9 +3,9 @@
  *
  * The bare machine puts two things in that map: a node's memory and its boot
  * flash. What this checks is that they appear where the address map says, that
- * the flash's two views really are one region rather than two copies that can
- * drift, and that the contents a guest reads before any firmware runs say what
- * they are supposed to say.
+ * the flash's three views really are one region rather than separate copies
+ * that can drift, and that the contents a guest reads before any firmware runs
+ * say what they are supposed to say.
  *
  * Addresses here are what the memory system sees, which for an uncached
  * reference is the physical address with the processor's uncached attribute
@@ -24,9 +24,10 @@
 #define NODE0           0x0000000000ULL
 #define SPACE_HUB       0x10000000000ULL
 
-/* The flash, in the two places a guest reaches it. */
+/* The flash at reset, through local LBOOT, and through node-explicit RBOOT. */
 #define FLASH_RESET     (NODE0 + 0x1fc00000)
 #define FLASH_HUB       (SPACE_HUB + NODE0 + 0x10000000)
+#define FLASH_REMOTE    (SPACE_HUB + NODE0 + 0x30000000)
 
 /*
  * The directory and error-correction back doors. Real firmware's own memory
@@ -105,37 +106,42 @@ static void test_config_block(const void *data)
     qtest_quit(qts);
 }
 
-static void test_flash_two_views(const void *data)
+static void test_flash_three_views(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     int i;
 
     /*
-     * The same bytes have to appear at both addresses. Comparing the whole
+     * The same bytes have to appear at all three addresses. Comparing the whole
      * configuration block rather than one field is what would catch two regions
      * built separately from the same values.
      */
     for (i = 0; i < 0x50; i += 4) {
         uint32_t reset_view = qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET + i);
         uint32_t hub_view = qtest_readl(qts, FLASH_HUB + CONFIG_OFFSET + i);
+        uint32_t remote_view =
+            qtest_readl(qts, FLASH_REMOTE + CONFIG_OFFSET + i);
 
         g_assert_cmphex(reset_view, ==, hub_view);
+        g_assert_cmphex(reset_view, ==, remote_view);
     }
 
     g_assert_cmphex(qtest_readq(qts, FLASH_HUB + CONFIG_OFFSET + FIELD_MAGIC),
                     ==, CONFIG_MAGIC);
+    g_assert_cmphex(qtest_readq(qts, FLASH_REMOTE + CONFIG_OFFSET +
+                               FIELD_MAGIC), ==, CONFIG_MAGIC);
 
     qtest_quit(qts);
 }
 
 /*
- * The Hub special view of the flash, LBOOT, is 256 MB decoding a 1 MB chip:
- * real firmware reaches its own code through offsets in this window well past
- * the flash's real size, and a real chip-select ignores the extra bits and
- * repeats. This is the case `test_flash_two_views` cannot reach, since offset
- * zero would pass even with a window sized to the flash alone.
+ * Each Hub-special view of the flash is 256 MB decoding a 1 MB chip. Real
+ * firmware reaches its own code through offsets in these windows well past the
+ * flash's real size, and a real chip-select ignores the extra bits and repeats.
+ * This is the case test_flash_three_views cannot reach, since offset zero would
+ * pass even with a window sized to the flash alone.
  */
-static void test_lboot_mirrors_the_flash(const void *data)
+static void test_boot_windows_mirror_the_flash(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t direct, mirrored;
@@ -144,15 +150,21 @@ static void test_lboot_mirrors_the_flash(const void *data)
     direct = qtest_readq(qts, FLASH_RESET + CONFIG_OFFSET);
     mirrored = qtest_readq(qts, FLASH_HUB + 0x100000 + CONFIG_OFFSET);
     g_assert_cmphex(mirrored, ==, direct);
+    mirrored = qtest_readq(qts, FLASH_REMOTE + 0x100000 + CONFIG_OFFSET);
+    g_assert_cmphex(mirrored, ==, direct);
 
     /* Deep into the window, the offset this project's own D1 trace hit. */
     direct = qtest_readl(qts, FLASH_RESET + 0x2a3c);
     mirrored = qtest_readl(qts, FLASH_HUB + 0xfc02a3c);
     g_assert_cmphex(mirrored, ==, direct);
+    mirrored = qtest_readl(qts, FLASH_REMOTE + 0xfc02a3c);
+    g_assert_cmphex(mirrored, ==, direct);
 
     /* The last aligned double word of the 256 MB window still wraps. */
     direct = qtest_readq(qts, FLASH_RESET + (0x10000000 - 8) % 0x100000);
     mirrored = qtest_readq(qts, FLASH_HUB + 0x10000000 - 8);
+    g_assert_cmphex(mirrored, ==, direct);
+    mirrored = qtest_readq(qts, FLASH_REMOTE + 0x10000000 - 8);
     g_assert_cmphex(mirrored, ==, direct);
 
     qtest_quit(qts);
@@ -189,6 +201,9 @@ static void test_flash_is_read_only(const void *data)
 
     /* Still answering afterwards. */
     g_assert_cmphex(qtest_readq(qts, FLASH_HUB + CONFIG_OFFSET + FIELD_MAGIC),
+                    ==, CONFIG_MAGIC);
+    g_assert_cmphex(qtest_readq(qts,
+                               FLASH_REMOTE + CONFIG_OFFSET + FIELD_MAGIC),
                     ==, CONFIG_MAGIC);
 
     qtest_quit(qts);
@@ -552,10 +567,10 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/address-map/config-block", NULL,
                         test_config_block);
-    qtest_add_data_func("sn0/address-map/flash-two-views", NULL,
-                        test_flash_two_views);
-    qtest_add_data_func("sn0/address-map/lboot-mirrors-the-flash", NULL,
-                        test_lboot_mirrors_the_flash);
+    qtest_add_data_func("sn0/address-map/flash-three-views", NULL,
+                        test_flash_three_views);
+    qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,
+                        test_boot_windows_mirror_the_flash);
     qtest_add_data_func("sn0/address-map/entry-points", NULL,
                         test_entry_points);
     qtest_add_data_func("sn0/address-map/flash-read-only", NULL,
