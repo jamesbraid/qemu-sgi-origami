@@ -580,6 +580,8 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_IOC3_ENET_MAC_CONTROL:
         if (val & SGI_IOC3_ENET_MCR_RESET) {
             sgi_ioc3_eth_reset_registers(s);
+            s->enet_reg[index] = SGI_IOC3_ENET_MCR_RESET |
+                                 SGI_IOC3_ENET_MCR_ARB_DIAG_IDLE;
             return;
         }
         s->enet_reg[index] = val;

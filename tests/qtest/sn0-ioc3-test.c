@@ -740,6 +740,7 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define MCR_TX_EN         (1u << 14)
 #define MCR_RX_DMA_EN     (1u << 15)
 #define MCR_RX_EN         (1u << 16)
+#define MCR_ARB_DIAG_IDLE (1u << 21)
 #define MCR_RESET         (1u << 31)
 
 /* The receive buffer offset field holds the distance from the buffer's
@@ -813,13 +814,12 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define RAM_SCRATCH       0x00100000
 
 /*
- * MAC reset is a command rather than storage. The PROM writes it before
- * programming either DMA ring and polls until hardware clears it; retaining
- * the bit stops netboot before the first BOOTP packet can be constructed.
- * Seed another register as well so the test proves that reset clears the
- * block, rather than merely hiding the command bit on reads.
+ * MAC reset is a two-step handshake. IRIX writes reset, waits for the
+ * arbitration diagnostic to report idle, and clears reset itself. Seed
+ * another register as well so the test proves that reset clears the block,
+ * rather than merely synthesizing the idle status on reads.
  */
-static void test_the_ethernet_mac_reset_is_self_clearing(const void *data)
+static void test_the_ethernet_mac_reset_reports_idle(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
@@ -827,8 +827,12 @@ static void test_the_ethernet_mac_reset_is_self_clearing(const void *data)
     qtest_writel(qts, TX_RING_LO, 0x00100000);
     qtest_writel(qts, MAC_CONTROL, MCR_RESET);
 
-    g_assert_cmphex(qtest_readl(qts, MAC_CONTROL), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MAC_CONTROL), ==,
+                    MCR_RESET | MCR_ARB_DIAG_IDLE);
     g_assert_cmphex(qtest_readl(qts, TX_RING_LO), ==, 0);
+
+    qtest_writel(qts, MAC_CONTROL, 0);
+    g_assert_cmphex(qtest_readl(qts, MAC_CONTROL), ==, 0);
 
     qtest_quit(qts);
 }
@@ -2711,8 +2715,8 @@ int main(int argc, char **argv)
                         test_the_ethernet_interrupt_register_acknowledges);
     qtest_add_data_func("sn0/ioc3/ethernet-read-only-registers", NULL,
                         test_the_ethernet_read_only_registers);
-    qtest_add_data_func("sn0/ioc3/ethernet-mac-reset-self-clearing", NULL,
-                        test_the_ethernet_mac_reset_is_self_clearing);
+    qtest_add_data_func("sn0/ioc3/ethernet-mac-reset-reports-idle", NULL,
+                        test_the_ethernet_mac_reset_reports_idle);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-sends-inline-frame", NULL,
                         test_the_ethernet_transmit_sends_inline_frame);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-bounds-the-inline-area",
