@@ -34,6 +34,14 @@
 
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785U
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffffU
+#define SN0_HUB_LOCAL           0x20001000000ULL
+#define SN0_PI_CPU_PRESENT_A    0x000040
+#define SN0_PI_CPU_PRESENT_B    0x000048
+#define SN0_GRAPH_NODE_BOARD    0x4100
+#define SN0_GRAPH_COMPONENTS    0x4400
+#define SN0_GRAPH_COMP_STRIDE   0x80
+#define SN0_COMP_PROCESSOR      1
+#define SN0_COMP_ENABLED        1
 
 static uint32_t read_config0(QTestState *qts)
 {
@@ -393,6 +401,46 @@ static void test_architecture_boundaries(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * An IP29 node has two processor slices.  Selecting both must create both CPU
+ * objects and tell the node's Hub that both sockets are populated; accepting
+ * -smp 2 without either half would expose a topology that firmware cannot use.
+ */
+static void test_one_node_smp(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+    QDict *response;
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                              " 'arguments': { 'path': '/machine/node0/cpu1',"
+                              "                  'property': 'type' } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "R10000-mips64-cpu");
+    qobject_unref(response);
+
+    g_assert_cmphex(qtest_readq(qts, SN0_HUB_LOCAL + SN0_PI_CPU_PRESENT_A),
+                    ==, 1);
+    g_assert_cmphex(qtest_readq(qts, SN0_HUB_LOCAL + SN0_PI_CPU_PRESENT_B),
+                    ==, 1);
+
+    g_assert_cmpuint(qtest_readb(qts, SN0_GRAPH_NODE_BOARD + 0x17), ==, 4);
+    g_assert_cmphex(qtest_readl(qts, SN0_GRAPH_NODE_BOARD + 0x28), ==,
+                    SN0_GRAPH_COMPONENTS + SN0_GRAPH_COMP_STRIDE);
+    g_assert_cmpuint(qtest_readb(qts, SN0_GRAPH_COMPONENTS +
+                                     SN0_GRAPH_COMP_STRIDE), ==,
+                     SN0_COMP_PROCESSOR);
+    g_assert_cmpuint(qtest_readb(qts, SN0_GRAPH_COMPONENTS +
+                                     SN0_GRAPH_COMP_STRIDE + 0x02), ==,
+                     SN0_COMP_ENABLED);
+    g_assert_cmpuint(qtest_readb(qts, SN0_GRAPH_COMPONENTS +
+                                     SN0_GRAPH_COMP_STRIDE + 0x18), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, SN0_GRAPH_COMPONENTS +
+                                    SN0_GRAPH_COMP_STRIDE + 0x1c), ==, 1);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -405,6 +453,8 @@ int main(int argc, char **argv)
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/processor-mode-bits", NULL,
                         test_processor_mode_bits_are_board_state);
+    qtest_add_data_func("sn0/model/one-node-smp", NULL,
+                        test_one_node_smp);
 
     return g_test_run();
 }

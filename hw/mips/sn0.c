@@ -92,6 +92,13 @@
 #define SN0_HUB_FREQ_HZ   90000000
 #define SN0_RTC_FREQ_HZ   1250000       /* an 800 ns tick */
 #define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
+#define SN0_CPUS_PER_NODE 2
+#define SN0_HUB_PRIVATE_SIZE (128 * KiB)
+#define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
+#define SN0_PROMDATA_PADDR  0x100000
+#define SN0_PROMDATA_SIZE   (32 * KiB)
+#define SN0_PROM_COPY_PADDR 0x01a00000
+#define SN0_PROM_BSR_DEX    (1U << 1)
 
 /*
  * A component's port descriptor: a sixteen-bit node identifier, an eight-bit
@@ -125,12 +132,22 @@ typedef enum SN0FlashState {
     SN0_FLASH_ERASE_SELECT,
 } SN0FlashState;
 
+typedef struct SN0PromDataState {
+    MIPSCPU *cpu;
+    MemoryRegion data;
+    MemoryRegion filter;
+} SN0PromDataState;
+
 typedef struct SN0NodeState {
     DeviceState parent_obj;
 
     uint32_t nasid;
     Clock *cpuclk;
-    MIPSCPU *cpu;
+    MIPSCPU *cpu[SN0_CPUS_PER_NODE];
+    MemoryRegion cpu_sysmem[SN0_CPUS_PER_NODE];
+    MemoryRegion sysmem_alias[SN0_CPUS_PER_NODE];
+    MemoryRegion hub_private[SN0_CPUS_PER_NODE][2];
+    SN0PromDataState promdata[SN0_CPUS_PER_NODE];
     SGIHubState hub;
 
     MemoryRegion flash;
@@ -261,6 +278,93 @@ DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
 #define SN0_PROMLOG_SECTOR    14
 #define SN0_PROMLOG_MAGIC     0x504c4f47
 #define SN0_PROMLOG_VERSION   1
+
+static bool sn0_promdata_is_private(SN0PromDataState *s)
+{
+    CPUMIPSState *env;
+    uint32_t pc;
+
+    if (!current_cpu || current_cpu != CPU(s->cpu)) {
+        return false;
+    }
+
+    env = &s->cpu->env;
+    pc = env->active_tc.PC;
+    /* The PROM switches between its physical and 32-bit KSEG aliases. */
+    if (pc >= 0x80000000 && pc < 0xc0000000) {
+        pc &= 0x1fffffff;
+    }
+
+    /*
+     * Before memory is initialized, the IP27 PROM marks this 32 KiB range
+     * dirty-exclusive in each R10000's primary data cache and uses it for its
+     * C stack and local data. FPR 0 is the PROM's boot-status register; DEX
+     * records that cache-only phase. Restrict the convention to code running
+     * from either the boot PROM or the RAM copy to which it transfers before
+     * installing the final mapped alias. Later software can then use FPR 0
+     * and physical memory at 1 MiB normally.
+     */
+    return (env->active_fpu.fpr[0].d & SN0_PROM_BSR_DEX) &&
+           ((pc >= SN0_FLASH_LOCAL &&
+             pc < SN0_FLASH_LOCAL + SN0_FLASH_SIZE) ||
+            (pc >= SN0_PROM_COPY_PADDR &&
+             pc < SN0_PROM_COPY_PADDR + SN0_FLASH_SIZE));
+}
+
+static MemTxResult sn0_promdata_read(void *opaque, hwaddr addr, uint64_t *val,
+                                     unsigned size, MemTxAttrs attrs)
+{
+    SN0PromDataState *s = opaque;
+    uint8_t bytes[8];
+    MemTxResult result;
+
+    if (sn0_promdata_is_private(s)) {
+        *val = ldn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size);
+        return MEMTX_OK;
+    }
+
+    result = address_space_read(&address_space_memory,
+                                SN0_PROMDATA_PADDR + addr, attrs, bytes, size);
+    *val = ldn_be_p(bytes, size);
+    return result;
+}
+
+static MemTxResult sn0_promdata_write(void *opaque, hwaddr addr, uint64_t val,
+                                      unsigned size, MemTxAttrs attrs)
+{
+    SN0PromDataState *s = opaque;
+    uint8_t bytes[8];
+
+    if (sn0_promdata_is_private(s)) {
+        stn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size, val);
+        memory_region_set_dirty(&s->data, addr, size);
+        return MEMTX_OK;
+    }
+
+    stn_be_p(bytes, size, val);
+    return address_space_write(&address_space_memory,
+                               SN0_PROMDATA_PADDR + addr, attrs, bytes, size);
+}
+
+static const MemoryRegionOps sn0_promdata_ops = {
+    .read_with_attrs = sn0_promdata_read,
+    .write_with_attrs = sn0_promdata_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+static void sn0_promdata_reset(void *opaque)
+{
+    SN0PromDataState *s = opaque;
+
+    memset(memory_region_get_ram_ptr(&s->data), 0, SN0_PROMDATA_SIZE);
+    memory_region_set_dirty(&s->data, 0, SN0_PROMDATA_SIZE);
+}
 
 static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
 {
@@ -1388,7 +1492,12 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     uint8_t *cpu, *hub, *mem;
     uint64_t total_mb = machine->ram_size / MiB;
     uint64_t widget;
+    unsigned int base_io_component;
+    unsigned int cpu_count = machine->smp.cpus;
+    unsigned int hub_component = cpu_count;
     unsigned int i;
+    unsigned int memory_component = hub_component + 1;
+    unsigned int midplane_component = memory_component + 1;
 
     stq_be_p(graph + 0x00, SN0_GRAPH_MAGIC);
     /* The structure version, which real firmware writes as zero. */
@@ -1483,21 +1592,20 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     console[0x22] = SN0_CONSOLE_WIDGET;
     console[0x23] = 1;                          /* devices behind the bridge */
 
-    /* Board 0: the node board, with a processor, a Hub and a memory bank. */
+    /* Board 0: the node board, with its processors, Hub and memory banks. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
-              SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, 3, 3);
+              SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, cpu_count + 2,
+              cpu_count + 2);
     /*
-     * The three physical identifiers here are all zero on this machine and all
-     * mean different things: the processor's is its processor index, the Hub's
-     * is its node identifier, and the memory bank's is its bank index. They
-     * agree because this is processor zero on node zero and the memory
-     * component describes the bank array beginning at bank zero. Writing them
-     * is worth doing precisely because each stops being right at a different
-     * moment when a second component of that type is added.
+     * These physical identifiers name different things: a processor's slice,
+     * the Hub's node, and the memory component's first bank. Only the latter
+     * two remain zero when slice B is populated.
      */
-    sn0_component(graph, 0, 0, SN0_COMP_PROCESSOR, 0, 0); /* processor 0 */
-    sn0_component(graph, 1, 0, SN0_COMP_HUB, 0, 0);
-    sn0_component(graph, 2, 0, SN0_COMP_MEMORY, 0, 0);
+    for (i = 0; i < cpu_count; i++) {
+        sn0_component(graph, i, i, SN0_COMP_PROCESSOR, i, 0);
+    }
+    sn0_component(graph, hub_component, 0, SN0_COMP_HUB, 0, 0);
+    sn0_component(graph, memory_component, 0, SN0_COMP_MEMORY, 0, 0);
 
     /*
      * The processor's own fields, which are the only source a guest has for its
@@ -1506,22 +1614,20 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * identification field is sixteen bits, so it carries the low half of the
      * processor identification register and not the whole of it.
      */
-    cpu = sn0_component_at(graph, 0);
-    stw_be_p(cpu + 0x38, 0x0900);               /* identification, low half */
-    /*
-     * The floating-point unit's implementation and revision register. It holds
-     * the same value as the processor's identification for a reason rather than
-     * by a slip of the keyboard: the unit is on the same die and carries the
-     * same implementation number, nine, with revision zero. This is what the
-     * CPU model reports through that register, so a guest comparing the two
-     * finds them agreeing, which is the point of writing it over zero.
-     */
-    stw_be_p(cpu + 0x3a, 0x0900);
-    stw_be_p(cpu + 0x3c, 180);                  /* clock in megahertz */
-    stw_be_p(cpu + 0x3e, 1);                    /* secondary cache, megabytes */
-    stw_be_p(cpu + 0x40, 90);                   /* secondary cache clock */
+    for (i = 0; i < cpu_count; i++) {
+        cpu = sn0_component_at(graph, i);
+        stw_be_p(cpu + 0x38, 0x0900);           /* identification, low half */
+        /*
+         * The floating-point unit is on the same die and carries the same
+         * implementation and revision as its processor.
+         */
+        stw_be_p(cpu + 0x3a, 0x0900);
+        stw_be_p(cpu + 0x3c, 180);              /* clock in megahertz */
+        stw_be_p(cpu + 0x3e, 1);                /* secondary cache, megabytes */
+        stw_be_p(cpu + 0x40, 90);               /* secondary cache clock */
+    }
 
-    hub = sn0_component_at(graph, 1);
+    hub = sn0_component_at(graph, hub_component);
     /*
      * The port descriptor at 0x3c: this Hub names no crossbar link, so the
      * node-identifier bits must read as the invalid marker rather than the
@@ -1547,7 +1653,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * than on anything visible here. The firmware test asserts the two
      * together so neither can be changed alone.
      */
-    mem = sn0_component_at(graph, 2);
+    mem = sn0_component_at(graph, memory_component);
     stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */
     stw_be_p(mem + 0x3a, 0);                    /* bank-to-address mapping */
     for (i = 0; i < SN0_MEM_BANKS; i++) {
@@ -1570,8 +1676,9 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * would put the component one slot away from where that consumer looks.
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
-              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE, 3, 1, 0);
-    sn0_component(graph, 3, 0, SN0_COMP_MODULE_SERIAL, 0, 0);
+              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE,
+              midplane_component, 1, 0);
+    sn0_component(graph, midplane_component, 0, SN0_COMP_MODULE_SERIAL, 0, 0);
 
     /*
      * Board 2: the base-I/O board, and the end of the list. Nothing on the path
@@ -1600,14 +1707,20 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * constants that place those devices on the bus above, not values asserted
      * separately that merely happen to agree with them.
      */
-    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0, 4, 4, 4);
-    sn0_component(graph, 4, 0, SN0_COMP_BRIDGE, SN0_CONSOLE_WIDGET,
+    base_io_component = midplane_component + 1;
+    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
+              base_io_component, 4, 4);
+    sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
+                  SN0_CONSOLE_WIDGET,
                   SN0_CONSOLE_WIDGET);
-    sn0_component(graph, 5, 0, SN0_COMP_SCSI, SN0_SCSI_DEVICE0,
+    sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
+                  SN0_SCSI_DEVICE0,
                   SN0_CONSOLE_WIDGET);
-    sn0_component(graph, 6, 1, SN0_COMP_SCSI, SN0_SCSI_DEVICE1,
+    sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
+                  SN0_SCSI_DEVICE1,
                   SN0_CONSOLE_WIDGET);
-    sn0_component(graph, 7, 0, SN0_COMP_IO_CONTROLLER, SN0_IOC3_DEVICE,
+    sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
+                  SN0_IOC3_DEVICE,
                   SN0_CONSOLE_WIDGET);
 
     rom_add_blob_fixed("sn0.graph", graph, SN0_CONFIG_GRAPH_SIZE,
@@ -2000,12 +2113,15 @@ static void sn0_assign_pci_resources(void *opaque)
 static void sn0_machine_ready(Notifier *notifier, void *data)
 {
     SN0MachineState *s = SN0_MACHINE(qdev_get_machine());
+    CPUState *cs;
 
     if (s->synthesized_firmware) {
         qemu_register_reset(sn0_firmware_reset, s);
     }
-    qemu_register_reset(sn0_cpu_reset, first_cpu);
-    qemu_register_reset(sn0_mode_bits_reset, first_cpu);
+    CPU_FOREACH(cs) {
+        qemu_register_reset(sn0_cpu_reset, cs);
+        qemu_register_reset(sn0_mode_bits_reset, cs);
+    }
     if (s->synthesized_firmware) {
         qemu_register_reset(sn0_assign_pci_resources, s);
     }
@@ -2071,7 +2187,7 @@ static void sn0_init(MachineState *machine)
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
-    unsigned int bank, segment, w, slot;
+    unsigned int bank, cpu_index, half, segment, w, slot;
 
     /*
      * Fatal rather than a warning if this cannot be armed: a machine that
@@ -2093,16 +2209,82 @@ static void sn0_init(MachineState *machine)
 
     s->node0.cpuclk = clock_new(OBJECT(&s->node0), "cpu-refclk");
     clock_set_hz(s->node0.cpuclk, SN0_CPU_REFCLK_HZ);
-    s->node0.cpu = MIPS_CPU(qdev_new(machine->cpu_type));
-    object_property_add_child(OBJECT(&s->node0), "cpu0",
-                              OBJECT(s->node0.cpu));
-    qdev_connect_clock_in(DEVICE(s->node0.cpu), "clk-in", s->node0.cpuclk);
-    object_property_set_bool(OBJECT(s->node0.cpu), "big-endian", true,
-                             &error_abort);
-    qdev_realize(DEVICE(s->node0.cpu), NULL, &error_abort);
-    cpu = s->node0.cpu;
-    cpu_mips_irq_init_cpu(cpu);
-    cpu_mips_clock_init(cpu);
+    for (cpu_index = 0; cpu_index < machine->smp.cpus; cpu_index++) {
+        g_autofree char *alias_name =
+            g_strdup_printf("sn0.node0.cpu%u.system", cpu_index);
+        g_autofree char *name = g_strdup_printf("cpu%u", cpu_index);
+        g_autofree char *promdata_name =
+            g_strdup_printf("sn0.node0.cpu%u.promdata", cpu_index);
+        g_autofree char *promdata_filter_name =
+            g_strdup_printf("sn0.node0.cpu%u.promdata-filter", cpu_index);
+        g_autofree char *sysmem_name =
+            g_strdup_printf("sn0.node0.cpu%u.memory", cpu_index);
+
+        /*
+         * Most addresses are shared system memory.  The bottom 128 KiB of the
+         * Hub-local uncached alias is the exception: the reading slice flips
+         * address bit 16, giving the two processors separate scratch halves.
+         */
+        memory_region_init(&s->node0.cpu_sysmem[cpu_index],
+                           OBJECT(&s->node0), sysmem_name, UINT64_MAX);
+        memory_region_init_alias(&s->node0.sysmem_alias[cpu_index],
+                                 OBJECT(&s->node0), alias_name, system, 0,
+                                 UINT64_MAX);
+        memory_region_add_subregion_overlap(
+            &s->node0.cpu_sysmem[cpu_index], 0,
+            &s->node0.sysmem_alias[cpu_index], -1);
+        for (half = 0; half < 2; half++) {
+            g_autofree char *private_name =
+                g_strdup_printf("sn0.node0.cpu%u.hub-private%u",
+                                cpu_index, half);
+            uint64_t private_offset = (half ^ cpu_index) *
+                                      SN0_HUB_PRIVATE_HALF;
+
+            memory_region_init_alias(
+                &s->node0.hub_private[cpu_index][half], OBJECT(&s->node0),
+                private_name, machine->ram, private_offset,
+                SN0_HUB_PRIVATE_HALF);
+            memory_region_add_subregion_overlap(
+                &s->node0.cpu_sysmem[cpu_index],
+                SN0_SPACE_HUB + node + half * SN0_HUB_PRIVATE_HALF,
+                &s->node0.hub_private[cpu_index][half], 0);
+        }
+
+        s->node0.cpu[cpu_index] = MIPS_CPU(qdev_new(machine->cpu_type));
+        s->node0.promdata[cpu_index].cpu = s->node0.cpu[cpu_index];
+        memory_region_init_ram(&s->node0.promdata[cpu_index].data,
+                               OBJECT(&s->node0), promdata_name,
+                               SN0_PROMDATA_SIZE, &error_fatal);
+        memory_region_init_io(&s->node0.promdata[cpu_index].filter,
+                              OBJECT(&s->node0), &sn0_promdata_ops,
+                              &s->node0.promdata[cpu_index],
+                              promdata_filter_name, SN0_PROMDATA_SIZE);
+        /*
+         * Firmware traps use cpu_memory_rw_debug() to copy results through
+         * guest pointers.  The trap and this filter share the node as their
+         * owner, so the device-wide guard would otherwise reject that
+         * intentional nested access before the filter can forward it to RAM.
+         */
+        s->node0.promdata[cpu_index].filter.disable_reentrancy_guard = true;
+        qemu_register_reset(sn0_promdata_reset,
+                            &s->node0.promdata[cpu_index]);
+        memory_region_add_subregion_overlap(
+            &s->node0.cpu_sysmem[cpu_index], SN0_PROMDATA_PADDR,
+            &s->node0.promdata[cpu_index].filter, 1);
+        object_property_add_child(OBJECT(&s->node0), name,
+                                  OBJECT(s->node0.cpu[cpu_index]));
+        object_property_set_link(OBJECT(s->node0.cpu[cpu_index]), "memory",
+                                 OBJECT(&s->node0.cpu_sysmem[cpu_index]),
+                                 &error_abort);
+        qdev_connect_clock_in(DEVICE(s->node0.cpu[cpu_index]), "clk-in",
+                              s->node0.cpuclk);
+        object_property_set_bool(OBJECT(s->node0.cpu[cpu_index]),
+                                 "big-endian", true, &error_abort);
+        qdev_realize(DEVICE(s->node0.cpu[cpu_index]), NULL, &error_abort);
+        cpu_mips_irq_init_cpu(s->node0.cpu[cpu_index]);
+        cpu_mips_clock_init(s->node0.cpu[cpu_index]);
+    }
+    cpu = s->node0.cpu[0];
 
     /*
      * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
@@ -2133,9 +2315,9 @@ static void sn0_init(MachineState *machine)
              * Hub-special offset zero mirrors the first 256 MiB of the
              * reading processor's local node memory.  Mirror each populated
              * run separately so the alias preserves the bank's slot holes.
-             * The real two-CPU form also selects a private low 128 KiB page
-             * from the reading slice; this one-CPU machine always selects
-             * slice A, for which the direct view is the required mapping.
+             * Per-CPU address-space overlays above flip the low 128 KiB for
+             * slice B. This shared mapping remains the fallback for qtest,
+             * DMA, and every address beyond that private range.
              */
             if (segment_addr < SN0_HUB_LOCAL_MEM_SIZE) {
                 uint64_t alias_size = MIN(segment_size,
@@ -2304,6 +2486,8 @@ static void sn0_init(MachineState *machine)
      * other to clear interrupt state in the same boot.
      */
     qdev_prop_set_uint32(DEVICE(&s->node0.hub), "nasid", s->node0.nasid);
+    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "cpus", machine->smp.cpus);
+    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "cpu-base", 0);
     qdev_prop_set_uint32(DEVICE(&s->node0.hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&s->node0.hub), "xtalk",
@@ -2339,8 +2523,8 @@ static void sn0_init(MachineState *machine)
     sysbus_realize(SYS_BUS_DEVICE(&s->node0.hub), &error_fatal);
 
     /*
-     * The Hub's two pending banks reach the processor on its first two hardware
-     * interrupt lines. The processor's own interrupt array is indexed by the
+     * The Hub's two pending banks reach each processor on its first two
+     * hardware interrupt lines. A processor's interrupt array is indexed by the
      * position within the Cause register's pending field, so the index is the
      * Cause bit less that field's offset — derived rather than written, because
      * the sources all name the Cause bit and a hand-written index is a silent
@@ -2351,12 +2535,20 @@ static void sn0_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 1,
                        cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
     /*
-     * The real-time counter's comparator for this processor. The Hub offers a
-     * line per socket; this node has one processor, so the second stays
-     * unconnected and the Hub's writes to it go nowhere.
+     * Processor A's real-time comparator. Processor B's line is connected
+     * below when that socket is populated.
      */
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 2,
                        cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
+    if (machine->smp.cpus == SN0_CPUS_PER_NODE) {
+        cpu = s->node0.cpu[1];
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 4,
+                           cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 5,
+                           cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 3,
+                           cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
+    }
 
     /*
      * The I/O bridge. It carries a real PCI bus, and the base I/O controller
@@ -2907,7 +3099,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
 
     mc->desc = "SGI Origin 200 (IP27)";
     mc->init = sn0_init;
-    mc->max_cpus = 1;
+    mc->max_cpus = SN0_CPUS_PER_NODE;
     mc->default_ram_size = 64 * MiB;
     mc->default_ram_id = "sn0.node0.ram";
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");

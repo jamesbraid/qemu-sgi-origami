@@ -71,15 +71,17 @@
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
 
 /*
- * The Hub's outgoing lines, by the order it registers them: the two pending
- * banks, then the counter comparator for each processor. Intercepting them is
- * what lets a test see the line itself rather than only the pending bit behind
- * it — the distinction the pending-bank tests have to leave to the boot.
+ * The Hub's outgoing lines, by the order it registers them: processor A's two
+ * pending banks, both counter comparators, then processor B's two pending
+ * banks. Intercepting them is what lets a test see the line itself rather than
+ * only the pending bit behind it.
  */
 #define HUB_IRQ_LINES       "sysbus-irq"
 #define HUB_IRQ_BANK0       0
 #define HUB_IRQ_BANK1       1
 #define HUB_IRQ_RT_A        2
+#define HUB_IRQ_BANK0_B     4
+#define HUB_IRQ_BANK1_B     5
 
 /* A millisecond of the counter, which is the unit these tests arm. */
 #define PI_RT_MS            (PI_RT_HZ / 1000)
@@ -1335,6 +1337,26 @@ static void test_a_masked_pending_bit_raises_nothing(const void *data)
     qtest_quit(qts);
 }
 
+static void test_pending_banks_are_masked_per_processor(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 1ULL << 12);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
+
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK1_B));
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+
+    qtest_quit(qts);
+}
+
 static void test_the_pending_banks_reject_writes(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1840,6 +1862,8 @@ int main(int argc, char **argv)
                         test_interrupt_number_selects_the_bank);
     qtest_add_data_func("sn0/hub/masked-pending-raises-nothing", NULL,
                         test_a_masked_pending_bit_raises_nothing);
+    qtest_add_data_func("sn0/hub/pending-banks-masked-per-processor", NULL,
+                        test_pending_banks_are_masked_per_processor);
     qtest_add_data_func("sn0/hub/one-wire-resets-to-its-timing", NULL,
                         test_the_one_wire_master_resets_to_its_timing);
     qtest_add_data_func("sn0/hub/one-wire-keeps-its-wide-field", NULL,
