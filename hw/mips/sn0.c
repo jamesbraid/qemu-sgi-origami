@@ -2749,8 +2749,14 @@ static void sn0_init(MachineState *machine)
         sn0_build_structures(machine, node, kernel_page, kernel_pages);
     }
 
-    rom_add_blob_fixed("sn0.flash", flash, SN0_FLASH_SIZE,
-                       node + SN0_FLASH_LOCAL);
+    /*
+     * Initialize the chip once. rom_add_blob_fixed() would register the
+     * contents as a ROM and copy them back on every machine reset, erasing
+     * environment changes the PROM deliberately retains across that reset.
+     */
+    memcpy(memory_region_get_ram_ptr(&s->node0.flash), flash,
+           SN0_FLASH_SIZE);
+    memory_region_set_dirty(&s->node0.flash, 0, SN0_FLASH_SIZE);
     g_free(flash);
 
     /*

@@ -267,6 +267,11 @@ static void test_flash_program_and_erase(const void *data)
     g_assert_cmphex(qtest_readb(qts, FLASH_HUB + target), ==, 0x5a);
     g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE + target), ==, 0x5a);
 
+    /* Flash is retained state; a machine reset must not reload -bios. */
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target + 1), ==, 0xf0);
+
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_UNLOCK1, 0x80);
