@@ -1626,6 +1626,71 @@ static void test_reaching_the_watermark_raises_the_threshold(const void *data)
 }
 
 /*
+ * Past the watermark, not merely on it. The three cases above put the
+ * available count at three against a watermark of nought, three against three,
+ * and nought against nought -- and an engine testing the two for *equality*
+ * rather than for at-or-below passes all three, so the comparison this source
+ * is named for is never actually compared.
+ *
+ * Here the supply falls through the watermark and keeps going: four buffers
+ * against a watermark of three, so the first delivery brings it to three and
+ * the second to two. Equality raises the source on the first and goes silent
+ * on the second. At-or-below raises it on both, which is what a low watermark
+ * means and what the driver programming one is asking for.
+ */
+static void test_falling_past_the_watermark_keeps_raising(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xbe, 0xef };
+    uint32_t ring = RAM_SCRATCH;
+    uint32_t rxbuf = RAM_SCRATCH + 0x4000;
+    unsigned int i;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL,
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_TIMER, 0);
+    qtest_writel(qts, RX_CONTROL, 3);
+    for (i = 0; i < 4; i++) {
+        qtest_writel(qts, ring + i * 8, 0);
+        qtest_writel(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
+    }
+    qtest_writel(qts, RX_PRODUCE, 4 << 3);
+
+    for (i = 0; i < 2; i++) {
+        qtest_writel(qts, ENET_INT_STATUS, 0xffffffffu);
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        for (attempt = 0; attempt < 200; attempt++) {
+            if (qtest_readl(qts, RX_CONSUME) == (i + 1) * 8) {
+                break;
+            }
+            g_usleep(5000);
+        }
+        g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, (i + 1) * 8);
+
+        /*
+         * Both deliveries. The second is the one an equality test misses:
+         * available has fallen to two and the watermark is three, so the
+         * supply is past it rather than on it.
+         */
+        g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
+                        ENET_INT_RX_THRESHOLD, ==, ENET_INT_RX_THRESHOLD);
+    }
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * Arming is a command and the index is storage. SGI's own driver writes the
  * index without the arm bit from its interrupt path, so an engine that took
  * the bit's absence as a disarm would deliver one frame with an interrupt
@@ -2553,6 +2618,8 @@ int main(int argc, char **argv)
                         test_an_armed_receive_timer_raises_its_own_source);
     qtest_add_data_func("sn0/ioc3/ethernet-below-watermark-raises-nothing",
                         NULL, test_a_frame_below_the_watermark_raises_nothing);
+    qtest_add_data_func("sn0/ioc3/ethernet-past-watermark-keeps-raising", NULL,
+                        test_falling_past_the_watermark_keeps_raising);
     qtest_add_data_func("sn0/ioc3/ethernet-watermark-raises-threshold", NULL,
                         test_reaching_the_watermark_raises_the_threshold);
     qtest_add_data_func("sn0/ioc3/ethernet-bare-produce-keeps-timer-armed",
