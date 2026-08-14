@@ -1758,7 +1758,7 @@ static void sn0_cpu_reset(void *opaque)
 
 static void sn0_mode_bits_reset(void *opaque)
 {
-    CPUMIPSState *env = &MIPS_CPU(first_cpu)->env;
+    CPUMIPSState *env = &MIPS_CPU(opaque)->env;
 
     env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
                        (SN0_PROCESSOR_MODE_BITS & SN0_PROCESSOR_MODE_MASK);
@@ -1850,11 +1850,16 @@ static void sn0_assign_pci_resources(void *opaque)
 
 static void sn0_machine_ready(Notifier *notifier, void *data)
 {
-    qemu_register_reset(sn0_firmware_reset, SN0_MACHINE(qdev_get_machine()));
+    SN0MachineState *s = SN0_MACHINE(qdev_get_machine());
+
+    if (s->synthesized_firmware) {
+        qemu_register_reset(sn0_firmware_reset, s);
+    }
     qemu_register_reset(sn0_cpu_reset, first_cpu);
-    qemu_register_reset(sn0_mode_bits_reset, NULL);
-    qemu_register_reset(sn0_assign_pci_resources,
-                        SN0_MACHINE(qdev_get_machine()));
+    qemu_register_reset(sn0_mode_bits_reset, first_cpu);
+    if (s->synthesized_firmware) {
+        qemu_register_reset(sn0_assign_pci_resources, s);
+    }
 }
 
 static Notifier sn0_machine_ready_notifier = {
@@ -2597,9 +2602,7 @@ static void sn0_init(MachineState *machine)
 
     qdev_realize(DEVICE(&s->node0), NULL, &error_fatal);
 
-    if (s->synthesized_firmware) {
-        qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
-    }
+    qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
 }
 
 static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
