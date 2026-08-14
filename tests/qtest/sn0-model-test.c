@@ -345,6 +345,14 @@ static void test_architecture_boundaries(const void *data)
     g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sgi-hub");
     qobject_unref(response);
 
+    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                              " 'arguments': { 'path': '/machine/node0/cpu0',"
+                              "                  'property': 'type' } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "R10000-mips64-cpu");
+    qobject_unref(response);
+
     qtest_quit(qts);
 }
 
