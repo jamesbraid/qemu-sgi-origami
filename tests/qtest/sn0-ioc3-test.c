@@ -1698,6 +1698,109 @@ static void test_enabling_a_set_source_raises_the_line(const void *data)
 }
 
 /*
+ * The rings driven hard on this machine rather than on the plain one: three
+ * laps of the receive ring and a burst of descriptors behind a single
+ * doorbell, with every transfer issued through the controller's own DMA
+ * address space rather than the system's.
+ *
+ * WHAT THIS DOES NOT SHOW, established by trying it rather than assumed. An
+ * earlier version of this comment said the transfers go through the Bridge's
+ * address translation and that a defect appearing here and not on the plain
+ * machine would therefore point at the fabric. Pointing the ring read at the
+ * plain system address space instead -- which is exactly the defect that claim
+ * describes -- leaves this test passing. In the arrangement it sets up the two
+ * address spaces resolve alike, so the test cannot tell them apart and proves
+ * nothing about the translation being in the path.
+ *
+ * What it does buy is the same shapes under load on the machine we ship, where
+ * the plain-machine versions carry the attribution. Making it discriminate the
+ * translation as well would mean programming the Bridge so a guest address and
+ * a physical one differ, which is its own work and belongs with the Bridge's
+ * own tests rather than smuggled in here.
+ */
+static void test_the_rings_under_load_on_the_fabric(const void *data)
+{
+    enum { BUFFERS = 8, LAPS = 3, RING_ENTRIES = 512, STRIDE = 8,
+           BURST = 16, LEN = 64 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[LEN];
+    uint8_t got[128];
+    uint32_t ring = RAM_SCRATCH;
+    uint32_t rxbuf = RAM_SCRATCH + 0x10000;
+    uint32_t txbase = RAM_SCRATCH + 0x200000;
+    unsigned int i, n;
+    uint32_t sent;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 9);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_TIMER, 0);
+    qtest_writel(qts, RX_CONTROL, 0);
+    for (i = 0; i < RING_ENTRIES; i++) {
+        qtest_writel(qts, ring + i * STRIDE, 0);
+        qtest_writel(qts, ring + i * STRIDE + 4,
+                     rxbuf + (i % BUFFERS) * 0x1000);
+    }
+
+    for (sent = 0; sent < RING_ENTRIES * LAPS; sent++) {
+        int attempt;
+        uint32_t want = ((sent + 1) * STRIDE) % (RING_ENTRIES * STRIDE);
+
+        if (sent % 64 == 0) {
+            uint32_t ahead = (sent + 256) % RING_ENTRIES;
+
+            qtest_writel(qts, RX_PRODUCE, (ahead * STRIDE) | RPIR_ARM);
+        }
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        for (attempt = 0; attempt < 2000; attempt++) {
+            if (qtest_readl(qts, RX_CONSUME) == want) {
+                break;
+            }
+            g_usleep(1000);
+        }
+        g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, want);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
+
+    /* And a whole batch out through the same translation, behind one write. */
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, txbase & 0xffffc000u);
+    for (n = 0; n < BURST; n++) {
+        uint32_t desc = txbase + n * 128;
+        uint8_t out[LEN];
+
+        memset(out, 0, sizeof(out));
+        memset(out, 0xff, 6);
+        out[14] = (uint8_t)n;
+        qtest_memwrite(qts, desc + TXD_DATA_OFFSET, out, sizeof(out));
+        qtest_writel(qts, desc + 0, LEN | TXD_DATA_VALID);
+        qtest_writel(qts, desc + 4, LEN);
+    }
+    qtest_writel(qts, TX_PRODUCE, BURST * 128);
+
+    for (n = 0; n < BURST; n++) {
+        size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+
+        g_assert_cmpint(len, ==, LEN);
+        g_assert_cmphex(got[14], ==, (uint8_t)n);
+    }
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * The register-only ack test above checks that a write clears the status bits
  * it names; it does not check that the line those bits gate actually follows.
  * A model that cleared the register without recomputing the line would pass
@@ -2440,6 +2543,8 @@ int main(int argc, char **argv)
                         NULL, test_a_bare_produce_write_leaves_the_timer_armed);
     qtest_add_data_func("sn0/ioc3/ethernet-enable-raises-a-set-source", NULL,
                         test_enabling_a_set_source_raises_the_line);
+    qtest_add_data_func("sn0/ioc3/ethernet-rings-under-load", NULL,
+                        test_the_rings_under_load_on_the_fabric);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
     qtest_add_data_func("sn0/ioc3/ethernet-reply-during-transmit", NULL,
