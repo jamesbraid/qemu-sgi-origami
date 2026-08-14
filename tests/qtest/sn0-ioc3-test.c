@@ -1082,7 +1082,8 @@ static void read_ethernet_address_page(QTestState *qts,
 
 static void assert_ethernet_address_page(QTestState *qts,
                                          OneWireSelection selection,
-                                         uint8_t cmd)
+                                         uint8_t cmd,
+                                         const uint8_t expected_mac[6])
 {
     uint8_t leading, page[32], trailing;
     uint8_t echo[3] = { cmd, 0x00, 0x00 };
@@ -1101,8 +1102,7 @@ static void assert_ethernet_address_page(QTestState *qts,
     for (i = 0; i < 6; i++) {
         got_mac[i] = page[10 - i];
     }
-    g_assert_cmpmem(got_mac, sizeof(got_mac), onewire_test_mac,
-                    sizeof(onewire_test_mac));
+    g_assert_cmpmem(got_mac, sizeof(got_mac), expected_mac, sizeof(got_mac));
 
     g_assert_cmphex(onewire_crc16(0, page, 13), ==, 0xb001);
     g_assert_cmphex(trailing, ==, onewire_crc8(0, page, 32));
@@ -1117,7 +1117,8 @@ static void test_reading_the_page_via_read_memory(const void *data)
     qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
 
     /* OpenBSD's owmac: Match ROM, then the plain Read Memory command. */
-    assert_ethernet_address_page(qts, ONEWIRE_SELECT_MATCH, 0xf0);
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_MATCH, 0xf0,
+                                 onewire_test_mac);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -1132,7 +1133,8 @@ static void test_reading_the_page_via_read_memory_crc(const void *data)
     qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
 
     /* Linux's w1_ds2502_read_page: Skip ROM, then Read Memory-with-CRC. */
-    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SKIP, 0xc3);
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SKIP, 0xc3,
+                                 onewire_test_mac);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -1147,7 +1149,33 @@ static void test_reading_the_page_after_search(const void *data)
     qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
 
     /* SGI's PROM continues directly from Search ROM to Read Memory. */
-    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SEARCH, 0xf0);
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SEARCH, 0xf0,
+                                 onewire_test_mac);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * An on-board IOC3 is not an arbitrary add-in NIC: its station address lives
+ * in the SGI-programmed one-wire part the PROM reads before it enables the
+ * ethernet engine.  A command line that supplies a backend but no mac= must
+ * therefore get an SGI address rather than QEMU's generic virtual-NIC OUI.
+ * Read the value through that part, not through a QOM property, because this
+ * is the firmware-visible contract that decides whether netboot can start.
+ */
+static void test_the_default_station_address_is_an_sgi_address(const void *data)
+{
+    static const uint8_t expected[6] = {
+        0x08, 0x00, 0x69, 0x12, 0x34, 0x56,
+    };
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SEARCH, 0xf0, expected);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2740,6 +2768,8 @@ int main(int argc, char **argv)
                         test_reading_the_page_via_read_memory_crc);
     qtest_add_data_func("sn0/ioc3/one-wire-read-memory-after-search", NULL,
                         test_reading_the_page_after_search);
+    qtest_add_data_func("sn0/ioc3/one-wire-default-mac-is-sgi", NULL,
+                        test_the_default_station_address_is_an_sgi_address);
     qtest_add_data_func("sn0/ioc3/one-wire-read-status-no-redirection", NULL,
                         test_read_status_returns_no_redirection);
     qtest_add_data_func("sn0/ioc3/pin-control-two-aliases", NULL,
