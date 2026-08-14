@@ -84,6 +84,17 @@
  */
 #define RXD_BUF_OFFSET    66
 #define RXH_VALID         0x80000000u
+
+/*
+ * The good-packet bit in a receive buffer's error word, from the drivers
+ * rather than from our header, on the same footing as the offsets above.
+ * Linux declares it as ERXBUF_GOODPKT 0x40000000 and gates every delivered
+ * frame on it, dropping the frame without it; OpenBSD declares the same value
+ * as IEC_RXERR_GOODPACKET and never reads it, testing the error bits beside it
+ * instead. A test carrying an untraceable copy of a constant is how the
+ * transmit data offset stayed wrong in two files at once, each agreeing with
+ * the other and neither with the hardware.
+ */
 #define RXE_GOODPKT       0x40000000u
 
 /*
