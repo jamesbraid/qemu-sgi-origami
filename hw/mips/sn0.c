@@ -2205,14 +2205,11 @@ static void sn0_init(MachineState *machine)
     qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
                       serial_hd(SN0_IOC3_CHARDEV));
     /*
-     * The controller's ethernet block is the machine's only network device,
-     * so it claims whichever -netdev/-nic the command line names for it (or
-     * none, if the guest is not being asked to reach a network this run).
-     * The block is a child device (hw/net/sgi-ioc3-eth.c) that carries the
-     * NIC properties itself, not the controller's own PCI function, so this
-     * targets that child rather than ioc3 directly.
+     * The controller's ethernet block is the machine's only network device
+     * and claims whichever -netdev/-nic the command line names for it, but
+     * the chip does that for itself in its own realize now, so there is
+     * nothing to do here beyond realizing it.
      */
-    qemu_configure_nic_device(DEVICE(&SGI_IOC3(ioc3)->eth), true, NULL);
     pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge)->bus,
                           &error_fatal);
 

@@ -67,6 +67,7 @@ config DP83840
 
 config SGI_IOC3_ETH
     bool
+    select DP83840
 
 config LAN9118_PHY
     bool

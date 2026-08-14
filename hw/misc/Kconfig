@@ -274,7 +274,11 @@ config SGI_ELSC
 
 config SGI_IOC3
     bool
+    default y if PCI_DEVICES
+    depends on PCI
+    select M48T35
     select SERIAL
+    select SGI_IOC3_ETH
 
 config SGI_XBOW
     bool
