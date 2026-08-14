@@ -1283,15 +1283,18 @@ static void tx_one(QTestState *qts, uint32_t base, uint32_t slot,
     ioc3_writel(qts, ENET_TX_PRODUCE, (slot + 1) * TX_DESC_SIZE);
 }
 
-static void test_a_reply_inside_the_walk_at_every_size(const void *data)
+/*
+ * One size per test case rather than a loop over all of them, and that is not
+ * a stylistic choice. The mutation these exist to fail against is the original
+ * defect -- the transmit walk snapshotting the interrupt status at entry and
+ * writing it back at exit -- and a single case aborts on the first size that
+ * fails, which says nothing about the rest. Split, every size reports its own
+ * verdict, so "it fails" becomes "it fails at all seven" and a size that
+ * quietly does not exercise the interleaving cannot hide behind one that does.
+ */
+static void test_a_reply_inside_the_walk_at_one_size(const void *data)
 {
-    /*
-     * Either side of the inline area, then sizes that can only go through the
-     * pointers, up to the largest frame a guest will accept. The transmit path
-     * changes at 104 and the receive size changes at every one of them.
-     */
-    static const uint32_t sizes[] = { 74, 104, 105, 170, 554, 1042,
-                                      ETHER_MAX_LEN - ETHER_FCS_LEN };
+    const uint32_t size = GPOINTER_TO_UINT(data);
     QTestState *qts;
     uint8_t frame[ETHER_MAX_LEN];
     uint8_t landed[64];
@@ -1299,9 +1302,7 @@ static void test_a_reply_inside_the_walk_at_every_size(const void *data)
     uint32_t ring = RAM_SCRATCH + 0x8000;
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
     uint32_t base = RAM_SCRATCH;
-    unsigned int n;
-
-    qts = ioc3_start(ring, rxbuf, ARRAY_SIZE(sizes) + 1);
+    qts = ioc3_start(ring, rxbuf, 3);
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
     ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
 
@@ -1319,13 +1320,13 @@ static void test_a_reply_inside_the_walk_at_every_size(const void *data)
 
     ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
 
-    for (n = 0; n < ARRAY_SIZE(sizes); n++) {
-        uint32_t slot = n + 1;
+    {
+        uint32_t slot = 1;
         uint32_t base_addr = rxbuf + slot * 0x1000;
         uint32_t word0, word1, status;
 
-        build_icmp_echo(frame, sizes[n], gw_mac);
-        tx_one(qts, base, slot, frame, sizes[n]);
+        build_icmp_echo(frame, size, gw_mac);
+        tx_one(qts, base, slot, frame, size);
 
         /*
          * No polling anywhere in this loop, deliberately. The reply is
@@ -1346,7 +1347,7 @@ static void test_a_reply_inside_the_walk_at_every_size(const void *data)
          * plus the CRC the engine adds back.
          */
         g_assert_cmpuint((word0 & RXH_BYTECNT_MASK) >> RXH_BYTECNT_SHIFT,
-                         ==, sizes[n] + ETHER_FCS_LEN);
+                         ==, size + ETHER_FCS_LEN);
 
         /* An echo reply rather than the backend's own ARP question. */
         qtest_memread(qts, base_addr + RXD_BUF_OFFSET, landed, sizeof(landed));
@@ -1367,12 +1368,28 @@ static void test_a_reply_inside_the_walk_at_every_size(const void *data)
     qtest_quit(qts);
 }
 
+static const uint32_t walk_sizes[] = { 74, 104, 105, 170, 554, 1042,
+                                       ETHER_MAX_LEN - ETHER_FCS_LEN };
+
 int main(int argc, char **argv)
 {
+    unsigned int i;
+
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("sgi-ioc3-eth/reply-inside-the-walk-every-size", NULL,
-                        test_a_reply_inside_the_walk_at_every_size);
+    /*
+     * Either side of the descriptor's inline area, then sizes that can only
+     * go through the pointers, up to the largest frame a guest accepts. The
+     * transmit path changes at 104 and the receive size changes at each.
+     */
+    for (i = 0; i < ARRAY_SIZE(walk_sizes); i++) {
+        char *name = g_strdup_printf("sgi-ioc3-eth/reply-inside-the-walk/%u",
+                                     walk_sizes[i]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(walk_sizes[i]),
+                            test_a_reply_inside_the_walk_at_one_size);
+        g_free(name);
+    }
     qtest_add_data_func("sgi-ioc3-eth/burst-behind-one-doorbell", NULL,
                         test_a_burst_behind_one_doorbell);
     qtest_add_data_func("sgi-ioc3-eth/transmit-ring-wraps", NULL,
