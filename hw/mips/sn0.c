@@ -113,6 +113,17 @@ typedef struct SN0BackdoorState {
     unsigned int populated_banks;
 } SN0BackdoorState;
 
+typedef enum SN0FlashState {
+    SN0_FLASH_READ,
+    SN0_FLASH_UNLOCK1,
+    SN0_FLASH_UNLOCK2,
+    SN0_FLASH_AUTOSELECT,
+    SN0_FLASH_PROGRAM,
+    SN0_FLASH_ERASE_UNLOCK1,
+    SN0_FLASH_ERASE_UNLOCK2,
+    SN0_FLASH_ERASE_SELECT,
+} SN0FlashState;
+
 typedef struct SN0NodeState {
     DeviceState parent_obj;
 
@@ -124,6 +135,7 @@ typedef struct SN0NodeState {
     MemoryRegion flash;
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
+    SN0FlashState flash_state;
     MemoryRegion hub_regs_node_view;
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;
@@ -241,69 +253,35 @@ typedef struct SN0MachineState SN0MachineState;
 DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
                          TYPE_SN0_MACHINE)
 
-/*
- * The flash is not programmable from the guest side in this model. Real
- * hardware programs it through a sector-erase protocol that only SGI's own
- * flash utility drives, and nothing on the path to booting an operating system
- * writes here, so a write is reported rather than acted on.
- */
-static void sn0_flash_write(void *opaque, hwaddr addr, uint64_t val,
-                            unsigned size)
-{
-    qemu_log_mask(LOG_UNIMP,
-                  "sn0: ignoring write of 0x%" PRIx64 " to boot flash offset "
-                  "0x%" HWADDR_PRIx "; programming the flash is not modeled\n",
-                  val, addr);
-}
+/* AMD 29F080 command addresses and geometry. */
+#define SN0_FLASH_CMD_ADDR1   0x5555
+#define SN0_FLASH_CMD_ADDR2   0x2aaa
+#define SN0_FLASH_SECTOR_SIZE (64 * KiB)
 
-static uint64_t sn0_flash_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
 {
-    /*
-     * Not reached while the region serves reads from its backing store, which
-     * it does for as long as nothing takes it out of that mode. Reported rather
-     * than asserted, because a guest must never be able to stop the emulator.
-     */
-    qemu_log_mask(LOG_UNIMP,
-                  "sn0: read of boot flash offset 0x%" HWADDR_PRIx
-                  " reached the device path\n", addr);
-    return 0;
-}
-
-static const MemoryRegionOps sn0_flash_ops = {
-    .read = sn0_flash_read,
-    .write = sn0_flash_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-};
-
-/*
- * The Hub special views of the boot flash, LBOOT and RBOOT, are each 256 MB
- * decoding a 1 MB chip. A real chip-select ignores the offset bits above its
- * own size, so the chip's contents repeat every 1 MB across either window.
- * Expressed here as the decode dropping those bits rather than as 256 separate
- * aliases naming the same repeat, because that is what the hardware does and
- * a guest's own code genuinely lands on offsets past the first repeat.
- *
- * Reached through the flash's own backing memory directly, not through its
- * device ops: the flash is a ROM device, answering reads from that backing
- * memory as long as nothing has taken it out of that mode, and its ops exist
- * only to reject the write path a real guest never takes. Dispatching a read
- * through the ops instead would reach the same stub every unprogrammed
- * access reports through, and read back nothing.
- */
-static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
-{
-    SN0MachineState *s = opaque;
     const uint8_t *p = memory_region_get_ram_ptr(&s->node0.flash) +
                        (addr & (SN0_FLASH_SIZE - 1));
+    uint8_t id[8];
+    unsigned int i;
 
-    /*
-     * A single byte carries no endianness of its own, so it is its own case
-     * rather than a big-endian load of width one — the generic byte-swapping
-     * helper this file uses for the wider sizes does not accept that
-     * combination.
-     */
+    if (s->node0.flash_state == SN0_FLASH_AUTOSELECT) {
+        for (i = 0; i < size; i++) {
+            switch ((addr + i) & (SN0_FLASH_SIZE - 1)) {
+            case 0:
+                id[i] = 0x01; /* AMD */
+                break;
+            case 1:
+                id[i] = 0xd5; /* Am29F080 */
+                break;
+            default:
+                id[i] = 0xff;
+                break;
+            }
+        }
+        p = id;
+    }
+
     switch (size) {
     case 1:
         return ldub_p(p);
@@ -318,13 +296,133 @@ static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+static void sn0_flash_read_mode(SN0MachineState *s)
+{
+    s->node0.flash_state = SN0_FLASH_READ;
+    memory_region_rom_device_set_romd(&s->node0.flash, true);
+}
+
+static void sn0_flash_reset(void *opaque)
+{
+    sn0_flash_read_mode(opaque);
+}
+
+static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
+                              unsigned size)
+{
+    SN0NodeState *node = &s->node0;
+    uint32_t offset;
+    uint8_t byte = val;
+    uint8_t *p;
+
+    /* The Hub exposes the byte-wide command port only on 64-bit writes. */
+    if (size != 8) {
+        return;
+    }
+
+    offset = (addr / 8) & (SN0_FLASH_SIZE - 1);
+
+    if (byte == 0xf0 && node->flash_state != SN0_FLASH_PROGRAM) {
+        sn0_flash_read_mode(s);
+        return;
+    }
+
+    switch (node->flash_state) {
+    case SN0_FLASH_READ:
+        node->flash_state = offset == SN0_FLASH_CMD_ADDR1 && byte == 0xaa ?
+                            SN0_FLASH_UNLOCK1 : SN0_FLASH_READ;
+        break;
+    case SN0_FLASH_UNLOCK1:
+        node->flash_state = offset == SN0_FLASH_CMD_ADDR2 && byte == 0x55 ?
+                            SN0_FLASH_UNLOCK2 : SN0_FLASH_READ;
+        break;
+    case SN0_FLASH_UNLOCK2:
+        if (offset != SN0_FLASH_CMD_ADDR1) {
+            node->flash_state = SN0_FLASH_READ;
+        } else if (byte == 0x90) {
+            node->flash_state = SN0_FLASH_AUTOSELECT;
+            memory_region_rom_device_set_romd(&node->flash, false);
+        } else if (byte == 0xa0) {
+            node->flash_state = SN0_FLASH_PROGRAM;
+        } else if (byte == 0x80) {
+            node->flash_state = SN0_FLASH_ERASE_UNLOCK1;
+        } else {
+            node->flash_state = SN0_FLASH_READ;
+        }
+        break;
+    case SN0_FLASH_AUTOSELECT:
+        break;
+    case SN0_FLASH_PROGRAM:
+        p = memory_region_get_ram_ptr(&node->flash);
+        p[offset] &= byte;
+        memory_region_set_dirty(&node->flash, offset, 1);
+        sn0_flash_read_mode(s);
+        break;
+    case SN0_FLASH_ERASE_UNLOCK1:
+        node->flash_state = offset == SN0_FLASH_CMD_ADDR1 && byte == 0xaa ?
+                            SN0_FLASH_ERASE_UNLOCK2 : SN0_FLASH_READ;
+        break;
+    case SN0_FLASH_ERASE_UNLOCK2:
+        node->flash_state = offset == SN0_FLASH_CMD_ADDR2 && byte == 0x55 ?
+                            SN0_FLASH_ERASE_SELECT : SN0_FLASH_READ;
+        break;
+    case SN0_FLASH_ERASE_SELECT:
+        if (byte == 0x30) {
+            offset &= ~(SN0_FLASH_SECTOR_SIZE - 1);
+            p = memory_region_get_ram_ptr(&node->flash);
+            memset(p + offset, 0xff, SN0_FLASH_SECTOR_SIZE);
+            memory_region_set_dirty(&node->flash, offset,
+                                    SN0_FLASH_SECTOR_SIZE);
+        }
+        sn0_flash_read_mode(s);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void sn0_flash_write(void *opaque, hwaddr addr, uint64_t val,
+                            unsigned size)
+{
+    sn0_flash_command(opaque, addr, val, size);
+}
+
+static uint64_t sn0_flash_read(void *opaque, hwaddr addr, unsigned size)
+{
+    return sn0_flash_load(opaque, addr, size);
+}
+
+static const MemoryRegionOps sn0_flash_ops = {
+    .read = sn0_flash_read,
+    .write = sn0_flash_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+/*
+ * The Hub special views of the boot flash, LBOOT and RBOOT, are each 256 MB
+ * decoding a 1 MB chip. A real chip-select ignores the offset bits above its
+ * own size, so the chip's contents repeat every 1 MB across either window.
+ * Expressed here as the decode dropping those bits rather than as 256 separate
+ * aliases naming the same repeat, because that is what the hardware does and
+ * a guest's own code genuinely lands on offsets past the first repeat.
+ *
+ * The mirror calls the same flash state machine as the reset view. Ordinary
+ * reads come from the shared backing store; autoselect reads return the chip
+ * identity instead.
+ */
+static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
+{
+    return sn0_flash_load(opaque, addr, size);
+}
+
 static void sn0_boot_mirror_write(void *opaque, hwaddr addr, uint64_t val,
                                   unsigned size)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "sn0: ignoring write of 0x%" PRIx64 " to boot flash "
-                  "offset 0x%" HWADDR_PRIx " through the Hub special view; "
-                  "programming the flash is not modeled\n", val, addr);
+    sn0_flash_command(opaque, addr, val, size);
 }
 
 static const MemoryRegionOps sn0_boot_mirror_ops = {
@@ -333,6 +431,8 @@ static const MemoryRegionOps sn0_boot_mirror_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
 };
 
 /*
@@ -765,7 +865,7 @@ static void sn0_build_flash(uint8_t *flash)
     uint8_t *config = flash + SN0_CONFIG_OFFSET;
     int i;
 
-    memset(flash, 0, SN0_FLASH_SIZE);
+    memset(flash, 0xff, SN0_FLASH_SIZE);
 
     for (i = 0; i < SN0_FLASH_ENTRIES; i++) {
         uint8_t *entry = flash + i * SN0_FLASH_ENTRY_STRIDE;
@@ -2034,10 +2134,11 @@ static void sn0_init(MachineState *machine)
      */
     memory_region_init_rom_device(&s->node0.flash, OBJECT(&s->node0),
                                   &sn0_flash_ops,
-                                  NULL, "sn0.node0.flash", SN0_FLASH_SIZE,
+                                  s, "sn0.node0.flash", SN0_FLASH_SIZE,
                                   &error_fatal);
     memory_region_add_subregion_overlap(system, node + SN0_FLASH_LOCAL,
                                         &s->node0.flash, 1);
+    qemu_register_reset(sn0_flash_reset, s);
 
     /*
      * The same bytes through the Hub's special space, which is how a guest

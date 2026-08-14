@@ -29,6 +29,18 @@
 #define FLASH_HUB       (SPACE_HUB + NODE0 + 0x10000000)
 #define FLASH_REMOTE    (SPACE_HUB + NODE0 + 0x30000000)
 
+/* AMD 29F080 command addresses and the blank first PROM-log sector. */
+#define FLASH_UNLOCK1       0x5555
+#define FLASH_UNLOCK2       0x2aaa
+#define FLASH_LOG_SECTOR    0xe0000
+#define FLASH_SECTOR_SIZE   0x10000
+
+static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
+{
+    /* Hub presents the flash's byte-wide command port on 64-bit cycles. */
+    qtest_writeq(qts, FLASH_HUB + 8 * offset, value);
+}
+
 /*
  * The directory and error-correction back doors. Real firmware's own memory
  * and directory diagnostic writes a pattern through here and reads it back
@@ -188,7 +200,7 @@ static void test_entry_points(const void *data)
     qtest_quit(qts);
 }
 
-static void test_flash_is_read_only(const void *data)
+static void test_flash_rejects_bare_writes(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t before = qtest_readq(qts, FLASH_RESET + CONFIG_OFFSET +
@@ -205,6 +217,65 @@ static void test_flash_is_read_only(const void *data)
     g_assert_cmphex(qtest_readq(qts,
                                FLASH_REMOTE + CONFIG_OFFSET + FIELD_MAGIC),
                     ==, CONFIG_MAGIC);
+
+    qtest_quit(qts);
+}
+
+static void test_flash_autoselect(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint32_t before = qtest_readl(qts, FLASH_HUB);
+
+    flash_command(qts, 0, 0xf0);
+    flash_command(qts, FLASH_UNLOCK1, 0xaa);
+    flash_command(qts, FLASH_UNLOCK2, 0x55);
+    flash_command(qts, FLASH_UNLOCK1, 0x90);
+
+    /* Manufacturer 0x01 and device 0xd5 occupy logical bytes zero and one. */
+    g_assert_cmphex(qtest_readl(qts, FLASH_HUB), ==, 0x01d5ffff);
+    g_assert_cmphex(qtest_readl(qts, FLASH_REMOTE), ==, 0x01d5ffff);
+
+    flash_command(qts, 0, 0xf0);
+    g_assert_cmphex(qtest_readl(qts, FLASH_HUB), ==, before);
+
+    qtest_quit(qts);
+}
+
+static void test_flash_program_and_erase(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    const uint32_t target = FLASH_LOG_SECTOR + 0x100;
+
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0xff);
+
+    flash_command(qts, FLASH_UNLOCK1, 0xaa);
+    flash_command(qts, FLASH_UNLOCK2, 0x55);
+    flash_command(qts, FLASH_UNLOCK1, 0xa0);
+    flash_command(qts, target, 0x5a);
+
+    flash_command(qts, FLASH_UNLOCK1, 0xaa);
+    flash_command(qts, FLASH_UNLOCK2, 0x55);
+    flash_command(qts, FLASH_UNLOCK1, 0xa0);
+    flash_command(qts, target + 1, 0xf0);
+
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target + 1), ==, 0xf0);
+    g_assert_cmphex(qtest_readb(qts, FLASH_HUB + target), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE + target), ==, 0x5a);
+
+    flash_command(qts, FLASH_UNLOCK1, 0xaa);
+    flash_command(qts, FLASH_UNLOCK2, 0x55);
+    flash_command(qts, FLASH_UNLOCK1, 0x80);
+    flash_command(qts, FLASH_UNLOCK1, 0xaa);
+    flash_command(qts, FLASH_UNLOCK2, 0x55);
+    flash_command(qts, FLASH_LOG_SECTOR, 0x30);
+
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0xff);
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + FLASH_LOG_SECTOR), ==,
+                    0xff);
+    g_assert_cmphex(qtest_readb(qts,
+                               FLASH_RESET + FLASH_LOG_SECTOR +
+                               FLASH_SECTOR_SIZE - 1), ==, 0xff);
 
     qtest_quit(qts);
 }
@@ -573,8 +644,12 @@ int main(int argc, char **argv)
                         test_boot_windows_mirror_the_flash);
     qtest_add_data_func("sn0/address-map/entry-points", NULL,
                         test_entry_points);
-    qtest_add_data_func("sn0/address-map/flash-read-only", NULL,
-                        test_flash_is_read_only);
+    qtest_add_data_func("sn0/address-map/flash-rejects-bare-writes", NULL,
+                        test_flash_rejects_bare_writes);
+    qtest_add_data_func("sn0/address-map/flash-autoselect", NULL,
+                        test_flash_autoselect);
+    qtest_add_data_func("sn0/address-map/flash-program-and-erase", NULL,
+                        test_flash_program_and_erase);
     qtest_add_data_func("sn0/address-map/memory-128m", NULL,
                         test_128m_memory);
     qtest_add_data_func("sn0/address-map/memory-256m", NULL,
