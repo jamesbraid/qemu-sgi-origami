@@ -390,6 +390,66 @@ static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 }
 
 /*
+ * The back door is the ordinary memory address shifted right by two.  A
+ * populated bank therefore has one quarter as much unique directory or ECC
+ * storage as ordinary memory, repeated across its fixed 128 MiB share of the
+ * back-door window.  Firmware relies on this aliasing to size the bank.
+ */
+static void check_backdoor_bank_span(QTestState *qts, uint64_t base,
+                                     unsigned int bank, uint64_t span)
+{
+    uint64_t bank_base = base + (uint64_t)bank * BACKDOOR_BANK_STRIDE;
+    uint64_t first = bank_base + 0x1000;
+    uint64_t distinct = first + span / 2;
+    uint64_t alias = first + span;
+
+    qtest_writeq(qts, first, 0x0000000000001111ULL);
+    qtest_writeq(qts, distinct, 0x0000000000002222ULL);
+    g_assert_cmphex(qtest_readq(qts, first) & 0xffffULL, ==, 0x1111);
+
+    qtest_writeq(qts, alias, 0x0000000000003333ULL);
+    g_assert_cmphex(qtest_readq(qts, first) & 0xffffULL, ==, 0x3333);
+}
+
+static void check_backdoor_bank_distinct(QTestState *qts, uint64_t base,
+                                         unsigned int bank, uint64_t offset)
+{
+    uint64_t bank_base = base + (uint64_t)bank * BACKDOOR_BANK_STRIDE;
+    uint64_t first = bank_base + 0x1000;
+
+    qtest_writeq(qts, first, 0x0000000000004444ULL);
+    qtest_writeq(qts, first + offset, 0x0000000000005555ULL);
+    g_assert_cmphex(qtest_readq(qts, first) & 0xffffULL, ==, 0x4444);
+}
+
+static void test_backdoor_tracks_bank_size(const void *data)
+{
+    QTestState *qts;
+
+    qts = qtest_init("-M origin200");
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 16 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 16 * MiB);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -m 128M");
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 32 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 32 * MiB);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -m 256M");
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -m 768M");
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
+    check_backdoor_bank_distinct(qts, BACKDOOR_DIR, 1, 64 * MiB);
+    check_backdoor_bank_distinct(qts, BACKDOOR_ECC, 1, 64 * MiB);
+    qtest_quit(qts);
+}
+
+/*
  * The default machine populates one 64 MiB bank from a matched DIMM pair.
  * Bank 0 answers in standard directory format; bank 1 and the top of the
  * window remain absent.
@@ -486,6 +546,8 @@ int main(int argc, char **argv)
                         test_ecc_backdoor);
     qtest_add_data_func("sn0/address-map/backdoor-tracks-populated-banks",
                         NULL, test_backdoor_tracks_populated_banks);
+    qtest_add_data_func("sn0/address-map/backdoor-tracks-bank-size", NULL,
+                        test_backdoor_tracks_bank_size);
 
     return g_test_run();
 }
