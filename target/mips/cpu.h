@@ -429,6 +429,16 @@ typedef struct mips_def_t mips_def_t;
 #define CP0_REG26__ERRCTL          0
 /* CP0 Register 27 */
 #define CP0_REG27__CACHERR         0
+
+/* The external secondary cache described by the R10000 CPU definition. */
+#define R10K_SCACHE_SIZE       (1024 * 1024)
+#define R10K_SCACHE_LINE_SIZE  128
+#define R10K_SCACHE_WAYS       2
+#define R10K_SCACHE_SETS       (R10K_SCACHE_SIZE / R10K_SCACHE_LINE_SIZE / \
+                                R10K_SCACHE_WAYS)
+#define R10K_SCACHE_TAGS       (R10K_SCACHE_SETS * R10K_SCACHE_WAYS)
+#define R10K_SCACHE_TAGLO_MASK 0xffffcdff
+#define R10K_SCACHE_TAGHI_MASK 0x8000000f
 /* CP0 Register 28 */
 #define CP0_REG28__TAGLO           0
 #define CP0_REG28__DATALO          1
@@ -1176,6 +1186,11 @@ typedef struct CPUArchState {
  */
     int32_t CP0_TagHi;
     int32_t CP0_DataHi;
+
+    /* R10000 external secondary-cache tag and set-wide MRU arrays. */
+    uint32_t r10k_scache_taglo[R10K_SCACHE_TAGS];
+    uint8_t r10k_scache_taghi[R10K_SCACHE_TAGS];
+    uint8_t r10k_scache_mru[R10K_SCACHE_SETS];
 /*
  * CP0 Register 30
  */

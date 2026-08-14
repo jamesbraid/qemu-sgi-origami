@@ -342,6 +342,29 @@ static const VMStateDescription mips_vmstate_timer = {
     }
 };
 
+static bool mips_r10k_scache_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.insn_flags & INSN_R10K;
+}
+
+static const VMStateDescription mips_vmstate_r10k_scache = {
+    .name = "cpu/r10k-scache",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_scache_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(env.r10k_scache_taglo, MIPSCPU,
+                             R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_ARRAY(env.r10k_scache_taghi, MIPSCPU,
+                            R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_ARRAY(env.r10k_scache_mru, MIPSCPU,
+                            R10K_SCACHE_SETS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_octeon_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -510,6 +533,7 @@ const VMStateDescription vmstate_mips_cpu = {
     },
     .subsections = (const VMStateDescription * const []) {
         &mips_vmstate_timer,
+        &mips_vmstate_r10k_scache,
         &mips_vmstate_octeon_multiplier,
         &mips_vmstate_octeon_crypto,
         NULL
