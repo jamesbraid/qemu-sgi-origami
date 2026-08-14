@@ -169,6 +169,9 @@ static const SN0ModelDevice sn0_model_devices[] = {
     { "Hub", "sgi-hub" },
     { "QLogic ISP1040", "qlogic-isp1040" },
     { "QLogic ISP1040", "qlogic-isp1040" },
+    { "MK48T35-class Timekeeper", "m48t35" },
+    { "PCF8584", "pcf8584" },
+    { "ELSC", "sgi-elsc" },
 };
 
 #define SN0_MODEL_GRAPH_BASE 0x4000
