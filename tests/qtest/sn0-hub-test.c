@@ -1375,6 +1375,18 @@ static void test_pending_banks_are_masked_per_processor(const void *data)
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
     g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
 
+    /*
+     * The PROM tests processor B in the opposite order: make an interrupt
+     * pending while it is masked, then unmask it.  The mask write must
+     * recompute B's output just as the equivalent processor A write does.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 1ULL << 12);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+
     qtest_quit(qts);
 }
 
