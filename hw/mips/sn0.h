@@ -673,6 +673,9 @@
 #define SN0_ARCS_PRIVATE_BASE_OP  SN0_ARCS_ENTRIES
 /* Capability level, private-vector entry at offset 0x48 -> index 9. */
 #define SN0_ARCS_CAPABILITY_OP    (SN0_ARCS_PRIVATE_BASE_OP + 9)
+/* Fixed-PROM launch_slave entry, implemented by the synthesized firmware. */
+#define SN0_FIRMWARE_LAUNCH_OP    (SN0_ARCS_PRIVATE_BASE_OP + \
+                                   SN0_ARCS_PRIVATE_ENTRIES)
 /*
  * Level three: the firmware can load a relocatable object. The SGI
  * standalone shell shipped on install media is a relocatable object with no
@@ -703,6 +706,11 @@
 #define SN0_FW_TEXT_SIZE        0x1000
 #define SN0_FW_BOOTLOADER       0x000       /* offset within that region */
 #define SN0_ARCS_STUBS          0x100
+#define SN0_FW_LAUNCH_STUB      0x500
+#define SN0_FW_SECONDARY_BOOT   0x520
+
+/* launch_slave is fixed entry seven in the IP27 PROM jump table. */
+#define SN0_FLASH_LAUNCHSLAVE   (7 * SN0_FLASH_ENTRY_STRIDE)
 
 /* The firmware configuration block, at flash offset 0x60. */
 #define SN0_CONFIG_OFFSET   0x60
