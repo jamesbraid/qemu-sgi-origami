@@ -58,6 +58,8 @@ qtests_filter = \
 
 qtests_i386 = \
   (slirp.found() ? ['pxe-test'] : []) + \
+  (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
+    ['sgi-ioc3-eth-test'] : []) + \
   qtests_filter + \
   (config_all_devices.has_key('CONFIG_ACPI_VMGENID') ? ['vmgenid-test'] : []) +             \
   (config_all_devices.has_key('CONFIG_AHCI_ICH9') and have_tools ? ['ahci-test'] : []) +    \
