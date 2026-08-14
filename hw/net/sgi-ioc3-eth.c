@@ -325,7 +325,28 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     uint32_t raised = 0;
     bool completed_one = false;
 
-    produce %= ring_bytes;
+    /*
+     * Both indices are byte offsets into the ring, and the datasheet gives
+     * both as a descriptor number shifted left by seven -- so the low seven
+     * bits are not part of either index and no value the engine can be given
+     * has them set. A guest can still write them, and the walk below steps by
+     * a whole descriptor and stops on equality, so a produce index the steps
+     * can never land on is a loop that never ends. That is reachable from a
+     * single unaligned register write, which makes it a guest hanging the
+     * emulator rather than a fidelity question. Reduce both into the ring and
+     * drop the bits that are not part of an index, so the walk terminates
+     * whatever it is handed.
+     */
+    if ((produce | consume) & (SGI_IOC3_ENET_TX_DESC_SIZE - 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3-eth: transmit index not on a descriptor"
+                      " boundary (produce 0x%04x consume 0x%04x)\n",
+                      produce, consume);
+    }
+    produce = QEMU_ALIGN_DOWN(produce % ring_bytes,
+                              SGI_IOC3_ENET_TX_DESC_SIZE);
+    consume = QEMU_ALIGN_DOWN(consume % ring_bytes,
+                              SGI_IOC3_ENET_TX_DESC_SIZE);
 
     while (consume != produce) {
         uint64_t desc = tx_base + consume;
