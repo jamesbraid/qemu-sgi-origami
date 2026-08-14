@@ -49,6 +49,19 @@
 #define PI_REGION_PRESENT   0x000018
 #define PI_PROCESSOR_NUMBER 0x000020
 #define PI_CALIAS_SIZE      0x000028
+#define PI_CALIAS_SIZE_RESET 15
+#define PI_CPU_ENABLE_A     0x000050
+#define PI_CPU_ENABLE_B     0x000058
+
+/*
+ * Where each processor spools error records -- and, on a single-processor
+ * machine, where the firmware parks a marker across its own two-pass reset,
+ * because processor B's copy belongs to a processor that is not fitted.
+ * Bits 31:3; the low three bits of a written value do not survive.
+ */
+#define PI_ERR_SPOOL_A       0x000418
+#define PI_ERR_SPOOL_B       0x000420
+#define PI_ERR_SPOOL_MASK    0xfffffff8ULL
 #define PI_RT_COUNT         0x030100
 #define PI_RT_COMPARE_A     0x000108
 #define PI_RT_PENDING_A     0x000120
@@ -121,6 +134,20 @@
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
 #define NI_IDENTITY     0xffULL          /* revision and chip identity */
+
+/*
+ * The port-reset register and the three bits that share it. Only the local
+ * bit is this machine's own reset -- the other two send a warm reset and a
+ * link reset over a fabric an Origin 200 does not have. The three writers
+ * disagree about which companion bit rides along with it: Linux's reboot
+ * path and real firmware's own early self-reset both write the warm bit
+ * alongside it, OpenBSD writes the link bit instead, and the model has to
+ * treat all three as a machine reset.
+ */
+#define NI_PORT_RESET        0x600008
+#define NI_PORT_RESET_LOCAL  (1ULL << 0)
+#define NI_PORT_RESET_LINK   (1ULL << 1)
+#define NI_PORT_RESET_WARM   (1ULL << 7)
 
 /*
  * The real-time counter's rate and width. A nanosecond divides by the rate
@@ -620,6 +647,62 @@ static void test_writes_the_guest_makes(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_error_spool_registers_hold_a_masked_value(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Zeroed at construction, which is the power-on value the datasheet
+     * records -- neither register is a reset value the machine's own reset
+     * touches.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==, 0);
+
+    /*
+     * Bits 31:3 only -- the low three bits of an all-ones write do not
+     * survive, and neither do bits above 31.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_A, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_A), ==,
+                    PI_ERR_SPOOL_MASK);
+
+    /* A realistic marker, already aligned, round-trips exactly. */
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_B, 0xdeadbee0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
+                    0xdeadbee0ULL);
+
+    qtest_quit(qts);
+}
+
+static void test_cpu_enable_registers_store_what_is_written(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* Both reset clear -- neither processor is running out of reset. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+
+    /*
+     * Processor B is not fitted on an Origin 200, so clearing its enable bit
+     * -- which is exactly what the firmware's halt routine does as its last
+     * act -- reaches for a CPU that qemu_get_cpu() returns NULL for. This is
+     * the realistic case, not an edge one, and it must not crash the model.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_md_indicator_registers(const void *data)
 {
     /*
@@ -876,6 +959,57 @@ static void test_status_field_access(const void *data)
 
     /* What the hardware reports about itself is not writable. */
     g_assert_cmphex(status & NI_IDENTITY, ==, 2 << 4);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The local-reset bit is a machine reset regardless of which companion bit
+ * rides with it -- Linux and real firmware's own early self-reset both send
+ * 0x81 (warm plus local), OpenBSD sends 0x03 (link plus local) and arms the
+ * protection register first, which this model must not require. Both are
+ * exercised on the same machine, one after the other, because a model keyed
+ * to either value alone would ignore the other guest.
+ *
+ * The cached-alias size is the sentinel for "the machine actually reset":
+ * it is dirtied to a value its own reset never produces, and a plain write
+ * that only stored the register would leave it dirty. The error-spool
+ * register is the opposite sentinel -- the firmware's own reset marker, and
+ * the one register in the whole Hub that a reset must *not* touch, because
+ * the firmware writes it immediately before triggering the reset expressly
+ * so the restarted machine can read it back.
+ */
+static void test_a_local_port_reset_resets_the_machine(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_CALIAS_SIZE, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_B, 0xdeadbee0ULL);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET,
+                NI_PORT_RESET_WARM | NI_PORT_RESET_LOCAL);
+    qtest_qmp_eventwait(qts, "RESET");
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==,
+                    PI_CALIAS_SIZE_RESET);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
+                    0xdeadbee0ULL);
+
+    /*
+     * OpenBSD's companion bit and its unarmed protection register, on the
+     * same machine, after the first reset already fired.
+     */
+    qtest_writeq(qts, HUB_LOCAL + PI_CALIAS_SIZE, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_B, 0x600df00ULL);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET,
+                NI_PORT_RESET_LINK | NI_PORT_RESET_LOCAL);
+    qtest_qmp_eventwait(qts, "RESET");
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==,
+                    PI_CALIAS_SIZE_RESET);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
+                    0x600df00ULL);
 
     qtest_quit(qts);
 }
@@ -1602,6 +1736,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/reset-values", NULL, test_reset_values);
     qtest_add_data_func("sn0/hub/guest-writes", NULL,
                         test_writes_the_guest_makes);
+    qtest_add_data_func("sn0/hub/error-spool-masked-value", NULL,
+                        test_the_error_spool_registers_hold_a_masked_value);
+    qtest_add_data_func("sn0/hub/cpu-enable-stores-what-is-written", NULL,
+                        test_cpu_enable_registers_store_what_is_written);
     qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
                         test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/md-indicator-shown-by-default", NULL,
@@ -1618,6 +1756,8 @@ int main(int argc, char **argv)
                         test_every_chardev_claim_is_distinct);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,
                         test_status_field_access);
+    qtest_add_data_func("sn0/hub/local-port-reset-resets-the-machine", NULL,
+                        test_a_local_port_reset_resets_the_machine);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
     qtest_add_data_func("sn0/hub/translation-entries-decode", NULL,
                         test_translation_entries_decode);
