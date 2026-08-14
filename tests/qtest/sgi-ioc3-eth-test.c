@@ -285,7 +285,8 @@ static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
     ioc3_writel(qts, ENET_RX_PRODUCE, (buffers << 3) | RPIR_ARM);
 }
 
-static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf)
+static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf,
+                              unsigned int buffers)
 {
     QTestState *qts;
 
@@ -297,7 +298,7 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf)
     qts = qtest_initf("-M pc -display none "
                       "-netdev user,id=n0 "
                       "-device sgi-ioc3,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
-    ioc3_bring_up(qts, ring, rxbuf, 4);
+    ioc3_bring_up(qts, ring, rxbuf, buffers);
     return qts;
 }
 
@@ -439,7 +440,7 @@ static void test_the_inline_path_off_the_fabric(const void *data)
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
 
     build_arp_request(frame, sizeof(frame));
-    qts = ioc3_start(ring, rxbuf);
+    qts = ioc3_start(ring, rxbuf, 4);
 
     dma_stl_be(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
     dma_stl_be(qts, desc + 4, sizeof(frame));
@@ -470,7 +471,7 @@ static void test_the_pointer_path_off_the_fabric(const void *data)
     const uint32_t split = 64;
 
     build_arp_request(frame, sizeof(frame));
-    qts = ioc3_start(ring, rxbuf);
+    qts = ioc3_start(ring, rxbuf, 4);
 
     qtest_memwrite(qts, buf1, frame, split);
     qtest_memwrite(qts, buf2, frame + split, sizeof(frame) - split);
@@ -1176,10 +1177,202 @@ static void test_the_ring_select_bit_moves_the_wrap(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The interleaving the whole engine was rewritten for: a frame arriving while
+ * the transmit walk is still running. One test covers it, at one size, on a
+ * frame the backend happens to answer -- so the size at which a reply can be
+ * lost is untested everywhere except that one point.
+ *
+ * User-mode networking answers a hand-built echo request synchronously, inside
+ * the same call that sent it, and its reply is the same length as the request.
+ * That gives the receive size freely, which the ARP the other test uses cannot:
+ * an ARP reply is one fixed length.
+ *
+ * A TRAP THAT LOOKS LIKE A PASSING TEST. The backend learns a station address
+ * from ARP input only, so an IP conversation with no ARP in front of it makes
+ * it ask who we are first. What comes back then is its own ARP request -- a
+ * delivered frame, a valid buffer header, a plausible byte count, every field
+ * a test would check looking right, and none of it the reply being tested.
+ * The exchange below is completed before any size is measured, for that reason
+ * and no other.
+ */
+static uint16_t ones_complement_sum(const uint8_t *data, size_t len)
+{
+    uint32_t sum = 0;
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)data[i] << 8) | data[i + 1];
+    }
+    if (len & 1) {
+        sum += (uint32_t)data[len - 1] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+/*
+ * Our own address and the one user-mode networking answers on, which are its
+ * documented defaults rather than anything this model chooses.
+ */
+static const uint8_t guest_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
+static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
+static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
+
+static void build_icmp_echo(uint8_t *f, size_t total, const uint8_t *dst_mac)
+{
+    size_t ip_total = total - 14;
+    size_t icmp_len = ip_total - 20;
+    size_t i;
+    uint16_t sum;
+
+    g_assert_cmpint(total, >=, 14 + 20 + 8);
+    memset(f, 0, total);
+    memcpy(f, dst_mac, 6);
+    memcpy(f + 6, guest_mac, 6);
+    f[12] = 0x08; f[13] = 0x00;
+
+    f[14] = 0x45;
+    f[16] = (uint8_t)(ip_total >> 8);
+    f[17] = (uint8_t)ip_total;
+    f[22] = 64;
+    f[23] = 1;
+    memcpy(f + 26, guest_ip, 4);
+    memcpy(f + 30, gateway_ip, 4);
+    sum = ones_complement_sum(f + 14, 20);
+    f[24] = (uint8_t)(sum >> 8);
+    f[25] = (uint8_t)sum;
+
+    f[34] = 8;
+    f[38] = 0x12; f[39] = 0x34;
+    f[40] = 0x00; f[41] = 0x01;
+    for (i = 42; i < total; i++) {
+        f[i] = (uint8_t)(i & 0xff);
+    }
+    sum = ones_complement_sum(f + 34, icmp_len);
+    f[36] = (uint8_t)(sum >> 8);
+    f[37] = (uint8_t)sum;
+}
+
+/*
+ * Queue one frame and ring the doorbell, taking the next descriptor each
+ * time: the walk runs from the consume index to the produce index, so a
+ * second doorbell against the first slot sends a descriptor nobody wrote.
+ */
+static void tx_one(QTestState *qts, uint32_t base, uint32_t slot,
+                   const uint8_t *frame, size_t len)
+{
+    uint32_t desc = base + slot * TX_DESC_SIZE;
+    uint32_t buf = RAM_SCRATCH + 0x4000;
+
+    if (len <= TXD_DATA_SIZE) {
+        qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, len);
+        dma_stl_be(qts, desc + 0, len | TXD_DATA_VALID | TXD_INT_DONE);
+        dma_stl_be(qts, desc + 4, len);
+    } else {
+        qtest_memwrite(qts, buf, frame, len);
+        dma_stl_be(qts, desc + 0, len | TXD_BUF1_VALID | TXD_INT_DONE);
+        dma_stl_be(qts, desc + 4, len << TXD_BUF1_LEN_SHIFT);
+        dma_stl_be(qts, desc + 8, 0);
+        dma_stl_be(qts, desc + 12, buf);
+        dma_stl_be(qts, desc + 16, 0);
+        dma_stl_be(qts, desc + 20, 0);
+    }
+    ioc3_writel(qts, ENET_TX_PRODUCE, (slot + 1) * TX_DESC_SIZE);
+}
+
+static void test_a_reply_inside_the_walk_at_every_size(const void *data)
+{
+    /*
+     * Either side of the inline area, then sizes that can only go through the
+     * pointers, up to the largest frame a guest will accept. The transmit path
+     * changes at 104 and the receive size changes at every one of them.
+     */
+    static const uint32_t sizes[] = { 74, 104, 105, 170, 554, 1042,
+                                      ETHER_MAX_LEN - ETHER_FCS_LEN };
+    QTestState *qts;
+    uint8_t frame[ETHER_MAX_LEN];
+    uint8_t landed[64];
+    uint8_t gw_mac[6];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t base = RAM_SCRATCH;
+    unsigned int n;
+
+    qts = ioc3_start(ring, rxbuf, ARRAY_SIZE(sizes) + 1);
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+
+    /*
+     * The prelude. Its own reply is the backend's ARP answer, and taking it
+     * here is what stops it being mistaken for the first size's echo.
+     */
+    build_arp_request(frame, 42);
+    tx_one(qts, base, 0, frame, 42);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, RX_RING_STRIDE);
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+    g_assert_cmphex(landed[12], ==, 0x08);
+    g_assert_cmphex(landed[13], ==, 0x06);
+    memcpy(gw_mac, landed + 6, 6);
+
+    ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
+
+    for (n = 0; n < ARRAY_SIZE(sizes); n++) {
+        uint32_t slot = n + 1;
+        uint32_t base_addr = rxbuf + slot * 0x1000;
+        uint32_t word0, word1, status;
+
+        build_icmp_echo(frame, sizes[n], gw_mac);
+        tx_one(qts, base, slot, frame, sizes[n]);
+
+        /*
+         * No polling anywhere in this loop, deliberately. The reply is
+         * delivered inside the doorbell write, and a test that waited for it
+         * would also pass on a delivery arriving afterwards -- which is the
+         * case the engine has always got right and not the one that broke.
+         */
+        g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
+                        (slot + 1) * RX_RING_STRIDE);
+
+        word0 = dma_ldl_be(qts, base_addr);
+        word1 = dma_ldl_be(qts, base_addr + 4);
+        g_assert_cmphex(word0 & RXH_VALID, ==, RXH_VALID);
+        g_assert_cmphex(word1 & RXE_GOODPKT, ==, RXE_GOODPKT);
+
+        /*
+         * The reply mirrors the request, so the count is the size under test
+         * plus the CRC the engine adds back.
+         */
+        g_assert_cmpuint((word0 & RXH_BYTECNT_MASK) >> RXH_BYTECNT_SHIFT,
+                         ==, sizes[n] + ETHER_FCS_LEN);
+
+        /* An echo reply rather than the backend's own ARP question. */
+        qtest_memread(qts, base_addr + RXD_BUF_OFFSET, landed, sizeof(landed));
+        g_assert_cmphex(landed[12], ==, 0x08);
+        g_assert_cmphex(landed[13], ==, 0x00);
+        g_assert_cmphex(landed[34], ==, 0x00);
+
+        /*
+         * And the receive source survived the walk that carried it. This is
+         * the assertion the milestone turns on, now made at seven sizes
+         * rather than one.
+         */
+        status = ioc3_readl(qts, ENET_INT_STATUS);
+        g_assert_cmphex(status & ENET_INT_RX_TIMER, ==, ENET_INT_RX_TIMER);
+        ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sgi-ioc3-eth/reply-inside-the-walk-every-size", NULL,
+                        test_a_reply_inside_the_walk_at_every_size);
     qtest_add_data_func("sgi-ioc3-eth/burst-behind-one-doorbell", NULL,
                         test_a_burst_behind_one_doorbell);
     qtest_add_data_func("sgi-ioc3-eth/transmit-ring-wraps", NULL,
