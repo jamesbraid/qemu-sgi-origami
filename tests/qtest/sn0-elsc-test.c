@@ -30,6 +30,7 @@
 #define I2C_PCF_BB  0x01
 
 #define ELSC_ADDR 0x08
+#define ELSC_NVRAM_PAGE7_ADDR 0x57
 
 /* A framed response's text is capped at 94 bytes plus its own length and
  * checksum bytes -- the datasheet's own bound on what this device may
@@ -569,31 +570,43 @@ static void test_supervisor_gating(const void *data)
 }
 
 /*
- * A NAK'd, single-byte-direction transaction to an address nothing answers,
- * arbitrated first -- what the sixteen boot-path reads of the identity
- * EEPROM at 0x57 look like at the register level. That device is a separate
- * part at its own addresses and is out of this milestone's scope; this
- * checks only that a run of transactions nothing answers, each preceded by
- * a real arbitration wait, leaves the model in a state that can still run
- * the transaction after it -- not the EEPROM's own behaviour, which this
- * does not model.
- *
- * A plain address NAK never reaches the data phase, so it does not get the
- * closing invalid-address step: docs/datasheets/pcf8584-elsc.md says that
- * step is only for a transaction that completed its data phase, and an
- * address-only NAK is one of the paths that skips it.
+ * Read one byte from the system-controller NVRAM as firmware does: a
+ * combined offset-write and data-read transaction, arbitrated first and
+ * closed with the invalid-address step. The PCF8584 exposes its stale data
+ * register on the first read after changing direction, so that read is
+ * deliberately discarded before the EEPROM byte is collected.
  */
-static void firmware_style_naked_probe(QTestState *qts, uint8_t addr7)
+static uint8_t firmware_style_nvram_read(QTestState *qts, uint8_t offset)
 {
+    uint8_t value;
+
     arb_wait_for_absence(qts);
     arb_wait_for_signal(qts);
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (addr7 << 1) | 0);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA,
+                 (ELSC_NVRAM_PAGE7_ADDR << 1) | 0);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB, ==,
-                    I2C_PCF_LRB);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, offset);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA,
+                 (ELSC_NVRAM_PAGE7_ADDR << 1) | 1);
+
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);
+    value = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xfe);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, I2C_PCF_LRB);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+
+    return value;
 }
 
 /*
@@ -665,9 +678,9 @@ static unsigned firmware_style_command(QTestState *qts, const uint8_t *req,
  * what this file's own helpers happen to do, because a test written against
  * the implementation can only ever agree with it:
  *
- *   sixteen reads of the identity EEPROM at 0x57 (represented here by
- *   three, since that device is out of scope and the point is only that
- *   NAK'd traffic ahead of the real probe does not destabilise anything);
+ *   sixteen reads of the identity EEPROM at 0x57, whose first byte is the
+ *   required 0x37 validity marker and whose remaining model defaults are
+ *   coherent zero values;
  *   then rsw to the ELSC, whose failure is tolerated;
  *   then ver, which must return a correctly framed, correctly checksummed
  *   response beginning "ok".
@@ -688,12 +701,17 @@ static void test_boot_acceptance_sequence(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
+    uint8_t nvram[16];
     unsigned req_len, resp_len, i;
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
 
-    for (i = 0; i < 3; i++) {
-        firmware_style_naked_probe(qts, 0x57);
+    for (i = 0; i < ARRAY_SIZE(nvram); i++) {
+        nvram[i] = firmware_style_nvram_read(qts, i);
+    }
+    g_assert_cmphex(nvram[0], ==, 0x37);
+    for (i = 1; i < ARRAY_SIZE(nvram); i++) {
+        g_assert_cmphex(nvram[i], ==, 0);
     }
 
     req_len = build_request(req, "rsw");

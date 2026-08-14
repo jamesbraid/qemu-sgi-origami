@@ -39,6 +39,7 @@ config SGI_SN0
     bool
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
+    select AT24C
     select DP83840
     select M48T35
     select PCF8584

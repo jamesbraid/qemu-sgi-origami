@@ -25,6 +25,7 @@
 #include "qemu/log.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-elsc.h"
+#include "hw/nvram/eeprom_at24c.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -338,6 +339,11 @@
  * chip's own size is derived from where the Hub places it.
  */
 #define HUB_MD_I2C_BASE         0x220000  /* PCF8584, S0 then S1 eight on */
+
+#define ELSC_NVRAM_FIRST_ADDR   0x50
+#define ELSC_NVRAM_PAGE_COUNT   8
+#define ELSC_NVRAM_PAGE_SIZE    256
+#define ELSC_NVRAM_RESERVED_PAGE 7
 
 /*
  * The junk-bus UART: a real NS16550-compatible serial interface at the upper
@@ -1705,6 +1711,36 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_chr(DEVICE(elsc), "chardev", serial_hd(1));
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
             return;
+        }
+    }
+
+    /*
+     * The system controller's 2 KiB NVRAM answers eight consecutive I2C
+     * addresses, with each address selecting one 256-byte page. Whether the
+     * hardware is one part consuming all eight addresses or several smaller
+     * parts is not established, and is invisible on the wire, so use the
+     * existing one-page EEPROM model for each address.
+     *
+     * Page 7 is the controller-reserved page that the PROM reads before it
+     * probes a console. Only its validity marker has a required value; zero
+     * is a coherent, deliberately non-authoritative default for its password,
+     * switches, configuration, module, self-test, and identity fields.
+     */
+    {
+        static const uint8_t reserved_page_defaults[16] = { 0x37 };
+
+        for (n = 0; n < ELSC_NVRAM_PAGE_COUNT; n++) {
+            uint8_t address = ELSC_NVRAM_FIRST_ADDR + n;
+
+            if (n == ELSC_NVRAM_RESERVED_PAGE) {
+                at24c_eeprom_init_rom(s->i2c.bus, address,
+                                     ELSC_NVRAM_PAGE_SIZE,
+                                     reserved_page_defaults,
+                                     sizeof(reserved_page_defaults));
+            } else {
+                at24c_eeprom_init(s->i2c.bus, address,
+                                  ELSC_NVRAM_PAGE_SIZE);
+            }
         }
     }
 
