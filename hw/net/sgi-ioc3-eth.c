@@ -466,6 +466,24 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         sgi_ioc3_enet_update_irq(s);
         return;
 
+    case SGI_IOC3_ENET_INT_ENABLE:
+        /*
+         * The line is level-driven from status & enable, so the enable
+         * register decides it as much as the status register does and has to
+         * re-derive it on every write. Plain storage here leaves a source
+         * that set while the enable was clear unable to raise the line when
+         * a guest later enables it, and the window is reachable on every
+         * bring-up: OpenBSD stops the interface by writing zero here, then
+         * writes the receive enables in the control register -- which is
+         * where this model flushes whatever the backend already had waiting
+         * -- and only then writes this register. A frame delivered in
+         * between sets its source against a clear enable and the line never
+         * follows.
+         */
+        s->enet_reg[index] = val;
+        sgi_ioc3_enet_update_irq(s);
+        return;
+
     case SGI_IOC3_ENET_MII_CONTROL: {
         unsigned int phy = (val >> SGI_IOC3_ENET_MII_PHY_SHIFT) &
                            SGI_IOC3_ENET_MII_PHY_MASK;

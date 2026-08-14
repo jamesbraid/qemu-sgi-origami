@@ -1596,6 +1596,50 @@ static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
 }
 
 /*
+ * A source that set while its enable was clear has to raise the line when the
+ * guest enables it. The line is level-driven from status & enable, so the
+ * enable register decides it as much as the status register does -- and the
+ * order this test uses is not contrived, it is the order every interface
+ * bring-up takes: OpenBSD's iec_init stops the interface by writing zero to
+ * the enable register, programs the receive enables in the control register,
+ * and writes the enable register last.
+ *
+ * The Bridge's own pin is what gets asserted, so that is what this reads,
+ * live, rather than trusting the model's own account of its line.
+ */
+static void test_enabling_a_set_source_raises_the_line(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    /*
+     * Interrupts off, then a frame delivered: its source sets and the line
+     * must stay low, because nothing is enabled.
+     */
+    qtest_writel(qts, ENET_INT_ENABLE, 0);
+    sn0_ioc3_rx_one_frame(qts, sv[0], RAM_SCRATCH, RAM_SCRATCH + 0x4000,
+                          (4 << 3) | RPIR_ARM, 0);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, ENET_INT_RX_TIMER);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, 0);
+
+    /* Enabling it is the only thing that happens next. */
+    qtest_writel(qts, ENET_INT_ENABLE, ENET_INT_RX_TIMER);
+
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * The register-only ack test above checks that a write clears the status bits
  * it names; it does not check that the line those bits gate actually follows.
  * A model that cleared the register without recomputing the line would pass
@@ -2307,6 +2351,8 @@ int main(int argc, char **argv)
                         test_reaching_the_watermark_raises_the_threshold);
     qtest_add_data_func("sn0/ioc3/ethernet-bare-produce-keeps-timer-armed",
                         NULL, test_a_bare_produce_write_leaves_the_timer_armed);
+    qtest_add_data_func("sn0/ioc3/ethernet-enable-raises-a-set-source", NULL,
+                        test_enabling_a_set_source_raises_the_line);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
     qtest_add_data_func("sn0/ioc3/ethernet-reply-during-transmit", NULL,
