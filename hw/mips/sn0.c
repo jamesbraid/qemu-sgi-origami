@@ -136,6 +136,7 @@ typedef struct SN0NodeState {
     MemoryRegion xtalk;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
     MemoryRegion mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
+    MemoryRegion hub_local_mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
     uint16_t bank_mb[SN0_MEM_BANKS];
     unsigned int populated_banks;
 
@@ -1980,6 +1981,8 @@ static void sn0_init(MachineState *machine)
         uint64_t segment_size = bank_size / segments;
 
         for (segment = 0; segment < segments; segment++) {
+            hwaddr segment_addr = (hwaddr)bank * SN0_MEM_BANK_SIZE +
+                                  (hwaddr)segment * SN0_MEM_SLOT_SIZE;
             g_autofree char *name =
                 g_strdup_printf("sn0.node0.ram.bank%u.slot%u", bank,
                                 segment);
@@ -1987,10 +1990,33 @@ static void sn0_init(MachineState *machine)
             memory_region_init_alias(&s->node0.mem_slot[bank][segment],
                                      OBJECT(&s->node0), name, machine->ram,
                                      ram_offset, segment_size);
-            memory_region_add_subregion(
-                system, node + (hwaddr)bank * SN0_MEM_BANK_SIZE +
-                        (hwaddr)segment * SN0_MEM_SLOT_SIZE,
-                &s->node0.mem_slot[bank][segment]);
+            memory_region_add_subregion(system, node + segment_addr,
+                                        &s->node0.mem_slot[bank][segment]);
+
+            /*
+             * Hub-special offset zero mirrors the first 256 MiB of the
+             * reading processor's local node memory.  Mirror each populated
+             * run separately so the alias preserves the bank's slot holes.
+             * The real two-CPU form also selects a private low 128 KiB page
+             * from the reading slice; this one-CPU machine always selects
+             * slice A, for which the direct view is the required mapping.
+             */
+            if (segment_addr < SN0_HUB_LOCAL_MEM_SIZE) {
+                uint64_t alias_size = MIN(segment_size,
+                                          SN0_HUB_LOCAL_MEM_SIZE -
+                                              segment_addr);
+                g_autofree char *alias_name =
+                    g_strdup_printf("sn0.node0.hub-local-ram.bank%u.slot%u",
+                                    bank, segment);
+
+                memory_region_init_alias(
+                    &s->node0.hub_local_mem_slot[bank][segment],
+                    OBJECT(&s->node0), alias_name, machine->ram,
+                    ram_offset, alias_size);
+                memory_region_add_subregion(
+                    system, SN0_SPACE_HUB + node + segment_addr,
+                    &s->node0.hub_local_mem_slot[bank][segment]);
+            }
             ram_offset += segment_size;
         }
     }

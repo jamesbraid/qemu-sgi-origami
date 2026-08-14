@@ -64,6 +64,13 @@
 #define SN0_MEM_BANKS       8
 
 /*
+ * The bottom of Hub-special space is an uncached view of the reading
+ * processor's own node memory.  Only the first 256 MiB decode through this
+ * local alias; the next 256 MiB are the node-local boot window.
+ */
+#define SN0_HUB_LOCAL_MEM_SIZE (256 * MiB)
+
+/*
  * The two lines the Hub drives into the processor, named by the Cause register
  * bit each one raises: the first pending bank on hardware interrupt 0, which is
  * Cause bit 10, and the second on hardware interrupt 1, Cause bit 11. Stated as

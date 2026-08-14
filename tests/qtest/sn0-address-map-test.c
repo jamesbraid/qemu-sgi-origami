@@ -278,6 +278,34 @@ static void test_512m_memory(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Hub-special offset zero is a 256 MiB view of the reading processor's local
+ * node memory.  It must preserve the fitted bank's sparse slot layout rather
+ * than turn the whole window into RAM.  The first address is the physical page
+ * to which the real PROM maps its uncached post-relocation instruction stream.
+ */
+static void test_hub_local_memory_alias(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t prom_copy = 0x01a0a520;
+
+    qtest_writeq(qts, prom_copy, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, SPACE_HUB + prom_copy), ==,
+                    0x0123456789abcdefULL);
+    qtest_writeq(qts, SPACE_HUB + prom_copy, 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(qts, prom_copy), ==,
+                    0xfedcba9876543210ULL);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -m 256M");
+    check_ram(qts, SPACE_HUB + 0x1000, 0x1000000000000001ULL);
+    check_not_ram(qts, SPACE_HUB + 64 * MiB);
+    check_ram(qts, SPACE_HUB + 128 * MiB + 0x1000,
+              0x1000000000000002ULL);
+    check_not_ram(qts, SPACE_HUB + 192 * MiB);
+    qtest_quit(qts);
+}
+
 static void test_invalid_memory_size(const void *data)
 {
     const char *args[] = {
@@ -538,6 +566,8 @@ int main(int argc, char **argv)
                         test_256m_memory);
     qtest_add_data_func("sn0/address-map/memory-512m", NULL,
                         test_512m_memory);
+    qtest_add_data_func("sn0/address-map/hub-local-memory-alias", NULL,
+                        test_hub_local_memory_alias);
     qtest_add_data_func("sn0/address-map/invalid-memory-size", NULL,
                         test_invalid_memory_size);
     qtest_add_data_func("sn0/address-map/directory-backdoor", NULL,
