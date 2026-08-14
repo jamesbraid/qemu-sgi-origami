@@ -318,7 +318,7 @@ static void test_the_comparator_raises_and_releases_the_line(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
@@ -349,7 +349,7 @@ static void test_the_comparator_pends_with_its_interrupt_off(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS);
@@ -1100,7 +1100,7 @@ static void test_interrupt_number_selects_the_bank(const void *data)
      * a plausible-looking bit in the wrong bank, which the guest experiences as
      * an interrupt delivered to the wrong handler.
      */
-    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK1_A, ~0ULL);
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 70);
@@ -1136,7 +1136,7 @@ static void test_a_masked_pending_bit_raises_nothing(const void *data)
      * lines shows the level directly, so the half that was named as missing is
      * asserted here.
      */
-    qtest_irq_intercept_out_named(qts, "/machine/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
