@@ -76,6 +76,7 @@ struct SGIElscState {
      * until a second real queue exists to answer for a second code.
      */
     uint32_t num_cpus;
+    uint8_t dip_switches;
     uint32_t arb_code;    /* which of the eight processor codes this cycle presents */
     bool arb_present;    /* false: showing the gap; true: holding the signal */
 

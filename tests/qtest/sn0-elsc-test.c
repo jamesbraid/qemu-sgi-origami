@@ -172,6 +172,30 @@ static void test_unimplemented_command_gets_err_cmd(const void *data)
     qtest_quit(qts);
 }
 
+static void test_read_switches_command(const void *data)
+{
+    QTestState *qts;
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    qts = qtest_init("-M origin200");
+    req_len = build_request(req, "rsw");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 5);
+    g_assert(memcmp(&resp[1], "ok ff", 5) == 0);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200,elsc-dip-switches=1");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 5);
+    g_assert(memcmp(&resp[1], "ok fe", 5) == 0);
+    qtest_quit(qts);
+}
+
 /*
  * Processor code 0's own pair: 0x70 * 2 plus processor_code 0, and signal2
  * as signal1 + 8. This is the one code this device backs with a real
@@ -681,7 +705,7 @@ static unsigned firmware_style_command(QTestState *qts, const uint8_t *req,
  *   sixteen reads of the identity EEPROM at 0x57, whose first byte is the
  *   required 0x37 validity marker and whose remaining model defaults are
  *   coherent zero values;
- *   then rsw to the ELSC, whose failure is tolerated;
+ *   then rsw to the ELSC, whose active-low switch byte must parse;
  *   then ver, which must return a correctly framed, correctly checksummed
  *   response beginning "ok".
  *
@@ -717,8 +741,8 @@ static void test_boot_acceptance_sequence(const void *data)
     req_len = build_request(req, "rsw");
     resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+    g_assert_cmpuint(resp[0], ==, 5);
+    g_assert(memcmp(&resp[1], "ok ff", 5) == 0);
 
     req_len = build_request(req, "ver");
     resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
@@ -742,6 +766,8 @@ int main(int argc, char **argv)
                         test_bad_request_checksum_gets_err_csum);
     qtest_add_data_func("sn0/elsc/unimplemented-command-gets-err-cmd", NULL,
                         test_unimplemented_command_gets_err_cmd);
+    qtest_add_data_func("sn0/elsc/read-switches-command", NULL,
+                        test_read_switches_command);
     qtest_add_data_func("sn0/elsc/arbitration-three-loop-wait", NULL,
                         test_arbitration_three_loop_wait);
     qtest_add_data_func("sn0/elsc/arbitration-repeats", NULL,

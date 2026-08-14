@@ -1772,6 +1772,8 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
 
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
+        qdev_prop_set_uint8(DEVICE(elsc), "dip-switches",
+                            s->elsc_dip_switches);
         qdev_prop_set_chr(DEVICE(elsc), "chardev", serial_hd(1));
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
             return;
@@ -1904,6 +1906,8 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
     DEFINE_PROP_BOOL("network-link-up", SGIHubState, network_link_up, false),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
+    DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
+                      elsc_dip_switches, 0),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
