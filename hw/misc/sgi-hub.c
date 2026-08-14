@@ -1397,9 +1397,11 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_PI_INT_MASK0_B:
         s->pi_int_mask[2] = val;
+        sgi_hub_update_irq(s);
         break;
     case HUB_PI_INT_MASK1_B:
         s->pi_int_mask[3] = val;
+        sgi_hub_update_irq(s);
         break;
     case HUB_IO_WIDGET_CONTROL:
         s->io_widget_control = (s->io_widget_control &
