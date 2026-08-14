@@ -210,6 +210,16 @@ static size_t sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
 
     if (cmd & SGI_IOC3_ENET_TXD_DATA_VALID) {
         n = bufcnt & SGI_IOC3_ENET_TXD_DATA_LEN_MASK;
+        /*
+         * The length field is seven bits wide and the area it measures holds
+         * 104 bytes, so a guest can name more inline data than exists. The
+         * cap below does not catch that -- the frame buffer it guards is
+         * twenty times larger than the area -- and without this the copy
+         * reads past the end of the caller's descriptor image.
+         */
+        if (n > SGI_IOC3_ENET_TXD_DATA_SIZE) {
+            n = SGI_IOC3_ENET_TXD_DATA_SIZE;
+        }
         if (n > sizeof(s->frame) - len) {
             n = sizeof(s->frame) - len;
         }
@@ -282,8 +292,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         uint64_t desc = tx_base + consume;
         uint32_t cmd, bufcnt;
         uint64_t buf1, buf2;
-        uint8_t inline_data[SGI_IOC3_ENET_TXD_SIZE -
-                            SGI_IOC3_ENET_TXD_DATA_OFFSET];
+        uint8_t inline_data[SGI_IOC3_ENET_TXD_DATA_SIZE];
         size_t len;
 
         ldl_be_dma(s->dma_as, desc + 0, &cmd, MEMTXATTRS_UNSPECIFIED);

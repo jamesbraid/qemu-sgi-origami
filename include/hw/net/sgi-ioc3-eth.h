@@ -171,8 +171,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_TXD_BUF1_LEN_SHIFT 8
 #define SGI_IOC3_ENET_TXD_BUF2_LEN_MASK  0x7ff00000u
 #define SGI_IOC3_ENET_TXD_BUF2_LEN_SHIFT 20
-#define SGI_IOC3_ENET_TXD_DATA_OFFSET    16
+/*
+ * Where the descriptor's own inline data area starts, and how much of the
+ * descriptor is left for it: two four-byte header words and two eight-byte
+ * buffer pointers come first, so the area is the last 104 bytes of the 128.
+ * Both drivers state the same two numbers independently -- OpenBSD computes
+ * the offset as two words plus two pointers and the size as what remains,
+ * and Linux's own transmit descriptor declares its inline array 104 bytes
+ * long -- which is what makes them the descriptor's layout rather than one
+ * driver's convention.
+ *
+ * The length field above holds seven bits, so a guest can name up to 127
+ * inline bytes in an area that holds 104. The engine takes the smaller.
+ */
+#define SGI_IOC3_ENET_TXD_DATA_OFFSET    24
 #define SGI_IOC3_ENET_TXD_SIZE           SGI_IOC3_ENET_TX_DESC_SIZE
+#define SGI_IOC3_ENET_TXD_DATA_SIZE      (SGI_IOC3_ENET_TXD_SIZE - \
+                                          SGI_IOC3_ENET_TXD_DATA_OFFSET)
 
 /* The largest frame this engine assembles before handing it to the network
  * backend: the eleven-bit byte count field's own limit, which no descriptor
