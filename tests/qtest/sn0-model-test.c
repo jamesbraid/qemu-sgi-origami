@@ -32,6 +32,43 @@
 
 #include "sn0-model.h"
 
+#define SN0_PROCESSOR_MODE_BITS 0x1211a785U
+#define SN0_PROCESSOR_MODE_MASK 0x01ffffffU
+
+static uint32_t read_config0(QTestState *qts)
+{
+    g_autofree char *registers = qtest_hmp(qts, "info registers");
+    const char *config = strstr(registers, "Config0 ");
+    uint32_t value;
+
+    g_assert_nonnull(config);
+    g_assert_cmpint(sscanf(config, "Config0 0x%x", &value), ==, 1);
+    return value;
+}
+
+/*
+ * The processor latches these bits from the board while reset is asserted.
+ * They are hardware state even when QEMU's synthesized firmware is disabled:
+ * the stock PROM compares them with the same word in flash before it can run
+ * its own reset sequence. Checking both power-on and a later machine reset
+ * catches callbacks that are either registered too late or wired only to the
+ * synthesized-firmware path.
+ */
+static void test_processor_mode_bits_are_board_state(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,synthesized-firmware=off "
+                                 "-cpu R10000 -m 64M");
+
+    g_assert_cmphex(read_config0(qts) & SN0_PROCESSOR_MODE_MASK, ==,
+                    SN0_PROCESSOR_MODE_BITS & SN0_PROCESSOR_MODE_MASK);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(read_config0(qts) & SN0_PROCESSOR_MODE_MASK, ==,
+                    SN0_PROCESSOR_MODE_BITS & SN0_PROCESSOR_MODE_MASK);
+
+    qtest_quit(qts);
+}
+
 /*
  * The graph sits in node memory, and the memory space is carrier window zero,
  * so a node offset is the address the memory system sees unchanged.
@@ -366,6 +403,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
                         test_architecture_boundaries);
+    qtest_add_data_func("sn0/model/processor-mode-bits", NULL,
+                        test_processor_mode_bits_are_board_state);
 
     return g_test_run();
 }
