@@ -84,6 +84,7 @@
  */
 #define RXD_BUF_OFFSET    66
 #define RXH_VALID         0x80000000u
+#define RXE_GOODPKT       0x40000000u
 
 /*
  * The register window is declared big-endian and this machine is not, so the
@@ -227,6 +228,13 @@ static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
 
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 8);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+
+    /*
+     * Reported good. Linux gates every delivered frame on this bit and drops
+     * the frame without it, while OpenBSD reads the error bits beside it and
+     * never looks at this one -- a field only one of the two guests can miss.
+     */
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4) & RXE_GOODPKT, ==, RXE_GOODPKT);
 
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
 
