@@ -19,6 +19,7 @@
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
+#include "trace.h"
 
 static uint32_t sgi_ioc3_enet_get(SGIIOC3EthState *s, hwaddr off)
 {
@@ -57,6 +58,7 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
     uint32_t status = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS);
     uint32_t enable = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_ENABLE);
 
+    trace_sgi_ioc3_eth_irq(status, enable, (status & enable) != 0);
     qemu_set_irq(s->irq, (status & enable) != 0);
 }
 
@@ -99,6 +101,10 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
     uint64_t ring_base, buf_addr;
 
     if (!sgi_ioc3_eth_can_receive(nc)) {
+        trace_sgi_ioc3_eth_rx_refused(
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME));
         return 0;
     }
     if (size > SGI_IOC3_ENET_FRAME_MAX - 8) {
@@ -150,6 +156,11 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
     } else if (size >= 1 && (buf[0] & 1)) {
         word1 |= SGI_IOC3_ENET_RXE_MULTICAST;
     }
+
+    trace_sgi_ioc3_eth_rx((uint32_t)size, mcr,
+                          sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
+                          sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME),
+                          ring_base, buf_addr, offset, wire_len, word0, word1);
 
     stl_be_dma(s->dma_as, buf_addr + 0, word0, MEMTXATTRS_UNSPECIFIED);
     stl_be_dma(s->dma_as, buf_addr + 4, word1, MEMTXATTRS_UNSPECIFIED);
@@ -307,7 +318,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     sgi_ioc3_enet_update_irq(s);
 }
 
-static uint64_t sgi_ioc3_enet_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t sgi_ioc3_enet_read_impl(void *opaque, hwaddr addr,
+                                        unsigned size)
 {
     SGIIOC3EthState *s = opaque;
     unsigned int index = addr / 4;
@@ -354,11 +366,29 @@ static uint64_t sgi_ioc3_enet_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+/*
+ * A wrapper rather than a trace call at each of the read handler's returns:
+ * several of them return something other than the stored register, and a
+ * trace that misses one of those is worse than none, since a reader takes
+ * the absence of a line as the absence of an access.
+ */
+static uint64_t sgi_ioc3_enet_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint64_t val = sgi_ioc3_enet_read_impl(opaque, addr, size);
+
+    trace_sgi_ioc3_eth_reg_read((uint32_t)(SGI_IOC3_ENET_BASE + addr),
+                                (uint32_t)val);
+    return val;
+}
+
 static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     SGIIOC3EthState *s = opaque;
     unsigned int index = addr / 4;
+
+    trace_sgi_ioc3_eth_reg_write((uint32_t)(SGI_IOC3_ENET_BASE + addr),
+                                 (uint32_t)val);
 
     switch (SGI_IOC3_ENET_BASE + addr) {
     case SGI_IOC3_ENET_INT_STATUS:
