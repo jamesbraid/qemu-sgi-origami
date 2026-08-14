@@ -797,6 +797,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 {
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
     unsigned int bank = number / SGI_HUB_BANK_BITS;
+    unsigned int i;
     uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
 
     if (val & PI_INT_MODIFY_SET) {
@@ -805,6 +806,22 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
         qatomic_and(&s->pi_int_pend[bank], ~bit);
     }
     sgi_hub_update_irq(s);
+
+    /*
+     * The PROM uses otherwise-unmasked pending bits as node-wide barrier and
+     * lock mailboxes. A peer polling one of those bits must observe a write
+     * before the writer exhausts the firmware's instruction-count timeout.
+     * Wake every other local processor just as the progress mailboxes do;
+     * this changes no interrupt state and only makes the already-atomic write
+     * visible on the scheduling boundary where real hardware exposes it.
+     */
+    for (i = 0; i < s->cpus; i++) {
+        CPUState *peer = qemu_get_cpu(s->cpu_base + i);
+
+        if (peer && peer != current_cpu) {
+            qemu_cpu_kick(peer);
+        }
+    }
 }
 
 /* Where the counter has got to, from the clock rather than from stored state. */
