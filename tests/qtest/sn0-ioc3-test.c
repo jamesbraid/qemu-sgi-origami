@@ -1440,6 +1440,43 @@ static void test_an_unaligned_produce_index_terminates(const void *data)
     close(sv[0]);
 }
 
+static void test_the_ethernet_transmit_honours_total_byte_count(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t inline_data[18] = {
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        0x08, 0x00, 0xde, 0xad, 0xbe, 0xef,
+    };
+    uint8_t received[64];
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    /* The segment includes padding, but the command gives the wire length. */
+    qtest_writel(qts, desc + 0, 14 | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(inline_data));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET,
+                   inline_data, sizeof(inline_data));
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, 14);
+    g_assert_cmpmem(received, got, inline_data, 14);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 {
     int sv[2];
@@ -2724,6 +2761,9 @@ int main(int argc, char **argv)
                         test_the_ethernet_transmit_bounds_the_inline_area);
     qtest_add_data_func("sn0/ioc3/ethernet-unaligned-produce-terminates",
                         NULL, test_an_unaligned_produce_index_terminates);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-honours-total-byte-count",
+                        NULL,
+                        test_the_ethernet_transmit_honours_total_byte_count);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
