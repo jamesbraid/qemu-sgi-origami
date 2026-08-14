@@ -387,6 +387,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
                         MEMTXATTRS_UNSPECIFIED);
 
         len = sgi_ioc3_eth_tx_gather(s, cmd, bufcnt, buf1, buf2, inline_data);
+        len = MIN(len, cmd & SGI_IOC3_ENET_TXD_BYTECNT_MASK);
         if (len > 0) {
             qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
         }
