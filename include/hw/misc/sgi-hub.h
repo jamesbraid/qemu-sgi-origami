@@ -144,6 +144,10 @@ struct SGIHubState {
     QEMUTimer *rt_timer[SGI_HUB_PROCESSORS];
     SGIHubCounterLine rt_line[SGI_HUB_PROCESSORS];
     uint64_t ni_status;
+
+    /* The network interface's two 64-bit general-purpose scratch registers. */
+    uint64_t ni_scratch[2];
+
     uint64_t io_link_status;
     uint64_t io_widget_control;
     uint64_t io_xtalk_timeout;

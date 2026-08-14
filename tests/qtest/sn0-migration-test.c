@@ -67,6 +67,10 @@
 
 #define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
 
+#define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
+#define NI_SCRATCH_0            0x600100
+#define NI_SCRATCH_1            0x600108
+
 /* PCI type 0 configuration space, and the window each device sits behind. */
 #define BRIDGE_CFG0             0x020000
 #define CFG0_DEVICE_STRIDE      0x1000
@@ -179,6 +183,9 @@ static void test_a_device_window_survives_migration(const void *data)
     bridge_put_card_in_slot(from, PROBE_SLOT);
     bridge_aim_window_at_card(from, PROBE_WINDOW, PROBE_SLOT);
 
+    qtest_writeq(from, HUB_LOCAL + NI_SCRATCH_0, 0x0123456789abcdefULL);
+    qtest_writeq(from, HUB_LOCAL + NI_SCRATCH_1, 0xfedcba9876543210ULL);
+
     qtest_writel(from, WINDOW(PROBE_WINDOW_OFFSET) + CARD_SCRATCH, 0xc0ffee00);
     g_assert_cmphex(qtest_readl(from, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
@@ -203,6 +210,10 @@ static void test_a_device_window_survives_migration(const void *data)
      */
     g_assert_cmphex(qtest_readl(to, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_SCRATCH_0), ==,
+                    0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_SCRATCH_1), ==,
+                    0xfedcba9876543210ULL);
 
     qtest_quit(to);
     qtest_quit(from);

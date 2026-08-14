@@ -517,6 +517,8 @@
 
 /* Network interface. */
 #define HUB_NI_STATUS           0x600000  /* status, revision and identity */
+#define HUB_NI_SCRATCH_0        0x600100
+#define HUB_NI_SCRATCH_1        0x600108
 
 /*
  * The port reset register. Three separate resets share it and only one of them
@@ -1000,6 +1002,10 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->io_link_status;
     case HUB_NI_STATUS:
         return s->ni_status;
+    case HUB_NI_SCRATCH_0:
+        return s->ni_scratch[0];
+    case HUB_NI_SCRATCH_1:
+        return s->ni_scratch[1];
     case HUB_MD_SLOT_ID_USTAT:
         return MD_SLOT_FLASH_READY;
     case HUB_MD_CONFIG:
@@ -1441,6 +1447,12 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
                        (val & NI_STATUS_WRITABLE);
         break;
+    case HUB_NI_SCRATCH_0:
+        s->ni_scratch[0] = val;
+        break;
+    case HUB_NI_SCRATCH_1:
+        s->ni_scratch[1] = val;
+        break;
     case HUB_NI_PORT_RESET:
         /*
          * The local-reset bit is tested on its own because the three things
@@ -1568,6 +1580,8 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
+    s->ni_scratch[0] = 0;
+    s->ni_scratch[1] = 0;
 
     /*
      * The crosstalk link comes up reporting itself up, and this is one of the
@@ -1779,7 +1793,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 13,
+    .version_id = 14,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1794,6 +1808,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
+        VMSTATE_UINT64_ARRAY_V(ni_scratch, SGIHubState, 2, 14),
         VMSTATE_UINT64_V(io_link_status, SGIHubState, 3),
         VMSTATE_UINT64_V(io_widget_control, SGIHubState, 4),
         VMSTATE_UINT64_V(io_xtalk_timeout, SGIHubState, 4),

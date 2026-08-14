@@ -115,6 +115,8 @@
 #define MD_MEM_DIMM_INIT    0x200090
 #define MD_DIR_DIMM_INIT    0x200098
 #define NI_STATUS           0x600000
+#define NI_SCRATCH_0        0x600100
+#define NI_SCRATCH_1        0x600108
 
 /*
  * The junk-bus UART: eight registers, the standard 16550 order, one
@@ -1571,6 +1573,30 @@ static void test_io_scratch_registers(const void *data)
     qtest_quit(qts);
 }
 
+static void test_network_scratch_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /*
+     * Firmware publishes this Hub's identity through scratch register 0 and
+     * its discovery state through scratch register 1. Both reset to zero and
+     * retain all 64 bits independently; treating an unimplemented read as
+     * zero makes the local Hub look headless as soon as discovery reads back
+     * the identity it just wrote.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_1), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_SCRATCH_0, 0x0123456789abcdefULL);
+    qtest_writeq(qts, HUB_LOCAL + NI_SCRATCH_1, 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_0), ==,
+                    0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_1), ==,
+                    0xfedcba9876543210ULL);
+
+    qtest_quit(qts);
+}
+
 static void test_md_perf_cnt0(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1781,6 +1807,8 @@ int main(int argc, char **argv)
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,
                         test_io_scratch_registers);
+    qtest_add_data_func("sn0/hub/network-scratch-registers", NULL,
+                        test_network_scratch_registers);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);
