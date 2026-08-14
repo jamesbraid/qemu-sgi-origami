@@ -752,7 +752,18 @@ static void test_the_ethernet_read_only_registers(const void *data)
 
 #define ENET_INT_TX_EMPTY    (1u << 16)
 #define ENET_INT_TX_COMPLETE (1u << 22)
+#define ENET_INT_RX_TIMER     (1u << 0)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
+
+/*
+ * The receive control register's watermark field and the produce index's
+ * arm bit, the two things that decide which source a delivered frame
+ * raises. RX_CONTROL is the register OpenBSD calls RCSR. Linux calls it
+ * ercsr. Its low nine bits are the watermark.
+ */
+#define RX_CONTROL        (IOC3_BASE + 0x0fc)
+#define RX_TIMER          (IOC3_BASE + 0x114)
+#define RPIR_ARM          (1u << 31)
 
 #define TX_CONSUME_IDLE   (1u << 31)
 
@@ -1402,6 +1413,183 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
 
     g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
                     ENET_INT_RX_THRESHOLD, ==, ENET_INT_RX_THRESHOLD);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Which source a delivered frame raises, and what has to be true for each.
+ * Three runs of one arrangement -- four buffers supplied, one frame sent --
+ * differing only in the receive timer's arming and the watermark in the
+ * receive control register, because those are the two things that decide
+ * the answer and a test that varied anything else could not say so.
+ *
+ * The frame is delivered in all three. What changes is what the guest is
+ * told about it, which is the whole of the contract here: Linux enables the
+ * timer source and no other receive source at all, so an engine that
+ * announces every frame on the threshold source leaves a Linux guest with
+ * status & enable == 0 on every frame it receives.
+ */
+static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
+                                  uint32_t rxbuf, uint32_t produce,
+                                  uint32_t threshold)
+{
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xde, 0xad };
+    unsigned int i;
+    int attempt;
+
+    qtest_writel(qts, MAC_CONTROL,
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_TIMER, 0);
+    qtest_writel(qts, RX_CONTROL, threshold);
+
+    /*
+     * Four buffers, one page apart, so a frame has somewhere to land and
+     * the supply is deep enough for a watermark to sit below it.
+     */
+    for (i = 0; i < 4; i++) {
+        qtest_writel(qts, ring + i * 8, 0);
+        qtest_writel(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
+    }
+
+    qtest_writel(qts, RX_PRODUCE, produce);
+
+    net_socket_send_frame(host_fd, frame, sizeof(frame));
+
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) != 0) {
+            break;
+        }
+        g_usleep(10000);
+    }
+
+    /*
+     * Delivered, in every one of the three runs. An assertion about which
+     * source was raised means nothing without this.
+     */
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+    g_assert_cmphex(qtest_readl(qts, rxbuf + 0) & 0x80000000u, ==, 0x80000000u);
+}
+
+/*
+ * Armed, with the immediate reload both drivers write, and three buffers
+ * still available against a watermark of none. The timer source is raised
+ * and the threshold source is not.
+ */
+static void test_an_armed_receive_timer_raises_its_own_source(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_rx_one_frame(qts, sv[0], RAM_SCRATCH, RAM_SCRATCH + 0x4000,
+                          (4 << 3) | RPIR_ARM, 0);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
+                    (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==,
+                    ENET_INT_RX_TIMER);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The same frame with the timer never armed and the supply still above the
+ * watermark. Nothing is raised. This is the run that fails on an engine
+ * announcing every frame on the threshold source, and the one above is what
+ * stops it being satisfied by an engine that raises nothing at all.
+ */
+static void test_a_frame_below_the_watermark_raises_nothing(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_rx_one_frame(qts, sv[0], RAM_SCRATCH, RAM_SCRATCH + 0x4000,
+                          4 << 3, 0);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
+                    (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The same again with the watermark raised to where this frame's delivery
+ * puts the supply -- four buffers, one consumed, three left, watermark
+ * three. The threshold source is raised and the unarmed timer is not.
+ */
+static void test_reaching_the_watermark_raises_the_threshold(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_rx_one_frame(qts, sv[0], RAM_SCRATCH, RAM_SCRATCH + 0x4000,
+                          4 << 3, 3);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
+                    (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==,
+                    ENET_INT_RX_THRESHOLD);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Arming is a command and the index is storage. SGI's own driver writes the
+ * index without the arm bit from its interrupt path, so an engine that took
+ * the bit's absence as a disarm would deliver one frame with an interrupt
+ * and every frame after it in silence.
+ */
+static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xbe, 0xef };
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_rx_one_frame(qts, sv[0], RAM_SCRATCH, RAM_SCRATCH + 0x4000,
+                          (4 << 3) | RPIR_ARM, 0);
+    qtest_writel(qts, ENET_INT_STATUS, ENET_INT_RX_TIMER);
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, 0);
+
+    /* A bare index write, the shape SGI's driver uses to return buffers. */
+    qtest_writel(qts, RX_PRODUCE, 8 << 3);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) != 8) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 16);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, ENET_INT_RX_TIMER);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2110,6 +2298,15 @@ int main(int argc, char **argv)
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
                         test_the_ethernet_receive_delivers_a_frame);
+    qtest_add_data_func("sn0/ioc3/ethernet-armed-timer-raises-its-source",
+                        NULL,
+                        test_an_armed_receive_timer_raises_its_own_source);
+    qtest_add_data_func("sn0/ioc3/ethernet-below-watermark-raises-nothing",
+                        NULL, test_a_frame_below_the_watermark_raises_nothing);
+    qtest_add_data_func("sn0/ioc3/ethernet-watermark-raises-threshold", NULL,
+                        test_reaching_the_watermark_raises_the_threshold);
+    qtest_add_data_func("sn0/ioc3/ethernet-bare-produce-keeps-timer-armed",
+                        NULL, test_a_bare_produce_write_leaves_the_timer_armed);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
     qtest_add_data_func("sn0/ioc3/ethernet-reply-during-transmit", NULL,
