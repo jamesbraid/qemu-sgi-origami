@@ -51,6 +51,7 @@
 #define ENET_RX_TIMER     (IOC3_BAR_ADDR + 0x114)
 #define ENET_TX_RING_HI   (IOC3_BAR_ADDR + 0x128)
 #define ENET_TX_RING_LO   (IOC3_BAR_ADDR + 0x12c)
+#define ENET_TX_CONSUME   (IOC3_BAR_ADDR + 0x130)
 #define ENET_TX_PRODUCE   (IOC3_BAR_ADDR + 0x134)
 #define ENET_MII_DATA_R   (IOC3_BAR_ADDR + 0x14c)
 
@@ -821,10 +822,374 @@ static void test_the_delivery_truncation_point(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The receive ring's size and the index that walks it, from the drivers:
+ * OpenBSD's IEC_NRXDESC_MAX is 512 and Linux sizes its own ring the same way,
+ * and both indices are byte offsets rather than entry numbers -- twelve bits,
+ * stepping eight per entry, so they run 0 to 4088 and wrap.
+ */
+#define RX_RING_ENTRIES   512
+#define RX_RING_STRIDE    8
+#define RX_INDEX_WRAP     (RX_RING_ENTRIES * RX_RING_STRIDE)
+
+/*
+ * The transmit ring, which comes in two sizes chosen by the low bit of the
+ * base register. OpenBSD's IEC_NTXDESC_MAX is 128 descriptors of
+ * IEC_TXDESCSIZE, and the larger arrangement is four times that.
+ */
+#define TX_DESC_SIZE      128
+#define TX_RING_SMALL     128
+#define TX_RING_LARGE     512
+#define TX_RING_SEL       1u
+#define TX_CONSUME_IDLE   (1u << 31)
+#define TX_CONSUME_MASK   0xffffu
+
+/*
+ * Wait for the consume index to reach a value, since a socket backend
+ * delivers on a later pass of the main loop rather than inside the write.
+ */
+static void wait_for_rx_consume(QTestState *qts, uint32_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 2000; attempt++) {
+        if (ioc3_readl(qts, ENET_RX_CONSUME) == want) {
+            return;
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, want);
+}
+
+/*
+ * Drive the receive ring right round three times. One lap proves the index
+ * returns to zero; three prove it keeps doing it, which is a different claim
+ * and the one a wrap defect off by a single entry survives.
+ *
+ * The ring holds 512 entries and the buffers behind them are reused, exactly
+ * as OpenBSD does -- it fills all 512 pointer slots from a smaller pool with
+ * `i & (sc_nrxdesc - 1)`. So this exercises the index arithmetic rather than
+ * anyone's memory footprint.
+ */
+static void test_the_receive_ring_wraps_three_times(const void *data)
+{
+    enum { BUFFERS = 8, LAPS = 3 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    unsigned int i;
+    uint32_t sent;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)i;
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], BUFFERS);
+
+    /* Every slot in the ring, pointing back into the small pool. */
+    for (i = 0; i < RX_RING_ENTRIES; i++) {
+        dma_stl_be(qts, ring + i * RX_RING_STRIDE, 0);
+        dma_stl_be(qts, ring + i * RX_RING_STRIDE + 4,
+                   rxbuf + (i % BUFFERS) * 0x1000);
+    }
+
+    for (sent = 0; sent < RX_RING_ENTRIES * LAPS; sent++) {
+        /*
+         * Keep the engine supplied the way a driver does, refilling well
+         * ahead of where it is consuming rather than one entry at a time.
+         */
+        if (sent % 64 == 0) {
+            uint32_t ahead = (sent + 256) % RX_RING_ENTRIES;
+
+            ioc3_writel(qts, ENET_RX_PRODUCE,
+                        (ahead * RX_RING_STRIDE) | RPIR_ARM);
+        }
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        wait_for_rx_consume(qts, ((sent + 1) * RX_RING_STRIDE) %
+                                 RX_INDEX_WRAP);
+    }
+
+    /*
+     * Three whole laps land exactly back on zero. On its own that is a weak
+     * thing to assert -- an engine that delivered nothing at all would also
+     * finish at zero -- so what carries this test is the check inside the
+     * loop, which names the exact expected index after every one of the
+     * 1536 deliveries. The two together say the index visited every value
+     * and came home, rather than merely ending where it started.
+     */
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /*
+     * And the last lap really wrote a frame, rather than the ring turning
+     * over an engine that had stopped delivering.
+     */
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf + ((RX_RING_ENTRIES - 1) % BUFFERS) *
+                               0x1000) & RXH_VALID, ==, RXH_VALID);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The receive ring running out, and coming back. When the engine has consumed
+ * everything software supplied it must stop taking frames rather than
+ * overwrite a buffer it has already filled -- and when software supplies more,
+ * the frames the backend has been holding must go in without another arriving
+ * to prompt it.
+ *
+ * This case was found by accident: a six-frame test against a four-buffer ring
+ * stopped dead at four. An accident that reproduces on purpose is a better
+ * starting point than a case somebody imagined, so it is asserted here.
+ */
+static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
+{
+    enum { BUFFERS = 4, EXTRA = 2 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x40);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], BUFFERS);
+
+    for (i = 0; i < BUFFERS + EXTRA; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+
+    /* It fills what it was given and then stops, however many are offered. */
+    wait_for_rx_consume(qts, BUFFERS * RX_RING_STRIDE);
+    g_usleep(200000);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
+                    BUFFERS * RX_RING_STRIDE);
+
+    /*
+     * Supplying buffers is what releases them. Nothing else happens here --
+     * no further frame arrives -- so an engine that only looked at its ring
+     * when something new turned up would sit on these forever.
+     */
+    for (i = 0; i < EXTRA; i++) {
+        uint32_t slot = BUFFERS + i;
+
+        dma_stl_be(qts, RAM_SCRATCH + 0x8000 + slot * RX_RING_STRIDE, 0);
+        dma_stl_be(qts, RAM_SCRATCH + 0x8000 + slot * RX_RING_STRIDE + 4,
+                   rxbuf + slot * 0x1000);
+    }
+    ioc3_writel(qts, ENET_RX_PRODUCE,
+                ((BUFFERS + EXTRA) * RX_RING_STRIDE) | RPIR_ARM);
+
+    wait_for_rx_consume(qts, (BUFFERS + EXTRA) * RX_RING_STRIDE);
+
+    /* And what landed is the frame, not a repeat of an earlier buffer. */
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf + BUFFERS * 0x1000) & RXH_VALID,
+                    ==, RXH_VALID);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Fill a run of transmit descriptors, each carrying its own index so the
+ * frames can be told apart on the wire, and ring the doorbell once.
+ */
+static void queue_tx_run(QTestState *qts, uint32_t base, uint32_t first,
+                         uint32_t count, uint32_t ring_bytes, size_t len)
+{
+    uint32_t n;
+
+    for (n = 0; n < count; n++) {
+        uint32_t slot = (first + n) % (ring_bytes / TX_DESC_SIZE);
+        uint32_t desc = base + slot * TX_DESC_SIZE;
+        uint8_t frame[64];
+
+        memset(frame, 0, sizeof(frame));
+        memset(frame, 0xff, 6);
+        frame[12] = 0x08;
+        frame[13] = 0x00;
+        frame[14] = (uint8_t)((first + n) >> 8);
+        frame[15] = (uint8_t)(first + n);
+
+        qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, len);
+        dma_stl_be(qts, desc + 0, len | TXD_DATA_VALID);
+        dma_stl_be(qts, desc + 4, len);
+    }
+}
+
+/*
+ * A whole batch behind one doorbell. Neither driver rings once per descriptor
+ * -- OpenBSD queues everything ifq_dequeue gives it and writes the produce
+ * index once at the end -- so an engine that sent only the first descriptor of
+ * a batch would stall every driver we have, and would look fine to any test
+ * that queued one frame at a time.
+ */
+static void test_a_burst_behind_one_doorbell(const void *data)
+{
+    enum { BURST = 16, LEN = 64 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[128];
+    uint32_t base = RAM_SCRATCH;
+    unsigned int n;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 8);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    queue_tx_run(qts, base, 0, BURST, TX_RING_SMALL * TX_DESC_SIZE, LEN);
+
+    /* One write, sixteen frames. */
+    ioc3_writel(qts, ENET_TX_PRODUCE, BURST * TX_DESC_SIZE);
+
+    for (n = 0; n < BURST; n++) {
+        size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+
+        g_assert_cmpint(len, ==, LEN);
+        /*
+         * In order, and all of them: the index each descriptor carries says
+         * which it was.
+         */
+        g_assert_cmphex(got[14], ==, (uint8_t)(n >> 8));
+        g_assert_cmphex(got[15], ==, (uint8_t)n);
+    }
+
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
+                    (BURST * TX_DESC_SIZE) | TX_CONSUME_IDLE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The transmit ring right round three times, on the smaller of the two
+ * arrangements. As with the receive ring, one lap proves the index returns and
+ * three prove it keeps doing so.
+ */
+static void test_the_transmit_ring_wraps_three_times(const void *data)
+{
+    enum { LAPS = 3, CHUNK = 16, LEN = 64 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[128];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t ring_bytes = TX_RING_SMALL * TX_DESC_SIZE;
+    uint32_t sent = 0;
+    unsigned int n;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 8);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+
+    while (sent < TX_RING_SMALL * LAPS) {
+        queue_tx_run(qts, base, sent, CHUNK, ring_bytes, LEN);
+        ioc3_writel(qts, ENET_TX_PRODUCE,
+                    ((sent + CHUNK) * TX_DESC_SIZE) % ring_bytes);
+
+        for (n = 0; n < CHUNK; n++) {
+            size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+            uint32_t which = sent + n;
+
+            g_assert_cmpint(len, ==, LEN);
+            g_assert_cmphex(got[14], ==, (uint8_t)(which >> 8));
+            g_assert_cmphex(got[15], ==, (uint8_t)which);
+        }
+        sent += CHUNK;
+    }
+
+    /*
+     * Three whole laps, so the index is back where it started. The frames
+     * checked above are what makes that mean something: an engine that
+     * stopped sending would also finish at zero.
+     */
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK,
+                    ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Which arrangement the low bit of the base register selects, asserted where
+ * the two differ: at descriptor 128. On the small ring that index is the
+ * start of the second lap; on the large one it is an ordinary descriptor a
+ * long way from the end. Sending 129 and reading where the consume index came
+ * to rest tells the two apart, and nothing else in this file does -- every
+ * other transmit test stays inside the first 128 either way.
+ */
+static void test_the_ring_select_bit_moves_the_wrap(const void *data)
+{
+    enum { COUNT = TX_RING_SMALL + 1, CHUNK = 16, LEN = 64 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[128];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t ring_bytes = TX_RING_LARGE * TX_DESC_SIZE;
+    uint32_t sent = 0;
+    unsigned int n;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 8);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
+
+    while (sent < COUNT) {
+        uint32_t run = MIN((uint32_t)CHUNK, (uint32_t)COUNT - sent);
+
+        queue_tx_run(qts, base, sent, run, ring_bytes, LEN);
+        ioc3_writel(qts, ENET_TX_PRODUCE, (sent + run) * TX_DESC_SIZE);
+
+        for (n = 0; n < run; n++) {
+            size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+
+            g_assert_cmpint(len, ==, LEN);
+            g_assert_cmphex(got[15], ==, (uint8_t)(sent + n));
+        }
+        sent += run;
+    }
+
+    /*
+     * On the large ring the index is simply 129 descriptors in. An engine
+     * ignoring the select bit would have wrapped at 128 and be sitting on
+     * one.
+     */
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK,
+                    ==, COUNT * TX_DESC_SIZE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sgi-ioc3-eth/burst-behind-one-doorbell", NULL,
+                        test_a_burst_behind_one_doorbell);
+    qtest_add_data_func("sgi-ioc3-eth/transmit-ring-wraps", NULL,
+                        test_the_transmit_ring_wraps_three_times);
+    qtest_add_data_func("sgi-ioc3-eth/ring-select-moves-the-wrap", NULL,
+                        test_the_ring_select_bit_moves_the_wrap);
+    qtest_add_data_func("sgi-ioc3-eth/receive-ring-wraps", NULL,
+                        test_the_receive_ring_wraps_three_times);
+    qtest_add_data_func("sgi-ioc3-eth/receive-ring-dry-and-recovers", NULL,
+                        test_the_receive_ring_runs_dry_and_recovers);
     qtest_add_data_func("sgi-ioc3-eth/reported-count-at-guest-gates", NULL,
                         test_the_reported_count_at_the_guest_gates);
     qtest_add_data_func("sgi-ioc3-eth/delivery-truncation-point", NULL,
