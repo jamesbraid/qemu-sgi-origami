@@ -2075,6 +2075,39 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
                     ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD |
                     ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
 
+    /*
+     * And the complement, which is what makes the check above about the source
+     * surviving rather than about the register's final value. A model that
+     * cleared the status at the start of the walk and or-ed the receive source
+     * back at the end finishes with the same word and passes everything above
+     * -- while announcing a receive on every transmit, including the ones
+     * nothing answers. A frame the backend does not understand must raise no
+     * receive source, and the consume index says a delivery could have
+     * happened and did not.
+     */
+    qtest_writel(qts, ENET_INT_STATUS, 0xffffffffu);
+    {
+        uint8_t quiet[64];
+
+        memset(quiet, 0, sizeof(quiet));
+        memset(quiet, 0xff, 6);
+        quiet[12] = 0x88;
+        quiet[13] = 0xb5;
+        qtest_memwrite(qts, desc + 128 + TXD_DATA_OFFSET, quiet,
+                       sizeof(quiet));
+        qtest_writel(qts, desc + 128 + 0,
+                     sizeof(quiet) | TXD_DATA_VALID | TXD_INT_DONE);
+        qtest_writel(qts, desc + 128 + 4, sizeof(quiet));
+        qtest_writel(qts, TX_PRODUCE, 256);
+
+        g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+        status = qtest_readl(qts, ENET_INT_STATUS);
+        g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
+                        ==, 0);
+        g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==,
+                        ENET_INT_TX_COMPLETE);
+    }
+
     qtest_quit(qts);
 }
 

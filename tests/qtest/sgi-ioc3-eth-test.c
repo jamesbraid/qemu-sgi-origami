@@ -63,6 +63,8 @@
 #define MCR_RX_EN         (1u << 16)
 
 #define ENET_INT_RX_TIMER (1u << 0)
+#define ENET_INT_RX_THRESHOLD (1u << 1)
+#define ENET_INT_TX_COMPLETE  (1u << 22)
 #define RPIR_ARM          (1u << 31)
 
 #define TXD_INT_DONE      (1u << 12)
@@ -1363,6 +1365,35 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         status = ioc3_readl(qts, ENET_INT_STATUS);
         g_assert_cmphex(status & ENET_INT_RX_TIMER, ==, ENET_INT_RX_TIMER);
         ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
+
+        /*
+         * Then the complement, which is what makes the assertion above about
+         * the source *surviving* rather than about the register's final value.
+         * A model that cleared the status at the start of the walk and or-ed
+         * the receive source back at the end finishes with the same word and
+         * passes everything above -- and announces a receive on every
+         * transmit, including the ones nothing answers.
+         *
+         * So: a frame the backend does not understand, with a receive buffer
+         * still free so a delivery could have happened, and nothing may be
+         * raised. The consume index is checked too, because "no source" is
+         * only a statement about the source if a frame could have arrived and
+         * did not.
+         */
+        memset(frame, 0, 64);
+        memcpy(frame, gw_mac, 6);
+        memcpy(frame + 6, guest_mac, 6);
+        frame[12] = 0x88;
+        frame[13] = 0xb5;
+        tx_one(qts, base, slot + 1, frame, 64);
+
+        g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
+                        (slot + 1) * RX_RING_STRIDE);
+        status = ioc3_readl(qts, ENET_INT_STATUS);
+        g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
+                        ==, 0);
+        g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==,
+                        ENET_INT_TX_COMPLETE);
     }
 
     qtest_quit(qts);
