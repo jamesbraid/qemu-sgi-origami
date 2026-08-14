@@ -1558,7 +1558,9 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
 
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
-    memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
+    for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
+        s->pi_cpu_enable[n] = n < s->cpus;
+    }
     /*
      * The error-spool addresses are deliberately not cleared here. The
      * firmware writes a marker into processor B's before triggering a reset,
