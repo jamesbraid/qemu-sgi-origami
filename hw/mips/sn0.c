@@ -100,6 +100,19 @@
 #define SN0_PORT_NODE_INVALID   0xffffULL
 #define SN0_PORT_UNCONNECTED    (SN0_PORT_NODE_INVALID << 48)
 
+#define TYPE_SN0_NODE "sn0-node"
+
+typedef struct SN0NodeState {
+    Object parent_obj;
+
+    uint32_t nasid;
+    SGIHubState hub;
+} SN0NodeState;
+
+DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
+
+#define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
+
 struct SN0MachineState {
     MachineState parent_obj;
 
@@ -123,7 +136,7 @@ struct SN0MachineState {
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
     MemoryRegion mem_bank[SN0_MEM_BANKS];
 
-    SGIHubState hub;
+    SN0NodeState node0;
     SGIBridgeState io_bridge;
 
     /*
@@ -213,7 +226,7 @@ struct SN0MachineState {
 typedef struct SN0MachineState SN0MachineState;
 
 DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
-                         MACHINE_TYPE_NAME("origin200"))
+                         TYPE_SN0_MACHINE)
 
 /*
  * The flash is not programmable from the guest side in this model. Real
@@ -2021,11 +2034,10 @@ static void sn0_init(MachineState *machine)
      * decode, because a guest uses one to read its processor number and the
      * other to clear interrupt state in the same boot.
      */
-    object_initialize_child(OBJECT(machine), "hub", &s->hub, TYPE_SGI_HUB);
-    qdev_prop_set_uint32(DEVICE(&s->hub), "nasid", 0);
-    qdev_prop_set_uint32(DEVICE(&s->hub), "xtalk-widget-shift",
+    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "nasid", s->node0.nasid);
+    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
-    object_property_set_link(OBJECT(&s->hub), "xtalk", OBJECT(&s->xtalk),
+    object_property_set_link(OBJECT(&s->node0.hub), "xtalk", OBJECT(&s->xtalk),
                              &error_fatal);
     /*
      * The junk-bus UART, off unless the operator asked for it by name. It
@@ -2047,13 +2059,14 @@ static void sn0_init(MachineState *machine)
      * machine anyone gets without asking keeps its device indices where they
      * were. An option should not renumber the parts a real machine has.
      */
-    qdev_prop_set_bit(DEVICE(&s->hub), "junk-uart", s->junk_uart_present);
+    qdev_prop_set_bit(DEVICE(&s->node0.hub), "junk-uart",
+                      s->junk_uart_present);
     if (s->junk_uart_present && serial_hd(SN0_JUNK_UART_CHARDEV)) {
-        object_property_set_link(OBJECT(&s->hub), "junk-uart-chardev",
+        object_property_set_link(OBJECT(&s->node0.hub), "junk-uart-chardev",
                                  OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
                                  &error_fatal);
     }
-    sysbus_realize(SYS_BUS_DEVICE(&s->hub), &error_fatal);
+    sysbus_realize(SYS_BUS_DEVICE(&s->node0.hub), &error_fatal);
 
     /*
      * The Hub's two pending banks reach the processor on its first two hardware
@@ -2063,16 +2076,16 @@ static void sn0_init(MachineState *machine)
      * the sources all name the Cause bit and a hand-written index is a silent
      * two-line error with nothing to check it against.
      */
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 0,
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 0,
                        cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 1,
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 1,
                        cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
     /*
      * The real-time counter's comparator for this processor. The Hub offers a
      * line per socket; this node has one processor, so the second stays
      * unconnected and the Hub's writes to it go nowhere.
      */
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hub), 2,
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 2,
                        cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
 
     /*
@@ -2330,13 +2343,13 @@ static void sn0_init(MachineState *machine)
      */
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_BIG_WINDOW_BASE,
-                                &s->hub.bwin);
+                                &s->node0.hub.bwin);
 
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,
-                                &s->hub.regs);
+                                &s->node0.hub.regs);
     memory_region_init_alias(&s->hub_regs_node_view, NULL,
-                             "sn0.node0.hub.explicit", &s->hub.regs, 0,
+                             "sn0.node0.hub.explicit", &s->node0.hub.regs, 0,
                              SGI_HUB_WINDOW_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_NODE_WINDOW,
@@ -2568,10 +2581,19 @@ static void sn0_set_widget0_revision(Object *obj, Visitor *v, const char *name,
     SN0_MACHINE(obj)->widget0_revision = value;
 }
 
+static void sn0_node_instance_init(Object *obj)
+{
+    SN0NodeState *node = SN0_NODE(obj);
+
+    object_initialize_child(obj, "hub", &node->hub, TYPE_SGI_HUB);
+}
+
 static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
 
+    object_initialize_child(obj, "node0", &s->node0, TYPE_SN0_NODE);
+    s->node0.nasid = 0;
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
     s->debug_leds = true;
@@ -2653,14 +2675,29 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
 
 static const TypeInfo origin200_type = {
     .name = MACHINE_TYPE_NAME("origin200"),
-    .parent = TYPE_MACHINE,
+    .parent = TYPE_SN0_MACHINE,
     .class_init = origin200_class_init,
+};
+
+static const TypeInfo sn0_machine_type = {
+    .name = TYPE_SN0_MACHINE,
+    .parent = TYPE_MACHINE,
     .instance_init = sn0_instance_init,
     .instance_size = sizeof(SN0MachineState),
+    .abstract = true,
+};
+
+static const TypeInfo sn0_node_type = {
+    .name = TYPE_SN0_NODE,
+    .parent = TYPE_OBJECT,
+    .instance_init = sn0_node_instance_init,
+    .instance_size = sizeof(SN0NodeState),
 };
 
 static void sn0_machine_types(void)
 {
+    type_register_static(&sn0_node_type);
+    type_register_static(&sn0_machine_type);
     type_register_static(&origin200_type);
 }
 

@@ -284,6 +284,70 @@ static void test_object_graph(const void *data)
     qtest_quit(qts);
 }
 
+static QDict *find_qom_type(QList *types, const char *name)
+{
+    const QListEntry *entry;
+
+    for (entry = qlist_first(types); entry; entry = qlist_next(entry)) {
+        QDict *type = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(type, "name"), name)) {
+            return type;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Product identity and shared architecture are separate QOM boundaries. The
+ * command line still selects origin200, but its implementation derives from
+ * an abstract SN0 machine and contains a node object that owns the Hub.
+ */
+static void test_architecture_boundaries(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    QDict *response;
+    QList *types;
+    QDict *type;
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-list-types',"
+                              " 'arguments': { 'implements': 'machine',"
+                              "                  'abstract': true } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    types = qdict_get_qlist(response, "return");
+    type = find_qom_type(types, "sn0-machine");
+    g_assert_nonnull(type);
+    g_assert_true(qdict_get_bool(type, "abstract"));
+    qobject_unref(response);
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-list-types',"
+                              " 'arguments': { 'implements': 'sn0-machine',"
+                              "                  'abstract': true } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    types = qdict_get_qlist(response, "return");
+    type = find_qom_type(types, SN0_MODEL_MACHINE_TYPE);
+    g_assert_nonnull(type);
+    g_assert_false(qdict_haskey(type, "abstract") &&
+                   qdict_get_bool(type, "abstract"));
+    qobject_unref(response);
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                              " 'arguments': { 'path': '/machine/node0',"
+                              "                  'property': 'type' } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sn0-node");
+    qobject_unref(response);
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                              " 'arguments': { 'path': '/machine/node0/hub',"
+                              "                  'property': 'type' } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sgi-hub");
+    qobject_unref(response);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -292,6 +356,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/graph-whole-region", NULL,
                         test_graph_whole_region);
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
+    qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
+                        test_architecture_boundaries);
 
     return g_test_run();
 }
