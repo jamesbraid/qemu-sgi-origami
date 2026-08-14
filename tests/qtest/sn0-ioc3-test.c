@@ -1289,6 +1289,52 @@ static void test_the_ethernet_transmit_bounds_the_inline_area(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A guest can hang the emulator with two register writes, and this is the
+ * shape of it: the walk steps a whole descriptor at a time and stops when the
+ * consume index equals the produce index, so a produce index the steps can
+ * never land on is a loop with no way out. The indices are byte offsets given
+ * as a descriptor number shifted left by seven, so nothing a driver writes has
+ * the low bits set -- which is exactly why no test written against a driver's
+ * behaviour would ever find this.
+ *
+ * The assertion that matters here is that the test finishes at all. A model
+ * without the bound never returns from the doorbell write and this fails as a
+ * timeout rather than a comparison, which is the only way a hang can fail.
+ */
+static void test_an_unaligned_produce_index_terminates(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+
+    /* Both indices written raw, neither on a descriptor boundary. */
+    qtest_writel(qts, TX_CONSUME, 0);
+    qtest_writel(qts, TX_PRODUCE, 1);
+
+    /*
+     * One byte is below a descriptor, so there is nothing to send and the
+     * engine comes to rest where it started, idle.
+     */
+    g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, TX_CONSUME_IDLE);
+
+    /* And it is still a working engine afterwards rather than a wedged one. */
+    qtest_writel(qts, TX_CONSUME, 3);
+    qtest_writel(qts, TX_PRODUCE, 128 + 5);
+    g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, (128u | TX_CONSUME_IDLE));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 {
     int sv[2];
@@ -2338,6 +2384,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-bounds-the-inline-area",
                         NULL,
                         test_the_ethernet_transmit_bounds_the_inline_area);
+    qtest_add_data_func("sn0/ioc3/ethernet-unaligned-produce-terminates",
+                        NULL, test_an_unaligned_produce_index_terminates);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
