@@ -33,6 +33,7 @@
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
+#include "net/net.h"
 
 /*
  * The ports' access contract, which is the whole reason this wrapper exists
@@ -801,6 +802,15 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * must go through it rather than the plain system address space.
      */
     s->eth.dma_as = pci_get_address_space(dev);
+    /*
+     * And its network backend, claimed here rather than by the machine that
+     * plugs this chip in. The block is a child device carrying the NIC
+     * properties itself, so nothing outside can name it on a command line --
+     * which left every machine but the Origin unable to give this chip a
+     * network at all, and made the whole ethernet unreachable on any board
+     * used to cross-check it away from the SGI fabric.
+     */
+    qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->eth), errp)) {
         return;
     }
@@ -931,6 +941,19 @@ static void sgi_ioc3_init(Object *obj)
     }
 
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_IOC3_ETH);
+
+    /*
+     * The ethernet block carries the network properties, and it is a child
+     * nobody outside can name, so without these aliases the only way to give
+     * this chip a backend is for the board to claim one on its behalf. That
+     * left the ethernet unreachable on every machine but the Origin -- and
+     * the whole point of plugging this card into a machine with none of the
+     * SGI fabric under it is to find out which defects belong to the device.
+     * A real IOC3 is also sold as a plain PCI card, so being pluggable is
+     * what the part does rather than a concession to testing.
+     */
+    object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
+    object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
 
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
 }
