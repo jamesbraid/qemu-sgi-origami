@@ -1335,6 +1335,22 @@ static void test_an_unaligned_produce_index_terminates(const void *data)
      */
     g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, TX_CONSUME_IDLE);
 
+    /*
+     * Eight, which is the value that tells a correct bound from a plausible
+     * wrong one. The walk steps a whole descriptor, so an engine rounding
+     * these indices down to eight bytes -- an alignment that looks careful and
+     * is not the descriptor's -- leaves this produce index at 8, which the
+     * steps 0, 128, 256 never land on. It still hangs.
+     *
+     * Every other value in this test survives that wrong alignment: 1, 3 and
+     * 133 round to 0, 0 and 128 under both rules, which are exactly the
+     * answers asserted. So without this line the test passes on an engine
+     * that hangs, which is the defect it exists to forbid.
+     */
+    qtest_writel(qts, TX_CONSUME, 0);
+    qtest_writel(qts, TX_PRODUCE, 8);
+    g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, TX_CONSUME_IDLE);
+
     /* And it is still a working engine afterwards rather than a wedged one. */
     qtest_writel(qts, TX_CONSUME, 3);
     qtest_writel(qts, TX_PRODUCE, 128 + 5);
