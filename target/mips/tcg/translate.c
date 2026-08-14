@@ -14761,7 +14761,8 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
     case OPC_CACHE:
         check_cp0_enabled(ctx);
         check_insn(ctx, ISA_MIPS3 | ISA_MIPS_R1);
-        if (ctx->hflags & MIPS_HFLAG_ITC_CACHE) {
+        if ((ctx->hflags & MIPS_HFLAG_ITC_CACHE) ||
+            (ctx->insn_flags & INSN_R10K)) {
             gen_cache_operation(ctx, rt, rs, imm);
         }
         /* Treat as NOP. */
