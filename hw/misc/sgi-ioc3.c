@@ -334,6 +334,8 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
         /* A search asks for each bit of the identity three slots at a
          * time: the bit, its complement, then the guest's choice. With a
          * single part on the bus every choice matches what was offered.
+         * The selected part remains ready for a function command; SGI's
+         * PROM relies on that and sends no second ROM command.
          */
         unsigned int step = s->onewire_bit % 3;
         unsigned int index = s->onewire_bit / 3;
@@ -347,7 +349,8 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
 
         if (++s->onewire_bit == 64 * 3) {
             s->onewire_bit = 0;
-            s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
+            s->onewire_command = 0;
+            s->onewire_phase = SGI_IOC3_ONEWIRE_FUNCTION;
         }
     } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_MATCH) {
         /* The sixty-four bits of a Match ROM, least-significant bit

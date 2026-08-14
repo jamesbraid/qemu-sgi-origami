@@ -1026,16 +1026,24 @@ static void test_a_wrong_match_rom_leaves_the_part_unselected(const void *data)
  * memory with the plain Read Memory command (0xf0); Linux's
  * w1_ds2502_read_page() selects with a Skip ROM (its w1 core takes that
  * path whenever only one device is registered) and reads memory with the
- * Read Memory-with-CRC command (0xc3). Both must answer identically.
+ * Read Memory-with-CRC command (0xc3). SGI's PROM continues directly from
+ * Search ROM to Read Memory. All three must answer identically.
  */
-static void read_ethernet_address_page(QTestState *qts, bool use_match_rom,
+typedef enum OneWireSelection {
+    ONEWIRE_SELECT_MATCH,
+    ONEWIRE_SELECT_SKIP,
+    ONEWIRE_SELECT_SEARCH,
+} OneWireSelection;
+
+static void read_ethernet_address_page(QTestState *qts,
+                                       OneWireSelection selection,
                                        uint8_t cmd, uint8_t *leading_crc,
                                        uint8_t page[32], uint8_t *trailing_crc)
 {
     unsigned int i;
 
     ONEWIRE_RESET(qts);
-    if (use_match_rom) {
+    if (selection != ONEWIRE_SELECT_SKIP) {
         uint64_t rom = 0;
 
         onewire_write_byte(qts, 0xf0);     /* Search ROM, to learn the id */
@@ -1050,10 +1058,12 @@ static void read_ethernet_address_page(QTestState *qts, bool use_match_rom,
                 ONEWIRE_WRITE_ZERO(qts);
             }
         }
-        ONEWIRE_RESET(qts);
-        onewire_write_byte(qts, 0x55);     /* Match ROM */
-        for (i = 0; i < 8; i++) {
-            onewire_write_byte(qts, (rom >> (8 * i)) & 0xff);
+        if (selection == ONEWIRE_SELECT_MATCH) {
+            ONEWIRE_RESET(qts);
+            onewire_write_byte(qts, 0x55);     /* Match ROM */
+            for (i = 0; i < 8; i++) {
+                onewire_write_byte(qts, (rom >> (8 * i)) & 0xff);
+            }
         }
     } else {
         onewire_write_byte(qts, 0xcc);     /* Skip ROM */
@@ -1070,7 +1080,8 @@ static void read_ethernet_address_page(QTestState *qts, bool use_match_rom,
     *trailing_crc = onewire_read_byte(qts);
 }
 
-static void assert_ethernet_address_page(QTestState *qts, bool use_match_rom,
+static void assert_ethernet_address_page(QTestState *qts,
+                                         OneWireSelection selection,
                                          uint8_t cmd)
 {
     uint8_t leading, page[32], trailing;
@@ -1078,7 +1089,7 @@ static void assert_ethernet_address_page(QTestState *qts, bool use_match_rom,
     uint8_t got_mac[6];
     unsigned int i;
 
-    read_ethernet_address_page(qts, use_match_rom, cmd, &leading, page,
+    read_ethernet_address_page(qts, selection, cmd, &leading, page,
                                &trailing);
 
     g_assert_cmphex(leading, ==, onewire_crc8(0, echo, sizeof(echo)));
@@ -1106,7 +1117,7 @@ static void test_reading_the_page_via_read_memory(const void *data)
     qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
 
     /* OpenBSD's owmac: Match ROM, then the plain Read Memory command. */
-    assert_ethernet_address_page(qts, true, 0xf0);
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_MATCH, 0xf0);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -1121,7 +1132,22 @@ static void test_reading_the_page_via_read_memory_crc(const void *data)
     qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
 
     /* Linux's w1_ds2502_read_page: Skip ROM, then Read Memory-with-CRC. */
-    assert_ethernet_address_page(qts, false, 0xc3);
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SKIP, 0xc3);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_reading_the_page_after_search(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    /* SGI's PROM continues directly from Search ROM to Read Memory. */
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_SEARCH, 0xf0);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2712,6 +2738,8 @@ int main(int argc, char **argv)
                         test_reading_the_page_via_read_memory);
     qtest_add_data_func("sn0/ioc3/one-wire-read-memory-crc", NULL,
                         test_reading_the_page_via_read_memory_crc);
+    qtest_add_data_func("sn0/ioc3/one-wire-read-memory-after-search", NULL,
+                        test_reading_the_page_after_search);
     qtest_add_data_func("sn0/ioc3/one-wire-read-status-no-redirection", NULL,
                         test_read_status_returns_no_redirection);
     qtest_add_data_func("sn0/ioc3/pin-control-two-aliases", NULL,
