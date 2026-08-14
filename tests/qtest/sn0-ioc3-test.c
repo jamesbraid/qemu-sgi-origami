@@ -756,6 +756,15 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
 
 /*
+ * The good-packet bit in a receive buffer's error word. Linux gates every
+ * delivered frame on it and drops the frame without it; OpenBSD reads the
+ * error bits beside it instead and never looks at this one. So it is a field
+ * only one of the two guests can miss, which is exactly the kind that goes
+ * unasserted -- the guest in front of you keeps working.
+ */
+#define ENET_RXE_GOODPKT      (1u << 30)
+
+/*
  * The receive control register's watermark field and the produce index's
  * arm bit, the two things that decide which source a delivered frame
  * raises. RX_CONTROL is the register OpenBSD calls RCSR. Linux calls it
@@ -1455,6 +1464,9 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
     /* An all-ones destination is reported as broadcast. */
     g_assert_cmphex(word1 & (1u << 27), ==, (1u << 27));
 
+    /* And the frame is reported good, which is the bit Linux gates on. */
+    g_assert_cmphex(word1 & ENET_RXE_GOODPKT, ==, ENET_RXE_GOODPKT);
+
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
 
     g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
@@ -1800,19 +1812,37 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     uint32_t desc = RAM_SCRATCH;
     uint32_t ring = RAM_SCRATCH + 0x8000;
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
-    uint32_t word0, status;
+    uint32_t word0, word1, status;
+    unsigned int i;
 
     qts = sn0_ioc3_attach_with_user_net();
 
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
 
-    /* One receive buffer, so the reply has somewhere to land. */
+    /*
+     * Four receive buffers with the timer armed and its reload zero, and the
+     * watermark set where this one frame's delivery reaches it, so the reply
+     * raises BOTH receive sources and both have to survive the walk.
+     *
+     * Arming matters more than it looks. An earlier version of this test
+     * supplied a bare produce index, so the timer was never in service, no
+     * timer source was ever raised, and the whole assertion rode on the
+     * threshold source surviving. An engine that preserved the threshold and
+     * dropped a timer source raised during the walk would have passed --
+     * and the timer source is the only receive source Linux enables, so this
+     * milestone's own regression test was guarding the guest that already
+     * worked rather than the one the fix was largely for.
+     */
     qtest_writel(qts, RX_RING_HI, 0);
     qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
-    qtest_writel(qts, ring + 0, 0);
-    qtest_writel(qts, ring + 4, rxbuf);
-    qtest_writel(qts, RX_PRODUCE, 8);
+    for (i = 0; i < 4; i++) {
+        qtest_writel(qts, ring + i * 8, 0);
+        qtest_writel(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
+    }
+    qtest_writel(qts, RX_TIMER, 0);
+    qtest_writel(qts, RX_CONTROL, 3);
+    qtest_writel(qts, RX_PRODUCE, (4 << 3) | RPIR_ARM);
 
     /*
      * One transmit descriptor carrying the request inline, asking for a
@@ -1840,6 +1870,15 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     word0 = qtest_readl(qts, rxbuf + 0);
     g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
 
+    /*
+     * And reported good. Linux gates every delivered frame on this bit and
+     * drops the frame without it, while OpenBSD reads the error bits beside
+     * it instead -- so an engine that stopped setting it would keep working
+     * for one guest and become unable to receive at all for the other.
+     */
+    word1 = qtest_readl(qts, rxbuf + 4);
+    g_assert_cmphex(word1 & ENET_RXE_GOODPKT, ==, ENET_RXE_GOODPKT);
+
     /* An ARP reply, so what landed is the answer to what was sent. */
     qtest_memread(qts, rxbuf + 66, landed, sizeof(landed));
     g_assert_cmphex(landed[12], ==, 0x08);
@@ -1847,10 +1886,10 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     g_assert_cmphex(landed[21], ==, 0x02);
 
     status = qtest_readl(qts, ENET_INT_STATUS);
-    g_assert_cmphex(status & (ENET_INT_RX_THRESHOLD | ENET_INT_TX_EMPTY |
-                              ENET_INT_TX_COMPLETE), ==,
-                    ENET_INT_RX_THRESHOLD | ENET_INT_TX_EMPTY |
-                    ENET_INT_TX_COMPLETE);
+    g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD |
+                              ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE), ==,
+                    ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD |
+                    ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
 
     qtest_quit(qts);
 }
