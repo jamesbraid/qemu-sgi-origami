@@ -763,7 +763,28 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define TXD_BUF2_VALID    (1u << 18)
 #define TXD_BUF1_LEN_SHIFT 8
 #define TXD_BUF2_LEN_SHIFT 20
-#define TXD_DATA_OFFSET   16
+
+/*
+ * Where a descriptor's inline data area starts and how big it is, taken from
+ * the two drivers rather than from the model, which is the only thing that
+ * makes these assertions able to fail. OpenBSD's struct iec_txdesc is a
+ * command word, a length word, two eight-byte pointers, then the buffer --
+ * its own IEC_TXD_BUFOFFSET computes 24 and IEC_TXD_BUFSIZE computes 104.
+ * Linux's struct ioc3_etxd is the same four fields followed by data[104].
+ * Two unrelated drivers, both numbers, so this is the descriptor's layout
+ * and not one driver's habit.
+ *
+ * This file carried 16 here for as long as the model did. Both were wrong
+ * and they were wrong together, so every transmit assertion passed while
+ * the frames leaving the engine had eight bytes of the second pointer in
+ * front of them.
+ */
+#define TXD_DATA_OFFSET   24
+#define TXD_DATA_SIZE     104
+
+/* The inline length field is seven bits, so a guest can name more than the
+ * area holds. */
+#define TXD_DATA_LEN_MAX  127
 
 /* A region of guest RAM well clear of the firmware's own configuration
  * graph (at 0x4000), used as scratch space for descriptors and buffers.
@@ -1206,6 +1227,52 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
     g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
                     (ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE), ==,
                     ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A guest may name more inline data than the descriptor's area holds: the
+ * length field is seven bits and the area is 104 bytes. The engine has to
+ * take the smaller of the two, and the frame that reaches the backend is
+ * where that shows -- an engine that trusted the field would send twenty
+ * three bytes of whatever follows its own copy of the descriptor.
+ *
+ * The payload is filled with the descriptor offset of each byte, so a frame
+ * that starts in the wrong place fails on content and not only on length.
+ */
+static void test_the_ethernet_transmit_bounds_the_inline_area(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t area[TXD_DATA_SIZE];
+    uint8_t received[256];
+    size_t got;
+    unsigned int i;
+    uint32_t desc = RAM_SCRATCH;
+
+    for (i = 0; i < sizeof(area); i++) {
+        area[i] = (uint8_t)(TXD_DATA_OFFSET + i);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    qtest_writel(qts, desc + 0, TXD_DATA_LEN_MAX | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, TXD_DATA_LEN_MAX);
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, area, sizeof(area));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, TXD_DATA_SIZE);
+    g_assert_cmpmem(received, got, area, sizeof(area));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2036,6 +2103,9 @@ int main(int argc, char **argv)
                         test_the_ethernet_read_only_registers);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-sends-inline-frame", NULL,
                         test_the_ethernet_transmit_sends_inline_frame);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-bounds-the-inline-area",
+                        NULL,
+                        test_the_ethernet_transmit_bounds_the_inline_area);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
