@@ -12,7 +12,7 @@
  * chosen so the whole packet -- length through checksum, inclusive -- sums
  * to zero modulo 256.
  *
- * "ver", "get", "acp" (both directions) and "pas" are answered for real;
+ * "ver", "rsw", "get", "acp" (both directions) and "pas" are answered;
  * everything else in the ASCII vocabulary answers "err cmd", which is
  * load-bearing rather than a placeholder -- the console-selection routine
  * issues a DIP-switch read before it ever probes this device as a
@@ -179,6 +179,14 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len == 3 && memcmp(text, "get", 3) == 0) {
         elsc_handle_get(s);
+        return;
+    }
+    if (len == 3 && memcmp(text, "rsw", 3) == 0) {
+        char resp[6];
+
+        /* The controller reports its physical switches active-low. */
+        snprintf(resp, sizeof(resp), "ok %02x", 0xff ^ s->dip_switches);
+        elsc_frame_response_str(s, resp);
         return;
     }
     if (len >= 4 && memcmp(text, "acp ", 4) == 0) {
@@ -475,7 +483,7 @@ static void elsc_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -491,12 +499,14 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT32(rx_queue_len, SGIElscState),
         VMSTATE_BOOL(in_escape, SGIElscState),
         VMSTATE_BOOL(supervisor, SGIElscState),
+        VMSTATE_UINT8_V(dip_switches, SGIElscState, 3),
         VMSTATE_END_OF_LIST()
     },
 };
 
 static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_UINT32("num-cpus", SGIElscState, num_cpus, 1),
+    DEFINE_PROP_UINT8("dip-switches", SGIElscState, dip_switches, 0),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
 

@@ -110,6 +110,9 @@ struct SGIHubState {
     /* How many processor sockets this node has populated. */
     uint32_t cpus;
 
+    /* Physical ELSC DIP switches, expressed as asserted switch bits. */
+    uint8_t elsc_dip_switches;
+
     /* Global QEMU CPU index of this node's slice A. */
     uint32_t cpu_base;
 

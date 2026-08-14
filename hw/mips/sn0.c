@@ -241,6 +241,9 @@ struct SN0MachineState {
      */
     bool synthesized_firmware;
 
+    /* Physical switch mask returned through each node's ELSC. */
+    uint8_t elsc_dip_switches;
+
     /* Where the firmware's console output goes. */
     Chardev *console;
 
@@ -2580,6 +2583,8 @@ static void sn0_init(MachineState *machine)
     qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "nasid", s->nodes[0].nasid);
     qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "cpus", machine->smp.cpus);
     qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "cpu-base", 0);
+    qdev_prop_set_uint8(DEVICE(&s->nodes[0].hub), "elsc-dip-switches",
+                        s->elsc_dip_switches);
     qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&s->nodes[0].hub), "xtalk",
@@ -3135,6 +3140,26 @@ static void sn0_set_debug_leds(Object *obj, bool value, Error **errp)
     SN0_MACHINE(obj)->debug_leds = value;
 }
 
+static void sn0_get_elsc_dip_switches(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    uint8_t value = SN0_MACHINE(obj)->elsc_dip_switches;
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void sn0_set_elsc_dip_switches(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    uint8_t value;
+
+    if (visit_type_uint8(v, name, &value, errp)) {
+        SN0_MACHINE(obj)->elsc_dip_switches = value;
+    }
+}
+
 static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {
@@ -3240,6 +3265,13 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "and turning it off buys a quieter stderr and nothing else. The "
         "codes go to the log destination, meaning stderr unless -D names a "
         "file.");
+
+    object_class_property_add(oc, "elsc-dip-switches", "uint8",
+                              sn0_get_elsc_dip_switches,
+                              sn0_set_elsc_dip_switches, NULL, NULL);
+    object_class_property_set_description(oc, "elsc-dip-switches",
+        "Set the eight physical ELSC DIP switches as asserted bits. The "
+        "controller reports their active-low wire value to firmware.");
 
     /*
      * The first of the candidate values. A captured boot of this configuration
