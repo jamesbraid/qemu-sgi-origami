@@ -682,8 +682,8 @@ static void test_cpu_enable_registers_store_what_is_written(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /* Both reset clear -- neither processor is running out of reset. */
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    /* The fitted boot processor is enabled; the empty socket is not. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
 
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 1);
