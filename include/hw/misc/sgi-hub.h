@@ -104,6 +104,9 @@ struct SGIHubState {
     /* Which node this Hub is, which its network-interface status reports. */
     uint32_t nasid;
 
+    /* Whether the direct inter-node CrayLink has a peer at the far end. */
+    bool network_link_up;
+
     /* How many processor sockets this node has populated. */
     uint32_t cpus;
 

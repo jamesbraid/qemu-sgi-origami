@@ -134,6 +134,7 @@
 #define MD_JUNKUART_BELOW    (MD_JUNKUART_BASE - 0x08)  /* one stride short */
 #define MD_JUNKUART_ABOVE    (MD_JUNKUART_BASE + 0x40)  /* one stride past index 7 */
 
+#define NI_LINK_UP      (1ULL << 29)
 #define NI_MORE_NODES   (1ULL << 18)
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
@@ -435,6 +436,26 @@ static void test_addressing_mode(const void *data)
 
     /* One region per node, which is what the field resets to. */
     g_assert_cmphex(status & NI_REGION_SIZE, ==, NI_REGION_SIZE);
+
+    qtest_quit(qts);
+}
+
+static void test_network_link_presence(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -global sgi-hub.network-link-up=on");
+    uint64_t status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
+
+    g_assert_cmphex(status & NI_LINK_UP, ==, NI_LINK_UP);
+
+    /* Link state is hardware status, not part of the writable fields. */
+    qtest_writeq(qts, HUB_LOCAL + NI_STATUS, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
+                    ==, NI_LINK_UP);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
+                    ==, NI_LINK_UP);
 
     qtest_quit(qts);
 }
@@ -1779,6 +1800,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/hub/addressing-mode", NULL, test_addressing_mode);
+    qtest_add_data_func("sn0/hub/network-link-presence", NULL,
+                        test_network_link_presence);
     qtest_add_data_func("sn0/hub/processor-number", NULL,
                         test_processor_number);
     qtest_add_data_func("sn0/hub/reset-values", NULL, test_reset_values);

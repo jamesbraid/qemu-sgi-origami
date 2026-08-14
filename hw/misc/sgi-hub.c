@@ -541,12 +541,13 @@
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
- * The status register's fields. Only three of them matter to a booting guest,
- * and all three read zero out of reset: the machine is in M mode, this Hub is
- * node zero, and no network link has come up because a single-node machine has
- * none. The region-size bit resets set, selecting one region per node.
+ * The status register's fields. The machine stays in M mode, the node field
+ * comes from the physical Hub, and link-up reports whether the product wires a
+ * peer to its network port. The region-size bit resets set, selecting one
+ * region per node.
  */
 #define NI_STATUS_MORE_NODES    (1ULL << 18)
+#define NI_STATUS_LINK_UP       (1ULL << 29)
 #define NI_STATUS_REGION_SIZE   (1ULL << 17)
 #define NI_STATUS_NODE_SHIFT    8
 #define NI_STATUS_NODE_MASK     (0x1ffULL << NI_STATUS_NODE_SHIFT)
@@ -1627,6 +1628,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_int_pend, 0, sizeof(s->pi_int_pend));
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
+                   (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
     s->ni_scratch[0] = 0;
     s->ni_scratch[1] = 0;
@@ -1900,6 +1902,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
+    DEFINE_PROP_BOOL("network-link-up", SGIHubState, network_link_up, false),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
