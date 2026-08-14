@@ -367,14 +367,14 @@ static void sn0_promdata_reset(void *opaque)
     memory_region_set_dirty(&s->data, 0, SN0_PROMDATA_SIZE);
 }
 
-static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
+static uint64_t sn0_flash_load(SN0NodeState *node, hwaddr addr, unsigned size)
 {
-    const uint8_t *p = memory_region_get_ram_ptr(&s->nodes[0].flash) +
+    const uint8_t *p = memory_region_get_ram_ptr(&node->flash) +
                        (addr & (SN0_FLASH_SIZE - 1));
     uint8_t id[8];
     unsigned int i;
 
-    if (s->nodes[0].flash_state == SN0_FLASH_AUTOSELECT) {
+    if (node->flash_state == SN0_FLASH_AUTOSELECT) {
         for (i = 0; i < size; i++) {
             switch ((addr + i) & (SN0_FLASH_SIZE - 1)) {
             case 0:
@@ -405,10 +405,10 @@ static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
     }
 }
 
-static void sn0_flash_read_mode(SN0MachineState *s)
+static void sn0_flash_read_mode(SN0NodeState *node)
 {
-    s->nodes[0].flash_state = SN0_FLASH_READ;
-    memory_region_rom_device_set_romd(&s->nodes[0].flash, true);
+    node->flash_state = SN0_FLASH_READ;
+    memory_region_rom_device_set_romd(&node->flash, true);
 }
 
 static void sn0_flash_reset(void *opaque)
@@ -436,10 +436,9 @@ static const VMStateDescription vmstate_sn0_flash = {
     }
 };
 
-static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
+static void sn0_flash_command(SN0NodeState *node, hwaddr addr, uint64_t val,
                               unsigned size)
 {
-    SN0NodeState *node = &s->nodes[0];
     uint32_t offset;
     uint8_t byte = val;
     uint8_t *p;
@@ -452,7 +451,7 @@ static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
     offset = (addr / 8) & (SN0_FLASH_SIZE - 1);
 
     if (byte == 0xf0 && node->flash_state != SN0_FLASH_PROGRAM) {
-        sn0_flash_read_mode(s);
+        sn0_flash_read_mode(node);
         return;
     }
 
@@ -485,7 +484,7 @@ static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
         p = memory_region_get_ram_ptr(&node->flash);
         p[offset] &= byte;
         memory_region_set_dirty(&node->flash, offset, 1);
-        sn0_flash_read_mode(s);
+        sn0_flash_read_mode(node);
         break;
     case SN0_FLASH_ERASE_UNLOCK1:
         node->flash_state = offset == SN0_FLASH_CMD_ADDR1 && byte == 0xaa ?
@@ -503,7 +502,7 @@ static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
             memory_region_set_dirty(&node->flash, offset,
                                     SN0_FLASH_SECTOR_SIZE);
         }
-        sn0_flash_read_mode(s);
+        sn0_flash_read_mode(node);
         break;
     default:
         g_assert_not_reached();
@@ -2413,11 +2412,12 @@ static void sn0_init(MachineState *machine)
      */
     memory_region_init_rom_device(&s->nodes[0].flash, OBJECT(&s->nodes[0]),
                                   &sn0_flash_ops,
-                                  s, "sn0.node0.flash", SN0_FLASH_SIZE,
+                                  &s->nodes[0], "sn0.node0.flash",
+                                  SN0_FLASH_SIZE,
                                   &error_fatal);
     memory_region_add_subregion_overlap(system, node + SN0_FLASH_LOCAL,
                                         &s->nodes[0].flash, 1);
-    qemu_register_reset(sn0_flash_reset, s);
+    qemu_register_reset(sn0_flash_reset, &s->nodes[0]);
 
     /*
      * The same bytes through the Hub's special space, which is how a guest
@@ -2429,7 +2429,7 @@ static void sn0_init(MachineState *machine)
      * the same bytes a real chip's address decode would.
      */
     memory_region_init_io(&s->nodes[0].flash_hub_view, OBJECT(&s->nodes[0]),
-                          &sn0_boot_mirror_ops, s,
+                          &sn0_boot_mirror_ops, &s->nodes[0],
                           "sn0.node0.flash.hub", SN0_LBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_HUB,
@@ -2442,7 +2442,7 @@ static void sn0_init(MachineState *machine)
      * into cached RAM.
      */
     memory_region_init_io(&s->nodes[0].flash_rboot_view, OBJECT(&s->nodes[0]),
-                          &sn0_boot_mirror_ops, s,
+                          &sn0_boot_mirror_ops, &s->nodes[0],
                           "sn0.node0.flash.rboot", SN0_RBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_RBOOT,
