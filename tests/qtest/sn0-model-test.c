@@ -441,6 +441,61 @@ static void test_one_node_smp(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * QEMU's standard CPU-topology interface must describe the IP29 sockets, not
+ * merely accept a scalar -smp value.  One Origin 200 chassis is one topology
+ * socket, and its two processor slices are the two cores in that socket.
+ */
+static void test_one_node_cpu_topology(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -smp 2,sockets=1,cores=2,threads=1");
+    QDict *response;
+    QList *cpus;
+    QObject *entry;
+    unsigned int seen = 0;
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    cpus = qdict_get_qlist(response, "return");
+
+    while ((entry = qlist_pop(cpus))) {
+        QDict *cpu = qobject_to(QDict, entry);
+        QDict *props = qdict_get_qdict(cpu, "props");
+        int64_t index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpint(index, >=, 0);
+        g_assert_cmpint(index, <, 2);
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, 0);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index);
+        g_assert_cmpint(qdict_get_int(props, "thread-id"), ==, 0);
+        seen |= 1U << index;
+        qobject_unref(entry);
+    }
+    g_assert_cmphex(seen, ==, 0x3);
+
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
+static void test_reject_split_one_node_topology(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-smp", "2,sockets=2,cores=1,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output,
+                           "one chassis requires one socket with at most "
+                           "two cores and one thread per core"));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -455,6 +510,10 @@ int main(int argc, char **argv)
                         test_processor_mode_bits_are_board_state);
     qtest_add_data_func("sn0/model/one-node-smp", NULL,
                         test_one_node_smp);
+    qtest_add_data_func("sn0/model/one-node-cpu-topology", NULL,
+                        test_one_node_cpu_topology);
+    qtest_add_data_func("sn0/model/reject-split-one-node-topology", NULL,
+                        test_reject_split_one_node_topology);
 
     return g_test_run();
 }
