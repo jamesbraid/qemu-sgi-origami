@@ -1348,14 +1348,13 @@ static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
  * no field name gives. One byte is the difference between this page working and
  * only looking as though it does.
  *
- * Bytes zero to four are a free choice and nothing establishes what a real
- * board puts there. They are spaces because a space is inert to both
- * readers — dropped by the positional one, and neither a field name nor a
- * terminator to the scanning one — and because a zero byte would end the
- * text early for any reader that treats the page as a string.
+ * Byte zero is the vendor manufacturing-data format. The PROM rejects page A
+ * before constructing any fields unless this byte is one. Bytes one to four
+ * are otherwise inert spaces: the positional reader drops them, and the
+ * scanning reader treats them as neither a field name nor a terminator.
  */
 static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
-    [0]  = ' ', ' ', ' ', ' ', ' ', ';',
+    [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
     [6]  = 'P', 'a', 'r', 't', ':',
     [11] = '0', '3', '0', '-', '1', '2', '4', '4', '-', '0', '0', '1',
     [23] = ';', ' ', ' ', ' ', ' ', ' ', ' ',

@@ -1800,7 +1800,16 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     g_assert_cmpmem(plain, sizeof(plain), framed, sizeof(framed));
 
     /*
-     * And what both of them return satisfies both of the page's readers.
+     * The vendor manufacturing-data reader rejects the whole record unless
+     * page A starts with format 1. Without this byte it returns "page A data
+     * not available" before constructing the Part field, so the later field
+     * parser sees no BaseIO identity even though the positional bytes below
+     * look correct.
+     */
+    g_assert_cmphex(plain[0], ==, 0x01);
+
+    /*
+     * And what both commands return satisfies both of the page's readers.
      *
      * The positional reader is reproduced rather than described: its two fixed
      * ranges, its dropped spaces, and the prefix it compares. Running the
