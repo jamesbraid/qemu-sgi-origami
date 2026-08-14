@@ -25,6 +25,8 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "hw/pci/pci_regs.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 /*
  * Where this test puts the chip's register window and its own scratch memory.
@@ -77,6 +79,45 @@
  * session while every test that could have caught it used our number.
  */
 #define TXD_DATA_OFFSET   24
+
+/*
+ * How much of the descriptor the inline area actually is, and how much the
+ * field that measures it can name. OpenBSD computes IEC_TXD_BUFSIZE as
+ * IEC_TXDESCSIZE - IEC_TXD_BUFOFFSET = 104, and Linux declares data[104]
+ * outright. The length field beside it is seven bits in both -- OpenBSD's
+ * IECTX_BUF0_LEN_MASK and Linux's ETXD_D0CNT_MASK are each 0x7f -- so a guest
+ * can legally name 127 bytes of an area that holds 104. The two numbers
+ * disagreeing is the boundary, not either number alone.
+ */
+#define TXD_DATA_SIZE     104
+#define TXD_DATA_LEN_MAX  127
+
+/*
+ * The assembled frame's own limit, and it disagrees with the buffer by one.
+ * The command word's total byte count is eleven bits in both drivers --
+ * OpenBSD's IEC_TXCMD_DATALEN and Linux's ETXD_BYTECNT_MASK, each 0x7ff, so
+ * 2047 -- while the engine assembles into 2048 bytes. A test that only ever
+ * used round numbers would never see which of the two governs.
+ */
+#define TXD_BYTECNT_MAX   2047
+
+/*
+ * What the engine assembles a frame into before handing it over, which is one
+ * larger than the count field can express. The two buffer-length fields are
+ * eleven bits each, though, so a descriptor can describe more than either --
+ * up to 4094 across the pair -- and something has to stop.
+ */
+#define FRAME_ASSEMBLY_MAX 2048
+
+/*
+ * The sixteen-kilobyte boundary a transfer may not cross, which is why a
+ * descriptor carries two buffer pointers at all rather than one. OpenBSD names
+ * it IEC_DMA_BOUNDARY and splits at it explicitly: "The chip DMA engine can
+ * not cross 16KB boundaries. If our mbuf doesn't fit, use the second pointer."
+ * This is the only boundary here that comes from a hardware constraint rather
+ * than from the width of a field.
+ */
+#define TX_DMA_BOUNDARY   0x4000u
 
 /*
  * Where a receive buffer's frame starts, past the two header words the
@@ -160,19 +201,16 @@ static void pci_cfg_writel(QTestState *qts, uint8_t slot, uint8_t offset,
  * buffers supplied, and the receive timer armed with the immediate reload
  * both drivers write.
  */
-static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf)
+/*
+ * Everything after the machine exists: place the window, let the chip decode
+ * and master, and leave the engine in the state a driver leaves it in. Shared
+ * by both attachments below, because which backend is on the other side must
+ * be the only thing that differs between them.
+ */
+static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
+                          unsigned int buffers)
 {
-    QTestState *qts;
     unsigned int i;
-
-    /*
-     * An explicit netdev rather than -nic, because this machine creates its
-     * own default network device during machine init and would claim a -nic
-     * before a -device is realized at all.
-     */
-    qts = qtest_initf("-M pc -display none "
-                      "-netdev user,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
 
     qtest_outl(qts, 0xcf8, pci_cfg_addr(IOC3_PCI_SLOT, PCI_VENDOR_ID));
     g_assert_cmphex(qtest_inl(qts, 0xcfc), ==, 0x000310a9u);
@@ -195,13 +233,77 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf)
     ioc3_writel(qts, ENET_RX_RING_LO, ring & 0xfffff000u);
     ioc3_writel(qts, ENET_RX_TIMER, 0);
     ioc3_writel(qts, ENET_RX_CONTROL, 0);
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < buffers; i++) {
         dma_stl_be(qts, ring + i * 8, 0);
         dma_stl_be(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
     }
-    ioc3_writel(qts, ENET_RX_PRODUCE, (4 << 3) | RPIR_ARM);
+    ioc3_writel(qts, ENET_RX_PRODUCE, (buffers << 3) | RPIR_ARM);
+}
 
+static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf)
+{
+    QTestState *qts;
+
+    /*
+     * An explicit netdev rather than -nic, because this machine creates its
+     * own default network device during machine init and would claim a -nic
+     * before a -device is realized at all.
+     */
+    qts = qtest_initf("-M pc -display none "
+                      "-netdev user,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
+    ioc3_bring_up(qts, ring, rxbuf, 4);
     return qts;
+}
+
+/*
+ * The other attachment: a connected socket pair rather than user-mode
+ * networking. What it buys is that the test chooses every byte in both
+ * directions, which user-mode networking cannot give -- it answers what it
+ * understands and nothing else, so it cannot carry an arbitrary length or an
+ * arbitrary payload. Size boundaries need exactly that, so they use this and
+ * the interleaving tests use the other.
+ */
+static QTestState *ioc3_attach_socket(int guest_fd)
+{
+    QTestState *qts;
+
+    qts = qtest_initf("-M pc -display none "
+                      "-netdev socket,fd=%d,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0",
+                      guest_fd, IOC3_PCI_SLOT);
+    ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, 4);
+    return qts;
+}
+
+/*
+ * A bound on how long the test's end of the pair will block for a frame that
+ * is late rather than never coming: delivery to a socket backend is not
+ * guaranteed to have reached it by the time the register write that caused it
+ * returns.
+ */
+static void net_socket_set_recv_timeout(int fd, int seconds)
+{
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
+                    ==, 0);
+}
+
+/*
+ * The framing the socket backend uses: a four-byte network-order length ahead
+ * of each frame, in both directions.
+ */
+static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint32_t hdr;
+    size_t len;
+
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    len = ntohl(hdr);
+    g_assert_cmpint(len, <=, buf_size);
+    g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
+    return len;
 }
 
 /*
@@ -339,10 +441,198 @@ static void test_the_pointer_path_off_the_fabric(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Send one frame and return what the backend received, so a size boundary is
+ * asserted on the bytes that left the machine rather than on a register the
+ * engine wrote for itself. The caller picks the path: inline for anything the
+ * area can hold, the out-of-line pointers otherwise, split across both if it
+ * is told where.
+ */
+static size_t send_and_capture(QTestState *qts, int host_fd,
+                               const uint8_t *frame, uint32_t claimed_len,
+                               uint32_t actual_len, uint32_t split,
+                               uint8_t *got, size_t got_size)
+{
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t buf1 = RAM_SCRATCH + TX_DMA_BOUNDARY - split;
+    uint32_t buf2 = RAM_SCRATCH + TX_DMA_BOUNDARY;
+
+    if (split == 0) {
+        qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, actual_len);
+        dma_stl_be(qts, desc + 0, claimed_len | TXD_DATA_VALID);
+        dma_stl_be(qts, desc + 4, claimed_len);
+    } else {
+        /*
+         * Buffer one ends exactly on the boundary and buffer two starts on
+         * it, which is the split OpenBSD's own transmit path produces when an
+         * mbuf would cross it. Nothing else in this suite makes that shape.
+         */
+        qtest_memwrite(qts, buf1, frame, split);
+        qtest_memwrite(qts, buf2, frame + split, actual_len - split);
+        dma_stl_be(qts, desc + 0,
+                   claimed_len | TXD_BUF1_VALID | TXD_BUF2_VALID);
+        dma_stl_be(qts, desc + 4,
+                   (split << TXD_BUF1_LEN_SHIFT) |
+                   ((actual_len - split) << TXD_BUF2_LEN_SHIFT));
+        dma_stl_be(qts, desc + 8, 0);
+        dma_stl_be(qts, desc + 12, buf1);
+        dma_stl_be(qts, desc + 16, 0);
+        dma_stl_be(qts, desc + 20, buf2);
+    }
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_PRODUCE, 128);
+
+    return net_socket_recv_frame(host_fd, got, got_size);
+}
+
+/*
+ * The inline area holds 104 bytes and the field that measures it holds seven
+ * bits, so a guest can name 127 of an area that has 104. Either side of the
+ * area's own size, then the two lengths that exceed it, all on the wire.
+ *
+ * These are the sizes nothing else here uses: the existing tests pick round
+ * numbers well clear of the edge, which is how a defect lived in this path for
+ * a session while every one of them passed.
+ */
+static void test_the_inline_area_boundary(const void *data)
+{
+    static const uint32_t claimed[] = { 103, 104, 105, TXD_DATA_LEN_MAX };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[TXD_DATA_LEN_MAX];
+    uint8_t got[512];
+    unsigned int i, n;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+
+    for (n = 0; n < ARRAY_SIZE(claimed); n++) {
+        uint32_t expect = MIN(claimed[n], TXD_DATA_SIZE);
+
+        g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+        net_socket_set_recv_timeout(sv[0], 10);
+        qts = ioc3_attach_socket(sv[1]);
+
+        len = send_and_capture(qts, sv[0], frame, claimed[n],
+                               MIN(claimed[n], (uint32_t)sizeof(frame)), 0,
+                               got, sizeof(got));
+
+        /*
+         * At or under the area, every byte named arrives. Over it, the frame
+         * stops at the area's end rather than at the field's value -- an
+         * engine trusting the field sends bytes from past its own copy of the
+         * descriptor, and they would be whatever followed it in memory.
+         */
+        g_assert_cmpint(len, ==, expect);
+        g_assert_cmpmem(got, len, frame, expect);
+
+        qtest_quit(qts);
+        close(sv[0]);
+    }
+}
+
+/*
+ * The assembled frame's two limits disagree by one: the command word's byte
+ * count is eleven bits, 2047, and the engine assembles into 2048 bytes. Either
+ * side of the count's own maximum and one past it, built from the inline area
+ * plus both pointers so the total is what is being tested rather than any one
+ * buffer's length.
+ */
+static void test_the_assembled_frame_limit(const void *data)
+{
+    static const uint32_t sizes[] = { TXD_BYTECNT_MAX - 1, TXD_BYTECNT_MAX,
+                                      TXD_BYTECNT_MAX + 1, 3000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[3000];
+    uint8_t got[4096];
+    unsigned int i, n;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 3);
+    }
+
+    for (n = 0; n < ARRAY_SIZE(sizes); n++) {
+        uint32_t total = sizes[n];
+        uint32_t part = total / 2;
+
+        g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+        net_socket_set_recv_timeout(sv[0], 10);
+        qts = ioc3_attach_socket(sv[1]);
+
+        len = send_and_capture(qts, sv[0], frame, total, total, part,
+                               got, sizeof(got));
+
+        /*
+         * The two buffer-length fields are eleven bits each, so a guest can
+         * describe far more than the engine assembles into -- 3000 here,
+         * against an assembly buffer of 2048. What leaves is the buffer's
+         * worth and no more, and the bytes it does send are the frame's own
+         * rather than whatever followed the buffer.
+         */
+        g_assert_cmpint(len, ==, MIN(total, FRAME_ASSEMBLY_MAX));
+        g_assert_cmpmem(got, len, frame, MIN(total, FRAME_ASSEMBLY_MAX));
+
+        qtest_quit(qts);
+        close(sv[0]);
+    }
+}
+
+/*
+ * A frame split exactly on the sixteen-kilobyte boundary the engine may not
+ * cross. This is the shape a real driver produces -- OpenBSD computes the
+ * distance to the next boundary and puts the remainder in the second pointer
+ * for that reason and no other -- and it is the only boundary in this file
+ * that comes from a hardware constraint rather than a field width.
+ */
+static void test_a_frame_split_on_the_dma_boundary(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[600];
+    uint8_t got[1024];
+    unsigned int i;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i ^ 0x5a);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1]);
+
+    /*
+     * 250 bytes before the boundary and 350 after it, so buffer one ends on
+     * it exactly. A gather that ignored the second pointer, or read both from
+     * one region, produces a frame of the wrong length or the wrong bytes and
+     * either shows here.
+     */
+    len = send_and_capture(qts, sv[0], frame, sizeof(frame), sizeof(frame),
+                           250, got, sizeof(got));
+
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sgi-ioc3-eth/inline-area-boundary", NULL,
+                        test_the_inline_area_boundary);
+    qtest_add_data_func("sgi-ioc3-eth/assembled-frame-limit", NULL,
+                        test_the_assembled_frame_limit);
+    qtest_add_data_func("sgi-ioc3-eth/dma-boundary-split", NULL,
+                        test_a_frame_split_on_the_dma_boundary);
     qtest_add_data_func("sgi-ioc3-eth/inline-path-off-the-fabric", NULL,
                         test_the_inline_path_off_the_fabric);
     qtest_add_data_func("sgi-ioc3-eth/pointer-path-off-the-fabric", NULL,
