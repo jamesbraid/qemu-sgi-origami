@@ -1737,6 +1737,25 @@ static void sn0_firmware_reset(void *opaque)
  * above: reset handlers run in registration order and this one has to follow
  * the processor's.
  */
+/*
+ * Reset the processor.
+ *
+ * **Without this the machine services a reset request without resetting the
+ * processor at all**: the devices reset, the machine's own handlers run, and
+ * the program counter is untouched, so execution simply carries on. Every
+ * other MIPS machine in the tree registers this explicitly and nothing does it
+ * automatically.
+ *
+ * That omission is what made the firmware's deliberate two-pass reset look
+ * like a single pass -- the request was serviced and the processor never
+ * restarted, so the second pass never happened and the marker it leaves
+ * behind was never read.
+ */
+static void sn0_cpu_reset(void *opaque)
+{
+    cpu_reset(CPU(opaque));
+}
+
 static void sn0_mode_bits_reset(void *opaque)
 {
     CPUMIPSState *env = &MIPS_CPU(first_cpu)->env;
@@ -1832,6 +1851,7 @@ static void sn0_assign_pci_resources(void *opaque)
 static void sn0_machine_ready(Notifier *notifier, void *data)
 {
     qemu_register_reset(sn0_firmware_reset, SN0_MACHINE(qdev_get_machine()));
+    qemu_register_reset(sn0_cpu_reset, first_cpu);
     qemu_register_reset(sn0_mode_bits_reset, NULL);
     qemu_register_reset(sn0_assign_pci_resources,
                         SN0_MACHINE(qdev_get_machine()));

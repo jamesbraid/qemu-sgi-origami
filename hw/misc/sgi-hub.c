@@ -32,6 +32,8 @@
 #include "chardev/char.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
+#include "exec/cpu-interrupt.h"
+#include "hw/core/cpu.h"
 #include "qemu/host-utils.h"
 #include "system/system.h"
 #include "system/runstate.h"
@@ -368,6 +370,20 @@
  */
 #define HUB_PI_CPU_PRESENT_A    0x000040
 #define HUB_PI_CPU_PRESENT_B    0x000048
+/*
+ * Where each processor spools error records. Bits 31:3, so the low three bits
+ * of a written value do not survive.
+ *
+ * **Processor B's is the register the firmware uses to survive its own reset.**
+ * It writes a marker there, triggers the port reset, and the restarted machine
+ * reads it back to learn it is on the second pass. On a single-processor
+ * machine that register belongs to a processor which is not fitted, which is
+ * presumably the point.
+ */
+#define HUB_PI_ERR_SPOOL_A      0x000418
+#define HUB_PI_ERR_SPOOL_B      0x000420
+#define PI_ERR_SPOOL_MASK       0xfffffff8ULL
+
 #define HUB_PI_CPU_ENABLE_A     0x000050
 #define HUB_PI_CPU_ENABLE_B     0x000058
 
@@ -744,6 +760,32 @@ static void sgi_hub_update_irq(SGIHubState *s)
  * seventh selects the bank, which is what makes numbers 64 through 127 the
  * second bank rather than a separate register.
  */
+/*
+ * Enable or disable one processor.
+ *
+ * **Clearing the bit removes the processor, and that is a behaviour rather
+ * than a stored value.** The firmware's halt routine writes zero here as its
+ * last act; on real hardware the processor is gone before the next instruction
+ * retires, so the routine never returns. Storing the bit and running on is
+ * what let it return, walk into normal initialisation, and make a two-pass
+ * reset look like a one-pass boot.
+ *
+ * Requesting the halt rather than forcing it is deliberate: this runs inside a
+ * memory write, and the same idiom is what MIPS's own power controller uses to
+ * stop a processor from a register write.
+ */
+static void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int index,
+                                   uint64_t val)
+{
+    CPUState *cs = qemu_get_cpu(index);
+
+    s->pi_cpu_enable[index] = val & 1;
+
+    if (!(val & 1) && cs) {
+        cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+    }
+}
+
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 {
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
@@ -893,6 +935,10 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->cpus >= 1;
     case HUB_PI_CPU_PRESENT_B:
         return s->cpus >= 2;
+    case HUB_PI_ERR_SPOOL_A:
+        return s->pi_err_spool[0];
+    case HUB_PI_ERR_SPOOL_B:
+        return s->pi_err_spool[1];
     case HUB_PI_CPU_ENABLE_A:
         return s->pi_cpu_enable[0];
     case HUB_PI_CPU_ENABLE_B:
@@ -1261,11 +1307,17 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_PI_RT_LOCAL_CTRL:
         s->pi_rt_local_ctrl = val & PI_RT_LOCAL_CTRL_MASK;
         break;
+    case HUB_PI_ERR_SPOOL_A:
+        s->pi_err_spool[0] = val & PI_ERR_SPOOL_MASK;
+        break;
+    case HUB_PI_ERR_SPOOL_B:
+        s->pi_err_spool[1] = val & PI_ERR_SPOOL_MASK;
+        break;
     case HUB_PI_CPU_ENABLE_A:
-        s->pi_cpu_enable[0] = val & 1;
+        sgi_hub_set_cpu_enable(s, 0, val);
         break;
     case HUB_PI_CPU_ENABLE_B:
-        s->pi_cpu_enable[1] = val & 1;
+        sgi_hub_set_cpu_enable(s, 1, val);
         break;
     case HUB_PI_INT_MODIFY:
         sgi_hub_int_modify(s, val);
@@ -1489,6 +1541,15 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
     memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
+    /*
+     * The error-spool addresses are deliberately not cleared here. The
+     * firmware writes a marker into processor B's before triggering a reset,
+     * expressly so the restarted machine can read it back and know it is on
+     * the second pass -- so a reset that clears it would make the firmware's
+     * own design impossible, and our machine would restart forever. They start
+     * at zero because the device is zeroed at construction, which is the
+     * power-on value the datasheet records.
+     */
     s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memset(s->pi_rt_compare, 0, sizeof(s->pi_rt_compare));
     memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
@@ -1682,7 +1743,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 12,
+    .version_id = 13,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1712,6 +1773,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(md_config, SGIHubState, 9),
         VMSTATE_UINT64_V(md_onewire, SGIHubState, 11),
         VMSTATE_TIMER_PTR_V(md_onewire_timer, SGIHubState, 12),
+        VMSTATE_UINT64_ARRAY_V(pi_err_spool, SGIHubState, 2, 13),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         VMSTATE_END_OF_LIST()
     }
