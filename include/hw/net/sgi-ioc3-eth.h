@@ -117,6 +117,34 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_RX_INDEX_MASK   (SGI_IOC3_ENET_RX_RING_SIZE - 1)
 
 /*
+ * What prompts a driver when a frame is delivered, which is two separate
+ * sources rather than one.
+ *
+ * The threshold in the receive control register is a low watermark on the
+ * buffers still available to the engine, counted downward. Linux's own
+ * comment calls it that, and it sets 15 against the 64 buffers it supplies,
+ * asking to hear when its supply runs low. OpenBSD sets its whole available
+ * count, which puts the watermark where the very first delivered frame
+ * crosses it. One register, two intentions -- so raising this source once
+ * per frame regardless of what is programmed here satisfies OpenBSD by
+ * accident and misreports for every other watermark.
+ *
+ * The receive timer is the per-frame source. It is armed through bit 31 of
+ * the produce index and loaded with an idle timeout, and both drivers load
+ * zero and say what they mean by it themselves -- OpenBSD's comment is "Set
+ * up RX timer to interrupt immediately upon reception", Linux's is
+ * "Interrupt immediately". Linux enables no other receive source at all and
+ * dispatches its receive handler on this one alone.
+ *
+ * Arming is a command rather than storage: SGI's own driver writes the
+ * produce index without bit 31 from its interrupt path, so a write lacking
+ * the bit has to leave an armed timer armed.
+ */
+#define SGI_IOC3_ENET_RCSR_THRESH_MASK 0x1ffu
+#define SGI_IOC3_ENET_RTR_RELOAD_MASK  0x7ffu
+#define SGI_IOC3_ENET_RPIR_ARM         (1u << 31)
+
+/*
  * A receive buffer's own two-word header, immediately before the frame data
  * the offset field above places. Bit positions come from SGI's own header,
  * cross-checked against the datasheet's prose account of the same fields --
@@ -280,6 +308,14 @@ struct SGIIOC3EthState {
      */
     uint16_t mii_data;
     uint16_t mii_data_w;
+
+    /*
+     * Whether the receive timer has been armed. Held apart from the produce
+     * index it is written through, because the bit is a command and the
+     * index is storage: a later write of the index alone must not disarm
+     * what an earlier write armed.
+     */
+    bool rx_timer_armed;
 };
 
 #endif

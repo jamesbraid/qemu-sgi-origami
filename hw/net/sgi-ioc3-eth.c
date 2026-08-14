@@ -86,6 +86,45 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
 }
 
 /*
+ * Which receive sources a delivered frame raises, given the consume index it
+ * has just advanced to. Two independent questions, neither of them "a frame
+ * arrived": whether the timer is in service, and whether the buffers still
+ * available to the engine have fallen to the watermark a driver asked to
+ * hear about.
+ *
+ * The timer's reload is an idle timeout and the only value either driver
+ * writes is zero, which is the one that needs no time to pass. A non-zero
+ * reload would need a real timer, and nothing here has one, so it is
+ * reported rather than silently treated as immediate.
+ */
+static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
+{
+    uint32_t reload = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_TIMER) &
+                      SGI_IOC3_ENET_RTR_RELOAD_MASK;
+    uint32_t threshold = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONTROL) &
+                         SGI_IOC3_ENET_RCSR_THRESH_MASK;
+    uint32_t produce = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE) &
+                       SGI_IOC3_ENET_RX_INDEX_MASK;
+    uint32_t available = ((produce - consume) & SGI_IOC3_ENET_RX_INDEX_MASK) >>
+                         SGI_IOC3_ENET_RX_RING_SHIFT;
+    uint32_t sources = 0;
+
+    if (s->rx_timer_armed) {
+        if (reload == 0) {
+            sources |= SGI_IOC3_ENET_INT_RX_TIMER;
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-ioc3-eth: receive timer reload %u not modelled;"
+                          " only an immediate timeout is\n", reload);
+        }
+    }
+    if (available <= threshold) {
+        sources |= SGI_IOC3_ENET_INT_RX_THRESHOLD;
+    }
+    return sources;
+}
+
+/*
  * Take the next buffer address off the receive ring, write the frame into it
  * at the offset the MAC control register selects, and advance the consume
  * index -- the sequence the datasheet's behavioral contract gives, in the
@@ -173,7 +212,7 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
 
     sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS,
                       sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) |
-                      SGI_IOC3_ENET_INT_RX_THRESHOLD);
+                      sgi_ioc3_eth_rx_sources(s, consume));
     sgi_ioc3_enet_update_irq(s);
 
     return size;
@@ -477,6 +516,17 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         return;
 
     case SGI_IOC3_ENET_RX_PRODUCE:
+        /*
+         * Bit 31 puts the receive timer in service and the rest is the
+         * index. The two are kept apart because only one of them is
+         * storage: SGI's own driver writes the index bare from its
+         * interrupt path, and disarming the timer there would silence the
+         * source every driver dispatches its receive handler on.
+         */
+        if (val & SGI_IOC3_ENET_RPIR_ARM) {
+            s->rx_timer_armed = true;
+        }
+        /* fall through */
     case SGI_IOC3_ENET_MAC_CONTROL:
         /*
          * Either write can be the one that makes a buffer available: a fresh
@@ -560,6 +610,7 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
     memset(s->enet_reg, 0, sizeof(s->enet_reg));
     s->mii_data = SGI_IOC3_ENET_MII_ABSENT;
     s->mii_data_w = 0;
+    s->rx_timer_armed = false;
     sgi_ioc3_enet_update_irq(s);
 }
 
@@ -572,12 +623,13 @@ static void sgi_ioc3_eth_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3_eth = {
     .name = "sgi-ioc3-eth",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3EthState, SGI_IOC3_ENET_REGS),
         VMSTATE_UINT16(mii_data, SGIIOC3EthState),
         VMSTATE_UINT16(mii_data_w, SGIIOC3EthState),
+        VMSTATE_BOOL_V(rx_timer_armed, SGIIOC3EthState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
