@@ -106,6 +106,13 @@
 
 #define TYPE_SN0_NODE "sn0-node"
 
+typedef struct SN0BackdoorState {
+    uint8_t *data;
+    uint64_t bank_offset[SN0_MEM_BANKS];
+    uint64_t bank_span[SN0_MEM_BANKS];
+    unsigned int populated_banks;
+} SN0BackdoorState;
+
 typedef struct SN0NodeState {
     DeviceState parent_obj;
 
@@ -123,8 +130,8 @@ typedef struct SN0NodeState {
     MemoryRegion backdoor_ecc_absent;
     MemoryRegion backdoor_dir;
     MemoryRegion backdoor_dir_absent;
-    uint8_t *backdoor_ecc_data;
-    uint8_t *backdoor_dir_data;
+    SN0BackdoorState backdoor_ecc_state;
+    SN0BackdoorState backdoor_dir_state;
 
     MemoryRegion xtalk;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
@@ -402,38 +409,39 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
  * survive that restore correctly, which this does; the other six are
  * harmless to store since nothing ever reads them back.
  *
- * Backed by a plain heap buffer rather than memory_region_init_ram because
- * the masking has to happen on every read, and a RAM-backed region answers
- * reads directly out of guest-visible memory with no callback in the way.
- * The buffer is machine-lifetime, freed with the process, same as the
- * flash and the other back-door pieces above -- and, like them, it does
- * not currently migrate: this content is diagnostic scratch a guest never
- * relies on surviving a snapshot (the datasheet already says the back
- * door "carries no meaning beyond a plain round trip"), so the gap is
- * recorded here rather than closed.
+ * Back-door addresses are ordinary memory addresses shifted right by two.
+ * A bank therefore has one quarter as much unique back-door storage as RAM,
+ * repeated across its fixed 128 MiB share of the window. Firmware uses that
+ * aliasing to distinguish bank capacities. Keeping only the unique span also
+ * prevents a default 64 MiB guest from allocating 256 MiB of mostly redundant
+ * diagnostic backing across these two windows.
+ *
+ * The compact buffer is used instead of memory_region_init_ram because both
+ * the address folding and the width mask have to happen on every access. It
+ * has machine lifetime, like the flash and the other back-door pieces above,
+ * and does not currently migrate: this content is diagnostic scratch a guest
+ * never relies on surviving a snapshot, so the gap is recorded here rather
+ * than closed.
  */
+static uint8_t *sn0_backdoor_byte(SN0BackdoorState *s, hwaddr addr)
+{
+    unsigned int bank = addr / SN0_BACKDOOR_BANK_STRIDE;
+    uint64_t within_bank = addr % SN0_BACKDOOR_BANK_STRIDE;
+
+    g_assert(bank < s->populated_banks);
+    return s->data + s->bank_offset[bank] +
+           within_bank % s->bank_span[bank];
+}
+
 static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
                                             unsigned size)
 {
-    const uint8_t *p = (const uint8_t *)opaque + addr;
-    uint64_t raw;
+    SN0BackdoorState *s = opaque;
+    uint64_t raw = 0;
     unsigned int i;
 
-    switch (size) {
-    case 1:
-        raw = ldub_p(p);
-        break;
-    case 2:
-        raw = lduw_be_p(p);
-        break;
-    case 4:
-        raw = ldl_be_p(p);
-        break;
-    case 8:
-        raw = ldq_be_p(p);
-        break;
-    default:
-        g_assert_not_reached();
+    for (i = 0; i < size; i++) {
+        raw = (raw << 8) | *sn0_backdoor_byte(s, addr + i);
     }
 
     /*
@@ -453,23 +461,13 @@ static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
 static void sn0_backdoor_populated_write(void *opaque, hwaddr addr,
                                          uint64_t val, unsigned size)
 {
-    uint8_t *p = (uint8_t *)opaque + addr;
+    SN0BackdoorState *s = opaque;
+    unsigned int i;
 
-    switch (size) {
-    case 1:
-        stb_p(p, val);
-        break;
-    case 2:
-        stw_be_p(p, val);
-        break;
-    case 4:
-        stl_be_p(p, val);
-        break;
-    case 8:
-        stq_be_p(p, val);
-        break;
-    default:
-        g_assert_not_reached();
+    for (i = 0; i < size; i++) {
+        unsigned int shift = 8 * (size - 1 - i);
+
+        *sn0_backdoor_byte(s, addr + i) = val >> shift;
     }
 }
 
@@ -482,6 +480,21 @@ static const MemoryRegionOps sn0_backdoor_populated_ops = {
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
 };
+
+static void sn0_backdoor_configure(SN0BackdoorState *s,
+                                   const SN0NodeState *node)
+{
+    uint64_t total = 0;
+    unsigned int bank;
+
+    s->populated_banks = node->populated_banks;
+    for (bank = 0; bank < node->populated_banks; bank++) {
+        s->bank_offset[bank] = total;
+        s->bank_span[bank] = (uint64_t)node->bank_mb[bank] * MiB / 4;
+        total += s->bank_span[bank];
+    }
+    s->data = g_malloc0(total);
+}
 
 /*
  * Build what a programmed flash would hold at the addresses a guest reaches
@@ -2046,10 +2059,10 @@ static void sn0_init(MachineState *machine)
         uint64_t populated_size = (uint64_t)s->node0.populated_banks *
                                   SN0_BACKDOOR_BANK_STRIDE;
 
-        s->node0.backdoor_ecc_data = g_malloc0(populated_size);
+        sn0_backdoor_configure(&s->node0.backdoor_ecc_state, &s->node0);
         memory_region_init_io(&s->node0.backdoor_ecc, OBJECT(&s->node0),
                               &sn0_backdoor_populated_ops,
-                              s->node0.backdoor_ecc_data,
+                              &s->node0.backdoor_ecc_state,
                               "sn0.node0.backdoor.ecc", populated_size);
         memory_region_add_subregion(system,
                                     SN0_SPACE_HUB + node +
@@ -2070,10 +2083,10 @@ static void sn0_init(MachineState *machine)
         uint64_t populated_size = (uint64_t)s->node0.populated_banks *
                                   SN0_BACKDOOR_BANK_STRIDE;
 
-        s->node0.backdoor_dir_data = g_malloc0(populated_size);
+        sn0_backdoor_configure(&s->node0.backdoor_dir_state, &s->node0);
         memory_region_init_io(&s->node0.backdoor_dir, OBJECT(&s->node0),
                               &sn0_backdoor_populated_ops,
-                              s->node0.backdoor_dir_data,
+                              &s->node0.backdoor_dir_state,
                               "sn0.node0.backdoor.dir", populated_size);
         memory_region_add_subregion(system,
                                     SN0_SPACE_HUB + node +
