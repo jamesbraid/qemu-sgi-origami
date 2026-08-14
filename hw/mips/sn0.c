@@ -93,6 +93,7 @@
 #define SN0_RTC_FREQ_HZ   1250000       /* an 800 ns tick */
 #define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
 #define SN0_CPUS_PER_NODE 2
+#define SN0_ORIGIN200_MAX_NODES 2
 #define SN0_HUB_PRIVATE_SIZE (128 * KiB)
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
 #define SN0_PROMDATA_PADDR  0x100000
@@ -182,7 +183,7 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
 struct SN0MachineState {
     MachineState parent_obj;
 
-    SN0NodeState node0;
+    SN0NodeState nodes[SN0_ORIGIN200_MAX_NODES];
     SGIBridgeState io_bridge;
 
     /*
@@ -368,12 +369,12 @@ static void sn0_promdata_reset(void *opaque)
 
 static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
 {
-    const uint8_t *p = memory_region_get_ram_ptr(&s->node0.flash) +
+    const uint8_t *p = memory_region_get_ram_ptr(&s->nodes[0].flash) +
                        (addr & (SN0_FLASH_SIZE - 1));
     uint8_t id[8];
     unsigned int i;
 
-    if (s->node0.flash_state == SN0_FLASH_AUTOSELECT) {
+    if (s->nodes[0].flash_state == SN0_FLASH_AUTOSELECT) {
         for (i = 0; i < size; i++) {
             switch ((addr + i) & (SN0_FLASH_SIZE - 1)) {
             case 0:
@@ -406,8 +407,8 @@ static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
 
 static void sn0_flash_read_mode(SN0MachineState *s)
 {
-    s->node0.flash_state = SN0_FLASH_READ;
-    memory_region_rom_device_set_romd(&s->node0.flash, true);
+    s->nodes[0].flash_state = SN0_FLASH_READ;
+    memory_region_rom_device_set_romd(&s->nodes[0].flash, true);
 }
 
 static void sn0_flash_reset(void *opaque)
@@ -438,7 +439,7 @@ static const VMStateDescription vmstate_sn0_flash = {
 static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
                               unsigned size)
 {
-    SN0NodeState *node = &s->node0;
+    SN0NodeState *node = &s->nodes[0];
     uint32_t offset;
     uint8_t byte = val;
     uint8_t *p;
@@ -1142,22 +1143,22 @@ static uint64_t sn0_arcs_get_memory(SN0MachineState *s, CPUMIPSState *env)
         unsigned int i;
 
         /* Which one did we hand out last? */
-        for (i = 0; i < s->node0.mem_count; i++) {
-            if (previous == s->node0.mem_addr +
+        for (i = 0; i < s->nodes[0].mem_count; i++) {
+            if (previous == s->nodes[0].mem_addr +
                             i * sizeof(struct sn0_mem_descriptor)) {
                 next = i + 1;
                 break;
             }
         }
-        if (i == s->node0.mem_count) {
+        if (i == s->nodes[0].mem_count) {
             return 0;
         }
     }
 
-    if (next >= s->node0.mem_count) {
+    if (next >= s->nodes[0].mem_count) {
         return 0;                       /* the end of the list */
     }
-    return s->node0.mem_addr + next * sizeof(struct sn0_mem_descriptor);
+    return s->nodes[0].mem_addr + next * sizeof(struct sn0_mem_descriptor);
 }
 
 static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
@@ -1657,7 +1658,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */
     stw_be_p(mem + 0x3a, 0);                    /* bank-to-address mapping */
     for (i = 0; i < SN0_MEM_BANKS; i++) {
-        stw_be_p(mem + 0x3c + i * 2, s->node0.bank_mb[i]);
+        stw_be_p(mem + 0x3c + i * 2, s->nodes[0].bank_mb[i]);
     }
 
     /*
@@ -1921,8 +1922,8 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
         rom_add_blob_fixed("sn0.memdesc", buf, sizeof(buf),
                            node + SN0_MEM_LIST + i * sizeof(buf));
     }
-    s->node0.mem_addr = SN0_COMPAT_CACHED + SN0_MEM_LIST;
-    s->node0.mem_count = n;
+    s->nodes[0].mem_addr = SN0_COMPAT_CACHED + SN0_MEM_LIST;
+    s->nodes[0].mem_count = n;
 }
 
 /*
@@ -2257,16 +2258,16 @@ static void sn0_init(MachineState *machine)
         sn0_show_indicator_codes(&error_fatal);
     }
 
-    if (!sn0_ip29_memory_layout(machine->ram_size, s->node0.bank_mb,
-                                &s->node0.populated_banks)) {
+    if (!sn0_ip29_memory_layout(machine->ram_size, s->nodes[0].bank_mb,
+                                &s->nodes[0].populated_banks)) {
         error_report("origin200: %" PRIu64 " MiB cannot be populated from "
                      "IP29 memory banks without overlapping firmware regions",
                      machine->ram_size / MiB);
         exit(EXIT_FAILURE);
     }
 
-    s->node0.cpuclk = clock_new(OBJECT(&s->node0), "cpu-refclk");
-    clock_set_hz(s->node0.cpuclk, SN0_CPU_REFCLK_HZ);
+    s->nodes[0].cpuclk = clock_new(OBJECT(&s->nodes[0]), "cpu-refclk");
+    clock_set_hz(s->nodes[0].cpuclk, SN0_CPU_REFCLK_HZ);
     for (cpu_index = 0; cpu_index < machine->smp.cpus; cpu_index++) {
         g_autofree char *alias_name =
             g_strdup_printf("sn0.node0.cpu%u.system", cpu_index);
@@ -2283,14 +2284,14 @@ static void sn0_init(MachineState *machine)
          * Hub-local uncached alias is the exception: the reading slice flips
          * address bit 16, giving the two processors separate scratch halves.
          */
-        memory_region_init(&s->node0.cpu_sysmem[cpu_index],
-                           OBJECT(&s->node0), sysmem_name, UINT64_MAX);
-        memory_region_init_alias(&s->node0.sysmem_alias[cpu_index],
-                                 OBJECT(&s->node0), alias_name, system, 0,
+        memory_region_init(&s->nodes[0].cpu_sysmem[cpu_index],
+                           OBJECT(&s->nodes[0]), sysmem_name, UINT64_MAX);
+        memory_region_init_alias(&s->nodes[0].sysmem_alias[cpu_index],
+                                 OBJECT(&s->nodes[0]), alias_name, system, 0,
                                  UINT64_MAX);
         memory_region_add_subregion_overlap(
-            &s->node0.cpu_sysmem[cpu_index], 0,
-            &s->node0.sysmem_alias[cpu_index], -1);
+            &s->nodes[0].cpu_sysmem[cpu_index], 0,
+            &s->nodes[0].sysmem_alias[cpu_index], -1);
         for (half = 0; half < 2; half++) {
             g_autofree char *private_name =
                 g_strdup_printf("sn0.node0.cpu%u.hub-private%u",
@@ -2299,23 +2300,23 @@ static void sn0_init(MachineState *machine)
                                       SN0_HUB_PRIVATE_HALF;
 
             memory_region_init_alias(
-                &s->node0.hub_private[cpu_index][half], OBJECT(&s->node0),
+                &s->nodes[0].hub_private[cpu_index][half], OBJECT(&s->nodes[0]),
                 private_name, machine->ram, private_offset,
                 SN0_HUB_PRIVATE_HALF);
             memory_region_add_subregion_overlap(
-                &s->node0.cpu_sysmem[cpu_index],
+                &s->nodes[0].cpu_sysmem[cpu_index],
                 SN0_SPACE_HUB + node + half * SN0_HUB_PRIVATE_HALF,
-                &s->node0.hub_private[cpu_index][half], 0);
+                &s->nodes[0].hub_private[cpu_index][half], 0);
         }
 
-        s->node0.cpu[cpu_index] = MIPS_CPU(qdev_new(machine->cpu_type));
-        s->node0.promdata[cpu_index].cpu = s->node0.cpu[cpu_index];
-        memory_region_init_ram(&s->node0.promdata[cpu_index].data,
-                               OBJECT(&s->node0), promdata_name,
+        s->nodes[0].cpu[cpu_index] = MIPS_CPU(qdev_new(machine->cpu_type));
+        s->nodes[0].promdata[cpu_index].cpu = s->nodes[0].cpu[cpu_index];
+        memory_region_init_ram(&s->nodes[0].promdata[cpu_index].data,
+                               OBJECT(&s->nodes[0]), promdata_name,
                                SN0_PROMDATA_SIZE, &error_fatal);
-        memory_region_init_io(&s->node0.promdata[cpu_index].filter,
-                              OBJECT(&s->node0), &sn0_promdata_ops,
-                              &s->node0.promdata[cpu_index],
+        memory_region_init_io(&s->nodes[0].promdata[cpu_index].filter,
+                              OBJECT(&s->nodes[0]), &sn0_promdata_ops,
+                              &s->nodes[0].promdata[cpu_index],
                               promdata_filter_name, SN0_PROMDATA_SIZE);
         /*
          * Firmware traps use cpu_memory_rw_debug() to copy results through
@@ -2325,26 +2326,26 @@ static void sn0_init(MachineState *machine)
          */
         s->node0.promdata[cpu_index].filter.disable_reentrancy_guard = true;
         qemu_register_reset(sn0_promdata_reset,
-                            &s->node0.promdata[cpu_index]);
+                            &s->nodes[0].promdata[cpu_index]);
         memory_region_add_subregion_overlap(
-            &s->node0.cpu_sysmem[cpu_index], SN0_PROMDATA_PADDR,
-            &s->node0.promdata[cpu_index].filter, 1);
-        object_property_add_child(OBJECT(&s->node0), name,
-                                  OBJECT(s->node0.cpu[cpu_index]));
-        object_property_set_link(OBJECT(s->node0.cpu[cpu_index]), "memory",
-                                 OBJECT(&s->node0.cpu_sysmem[cpu_index]),
+            &s->nodes[0].cpu_sysmem[cpu_index], SN0_PROMDATA_PADDR,
+            &s->nodes[0].promdata[cpu_index].filter, 1);
+        object_property_add_child(OBJECT(&s->nodes[0]), name,
+                                  OBJECT(s->nodes[0].cpu[cpu_index]));
+        object_property_set_link(OBJECT(s->nodes[0].cpu[cpu_index]), "memory",
+                                 OBJECT(&s->nodes[0].cpu_sysmem[cpu_index]),
                                  &error_abort);
-        qdev_connect_clock_in(DEVICE(s->node0.cpu[cpu_index]), "clk-in",
-                              s->node0.cpuclk);
-        object_property_set_bool(OBJECT(s->node0.cpu[cpu_index]),
+        qdev_connect_clock_in(DEVICE(s->nodes[0].cpu[cpu_index]), "clk-in",
+                              s->nodes[0].cpuclk);
+        object_property_set_bool(OBJECT(s->nodes[0].cpu[cpu_index]),
                                  "big-endian", true, &error_abort);
-        qdev_realize(DEVICE(s->node0.cpu[cpu_index]), NULL, &error_abort);
+        qdev_realize(DEVICE(s->nodes[0].cpu[cpu_index]), NULL, &error_abort);
         machine->possible_cpus->cpus[cpu_index].cpu =
-            CPU(s->node0.cpu[cpu_index]);
-        cpu_mips_irq_init_cpu(s->node0.cpu[cpu_index]);
-        cpu_mips_clock_init(s->node0.cpu[cpu_index]);
+            CPU(s->nodes[0].cpu[cpu_index]);
+        cpu_mips_irq_init_cpu(s->nodes[0].cpu[cpu_index]);
+        cpu_mips_clock_init(s->nodes[0].cpu[cpu_index]);
     }
-    cpu = s->node0.cpu[0];
+    cpu = s->nodes[0].cpu[0];
 
     /*
      * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
@@ -2352,8 +2353,8 @@ static void sn0_init(MachineState *machine)
      * of four slots on a 128 MiB stride. Both supported guests derive this
      * placement from the plain-megabyte bank sizes in KLCONFIG.
      */
-    for (bank = 0; bank < s->node0.populated_banks; bank++) {
-        uint64_t bank_size = (uint64_t)s->node0.bank_mb[bank] * MiB;
+    for (bank = 0; bank < s->nodes[0].populated_banks; bank++) {
+        uint64_t bank_size = (uint64_t)s->nodes[0].bank_mb[bank] * MiB;
         unsigned int segments = bank_size <= SN0_MEM_SLOT_SIZE ?
                                 1 : SN0_MEM_BANK_SLOTS;
         uint64_t segment_size = bank_size / segments;
@@ -2365,11 +2366,11 @@ static void sn0_init(MachineState *machine)
                 g_strdup_printf("sn0.node0.ram.bank%u.slot%u", bank,
                                 segment);
 
-            memory_region_init_alias(&s->node0.mem_slot[bank][segment],
-                                     OBJECT(&s->node0), name, machine->ram,
+            memory_region_init_alias(&s->nodes[0].mem_slot[bank][segment],
+                                     OBJECT(&s->nodes[0]), name, machine->ram,
                                      ram_offset, segment_size);
             memory_region_add_subregion(system, node + segment_addr,
-                                        &s->node0.mem_slot[bank][segment]);
+                                        &s->nodes[0].mem_slot[bank][segment]);
 
             /*
              * Hub-special offset zero mirrors the first 256 MiB of the
@@ -2388,12 +2389,12 @@ static void sn0_init(MachineState *machine)
                                     bank, segment);
 
                 memory_region_init_alias(
-                    &s->node0.hub_local_mem_slot[bank][segment],
-                    OBJECT(&s->node0), alias_name, machine->ram,
+                    &s->nodes[0].hub_local_mem_slot[bank][segment],
+                    OBJECT(&s->nodes[0]), alias_name, machine->ram,
                     ram_offset, alias_size);
                 memory_region_add_subregion(
                     system, SN0_SPACE_HUB + node + segment_addr,
-                    &s->node0.hub_local_mem_slot[bank][segment]);
+                    &s->nodes[0].hub_local_mem_slot[bank][segment]);
             }
             ram_offset += segment_size;
         }
@@ -2410,12 +2411,12 @@ static void sn0_init(MachineState *machine)
      * node. Keeping its lifetime and migration identity at that boundary lets
      * a later multi-node product instantiate the same boot mapping per node.
      */
-    memory_region_init_rom_device(&s->node0.flash, OBJECT(&s->node0),
+    memory_region_init_rom_device(&s->nodes[0].flash, OBJECT(&s->nodes[0]),
                                   &sn0_flash_ops,
                                   s, "sn0.node0.flash", SN0_FLASH_SIZE,
                                   &error_fatal);
     memory_region_add_subregion_overlap(system, node + SN0_FLASH_LOCAL,
-                                        &s->node0.flash, 1);
+                                        &s->nodes[0].flash, 1);
     qemu_register_reset(sn0_flash_reset, s);
 
     /*
@@ -2427,12 +2428,12 @@ static void sn0_init(MachineState *machine)
      * zero cannot drift from the flash and every repeat past it answers with
      * the same bytes a real chip's address decode would.
      */
-    memory_region_init_io(&s->node0.flash_hub_view, OBJECT(&s->node0),
+    memory_region_init_io(&s->nodes[0].flash_hub_view, OBJECT(&s->nodes[0]),
                           &sn0_boot_mirror_ops, s,
                           "sn0.node0.flash.hub", SN0_LBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_HUB,
-                                &s->node0.flash_hub_view);
+                                &s->nodes[0].flash_hub_view);
 
     /*
      * RBOOT is the node-explicit view of that same boot PROM. Firmware uses
@@ -2440,12 +2441,12 @@ static void sn0_init(MachineState *machine)
      * Hub, including when it reads the IP27 configuration block after moving
      * into cached RAM.
      */
-    memory_region_init_io(&s->node0.flash_rboot_view, OBJECT(&s->node0),
+    memory_region_init_io(&s->nodes[0].flash_rboot_view, OBJECT(&s->nodes[0]),
                           &sn0_boot_mirror_ops, s,
                           "sn0.node0.flash.rboot", SN0_RBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node + SN0_FLASH_RBOOT,
-                                &s->node0.flash_rboot_view);
+                                &s->nodes[0].flash_rboot_view);
 
     /*
      * The directory and error-correction back doors. Real firmware's own
@@ -2464,52 +2465,52 @@ static void sn0_init(MachineState *machine)
      * These regions and their buffers have the node's lifetime, like the flash
      * above. Their ownership must move with the node when more are composed.
      */
-    memory_region_init_io(&s->node0.backdoor_ecc_absent,
-                          OBJECT(&s->node0),
+    memory_region_init_io(&s->nodes[0].backdoor_ecc_absent,
+                          OBJECT(&s->nodes[0]),
                           &sn0_backdoor_absent_ops, NULL,
                           "sn0.node0.backdoor.ecc.absent",
                           SN0_BACKDOOR_ECC_SIZE);
     memory_region_add_subregion_overlap(system,
                                         SN0_SPACE_HUB + node +
                                             SN0_BACKDOOR_ECC_HUB,
-                                        &s->node0.backdoor_ecc_absent, -1);
-    if (s->node0.populated_banks > 0) {
-        uint64_t populated_size = (uint64_t)s->node0.populated_banks *
+                                        &s->nodes[0].backdoor_ecc_absent, -1);
+    if (s->nodes[0].populated_banks > 0) {
+        uint64_t populated_size = (uint64_t)s->nodes[0].populated_banks *
                                   SN0_BACKDOOR_BANK_STRIDE;
 
-        sn0_backdoor_configure(&s->node0.backdoor_ecc_state, &s->node0);
-        memory_region_init_io(&s->node0.backdoor_ecc, OBJECT(&s->node0),
+        sn0_backdoor_configure(&s->nodes[0].backdoor_ecc_state, &s->nodes[0]);
+        memory_region_init_io(&s->nodes[0].backdoor_ecc, OBJECT(&s->nodes[0]),
                               &sn0_backdoor_populated_ops,
-                              &s->node0.backdoor_ecc_state,
+                              &s->nodes[0].backdoor_ecc_state,
                               "sn0.node0.backdoor.ecc", populated_size);
         memory_region_add_subregion(system,
                                     SN0_SPACE_HUB + node +
                                         SN0_BACKDOOR_ECC_HUB,
-                                    &s->node0.backdoor_ecc);
+                                    &s->nodes[0].backdoor_ecc);
     }
 
-    memory_region_init_io(&s->node0.backdoor_dir_absent,
-                          OBJECT(&s->node0),
+    memory_region_init_io(&s->nodes[0].backdoor_dir_absent,
+                          OBJECT(&s->nodes[0]),
                           &sn0_backdoor_absent_ops, NULL,
                           "sn0.node0.backdoor.dir.absent",
                           SN0_BACKDOOR_DIR_SIZE);
     memory_region_add_subregion_overlap(system,
                                         SN0_SPACE_HUB + node +
                                             SN0_BACKDOOR_DIR_HUB,
-                                        &s->node0.backdoor_dir_absent, -1);
-    if (s->node0.populated_banks > 0) {
-        uint64_t populated_size = (uint64_t)s->node0.populated_banks *
+                                        &s->nodes[0].backdoor_dir_absent, -1);
+    if (s->nodes[0].populated_banks > 0) {
+        uint64_t populated_size = (uint64_t)s->nodes[0].populated_banks *
                                   SN0_BACKDOOR_BANK_STRIDE;
 
-        sn0_backdoor_configure(&s->node0.backdoor_dir_state, &s->node0);
-        memory_region_init_io(&s->node0.backdoor_dir, OBJECT(&s->node0),
+        sn0_backdoor_configure(&s->nodes[0].backdoor_dir_state, &s->nodes[0]);
+        memory_region_init_io(&s->nodes[0].backdoor_dir, OBJECT(&s->nodes[0]),
                               &sn0_backdoor_populated_ops,
-                              &s->node0.backdoor_dir_state,
+                              &s->nodes[0].backdoor_dir_state,
                               "sn0.node0.backdoor.dir", populated_size);
         memory_region_add_subregion(system,
                                     SN0_SPACE_HUB + node +
                                         SN0_BACKDOOR_DIR_HUB,
-                                    &s->node0.backdoor_dir);
+                                    &s->nodes[0].backdoor_dir);
     }
 
     /*
@@ -2527,7 +2528,7 @@ static void sn0_init(MachineState *machine)
      * window and the big window that both reach it cannot come to disagree
      * about what it is.
      */
-    memory_region_init(&s->node0.xtalk, OBJECT(&s->node0), "sn0.xtalk",
+    memory_region_init(&s->nodes[0].xtalk, OBJECT(&s->nodes[0]), "sn0.xtalk",
                        SN0_XTALK_SIZE);
 
     /*
@@ -2545,13 +2546,13 @@ static void sn0_init(MachineState *machine)
      * decode, because a guest uses one to read its processor number and the
      * other to clear interrupt state in the same boot.
      */
-    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "nasid", s->node0.nasid);
-    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "cpus", machine->smp.cpus);
-    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "cpu-base", 0);
-    qdev_prop_set_uint32(DEVICE(&s->node0.hub), "xtalk-widget-shift",
+    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "nasid", s->nodes[0].nasid);
+    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "cpus", machine->smp.cpus);
+    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "cpu-base", 0);
+    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
-    object_property_set_link(OBJECT(&s->node0.hub), "xtalk",
-                             OBJECT(&s->node0.xtalk),
+    object_property_set_link(OBJECT(&s->nodes[0].hub), "xtalk",
+                             OBJECT(&s->nodes[0].xtalk),
                              &error_fatal);
     /*
      * The junk-bus UART, off unless the operator asked for it by name. It
@@ -2573,14 +2574,14 @@ static void sn0_init(MachineState *machine)
      * machine anyone gets without asking keeps its device indices where they
      * were. An option should not renumber the parts a real machine has.
      */
-    qdev_prop_set_bit(DEVICE(&s->node0.hub), "junk-uart",
+    qdev_prop_set_bit(DEVICE(&s->nodes[0].hub), "junk-uart",
                       s->junk_uart_present);
     if (s->junk_uart_present && serial_hd(SN0_JUNK_UART_CHARDEV)) {
-        object_property_set_link(OBJECT(&s->node0.hub), "junk-uart-chardev",
+        object_property_set_link(OBJECT(&s->nodes[0].hub), "junk-uart-chardev",
                                  OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
                                  &error_fatal);
     }
-    sysbus_realize(SYS_BUS_DEVICE(&s->node0.hub), &error_fatal);
+    sysbus_realize(SYS_BUS_DEVICE(&s->nodes[0].hub), &error_fatal);
 
     /*
      * The Hub's two pending banks reach each processor on its first two
@@ -2590,23 +2591,23 @@ static void sn0_init(MachineState *machine)
      * the sources all name the Cause bit and a hand-written index is a silent
      * two-line error with nothing to check it against.
      */
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 0,
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 0,
                        cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 1,
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 1,
                        cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
     /*
      * Processor A's real-time comparator. Processor B's line is connected
      * below when that socket is populated.
      */
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 2,
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 2,
                        cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
     if (machine->smp.cpus == SN0_CPUS_PER_NODE) {
-        cpu = s->node0.cpu[1];
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 4,
+        cpu = s->nodes[0].cpu[1];
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 4,
                            cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 5,
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 5,
                            cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->node0.hub), 3,
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 3,
                            cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
     }
 
@@ -2733,7 +2734,7 @@ static void sn0_init(MachineState *machine)
                              sysbus_mmio_get_region(
                                  SYS_BUS_DEVICE(&s->io_bridge), 0),
                              0, SGI_BRIDGE_WIDGET_SIZE);
-    memory_region_add_subregion(&s->node0.xtalk,
+    memory_region_add_subregion(&s->nodes[0].xtalk,
                                 SN0_XTALK_BASE(SN0_WIDGET0),
                                 &s->widget0);
 
@@ -2781,7 +2782,7 @@ static void sn0_init(MachineState *machine)
 
     if (s->io_bridge_present) {
         memory_region_add_subregion_overlap(
-            &s->node0.xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
+            &s->nodes[0].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge), 0), -1);
 
         /*
@@ -2813,7 +2814,7 @@ static void sn0_init(MachineState *machine)
                     "to assign it PCI resources the way real ARCS PROM does, "
                     "the I/O bridge cannot yet carry it to a booting guest "
                     "(an approved interim, see task #43)");
-        memory_region_add_subregion(&s->node0.xtalk,
+        memory_region_add_subregion(&s->nodes[0].xtalk,
                                     SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) +
                                     SN0_BRIDGE_DEVICE2, &SGI_IOC3(ioc3)->bar);
     }
@@ -2832,15 +2833,15 @@ static void sn0_init(MachineState *machine)
      * the one it mapped.** This project shipped exactly that once, with the
      * small window unmapped, and Linux found it with a bus error.
      */
-    memory_region_init_alias(&s->node0.small_window[SN0_WIDGET0],
-                             OBJECT(&s->node0),
-                             "sn0.node0.xtalk.small0", &s->node0.xtalk,
+    memory_region_init_alias(&s->nodes[0].small_window[SN0_WIDGET0],
+                             OBJECT(&s->nodes[0]),
+                             "sn0.node0.xtalk.small0", &s->nodes[0].xtalk,
                              SN0_XTALK_BASE(SN0_WIDGET0),
                              SN0_SMALL_WINDOW_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node +
                                 SN0_SMALL_WINDOW(SN0_WIDGET0),
-                                &s->node0.small_window[SN0_WIDGET0]);
+                                &s->nodes[0].small_window[SN0_WIDGET0]);
 
     /*
      * The eight crosstalk port numbers, each reached through its own small
@@ -2861,13 +2862,13 @@ static void sn0_init(MachineState *machine)
     for (w = SN0_XTALK_PORT_FIRST; w <= SN0_XTALK_PORT_LAST; w++) {
         char *name = g_strdup_printf("sn0.node0.xtalk.small%u", w);
 
-        memory_region_init_alias(&s->node0.small_window[w],
-                                 OBJECT(&s->node0), name, &s->node0.xtalk,
+        memory_region_init_alias(&s->nodes[0].small_window[w],
+                                 OBJECT(&s->nodes[0]), name, &s->nodes[0].xtalk,
                                  SN0_XTALK_BASE(w), SN0_SMALL_WINDOW_SIZE);
         memory_region_add_subregion(system,
                                     SN0_SPACE_XTALK + node +
                                     SN0_SMALL_WINDOW(w),
-                                    &s->node0.small_window[w]);
+                                    &s->nodes[0].small_window[w]);
         g_free(name);
     }
 
@@ -2879,18 +2880,18 @@ static void sn0_init(MachineState *machine)
      */
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_BIG_WINDOW_BASE,
-                                &s->node0.hub.bwin);
+                                &s->nodes[0].hub.bwin);
 
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,
-                                &s->node0.hub.regs);
-    memory_region_init_alias(&s->node0.hub_regs_node_view,
-                             OBJECT(&s->node0),
-                             "sn0.node0.hub.explicit", &s->node0.hub.regs, 0,
+                                &s->nodes[0].hub.regs);
+    memory_region_init_alias(&s->nodes[0].hub_regs_node_view,
+                             OBJECT(&s->nodes[0]),
+                             "sn0.node0.hub.explicit", &s->nodes[0].hub.regs, 0,
                              SGI_HUB_WINDOW_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_XTALK + node + SN0_HUB_NODE_WINDOW,
-                                &s->node0.hub_regs_node_view);
+                                &s->nodes[0].hub_regs_node_view);
 
     flash = g_malloc0(SN0_FLASH_SIZE);
     sn0_build_flash(flash);
@@ -2923,11 +2924,11 @@ static void sn0_init(MachineState *machine)
 
         s->console = serial_hd(SN0_IOC3_CHARDEV);
 
-        memory_region_init_io(&s->node0.arcs_trap, OBJECT(&s->node0),
+        memory_region_init_io(&s->nodes[0].arcs_trap, OBJECT(&s->nodes[0]),
                               &sn0_arcs_ops, s,
                               "sn0.arcs.trap", SN0_ARCS_TRAP_SIZE);
         memory_region_add_subregion(system, node + SN0_ARCS_TRAP_LOCAL,
-                                    &s->node0.arcs_trap);
+                                    &s->nodes[0].arcs_trap);
 
         sn0_build_arcs(fw, fw_vaddr, trap_vaddr, vector, SN0_ARCS_ENTRIES,
                        0, 0);
@@ -3039,9 +3040,9 @@ static void sn0_init(MachineState *machine)
      * contents as a ROM and copy them back on every machine reset, erasing
      * environment changes the PROM deliberately retains across that reset.
      */
-    memcpy(memory_region_get_ram_ptr(&s->node0.flash), flash,
+    memcpy(memory_region_get_ram_ptr(&s->nodes[0].flash), flash,
            SN0_FLASH_SIZE);
-    memory_region_set_dirty(&s->node0.flash, 0, SN0_FLASH_SIZE);
+    memory_region_set_dirty(&s->nodes[0].flash, 0, SN0_FLASH_SIZE);
     g_free(flash);
 
     /*
@@ -3049,16 +3050,16 @@ static void sn0_init(MachineState *machine)
      * in the flash, so that whatever image the flash holds keeps every byte of
      * it. Read-only, like the flash, because nothing should be writing here.
      */
-    memory_region_init_rom(&s->node0.fw_text, OBJECT(&s->node0),
+    memory_region_init_rom(&s->nodes[0].fw_text, OBJECT(&s->nodes[0]),
                            "sn0.firmware.text",
                            SN0_FW_TEXT_SIZE, &error_fatal);
     memory_region_add_subregion(system, node + SN0_FW_TEXT_LOCAL,
-                                &s->node0.fw_text);
+                                &s->nodes[0].fw_text);
     rom_add_blob_fixed("sn0.firmware.text", fw, SN0_FW_TEXT_SIZE,
                        node + SN0_FW_TEXT_LOCAL);
     g_free(fw);
 
-    qdev_realize(DEVICE(&s->node0), NULL, &error_fatal);
+    qdev_realize(DEVICE(&s->nodes[0]), NULL, &error_fatal);
 
     qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
 }
@@ -3145,8 +3146,8 @@ static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
 
-    object_initialize_child(obj, "node0", &s->node0, TYPE_SN0_NODE);
-    s->node0.nasid = 0;
+    object_initialize_child(obj, "node0", &s->nodes[0], TYPE_SN0_NODE);
+    s->nodes[0].nasid = 0;
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
     s->debug_leds = true;
