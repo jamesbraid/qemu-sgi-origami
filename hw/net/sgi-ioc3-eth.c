@@ -250,7 +250,19 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
                        << 32) | (tx_lo & SGI_IOC3_ENET_TX_BASE_MASK);
     uint32_t consume = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_CONSUME) &
                        SGI_IOC3_ENET_TX_CONSUME_MASK;
-    uint32_t status = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS);
+    /*
+     * The sources this walk raises, accumulated on their own rather than
+     * onto a copy of the interrupt status register taken here. Sending a
+     * frame below re-enters this device: a backend that answers -- QEMU's
+     * user-mode networking answers a request from inside the same call that
+     * sent it -- delivers the reply through this engine's own receive path
+     * several frames down the stack, and that path raises the receive
+     * source. A copy taken before the walk does not have it, so writing the
+     * copy back afterwards erases it, and a driver dispatching on the
+     * sources it can see never collects the frame that is already in its
+     * ring. Read the register once at the end and add to what it holds.
+     */
+    uint32_t raised = 0;
     bool completed_one = false;
 
     produce %= ring_bytes;
@@ -277,7 +289,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         }
 
         if (cmd & SGI_IOC3_ENET_TXD_INT_DONE) {
-            status |= SGI_IOC3_ENET_INT_TX_COMPLETE;
+            raised |= SGI_IOC3_ENET_INT_TX_COMPLETE;
         }
 
         consume = (consume + SGI_IOC3_ENET_TX_DESC_SIZE) % ring_bytes;
@@ -285,12 +297,13 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     }
 
     if (completed_one) {
-        status |= SGI_IOC3_ENET_INT_TX_EMPTY;
+        raised |= SGI_IOC3_ENET_INT_TX_EMPTY;
     }
 
     sgi_ioc3_enet_set(s, SGI_IOC3_ENET_TX_CONSUME,
                       consume | SGI_IOC3_ENET_TX_CONSUME_IDLE);
-    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS, status);
+    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS,
+                      sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) | raised);
     sgi_ioc3_enet_update_irq(s);
 }
 

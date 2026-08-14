@@ -1403,6 +1403,113 @@ static void test_the_ethernet_interrupt_line_drops_when_acknowledged(
     close(sv[0]);
 }
 
+/*
+ * A frame that arrives while the transmit walk is still running must keep
+ * its own interrupt source. Nothing in the tests above can see this: they
+ * drive one direction at a time, and the two directions only collide when
+ * the backend answers a transmitted frame from inside the very call that
+ * sent it. That is not a contrived ordering -- it is what every request
+ * and reply on QEMU's user-mode network does, because slirp builds its
+ * answer synchronously and hands it straight back to this engine's own
+ * receive path, several stack frames below the register write that started
+ * the transmit.
+ *
+ * The frame here is an ARP request for the address user-mode networking
+ * answers on. Its reply comes back inside the doorbell write, so by the
+ * time that write returns, both directions have already run: the consume
+ * index has advanced over a delivered frame, and the interrupt status
+ * register has to name the receive source as well as the two transmit
+ * ones. An engine that read the status register into a local before the
+ * walk and wrote that local back afterwards reports only the transmit
+ * sources, and a driver dispatching on them never collects the frame.
+ */
+static QTestState *sn0_ioc3_attach_with_user_net(void)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+                                 "-nic user,id=n0");
+
+    sn0_ioc3_attach(qts);
+    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
+                PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    return qts;
+}
+
+static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
+{
+    QTestState *qts;
+    /*
+     * Destination broadcast, our own address as the sender, then the
+     * hardware and protocol types, the request opcode, and the two
+     * address pairs: 10.0.2.15 asking who has 10.0.2.2, which is the
+     * address user-mode networking answers for itself.
+     */
+    uint8_t arp_request[42] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+        0x08, 0x06,
+        0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 10, 0, 2, 15,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 0, 2, 2
+    };
+    uint8_t landed[42];
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t word0, status;
+
+    qts = sn0_ioc3_attach_with_user_net();
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+
+    /* One receive buffer, so the reply has somewhere to land. */
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_PRODUCE, 8);
+
+    /*
+     * One transmit descriptor carrying the request inline, asking for a
+     * completion interrupt so both transmit sources are raised too.
+     */
+    qtest_writel(qts, desc + 0,
+                sizeof(arp_request) | TXD_DATA_VALID | TXD_INT_DONE);
+    qtest_writel(qts, desc + 4, sizeof(arp_request));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, arp_request,
+                   sizeof(arp_request));
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    /*
+     * No polling loop here, deliberately. The reply is delivered inside
+     * the doorbell write above rather than on a later main-loop pass, and
+     * that is the whole condition being tested -- a test that waited for
+     * it would also pass on a delivery that arrived afterwards, which is
+     * the case the engine already gets right.
+     */
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    word0 = qtest_readl(qts, rxbuf + 0);
+    g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
+
+    /* An ARP reply, so what landed is the answer to what was sent. */
+    qtest_memread(qts, rxbuf + 66, landed, sizeof(landed));
+    g_assert_cmphex(landed[12], ==, 0x08);
+    g_assert_cmphex(landed[13], ==, 0x06);
+    g_assert_cmphex(landed[21], ==, 0x02);
+
+    status = qtest_readl(qts, ENET_INT_STATUS);
+    g_assert_cmphex(status & (ENET_INT_RX_THRESHOLD | ENET_INT_TX_EMPTY |
+                              ENET_INT_TX_COMPLETE), ==,
+                    ENET_INT_RX_THRESHOLD | ENET_INT_TX_EMPTY |
+                    ENET_INT_TX_COMPLETE);
+
+    qtest_quit(qts);
+}
+
 static void test_the_media_interface_never_reads_busy(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -1935,6 +2042,8 @@ int main(int argc, char **argv)
                         test_the_ethernet_receive_delivers_a_frame);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
+    qtest_add_data_func("sn0/ioc3/ethernet-reply-during-transmit", NULL,
+                        test_a_reply_during_transmit_keeps_its_interrupt);
     qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
                         test_the_media_interface_never_reads_busy);
     qtest_add_data_func("sn0/ioc3/buffer-ram-halves-are-distinct", NULL,
