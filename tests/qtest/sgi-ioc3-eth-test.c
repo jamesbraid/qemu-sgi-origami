@@ -125,6 +125,50 @@
  */
 #define RXD_BUF_OFFSET    66
 #define RXH_VALID         0x80000000u
+#define RXH_BYTECNT_SHIFT 16
+
+/*
+ * The received byte count's field, eleven bits in both drivers -- OpenBSD's
+ * IEC_RXSTAT_LEN_MASK and Linux's ERXBUF_BYTECNT_MASK are each 0x07ff0000 --
+ * so the largest count the engine can report at all is 2047, and a frame of
+ * more than 2043 bytes could not be described.
+ */
+#define RXH_BYTECNT_MASK  0x07ff0000u
+#define RXH_BYTECNT_MAX   2047
+
+/*
+ * The split length field in the error word, which the same count arrives in a
+ * second time: three low bits at 12 and ten high bits at 16, reassembled as
+ * the high part shifted left three. Both drivers carry it and neither reads
+ * it, so it is the field most likely to rot unnoticed.
+ */
+#define RXE_LEN_LO_SHIFT  12
+#define RXE_LEN_HI_SHIFT  16
+
+/*
+ * What a real MAC captures alongside the frame and QEMU's network layer never
+ * produces, so the engine adds it back into the count it reports. OpenBSD's
+ * ETHER_CRC_LEN, and Linux subtracts the same four in its own receive path.
+ */
+#define ETHER_FCS_LEN     4
+
+/*
+ * Where the guests' own length gates fall, from OpenBSD's if_ether.h: a frame
+ * is dropped below ETHER_MIN_LEN or above ETHER_MAX_LEN, both counted with the
+ * CRC included -- which is the count this engine reports rather than the
+ * payload it delivered. So the interesting delivered sizes are four less.
+ */
+#define ETHER_MIN_LEN     64
+#define ETHER_MAX_LEN     1518
+
+/*
+ * The engine's own truncation point, and this one is ours rather than the
+ * drivers'. It assembles into 2048 bytes and reserves eight, so a delivery is
+ * cut at 2040 -- three below what the count field could still describe. No
+ * legal Ethernet frame comes near either number, so the two limits have never
+ * had to be reconciled; the test asserts the model's own and says which it is.
+ */
+#define RX_DELIVER_MAX    2040
 
 /*
  * The good-packet bit in a receive buffer's error word, from the drivers
@@ -264,7 +308,7 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf)
  * arbitrary payload. Size boundaries need exactly that, so they use this and
  * the interleaving tests use the other.
  */
-static QTestState *ioc3_attach_socket(int guest_fd)
+static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
 {
     QTestState *qts;
 
@@ -272,7 +316,7 @@ static QTestState *ioc3_attach_socket(int guest_fd)
                       "-netdev socket,fd=%d,id=n0 "
                       "-device sgi-ioc3,addr=%02x.0,netdev=n0",
                       guest_fd, IOC3_PCI_SLOT);
-    ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, 4);
+    ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
     return qts;
 }
 
@@ -294,6 +338,14 @@ static void net_socket_set_recv_timeout(int fd, int seconds)
  * The framing the socket backend uses: a four-byte network-order length ahead
  * of each frame, in both directions.
  */
+static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
+{
+    uint32_t hdr = htonl((uint32_t)len);
+
+    g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
+}
+
 static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
 {
     uint32_t hdr;
@@ -515,7 +567,7 @@ static void test_the_inline_area_boundary(const void *data)
 
         g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
         net_socket_set_recv_timeout(sv[0], 10);
-        qts = ioc3_attach_socket(sv[1]);
+        qts = ioc3_attach_socket(sv[1], 8);
 
         len = send_and_capture(qts, sv[0], frame, claimed[n],
                                MIN(claimed[n], (uint32_t)sizeof(frame)), 0,
@@ -563,7 +615,7 @@ static void test_the_assembled_frame_limit(const void *data)
 
         g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
         net_socket_set_recv_timeout(sv[0], 10);
-        qts = ioc3_attach_socket(sv[1]);
+        qts = ioc3_attach_socket(sv[1], 8);
 
         len = send_and_capture(qts, sv[0], frame, total, total, part,
                                got, sizeof(got));
@@ -605,7 +657,7 @@ static void test_a_frame_split_on_the_dma_boundary(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
-    qts = ioc3_attach_socket(sv[1]);
+    qts = ioc3_attach_socket(sv[1], 8);
 
     /*
      * 250 bytes before the boundary and 350 after it, so buffer one ends on
@@ -623,10 +675,160 @@ static void test_a_frame_split_on_the_dma_boundary(const void *data)
     close(sv[0]);
 }
 
+/*
+ * Deliver one frame from the backend and read back everything the engine wrote
+ * about it. Returns the reported byte count; the caller checks the rest.
+ */
+static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
+                                    const uint8_t *frame, size_t len,
+                                    uint32_t rxbuf, uint32_t slot,
+                                    uint8_t *landed, size_t landed_size)
+{
+    uint32_t base = rxbuf + slot * 0x1000;
+    uint32_t word0, word1, count, split;
+    int attempt;
+
+    net_socket_send_frame(host_fd, frame, len);
+
+    /*
+     * A socket backend delivers on a later pass of the main loop, so the
+     * consume index is polled rather than read once. The interleaving tests
+     * elsewhere need the opposite and use a backend that answers inside the
+     * call; here the delay is harmless and the size control is what matters.
+     */
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (ioc3_readl(qts, ENET_RX_CONSUME) != slot * 8) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, (slot + 1) * 8);
+
+    word0 = dma_ldl_be(qts, base);
+    word1 = dma_ldl_be(qts, base + 4);
+
+    g_assert_cmphex(word0 & RXH_VALID, ==, RXH_VALID);
+    g_assert_cmphex(word1 & RXE_GOODPKT, ==, RXE_GOODPKT);
+
+    count = (word0 & RXH_BYTECNT_MASK) >> RXH_BYTECNT_SHIFT;
+
+    /*
+     * The same count arrives a second time in the split field, and the two
+     * must agree. Neither driver reads the split one, so nothing else in the
+     * system would notice it drifting.
+     */
+    split = (((word1 >> RXE_LEN_HI_SHIFT) & 0x3ff) << 3) |
+            ((word1 >> RXE_LEN_LO_SHIFT) & 0x7);
+    g_assert_cmpuint(split, ==, count);
+
+    /* Never more than the field can hold, whatever the backend offered. */
+    g_assert_cmpuint(count, <=, RXH_BYTECNT_MAX);
+
+    if (landed_size) {
+        qtest_memread(qts, base + RXD_BUF_OFFSET, landed, landed_size);
+    }
+    return count;
+}
+
+/*
+ * The reported count against the delivered size, at the sizes where something
+ * changes. Two of these are the guests' own gates -- a frame is dropped below
+ * ETHER_MIN_LEN and above ETHER_MAX_LEN, both counted with the CRC the engine
+ * adds back -- so 60 bytes delivered reports exactly the minimum and 59
+ * reports one short of it, while 1514 reports exactly the maximum and 1515
+ * reports one over. A model that dropped the four-byte addition would put
+ * every one of those on the wrong side of the guest's comparison.
+ */
+static void test_the_reported_count_at_the_guest_gates(const void *data)
+{
+    static const uint32_t sizes[] = {
+        59, 60, 61,
+        ETHER_MAX_LEN - ETHER_FCS_LEN - 1,
+        ETHER_MAX_LEN - ETHER_FCS_LEN,
+        ETHER_MAX_LEN - ETHER_FCS_LEN + 1,
+    };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[ETHER_MAX_LEN];
+    uint8_t landed[ETHER_MAX_LEN];
+    unsigned int i, n;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 3 + 1);
+    }
+    /* Broadcast, so the delivery is not conditional on any address filter. */
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 8);
+
+    for (n = 0; n < ARRAY_SIZE(sizes); n++) {
+        uint32_t count = receive_and_inspect(qts, sv[0], frame, sizes[n],
+                                             RAM_SCRATCH + 0xc000, n,
+                                             landed, sizes[n]);
+
+        g_assert_cmpuint(count, ==, sizes[n] + ETHER_FCS_LEN);
+        g_assert_cmpmem(landed, sizes[n], frame, sizes[n]);
+    }
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Where the engine stops. It assembles into 2048 bytes and reserves eight, so
+ * a delivery is cut at 2040 -- and the count field could still describe three
+ * more, which is the tell that this limit is the model's own rather than the
+ * hardware's. Either side of it and one past, with the truncated case required
+ * to report the truncated length rather than what arrived.
+ */
+static void test_the_delivery_truncation_point(const void *data)
+{
+    static const uint32_t sizes[] = { RX_DELIVER_MAX - 1, RX_DELIVER_MAX,
+                                      RX_DELIVER_MAX + 1 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[RX_DELIVER_MAX + 1];
+    uint8_t landed[RX_DELIVER_MAX];
+    unsigned int i, n;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i ^ 0x33);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 8);
+
+    for (n = 0; n < ARRAY_SIZE(sizes); n++) {
+        uint32_t kept = MIN(sizes[n], (uint32_t)RX_DELIVER_MAX);
+        uint32_t count = receive_and_inspect(qts, sv[0], frame, sizes[n],
+                                             RAM_SCRATCH + 0xc000, n,
+                                             landed, kept);
+
+        /*
+         * The count describes what was kept, not what was offered. Reporting
+         * the offered length would send a driver reading past the bytes that
+         * actually arrived.
+         */
+        g_assert_cmpuint(count, ==, kept + ETHER_FCS_LEN);
+        g_assert_cmpmem(landed, kept, frame, kept);
+    }
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sgi-ioc3-eth/reported-count-at-guest-gates", NULL,
+                        test_the_reported_count_at_the_guest_gates);
+    qtest_add_data_func("sgi-ioc3-eth/delivery-truncation-point", NULL,
+                        test_the_delivery_truncation_point);
     qtest_add_data_func("sgi-ioc3-eth/inline-area-boundary", NULL,
                         test_the_inline_area_boundary);
     qtest_add_data_func("sgi-ioc3-eth/assembled-frame-limit", NULL,
