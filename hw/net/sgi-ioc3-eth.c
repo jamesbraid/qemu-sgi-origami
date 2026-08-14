@@ -119,17 +119,25 @@ static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
         }
     }
     /*
-     * UNOBSERVED: whether the watermark is crossed at "at or below" or at
-     * "strictly below". Neither driver settles it. OpenBSD programs its whole
-     * available count, so the first delivered frame crosses under either
-     * reading, and it enables the receive timer as well, so it would be
-     * prompted even if this source never fired. Linux never enables this
-     * source at all. So no guest we run can tell the two apart, and nothing
-     * in the sources says which the silicon does. The inclusive form is the
-     * one taken here because it is what a low watermark usually means, and
-     * that is a convention rather than a measurement. What would settle it:
-     * a driver that enables this source alone and programs a watermark below
-     * its supply, or a vendor statement about the comparison.
+     * The comparison is inclusive because OpenBSD's own words and its own
+     * arithmetic both ask for that. It writes a watermark of exactly one
+     * below the buffers it supplies -- produce index minus consume index
+     * minus one -- under the comment "Interrupt as soon as available RX desc
+     * reach this limit". Supplying 129 and asking about 128 places the
+     * watermark precisely where the first delivered frame lands, and "reach"
+     * is the inclusive word. Under a strict comparison that first frame
+     * would not cross and the driver would hear nothing until the second,
+     * which is not what it wrote down that it wanted.
+     *
+     * What is still a reading rather than a measurement: nothing has been run
+     * that distinguishes the pairing taken here -- available counted as
+     * produce minus consume, compared inclusively -- from counting one fewer
+     * available and comparing strictly, which would put OpenBSD's watermark
+     * in the same place. The two unknowns are coupled, so a driver cannot
+     * separate them and neither can a boot. Linux never enables this source,
+     * so it says nothing either way. What would settle it is a driver that
+     * enables this source alone against a watermark below its supply, or a
+     * vendor statement.
      */
     if (available <= threshold) {
         sources |= SGI_IOC3_ENET_INT_RX_THRESHOLD;
