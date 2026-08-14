@@ -163,6 +163,16 @@ struct SGIHubState {
      * The node's one-wire bus master. Thirty-four bits wide, so it does not
      * fit a word: the upper timing phase reaches bit 33.
      */
+    /*
+     * The two error-spool address registers, one per processor. Kept here
+     * because the firmware uses processor B's as scratch that outlives a
+     * reset: it parks a marker there, triggers the reset, and reads it back to
+     * learn which pass it is on. On a single-processor machine that register
+     * belongs to a processor which does not exist, which is presumably why it
+     * was chosen.
+     */
+    uint64_t pi_err_spool[SGI_HUB_PROCESSORS];
+
     uint64_t md_onewire;
 
     /*
