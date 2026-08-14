@@ -437,6 +437,8 @@ typedef struct mips_def_t mips_def_t;
 #define R10K_SCACHE_SETS       (R10K_SCACHE_SIZE / R10K_SCACHE_LINE_SIZE / \
                                 R10K_SCACHE_WAYS)
 #define R10K_SCACHE_TAGS       (R10K_SCACHE_SETS * R10K_SCACHE_WAYS)
+#define R10K_SCACHE_QUADWORDS  (R10K_SCACHE_SIZE / 16)
+#define R10K_SCACHE_DWORDS     (R10K_SCACHE_SIZE / 8)
 #define R10K_SCACHE_TAGLO_MASK 0xffffcdff
 #define R10K_SCACHE_TAGHI_MASK 0x8000000f
 /* CP0 Register 28 */
@@ -1187,10 +1189,12 @@ typedef struct CPUArchState {
     int32_t CP0_TagHi;
     int32_t CP0_DataHi;
 
-    /* R10000 external secondary-cache tag and set-wide MRU arrays. */
+    /* R10000 external secondary-cache diagnostic state. */
     uint32_t r10k_scache_taglo[R10K_SCACHE_TAGS];
     uint8_t r10k_scache_taghi[R10K_SCACHE_TAGS];
     uint8_t r10k_scache_mru[R10K_SCACHE_SETS];
+    uint64_t r10k_scache_data[R10K_SCACHE_DWORDS];
+    uint16_t r10k_scache_ecc[R10K_SCACHE_QUADWORDS];
 /*
  * CP0 Register 30
  */

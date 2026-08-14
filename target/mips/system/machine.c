@@ -351,7 +351,7 @@ static bool mips_r10k_scache_needed(void *opaque)
 
 static const VMStateDescription mips_vmstate_r10k_scache = {
     .name = "cpu/r10k-scache",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .needed = mips_r10k_scache_needed,
     .fields = (const VMStateField[]) {
@@ -361,6 +361,10 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
                             R10K_SCACHE_TAGS),
         VMSTATE_UINT8_ARRAY(env.r10k_scache_mru, MIPSCPU,
                             R10K_SCACHE_SETS),
+        VMSTATE_UINT64_ARRAY_V(env.r10k_scache_data, MIPSCPU,
+                               R10K_SCACHE_DWORDS, 2),
+        VMSTATE_UINT16_ARRAY_V(env.r10k_scache_ecc, MIPSCPU,
+                               R10K_SCACHE_QUADWORDS, 2),
         VMSTATE_END_OF_LIST()
     }
 };
