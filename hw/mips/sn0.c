@@ -94,6 +94,7 @@
 #define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
 #define SN0_CPUS_PER_NODE 2
 #define SN0_ORIGIN200_MAX_NODES 2
+#define SN0_UNCACHED_SPACES 4
 #define SN0_HUB_PRIVATE_SIZE (128 * KiB)
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
 #define SN0_PROMDATA_PADDR  0x100000
@@ -135,6 +136,7 @@ typedef enum SN0FlashState {
 
 typedef struct SN0PromDataState {
     MIPSCPU *cpu;
+    hwaddr node_base;
     MemoryRegion data;
     MemoryRegion filter;
 } SN0PromDataState;
@@ -147,6 +149,7 @@ typedef struct SN0NodeState {
     MIPSCPU *cpu[SN0_CPUS_PER_NODE];
     MemoryRegion cpu_sysmem[SN0_CPUS_PER_NODE];
     MemoryRegion sysmem_alias[SN0_CPUS_PER_NODE];
+    MemoryRegion local_space[SN0_CPUS_PER_NODE][SN0_UNCACHED_SPACES];
     MemoryRegion hub_private[SN0_CPUS_PER_NODE][2];
     SN0PromDataState promdata[SN0_CPUS_PER_NODE];
     SGIHubState hub;
@@ -325,7 +328,8 @@ static MemTxResult sn0_promdata_read(void *opaque, hwaddr addr, uint64_t *val,
     }
 
     result = address_space_read(&address_space_memory,
-                                SN0_PROMDATA_PADDR + addr, attrs, bytes, size);
+                                s->node_base + SN0_PROMDATA_PADDR + addr,
+                                attrs, bytes, size);
     *val = ldn_be_p(bytes, size);
     return result;
 }
@@ -344,7 +348,8 @@ static MemTxResult sn0_promdata_write(void *opaque, hwaddr addr, uint64_t val,
 
     stn_be_p(bytes, size, val);
     return address_space_write(&address_space_memory,
-                               SN0_PROMDATA_PADDR + addr, attrs, bytes, size);
+                               s->node_base + SN0_PROMDATA_PADDR + addr,
+                               attrs, bytes, size);
 }
 
 static const MemoryRegionOps sn0_promdata_ops = {
@@ -2223,6 +2228,110 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
     return index / SN0_CPUS_PER_NODE;
 }
 
+static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
+                                 unsigned int node_index,
+                                 unsigned int cpu_base,
+                                 unsigned int cpu_count,
+                                 uint64_t ram_offset)
+{
+    MemoryRegion *system = get_system_memory();
+    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    unsigned int slice, half, space;
+
+    node->cpuclk = clock_new(OBJECT(node), "cpu-refclk");
+    clock_set_hz(node->cpuclk, SN0_CPU_REFCLK_HZ);
+    for (slice = 0; slice < cpu_count; slice++) {
+        unsigned int cpu_index = cpu_base + slice;
+        g_autofree char *alias_name =
+            g_strdup_printf("sn0.node%u.cpu%u.system", node_index, slice);
+        g_autofree char *name = g_strdup_printf("cpu%u", slice);
+        g_autofree char *promdata_name =
+            g_strdup_printf("sn0.node%u.cpu%u.promdata", node_index, slice);
+        g_autofree char *promdata_filter_name = g_strdup_printf(
+            "sn0.node%u.cpu%u.promdata-filter", node_index, slice);
+        g_autofree char *sysmem_name =
+            g_strdup_printf("sn0.node%u.cpu%u.memory", node_index, slice);
+
+        memory_region_init(&node->cpu_sysmem[slice], OBJECT(node),
+                           sysmem_name, UINT64_MAX);
+        memory_region_init_alias(&node->sysmem_alias[slice], OBJECT(node),
+                                 alias_name, system, 0, UINT64_MAX);
+        memory_region_add_subregion_overlap(&node->cpu_sysmem[slice], 0,
+                                            &node->sysmem_alias[slice], -1);
+
+        /*
+         * Addresses without a NASID name the reading processor's node.  Keep
+         * the global system map underneath so an explicit NASID still reaches
+         * any remote node.
+         */
+        for (space = 0; space < SN0_UNCACHED_SPACES; space++) {
+            g_autofree char *local_name = g_strdup_printf(
+                "sn0.node%u.cpu%u.local-space%u", node_index, slice, space);
+
+            memory_region_init_alias(&node->local_space[slice][space],
+                                     OBJECT(node), local_name, system,
+                                     SN0_SPACE(space) + node_base,
+                                     SN0_NODE_SIZE);
+            memory_region_add_subregion_overlap(
+                &node->cpu_sysmem[slice], SN0_SPACE(space),
+                &node->local_space[slice][space], 0);
+        }
+
+        /*
+         * The bottom 128 KiB of Hub-local space is the remaining exception:
+         * the reading slice flips address bit 16, giving the two processors
+         * separate scratch halves.
+         */
+        for (half = 0; half < 2; half++) {
+            g_autofree char *private_name = g_strdup_printf(
+                "sn0.node%u.cpu%u.hub-private%u", node_index, slice, half);
+            uint64_t private_offset = ram_offset +
+                (half ^ slice) * SN0_HUB_PRIVATE_HALF;
+
+            memory_region_init_alias(&node->hub_private[slice][half],
+                                     OBJECT(node), private_name, machine->ram,
+                                     private_offset, SN0_HUB_PRIVATE_HALF);
+            memory_region_add_subregion_overlap(
+                &node->cpu_sysmem[slice],
+                SN0_SPACE_HUB + half * SN0_HUB_PRIVATE_HALF,
+                &node->hub_private[slice][half], 1);
+        }
+
+        node->cpu[slice] = MIPS_CPU(qdev_new(machine->cpu_type));
+        node->promdata[slice].cpu = node->cpu[slice];
+        node->promdata[slice].node_base = node_base;
+        memory_region_init_ram(&node->promdata[slice].data, OBJECT(node),
+                               promdata_name, SN0_PROMDATA_SIZE, &error_fatal);
+        memory_region_init_io(&node->promdata[slice].filter, OBJECT(node),
+                              &sn0_promdata_ops, &node->promdata[slice],
+                              promdata_filter_name, SN0_PROMDATA_SIZE);
+        /*
+         * Firmware traps use cpu_memory_rw_debug() to copy results through
+         * guest pointers.  The trap and this filter share the node as their
+         * owner, so the device-wide guard would otherwise reject that
+         * intentional nested access before the filter can forward it to RAM.
+         */
+        node->promdata[slice].filter.disable_reentrancy_guard = true;
+        qemu_register_reset(sn0_promdata_reset, &node->promdata[slice]);
+        memory_region_add_subregion_overlap(
+            &node->cpu_sysmem[slice], SN0_PROMDATA_PADDR,
+            &node->promdata[slice].filter, 2);
+        object_property_add_child(OBJECT(node), name,
+                                  OBJECT(node->cpu[slice]));
+        object_property_set_link(OBJECT(node->cpu[slice]), "memory",
+                                 OBJECT(&node->cpu_sysmem[slice]),
+                                 &error_abort);
+        qdev_connect_clock_in(DEVICE(node->cpu[slice]), "clk-in",
+                              node->cpuclk);
+        object_property_set_bool(OBJECT(node->cpu[slice]), "big-endian", true,
+                                 &error_abort);
+        qdev_realize(DEVICE(node->cpu[slice]), NULL, &error_abort);
+        machine->possible_cpus->cpus[cpu_index].cpu = CPU(node->cpu[slice]);
+        cpu_mips_irq_init_cpu(node->cpu[slice]);
+        cpu_mips_clock_init(node->cpu[slice]);
+    }
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -2235,7 +2344,7 @@ static void sn0_init(MachineState *machine)
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
-    unsigned int bank, cpu_index, half, segment, w, slot;
+    unsigned int bank, segment, w, slot;
 
     if (machine->smp.sockets != 1 ||
         machine->smp.cores > SN0_CPUS_PER_NODE ||
@@ -2265,85 +2374,7 @@ static void sn0_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
 
-    s->nodes[0].cpuclk = clock_new(OBJECT(&s->nodes[0]), "cpu-refclk");
-    clock_set_hz(s->nodes[0].cpuclk, SN0_CPU_REFCLK_HZ);
-    for (cpu_index = 0; cpu_index < machine->smp.cpus; cpu_index++) {
-        g_autofree char *alias_name =
-            g_strdup_printf("sn0.node0.cpu%u.system", cpu_index);
-        g_autofree char *name = g_strdup_printf("cpu%u", cpu_index);
-        g_autofree char *promdata_name =
-            g_strdup_printf("sn0.node0.cpu%u.promdata", cpu_index);
-        g_autofree char *promdata_filter_name =
-            g_strdup_printf("sn0.node0.cpu%u.promdata-filter", cpu_index);
-        g_autofree char *sysmem_name =
-            g_strdup_printf("sn0.node0.cpu%u.memory", cpu_index);
-
-        /*
-         * Most addresses are shared system memory.  The bottom 128 KiB of the
-         * Hub-local uncached alias is the exception: the reading slice flips
-         * address bit 16, giving the two processors separate scratch halves.
-         */
-        memory_region_init(&s->nodes[0].cpu_sysmem[cpu_index],
-                           OBJECT(&s->nodes[0]), sysmem_name, UINT64_MAX);
-        memory_region_init_alias(&s->nodes[0].sysmem_alias[cpu_index],
-                                 OBJECT(&s->nodes[0]), alias_name, system, 0,
-                                 UINT64_MAX);
-        memory_region_add_subregion_overlap(
-            &s->nodes[0].cpu_sysmem[cpu_index], 0,
-            &s->nodes[0].sysmem_alias[cpu_index], -1);
-        for (half = 0; half < 2; half++) {
-            g_autofree char *private_name =
-                g_strdup_printf("sn0.node0.cpu%u.hub-private%u",
-                                cpu_index, half);
-            uint64_t private_offset = (half ^ cpu_index) *
-                                      SN0_HUB_PRIVATE_HALF;
-
-            memory_region_init_alias(
-                &s->nodes[0].hub_private[cpu_index][half], OBJECT(&s->nodes[0]),
-                private_name, machine->ram, private_offset,
-                SN0_HUB_PRIVATE_HALF);
-            memory_region_add_subregion_overlap(
-                &s->nodes[0].cpu_sysmem[cpu_index],
-                SN0_SPACE_HUB + node + half * SN0_HUB_PRIVATE_HALF,
-                &s->nodes[0].hub_private[cpu_index][half], 0);
-        }
-
-        s->nodes[0].cpu[cpu_index] = MIPS_CPU(qdev_new(machine->cpu_type));
-        s->nodes[0].promdata[cpu_index].cpu = s->nodes[0].cpu[cpu_index];
-        memory_region_init_ram(&s->nodes[0].promdata[cpu_index].data,
-                               OBJECT(&s->nodes[0]), promdata_name,
-                               SN0_PROMDATA_SIZE, &error_fatal);
-        memory_region_init_io(&s->nodes[0].promdata[cpu_index].filter,
-                              OBJECT(&s->nodes[0]), &sn0_promdata_ops,
-                              &s->nodes[0].promdata[cpu_index],
-                              promdata_filter_name, SN0_PROMDATA_SIZE);
-        /*
-         * Firmware traps use cpu_memory_rw_debug() to copy results through
-         * guest pointers.  The trap and this filter share the node as their
-         * owner, so the device-wide guard would otherwise reject that
-         * intentional nested access before the filter can forward it to RAM.
-         */
-        s->node0.promdata[cpu_index].filter.disable_reentrancy_guard = true;
-        qemu_register_reset(sn0_promdata_reset,
-                            &s->nodes[0].promdata[cpu_index]);
-        memory_region_add_subregion_overlap(
-            &s->nodes[0].cpu_sysmem[cpu_index], SN0_PROMDATA_PADDR,
-            &s->nodes[0].promdata[cpu_index].filter, 1);
-        object_property_add_child(OBJECT(&s->nodes[0]), name,
-                                  OBJECT(s->nodes[0].cpu[cpu_index]));
-        object_property_set_link(OBJECT(s->nodes[0].cpu[cpu_index]), "memory",
-                                 OBJECT(&s->nodes[0].cpu_sysmem[cpu_index]),
-                                 &error_abort);
-        qdev_connect_clock_in(DEVICE(s->nodes[0].cpu[cpu_index]), "clk-in",
-                              s->nodes[0].cpuclk);
-        object_property_set_bool(OBJECT(s->nodes[0].cpu[cpu_index]),
-                                 "big-endian", true, &error_abort);
-        qdev_realize(DEVICE(s->nodes[0].cpu[cpu_index]), NULL, &error_abort);
-        machine->possible_cpus->cpus[cpu_index].cpu =
-            CPU(s->nodes[0].cpu[cpu_index]);
-        cpu_mips_irq_init_cpu(s->nodes[0].cpu[cpu_index]);
-        cpu_mips_clock_init(s->nodes[0].cpu[cpu_index]);
-    }
+    sn0_node_create_cpus(machine, &s->nodes[0], 0, 0, machine->smp.cpus, 0);
     cpu = s->nodes[0].cpu[0];
 
     /*
