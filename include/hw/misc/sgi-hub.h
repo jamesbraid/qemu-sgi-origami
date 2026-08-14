@@ -88,14 +88,10 @@ struct SGIHubState {
     uint32_t xtalk_widget_shift;
 
     /*
-     * The two lines this Hub drives into the processor: the first pending bank
-     * on hardware interrupt 0 and the second on hardware interrupt 1. Both are
-     * level-triggered — the line follows the state of the pending bits and the
-     * masks and drops when software clears the last bit it can see — so they
-     * are
-     * recomputed on every change rather than pulsed.
+     * Each processor has a mask for each shared pending bank, so each receives
+     * its own pair of level-triggered interrupt lines.
      */
-    qemu_irq bank_irq[SGI_HUB_PENDING_BANKS];
+    qemu_irq bank_irq[SGI_HUB_PROCESSORS][SGI_HUB_PENDING_BANKS];
 
     /*
      * The real-time counter comparator's line into each processor, hardware
@@ -110,6 +106,9 @@ struct SGIHubState {
 
     /* How many processor sockets this node has populated. */
     uint32_t cpus;
+
+    /* Global QEMU CPU index of this node's slice A. */
+    uint32_t cpu_base;
 
     /*
      * The manufacturer this Hub claims in its widget identification. A

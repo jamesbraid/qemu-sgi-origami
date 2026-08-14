@@ -737,27 +737,26 @@ static const MemoryRegionOps sgi_hub_bwin_empty_ops = {
  * processor.
  *
  * The lines are level-triggered, so this is the whole of the output logic and
- * it
- * has to run on every change to a pending bit or a mask. A model that raised a
- * line when a bit was set, rather than recomputing, would leave it asserted
+ * it has to run on every change to a pending bit or a mask. A model that raised
+ * a line when a bit was set, rather than recomputing, would leave it asserted
  * after software cleared the last bit it could see — which a guest experiences
  * as an interrupt storm rather than as a lost interrupt.
  *
- * One processor for now, so the masks consulted are processor A's. A second
- * processor gets its own pair of lines from its own masks over the same pending
- * banks.
+ * Each processor gets its own pair of lines from its own masks over the same
+ * pending banks.
  */
 static void sgi_hub_update_irq(SGIHubState *s)
 {
     unsigned int bank;
-
     unsigned int cpu;
 
-    for (bank = 0; bank < SGI_HUB_PENDING_BANKS; bank++) {
-        qemu_set_irq(s->bank_irq[bank],
-                     !!(s->pi_int_pend[bank] & s->pi_int_mask[bank]));
-    }
     for (cpu = 0; cpu < SGI_HUB_PROCESSORS; cpu++) {
+        for (bank = 0; bank < SGI_HUB_PENDING_BANKS; bank++) {
+            qemu_set_irq(s->bank_irq[cpu][bank],
+                         !!(qatomic_read(&s->pi_int_pend[bank]) &
+                            s->pi_int_mask[cpu * SGI_HUB_PENDING_BANKS +
+                                           bank]));
+        }
         qemu_set_irq(s->rt_irq[cpu], s->pi_rt_pending[cpu] &&
                                      s->pi_rt_enable[cpu]);
     }
@@ -785,7 +784,7 @@ static void sgi_hub_update_irq(SGIHubState *s)
 static void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int index,
                                    uint64_t val)
 {
-    CPUState *cs = qemu_get_cpu(index);
+    CPUState *cs = qemu_get_cpu(s->cpu_base + index);
 
     s->pi_cpu_enable[index] = val & 1;
 
@@ -801,9 +800,9 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
 
     if (val & PI_INT_MODIFY_SET) {
-        s->pi_int_pend[bank] |= bit;
+        qatomic_or(&s->pi_int_pend[bank], bit);
     } else {
-        s->pi_int_pend[bank] &= ~bit;
+        qatomic_and(&s->pi_int_pend[bank], ~bit);
     }
     sgi_hub_update_irq(s);
 }
@@ -817,6 +816,22 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
         return 0;
     }
     return muldiv64(delta, PI_RT_HZ, NANOSECONDS_PER_SECOND) & PI_RT_MASK;
+}
+
+static uint64_t sgi_hub_rt_compare_read(SGIHubState *s, unsigned int i)
+{
+    CPUState *owner = qemu_get_cpu(s->cpu_base + i);
+
+    /*
+     * Firmware polls the peer's progress through these registers with an
+     * instruction-count timeout. Give the owner a chance to publish its next
+     * value before an MTTCG reader can consume that entire loop in one host
+     * time slice.
+     */
+    if (owner && owner != current_cpu) {
+        qemu_cpu_kick(owner);
+    }
+    return qatomic_read(&s->pi_rt_compare[i]);
 }
 
 /* Move the origin so the counter reads what was written, and keep running. */
@@ -854,7 +869,8 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
  */
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 {
-    uint64_t ticks = ((s->pi_rt_compare[index] - sgi_hub_rt_count(s) - 1) &
+    uint64_t ticks = ((qatomic_read(&s->pi_rt_compare[index]) -
+                       sgi_hub_rt_count(s) - 1) &
                       PI_RT_MASK) + 1;
 
     timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -932,8 +948,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     switch (addr) {
     case HUB_PI_RT_COUNT:
         return sgi_hub_rt_count(s);
-    case HUB_PI_RT_COMPARE_A: return s->pi_rt_compare[0];
-    case HUB_PI_RT_COMPARE_B: return s->pi_rt_compare[1];
+    case HUB_PI_RT_COMPARE_A: return sgi_hub_rt_compare_read(s, 0);
+    case HUB_PI_RT_COMPARE_B: return sgi_hub_rt_compare_read(s, 1);
     case HUB_PI_RT_PENDING_A: return s->pi_rt_pending[0];
     case HUB_PI_RT_PENDING_B: return s->pi_rt_pending[1];
     case HUB_PI_RT_ENABLE_A:  return s->pi_rt_enable[0];
@@ -954,19 +970,17 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     case HUB_PI_REGION_PRESENT:
         return s->pi_region_present;
     case HUB_PI_PROCESSOR_NUMBER:
-        /*
-         * Which processor of the pair is reading. One processor per node for
-         * now, so always the first; when a second exists this has to answer
-         * differently depending on which one asked, which the register window
-         * alone cannot tell.
-         */
+        if (current_cpu && current_cpu->cpu_index >= s->cpu_base &&
+            current_cpu->cpu_index < s->cpu_base + s->cpus) {
+            return current_cpu->cpu_index - s->cpu_base;
+        }
         return 0;
     case HUB_PI_CALIAS_SIZE:
         return s->pi_calias_size;
     case HUB_PI_INT_PEND0:
-        return s->pi_int_pend[0];
+        return qatomic_read(&s->pi_int_pend[0]);
     case HUB_PI_INT_PEND1:
-        return s->pi_int_pend[1];
+        return qatomic_read(&s->pi_int_pend[1]);
     case HUB_PI_INT_MASK0_A:
         return s->pi_int_mask[0];
     case HUB_PI_INT_MASK1_A:
@@ -1300,9 +1314,24 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_PI_RT_COMPARE_A:
     case HUB_PI_RT_COMPARE_B: {
         unsigned int i = (addr == HUB_PI_RT_COMPARE_B);
+        CPUState *peer;
 
-        s->pi_rt_compare[i] = val & PI_RT_MASK;
+        qatomic_set(&s->pi_rt_compare[i], val & PI_RT_MASK);
         sgi_hub_rt_arm(s, i);
+
+        /*
+         * The boot PROM uses these registers as progress mailboxes while the
+         * two local processors arbitrate. Its peer timeout is a tight MMIO
+         * read loop, short enough for one MTTCG host thread to exhaust before
+         * the other vCPU receives a host time slice. A real register write is
+         * immediately visible to the peer; kick that vCPU so host scheduling
+         * cannot turn the firmware's instruction-count timeout into a false
+         * dead-processor report. This changes no register or interrupt state.
+         */
+        peer = qemu_get_cpu(s->cpu_base + (i ^ 1));
+        if (peer && (i ^ 1) < s->cpus) {
+            qemu_cpu_kick(peer);
+        }
         break;
     }
     case HUB_PI_RT_PENDING_A:
@@ -1761,7 +1790,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     }
 
     for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
-        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[n]);
+        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[0][n]);
     }
     s->md_onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                        sgi_hub_onewire_slot_done, s);
@@ -1772,6 +1801,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         s->rt_line[n].index = n;
         s->rt_timer[n] = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_hub_rt_expire,
                                       &s->rt_line[n]);
+    }
+    for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
+        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[1][n]);
     }
 
     memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",
@@ -1852,6 +1884,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
+    DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),
