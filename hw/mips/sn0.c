@@ -273,6 +273,16 @@ struct SN0MachineState {
     uint32_t widget0_revision;
 
 };
+
+typedef struct SN0LaunchData {
+    uint64_t call_addr;
+    uint64_t call_parm;
+    uint64_t stack_addr;
+    uint64_t gp_addr;
+} SN0LaunchData;
+
+static void sn0_mode_bits_reset(void *opaque);
+
 typedef struct SN0MachineState SN0MachineState;
 
 DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
@@ -804,6 +814,15 @@ static void sn0_flash_jump_to_bootloader(uint8_t *flash, hwaddr fw_vaddr)
     stl_be_p(flash + 4, 0);                                     /* delay slot */
 }
 
+static void sn0_flash_jump_to_firmware(uint8_t *flash, hwaddr entry,
+                                      hwaddr target)
+{
+    uint8_t *slot = flash + entry;
+
+    stl_be_p(slot, 0x08000000 | ((target >> 2) & 0x03ffffff));
+    stl_be_p(slot + 4, 0);
+}
+
 static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
                                      hwaddr fw_vaddr, uint64_t entry,
                                      unsigned argc, hwaddr argv)
@@ -1168,6 +1187,68 @@ static uint64_t sn0_arcs_get_memory(SN0MachineState *s, CPUMIPSState *env)
     return s->nodes[0].mem_addr + next * sizeof(struct sn0_mem_descriptor);
 }
 
+/*
+ * Enter a processor that the synthesized firmware kept in its slave loop.
+ * The real PROM changes to 64-bit kernel addressing before calling the
+ * requested routine. Start at our equivalent trampoline so the target makes
+ * that architectural transition itself rather than having QEMU alter CP0
+ * state behind its back.
+ */
+static void sn0_launch_cpu(CPUState *cs, run_on_cpu_data data)
+{
+    SN0LaunchData *launch = data.host_ptr;
+    CPUMIPSState *env = cpu_env(cs);
+
+    cpu_reset(cs);
+    sn0_mode_bits_reset(cs);
+    env->active_tc.PC = (int32_t)(0xa0000000 + SN0_FW_TEXT_LOCAL +
+                                  SN0_FW_SECONDARY_BOOT);
+    env->active_tc.gpr[27] = launch->call_addr;
+    env->active_tc.gpr[4] = launch->call_parm;
+    if (launch->stack_addr) {
+        env->active_tc.gpr[29] = launch->stack_addr;
+    }
+    if (launch->gp_addr) {
+        env->active_tc.gpr[28] = launch->gp_addr;
+    }
+    cs->halted = 0;
+    cs->exception_index = -1;
+    cpu_resume(cs);
+    g_free(launch);
+}
+
+static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
+{
+    unsigned int nasid = env->active_tc.gpr[4];
+    unsigned int slice = env->active_tc.gpr[5];
+    SN0LaunchData *launch;
+    CPUState *target;
+
+    if (nasid != s->nodes[0].nasid || slice >= SN0_CPUS_PER_NODE ||
+        !s->nodes[0].cpu[slice]) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn0: cannot launch processor %u on NASID %u\n",
+                      slice, nasid);
+        return ARCS_EINVAL;
+    }
+
+    target = CPU(s->nodes[0].cpu[slice]);
+    if (target == current_cpu) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn0: processor tried to launch itself\n");
+        return ARCS_EINVAL;
+    }
+
+    launch = g_new(SN0LaunchData, 1);
+    launch->call_addr = env->active_tc.gpr[6];
+    launch->call_parm = env->active_tc.gpr[7];
+    launch->stack_addr = env->active_tc.gpr[8];
+    launch->gp_addr = env->active_tc.gpr[9];
+    async_safe_run_on_cpu(target, sn0_launch_cpu,
+                          RUN_ON_CPU_HOST_PTR(launch));
+    return ARCS_ESUCCESS;
+}
+
 static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
                                  unsigned size, MemTxAttrs attrs)
 {
@@ -1195,6 +1276,7 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
     switch (op) {
     case SN0_ARCS_WRITE:
     case SN0_ARCS_GET_MEMORY:
+    case SN0_FIRMWARE_LAUNCH_OP:
         if (!current_cpu) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sn0: firmware routine %u reached with no "
@@ -1203,8 +1285,10 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
         }
         if (op == SN0_ARCS_WRITE) {
             *val = sn0_arcs_write(s, cpu_env(current_cpu));
-        } else {
+        } else if (op == SN0_ARCS_GET_MEMORY) {
             *val = sn0_arcs_get_memory(s, cpu_env(current_cpu));
+        } else {
+            *val = sn0_firmware_launch(s, cpu_env(current_cpu));
         }
         break;
     case SN0_ARCS_GET_CHILD:
@@ -1292,6 +1376,14 @@ static const MemoryRegionOps sn0_arcs_ops = {
  * leaves off, so the two never collide and the dispatcher tells them apart
  * by op number alone.
  */
+static void sn0_build_trap_stub(uint8_t *stub, uint64_t slot)
+{
+    stl_be_p(stub, 0x3c010000 | ((slot >> 16) & 0xffff)); /* lui $1, hi */
+    stl_be_p(stub + 4, 0xdc220000 | (slot & 0xffff));  /* ld $2, lo($1) */
+    stl_be_p(stub + 8, 0x03e00008);                       /* jr $31 */
+    stl_be_p(stub + 12, 0);                               /* delay slot */
+}
+
 static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
                            uint64_t *vector, unsigned int entries,
                            unsigned int stub_index, unsigned int op_base)
@@ -1303,10 +1395,7 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
                         (stub_index + i) * SN0_ARCS_STUB_SIZE;
         uint64_t slot = trap_vaddr + (op_base + i) * 8;
 
-        stl_be_p(stub, 0x3c010000 | ((slot >> 16) & 0xffff)); /* lui $1, hi */
-        stl_be_p(stub + 4, 0xdc220000 | (slot & 0xffff));  /* ld $2, lo($1) */
-        stl_be_p(stub + 8, 0x03e00008);                       /* jr $31 */
-        stl_be_p(stub + 12, 0);                               /* delay slot */
+        sn0_build_trap_stub(stub, slot);
 
         vector[i] = cpu_to_be64(fw_vaddr + SN0_ARCS_STUBS +
                                 (stub_index + i) * SN0_ARCS_STUB_SIZE);
@@ -2023,7 +2112,16 @@ static void sn0_firmware_reset(void *opaque)
  */
 static void sn0_cpu_reset(void *opaque)
 {
-    cpu_reset(CPU(opaque));
+    CPUState *cs = CPU(opaque);
+    MachineState *machine = MACHINE(qdev_get_machine());
+    SN0MachineState *s = SN0_MACHINE(machine);
+
+    cpu_reset(cs);
+    if (s->synthesized_firmware && machine->kernel_filename &&
+        cs->cpu_index != 0) {
+        /* Direct boot enters only the primary; launch_slave starts the rest. */
+        cs->halted = 1;
+    }
 }
 
 static void sn0_mode_bits_reset(void *opaque)
@@ -2984,6 +3082,21 @@ static void sn0_init(MachineState *machine)
                        SN0_ARCS_PRIVATE_BASE_OP);
         rom_add_blob_fixed("sn0.arcs.private", private_vector,
                            sizeof(private_vector), node + SN0_ARCS_PRIVATE_VECTOR);
+
+        if (machine->kernel_filename) {
+            uint8_t *secondary = fw + SN0_FW_SECONDARY_BOOT;
+
+            sn0_build_trap_stub(fw + SN0_FW_LAUNCH_STUB,
+                               trap_vaddr + SN0_FIRMWARE_LAUNCH_OP * 8);
+            /* Match the primary handoff before jumping through k1. */
+            stl_be_p(secondary, 0x341a0000 | (1 << CP0St_KX));
+            stl_be_p(secondary + 4, 0x409a6000); /* mtc0 k0, CP0_Status */
+            stl_be_p(secondary + 8, 0x03600008); /* jr k1 */
+            stl_be_p(secondary + 12, 0);
+            sn0_flash_jump_to_firmware(
+                flash, SN0_FLASH_LAUNCHSLAVE,
+                fw_vaddr + SN0_FW_LAUNCH_STUB);
+        }
     }
 
     /*
