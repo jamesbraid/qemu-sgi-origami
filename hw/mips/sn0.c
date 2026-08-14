@@ -2175,6 +2175,54 @@ static void sn0_show_indicator_codes(Error **errp)
     trace_event_set_state_dynamic(ev, true);
 }
 
+static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
+{
+    unsigned int max_cpus = machine->smp.max_cpus;
+    unsigned int index;
+
+    if (machine->possible_cpus) {
+        assert(machine->possible_cpus->len == max_cpus);
+        return machine->possible_cpus;
+    }
+
+    machine->possible_cpus = g_malloc0(sizeof(CPUArchIdList) +
+                                       sizeof(CPUArchId) * max_cpus);
+    machine->possible_cpus->len = max_cpus;
+    for (index = 0; index < max_cpus; index++) {
+        CPUArchId *slot = &machine->possible_cpus->cpus[index];
+        unsigned int node = index / SN0_CPUS_PER_NODE;
+        unsigned int slice = index % SN0_CPUS_PER_NODE;
+
+        slot->type = machine->cpu_type;
+        slot->vcpus_count = 1;
+        slot->arch_id = (node << 1) | slice;
+        slot->props.has_socket_id = true;
+        slot->props.socket_id = node;
+        slot->props.has_core_id = true;
+        slot->props.core_id = slice;
+        slot->props.has_thread_id = true;
+        slot->props.thread_id = 0;
+    }
+
+    return machine->possible_cpus;
+}
+
+static CpuInstanceProperties
+sn0_cpu_index_to_props(MachineState *machine, unsigned int cpu_index)
+{
+    const CPUArchIdList *possible_cpus =
+        sn0_possible_cpu_arch_ids(machine);
+
+    assert(cpu_index < possible_cpus->len);
+    return possible_cpus->cpus[cpu_index].props;
+}
+
+static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
+                                           int index)
+{
+    return index / SN0_CPUS_PER_NODE;
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -2188,6 +2236,16 @@ static void sn0_init(MachineState *machine)
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
     unsigned int bank, cpu_index, half, segment, w, slot;
+
+    if (machine->smp.sockets != 1 ||
+        machine->smp.cores > SN0_CPUS_PER_NODE ||
+        machine->smp.threads != 1) {
+        error_report("origin200: one chassis requires one socket with at "
+                     "most two cores and one thread per core");
+        exit(EXIT_FAILURE);
+    }
+
+    sn0_possible_cpu_arch_ids(machine);
 
     /*
      * Fatal rather than a warning if this cannot be armed: a machine that
@@ -2281,6 +2339,8 @@ static void sn0_init(MachineState *machine)
         object_property_set_bool(OBJECT(s->node0.cpu[cpu_index]),
                                  "big-endian", true, &error_abort);
         qdev_realize(DEVICE(s->node0.cpu[cpu_index]), NULL, &error_abort);
+        machine->possible_cpus->cpus[cpu_index].cpu =
+            CPU(s->node0.cpu[cpu_index]);
         cpu_mips_irq_init_cpu(s->node0.cpu[cpu_index]);
         cpu_mips_clock_init(s->node0.cpu[cpu_index]);
     }
@@ -3103,6 +3163,9 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_size = 64 * MiB;
     mc->default_ram_id = "sn0.node0.ram";
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
+    mc->possible_cpu_arch_ids = sn0_possible_cpu_arch_ids;
+    mc->cpu_index_to_instance_props = sn0_cpu_index_to_props;
+    mc->get_default_cpu_node_id = sn0_get_default_cpu_node_id;
 
     object_class_property_add_bool(oc, "synthesized-firmware",
                                    sn0_get_synthesized_firmware,
