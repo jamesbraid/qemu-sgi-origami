@@ -257,6 +257,9 @@ DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
 #define SN0_FLASH_CMD_ADDR1   0x5555
 #define SN0_FLASH_CMD_ADDR2   0x2aaa
 #define SN0_FLASH_SECTOR_SIZE (64 * KiB)
+#define SN0_PROMLOG_SECTOR    14
+#define SN0_PROMLOG_MAGIC     0x504c4f47
+#define SN0_PROMLOG_VERSION   1
 
 static uint64_t sn0_flash_load(SN0MachineState *s, hwaddr addr, unsigned size)
 {
@@ -895,6 +898,17 @@ static void sn0_build_flash(uint8_t *flash)
     stl_be_p(config + 0x40, 6);                    /* firmware version */
     stl_be_p(config + 0x44, 11);                   /* firmware revision */
     stl_be_p(config + 0x48, 0);                    /* configuration flags */
+
+    /*
+     * A board leaves the factory with an empty, initialized environment log.
+     * It is retained state outside the firmware payload; a complete 1 MiB
+     * image supplied with -bios can still replace it along with everything
+     * else. An erased first entry is the log's end marker.
+     */
+    config = flash + SN0_PROMLOG_SECTOR * SN0_FLASH_SECTOR_SIZE;
+    stl_be_p(config + 0x10, SN0_PROMLOG_MAGIC);
+    stl_be_p(config + 0x14, SN0_PROMLOG_VERSION);
+    stl_be_p(config + 0x18, 1);                    /* initial sequence */
 }
 
 /*

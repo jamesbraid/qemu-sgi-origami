@@ -34,6 +34,10 @@
 #define FLASH_UNLOCK2       0x2aaa
 #define FLASH_LOG_SECTOR    0xe0000
 #define FLASH_SECTOR_SIZE   0x10000
+#define PROMLOG_MAGIC_OFF   0x10
+#define PROMLOG_VERSION_OFF 0x14
+#define PROMLOG_SEQUENCE_OFF 0x18
+#define PROMLOG_MAGIC       0x504c4f47
 
 static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 {
@@ -276,6 +280,25 @@ static void test_flash_program_and_erase(const void *data)
     g_assert_cmphex(qtest_readb(qts,
                                FLASH_RESET + FLASH_LOG_SECTOR +
                                FLASH_SECTOR_SIZE - 1), ==, 0xff);
+
+    qtest_quit(qts);
+}
+
+static void test_flash_has_empty_factory_log(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,synthesized-firmware=off");
+
+    g_assert_cmphex(qtest_readl(qts, FLASH_RESET + FLASH_LOG_SECTOR +
+                               PROMLOG_MAGIC_OFF), ==, PROMLOG_MAGIC);
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + FLASH_LOG_SECTOR +
+                                PROMLOG_VERSION_OFF), ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + FLASH_LOG_SECTOR +
+                                PROMLOG_SEQUENCE_OFF), ==, 1);
+
+    /* The second log sector is the erased alternate until compaction. */
+    g_assert_cmphex(qtest_readl(qts, FLASH_RESET + FLASH_LOG_SECTOR +
+                               FLASH_SECTOR_SIZE + PROMLOG_MAGIC_OFF), ==,
+                    0xffffffff);
 
     qtest_quit(qts);
 }
@@ -650,6 +673,8 @@ int main(int argc, char **argv)
                         test_flash_autoselect);
     qtest_add_data_func("sn0/address-map/flash-program-and-erase", NULL,
                         test_flash_program_and_erase);
+    qtest_add_data_func("sn0/address-map/flash-empty-factory-log", NULL,
+                        test_flash_has_empty_factory_log);
     qtest_add_data_func("sn0/address-map/memory-128m", NULL,
                         test_128m_memory);
     qtest_add_data_func("sn0/address-map/memory-256m", NULL,
