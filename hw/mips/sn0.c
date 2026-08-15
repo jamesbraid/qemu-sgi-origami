@@ -45,6 +45,9 @@
  */
 #define SN0_CPU_REFCLK_HZ (180 * 1000 * 1000)
 
+/* IP29 has four banks, each made from one matched DIMM pair. */
+#define IP29_MEM_BANKS 4
+
 /*
  * Where the argument vector handed to a kernel goes. Low memory below the
  * firmware structures and above the exception vectors a kernel installs. The
@@ -125,7 +128,9 @@ typedef struct SN0NodeState {
 
     MemoryRegion xtalk;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
-    MemoryRegion mem_bank[SN0_MEM_BANKS];
+    MemoryRegion mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
+    uint16_t bank_mb[SN0_MEM_BANKS];
+    unsigned int populated_banks;
 
     uint64_t mem_addr;
     unsigned int mem_count;
@@ -1115,6 +1120,66 @@ static uint8_t *sn0_component_at(uint8_t *graph, unsigned int index)
 }
 
 /*
+ * Find a deterministic IP29 DIMM population for QEMU's scalar -m value.
+ * Physical banks support 64, 128, 256, or 512 MiB and bank zero must be
+ * present. Prefer larger banks and fewer partially populated pairs.
+ *
+ * A 512 MiB bank zero would fill all four of its slots, including the fixed
+ * boot-flash and synthesized-firmware addresses at the top of the stride.
+ * Until that fixed decode can be represented independently, keep bank zero
+ * at 256 MiB or less and reject totals that cannot be expressed in four banks
+ * under that constraint. This is a model limitation, not an IP29 DIMM rule.
+ */
+static bool sn0_ip29_layout_from(uint64_t remaining_mb, unsigned int bank,
+                                 uint16_t bank_mb[SN0_MEM_BANKS])
+{
+    static const uint16_t supported_mb[] = { 512, 256, 128, 64 };
+    unsigned int i;
+
+    if (remaining_mb == 0) {
+        return bank > 0;
+    }
+    if (bank == IP29_MEM_BANKS) {
+        return false;
+    }
+
+    for (i = 0; i < G_N_ELEMENTS(supported_mb); i++) {
+        uint16_t size_mb = supported_mb[i];
+
+        if ((bank == 0 && size_mb > 256) || size_mb > remaining_mb) {
+            continue;
+        }
+        bank_mb[bank] = size_mb;
+        if (sn0_ip29_layout_from(remaining_mb - size_mb, bank + 1,
+                                 bank_mb)) {
+            return true;
+        }
+        bank_mb[bank] = 0;
+    }
+    return false;
+}
+
+static bool sn0_ip29_memory_layout(uint64_t ram_size,
+                                   uint16_t bank_mb[SN0_MEM_BANKS],
+                                   unsigned int *populated_banks)
+{
+    unsigned int i;
+
+    memset(bank_mb, 0, sizeof(uint16_t) * SN0_MEM_BANKS);
+    if (ram_size == 0 || ram_size % MiB != 0 ||
+        !sn0_ip29_layout_from(ram_size / MiB, 0, bank_mb)) {
+        return false;
+    }
+
+    i = 0;
+    while (i < SN0_MEM_BANKS && bank_mb[i] != 0) {
+        i++;
+    }
+    *populated_banks = i;
+    return true;
+}
+
+/*
  * One board record, linked to the next. The list is terminated only by a zero
  * next-board offset: a consumer reads the record first and checks afterwards,
  * so there is no escape from a bad link. A board without the local-board kind
@@ -1168,11 +1233,13 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
  */
 static void sn0_build_graph(MachineState *machine, hwaddr node)
 {
+    SN0MachineState *s = SN0_MACHINE(machine);
     uint8_t *graph = g_malloc0(SN0_CONFIG_GRAPH_SIZE);
     uint8_t *console = graph + SN0_GRAPH_CONSOLE_OFF;
     uint8_t *cpu, *hub, *mem;
     uint64_t total_mb = machine->ram_size / MiB;
     uint64_t widget;
+    unsigned int i;
 
     stq_be_p(graph + 0x00, SN0_GRAPH_MAGIC);
     /* The structure version, which real firmware writes as zero. */
@@ -1274,10 +1341,10 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * The three physical identifiers here are all zero on this machine and all
      * mean different things: the processor's is its processor index, the Hub's
      * is its node identifier, and the memory bank's is its bank index. They
-     * agree only because this machine has one processor on one node with one
-     * populated bank, so writing them is worth doing precisely because it
-     * changes nothing observable — each stops being right at a different
-     * moment, and a second component of any of these types is the moment.
+     * agree because this is processor zero on node zero and the memory
+     * component describes the bank array beginning at bank zero. Writing them
+     * is worth doing precisely because each stops being right at a different
+     * moment when a second component of that type is added.
      */
     sn0_component(graph, 0, 0, SN0_COMP_PROCESSOR, 0, 0); /* processor 0 */
     sn0_component(graph, 1, 0, SN0_COMP_HUB, 0, 0);
@@ -1334,7 +1401,9 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     mem = sn0_component_at(graph, 2);
     stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */
     stw_be_p(mem + 0x3a, 0);                    /* bank-to-address mapping */
-    stw_be_p(mem + 0x3c, total_mb);             /* one populated bank */
+    for (i = 0; i < SN0_MEM_BANKS; i++) {
+        stw_be_p(mem + 0x3c + i * 2, s->node0.bank_mb[i]);
+    }
 
     /*
      * Board 1: the midplane, carrying a module serial number and nothing else,
@@ -1826,7 +1895,8 @@ static void sn0_init(MachineState *machine)
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
-    unsigned int w, slot;
+    uint64_t ram_offset = 0;
+    unsigned int bank, segment, w, slot;
 
     /*
      * Fatal rather than a warning if this cannot be armed: a machine that
@@ -1838,9 +1908,11 @@ static void sn0_init(MachineState *machine)
         sn0_show_indicator_codes(&error_fatal);
     }
 
-    if (machine->ram_size > SN0_NODE_SIZE) {
-        error_report("origin200: a node holds at most %" PRIu64 " bytes of "
-                     "memory", (uint64_t)SN0_NODE_SIZE);
+    if (!sn0_ip29_memory_layout(machine->ram_size, s->node0.bank_mb,
+                                &s->node0.populated_banks)) {
+        error_report("origin200: %" PRIu64 " MiB cannot be populated from "
+                     "IP29 memory banks without overlapping firmware regions",
+                     machine->ram_size / MiB);
         exit(EXIT_FAILURE);
     }
 
@@ -1858,60 +1930,33 @@ static void sn0_init(MachineState *machine)
     cpu_mips_clock_init(cpu);
 
     /*
-     * Node memory sits at the bottom of the node's window. A cached reference,
-     * an uncached reference carrying the attribute that means memory, and both
-     * compatibility segments all arrive here, because that attribute is the one
-     * placed at window zero.
+     * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
+     * first slot; larger banks interleave one quarter of their bytes into each
+     * of four slots on a 128 MiB stride. Both supported guests derive this
+     * placement from the plain-megabyte bank sizes in KLCONFIG.
      */
-    /*
-     * Place memory the way real per-bank DIMM population does: each bank
-     * backed as one contiguous run from its own base up to however much of
-     * the requested total it holds, with the remainder of that bank's stride
-     * and every bank past the last one populated left entirely unbacked.
-     * Real hardware never backs a bank in smaller, evenly-sized pieces
-     * spread across its own address range -- confirmed against the real
-     * PROM's own bring-up source, which builds one aggregate size per bank
-     * from its physical SIMM positions, and independently against OpenBSD's
-     * own per-bank memory structure, which holds one size per bank and has
-     * no field for a partial bank. A prior version of this code split the
-     * total evenly across four fixed-size pieces regardless of how much of
-     * each was actually requested, which left a real gap inside the address
-     * range of the first bank alone -- exactly the shape neither source
-     * shows on real hardware, and exactly where a guest walking every bank
-     * by its physical size would reach unbacked space partway through the
-     * first one instead of cleanly at the boundary of the last requested
-     * bank.
-     */
-    /*
-     * How many of the eight bank slots this configuration actually
-     * populates. Computed once and shared with the back-door windows below
-     * -- both derive bank presence from machine->ram_size, and computing it
-     * twice would risk the two disagreeing about which banks exist.
-     */
-    unsigned int populated_banks = MIN(SN0_MEM_BANKS,
-                                       DIV_ROUND_UP(machine->ram_size,
-                                                    SN0_MEM_BANK_SIZE));
+    for (bank = 0; bank < s->node0.populated_banks; bank++) {
+        uint64_t bank_size = (uint64_t)s->node0.bank_mb[bank] * MiB;
+        unsigned int segments = bank_size <= SN0_MEM_SLOT_SIZE ?
+                                1 : SN0_MEM_BANK_SLOTS;
+        uint64_t segment_size = bank_size / segments;
 
-    if (machine->ram_size <= SN0_MEM_BANK_SIZE) {
-        memory_region_add_subregion(system, node, machine->ram);
-    } else {
-        uint64_t remaining = machine->ram_size;
-        unsigned int i;
+        for (segment = 0; segment < segments; segment++) {
+            g_autofree char *name =
+                g_strdup_printf("sn0.node0.ram.bank%u.slot%u", bank,
+                                segment);
 
-        for (i = 0; i < SN0_MEM_BANKS && remaining > 0; i++) {
-            uint64_t this_bank = MIN(remaining, SN0_MEM_BANK_SIZE);
-            uint64_t bank_offset = machine->ram_size - remaining;
-            g_autofree char *name = g_strdup_printf("sn0.node0.ram.bank%u", i);
-
-            memory_region_init_alias(&s->node0.mem_bank[i],
-                                     OBJECT(&s->node0), name,
-                                     machine->ram, bank_offset, this_bank);
-            memory_region_add_subregion(system,
-                                        node + (hwaddr)i * SN0_MEM_BANK_SIZE,
-                                        &s->node0.mem_bank[i]);
-            remaining -= this_bank;
+            memory_region_init_alias(&s->node0.mem_slot[bank][segment],
+                                     OBJECT(&s->node0), name, machine->ram,
+                                     ram_offset, segment_size);
+            memory_region_add_subregion(
+                system, node + (hwaddr)bank * SN0_MEM_BANK_SIZE +
+                        (hwaddr)segment * SN0_MEM_SLOT_SIZE,
+                &s->node0.mem_slot[bank][segment]);
+            ram_offset += segment_size;
         }
     }
+    g_assert(ram_offset == machine->ram_size);
 
     /*
      * The boot flash, at the node offset the reset vector reaches through the
@@ -1972,8 +2017,8 @@ static void sn0_init(MachineState *machine)
                                         SN0_SPACE_HUB + node +
                                             SN0_BACKDOOR_ECC_HUB,
                                         &s->node0.backdoor_ecc_absent, -1);
-    if (populated_banks > 0) {
-        uint64_t populated_size = (uint64_t)populated_banks *
+    if (s->node0.populated_banks > 0) {
+        uint64_t populated_size = (uint64_t)s->node0.populated_banks *
                                   SN0_BACKDOOR_BANK_STRIDE;
 
         s->node0.backdoor_ecc_data = g_malloc0(populated_size);
@@ -1996,8 +2041,8 @@ static void sn0_init(MachineState *machine)
                                         SN0_SPACE_HUB + node +
                                             SN0_BACKDOOR_DIR_HUB,
                                         &s->node0.backdoor_dir_absent, -1);
-    if (populated_banks > 0) {
-        uint64_t populated_size = (uint64_t)populated_banks *
+    if (s->node0.populated_banks > 0) {
+        uint64_t populated_size = (uint64_t)s->node0.populated_banks *
                                   SN0_BACKDOOR_BANK_STRIDE;
 
         s->node0.backdoor_dir_data = g_malloc0(populated_size);
@@ -2627,7 +2672,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->desc = "SGI Origin 200 (IP27)";
     mc->init = sn0_init;
     mc->max_cpus = 1;
-    mc->default_ram_size = SN0_MEM_BANK_SIZE;
+    mc->default_ram_size = 64 * MiB;
     mc->default_ram_id = "sn0.node0.ram";
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
 
