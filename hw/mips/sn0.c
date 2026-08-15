@@ -33,6 +33,7 @@
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
 #include "system/reset.h"
+#include "migration/vmstate.h"
 #include "trace/control.h"
 #include "cpu.h"
 #include "sn0.h"
@@ -309,6 +310,26 @@ static void sn0_flash_reset(void *opaque)
 {
     sn0_flash_read_mode(opaque);
 }
+
+static int sn0_flash_post_load(void *opaque, int version_id)
+{
+    SN0NodeState *node = opaque;
+
+    memory_region_rom_device_set_romd(
+        &node->flash, node->flash_state != SN0_FLASH_AUTOSELECT);
+    return 0;
+}
+
+static const VMStateDescription vmstate_sn0_flash = {
+    .name = "sn0-flash",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = sn0_flash_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(flash_state, SN0NodeState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static void sn0_flash_command(SN0MachineState *s, hwaddr addr, uint64_t val,
                               unsigned size)
@@ -2154,6 +2175,8 @@ static void sn0_init(MachineState *machine)
     memory_region_add_subregion_overlap(system, node + SN0_FLASH_LOCAL,
                                         &s->node0.flash, 1);
     qemu_register_reset(sn0_flash_reset, s);
+    vmstate_register(VMSTATE_IF(&s->node0), 0, &vmstate_sn0_flash,
+                     &s->node0);
 
     /*
      * The same bytes through the Hub's special space, which is how a guest
