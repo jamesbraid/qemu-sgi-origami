@@ -1478,6 +1478,7 @@ S: Odd Fixes
 F: configs/devices/mips*/*
 F: hw/mips/
 F: include/hw/mips/
+F: tests/qtest/sn0-*
 
 Jazz
 M: Hervé Poussineau <hpoussin@reactos.org>
