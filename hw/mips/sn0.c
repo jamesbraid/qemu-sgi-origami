@@ -1222,18 +1222,25 @@ static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
 {
     unsigned int nasid = env->active_tc.gpr[4];
     unsigned int slice = env->active_tc.gpr[5];
+    SN0NodeState *node = NULL;
     SN0LaunchData *launch;
     CPUState *target;
+    unsigned int i;
 
-    if (nasid != s->nodes[0].nasid || slice >= SN0_CPUS_PER_NODE ||
-        !s->nodes[0].cpu[slice]) {
+    for (i = 0; i < SN0_ORIGIN200_MAX_NODES; i++) {
+        if (s->nodes[i].cpu[0] && s->nodes[i].nasid == nasid) {
+            node = &s->nodes[i];
+            break;
+        }
+    }
+    if (!node || slice >= SN0_CPUS_PER_NODE || !node->cpu[slice]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sn0: cannot launch processor %u on NASID %u\n",
                       slice, nasid);
         return ARCS_EINVAL;
     }
 
-    target = CPU(s->nodes[0].cpu[slice]);
+    target = CPU(node->cpu[slice]);
     if (target == current_cpu) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sn0: processor tried to launch itself\n");
@@ -2656,6 +2663,48 @@ static void sn0_node_create_hub(SN0MachineState *machine,
     }
 }
 
+static void sn0_node_map_xtalk_windows(SN0NodeState *node,
+                                       unsigned int node_index)
+{
+    MemoryRegion *system = get_system_memory();
+    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    unsigned int widget;
+
+    for (widget = SN0_WIDGET0;
+         widget <= SN0_XTALK_PORT_LAST; widget++) {
+        g_autofree char *name =
+            g_strdup_printf("sn0.node%u.xtalk.small%u",
+                            node_index, widget);
+
+        memory_region_init_alias(&node->small_window[widget], OBJECT(node),
+                                 name, &node->xtalk,
+                                 SN0_XTALK_BASE(widget),
+                                 SN0_SMALL_WINDOW_SIZE);
+        memory_region_add_subregion(
+            system, SN0_SPACE_XTALK + node_base + SN0_SMALL_WINDOW(widget),
+            &node->small_window[widget]);
+    }
+
+    memory_region_add_subregion(
+        system, SN0_SPACE_XTALK + node_base + SN0_BIG_WINDOW_BASE,
+        &node->hub.bwin);
+    memory_region_add_subregion(
+        system, SN0_SPACE_XTALK + node_base + SN0_HUB_LOCAL_WINDOW,
+        &node->hub.regs);
+
+    {
+        g_autofree char *name =
+            g_strdup_printf("sn0.node%u.hub.explicit", node_index);
+
+        memory_region_init_alias(&node->hub_regs_node_view, OBJECT(node),
+                                 name, &node->hub.regs, 0,
+                                 SGI_HUB_WINDOW_SIZE);
+    }
+    memory_region_add_subregion(
+        system, SN0_SPACE_XTALK + node_base + SN0_HUB_NODE_WINDOW,
+        &node->hub_regs_node_view);
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -2667,29 +2716,44 @@ static void sn0_init(MachineState *machine)
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
-    unsigned int w, slot;
+    unsigned int node_count, node_index, slot;
 
-    /*
-     * A NUMA node names a physical Origin 200 chassis, not an arbitrary guest
-     * locality domain.  Do not accept a topology until this product actually
-     * constructs the corresponding node hardware: otherwise QEMU would put
-     * both backends in node 0's RAM container while reporting two nodes to
-     * management software.
-     */
-    if (machine->numa_state && machine->numa_state->num_nodes > 1) {
-        error_report("origin200: one chassis supports one NUMA node");
+    node_count = machine->numa_state && machine->numa_state->num_nodes ?
+                 machine->numa_state->num_nodes : 1;
+    if (node_count > SN0_ORIGIN200_MAX_NODES) {
+        error_report("origin200: at most two NUMA nodes are supported");
         exit(EXIT_FAILURE);
     }
 
-    if (machine->smp.sockets != 1 ||
-        machine->smp.cores > SN0_CPUS_PER_NODE ||
-        machine->smp.threads != 1) {
-        error_report("origin200: one chassis requires one socket with at "
-                     "most two cores and one thread per core");
+    if (node_count == 1) {
+        if (machine->smp.sockets != 1 ||
+            machine->smp.cores > SN0_CPUS_PER_NODE ||
+            machine->smp.threads != 1) {
+            error_report("origin200: one chassis requires one socket with at "
+                         "most two cores and one thread per core");
+            exit(EXIT_FAILURE);
+        }
+    } else if (machine->smp.cpus != 4 || machine->smp.sockets != 2 ||
+               machine->smp.cores != 2 || machine->smp.threads != 1) {
+        error_report("origin200: two chassis require four CPUs as two "
+                     "sockets with two cores and one thread each");
         exit(EXIT_FAILURE);
     }
 
     sn0_possible_cpu_arch_ids(machine);
+    if (machine->numa_state && machine->numa_state->num_nodes) {
+        for (node_index = 0; node_index < machine->smp.cpus; node_index++) {
+            CPUArchId *cpu_slot = &machine->possible_cpus->cpus[node_index];
+            unsigned int expected = node_index / SN0_CPUS_PER_NODE;
+
+            if (!cpu_slot->props.has_node_id ||
+                cpu_slot->props.node_id != expected) {
+                error_report("origin200: CPU %u must be assigned to NUMA "
+                             "node %u", node_index, expected);
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
 
     /*
      * Fatal rather than a warning if this cannot be armed: a machine that
@@ -2701,11 +2765,28 @@ static void sn0_init(MachineState *machine)
         sn0_show_indicator_codes(&error_fatal);
     }
 
-    sn0_node_create_cpus(machine, &s->nodes[0], 0, 0, machine->smp.cpus, 0);
-    ram_offset = sn0_node_map_memory(machine, &s->nodes[0], 0, ram_offset,
-                                     machine->ram_size);
+    if (node_count == 2) {
+        object_initialize_child(OBJECT(machine), "node1", &s->nodes[1],
+                                TYPE_SN0_NODE);
+        s->nodes[1].nasid = 1;
+    }
+
+    for (node_index = 0; node_index < node_count; node_index++) {
+        uint64_t ram_size = node_count == 1 ? machine->ram_size :
+                            machine->numa_state->nodes[node_index].node_mem;
+        unsigned int cpu_base = node_index * SN0_CPUS_PER_NODE;
+        unsigned int cpu_count = node_count == 1 ? machine->smp.cpus :
+                                 SN0_CPUS_PER_NODE;
+
+        sn0_node_create_cpus(machine, &s->nodes[node_index], node_index,
+                             cpu_base, cpu_count, ram_offset);
+        ram_offset = sn0_node_map_memory(machine, &s->nodes[node_index],
+                                         node_index, ram_offset, ram_size);
+        sn0_node_map_boot_storage(&s->nodes[node_index], node_index);
+        sn0_node_create_hub(s, &s->nodes[node_index], node_index, cpu_base,
+                            cpu_count, node_count == 2);
+    }
     g_assert(ram_offset == machine->ram_size);
-    sn0_node_map_boot_storage(&s->nodes[0], 0);
 
     /*
      * A firmware image, if one was supplied, replaces what this file would
@@ -2714,8 +2795,6 @@ static void sn0_init(MachineState *machine)
      * last. An image shorter than the flash leaves the synthesized bytes behind
      * it, which is what a partly programmed flash looks like.
      */
-    sn0_node_create_hub(s, &s->nodes[0], 0, 0, machine->smp.cpus, false);
-
     /*
      * The I/O bridge. It carries a real PCI bus, and the base I/O controller
      * below is a PCI device that cannot exist without one to realize onto —
@@ -2924,79 +3003,9 @@ static void sn0_init(MachineState *machine)
                                     SN0_BRIDGE_DEVICE2, &SGI_IOC3(ioc3)->bar);
     }
 
-    /*
-     * Widget 0's small window, which Linux reads the identification register
-     * through — by name, with the raw address macro, rather than the
-     * substituting helper that would have sent it to big window 6. OpenBSD
-     * takes that other path, so both have to work and both have to reach the
-     * same device: this alias and big window 6 are two views of one widget,
-     * and that widget is itself a second view of the I/O bridge.
-     *
-     * Each window is the only one its guest uses, which is what makes forgetting
-     * one cheap to do and expensive to find: **a machine that maps one and
-     * forgets the other passes every check written against the guest that uses
-     * the one it mapped.** This project shipped exactly that once, with the
-     * small window unmapped, and Linux found it with a bus error.
-     */
-    memory_region_init_alias(&s->nodes[0].small_window[SN0_WIDGET0],
-                             OBJECT(&s->nodes[0]),
-                             "sn0.node0.xtalk.small0", &s->nodes[0].xtalk,
-                             SN0_XTALK_BASE(SN0_WIDGET0),
-                             SN0_SMALL_WINDOW_SIZE);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_XTALK + node +
-                                SN0_SMALL_WINDOW(SN0_WIDGET0),
-                                &s->nodes[0].small_window[SN0_WIDGET0]);
-
-    /*
-     * The eight crosstalk port numbers, each reached through its own small
-     * window onto the first 16 MB of that widget's crosstalk space. All eight
-     * windows decode because the address space has all eight; the seven with
-     * nothing behind them reach an empty part of crosstalk space and fault.
-     *
-     * On real hardware they would not fault — with no crossbar there is nothing
-     * routing by widget number, so a directly connected bridge answers at every
-     * one of these addresses. Modelling that would make an absent widget
-     * indistinguishable from a present one, and nothing reaches for them, so
-     * this diverges deliberately rather than by omission.
-     *
-     * A fault here is deliberately not the same answer a disabled big window
-     * gives — a disabled window is a normal state the guests program on
-     * purpose, and an unmodelled widget should be loud.
-     */
-    for (w = SN0_XTALK_PORT_FIRST; w <= SN0_XTALK_PORT_LAST; w++) {
-        char *name = g_strdup_printf("sn0.node0.xtalk.small%u", w);
-
-        memory_region_init_alias(&s->nodes[0].small_window[w],
-                                 OBJECT(&s->nodes[0]), name, &s->nodes[0].xtalk,
-                                 SN0_XTALK_BASE(w), SN0_SMALL_WINDOW_SIZE);
-        memory_region_add_subregion(system,
-                                    SN0_SPACE_XTALK + node +
-                                    SN0_SMALL_WINDOW(w),
-                                    &s->nodes[0].small_window[w]);
-        g_free(name);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        sn0_node_map_xtalk_windows(&s->nodes[node_index], node_index);
     }
-
-    /*
-     * The seven big windows, filling the crosstalk window above the small ones.
-     * Where each of them points is the Hub's to say, not the machine's: they
-     * follow the Hub's translation table, and this only decides where the set
-     * of them lands in the node's address space.
-     */
-    memory_region_add_subregion(system,
-                                SN0_SPACE_XTALK + node + SN0_BIG_WINDOW_BASE,
-                                &s->nodes[0].hub.bwin);
-
-    memory_region_add_subregion(system,
-                                SN0_SPACE_XTALK + node + SN0_HUB_LOCAL_WINDOW,
-                                &s->nodes[0].hub.regs);
-    memory_region_init_alias(&s->nodes[0].hub_regs_node_view,
-                             OBJECT(&s->nodes[0]),
-                             "sn0.node0.hub.explicit", &s->nodes[0].hub.regs, 0,
-                             SGI_HUB_WINDOW_SIZE);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_XTALK + node + SN0_HUB_NODE_WINDOW,
-                                &s->nodes[0].hub_regs_node_view);
 
     flash = g_malloc0(SN0_FLASH_SIZE);
     sn0_build_flash(flash);
@@ -3029,16 +3038,8 @@ static void sn0_init(MachineState *machine)
 
         s->console = serial_hd(SN0_IOC3_CHARDEV);
 
-        memory_region_init_io(&s->nodes[0].arcs_trap, OBJECT(&s->nodes[0]),
-                              &sn0_arcs_ops, s,
-                              "sn0.arcs.trap", SN0_ARCS_TRAP_SIZE);
-        memory_region_add_subregion(system, node + SN0_ARCS_TRAP_LOCAL,
-                                    &s->nodes[0].arcs_trap);
-
         sn0_build_arcs(fw, fw_vaddr, trap_vaddr, vector, SN0_ARCS_ENTRIES,
                        0, 0);
-        rom_add_blob_fixed("sn0.arcs.vector", vector, sizeof(vector),
-                           node + SN0_ARCS_VECTOR);
 
         /*
          * The SGI-private call vector. IRIX and the SGI standalone shell
@@ -3051,8 +3052,28 @@ static void sn0_init(MachineState *machine)
         sn0_build_arcs(fw, fw_vaddr, trap_vaddr, private_vector,
                        SN0_ARCS_PRIVATE_ENTRIES, SN0_ARCS_ENTRIES,
                        SN0_ARCS_PRIVATE_BASE_OP);
-        rom_add_blob_fixed("sn0.arcs.private", private_vector,
-                           sizeof(private_vector), node + SN0_ARCS_PRIVATE_VECTOR);
+        for (node_index = 0; node_index < node_count; node_index++) {
+            SN0NodeState *node_state = &s->nodes[node_index];
+            hwaddr node_base = SN0_NODE_BASE(node_state->nasid);
+            g_autofree char *trap_name =
+                g_strdup_printf("sn0.node%u.arcs.trap", node_index);
+            g_autofree char *vector_name =
+                g_strdup_printf("sn0.node%u.arcs.vector", node_index);
+            g_autofree char *private_name =
+                g_strdup_printf("sn0.node%u.arcs.private", node_index);
+
+            memory_region_init_io(&node_state->arcs_trap, OBJECT(node_state),
+                                  &sn0_arcs_ops, s, trap_name,
+                                  SN0_ARCS_TRAP_SIZE);
+            memory_region_add_subregion(
+                system, node_base + SN0_ARCS_TRAP_LOCAL,
+                &node_state->arcs_trap);
+            rom_add_blob_fixed(vector_name, vector, sizeof(vector),
+                               node_base + SN0_ARCS_VECTOR);
+            rom_add_blob_fixed(private_name, private_vector,
+                               sizeof(private_vector),
+                               node_base + SN0_ARCS_PRIVATE_VECTOR);
+        }
 
         if (machine->kernel_filename) {
             uint8_t *secondary = fw + SN0_FW_SECONDARY_BOOT;
@@ -3160,9 +3181,12 @@ static void sn0_init(MachineState *machine)
      * contents as a ROM and copy them back on every machine reset, erasing
      * environment changes the PROM deliberately retains across that reset.
      */
-    memcpy(memory_region_get_ram_ptr(&s->nodes[0].flash), flash,
-           SN0_FLASH_SIZE);
-    memory_region_set_dirty(&s->nodes[0].flash, 0, SN0_FLASH_SIZE);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        memcpy(memory_region_get_ram_ptr(&s->nodes[node_index].flash), flash,
+               SN0_FLASH_SIZE);
+        memory_region_set_dirty(&s->nodes[node_index].flash, 0,
+                                SN0_FLASH_SIZE);
+    }
     g_free(flash);
 
     /*
@@ -3170,16 +3194,24 @@ static void sn0_init(MachineState *machine)
      * in the flash, so that whatever image the flash holds keeps every byte of
      * it. Read-only, like the flash, because nothing should be writing here.
      */
-    memory_region_init_rom(&s->nodes[0].fw_text, OBJECT(&s->nodes[0]),
-                           "sn0.firmware.text",
-                           SN0_FW_TEXT_SIZE, &error_fatal);
-    memory_region_add_subregion(system, node + SN0_FW_TEXT_LOCAL,
-                                &s->nodes[0].fw_text);
-    rom_add_blob_fixed("sn0.firmware.text", fw, SN0_FW_TEXT_SIZE,
-                       node + SN0_FW_TEXT_LOCAL);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        SN0NodeState *node_state = &s->nodes[node_index];
+        hwaddr node_base = SN0_NODE_BASE(node_state->nasid);
+        g_autofree char *name =
+            g_strdup_printf("sn0.node%u.firmware.text", node_index);
+
+        memory_region_init_rom(&node_state->fw_text, OBJECT(node_state),
+                               name, SN0_FW_TEXT_SIZE, &error_fatal);
+        memory_region_add_subregion(system, node_base + SN0_FW_TEXT_LOCAL,
+                                    &node_state->fw_text);
+        rom_add_blob_fixed(name, fw, SN0_FW_TEXT_SIZE,
+                           node_base + SN0_FW_TEXT_LOCAL);
+    }
     g_free(fw);
 
-    qdev_realize(DEVICE(&s->nodes[0]), NULL, &error_fatal);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        qdev_realize(DEVICE(&s->nodes[node_index]), NULL, &error_fatal);
+    }
 
     qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
 }
@@ -3300,7 +3332,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
 
     mc->desc = "SGI Origin 200 (IP27)";
     mc->init = sn0_init;
-    mc->max_cpus = SN0_CPUS_PER_NODE;
+    mc->max_cpus = SN0_CPUS_PER_NODE * SN0_ORIGIN200_MAX_NODES;
     mc->default_ram_size = 64 * MiB;
     mc->default_ram_id = "sn0.node0.ram";
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");

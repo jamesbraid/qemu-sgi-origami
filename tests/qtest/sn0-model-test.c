@@ -35,6 +35,11 @@
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785U
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffffU
 #define SN0_HUB_LOCAL           0x20001000000ULL
+#define SN0_NODE_STRIDE         0x100000000ULL
+#define SN0_HUB_NODE_WINDOW     0x01800000ULL
+#define SN0_NI_STATUS           0x00600000ULL
+#define SN0_NI_LINK_UP          (1ULL << 29)
+#define SN0_NI_NODE_SHIFT       8
 #define SN0_PI_CPU_PRESENT_A    0x000040
 #define SN0_PI_CPU_PRESENT_B    0x000048
 #define SN0_GRAPH_NODE_BOARD    0x4100
@@ -517,25 +522,120 @@ static void test_explicit_one_node_numa(const void *data)
     qtest_quit(qts);
 }
 
-static void test_reject_unbuilt_second_numa_node(const void *data)
+static void test_dual_chassis_numa(const void *data)
 {
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "64M",
-        "-object", "memory-backend-ram,id=ram0,size=32M",
-        "-object", "memory-backend-ram,id=ram1,size=32M",
-        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
-        "-numa", "node,nodeid=1,memdev=ram1",
-        "-smp", "2,sockets=1,cores=2,threads=1",
-        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
-    };
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    QDict *response;
+    QList *cpus;
+    QObject *entry;
+    unsigned int seen = 0;
+    uint64_t node1_hub = SN0_HUB_LOCAL + SN0_NODE_STRIDE +
+                         (SN0_HUB_NODE_WINDOW - 0x01000000ULL);
+    uint64_t status;
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    cpus = qdict_get_qlist(response, "return");
+    while ((entry = qlist_pop(cpus))) {
+        QDict *cpu = qobject_to(QDict, entry);
+        QDict *props = qdict_get_qdict(cpu, "props");
+        int64_t index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpint(index, >=, 0);
+        g_assert_cmpint(index, <, 4);
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, index / 2);
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index / 2);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index % 2);
+        seen |= 1U << index;
+        qobject_unref(entry);
+    }
+    g_assert_cmphex(seen, ==, 0xf);
+    qobject_unref(response);
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                              " 'arguments': { 'path': '/machine/node1',"
+                              " 'property': 'type' } }");
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sn0-node");
+    qobject_unref(response);
+
+    qtest_writel(qts, 0x1000, 0x11223344);
+    qtest_writel(qts, SN0_NODE_STRIDE + 0x1000, 0x55667788);
+    g_assert_cmphex(qtest_readl(qts, 0x1000), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(qts, SN0_NODE_STRIDE + 0x1000),
+                    ==, 0x55667788);
+
+    status = qtest_readq(qts, node1_hub + SN0_NI_STATUS);
+    g_assert_cmphex(status & SN0_NI_LINK_UP, ==, SN0_NI_LINK_UP);
+    g_assert_cmphex((status >> SN0_NI_NODE_SHIFT) & 0x1ff, ==, 1);
+
+    qtest_quit(qts);
+}
+
+static void assert_qemu_rejects(const char *const args[], const char *message)
+{
     g_autofree char *error_output = NULL;
     int wait_status = 0;
 
     g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output,
-                           "origin200: one chassis supports one NUMA node"));
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+static void test_reject_three_numa_nodes(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "192M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=64M",
+        "-object", "memory-backend-ram,id=ram2,size=64M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
+        "-numa", "node,nodeid=2,memdev=ram2",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: at most two NUMA nodes are supported");
+}
+
+static void test_reject_partial_cpu_numa_mapping(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "128M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=64M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,memdev=ram1",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: CPU 2 must be assigned to NUMA node 1");
+}
+
+static void test_reject_invalid_node_memory(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "96M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=32M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "node 1's 32 MiB cannot be populated from IP29");
 }
 
 static void test_reject_split_one_node_topology(const void *data)
@@ -574,8 +674,14 @@ int main(int argc, char **argv)
                         test_one_node_cpu_topology);
     qtest_add_data_func("sn0/model/explicit-one-node-numa", NULL,
                         test_explicit_one_node_numa);
-    qtest_add_data_func("sn0/model/reject-unbuilt-second-numa-node", NULL,
-                        test_reject_unbuilt_second_numa_node);
+    qtest_add_data_func("sn0/model/dual-chassis-numa", NULL,
+                        test_dual_chassis_numa);
+    qtest_add_data_func("sn0/model/reject-three-numa-nodes", NULL,
+                        test_reject_three_numa_nodes);
+    qtest_add_data_func("sn0/model/reject-partial-cpu-numa-mapping", NULL,
+                        test_reject_partial_cpu_numa_mapping);
+    qtest_add_data_func("sn0/model/reject-invalid-node-memory", NULL,
+                        test_reject_invalid_node_memory);
     qtest_add_data_func("sn0/model/reject-split-one-node-topology", NULL,
                         test_reject_split_one_node_topology);
 
