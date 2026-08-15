@@ -51,6 +51,9 @@
 #define ENTRY_POINTS    10
 #define ENTRY_STRIDE    8
 
+/* The default synthesized graph's eight plain-megabyte bank counts. */
+#define GRAPH_BANK_SIZES    0x453c
+
 /* Every instruction word at an entry point has to be a branch of some kind. */
 static bool is_branch(uint32_t insn)
 {
@@ -191,76 +194,104 @@ static void test_flash_is_read_only(const void *data)
     qtest_quit(qts);
 }
 
-static void test_node_memory(const void *data)
+static void check_ram(QTestState *qts, uint64_t addr, uint64_t pattern)
 {
-    QTestState *qts = qtest_init("-M origin200 -m 512M");
+    qtest_writeq(qts, addr, pattern);
+    g_assert_cmphex(qtest_readq(qts, addr), ==, pattern);
+}
 
-    /* Memory is at the bottom of the node's window. */
-    qtest_writeq(qts, NODE0 + 0x1000, 0x0123456789abcdefULL);
-    g_assert_cmphex(qtest_readq(qts, NODE0 + 0x1000), ==,
-                    0x0123456789abcdefULL);
+static void check_not_ram(QTestState *qts, uint64_t addr)
+{
+    uint64_t before = qtest_readq(qts, addr);
 
-    /*
-     * The flash sits on top of the first memory bank rather than beside it, so
-     * the bank's last bytes are still memory and the flash's are not.
-     */
-    qtest_writeq(qts, NODE0 + 0x1fbffff8, 0x1122334455667788ULL);
-    g_assert_cmphex(qtest_readq(qts, NODE0 + 0x1fbffff8), ==,
-                    0x1122334455667788ULL);
+    qtest_writeq(qts, addr, ~before);
+    g_assert_cmphex(qtest_readq(qts, addr), ==, before);
+}
+
+/*
+ * An IP27 bank of at most 128 MiB occupies the first 128 MiB slot. A larger
+ * bank is interleaved evenly over all four slots on a 128 MiB stride.
+ */
+static void test_128m_memory(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 128M");
+
+    check_ram(qts, NODE0 + 0x1000, 0x0123456789abcdefULL);
+    check_ram(qts, NODE0 + 128 * MiB - 8, 0x1281281281281281ULL);
+    check_not_ram(qts, NODE0 + 128 * MiB);
 
     qtest_quit(qts);
 }
 
-/* One bank's real stride, matching hw/mips/sn0.h's SN0_MEM_BANK_SIZE. */
+/* One bank's stride, matching hw/mips/sn0.h's SN0_MEM_BANK_SIZE. */
 #define MEM_BANK_SIZE   0x20000000ULL
+#define MEM_SLOT_SIZE   0x08000000ULL
 
 /*
- * A config that spans two banks unevenly: 768 MiB is one full 512 MiB bank
- * plus a 256 MiB remainder in the second. -m 512M alone (test_node_memory,
- * above) and any single-bank size take the machine's other branch entirely
- * — one region, no loop — so neither one ever runs the per-bank alias loop
- * this checks. A size that is an exact multiple of two full banks would run
- * the loop but never exercise MIN(remaining, SN0_MEM_BANK_SIZE) actually
- * clamping to less than a full bank; an uneven second bank is the smallest
- * config where both that clamp and the second bank's alias offset into
- * machine->ram (bank_offset = ram_size - remaining, not i * SN0_MEM_BANK_SIZE)
- * have to be right for both writes below to read back correctly.
+ * A 256 MiB bank is four 64 MiB runs, not one contiguous run. This is the
+ * layout both supported guests derive from the graph's per-bank size.
  */
-static void test_multi_bank_memory(const void *data)
+static void test_256m_memory(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200 -m 768M");
+    QTestState *qts = qtest_init("-M origin200 -m 256M");
+    unsigned int slot;
 
-    /* Bank 0 backed for its own full 512 MiB, to the last double word. */
-    qtest_writeq(qts, NODE0 + MEM_BANK_SIZE - 8, 0xb0b0b0b0b0b0b0b0ULL);
-    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE - 8), ==,
-                    0xb0b0b0b0b0b0b0b0ULL);
+    for (slot = 0; slot < 4; slot++) {
+        check_ram(qts, NODE0 + slot * MEM_SLOT_SIZE,
+                  0x2560000000000000ULL + slot);
+        check_ram(qts, NODE0 + slot * MEM_SLOT_SIZE + 64 * MiB - 8,
+                  0x256fffffffffff00ULL + slot);
+        check_not_ram(qts, NODE0 + slot * MEM_SLOT_SIZE + 64 * MiB);
+    }
 
-    /* Bank 1 starts at its own base, one full bank stride up. */
-    qtest_writeq(qts, NODE0 + MEM_BANK_SIZE, 0xb1b1b1b1b1b1b1b1ULL);
-    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE), ==,
-                    0xb1b1b1b1b1b1b1b1ULL);
-
-    /*
-     * Bank 1 backed for only its real 256 MiB (768 MiB total minus the 512
-     * MiB bank 0 already took), to the last double word of that -- not the
-     * full 512 MiB bank 1's own stride would otherwise allow.
-     */
-    qtest_writeq(qts, NODE0 + MEM_BANK_SIZE + 256 * MiB - 8,
-                0xb2b2b2b2b2b2b2b2ULL);
-    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE + 256 * MiB - 8),
-                    ==, 0xb2b2b2b2b2b2b2b2ULL);
-
-    /*
-     * The three patterns above land in three different bytes of the one
-     * underlying machine->ram object once bank_offset is right (0, 512 MiB
-     * minus 8, and 768 MiB minus 8 into it) -- reading bank 0's pattern back
-     * unchanged after writing bank 1's is what catches bank 1 having been
-     * aliased onto the same bytes as bank 0 instead of its own.
-     */
-    g_assert_cmphex(qtest_readq(qts, NODE0 + MEM_BANK_SIZE - 8), ==,
-                    0xb0b0b0b0b0b0b0b0ULL);
+    g_assert_cmpuint(qtest_readw(qts, NODE0 + GRAPH_BANK_SIZES), ==, 256);
+    g_assert_cmpuint(qtest_readw(qts, NODE0 + GRAPH_BANK_SIZES + 2), ==, 0);
 
     qtest_quit(qts);
+}
+
+/*
+ * The explicit 512 MiB configuration is two 256 MiB banks. That keeps the
+ * flash and synthesized ARCS regions in bank zero's final gap instead of
+ * advertising their addresses as RAM.
+ */
+static void test_512m_memory(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 512M");
+    unsigned int bank, slot;
+
+    for (bank = 0; bank < 2; bank++) {
+        for (slot = 0; slot < 4; slot++) {
+            check_ram(qts, NODE0 + bank * MEM_BANK_SIZE +
+                      slot * MEM_SLOT_SIZE,
+                      0x5120000000000000ULL + bank * 4 + slot);
+        }
+    }
+
+    g_assert_cmpuint(qtest_readw(qts, NODE0 + GRAPH_BANK_SIZES), ==, 256);
+    g_assert_cmpuint(qtest_readw(qts, NODE0 + GRAPH_BANK_SIZES + 2), ==, 256);
+    g_assert_cmpuint(qtest_readw(qts, NODE0 + GRAPH_BANK_SIZES + 4), ==, 0);
+    check_not_ram(qts, NODE0 + 0x1f800000);
+    check_not_ram(qts, NODE0 + 0x1fc00000);
+    check_not_ram(qts, NODE0 + 0x1fd00000);
+
+    qtest_quit(qts);
+}
+
+static void test_invalid_memory_size(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "96M",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output,
+                           "cannot be populated from IP29 memory banks"));
 }
 
 /*
@@ -359,11 +390,9 @@ static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 }
 
 /*
- * The default machine populates one bank (the default -m is one bank's own
- * stride, SN0_MEM_BANK_SIZE): bank 0 round-trips its low sixteen bits and
- * classifies standard format, and both the very next bank and the top of
- * the window -- the two ends of the absent range -- must classify absent
- * rather than silently answering as populated memory.
+ * The default machine populates one 64 MiB bank from a matched DIMM pair.
+ * Bank 0 answers in standard directory format; bank 1 and the top of the
+ * window remain absent.
  */
 static void test_directory_backdoor(const void *data)
 {
@@ -443,9 +472,14 @@ int main(int argc, char **argv)
                         test_entry_points);
     qtest_add_data_func("sn0/address-map/flash-read-only", NULL,
                         test_flash_is_read_only);
-    qtest_add_data_func("sn0/address-map/node-memory", NULL, test_node_memory);
-    qtest_add_data_func("sn0/address-map/multi-bank-memory", NULL,
-                        test_multi_bank_memory);
+    qtest_add_data_func("sn0/address-map/memory-128m", NULL,
+                        test_128m_memory);
+    qtest_add_data_func("sn0/address-map/memory-256m", NULL,
+                        test_256m_memory);
+    qtest_add_data_func("sn0/address-map/memory-512m", NULL,
+                        test_512m_memory);
+    qtest_add_data_func("sn0/address-map/invalid-memory-size", NULL,
+                        test_invalid_memory_size);
     qtest_add_data_func("sn0/address-map/directory-backdoor", NULL,
                         test_directory_backdoor);
     qtest_add_data_func("sn0/address-map/ecc-backdoor", NULL,
