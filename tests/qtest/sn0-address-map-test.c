@@ -17,6 +17,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "libqtest.h"
 
@@ -63,7 +64,11 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 #define FIELD_CPU_FREQ  0x10
 #define FIELD_HUB_FREQ  0x18
 #define FIELD_RTC_FREQ  0x20
+#define FIELD_FPROM_CYC 0x2c
 #define FIELD_MACHTYPE  0x30
+#define FIELD_CHECKSUM  0x34
+#define FIELD_FPROM_WR  0x3c
+#define CONFIG_SIZE     0x50
 
 #define ENTRY_POINTS    10
 #define ENTRY_STRIDE    8
@@ -114,12 +119,81 @@ static void test_config_block(const void *data)
 
     /*
      * One means Origin 200; zero would make a guest introduce itself as an
-     * Origin 2000.
+     * Origin 2000. The flash timings are the matching SN00 values rather than
+     * the generic release image's Origin 2000 defaults.
      */
     g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                               FIELD_FPROM_CYC), ==, 15);
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
                                FIELD_MACHTYPE), ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                               FIELD_FPROM_WR), ==, 4);
 
     qtest_quit(qts);
+}
+
+static uint8_t config_byte_sum(const uint8_t *config)
+{
+    uint8_t sum = 0;
+    unsigned int i;
+
+    for (i = 0; i < CONFIG_SIZE; i++) {
+        sum += config[i];
+    }
+    return sum;
+}
+
+/*
+ * SGI ships one generic IP27 PROM image and preserves the running node's
+ * configuration block when it flashes that image. Reproduce the externally
+ * visible half of that operation: a release image carrying the SN0 defaults
+ * must describe the concrete Origin 200 machine after QEMU installs it, while
+ * retaining the configuration block's original byte sum.
+ */
+static void test_supplied_prom_gets_origin200_config(const void *data)
+{
+    uint8_t image[CONFIG_OFFSET + CONFIG_SIZE] = { 0 };
+    uint8_t configured[CONFIG_SIZE];
+    uint8_t *config = image + CONFIG_OFFSET;
+    g_autofree char *path = NULL;
+    g_autofree char *quoted_path = NULL;
+    g_autofree char *args = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    uint8_t original_sum;
+    int fd;
+
+    stq_be_p(config + FIELD_MAGIC, CONFIG_MAGIC);
+    stl_be_p(config + FIELD_FPROM_CYC, 8);
+    stl_be_p(config + FIELD_MACHTYPE, 0);
+    stl_be_p(config + FIELD_CHECKSUM, 0);
+    stl_be_p(config + FIELD_FPROM_WR, 1);
+    original_sum = config_byte_sum(config);
+
+    fd = g_file_open_tmp("sn0-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+
+    quoted_path = g_shell_quote(path);
+    args = g_strdup_printf("-M origin200,synthesized-firmware=off -bios %s",
+                           quoted_path);
+    qts = qtest_init(args);
+
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                               FIELD_FPROM_CYC), ==, 15);
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                               FIELD_MACHTYPE), ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                               FIELD_FPROM_WR), ==, 4);
+    qtest_memread(qts, FLASH_RESET + CONFIG_OFFSET, configured,
+                  sizeof(configured));
+    g_assert_cmphex(config_byte_sum(configured), ==, original_sum);
+
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 static void test_flash_three_views(const void *data)
@@ -666,6 +740,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/address-map/config-block", NULL,
                         test_config_block);
+    qtest_add_data_func("sn0/address-map/supplied-prom-origin200-config",
+                        NULL, test_supplied_prom_gets_origin200_config);
     qtest_add_data_func("sn0/address-map/flash-three-views", NULL,
                         test_flash_three_views);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,

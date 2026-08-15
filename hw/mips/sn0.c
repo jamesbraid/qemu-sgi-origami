@@ -93,6 +93,13 @@
 #define SN0_HUB_FREQ_HZ   90000000
 #define SN0_RTC_FREQ_HZ   1250000       /* an 800 ns tick */
 #define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
+#define SN0_FPROM_CYC     15
+#define SN0_FPROM_WR      4
+#define SN0_CONFIG_SIZE   0x50
+#define SN0_CONFIG_FPROM_CYC_OFFSET 0x2c
+#define SN0_CONFIG_MACHINE_TYPE_OFFSET 0x30
+#define SN0_CONFIG_CHECKSUM_OFFSET 0x34
+#define SN0_CONFIG_FPROM_WR_OFFSET 0x3c
 #define SN0_CPUS_PER_NODE 2
 #define SN0_ORIGIN200_MAX_NODES 2
 #define SN0_BRIDGE_ONEWIRE_SERIAL_BASE 0x060504030201ULL
@@ -1036,10 +1043,10 @@ static void sn0_build_flash(uint8_t *flash)
     }
 
     /*
-     * The field order, widths and values are the shipped Origin 200 firmware's,
-     * so a guest reading this block sees a machine SGI actually built. The
-     * timing and mode words are the measured contents of that image rather than
-     * anything this model acts on.
+     * The field order and widths are the IP27 firmware's. The release image is
+     * built with Origin 2000 defaults because a real flasher preserves the
+     * running node's configuration; this synthesized image instead carries
+     * this product's Origin 200 values directly.
      */
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
     stl_be_p(config + 0x04, SN0_PROCESSOR_MODE_BITS);
@@ -1048,11 +1055,11 @@ static void sn0_build_flash(uint8_t *flash)
     stq_be_p(config + 0x18, SN0_HUB_FREQ_HZ);
     stq_be_p(config + 0x20, SN0_RTC_FREQ_HZ);
     stl_be_p(config + 0x28, 1);                    /* error correction on */
-    stl_be_p(config + 0x2c, 8);                    /* flash read timing */
+    stl_be_p(config + 0x2c, SN0_FPROM_CYC);        /* flash read timing */
     stl_be_p(config + 0x30, SN0_MACHINE_TYPE);
     stl_be_p(config + 0x34, 0);                    /* checksum adjustment */
     stl_be_p(config + 0x38, 0);                    /* flash program count */
-    stl_be_p(config + 0x3c, 4);                    /* flash write timing */
+    stl_be_p(config + 0x3c, SN0_FPROM_WR);         /* flash write timing */
     stl_be_p(config + 0x40, 6);                    /* firmware version */
     stl_be_p(config + 0x44, 11);                   /* firmware revision */
     stl_be_p(config + 0x48, 0);                    /* configuration flags */
@@ -1067,6 +1074,51 @@ static void sn0_build_flash(uint8_t *flash)
     stl_be_p(config + 0x10, SN0_PROMLOG_MAGIC);
     stl_be_p(config + 0x14, SN0_PROMLOG_VERSION);
     stl_be_p(config + 0x18, 1);                    /* initial sequence */
+}
+
+static uint8_t sn0_config_byte_sum(const uint8_t *config)
+{
+    uint8_t sum = 0;
+    unsigned int i;
+
+    for (i = 0; i < SN0_CONFIG_SIZE; i++) {
+        sum += config[i];
+    }
+    return sum;
+}
+
+/*
+ * Install the product-specific part of an IP27 PROM configuration block.
+ *
+ * SGI ships a generic release image with Origin 2000 defaults. Its flasher
+ * copies the running node's configuration into the new image and adjusts one
+ * byte so the replacement block has the same byte sum as the original. QEMU
+ * has no preceding physical PROM to preserve, but the concrete machine type
+ * supplies the same three values: SN00 identity and its two flash timings.
+ *
+ * Preserve every other field supplied by the image, including clocks, CPU
+ * mode, version, and flash count. Preserve the old block sum too, following
+ * the flasher's observable contract. A diagnostic ROM without an IP27 config
+ * signature remains byte-for-byte untouched.
+ */
+static void sn0_configure_flash_for_origin200(uint8_t *flash)
+{
+    uint8_t *config = flash + SN0_CONFIG_OFFSET;
+    uint8_t old_sum;
+    uint8_t new_sum;
+
+    if (ldq_be_p(config + 0x08) != SN0_CONFIG_MAGIC) {
+        return;
+    }
+
+    old_sum = sn0_config_byte_sum(config);
+    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET, 0);
+    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, SN0_FPROM_CYC);
+    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET, SN0_MACHINE_TYPE);
+    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, SN0_FPROM_WR);
+    new_sum = sn0_config_byte_sum(config);
+    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET,
+             (uint8_t)(old_sum - new_sum));
 }
 
 /*
@@ -3110,6 +3162,7 @@ static void sn0_init(MachineState *machine)
         }
         g_free(path);
     }
+    sn0_configure_flash_for_origin200(flash);
 
     /*
      * The firmware this machine presents, unless it was told to stand aside for
