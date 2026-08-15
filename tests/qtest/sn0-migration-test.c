@@ -386,7 +386,7 @@ static void test_flash_autoselect_survives_migration(const void *data)
     to = qtest_init(dest_cmdline);
     migrate_stopped_vm(from, uri);
 
-    g_assert_cmphex(qtest_readl(to, FLASH_HUB), ==, 0x01d5ffff);
+    g_assert_cmphex(qtest_readl(to, FLASH_RESET), ==, 0x01d5ffff);
 
     qtest_quit(to);
     qtest_quit(from);

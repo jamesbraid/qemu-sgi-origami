@@ -2175,8 +2175,6 @@ static void sn0_init(MachineState *machine)
     memory_region_add_subregion_overlap(system, node + SN0_FLASH_LOCAL,
                                         &s->node0.flash, 1);
     qemu_register_reset(sn0_flash_reset, s);
-    vmstate_register(VMSTATE_IF(&s->node0), 0, &vmstate_sn0_flash,
-                     &s->node0);
 
     /*
      * The same bytes through the Hub's special space, which is how a guest
@@ -2884,6 +2882,13 @@ static void sn0_node_instance_init(Object *obj)
     object_initialize_child(obj, "hub", &node->hub, TYPE_SGI_HUB);
 }
 
+static void sn0_node_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->vmsd = &vmstate_sn0_flash;
+}
+
 static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
@@ -2988,6 +2993,7 @@ static const TypeInfo sn0_node_type = {
     .parent = TYPE_DEVICE,
     .instance_init = sn0_node_instance_init,
     .instance_size = sizeof(SN0NodeState),
+    .class_init = sn0_node_class_init,
 };
 
 static void sn0_machine_types(void)
