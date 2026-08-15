@@ -528,6 +528,10 @@
 #define HUB_NI_RETURN_VECTOR    0x600308
 #define HUB_NI_VECTOR_READ_DATA 0x600310
 #define HUB_NI_VECTOR_CLEAR     0x600380
+#define HUB_NI_META_TABLE       0x638000
+#define HUB_NI_LOCAL_TABLE      0x638100
+#define NI_ROUTE_STRIDE         8
+#define NI_ROUTE_MASK           0xf
 
 #define NI_VECTOR_PIOID_MASK    (0x3ffULL << 40)
 #define NI_VECTOR_WRITEID_MASK  (0xffULL << 32)
@@ -962,9 +966,32 @@ static void sgi_hub_rt_expire(void *opaque)
     sgi_hub_update_irq(line->hub);
 }
 
+static uint8_t *sgi_hub_route_entry(SGIHubState *s, hwaddr addr)
+{
+    if ((addr & (NI_ROUTE_STRIDE - 1)) != 0) {
+        return NULL;
+    }
+    if (addr >= HUB_NI_META_TABLE &&
+        addr < HUB_NI_META_TABLE + SGI_HUB_META_ROUTES * NI_ROUTE_STRIDE) {
+        return &s->ni_meta_route[(addr - HUB_NI_META_TABLE) / NI_ROUTE_STRIDE];
+    }
+    if (addr >= HUB_NI_LOCAL_TABLE &&
+        addr < HUB_NI_LOCAL_TABLE + SGI_HUB_LOCAL_ROUTES * NI_ROUTE_STRIDE) {
+        return &s->ni_local_route[(addr - HUB_NI_LOCAL_TABLE) /
+                                  NI_ROUTE_STRIDE];
+    }
+    return NULL;
+}
+
 static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
                                        uint64_t *value)
 {
+    uint8_t *route = sgi_hub_route_entry(target, addr);
+
+    if (route) {
+        *value = *route;
+        return true;
+    }
     switch (addr) {
     case HUB_NI_STATUS:
         *value = target->ni_status;
@@ -983,6 +1010,12 @@ static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
 static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
                                         uint64_t value)
 {
+    uint8_t *route = sgi_hub_route_entry(target, addr);
+
+    if (route) {
+        *route = value & NI_ROUTE_MASK;
+        return true;
+    }
     switch (addr) {
     case HUB_NI_STATUS:
         target->ni_status = (target->ni_status & ~NI_STATUS_WRITABLE) |
@@ -1061,10 +1094,15 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
+    uint8_t *route;
     unsigned int n;
 
     if (sgi_hub_bwin_entry(addr, &n)) {
         return s->io_bwin[n];
+    }
+    route = sgi_hub_route_entry(s, addr);
+    if (route) {
+        return *route;
     }
     if (sgi_hub_icrb_c_entry(addr)) {
         /*
@@ -1391,6 +1429,7 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                           unsigned size)
 {
     SGIHubState *s = opaque;
+    uint8_t *route;
     unsigned int n;
 
     if (sgi_hub_bwin_entry(addr, &n)) {
@@ -1402,6 +1441,11 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
          */
         s->io_bwin[n] = val & IO_BWIN_MASK;
         sgi_hub_bwin_follow(s, n);
+        return;
+    }
+    route = sgi_hub_route_entry(s, addr);
+    if (route) {
+        *route = val & NI_ROUTE_MASK;
         return;
     }
     if (sgi_hub_icrb_c_entry(addr)) {
@@ -1797,6 +1841,8 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->ni_vector_status = 0;
     s->ni_return_vector = 0;
     s->ni_vector_read_data = 0;
+    memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
+    memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
 
     /*
      * The crosstalk link comes up reporting itself up, and this is one of the
@@ -2013,7 +2059,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 15,
+    .version_id = 16,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -2034,6 +2080,10 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(ni_vector_status, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_return_vector, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
+        VMSTATE_UINT8_ARRAY_V(ni_meta_route, SGIHubState,
+                             SGI_HUB_META_ROUTES, 16),
+        VMSTATE_UINT8_ARRAY_V(ni_local_route, SGIHubState,
+                             SGI_HUB_LOCAL_ROUTES, 16),
         VMSTATE_UINT64_V(io_link_status, SGIHubState, 3),
         VMSTATE_UINT64_V(io_widget_control, SGIHubState, 4),
         VMSTATE_UINT64_V(io_xtalk_timeout, SGIHubState, 4),
@@ -2064,6 +2114,11 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 {
     SGIHubState *s = opaque;
     unsigned int n;
+
+    if (version_id < 16) {
+        memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
+        memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
+    }
 
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         sgi_hub_bwin_follow(s, n);
