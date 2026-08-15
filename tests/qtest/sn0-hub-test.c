@@ -121,6 +121,23 @@
 #define NI_STATUS           0x600000
 #define NI_SCRATCH_0        0x600100
 #define NI_SCRATCH_1        0x600108
+#define NI_VECTOR_PARMS     0x600200
+#define NI_VECTOR           0x600208
+#define NI_VECTOR_DATA      0x600210
+#define NI_VECTOR_STATUS    0x600300
+#define NI_VECTOR_READ_DATA 0x600310
+#define NI_VECTOR_CLEAR     0x600380
+
+#define NODE_STRIDE         0x100000000ULL
+#define NVP_PIOID_SHIFT     40
+#define NVP_WRITEID_SHIFT   32
+#define NVS_VALID           (1ULL << 63)
+#define NVS_TARGET_SHIFT    51
+#define NVS_TARGET_MASK     (0x3ffULL << NVS_TARGET_SHIFT)
+#define NVS_TYPE_MASK       0x7ULL
+#define PIOTYPE_READ        0
+#define PIOTYPE_WRITE       1
+#define PIOTYPE_EXCHANGE    3
 
 /*
  * The junk-bus UART: eight registers, the standard 16550 order, one
@@ -1684,6 +1701,99 @@ static void test_network_scratch_registers(const void *data)
     qtest_quit(qts);
 }
 
+static uint64_t vector_operation(QTestState *qts, uint64_t hub,
+                                 uint64_t address, uint64_t type)
+{
+    uint64_t parms = (123ULL << NVP_PIOID_SHIFT) |
+                     (45ULL << NVP_WRITEID_SHIFT) | address | type;
+
+    qtest_writeq(qts, hub + NI_VECTOR, 0);
+    qtest_writeq(qts, hub + NI_VECTOR_PARMS, parms);
+    return qtest_readq(qts, hub + NI_VECTOR_STATUS);
+}
+
+static void test_vector_pio_reaches_the_direct_peer(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t status;
+
+    qtest_writeq(qts, node1 + NI_SCRATCH_0, 0x0123456789abcdefULL);
+    status = vector_operation(qts, node0, NI_SCRATCH_0, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==,
+                    0x0123456789abcdefULL);
+
+    qtest_readq(qts, node0 + NI_VECTOR_CLEAR);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_STATUS) & NVS_VALID,
+                    ==, 0);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0xfedcba9876543210ULL);
+    status = vector_operation(qts, node0, NI_SCRATCH_1, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_SCRATCH_1), ==,
+                    0xfedcba9876543210ULL);
+
+    qtest_writeq(qts, node1 + NI_SCRATCH_1, 0);
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0x1122334455667788ULL);
+    status = vector_operation(qts, node0, NI_SCRATCH_1, PIOTYPE_EXCHANGE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_EXCHANGE);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_SCRATCH_1), ==,
+                    0x1122334455667788ULL);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0x8877665544332211ULL);
+    vector_operation(qts, node0, NI_SCRATCH_1, PIOTYPE_EXCHANGE);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==,
+                    0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_SCRATCH_1), ==,
+                    0x1122334455667788ULL);
+
+    qtest_quit(qts);
+}
+
+static void test_stock_prom_hubs_start_unnumbered(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t peer_status = qtest_readq(qts, node1 + NI_STATUS);
+    uint64_t status;
+
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_STATUS) & NI_NODE_MASK,
+                    ==, 0);
+    g_assert_cmphex(peer_status & NI_NODE_MASK, ==, 0);
+
+    status = vector_operation(qts, node0, NI_STATUS, PIOTYPE_READ);
+    g_assert_cmphex(status & NVS_TARGET_MASK, ==, 0);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, peer_status | (1ULL << 8));
+    vector_operation(qts, node0, NI_STATUS, PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_STATUS) & NI_NODE_MASK,
+                    ==, 1ULL << 8);
+
+    status = vector_operation(qts, node0, NI_STATUS, PIOTYPE_READ);
+    g_assert_cmphex(status & NVS_TARGET_MASK, ==, 1ULL << NVS_TARGET_SHIFT);
+
+    qtest_quit(qts);
+}
+
 static void test_md_perf_cnt0(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -1900,6 +2010,10 @@ int main(int argc, char **argv)
                         test_io_scratch_registers);
     qtest_add_data_func("sn0/hub/network-scratch-registers", NULL,
                         test_network_scratch_registers);
+    qtest_add_data_func("sn0/hub/vector-pio-direct-peer", NULL,
+                        test_vector_pio_reaches_the_direct_peer);
+    qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,
+                        test_stock_prom_hubs_start_unnumbered);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);

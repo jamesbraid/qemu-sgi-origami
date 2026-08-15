@@ -2641,7 +2641,7 @@ static void sn0_node_create_hub(SN0MachineState *machine,
                                 unsigned int node_index,
                                 unsigned int cpu_base,
                                 unsigned int cpu_count,
-                                bool network_link_up)
+                                SGIHubState *network_peer)
 {
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
@@ -2650,15 +2650,18 @@ static void sn0_node_create_hub(SN0MachineState *machine,
     memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
                        SN0_XTALK_SIZE);
 
-    qdev_prop_set_uint32(DEVICE(&node->hub), "nasid", node->nasid);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
+                         machine->synthesized_firmware ? node->nasid : 0);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", cpu_count);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", cpu_base);
     qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                         machine->elsc_dip_switches);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
-    if (network_link_up) {
+    if (network_peer) {
         qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
+        object_property_set_link(OBJECT(&node->hub), "network-peer",
+                                 OBJECT(network_peer), &error_fatal);
     }
     object_property_set_link(OBJECT(&node->hub), "xtalk",
                              OBJECT(&node->xtalk), &error_fatal);
@@ -2810,6 +2813,8 @@ static void sn0_init(MachineState *machine)
         unsigned int cpu_base = node_index * SN0_CPUS_PER_NODE;
         unsigned int cpu_count = node_count == 1 ? machine->smp.cpus :
                                  SN0_CPUS_PER_NODE;
+        SGIHubState *network_peer = node_count == 2 ?
+            &s->nodes[1 - node_index].hub : NULL;
 
         sn0_node_create_cpus(machine, &s->nodes[node_index], node_index,
                              cpu_base, cpu_count, ram_offset);
@@ -2817,7 +2822,7 @@ static void sn0_init(MachineState *machine)
                                          node_index, ram_offset, ram_size);
         sn0_node_map_boot_storage(&s->nodes[node_index], node_index);
         sn0_node_create_hub(s, &s->nodes[node_index], node_index, cpu_base,
-                            cpu_count, node_count == 2);
+                            cpu_count, network_peer);
     }
     g_assert(ram_offset == machine->ram_size);
 
