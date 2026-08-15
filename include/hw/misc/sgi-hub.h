@@ -47,6 +47,9 @@ typedef struct SGIHubCounterLine {
 /* Processor sockets a node has, which is what makes every A/B register a pair. */
 #define SGI_HUB_PROCESSORS  2
 
+#define SGI_HUB_META_ROUTES  32
+#define SGI_HUB_LOCAL_ROUTES 16
+
 /* The two pending banks, of 64 interrupt numbers each. */
 #define SGI_HUB_PENDING_BANKS 2
 #define SGI_HUB_BANK_BITS     64
@@ -162,6 +165,8 @@ struct SGIHubState {
     uint64_t ni_vector_status;
     uint64_t ni_return_vector;
     uint64_t ni_vector_read_data;
+    uint8_t ni_meta_route[SGI_HUB_META_ROUTES];
+    uint8_t ni_local_route[SGI_HUB_LOCAL_ROUTES];
 
     uint64_t io_link_status;
     uint64_t io_widget_control;

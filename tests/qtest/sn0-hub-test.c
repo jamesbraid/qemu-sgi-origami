@@ -127,6 +127,9 @@
 #define NI_VECTOR_STATUS    0x600300
 #define NI_VECTOR_READ_DATA 0x600310
 #define NI_VECTOR_CLEAR     0x600380
+#define NI_META_TABLE       0x638000
+#define NI_META_TABLE_LAST  (NI_META_TABLE + 31 * 8)
+#define NI_LOCAL_TABLE      0x638100
 
 #define NODE_STRIDE         0x100000000ULL
 #define NVP_PIOID_SHIFT     40
@@ -1758,6 +1761,25 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
                     0x1122334455667788ULL);
     g_assert_cmphex(qtest_readq(qts, node1 + NI_SCRATCH_1), ==,
                     0x1122334455667788ULL);
+
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_LOCAL_TABLE), ==, 0);
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0x1b);
+    status = vector_operation(qts, node0, NI_LOCAL_TABLE, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_LOCAL_TABLE), ==, 0xb);
+
+    status = vector_operation(qts, node0, NI_LOCAL_TABLE, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==, 0xb);
+
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_META_TABLE_LAST), ==, 0);
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0x16);
+    status = vector_operation(qts, node0, NI_META_TABLE_LAST, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_META_TABLE_LAST), ==, 6);
 
     qtest_quit(qts);
 }
