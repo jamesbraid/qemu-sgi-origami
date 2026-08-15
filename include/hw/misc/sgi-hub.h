@@ -101,11 +101,14 @@ struct SGIHubState {
      */
     qemu_irq rt_irq[SGI_HUB_PROCESSORS];
 
-    /* Which node this Hub is, which its network-interface status reports. */
+    /* Node number preprogrammed by synthesized firmware, or zero at reset. */
     uint32_t nasid;
 
     /* Whether the direct inter-node CrayLink has a peer at the far end. */
     bool network_link_up;
+
+    /* The Hub directly connected to this network port, when one is fitted. */
+    SGIHubState *network_peer;
 
     /* How many processor sockets this node has populated. */
     uint32_t cpus;
@@ -152,6 +155,13 @@ struct SGIHubState {
 
     /* The network interface's two 64-bit general-purpose scratch registers. */
     uint64_t ni_scratch[2];
+
+    /* Direct-link vector PIO request and completion registers. */
+    uint64_t ni_vector;
+    uint64_t ni_vector_data;
+    uint64_t ni_vector_status;
+    uint64_t ni_return_vector;
+    uint64_t ni_vector_read_data;
 
     uint64_t io_link_status;
     uint64_t io_widget_control;

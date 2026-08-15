@@ -521,6 +521,27 @@
 #define HUB_NI_STATUS           0x600000  /* status, revision and identity */
 #define HUB_NI_SCRATCH_0        0x600100
 #define HUB_NI_SCRATCH_1        0x600108
+#define HUB_NI_VECTOR_PARMS     0x600200
+#define HUB_NI_VECTOR           0x600208
+#define HUB_NI_VECTOR_DATA      0x600210
+#define HUB_NI_VECTOR_STATUS    0x600300
+#define HUB_NI_RETURN_VECTOR    0x600308
+#define HUB_NI_VECTOR_READ_DATA 0x600310
+#define HUB_NI_VECTOR_CLEAR     0x600380
+
+#define NI_VECTOR_PIOID_MASK    (0x3ffULL << 40)
+#define NI_VECTOR_WRITEID_MASK  (0xffULL << 32)
+#define NI_VECTOR_ADDRESS_MASK  0xffff8ULL
+#define NI_VECTOR_TYPE_MASK     0x3ULL
+
+#define NI_VECTOR_VALID         (1ULL << 63)
+#define NI_VECTOR_TARGET_SHIFT  51
+#define NI_VECTOR_STATUS_ADDR_MASK 0xfffffff8ULL
+
+#define NI_VECTOR_READ          0
+#define NI_VECTOR_WRITE         1
+#define NI_VECTOR_EXCHANGE      3
+#define NI_VECTOR_ADDRESS_ERROR 4
 
 /*
  * The port reset register. Three separate resets share it and only one of them
@@ -543,10 +564,11 @@
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
- * The status register's fields. The machine stays in M mode, the node field
- * comes from the physical Hub, and link-up reports whether the product wires a
- * peer to its network port. The region-size bit resets set, selecting one
- * region per node.
+ * The status register's fields. The machine stays in M mode, and link-up
+ * reports whether the product wires a peer to its network port. The node field
+ * resets to zero on real hardware and is programmed by firmware; synthesized
+ * firmware may supply that programmed value through the nasid property. The
+ * region-size bit resets set, selecting one region per node.
  */
 #define NI_STATUS_MORE_NODES    (1ULL << 18)
 #define NI_STATUS_LINK_UP       (1ULL << 29)
@@ -940,6 +962,102 @@ static void sgi_hub_rt_expire(void *opaque)
     sgi_hub_update_irq(line->hub);
 }
 
+static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
+                                       uint64_t *value)
+{
+    switch (addr) {
+    case HUB_NI_STATUS:
+        *value = target->ni_status;
+        return true;
+    case HUB_NI_SCRATCH_0:
+        *value = target->ni_scratch[0];
+        return true;
+    case HUB_NI_SCRATCH_1:
+        *value = target->ni_scratch[1];
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
+                                        uint64_t value)
+{
+    switch (addr) {
+    case HUB_NI_STATUS:
+        target->ni_status = (target->ni_status & ~NI_STATUS_WRITABLE) |
+                            (value & NI_STATUS_WRITABLE);
+        return true;
+    case HUB_NI_SCRATCH_0:
+        target->ni_scratch[0] = value;
+        return true;
+    case HUB_NI_SCRATCH_1:
+        target->ni_scratch[1] = value;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * Launch the vector PIO described by NI_VECTOR_PARMS.
+ *
+ * An Origin 200's network port is wired directly to the other chassis, so a
+ * null route names that peer. Non-null routes require a router and fail with
+ * the hardware's address-error response; this keeps the direct topology from
+ * silently pretending it can route an Origin 2000 network.
+ */
+static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
+{
+    /* The request carries bits 19:3; a Hub target supplies the NI base. */
+    hwaddr addr = parms & NI_VECTOR_ADDRESS_MASK;
+    hwaddr target_addr = HUB_NI_STATUS + addr;
+    uint64_t type = parms & NI_VECTOR_TYPE_MASK;
+    uint64_t response_type = type;
+    uint64_t source = s->network_peer ?
+        (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
+        NI_STATUS_NODE_SHIFT : 0;
+    uint64_t value = 0;
+    bool success = false;
+
+    if (s->network_peer && s->ni_vector == 0) {
+        switch (type) {
+        case NI_VECTOR_READ:
+            success = sgi_hub_vector_target_read(s->network_peer, target_addr,
+                                                 &value);
+            if (success) {
+                s->ni_vector_read_data = value;
+            }
+            break;
+        case NI_VECTOR_WRITE:
+            success = sgi_hub_vector_target_write(s->network_peer, target_addr,
+                                                  s->ni_vector_data);
+            break;
+        case NI_VECTOR_EXCHANGE:
+            success = sgi_hub_vector_target_read(s->network_peer, target_addr,
+                                                 &value);
+            if (success) {
+                s->ni_vector_read_data = value;
+                if (value == 0) {
+                    success = sgi_hub_vector_target_write(
+                        s->network_peer, target_addr, s->ni_vector_data);
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!success) {
+        response_type = NI_VECTOR_ADDRESS_ERROR;
+    }
+    s->ni_vector_status = NI_VECTOR_VALID |
+        (source << NI_VECTOR_TARGET_SHIFT) |
+        (parms & (NI_VECTOR_PIOID_MASK | NI_VECTOR_WRITEID_MASK)) |
+        (addr & NI_VECTOR_STATUS_ADDR_MASK) | response_type;
+}
+
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
@@ -1040,6 +1158,19 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         return s->ni_scratch[0];
     case HUB_NI_SCRATCH_1:
         return s->ni_scratch[1];
+    case HUB_NI_VECTOR:
+        return s->ni_vector;
+    case HUB_NI_VECTOR_DATA:
+        return s->ni_vector_data;
+    case HUB_NI_VECTOR_STATUS:
+        return s->ni_vector_status;
+    case HUB_NI_RETURN_VECTOR:
+        return s->ni_return_vector;
+    case HUB_NI_VECTOR_READ_DATA:
+        return s->ni_vector_read_data;
+    case HUB_NI_VECTOR_CLEAR:
+        s->ni_vector_status = 0;
+        return 0;
     case HUB_MD_SLOT_ID_USTAT:
         return MD_SLOT_FLASH_READY;
     case HUB_MD_CONFIG:
@@ -1504,6 +1635,29 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_NI_SCRATCH_1:
         s->ni_scratch[1] = val;
         break;
+    case HUB_NI_VECTOR:
+        s->ni_vector = val;
+        break;
+    case HUB_NI_VECTOR_DATA:
+        s->ni_vector_data = val;
+        break;
+    case HUB_NI_VECTOR_STATUS:
+        if (val == 0) {
+            s->ni_vector_status = 0;
+        }
+        break;
+    case HUB_NI_RETURN_VECTOR:
+        s->ni_return_vector = val;
+        break;
+    case HUB_NI_VECTOR_READ_DATA:
+        s->ni_vector_read_data = val;
+        break;
+    case HUB_NI_VECTOR_CLEAR:
+        s->ni_vector_status = 0;
+        break;
+    case HUB_NI_VECTOR_PARMS:
+        sgi_hub_vector_execute(s, val);
+        break;
     case HUB_NI_PORT_RESET:
         /*
          * The local-reset bit is tested on its own because the three things
@@ -1639,6 +1793,11 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
     s->ni_scratch[0] = 0;
     s->ni_scratch[1] = 0;
+    s->ni_vector = 0;
+    s->ni_vector_data = 0;
+    s->ni_vector_status = 0;
+    s->ni_return_vector = 0;
+    s->ni_vector_read_data = 0;
 
     /*
      * The crosstalk link comes up reporting itself up, and this is one of the
@@ -1855,7 +2014,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 14,
+    .version_id = 15,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -1871,6 +2030,11 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
         VMSTATE_UINT64_ARRAY_V(ni_scratch, SGIHubState, 2, 14),
+        VMSTATE_UINT64_V(ni_vector, SGIHubState, 15),
+        VMSTATE_UINT64_V(ni_vector_data, SGIHubState, 15),
+        VMSTATE_UINT64_V(ni_vector_status, SGIHubState, 15),
+        VMSTATE_UINT64_V(ni_return_vector, SGIHubState, 15),
+        VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
         VMSTATE_UINT64_V(io_link_status, SGIHubState, 3),
         VMSTATE_UINT64_V(io_widget_control, SGIHubState, 4),
         VMSTATE_UINT64_V(io_xtalk_timeout, SGIHubState, 4),
@@ -1912,6 +2076,8 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
     DEFINE_PROP_BOOL("network-link-up", SGIHubState, network_link_up, false),
+    DEFINE_PROP_LINK("network-peer", SGIHubState, network_peer, TYPE_SGI_HUB,
+                     SGIHubState *),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
     DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
                       elsc_dip_switches, 0),
