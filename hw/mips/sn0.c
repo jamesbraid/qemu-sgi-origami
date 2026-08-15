@@ -2506,6 +2506,96 @@ static uint64_t sn0_node_map_memory(MachineState *machine,
     return ram_offset;
 }
 
+static void sn0_node_map_boot_storage(SN0NodeState *node,
+                                      unsigned int node_index)
+{
+    MemoryRegion *system = get_system_memory();
+    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    g_autofree char *flash_name =
+        g_strdup_printf("sn0.node%u.flash", node_index);
+    g_autofree char *hub_name =
+        g_strdup_printf("sn0.node%u.flash.hub", node_index);
+    g_autofree char *rboot_name =
+        g_strdup_printf("sn0.node%u.flash.rboot", node_index);
+    g_autofree char *ecc_absent_name =
+        g_strdup_printf("sn0.node%u.backdoor.ecc.absent", node_index);
+    g_autofree char *ecc_name =
+        g_strdup_printf("sn0.node%u.backdoor.ecc", node_index);
+    g_autofree char *dir_absent_name =
+        g_strdup_printf("sn0.node%u.backdoor.dir.absent", node_index);
+    g_autofree char *dir_name =
+        g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
+
+    /*
+     * The boot flash overlaps RAM at the reset-vector offset and wins. Its
+     * Hub-special LBOOT and RBOOT mappings are views of the same physical
+     * chip, so guest writes retained by the flash are visible through all
+     * three addresses.
+     */
+    memory_region_init_rom_device(&node->flash, OBJECT(node), &sn0_flash_ops,
+                                  node, flash_name, SN0_FLASH_SIZE,
+                                  &error_fatal);
+    memory_region_add_subregion_overlap(system, node_base + SN0_FLASH_LOCAL,
+                                        &node->flash, 1);
+    qemu_register_reset(sn0_flash_reset, node);
+
+    memory_region_init_io(&node->flash_hub_view, OBJECT(node),
+                          &sn0_boot_mirror_ops, node, hub_name,
+                          SN0_LBOOT_SIZE);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_HUB + node_base + SN0_FLASH_HUB,
+                                &node->flash_hub_view);
+
+    memory_region_init_io(&node->flash_rboot_view, OBJECT(node),
+                          &sn0_boot_mirror_ops, node, rboot_name,
+                          SN0_RBOOT_SIZE);
+    memory_region_add_subregion(system,
+                                SN0_SPACE_HUB + node_base + SN0_FLASH_RBOOT,
+                                &node->flash_rboot_view);
+
+    /*
+     * Fixed absent floors cover the complete ECC and directory backdoor
+     * windows. Storage for the populated banks overlays those floors.
+     */
+    memory_region_init_io(&node->backdoor_ecc_absent, OBJECT(node),
+                          &sn0_backdoor_absent_ops, NULL, ecc_absent_name,
+                          SN0_BACKDOOR_ECC_SIZE);
+    memory_region_add_subregion_overlap(
+        system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_ECC_HUB,
+        &node->backdoor_ecc_absent, -1);
+    if (node->populated_banks > 0) {
+        uint64_t size = (uint64_t)node->populated_banks *
+                        SN0_BACKDOOR_BANK_STRIDE;
+
+        sn0_backdoor_configure(&node->backdoor_ecc_state, node);
+        memory_region_init_io(&node->backdoor_ecc, OBJECT(node),
+                              &sn0_backdoor_populated_ops,
+                              &node->backdoor_ecc_state, ecc_name, size);
+        memory_region_add_subregion(
+            system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_ECC_HUB,
+            &node->backdoor_ecc);
+    }
+
+    memory_region_init_io(&node->backdoor_dir_absent, OBJECT(node),
+                          &sn0_backdoor_absent_ops, NULL, dir_absent_name,
+                          SN0_BACKDOOR_DIR_SIZE);
+    memory_region_add_subregion_overlap(
+        system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_DIR_HUB,
+        &node->backdoor_dir_absent, -1);
+    if (node->populated_banks > 0) {
+        uint64_t size = (uint64_t)node->populated_banks *
+                        SN0_BACKDOOR_BANK_STRIDE;
+
+        sn0_backdoor_configure(&node->backdoor_dir_state, node);
+        memory_region_init_io(&node->backdoor_dir, OBJECT(node),
+                              &sn0_backdoor_populated_ops,
+                              &node->backdoor_dir_state, dir_name, size);
+        memory_region_add_subregion(
+            system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_DIR_HUB,
+            &node->backdoor_dir);
+    }
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -2557,119 +2647,7 @@ static void sn0_init(MachineState *machine)
     ram_offset = sn0_node_map_memory(machine, &s->nodes[0], 0, ram_offset,
                                      machine->ram_size);
     g_assert(ram_offset == machine->ram_size);
-
-    /*
-     * The boot flash, at the node offset the reset vector reaches through the
-     * uncached compatibility segment. It overlaps the first memory bank, which
-     * covers the same offset, and wins: that is the only arrangement under
-     * which the processor's first fetch finds firmware rather than memory.
-     *
-     * The node owns this region because the flash belongs to one physical
-     * node. Keeping its lifetime and migration identity at that boundary lets
-     * a later multi-node product instantiate the same boot mapping per node.
-     */
-    memory_region_init_rom_device(&s->nodes[0].flash, OBJECT(&s->nodes[0]),
-                                  &sn0_flash_ops,
-                                  &s->nodes[0], "sn0.node0.flash",
-                                  SN0_FLASH_SIZE,
-                                  &error_fatal);
-    memory_region_add_subregion_overlap(system, node + SN0_FLASH_LOCAL,
-                                        &s->nodes[0].flash, 1);
-    qemu_register_reset(sn0_flash_reset, &s->nodes[0]);
-
-    /*
-     * The same bytes through the Hub's special space, which is how a guest
-     * reads the machine type without going through the compatibility segment
-     * — and, at any offset past the flash's own 1 MB, how real firmware
-     * reaches its own code a second way (LBOOT; see the constant's comment).
-     * One region and a masking mirror onto it, so the view nearest offset
-     * zero cannot drift from the flash and every repeat past it answers with
-     * the same bytes a real chip's address decode would.
-     */
-    memory_region_init_io(&s->nodes[0].flash_hub_view, OBJECT(&s->nodes[0]),
-                          &sn0_boot_mirror_ops, &s->nodes[0],
-                          "sn0.node0.flash.hub", SN0_LBOOT_SIZE);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_HUB + node + SN0_FLASH_HUB,
-                                &s->nodes[0].flash_hub_view);
-
-    /*
-     * RBOOT is the node-explicit view of that same boot PROM. Firmware uses
-     * it when code carries a NASID rather than implicitly naming the local
-     * Hub, including when it reads the IP27 configuration block after moving
-     * into cached RAM.
-     */
-    memory_region_init_io(&s->nodes[0].flash_rboot_view, OBJECT(&s->nodes[0]),
-                          &sn0_boot_mirror_ops, &s->nodes[0],
-                          "sn0.node0.flash.rboot", SN0_RBOOT_SIZE);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_HUB + node + SN0_FLASH_RBOOT,
-                                &s->nodes[0].flash_rboot_view);
-
-    /*
-     * The directory and error-correction back doors. Real firmware's own
-     * diagnostics write a pattern through one of these and read it back to
-     * test for stuck directory bits, before it does anything else with the
-     * machine -- and the very same probe is how firmware first learns which
-     * banks exist and what directory format each one carries: the width of
-     * a location's real storage, not merely whether it has any, is what the
-     * probe's two-mask comparison reads off. A floor of fixed, non-RAM
-     * storage (sn0_backdoor_absent_ops) covers each whole 1 GB window at
-     * lower priority than everything else added into it; width-limited
-     * storage (sn0_backdoor_populated_ops) for however many of the eight
-     * banks this configuration populates layers on top at the default
-     * priority and wins wherever the two overlap, the same floor-then-window
-     * arrangement the Hub's own big windows already use (hw/misc/sgi-hub.c).
-     * These regions and their buffers have the node's lifetime, like the flash
-     * above. Their ownership must move with the node when more are composed.
-     */
-    memory_region_init_io(&s->nodes[0].backdoor_ecc_absent,
-                          OBJECT(&s->nodes[0]),
-                          &sn0_backdoor_absent_ops, NULL,
-                          "sn0.node0.backdoor.ecc.absent",
-                          SN0_BACKDOOR_ECC_SIZE);
-    memory_region_add_subregion_overlap(system,
-                                        SN0_SPACE_HUB + node +
-                                            SN0_BACKDOOR_ECC_HUB,
-                                        &s->nodes[0].backdoor_ecc_absent, -1);
-    if (s->nodes[0].populated_banks > 0) {
-        uint64_t populated_size = (uint64_t)s->nodes[0].populated_banks *
-                                  SN0_BACKDOOR_BANK_STRIDE;
-
-        sn0_backdoor_configure(&s->nodes[0].backdoor_ecc_state, &s->nodes[0]);
-        memory_region_init_io(&s->nodes[0].backdoor_ecc, OBJECT(&s->nodes[0]),
-                              &sn0_backdoor_populated_ops,
-                              &s->nodes[0].backdoor_ecc_state,
-                              "sn0.node0.backdoor.ecc", populated_size);
-        memory_region_add_subregion(system,
-                                    SN0_SPACE_HUB + node +
-                                        SN0_BACKDOOR_ECC_HUB,
-                                    &s->nodes[0].backdoor_ecc);
-    }
-
-    memory_region_init_io(&s->nodes[0].backdoor_dir_absent,
-                          OBJECT(&s->nodes[0]),
-                          &sn0_backdoor_absent_ops, NULL,
-                          "sn0.node0.backdoor.dir.absent",
-                          SN0_BACKDOOR_DIR_SIZE);
-    memory_region_add_subregion_overlap(system,
-                                        SN0_SPACE_HUB + node +
-                                            SN0_BACKDOOR_DIR_HUB,
-                                        &s->nodes[0].backdoor_dir_absent, -1);
-    if (s->nodes[0].populated_banks > 0) {
-        uint64_t populated_size = (uint64_t)s->nodes[0].populated_banks *
-                                  SN0_BACKDOOR_BANK_STRIDE;
-
-        sn0_backdoor_configure(&s->nodes[0].backdoor_dir_state, &s->nodes[0]);
-        memory_region_init_io(&s->nodes[0].backdoor_dir, OBJECT(&s->nodes[0]),
-                              &sn0_backdoor_populated_ops,
-                              &s->nodes[0].backdoor_dir_state,
-                              "sn0.node0.backdoor.dir", populated_size);
-        memory_region_add_subregion(system,
-                                    SN0_SPACE_HUB + node +
-                                        SN0_BACKDOOR_DIR_HUB,
-                                    &s->nodes[0].backdoor_dir);
-    }
+    sn0_node_map_boot_storage(&s->nodes[0], 0);
 
     /*
      * A firmware image, if one was supplied, replaces what this file would
