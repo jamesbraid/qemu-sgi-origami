@@ -1784,6 +1784,29 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Firmware owns the route tables after reset. A stale route from the previous
+ * boot can send its first discovery packet to a port the new boot has not
+ * configured, so exercise a later machine reset rather than relying on the
+ * zero-filled allocation seen at power-on.
+ */
+static void test_network_routes_reset_to_zero(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + NI_LOCAL_TABLE, 0x1b);
+    qtest_writeq(qts, HUB_LOCAL + NI_META_TABLE_LAST, 0x16);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
+
+    qtest_system_reset(qts);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_META_TABLE_LAST), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_stock_prom_hubs_start_unnumbered(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -2034,6 +2057,8 @@ int main(int argc, char **argv)
                         test_network_scratch_registers);
     qtest_add_data_func("sn0/hub/vector-pio-direct-peer", NULL,
                         test_vector_pio_reaches_the_direct_peer);
+    qtest_add_data_func("sn0/hub/network-routes-reset-to-zero", NULL,
+                        test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,
                         test_stock_prom_hubs_start_unnumbered);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);

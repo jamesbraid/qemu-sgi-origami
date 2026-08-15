@@ -79,6 +79,8 @@
 #define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
 #define NI_SCRATCH_0            0x600100
 #define NI_SCRATCH_1            0x600108
+#define NI_META_TABLE_LAST      0x6380f8
+#define NI_LOCAL_TABLE          0x638100
 
 /* PCI type 0 configuration space, and the window each device sits behind. */
 #define BRIDGE_CFG0             0x020000
@@ -228,6 +230,40 @@ static void test_a_device_window_survives_migration(const void *data)
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_SCRATCH_1), ==,
                     0xfedcba9876543210ULL);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+/*
+ * Route entries are guest-programmed network state. Their initial value is
+ * also zero, so a migration test must write non-zero values before the move;
+ * otherwise a destination that silently drops the version-16 arrays passes.
+ */
+static void test_network_routes_survive_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    qtest_writeq(from, HUB_LOCAL + NI_LOCAL_TABLE, 0x1b);
+    qtest_writeq(from, HUB_LOCAL + NI_META_TABLE_LAST, 0x16);
+    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
+    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -427,6 +463,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/migration/device-window-survives-migration",
                         NULL, test_a_device_window_survives_migration);
+    qtest_add_data_func("sn0/migration/network-routes-survive-migration",
+                        NULL, test_network_routes_survive_migration);
     qtest_add_data_func("sn0/migration/conversation-survives-migration",
                         NULL, test_a_conversation_survives_migration);
     qtest_add_data_func("sn0/migration/flash-autoselect-survives-migration",
