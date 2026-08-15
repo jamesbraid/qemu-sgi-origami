@@ -34,6 +34,8 @@
 
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785U
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffffU
+#define SN0_PROMDATA_PADDR      UINT64_C(0x00100000)
+#define SN0_PROMDATA_SIZE       UINT64_C(0x00008000)
 #define SN0_HUB_LOCAL           0x20001000000ULL
 #define SN0_NODE_STRIDE         0x100000000ULL
 #define SN0_HUB_NODE_WINDOW     0x01800000ULL
@@ -407,6 +409,34 @@ static void test_architecture_boundaries(const void *data)
 }
 
 /*
+ * The PROM's early C stack lives at the 0xa800... XKPHYS alias. Its cache
+ * algorithm maps that alias to ordinary physical memory at 1 MiB. QEMU has no
+ * primary data cache to keep those writes private, so each CPU's address space
+ * must intercept that physical range before it reaches shared node RAM.
+ */
+static void test_promdata_uses_memory_space(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,synthesized-firmware=off "
+                                 "-smp 2");
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    g_autofree char *cpu0_mapping = g_strdup_printf(
+        "%016" PRIx64 "-%016" PRIx64
+        " (prio 2, i/o): sn0.node0.cpu0.promdata-filter",
+        SN0_PROMDATA_PADDR,
+        SN0_PROMDATA_PADDR + SN0_PROMDATA_SIZE - 1);
+    g_autofree char *cpu1_mapping = g_strdup_printf(
+        "%016" PRIx64 "-%016" PRIx64
+        " (prio 2, i/o): sn0.node0.cpu1.promdata-filter",
+        SN0_PROMDATA_PADDR,
+        SN0_PROMDATA_PADDR + SN0_PROMDATA_SIZE - 1);
+
+    g_assert_nonnull(strstr(mtree, cpu0_mapping));
+    g_assert_nonnull(strstr(mtree, cpu1_mapping));
+
+    qtest_quit(qts);
+}
+
+/*
  * An IP29 node has two processor slices.  Selecting both must create both CPU
  * objects and tell the node's Hub that both sockets are populated; accepting
  * -smp 2 without either half would expose a topology that firmware cannot use.
@@ -666,6 +696,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
                         test_architecture_boundaries);
+    qtest_add_data_func("sn0/model/promdata-uses-memory-space", NULL,
+                        test_promdata_uses_memory_space);
     qtest_add_data_func("sn0/model/processor-mode-bits", NULL,
                         test_processor_mode_bits_are_board_state);
     qtest_add_data_func("sn0/model/one-node-smp", NULL,

@@ -4,6 +4,10 @@ test_mips64_timeouts = {
   'malta' : 240,
 }
 
+tests_mips64_system_quick = [
+  'sn0_smp',
+]
+
 tests_mips64_system_thorough = [
   'malta',
   'tuxrun',

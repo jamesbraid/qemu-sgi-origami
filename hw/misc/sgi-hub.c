@@ -1084,8 +1084,7 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     switch (addr) {
-    case HUB_PI_RT_COUNT:
-        return sgi_hub_rt_count(s);
+    case HUB_PI_RT_COUNT:     return sgi_hub_rt_count(s);
     case HUB_PI_RT_COMPARE_A: return sgi_hub_rt_compare_read(s, 0);
     case HUB_PI_RT_COMPARE_B: return sgi_hub_rt_compare_read(s, 1);
     case HUB_PI_RT_PENDING_A: return s->pi_rt_pending[0];

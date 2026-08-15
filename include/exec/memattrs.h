@@ -66,7 +66,9 @@ typedef struct MemTxAttrs {
      */
     bool unspecified;
 
-    uint8_t _reserved1;
+    /* MIPS: the access uses an uncached or uncached-accelerated CCA. */
+    uint8_t mips_uncached:1;
+    uint8_t _reserved1:7;
     uint16_t _reserved2;
 } MemTxAttrs;
 
