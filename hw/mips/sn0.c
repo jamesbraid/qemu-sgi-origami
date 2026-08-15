@@ -2596,12 +2596,71 @@ static void sn0_node_map_boot_storage(SN0NodeState *node,
     }
 }
 
+static void sn0_node_create_hub(SN0MachineState *machine,
+                                SN0NodeState *node,
+                                unsigned int node_index,
+                                unsigned int cpu_base,
+                                unsigned int cpu_count,
+                                bool network_link_up)
+{
+    g_autofree char *xtalk_name =
+        g_strdup_printf("sn0.node%u.xtalk", node_index);
+    MIPSCPU *cpu;
+
+    memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
+                       SN0_XTALK_SIZE);
+
+    qdev_prop_set_uint32(DEVICE(&node->hub), "nasid", node->nasid);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", cpu_count);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", cpu_base);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
+                        machine->elsc_dip_switches);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
+                         SN0_XTALK_WIDGET_SHIFT);
+    if (network_link_up) {
+        qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
+    }
+    object_property_set_link(OBJECT(&node->hub), "xtalk",
+                             OBJECT(&node->xtalk), &error_fatal);
+
+    /*
+     * The bring-up UART is a node-0 diagnostic device, not part of either
+     * shipped chassis. Keeping it on the console node also avoids assigning
+     * one character backend to two frontends.
+     */
+    qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
+                      node_index == 0 && machine->junk_uart_present);
+    if (node_index == 0 && machine->junk_uart_present &&
+        serial_hd(SN0_JUNK_UART_CHARDEV)) {
+        object_property_set_link(OBJECT(&node->hub), "junk-uart-chardev",
+                                 OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
+                                 &error_fatal);
+    }
+    sysbus_realize(SYS_BUS_DEVICE(&node->hub), &error_fatal);
+
+    cpu = node->cpu[0];
+    sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 0,
+                       cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 1,
+                       cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 2,
+                       cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
+    if (cpu_count == SN0_CPUS_PER_NODE) {
+        cpu = node->cpu[1];
+        sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 4,
+                           cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 5,
+                           cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 3,
+                           cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
+    }
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     MemoryRegion *system = get_system_memory();
     hwaddr node = SN0_NODE_BASE(0);
-    MIPSCPU *cpu;
     PCIDevice *ioc3;
     NICInfo *nd;
     uint8_t *flash, *fw;
@@ -2643,7 +2702,6 @@ static void sn0_init(MachineState *machine)
     }
 
     sn0_node_create_cpus(machine, &s->nodes[0], 0, 0, machine->smp.cpus, 0);
-    cpu = s->nodes[0].cpu[0];
     ram_offset = sn0_node_map_memory(machine, &s->nodes[0], 0, ram_offset,
                                      machine->ram_size);
     g_assert(ram_offset == machine->ram_size);
@@ -2656,98 +2714,7 @@ static void sn0_init(MachineState *machine)
      * last. An image shorter than the flash leaves the synthesized bytes behind
      * it, which is what a partly programmed flash looks like.
      */
-    /*
-     * Crosstalk space, which every widget lives in and which the node's
-     * crosstalk windows are views onto. A widget's registers go in here once,
-     * at that widget's own base, and the windows a processor reaches them
-     * through are aliases of it — so a device has one address, and the small
-     * window and the big window that both reach it cannot come to disagree
-     * about what it is.
-     */
-    memory_region_init(&s->nodes[0].xtalk, OBJECT(&s->nodes[0]), "sn0.xtalk",
-                       SN0_XTALK_SIZE);
-
-    /*
-     * Nothing is built for widget 0, because on this machine widget 0 is not a
-     * device. It is the I/O bridge answering a second time, and what puts it
-     * there is an alias built once the bridge exists, below.
-     */
-
-    /*
-     * The Hub's register window, at both halves of the crossbar's widget 1
-     * small window. The lower half is how a guest reaches the Hub of whichever
-     * node it is running on without first learning its node number: the address
-     * carries node zero whoever forms it. The upper half names a node
-     * explicitly. On one node the two resolve to the same Hub, and both have to
-     * decode, because a guest uses one to read its processor number and the
-     * other to clear interrupt state in the same boot.
-     */
-    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "nasid", s->nodes[0].nasid);
-    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "cpus", machine->smp.cpus);
-    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "cpu-base", 0);
-    qdev_prop_set_uint8(DEVICE(&s->nodes[0].hub), "elsc-dip-switches",
-                        s->elsc_dip_switches);
-    qdev_prop_set_uint32(DEVICE(&s->nodes[0].hub), "xtalk-widget-shift",
-                         SN0_XTALK_WIDGET_SHIFT);
-    object_property_set_link(OBJECT(&s->nodes[0].hub), "xtalk",
-                             OBJECT(&s->nodes[0].xtalk),
-                             &error_fatal);
-    /*
-     * The junk-bus UART, off unless the operator asked for it by name. It
-     * takes the *third* character device. The first belongs to the base I/O
-     * controller's port A and to the synthesized firmware's own console; the
-     * second belongs to the system controller, which every Origin 200 has and
-     * which this machine therefore always fits.
-     *
-     * **It moved here from the second, and the reason is worth keeping.** This
-     * port was given the second device when nothing else used it, and the
-     * system controller then landed and took the same one. Two frontends
-     * cannot share a backend, so enabling this port *and* supplying a second
-     * -serial aborted the machine before it started. Only that combination
-     * fails: with no second -serial both claims resolve to nothing and the
-     * collision never forms, which is why every qtest passes — they supply no
-     * character devices at all.
-     *
-     * **The part that moved is the one that is off by default**, so the
-     * machine anyone gets without asking keeps its device indices where they
-     * were. An option should not renumber the parts a real machine has.
-     */
-    qdev_prop_set_bit(DEVICE(&s->nodes[0].hub), "junk-uart",
-                      s->junk_uart_present);
-    if (s->junk_uart_present && serial_hd(SN0_JUNK_UART_CHARDEV)) {
-        object_property_set_link(OBJECT(&s->nodes[0].hub), "junk-uart-chardev",
-                                 OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
-                                 &error_fatal);
-    }
-    sysbus_realize(SYS_BUS_DEVICE(&s->nodes[0].hub), &error_fatal);
-
-    /*
-     * The Hub's two pending banks reach each processor on its first two
-     * hardware interrupt lines. A processor's interrupt array is indexed by the
-     * position within the Cause register's pending field, so the index is the
-     * Cause bit less that field's offset — derived rather than written, because
-     * the sources all name the Cause bit and a hand-written index is a silent
-     * two-line error with nothing to check it against.
-     */
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 0,
-                       cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 1,
-                       cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
-    /*
-     * Processor A's real-time comparator. Processor B's line is connected
-     * below when that socket is populated.
-     */
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 2,
-                       cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
-    if (machine->smp.cpus == SN0_CPUS_PER_NODE) {
-        cpu = s->nodes[0].cpu[1];
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 4,
-                           cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 5,
-                           cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->nodes[0].hub), 3,
-                           cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
-    }
+    sn0_node_create_hub(s, &s->nodes[0], 0, 0, machine->smp.cpus, false);
 
     /*
      * The I/O bridge. It carries a real PCI bus, and the base I/O controller
