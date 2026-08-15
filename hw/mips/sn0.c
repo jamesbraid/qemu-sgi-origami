@@ -298,12 +298,16 @@ DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
 #define SN0_PROMLOG_MAGIC     0x504c4f47
 #define SN0_PROMLOG_VERSION   1
 
-static bool sn0_promdata_is_private(SN0PromDataState *s)
+static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
 {
     CPUMIPSState *env;
     uint32_t pc;
 
     if (!current_cpu || current_cpu != CPU(s->cpu)) {
+        return false;
+    }
+
+    if (attrs.mips_uncached) {
         return false;
     }
 
@@ -337,7 +341,7 @@ static MemTxResult sn0_promdata_read(void *opaque, hwaddr addr, uint64_t *val,
     uint8_t bytes[8];
     MemTxResult result;
 
-    if (sn0_promdata_is_private(s)) {
+    if (sn0_promdata_is_private(s, attrs)) {
         *val = ldn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size);
         return MEMTX_OK;
     }
@@ -355,7 +359,7 @@ static MemTxResult sn0_promdata_write(void *opaque, hwaddr addr, uint64_t val,
     SN0PromDataState *s = opaque;
     uint8_t bytes[8];
 
-    if (sn0_promdata_is_private(s)) {
+    if (sn0_promdata_is_private(s, attrs)) {
         stn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size, val);
         memory_region_set_dirty(&s->data, addr, size);
         return MEMTX_OK;
@@ -2455,8 +2459,16 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
          */
         node->promdata[slice].filter.disable_reentrancy_guard = true;
         qemu_register_reset(sn0_promdata_reset, &node->promdata[slice]);
+
+        /*
+         * The PROM addresses this cache-only data through its 0xa800...
+         * XKPHYS alias. Its cache algorithm translates to ordinary physical
+         * memory, so intercept that carrier window before shared node RAM.
+         * When the private phase ends, the filter forwards accesses to the
+         * same address in the global memory space.
+         */
         memory_region_add_subregion_overlap(
-            &node->cpu_sysmem[slice], SN0_PROMDATA_PADDR,
+            &node->cpu_sysmem[slice], SN0_SPACE_MEMORY + SN0_PROMDATA_PADDR,
             &node->promdata[slice].filter, 2);
         object_property_add_child(OBJECT(node), name,
                                   OBJECT(node->cpu[slice]));

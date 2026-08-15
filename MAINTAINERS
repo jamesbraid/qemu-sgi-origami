@@ -1478,6 +1478,7 @@ S: Odd Fixes
 F: configs/devices/mips*/*
 F: hw/mips/
 F: include/hw/mips/
+F: tests/functional/mips64/test_sn0_smp.py
 F: tests/qtest/sn0-*
 
 Jazz

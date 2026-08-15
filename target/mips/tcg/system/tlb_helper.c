@@ -949,6 +949,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                        bool probe, uintptr_t retaddr)
 {
     CPUMIPSState *env = cpu_env(cs);
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
     hwaddr physical;
     int prot;
     int ret = TLBRET_BADADDR;
@@ -970,9 +971,18 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         break;
     }
     if (ret == TLBRET_MATCH) {
-        tlb_set_page(cs, address & TARGET_PAGE_MASK,
-                     physical & TARGET_PAGE_MASK, prot,
-                     mmu_idx, TARGET_PAGE_SIZE);
+#if defined(TARGET_MIPS64)
+        if ((env->insn_flags & INSN_R10K) &&
+            address >= UINT64_C(0x8000000000000000) &&
+            address < UINT64_C(0xc000000000000000)) {
+            unsigned int cca = (address >> 59) & 7;
+
+            attrs.mips_uncached = cca == 2 || cca == 7;
+        }
+#endif
+        tlb_set_page_with_attrs(cs, address & TARGET_PAGE_MASK,
+                                physical & TARGET_PAGE_MASK, attrs, prot,
+                                mmu_idx, TARGET_PAGE_SIZE);
         return true;
     }
 #if !defined(TARGET_MIPS64)
