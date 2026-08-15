@@ -66,6 +66,15 @@
 #define DEV_MEMORY_SPACE        (1u << 12)
 
 #define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
+#define MACHINE                 "-M origin200"
+
+/* The Hub's boot-flash view and AMD command offsets. */
+#define SPACE_HUB               0x10000000000ULL
+#define FLASH_RESET             0x1fc00000ULL
+#define FLASH_HUB               (SPACE_HUB + 0x10000000)
+#define FLASH_UNLOCK1           0x5555
+#define FLASH_UNLOCK2           0x2aaa
+#define FLASH_PROGRAM_TARGET    0xe0100
 
 #define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
 #define NI_SCRATCH_0            0x600100
@@ -113,6 +122,11 @@
 #define NIC_PULSE(us)            ((uint32_t)(us) << 10)
 #define NIC_ROM_IDENTITY         0x360605040302010bULL
 #define NIC_CRC_RESIDUE          0xb001
+
+static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
+{
+    qtest_writeq(qts, FLASH_HUB + 8 * offset, value);
+}
 
 static void bridge_put_card_in_slot(QTestState *qts, int slot)
 {
@@ -350,6 +364,63 @@ static void test_a_conversation_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+static void test_flash_autoselect_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    flash_command(from, FLASH_UNLOCK1, 0xaa);
+    flash_command(from, FLASH_UNLOCK2, 0x55);
+    flash_command(from, FLASH_UNLOCK1, 0x90);
+    g_assert_cmphex(qtest_readl(from, FLASH_HUB), ==, 0x01d5ffff);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    g_assert_cmphex(qtest_readl(to, FLASH_HUB), ==, 0x01d5ffff);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+static void test_flash_program_command_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    flash_command(from, FLASH_UNLOCK1, 0xaa);
+    flash_command(from, FLASH_UNLOCK2, 0x55);
+    flash_command(from, FLASH_UNLOCK1, 0xa0);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    flash_command(to, FLASH_PROGRAM_TARGET, 0x5a);
+    g_assert_cmphex(qtest_readb(to, FLASH_RESET + FLASH_PROGRAM_TARGET), ==,
+                    0x5a);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -358,6 +429,11 @@ int main(int argc, char **argv)
                         NULL, test_a_device_window_survives_migration);
     qtest_add_data_func("sn0/migration/conversation-survives-migration",
                         NULL, test_a_conversation_survives_migration);
+    qtest_add_data_func("sn0/migration/flash-autoselect-survives-migration",
+                        NULL, test_flash_autoselect_survives_migration);
+    qtest_add_data_func("sn0/migration/flash-program-command-"
+                        "survives-migration",
+                        NULL, test_flash_program_command_survives_migration);
 
     return g_test_run();
 }
