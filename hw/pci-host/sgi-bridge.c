@@ -224,10 +224,13 @@
  * serial number, and a check byte over the seven. **The family code is the
  * load-bearing part** — a guest matches on it to decide this is a memory it
  * knows how to read, and the wrong one means the part is found and ignored.
- * The serial is ours and nothing reads it; the check byte is computed over the
- * other seven and a guest verifies it before believing any of them.
+ * The serial identifies the physical board and is supplied by the machine;
+ * the check byte is computed over the other seven and a guest verifies it
+ * before believing any of them.
  */
-#define NIC_ROM_IDENTITY        0x360605040302010bULL
+#define NIC_ROM_FAMILY          0x0b
+#define NIC_ROM_SERIAL_DEFAULT  0x060504030201ULL
+#define NIC_ROM_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
 #define NIC_ROM_BITS            64
 
 
@@ -1311,6 +1314,30 @@ static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
 }
 
 /*
+ * Assemble the standard one-wire ROM identifier: family, six serial bytes,
+ * then the Dallas/Maxim CRC-8 over those seven bytes. This is the same public
+ * one-wire algorithm used by the IOC3 identity part, kept local because these
+ * two devices otherwise share no bus implementation or state.
+ */
+static uint64_t sgi_bridge_onewire_rom_id(uint64_t serial)
+{
+    uint64_t identity = NIC_ROM_FAMILY | (serial << 8);
+    uint64_t data = identity;
+    uint8_t crc = 0;
+    unsigned int byte, bit;
+
+    for (byte = 0; byte < 7; byte++) {
+        crc ^= data & 0xff;
+        data >>= 8;
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+
+    return identity | ((uint64_t)crc << 56);
+}
+
+/*
  * What the identity part holds. Two guests read these same sixty-four bytes
  * and want different things from them, and the layout below is what satisfies
  * both at once.
@@ -1637,7 +1664,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
          */
         unsigned int step = s->onewire_bit % 3;
         unsigned int index = s->onewire_bit / 3;
-        bool bit = (NIC_ROM_IDENTITY >> index) & 1;
+        bool bit = (s->onewire_identity >> index) & 1;
 
         if (step == 0) {
             level = bit;
@@ -1648,7 +1675,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         if (++s->onewire_bit == NIC_ROM_BITS * 3) {
             s->onewire_bit = 0;
             s->onewire_phase = NIC_PHASE_IDLE;
-            trace_sgi_bridge_onewire_search_done(NIC_ROM_IDENTITY);
+            trace_sgi_bridge_onewire_search_done(s->onewire_identity);
         }
     } else if (s->onewire_phase == NIC_PHASE_MATCH) {
         /*
@@ -1668,7 +1695,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
         }
         if (++s->onewire_bit == NIC_ROM_BITS) {
             s->onewire_bit = 0;
-            if (s->onewire_match == NIC_ROM_IDENTITY) {
+            if (s->onewire_match == s->onewire_identity) {
                 s->onewire_phase = NIC_PHASE_FUNCTION;
                 s->onewire_command = 0;
             } else {
@@ -1676,7 +1703,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
                               "sgi-bridge: one-wire match names identity "
                               "0x%016" PRIx64 ", but the board identity part "
                               "is 0x%016" PRIx64 "\n",
-                              s->onewire_match, (uint64_t)NIC_ROM_IDENTITY);
+                              s->onewire_match, s->onewire_identity);
                 s->onewire_phase = NIC_PHASE_IDLE;
             }
             trace_sgi_bridge_onewire_match(s->onewire_match,
@@ -2359,6 +2386,13 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     Object *obj = OBJECT(dev);
     unsigned int slot;
 
+    if (s->onewire_serial & ~NIC_ROM_SERIAL_MASK) {
+        error_setg(errp, "the I/O bridge one-wire serial 0x%" PRIx64
+                   " does not fit in 48 bits", s->onewire_serial);
+        return;
+    }
+    s->onewire_identity = sgi_bridge_onewire_rom_id(s->onewire_serial);
+
     /*
      * The widget's whole crosstalk space is this chip's, and what is not in it
      * yet is not mapped, so an access there reaches nothing rather than
@@ -2534,10 +2568,9 @@ static const VMStateDescription vmstate_sgi_bridge = {
 };
 
 /*
- * The identity a real Bridge answers with. It is a property rather than a
- * constant for the same reason the crossbar's is: what a widget reports is part
- * of the machine's description, and a machine carrying a different revision of
- * the chip says so here rather than by editing this file.
+ * The identities a real Bridge and its board answer with. They are properties
+ * rather than constants because the chip revision and board serial belong to
+ * the machine that fitted them, not to every instance of the device.
  */
 static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIBridgeState, fabric, TYPE_MEMORY_REGION,
@@ -2548,6 +2581,8 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT32("revision", SGIBridgeState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIBridgeState, part, 0xc002),
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),
+    DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
+                       NIC_ROM_SERIAL_DEFAULT),
 };
 
 static void sgi_bridge_class_init(ObjectClass *oc, const void *data)

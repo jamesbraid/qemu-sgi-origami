@@ -199,6 +199,19 @@ struct SGIBridgeState {
     uint32_t reg[SGI_BRIDGE_REG_SLOTS];
 
     /*
+     * The laser-programmed serial and complete ROM identifier of the board's
+     * one-wire identity part. The machine supplies the six-byte serial because
+     * it identifies a physical board rather than the Bridge chip; the device
+     * derives the family and check byte that the part sends around it.
+     *
+     * The serial is static machine configuration and the complete identity is
+     * derived at realize. Neither is migrated: the destination constructs the
+     * same physical machine before restoring the transaction state below.
+     */
+    uint64_t onewire_serial;
+    uint64_t onewire_identity;
+
+    /*
      * The one-wire conversation with the board identity part. A guest drives
      * it a bit at a time through a single register, so where the part is in a
      * command has to be remembered between writes: which phase it is in, how
