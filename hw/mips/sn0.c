@@ -95,6 +95,7 @@
 #define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
 #define SN0_CPUS_PER_NODE 2
 #define SN0_ORIGIN200_MAX_NODES 2
+#define SN0_BRIDGE_ONEWIRE_SERIAL_BASE 0x060504030201ULL
 #define SN0_UNCACHED_SPACES 4
 #define SN0_HUB_PRIVATE_SIZE (128 * KiB)
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
@@ -188,7 +189,7 @@ struct SN0MachineState {
     MachineState parent_obj;
 
     SN0NodeState nodes[SN0_ORIGIN200_MAX_NODES];
-    SGIBridgeState io_bridge;
+    SGIBridgeState io_bridge[SN0_ORIGIN200_MAX_NODES];
 
     /*
      * Widget 0, which on this machine is the I/O bridge seen a second time
@@ -196,7 +197,7 @@ struct SN0MachineState {
      * one parent, so the second view of the bridge's widget space has to be an
      * alias with its own storage.
      */
-    MemoryRegion widget0;
+    MemoryRegion widget0[SN0_ORIGIN200_MAX_NODES];
 
     /*
      * Whether the I/O bridge is fitted. **On by default**, because a real
@@ -1554,7 +1555,7 @@ static bool sn0_ip29_memory_layout(uint64_t ram_size,
 static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
                       uint8_t version, unsigned int next,
                       unsigned int first_component, unsigned int components,
-                      unsigned int declared_count)
+                      unsigned int declared_count, unsigned int nasid)
 {
     uint8_t *b = graph + (SN0_GRAPH_BOARDS - SN0_CONFIG_GRAPH) +
                  index * SN0_GRAPH_BOARD_SIZE;
@@ -1571,7 +1572,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
      * field also indexes a table with no bounds check, so it has to be right
      * and in range on every board even here.
      */
-    stw_be_p(b + 0x20, 0);
+    stw_be_p(b + 0x20, nasid);
     for (i = 0; i < components; i++) {
         stl_be_p(b + 0x24 + i * 4,
                  SN0_GRAPH_COMPONENTS + (first_component + i) *
@@ -1589,20 +1590,27 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
  * to assuming the Hub sits at a fixed widget is the normal path on this machine
  * and not a degraded one.
  */
-static void sn0_build_graph(MachineState *machine, hwaddr node)
+static void sn0_build_graph(MachineState *machine, unsigned int node_index,
+                            bool include_base_io)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
+    SN0NodeState *node_state = &s->nodes[node_index];
+    hwaddr node = SN0_NODE_BASE(node_state->nasid);
     uint8_t *graph = g_malloc0(SN0_CONFIG_GRAPH_SIZE);
     uint8_t *console = graph + SN0_GRAPH_CONSOLE_OFF;
     uint8_t *cpu, *hub, *mem;
-    uint64_t total_mb = machine->ram_size / MiB;
+    uint64_t total_mb = 0;
     uint64_t widget;
     unsigned int base_io_component;
-    unsigned int cpu_count = machine->smp.cpus;
+    unsigned int cpu_count = node_state->cpu[1] ? 2 : 1;
     unsigned int hub_component = cpu_count;
     unsigned int i;
     unsigned int memory_component = hub_component + 1;
     unsigned int midplane_component = memory_component + 1;
+
+    for (i = 0; i < node_state->populated_banks; i++) {
+        total_mb += node_state->bank_mb[i];
+    }
 
     stq_be_p(graph + 0x00, SN0_GRAPH_MAGIC);
     /* The structure version, which real firmware writes as zero. */
@@ -1700,16 +1708,18 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     /* Board 0: the node board, with its processors, Hub and memory banks. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
               SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, cpu_count + 2,
-              cpu_count + 2);
+              cpu_count + 2, node_state->nasid);
     /*
      * These physical identifiers name different things: a processor's slice,
      * the Hub's node, and the memory component's first bank. Only the latter
      * two remain zero when slice B is populated.
      */
     for (i = 0; i < cpu_count; i++) {
-        sn0_component(graph, i, i, SN0_COMP_PROCESSOR, i, 0);
+        sn0_component(graph, i, node_index * SN0_CPUS_PER_NODE + i,
+                      SN0_COMP_PROCESSOR, i, 0);
     }
-    sn0_component(graph, hub_component, 0, SN0_COMP_HUB, 0, 0);
+    sn0_component(graph, hub_component, 0, SN0_COMP_HUB,
+                  node_state->nasid, 0);
     sn0_component(graph, memory_component, 0, SN0_COMP_MEMORY, 0, 0);
 
     /*
@@ -1762,7 +1772,7 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
     stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */
     stw_be_p(mem + 0x3a, 0);                    /* bank-to-address mapping */
     for (i = 0; i < SN0_MEM_BANKS; i++) {
-        stw_be_p(mem + 0x3c + i * 2, s->nodes[0].bank_mb[i]);
+        stw_be_p(mem + 0x3c + i * 2, node_state->bank_mb[i]);
     }
 
     /*
@@ -1781,8 +1791,9 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * would put the component one slot away from where that consumer looks.
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
-              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE,
-              midplane_component, 1, 0);
+              include_base_io ?
+                  SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE : 0,
+              midplane_component, 1, 0, node_state->nasid);
     sn0_component(graph, midplane_component, 0, SN0_COMP_MODULE_SERIAL, 0, 0);
 
     /*
@@ -1812,24 +1823,27 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
      * constants that place those devices on the bus above, not values asserted
      * separately that merely happen to agree with them.
      */
-    base_io_component = midplane_component + 1;
-    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
-              base_io_component, 4, 4);
-    sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
-                  SN0_CONSOLE_WIDGET,
-                  SN0_CONSOLE_WIDGET);
-    sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
-                  SN0_SCSI_DEVICE0,
-                  SN0_CONSOLE_WIDGET);
-    sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
-                  SN0_SCSI_DEVICE1,
-                  SN0_CONSOLE_WIDGET);
-    sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
-                  SN0_IOC3_DEVICE,
-                  SN0_CONSOLE_WIDGET);
+    if (include_base_io) {
+        base_io_component = midplane_component + 1;
+        sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
+                  base_io_component, 4, 4, node_state->nasid);
+        sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
+                      SN0_CONSOLE_WIDGET, SN0_CONSOLE_WIDGET);
+        sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
+                      SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET);
+        sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
+                      SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET);
+        sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
+                      SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET);
+    }
 
-    rom_add_blob_fixed("sn0.graph", graph, SN0_CONFIG_GRAPH_SIZE,
+    {
+        g_autofree char *name =
+            g_strdup_printf("sn0.node%u.graph", node_index);
+
+        rom_add_blob_fixed(name, graph, SN0_CONFIG_GRAPH_SIZE,
                        node + SN0_CONFIG_GRAPH);
+    }
     g_free(graph);
 }
 
@@ -1839,14 +1853,20 @@ static void sn0_build_graph(MachineState *machine, hwaddr node)
  * every field rather than only the ones a guest currently reads: a block that
  * is right only where somebody looks is a trap for whoever comes next.
  */
-static void sn0_build_structures(MachineState *machine, hwaddr node,
+static void sn0_build_structures(MachineState *machine,
+                                 unsigned int node_index,
                                  uint64_t kernel_page, uint64_t kernel_pages)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
+    SN0NodeState *node_state = &s->nodes[node_index];
+    hwaddr node = SN0_NODE_BASE(node_state->nasid);
     struct sn0_mem_descriptor mem[6];
     uint8_t param[0x60] = { };
     uint8_t dir[SN0_HW_DIR_ENTRIES * SN0_HW_DIR_ENTRY_SIZE] = { };
     uint8_t gda[SN0_GDA_SIZE] = { };
+    unsigned int node_count =
+        machine->numa_state && machine->numa_state->num_nodes ?
+        machine->numa_state->num_nodes : 1;
     unsigned int n = 0;
     int i;
 
@@ -1978,11 +1998,11 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
     stw_be_p(gda + 0x06, 0);                        /* master node */
     for (i = 0; i < SN0_GDA_NODES; i++) {
         stw_be_p(gda + SN0_GDA_NODE_TABLE + i * 2,
-                 i == 0 ? 0 : SN0_GDA_NODE_ABSENT);
+                 i < node_count ? i : SN0_GDA_NODE_ABSENT);
     }
     rom_add_blob_fixed("sn0.gda", gda, sizeof(gda), node + SN0_GDA);
 
-    sn0_build_graph(machine, node);
+    sn0_build_graph(machine, node_index, node_index == 0);
 
     /* The memory descriptors, shaped as a real machine of this era reports. */
     mem[n].type = SN0_MEM_EXCEPTION_BLOCK;
@@ -2026,8 +2046,8 @@ static void sn0_build_structures(MachineState *machine, hwaddr node,
         rom_add_blob_fixed("sn0.memdesc", buf, sizeof(buf),
                            node + SN0_MEM_LIST + i * sizeof(buf));
     }
-    s->nodes[0].mem_addr = SN0_COMPAT_CACHED + SN0_MEM_LIST;
-    s->nodes[0].mem_count = n;
+    node_state->mem_addr = SN0_COMPAT_CACHED + SN0_MEM_LIST;
+    node_state->mem_count = n;
 }
 
 /*
@@ -2205,7 +2225,8 @@ static void sn0_assign_pci_resources(void *opaque)
                              SN0_PCI_IOC3_MEM, 4);
     pci_default_write_config(s->pci_ioc3, PCI_COMMAND,
                              PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, 2);
-    sgi_bridge_assign_window(&s->io_bridge, SN0_IOC3_DEVICE, SN0_PCI_IOC3_MEM,
+    sgi_bridge_assign_window(&s->io_bridge[0], SN0_IOC3_DEVICE,
+                             SN0_PCI_IOC3_MEM,
                              true);
 
     for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
@@ -2219,7 +2240,7 @@ static void sn0_assign_pci_resources(void *opaque)
         pci_default_write_config(s->pci_scsi[slot], PCI_COMMAND,
                                  PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
                                  PCI_COMMAND_MASTER, 2);
-        sgi_bridge_assign_window(&s->io_bridge, SN0_SCSI_DEVICE0 + slot,
+        sgi_bridge_assign_window(&s->io_bridge[0], SN0_SCSI_DEVICE0 + slot,
                                  mem_base, true);
     }
 }
@@ -2369,17 +2390,29 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
                                             &node->sysmem_alias[slice], -1);
 
         /*
-         * Addresses without a NASID name the reading processor's node.  Keep
-         * the global system map underneath so an explicit NASID still reaches
-         * any remote node.
+         * Addresses without a NASID normally name the reading processor's
+         * node.  The exception is the cached low-address alias after
+         * synthesized firmware has handed a directly loaded kernel control:
+         * Linux disables PI_CALIAS_SIZE before launching remote processors,
+         * so their unqualified kernel-text addresses name node zero.  A real
+         * PROM keeps the reset-local view and owns that transition itself.
+         * Keep the global system map underneath so an explicit NASID still
+         * reaches either node in both cases.
          */
         for (space = 0; space < SN0_UNCACHED_SPACES; space++) {
             g_autofree char *local_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.local-space%u", node_index, slice, space);
+            hwaddr alias_node_base = node_base;
+
+            if (space == 0 && node_index != 0 &&
+                SN0_MACHINE(machine)->synthesized_firmware &&
+                machine->kernel_filename) {
+                alias_node_base = SN0_NODE_BASE(0);
+            }
 
             memory_region_init_alias(&node->local_space[slice][space],
                                      OBJECT(node), local_name, system,
-                                     SN0_SPACE(space) + node_base,
+                                     SN0_SPACE(space) + alias_node_base,
                                      SN0_NODE_SIZE);
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice], SN0_SPACE(space),
@@ -2848,7 +2881,7 @@ static void sn0_init(MachineState *machine)
      * (task #43). This whole branch — the direct subregion, and the warning
      * naming it an interim — is deleted once firmware can.
      */
-    object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge,
+    object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge[0],
                             TYPE_SGI_BRIDGE);
     /*
      * The silicon revision of the I/O bridge fitted to this machine. It is a
@@ -2860,8 +2893,17 @@ static void sn0_init(MachineState *machine)
      * because those are one chip and this is the one place the machine says
      * which chip it fitted.
      */
-    qdev_prop_set_uint32(DEVICE(&s->io_bridge), "revision",
+    qdev_prop_set_uint32(DEVICE(&s->io_bridge[0]), "revision",
                          s->widget0_revision);
+    /*
+     * Every physical BaseIO board has its own laser-programmed one-wire
+     * serial. These stable model values are consecutive only by choice; the
+     * first preserves the identity this machine exposed before it supported a
+     * second chassis, while the second prevents firmware from merging two
+     * physical nodes that fall back to their BaseIO identities.
+     */
+    qdev_prop_set_uint64(DEVICE(&s->io_bridge[0]), "onewire-serial",
+                         SN0_BRIDGE_ONEWIRE_SERIAL_BASE);
     /*
      * The fabric its interrupt packets travel, and how this machine encodes
      * a crosstalk destination in it. A pin rise becomes a write to the
@@ -2875,13 +2917,13 @@ static void sn0_init(MachineState *machine)
      * bridge is not asked for, because realize requires it and nothing here
      * ever drives a packet through an unmapped chip's fabric link anyway.
      */
-    object_property_set_link(OBJECT(&s->io_bridge), "fabric",
+    object_property_set_link(OBJECT(&s->io_bridge[0]), "fabric",
                              OBJECT(system), &error_fatal);
-    qdev_prop_set_uint64(DEVICE(&s->io_bridge), "fabric-base",
+    qdev_prop_set_uint64(DEVICE(&s->io_bridge[0]), "fabric-base",
                          SN0_SPACE_XTALK);
-    qdev_prop_set_uint32(DEVICE(&s->io_bridge), "fabric-node-shift",
+    qdev_prop_set_uint32(DEVICE(&s->io_bridge[0]), "fabric-node-shift",
                          SN0_NODE_SHIFT);
-    sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge), &error_fatal);
+    sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge[0]), &error_fatal);
 
     /*
      * Widget 0, which is this same bridge and not a second device.
@@ -2914,13 +2956,43 @@ static void sn0_init(MachineState *machine)
      * reaches for them and making an absent widget answer would remove the
      * only signal that tells one from a present one.
      */
-    memory_region_init_alias(&s->widget0, NULL, "sn0.xtalk.widget0",
+    memory_region_init_alias(&s->widget0[0], NULL, "sn0.xtalk.widget0",
                              sysbus_mmio_get_region(
-                                 SYS_BUS_DEVICE(&s->io_bridge), 0),
+                                 SYS_BUS_DEVICE(&s->io_bridge[0]), 0),
                              0, SGI_BRIDGE_WIDGET_SIZE);
     memory_region_add_subregion(&s->nodes[0].xtalk,
                                 SN0_XTALK_BASE(SN0_WIDGET0),
-                                &s->widget0);
+                                &s->widget0[0]);
+
+    if (node_count == 2) {
+        object_initialize_child(OBJECT(machine), "bridge1", &s->io_bridge[1],
+                                TYPE_SGI_BRIDGE);
+        qdev_prop_set_uint32(DEVICE(&s->io_bridge[1]), "revision",
+                             s->widget0_revision);
+        qdev_prop_set_uint64(DEVICE(&s->io_bridge[1]), "onewire-serial",
+                             SN0_BRIDGE_ONEWIRE_SERIAL_BASE + 1);
+        object_property_set_link(OBJECT(&s->io_bridge[1]), "fabric",
+                                 OBJECT(system), &error_fatal);
+        qdev_prop_set_uint64(DEVICE(&s->io_bridge[1]), "fabric-base",
+                             SN0_SPACE_XTALK);
+        qdev_prop_set_uint32(DEVICE(&s->io_bridge[1]), "fabric-node-shift",
+                             SN0_NODE_SHIFT);
+        sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge[1]), &error_fatal);
+
+        memory_region_init_alias(
+            &s->widget0[1], NULL, "sn0.node1.xtalk.widget0",
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[1]), 0),
+            0, SGI_BRIDGE_WIDGET_SIZE);
+        memory_region_add_subregion(&s->nodes[1].xtalk,
+                                    SN0_XTALK_BASE(SN0_WIDGET0),
+                                    &s->widget0[1]);
+        if (s->io_bridge_present) {
+            memory_region_add_subregion_overlap(
+                &s->nodes[1].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[1]), 0),
+                -1);
+        }
+    }
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
     qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
@@ -2942,7 +3014,7 @@ static void sn0_init(MachineState *machine)
             nd->macaddr.a[2] = 0x69;
         }
     }
-    pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge)->bus,
+    pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge[0])->bus,
                           &error_fatal);
 
     s->pci_ioc3 = ioc3;
@@ -2961,13 +3033,13 @@ static void sn0_init(MachineState *machine)
      * the bridge's own window.
      */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
-                          qdev_get_gpio_in(DEVICE(&s->io_bridge),
+                          qdev_get_gpio_in(DEVICE(&s->io_bridge[0]),
                                            SN0_IOC3_SUPERIO_PIN));
 
     if (s->io_bridge_present) {
         memory_region_add_subregion_overlap(
             &s->nodes[0].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
-            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge), 0), -1);
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[0]), 0), -1);
 
         /*
          * The two SCSI adapters the base I/O board carries, at the first two
@@ -2989,7 +3061,7 @@ static void sn0_init(MachineState *machine)
          */
         for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
             s->pci_scsi[slot] = pci_create_simple(
-                PCI_HOST_BRIDGE(&s->io_bridge)->bus,
+                PCI_HOST_BRIDGE(&s->io_bridge[0])->bus,
                 PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
         }
     } else {
@@ -3080,11 +3152,18 @@ static void sn0_init(MachineState *machine)
 
             sn0_build_trap_stub(fw + SN0_FW_LAUNCH_STUB,
                                trap_vaddr + SN0_FIRMWARE_LAUNCH_OP * 8);
-            /* Match the primary handoff before jumping through k1. */
-            stl_be_p(secondary, 0x341a0000 | (1 << CP0St_KX));
-            stl_be_p(secondary + 4, 0x409a6000); /* mtc0 k0, CP0_Status */
-            stl_be_p(secondary + 8, 0x03600008); /* jr k1 */
-            stl_be_p(secondary + 12, 0);
+            /*
+             * Remote slaves can execute the kernel's 64-bit FPU loads before
+             * its per-node exception vectors are live. Match the execution
+             * mode supplied by PROM for that transition; Linux replaces the
+             * status word in setup_c0_status_sec immediately afterwards.
+             */
+            stl_be_p(secondary, 0x3c1a3400); /* lui k0, CU0|CU1|FR */
+            stl_be_p(secondary + 4,
+                     0x375a0000 | (1 << CP0St_KX)); /* ori k0, k0, KX */
+            stl_be_p(secondary + 8, 0x409a6000); /* mtc0 k0, CP0_Status */
+            stl_be_p(secondary + 12, 0x03600008); /* jr k1 */
+            stl_be_p(secondary + 16, 0);
             sn0_flash_jump_to_firmware(
                 flash, SN0_FLASH_LAUNCHSLAVE,
                 fw_vaddr + SN0_FW_LAUNCH_STUB);
@@ -3173,7 +3252,11 @@ static void sn0_init(MachineState *machine)
      * where the kernel landed and how much of memory it took.
      */
     if (s->synthesized_firmware) {
-        sn0_build_structures(machine, node, kernel_page, kernel_pages);
+        for (node_index = 0; node_index < node_count; node_index++) {
+            sn0_build_structures(machine, node_index,
+                                 node_index == 0 ? kernel_page : 0,
+                                 node_index == 0 ? kernel_pages : 0);
+        }
     }
 
     /*

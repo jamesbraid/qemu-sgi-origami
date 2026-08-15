@@ -45,6 +45,7 @@
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
+#define NODE_STRIDE     (1ULL << 32)
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -1478,6 +1479,85 @@ static uint64_t nic_search_for_identity(QTestState *qts)
     return rom;
 }
 
+/*
+ * The same search through a specific physical node's Bridge window. A
+ * dual-chassis Origin 200 has one board identity part per Bridge, and the
+ * firmware uses that identity when the Hub's own part cannot be read.
+ */
+static bool nic_slot_at(QTestState *qts, uint64_t bridge, unsigned int pulse,
+                        unsigned int sample)
+{
+    uint64_t reg = bridge + BRIDGE_NIC + REG_DATA;
+
+    qtest_writel(qts, reg, NIC_PULSE(pulse) | NIC_SAMPLE(sample));
+    return qtest_readl(qts, reg) & NIC_LEVEL;
+}
+
+static void nic_write_byte_at(QTestState *qts, uint64_t bridge, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        nic_slot_at(qts, bridge, (byte >> i) & 1 ? 6 : 80,
+                    (byte >> i) & 1 ? 13 : 30);
+    }
+}
+
+static uint64_t nic_search_for_identity_at(QTestState *qts, uint64_t bridge)
+{
+    uint64_t rom = 0;
+    unsigned int i;
+
+    g_assert_false(nic_slot_at(qts, bridge, 520, 65));
+    nic_write_byte_at(qts, bridge, 0xf0);
+    for (i = 0; i < 64; i++) {
+        bool bit = nic_slot_at(qts, bridge, 6, 13);
+        bool complement = nic_slot_at(qts, bridge, 6, 13);
+
+        g_assert_cmpint(complement, ==, !bit);
+        if (bit) {
+            rom |= 1ULL << i;
+        }
+        nic_slot_at(qts, bridge, bit ? 6 : 80, bit ? 13 : 30);
+    }
+    return rom;
+}
+
+static uint8_t nic_crc8(uint8_t crc, uint64_t rom)
+{
+    unsigned int byte, bit;
+
+    for (byte = 0; byte < 8; byte++) {
+        crc ^= rom >> (byte * 8);
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+static void test_each_node_has_its_own_board_identity(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,io-bridge=on,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = nic_search_for_identity_at(qts, BRIDGE_BASE);
+    uint64_t node1 = nic_search_for_identity_at(qts,
+                                                 BRIDGE_BASE + NODE_STRIDE);
+
+    g_assert_cmphex(node0 & 0xff, ==, 0x0b);
+    g_assert_cmphex(node1 & 0xff, ==, 0x0b);
+    g_assert_cmphex(nic_crc8(0, node0), ==, 0);
+    g_assert_cmphex(nic_crc8(0, node1), ==, 0);
+    g_assert_cmphex(node0, !=, node1);
+
+    qtest_quit(qts);
+}
+
 /* Name an identity, sixty-four bits of it, least-significant first. */
 static void nic_match_identity(QTestState *qts, uint64_t rom)
 {
@@ -2170,6 +2250,8 @@ int main(int argc, char **argv)
                         test_a_reset_finds_the_part);
     qtest_add_data_func("sn0/bridge/one-wire-search-returns-identity", NULL,
                         test_a_search_returns_the_identity);
+    qtest_add_data_func("sn0/bridge/one-wire-identifies-each-node", NULL,
+                        test_each_node_has_its_own_board_identity);
     qtest_add_data_func("sn0/bridge/one-wire-page-reads-back", NULL,
                         test_a_page_reads_back_with_its_checks);
     qtest_add_data_func("sn0/bridge/one-wire-named-part-reads-back", NULL,
