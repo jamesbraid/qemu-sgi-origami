@@ -2434,6 +2434,78 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
     }
 }
 
+static uint64_t sn0_node_map_memory(MachineState *machine,
+                                    SN0NodeState *node,
+                                    unsigned int node_index,
+                                    uint64_t ram_offset,
+                                    uint64_t ram_size)
+{
+    MemoryRegion *system = get_system_memory();
+    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    unsigned int bank, segment;
+
+    if (!sn0_ip29_memory_layout(ram_size, node->bank_mb,
+                                &node->populated_banks)) {
+        error_report("origin200: node %u's %" PRIu64 " MiB cannot be "
+                     "populated from IP29 memory banks without overlapping "
+                     "firmware regions", node_index, ram_size / MiB);
+        exit(EXIT_FAILURE);
+    }
+
+    /*
+     * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
+     * first slot; larger banks interleave one quarter of their bytes into each
+     * of four slots on a 128 MiB stride. Both supported guests derive this
+     * placement from the plain-megabyte bank sizes in KLCONFIG.
+     */
+    for (bank = 0; bank < node->populated_banks; bank++) {
+        uint64_t bank_size = (uint64_t)node->bank_mb[bank] * MiB;
+        unsigned int segments = bank_size <= SN0_MEM_SLOT_SIZE ?
+                                1 : SN0_MEM_BANK_SLOTS;
+        uint64_t segment_size = bank_size / segments;
+
+        for (segment = 0; segment < segments; segment++) {
+            hwaddr segment_addr = (hwaddr)bank * SN0_MEM_BANK_SIZE +
+                                  (hwaddr)segment * SN0_MEM_SLOT_SIZE;
+            g_autofree char *name = g_strdup_printf(
+                "sn0.node%u.ram.bank%u.slot%u", node_index, bank, segment);
+
+            memory_region_init_alias(&node->mem_slot[bank][segment],
+                                     OBJECT(node), name, machine->ram,
+                                     ram_offset, segment_size);
+            memory_region_add_subregion(system, node_base + segment_addr,
+                                        &node->mem_slot[bank][segment]);
+
+            /*
+             * Hub-special offset zero mirrors the first 256 MiB of the
+             * reading processor's local node memory. Mirror each populated
+             * run separately so the alias preserves the bank's slot holes.
+             * Per-CPU address-space overlays above flip the low 128 KiB for
+             * slice B. This shared mapping remains the fallback for qtest,
+             * DMA, and every address beyond that private range.
+             */
+            if (segment_addr < SN0_HUB_LOCAL_MEM_SIZE) {
+                uint64_t alias_size = MIN(segment_size,
+                                          SN0_HUB_LOCAL_MEM_SIZE -
+                                              segment_addr);
+                g_autofree char *alias_name = g_strdup_printf(
+                    "sn0.node%u.hub-local-ram.bank%u.slot%u",
+                    node_index, bank, segment);
+
+                memory_region_init_alias(
+                    &node->hub_local_mem_slot[bank][segment], OBJECT(node),
+                    alias_name, machine->ram, ram_offset, alias_size);
+                memory_region_add_subregion(
+                    system, SN0_SPACE_HUB + node_base + segment_addr,
+                    &node->hub_local_mem_slot[bank][segment]);
+            }
+            ram_offset += segment_size;
+        }
+    }
+
+    return ram_offset;
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -2446,7 +2518,7 @@ static void sn0_init(MachineState *machine)
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
-    unsigned int bank, segment, w, slot;
+    unsigned int w, slot;
 
     /*
      * A NUMA node names a physical Origin 200 chassis, not an arbitrary guest
@@ -2480,69 +2552,10 @@ static void sn0_init(MachineState *machine)
         sn0_show_indicator_codes(&error_fatal);
     }
 
-    if (!sn0_ip29_memory_layout(machine->ram_size, s->nodes[0].bank_mb,
-                                &s->nodes[0].populated_banks)) {
-        error_report("origin200: %" PRIu64 " MiB cannot be populated from "
-                     "IP29 memory banks without overlapping firmware regions",
-                     machine->ram_size / MiB);
-        exit(EXIT_FAILURE);
-    }
-
     sn0_node_create_cpus(machine, &s->nodes[0], 0, 0, machine->smp.cpus, 0);
     cpu = s->nodes[0].cpu[0];
-
-    /*
-     * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
-     * first slot; larger banks interleave one quarter of their bytes into each
-     * of four slots on a 128 MiB stride. Both supported guests derive this
-     * placement from the plain-megabyte bank sizes in KLCONFIG.
-     */
-    for (bank = 0; bank < s->nodes[0].populated_banks; bank++) {
-        uint64_t bank_size = (uint64_t)s->nodes[0].bank_mb[bank] * MiB;
-        unsigned int segments = bank_size <= SN0_MEM_SLOT_SIZE ?
-                                1 : SN0_MEM_BANK_SLOTS;
-        uint64_t segment_size = bank_size / segments;
-
-        for (segment = 0; segment < segments; segment++) {
-            hwaddr segment_addr = (hwaddr)bank * SN0_MEM_BANK_SIZE +
-                                  (hwaddr)segment * SN0_MEM_SLOT_SIZE;
-            g_autofree char *name =
-                g_strdup_printf("sn0.node0.ram.bank%u.slot%u", bank,
-                                segment);
-
-            memory_region_init_alias(&s->nodes[0].mem_slot[bank][segment],
-                                     OBJECT(&s->nodes[0]), name, machine->ram,
-                                     ram_offset, segment_size);
-            memory_region_add_subregion(system, node + segment_addr,
-                                        &s->nodes[0].mem_slot[bank][segment]);
-
-            /*
-             * Hub-special offset zero mirrors the first 256 MiB of the
-             * reading processor's local node memory.  Mirror each populated
-             * run separately so the alias preserves the bank's slot holes.
-             * Per-CPU address-space overlays above flip the low 128 KiB for
-             * slice B. This shared mapping remains the fallback for qtest,
-             * DMA, and every address beyond that private range.
-             */
-            if (segment_addr < SN0_HUB_LOCAL_MEM_SIZE) {
-                uint64_t alias_size = MIN(segment_size,
-                                          SN0_HUB_LOCAL_MEM_SIZE -
-                                              segment_addr);
-                g_autofree char *alias_name =
-                    g_strdup_printf("sn0.node0.hub-local-ram.bank%u.slot%u",
-                                    bank, segment);
-
-                memory_region_init_alias(
-                    &s->nodes[0].hub_local_mem_slot[bank][segment],
-                    OBJECT(&s->nodes[0]), alias_name, machine->ram,
-                    ram_offset, alias_size);
-                memory_region_add_subregion(
-                    system, SN0_SPACE_HUB + node + segment_addr,
-                    &s->nodes[0].hub_local_mem_slot[bank][segment]);
-            }
-            ram_offset += segment_size;
-        }
-    }
+    ram_offset = sn0_node_map_memory(machine, &s->nodes[0], 0, ram_offset,
+                                     machine->ram_size);
     g_assert(ram_offset == machine->ram_size);
 
     /*
