@@ -478,6 +478,66 @@ static void test_one_node_cpu_topology(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * An explicit NUMA description is the operator-facing way to select physical
+ * Origin 200 nodes.  Even the one-node form matters: it proves that a memory
+ * backend survives QEMU's generic NUMA setup and that the standard CPU
+ * topology callbacks attach both IP29 slices to the declared node.
+ */
+static void test_explicit_one_node_numa(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 64M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-smp 2,sockets=1,cores=2,threads=1");
+    QDict *response;
+    QList *cpus;
+    QObject *entry;
+    unsigned int seen = 0;
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    cpus = qdict_get_qlist(response, "return");
+
+    while ((entry = qlist_pop(cpus))) {
+        QDict *cpu = qobject_to(QDict, entry);
+        QDict *props = qdict_get_qdict(cpu, "props");
+        int64_t index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpint(index, >=, 0);
+        g_assert_cmpint(index, <, 2);
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, 0);
+        seen |= 1U << index;
+        qobject_unref(entry);
+    }
+    g_assert_cmphex(seen, ==, 0x3);
+
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
+static void test_reject_unbuilt_second_numa_node(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "64M",
+        "-object", "memory-backend-ram,id=ram0,size=32M",
+        "-object", "memory-backend-ram,id=ram1,size=32M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,memdev=ram1",
+        "-smp", "2,sockets=1,cores=2,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output,
+                           "origin200: one chassis supports one NUMA node"));
+}
+
 static void test_reject_split_one_node_topology(const void *data)
 {
     const char *args[] = {
@@ -512,6 +572,10 @@ int main(int argc, char **argv)
                         test_one_node_smp);
     qtest_add_data_func("sn0/model/one-node-cpu-topology", NULL,
                         test_one_node_cpu_topology);
+    qtest_add_data_func("sn0/model/explicit-one-node-numa", NULL,
+                        test_explicit_one_node_numa);
+    qtest_add_data_func("sn0/model/reject-unbuilt-second-numa-node", NULL,
+                        test_reject_unbuilt_second_numa_node);
     qtest_add_data_func("sn0/model/reject-split-one-node-topology", NULL,
                         test_reject_split_one_node_topology);
 

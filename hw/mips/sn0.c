@@ -32,6 +32,7 @@
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
+#include "system/numa.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "trace/control.h"
@@ -2446,6 +2447,18 @@ static void sn0_init(MachineState *machine)
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
     unsigned int bank, segment, w, slot;
+
+    /*
+     * A NUMA node names a physical Origin 200 chassis, not an arbitrary guest
+     * locality domain.  Do not accept a topology until this product actually
+     * constructs the corresponding node hardware: otherwise QEMU would put
+     * both backends in node 0's RAM container while reporting two nodes to
+     * management software.
+     */
+    if (machine->numa_state && machine->numa_state->num_nodes > 1) {
+        error_report("origin200: one chassis supports one NUMA node");
+        exit(EXIT_FAILURE);
+    }
 
     if (machine->smp.sockets != 1 ||
         machine->smp.cores > SN0_CPUS_PER_NODE ||
