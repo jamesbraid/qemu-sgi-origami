@@ -41,7 +41,10 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
+
+#include <elf.h>
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -175,6 +178,10 @@ static const uint32_t device_reset[8] = {
 
 #define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
 
+/* Physical RAM location for the guest fragment's completion word. */
+#define GUEST_MARKER_ADDR       0x30000
+#define GUEST_MARKER            0x5a17c0deu
+
 /*
  * PCI type 0 configuration space, and the window each device and function is
  * reached through inside it.
@@ -270,6 +277,93 @@ static uint32_t bridge_identity(uint32_t revision)
            (BRIDGE_PART << ID_PART_SHIFT) |
            (BRIDGE_MANUFACTURER << ID_MANUFACTURER_SHIFT) |
            ID_ALWAYS_ONE;
+}
+
+static char *write_reserved_store_guest(void)
+{
+    static const uint32_t code[] = {
+        0x3c089200,             /* lui t0, 0x9200 */
+        0x00000000,             /* nop */
+        0x0008403c,             /* dsll32 t0, t0, 0 */
+        0x3c090800,             /* lui t1, 0x0800 */
+        0x3529019c,             /* ori t1, t1, 0x019c */
+        0x01094025,             /* or t0, t0, t1 */
+        0xad000000,             /* sw zero, 0(t0) */
+        0x3c089600,             /* lui t0, 0x9600 */
+        0x0008403c,             /* dsll32 t0, t0, 0 */
+        0x3c090003,             /* lui t1, 0x0003 */
+        0x01094025,             /* or t0, t0, t1 */
+        0x3c095a17,             /* lui t1, 0x5a17 */
+        0x3529c0de,             /* ori t1, t1, 0xc0de */
+        0xad090000,             /* sw t1, 0(t0) */
+        0x1000ffff,             /* b . */
+        0x00000000,             /* nop */
+    };
+    uint8_t image[0x1000 + sizeof(code)] = { 0 };
+    const uint64_t entry = 0x8000000000020000ULL;
+    GError *err = NULL;
+    char *path = NULL;
+    int fd;
+    size_t i;
+
+    fd = g_file_open_tmp("sn0-bridge-guest-XXXXXX", &path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(fd, >=, 0);
+
+    image[0] = ELFMAG0;
+    image[1] = ELFMAG1;
+    image[2] = ELFMAG2;
+    image[3] = ELFMAG3;
+    image[EI_CLASS] = ELFCLASS64;
+    image[EI_DATA] = ELFDATA2MSB;
+    image[EI_VERSION] = EV_CURRENT;
+    stw_be_p(image + 16, ET_EXEC);
+    stw_be_p(image + 18, EM_MIPS);
+    stl_be_p(image + 20, EV_CURRENT);
+    stq_be_p(image + 24, entry);
+    stq_be_p(image + 32, 64);
+    stw_be_p(image + 52, 64);
+    stw_be_p(image + 54, 56);
+    stw_be_p(image + 56, 1);
+
+    stl_be_p(image + 64, PT_LOAD);
+    stl_be_p(image + 68, PF_R | PF_X);
+    stq_be_p(image + 72, 0x1000);
+    stq_be_p(image + 80, entry);
+    stq_be_p(image + 88, entry);
+    stq_be_p(image + 96, sizeof(code));
+    stq_be_p(image + 104, sizeof(code));
+    stq_be_p(image + 112, 0x1000);
+
+    for (i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
+    }
+
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
+                    (ssize_t)sizeof(image));
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_reserved_data_half_store_completes(const void *data)
+{
+    g_autofree char *kernel = write_reserved_store_guest();
+    QTestState *qts;
+    uint32_t marker = 0;
+
+    g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
+    qts = qtest_initf(MACHINE_WITH_BRIDGE " -smp 1 -kernel %s", kernel);
+    g_unsetenv("QTEST_QEMU_ARGS");
+
+    g_test_timer_start();
+    while (marker != GUEST_MARKER && g_test_timer_elapsed() < 1) {
+        marker = qtest_readl(qts, GUEST_MARKER_ADDR);
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(marker, ==, GUEST_MARKER);
+    qtest_quit(qts);
+    g_unlink(kernel);
 }
 
 static void test_identity(const void *data)
@@ -2197,6 +2291,8 @@ int main(int argc, char **argv)
                         test_identity_follows_the_machines_revision);
     qtest_add_data_func("sn0/bridge/upper-half-of-the-slot", NULL,
                         test_upper_half_of_the_slot);
+    qtest_add_data_func("sn0/bridge/reserved-data-half-store", NULL,
+                        test_reserved_data_half_store_completes);
     qtest_add_data_func("sn0/bridge/reset-state", NULL, test_reset_state);
     qtest_add_data_func("sn0/bridge/each-slot-resets-to-its-own-window", NULL,
                         test_each_slot_resets_to_its_own_window);

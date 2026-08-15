@@ -255,6 +255,9 @@
 #define BRIDGE_HOST_ERR_FIELD   0x128
 #define BRIDGE_INT_HOST(n)      (0x130 + SGI_BRIDGE_REG_SLOT * (n))
 
+/* The only reserved data half this model accepts. */
+#define BRIDGE_RESERVED_DATA_HALF 0x19c
+
 /* The eight device pins live at the bottom of the status and enable words. */
 #define INT_DEVICE_PINS         0xffu
 /* All a guest may enable: bit 31, the multiple-error flag, has no bit. */
@@ -1871,6 +1874,47 @@ static const MemoryRegionOps sgi_bridge_reg_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool sgi_bridge_reserved_data_half_accepts(void *opaque, hwaddr addr,
+                                                  unsigned size, bool is_write,
+                                                  MemTxAttrs attrs)
+{
+    if (!is_write) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-bridge: read of register 0x%" HWADDR_PRIx " which "
+                      "this model does not implement; raising a bus error "
+                      "rather than answering\n",
+                      (hwaddr)BRIDGE_RESERVED_DATA_HALF);
+    }
+    return is_write;
+}
+
+static MemTxResult sgi_bridge_reserved_data_half_write(void *opaque,
+                                                        hwaddr addr,
+                                                        uint64_t val,
+                                                        unsigned size,
+                                                        MemTxAttrs attrs)
+{
+    if (val != 0) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-bridge: nonzero write of 0x%" PRIx64 " to "
+                      "reserved register 0x%" HWADDR_PRIx "; raising a "
+                      "bus error\n", val,
+                      (hwaddr)BRIDGE_RESERVED_DATA_HALF);
+        return MEMTX_ERROR;
+    }
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps sgi_bridge_reserved_data_half_ops = {
+    .write_with_attrs = sgi_bridge_reserved_data_half_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .valid.accepts = sgi_bridge_reserved_data_half_accepts,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+
 /*
  * An entry is written whole and read in halves, so what this region accepts is
  * narrower than a width check can say: a 64-bit write at an entry's own offset,
@@ -2403,6 +2447,11 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->regs, obj, &sgi_bridge_reg_ops, s,
                           "sgi-bridge.regs", SGI_BRIDGE_REGS_SIZE);
     memory_region_add_subregion(&s->widget, 0, &s->regs);
+    memory_region_init_io(&s->reserved_data_half, obj,
+                          &sgi_bridge_reserved_data_half_ops, s,
+                          "sgi-bridge.reserved-data-half", 4);
+    memory_region_add_subregion_overlap(&s->widget, BRIDGE_RESERVED_DATA_HALF,
+                                        &s->reserved_data_half, 1);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->widget);
 
     /*

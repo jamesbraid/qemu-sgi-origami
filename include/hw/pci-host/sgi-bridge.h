@@ -94,6 +94,7 @@ struct SGIBridgeState {
      */
     MemoryRegion widget;
     MemoryRegion regs;
+    MemoryRegion reserved_data_half;
 
     /*
      * The window a processor reads PCI configuration space through. Type 0
