@@ -584,7 +584,15 @@ void helper_mtc0_mvpcontrol(CPUMIPSState *env, target_ulong arg1)
 
     /* TODO: Enable/disable shared TLB, enable/disable VPEs. */
 
-    cpu->mvp->CP0_MVPControl = newval;
+    /*
+     * qatomic_set(), not a plain store: mips_vpe_active() reads this
+     * field from the halt path with no BQL held -- see its comment.
+     * The BQL held here still serializes this write against every
+     * other writer (helper_dvpe()/helper_evpe()'s sweep included), so
+     * this is publish-for-the-lock-free-reader, not a substitute for
+     * the guard.
+     */
+    qatomic_set(&cpu->mvp->CP0_MVPControl, newval);
 }
 
 void helper_mtc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
@@ -649,6 +657,15 @@ void helper_mtc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask = 0;
     uint32_t newval;
 
+    /*
+     * Pairs with helper_mttc0_vpeconf0()'s guard below: that function
+     * writes this same env's CP0_VPEConf0 from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other. qatomic_set() at the end additionally publishes for
+     * mips_vpe_active()'s lock-free halt-path read -- see its comment.
+     */
+    BQL_LOCK_GUARD();
+
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         if (env->CP0_VPEConf0 & (1 << CP0VPEC0_VPA)) {
             mask |= (0xff << CP0VPEC0_XTC);
@@ -659,7 +676,7 @@ void helper_mtc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
 
     /* TODO: TC exclusive handling due to ERL/EXL. */
 
-    env->CP0_VPEConf0 = newval;
+    qatomic_set(&env->CP0_VPEConf0, newval);
 }
 
 void helper_mttc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
@@ -675,7 +692,7 @@ void helper_mttc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
     newval = (other->CP0_VPEConf0 & ~mask) | (arg1 & mask);
 
     /* TODO: TC exclusive handling due to ERL/EXL.  */
-    other->CP0_VPEConf0 = newval;
+    qatomic_set(&other->CP0_VPEConf0, newval);
 }
 
 void helper_mtc0_vpeconf1(CPUMIPSState *env, target_ulong arg1)
@@ -751,9 +768,18 @@ void helper_mtc0_tcstatus(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask = env->CP0_TCStatus_rw_bitmask;
     uint32_t newval;
 
+    /*
+     * Pairs with helper_mttc0_tcstatus()'s guard below: that function
+     * writes this same TC's CP0_TCStatus from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other. qatomic_set() additionally publishes for
+     * mips_vpe_active()'s lock-free halt-path read -- see its comment.
+     */
+    BQL_LOCK_GUARD();
+
     newval = (env->active_tc.CP0_TCStatus & ~mask) | (arg1 & mask);
 
-    env->active_tc.CP0_TCStatus = newval;
+    qatomic_set(&env->active_tc.CP0_TCStatus, newval);
     sync_c0_tcstatus(env, env->current_tc, newval);
 }
 
@@ -765,7 +791,13 @@ void helper_mttc0_tcstatus(CPUMIPSState *env, target_ulong arg1)
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
     if (other_tc == other->current_tc) {
-        other->active_tc.CP0_TCStatus = arg1;
+        /*
+         * qatomic_set(), not a plain store, only on this branch:
+         * mips_vpe_active() reads active_tc.CP0_TCStatus specifically
+         * (see its comment), never a parked TC's tcs[] copy below --
+         * that write has no lock-free reader to publish for.
+         */
+        qatomic_set(&other->active_tc.CP0_TCStatus, arg1);
     } else {
         other->tcs[other_tc].CP0_TCStatus = arg1;
     }
@@ -842,7 +874,16 @@ void helper_mtc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 {
     MIPSCPU *cpu = env_archcpu(env);
 
-    env->active_tc.CP0_TCHalt = arg1 & 0x1;
+    /*
+     * Pairs with helper_mttc0_tchalt()'s guard below: that function
+     * writes this same TC's CP0_TCHalt from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other. qatomic_set() additionally publishes for
+     * mips_vpe_active()'s lock-free halt-path read -- see its comment.
+     */
+    BQL_LOCK_GUARD();
+
+    qatomic_set(&env->active_tc.CP0_TCHalt, arg1 & 0x1);
 
     /* TODO: Halt TC / Restart (if allocated+active) TC. */
     if (env->active_tc.CP0_TCHalt & 1) {
@@ -863,7 +904,13 @@ void helper_mttc0_tchalt(CPUMIPSState *env, target_ulong arg1)
     /* TODO: Halt TC / Restart (if allocated+active) TC. */
 
     if (other_tc == other->current_tc) {
-        other->active_tc.CP0_TCHalt = arg1;
+        /*
+         * qatomic_set(), not a plain store, only on this branch:
+         * mips_vpe_active() reads active_tc.CP0_TCHalt specifically
+         * (see its comment), never a parked TC's tcs[] copy below --
+         * that write has no lock-free reader to publish for.
+         */
+        qatomic_set(&other->active_tc.CP0_TCHalt, arg1);
     } else {
         other->tcs[other_tc].CP0_TCHalt = arg1;
     }
@@ -1759,7 +1806,16 @@ target_ulong helper_dvpe(CPUMIPSState *env)
             MIPSCPU *other_cpu = MIPS_CPU(cs);
             /* Turn off all VPEs except the one executing the dvpe.  */
             if (&other_cpu->env != env) {
-                other_cpu->mvp->CP0_MVPControl &= ~(1 << CP0MVPCo_EVP);
+                /*
+                 * qatomic_set(), not &=: mips_vpe_active() reads this
+                 * field from the halt path with no BQL held -- see its
+                 * comment. The RMW itself is safe plain under the BQL
+                 * this whole sweep holds; qatomic_set() is publish for
+                 * that lock-free reader, not protection for the RMW.
+                 */
+                qatomic_set(&other_cpu->mvp->CP0_MVPControl,
+                           other_cpu->mvp->CP0_MVPControl &
+                           ~(1 << CP0MVPCo_EVP));
                 mips_vpe_sleep(other_cpu);
             }
         }
@@ -1787,8 +1843,13 @@ target_ulong helper_evpe(CPUMIPSState *env)
             if (&other_cpu->env != env
                 /* If the VPE is WFI, don't disturb its sleep.  */
                 && !mips_vpe_is_wfi(other_cpu)) {
-                /* Enable the VPE.  */
-                other_cpu->mvp->CP0_MVPControl |= (1 << CP0MVPCo_EVP);
+                /*
+                 * Enable the VPE. qatomic_set(), not |=: see the
+                 * matching comment in helper_dvpe() above.
+                 */
+                qatomic_set(&other_cpu->mvp->CP0_MVPControl,
+                           other_cpu->mvp->CP0_MVPControl |
+                           (1 << CP0MVPCo_EVP));
                 mips_vpe_wake(other_cpu); /* And wake it up.  */
             }
         }
