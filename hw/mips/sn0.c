@@ -2718,6 +2718,7 @@ static void sn0_node_create_hub(SN0MachineState *machine,
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
                          machine->synthesized_firmware ? node->nasid : 0);
+    qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", node_index != 0);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", cpu_count);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", cpu_base);
     qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
