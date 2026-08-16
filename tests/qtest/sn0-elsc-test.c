@@ -117,6 +117,8 @@ static void test_ver_command_succeeds(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
+    const uint8_t *version_end;
+    size_t version_len;
     unsigned req_len, resp_len;
 
     req_len = build_request(req, "ver");
@@ -127,8 +129,17 @@ static void test_ver_command_succeeds(const void *data)
     /* "the presence probe is defined as did the version command succeed,
      * and succeeding takes more than a valid checksum" -- the response
      * text has to begin "ok". */
-    g_assert_cmpuint(resp[0], >=, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    g_assert_cmpuint(resp[0], >=, 4);
+    g_assert(memcmp(&resp[1], "ok ", 3) == 0);
+
+    /*
+     * Keep the synthetic identity, including its terminator, within the
+     * eight-byte compatibility boundary observed during black-box bring-up.
+     */
+    version_end = memchr(&resp[4], ' ', resp[0] - 3);
+    version_len = version_end ? version_end - &resp[4] : resp[0] - 3;
+    g_assert_cmpuint(version_len, >, 0);
+    g_assert_cmpuint(version_len + 1, <=, 8);
 
     qtest_quit(qts);
 }

@@ -36,11 +36,13 @@
 #include "migration/vmstate.h"
 
 /*
- * The version string's content is irrelevant to firmware's presence probe
- * -- only the response's shape (it must begin "ok") is checked -- so this
- * names the model rather than claiming a real ELSC firmware revision.
+ * Firmware requires the response to begin "ok" but does not interpret the
+ * version token.  Name the model rather than claiming a real ELSC firmware
+ * revision.  Black-box bring-up shows that the first token, including its
+ * terminator, must fit in eight bytes.
  */
-#define SGI_ELSC_VERSION "origami-elsc 1.0"
+#define SGI_ELSC_VERSION "origami"
+QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION) > 8);
 
 static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
 {
