@@ -1265,6 +1265,406 @@ static void run_rendezvous(const char *accel, unsigned int increments)
     qtest_quit(qts);
 }
 
+/*
+ * GINVT smoke test: an I6400 CPS cluster on malta, VP0 installs a TLB
+ * mapping and reads through it, VP1 GINVTs that VPN, and VP0's second
+ * access to the same page must fault -- proving the remote CPU's TLB
+ * entry, not just the issuing CPU's own, was invalidated.
+ *
+ * Only VP0 runs from reset in a CPS cluster; VP1 is parked by the CPC
+ * until VP0 starts it, so this needs real Cluster Power Controller
+ * bring-up before any of the GINVT part can run at all: read the GCR at
+ * its fixed reset-default base (CP0_CMGCRBase's own reset default, the
+ * same GCR_BASE_ADDR constant hw/misc/mips_cmgcr.h uses), point the GCR
+ * at a chosen CPC base and enable it, then hit that CPC's VP_RUN
+ * register with VP1's bit -- see hw/mips/cps.c and hw/misc/mips_cpc.c.
+ *
+ * The chosen CPC base only has to avoid the two things this test itself
+ * still needs afterward: GCR's own 0x8000-byte block, and the flash-
+ * aliased boot vector this program is running from. It does not need to
+ * avoid RAM or anything else -- the CPS container shadows whatever is
+ * behind it at the address CPC lands on, by construction.
+ *
+ * The virtual page is chosen in the low, 32-bit-compatible range (region
+ * 00) so a miss on it takes the plain TLB refill vector, not XTLB
+ * refill, and Status.ERL is cleared first: I6400's default SegCtl2 marks
+ * that range EU (ERL-unmapped), so with ERL still set from reset the
+ * access would bypass the TLB entirely rather than exercise it.
+ */
+
+#define GCR_BASE_PHYS       0x1fbf8000u  /* GCR_BASE_ADDR, mips_cmgcr.h */
+#define CPC_BASE_PHYS       0x1fb00000u  /* clear of GCR and the boot flash */
+
+#define GCR_CPC_BASE_OFS    0x0088
+#define CPC_VP_RUN_OFS      (0x4000 + 0x0028)  /* CO block + CPC_VP_RUN_OFS */
+#define CPC_ENABLE          0x1
+#define VP1_RUN_BIT         0x2
+
+#define GI_STATE_PHYS       0x00110000u
+#define GI_VP0_PROGRESS_OFF 0x00
+#define GI_VP1_PROGRESS_OFF 0x08
+#define GI_RESULT_OFF       0x10
+#define GI_VPN_OFF          0x18
+#define GI_FAULT_VADDR_OFF  0x20  /* BadVAddr, captured by the refill handler */
+
+#define GI_TEST_VA          0x10000000  /* region 00, well below USEG_LIMIT */
+#define GI_TEST_PHYS        0x00200000u /* clear of GI_STATE_PHYS, the flash */
+#define GI_TEST_PATTERN     0x1234
+
+/*
+ * VP0's progress once it has waited for VP1's GINVT + sync and is retrying
+ * the mapped access -- the only point at which a refill fault here is the
+ * probe under test succeeding rather than a setup bug.  See the
+ * emit_addiu(..., 4) in write_ginvt_test_program().
+ */
+#define GI_VP0_POST_GINVT   4
+
+/* VP1 is done once its progress reaches this; also its GINVT-issued signal. */
+#define GI_VP1_DONE         3
+
+#define GI_RESULT_REFILLED  0x600d0000  /* post-GINVT refill: pass */
+#define GI_RESULT_STALE     0x0bad0000  /* second access still hit: fail */
+/*
+ * A refill fault before VP0 reaches GI_VP0_POST_GINVT is a setup bug, not
+ * GINVT's remote invalidation working.  Shares FAULT_MAGIC with every other
+ * case's own per-CPU fault marker rather than inventing a new code, and is
+ * distinguished from the pass magic above so a fault anywhere else in setup
+ * cannot be mistaken for it -- see the refill handler in
+ * write_ginvt_test_program().
+ */
+#define GI_RESULT_SETUP_FAULT FAULT_MAGIC
+
+#define GI_STATUS_BEV_ONLY  0x00400000  /* BEV kept, ERL cleared */
+
+/* CP0 register numbers (sel 0 throughout). */
+#define CP0_INDEX           0
+#define CP0_ENTRYLO0        2
+#define CP0_ENTRYLO1        3
+#define CP0_PAGEMASK        5
+#define CP0_ENTRYHI         10
+#define CP0_STATUS          12
+
+/* GINVT type field (target/mips/tcg/tlb_helper.c: helper_ginvt). */
+#define GINVT_TYPE_VA       1
+
+static void emit_dmtc0(GuestImage *img, int rt, int rd, int sel)
+{
+    emit(img, OPC_MFC0 | (0x05u << 21) | (rt << 16) | (rd << 11) | sel);
+}
+
+static void emit_ginvt(GuestImage *img, int rs, int type)
+{
+    /* SPECIAL3 funct 0x3d, sa bits 7:6 = 2 (GINVT), sa bits 9:8 = type. */
+    emit(img, (0x1fu << 26) | (rs << 21) | (uint32_t)(type << 8) |
+             (2u << 6) | 0x3du);
+}
+
+/* Load a KSEG1 address for a physical address below the 512M direct-map. */
+static void emit_li_kseg1(GuestImage *img, int rt, uint32_t phys)
+{
+    emit_lui(img, rt, 0xa000u | (phys >> 16));
+    emit_ori(img, rt, rt, phys & 0xffffu);
+}
+
+/*
+ * Reserve a branch slot to be patched once its target is known -- used
+ * for the one forward reference this program needs (VP0 skipping past
+ * its own body to reach VP1's).  emit_beq()/emit_bne() need the target
+ * up front, which a backward branch (a spin loop back to its own top)
+ * always has, but this one does not.
+ */
+static unsigned int reserve_branch(GuestImage *img)
+{
+    unsigned int pos = img->pos;
+
+    emit(img, 0);        /* patched later */
+    emit_nop(img);        /* delay slot */
+    return pos;
+}
+
+static void patch_bne(GuestImage *img, unsigned int branch_pos, int rs,
+                      int rt, unsigned int target)
+{
+    int delta = ((int)target - (int)(branch_pos + 4)) / 4;
+
+    g_assert_cmpint(delta, >=, -0x8000);
+    g_assert_cmpint(delta, <=, 0x7fff);
+    stl_be_p(img->code + branch_pos,
+            OPC_BNE | (rs << 21) | (rt << 16) | (uint16_t)delta);
+}
+
+static void write_ginvt_test_program(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    unsigned int vp1_branch, vp1_start, recheck, spin;
+    ssize_t written;
+
+    emit_b(&img, CODE_START);
+    emit_nop(&img);
+    img.pos = CODE_START;
+
+    /* k0 = CPUNum, t0 = this test's state block (KSEG1). */
+    emit_mfc0(&img, R_K0, CP0_EBASE, CP0_EBASE_SEL);
+    emit_andi(&img, R_K0, R_K0, CPUNUM_MASK);
+    emit_li_kseg1(&img, R_T0, GI_STATE_PHYS);
+
+    /* VP1 (any CPUNum != 0) skips VP0's body; patched once it is known. */
+    vp1_branch = reserve_branch(&img);
+
+    /* ---- VP0: bring up the CPC, start VP1, install and probe. ---- */
+    emit_addiu(&img, R_T3, R_ZERO, 1);
+    emit_sd(&img, R_T3, R_T0, GI_VP0_PROGRESS_OFF);
+
+    /* Clear ERL so this CPU's own low-region accesses go through the TLB. */
+    emit_li(&img, R_T3, GI_STATUS_BEV_ONLY);
+    emit_mtc0(&img, R_T3, CP0_STATUS, 0);
+
+    /* Point the GCR at a CPC and enable it. */
+    emit_li_kseg1(&img, R_T1, GCR_BASE_PHYS);
+    emit_li(&img, R_T3, CPC_BASE_PHYS | CPC_ENABLE);
+    emit_sd(&img, R_T3, R_T1, GCR_CPC_BASE_OFS);
+
+    /* Start VP1. */
+    emit_li_kseg1(&img, R_T1, CPC_BASE_PHYS);
+    emit_addiu(&img, R_T3, R_ZERO, VP1_RUN_BIT);
+    emit_sd(&img, R_T3, R_T1, CPC_VP_RUN_OFS);
+
+    emit_addiu(&img, R_T3, R_ZERO, 2);
+    emit_sd(&img, R_T3, R_T0, GI_VP0_PROGRESS_OFF);
+
+    /* Install one TLB entry at index 0 covering GI_TEST_VA / GI_TEST_PHYS. */
+    emit_addiu(&img, R_T3, R_ZERO, 0);
+    emit_mtc0(&img, R_T3, CP0_INDEX, 0);
+    emit_li(&img, R_T3, GI_TEST_VA);
+    emit_dmtc0(&img, R_T3, CP0_ENTRYHI, 0);
+    emit_addiu(&img, R_T3, R_ZERO, 0);
+    emit_mtc0(&img, R_T3, CP0_PAGEMASK, 0);
+    /* EntryLo0/1: V | D | C=2, PFN = phys >> 12 << 6, even/odd page pair. */
+    emit_li(&img, R_T3, ((GI_TEST_PHYS >> 12) << 6) | 0x16);
+    emit_dmtc0(&img, R_T3, CP0_ENTRYLO0, 0);
+    emit_li(&img, R_T3, (((GI_TEST_PHYS + 0x1000u) >> 12) << 6) | 0x16);
+    emit_dmtc0(&img, R_T3, CP0_ENTRYLO1, 0);
+    emit_tlbwi(&img);
+
+    /*
+     * Seed the physical page directly, then read it back through the
+     * map. If the two ever disagree the map itself is broken -- retry
+     * forever rather than assert a specific cause; the host's progress
+     * dump on timeout (progress stuck at 2, VPN still 0) says as much.
+     */
+    emit_li_kseg1(&img, R_T1, GI_TEST_PHYS);
+    emit_addiu(&img, R_T3, R_ZERO, GI_TEST_PATTERN);
+    emit_sd(&img, R_T3, R_T1, 0);
+    emit_li(&img, R_T6, GI_TEST_VA);
+    recheck = img.pos;
+    emit_ld(&img, R_T4, R_T6, 0);
+    emit_bne(&img, R_T4, R_T3, recheck);
+    emit_nop(&img);
+
+    emit_addiu(&img, R_T3, R_ZERO, 3);
+    emit_sd(&img, R_T3, R_T0, GI_VP0_PROGRESS_OFF);
+
+    /* Publish the VPN last: this is VP1's go signal. */
+    emit_li(&img, R_T3, GI_TEST_VA);
+    emit_sd(&img, R_T3, R_T0, GI_VPN_OFF);
+    emit_sync(&img);
+
+    /* Wait for VP1's GINVT + sync before trying the page again. */
+    spin = img.pos;
+    emit_ld(&img, R_T5, R_T0, GI_VP1_PROGRESS_OFF);
+    emit_sltiu(&img, R_T8, R_T5, GI_VP1_DONE);
+    emit_bne(&img, R_T8, R_ZERO, spin);
+    emit_nop(&img);
+
+    emit_addiu(&img, R_T3, R_ZERO, 4);
+    emit_sd(&img, R_T3, R_T0, GI_VP0_PROGRESS_OFF);
+
+    /*
+     * The mapping should be gone now. A successful load here means the
+     * fix did not reach this CPU's TLB; record that explicitly rather
+     * than hanging, so a mutated tree reports FAIL, not a timeout.
+     */
+    emit_ld(&img, R_T4, R_T6, 0);
+    emit_li(&img, R_T3, GI_RESULT_STALE);
+    emit_sd(&img, R_T3, R_T0, GI_RESULT_OFF);
+    emit_sync(&img);
+
+    {
+        unsigned int vp0_park = img.pos;
+        emit_wait(&img);
+        emit_b(&img, vp0_park);
+        emit_nop(&img);
+    }
+
+    /* ---- VP1: wait for the VPN, GINVT it, publish, park. ---- */
+    vp1_start = img.pos;
+    patch_bne(&img, vp1_branch, R_K0, R_ZERO, vp1_start);
+
+    emit_addiu(&img, R_T3, R_ZERO, 1);
+    emit_sd(&img, R_T3, R_T0, GI_VP1_PROGRESS_OFF);
+
+    spin = img.pos;
+    emit_ld(&img, R_T5, R_T0, GI_VPN_OFF);
+    emit_beq(&img, R_T5, R_ZERO, spin);
+    emit_nop(&img);
+
+    emit_addiu(&img, R_T3, R_ZERO, 2);
+    emit_sd(&img, R_T3, R_T0, GI_VP1_PROGRESS_OFF);
+
+    emit_ginvt(&img, R_T5, GINVT_TYPE_VA);
+    emit_sync(&img);
+
+    emit_addiu(&img, R_T3, R_ZERO, GI_VP1_DONE);
+    emit_sd(&img, R_T3, R_T0, GI_VP1_PROGRESS_OFF);
+
+    {
+        unsigned int vp1_park = img.pos;
+        emit_wait(&img);
+        emit_b(&img, vp1_park);
+        emit_nop(&img);
+    }
+
+    /*
+     * TLB refill handler, at VEC_TLB_REFILL: BEV=1 (kept set throughout
+     * this test) adds that offset to exception_base, and a region-00
+     * miss with EXL clear adds nothing further -- see
+     * mips_cpu_do_interrupt's set_EPC in
+     * target/mips/tcg/system/tlb_helper.c. VP0 and VP1's own code lives
+     * at CODE_START, well past every reserved vector, so this can never
+     * collide with it; the assert below is only against the *next*
+     * vector, VEC_XTLB_REFILL.
+     *
+     * Shared by both VPs, so landing here does not by itself mean the
+     * probe under test succeeded: a setup bug that faults early, before
+     * VP1 has even run its GINVT, would land on this exact same vector
+     * and -- if this handler did not tell the two apart -- write the
+     * exact same pass magic. It tells them apart by VP0's own progress
+     * word, which only reaches GI_VP0_POST_GINVT after VP0 has already
+     * waited for VP1's completion (see above), and it records the
+     * faulting address too, so the host can confirm the fault names the
+     * mapped page rather than some other address entirely.
+     */
+    img.pos = VEC_TLB_REFILL;
+
+    emit_li_kseg1(&img, R_T0, GI_STATE_PHYS);
+
+    emit_mfc0(&img, R_T4, CP0_BADVADDR, 0);
+    emit_sd(&img, R_T4, R_T0, GI_FAULT_VADDR_OFF);
+
+    emit_ld(&img, R_T5, R_T0, GI_VP0_PROGRESS_OFF);
+    emit_addiu(&img, R_T7, R_ZERO, GI_VP0_POST_GINVT);
+    {
+        unsigned int post_ginvt = emit_beq_fwd(&img, R_T5, R_T7);
+        unsigned int joined;
+
+        emit_nop(&img);
+        emit_li(&img, R_T3, GI_RESULT_SETUP_FAULT);
+        joined = emit_b_fwd(&img);
+        emit_nop(&img);
+        patch_fwd(&img, post_ginvt);
+        emit_li(&img, R_T3, GI_RESULT_REFILLED);
+        patch_fwd(&img, joined);
+    }
+    emit_sd(&img, R_T3, R_T0, GI_RESULT_OFF);
+    emit_sync(&img);
+
+    {
+        unsigned int handler_park = img.pos;
+        emit_wait(&img);
+        emit_b(&img, handler_park);
+        emit_nop(&img);
+    }
+    g_assert_cmpuint(img.pos, <=, VEC_XTLB_REFILL);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+/*
+ * qtest_readq issues one 8-byte read; that is untorn only because the host
+ * itself gives an aligned 64-bit load atomicity, which x86-64 -- what this
+ * fork builds and tests on -- does. A host without that guarantee would
+ * need this documented differently, not just assumed.
+ */
+static uint64_t gi_state_word(QTestState *qts, unsigned int off)
+{
+    return qtest_readq(qts, GI_STATE_PHYS + off);
+}
+
+static void report_ginvt_state(QTestState *qts)
+{
+    g_test_message("vp0 progress %" PRIu64 " vp1 progress %" PRIu64
+                   " result 0x%" PRIx64 " vpn 0x%" PRIx64
+                   " fault_vaddr 0x%" PRIx64,
+                   gi_state_word(qts, GI_VP0_PROGRESS_OFF),
+                   gi_state_word(qts, GI_VP1_PROGRESS_OFF),
+                   gi_state_word(qts, GI_RESULT_OFF),
+                   gi_state_word(qts, GI_VPN_OFF),
+                   gi_state_word(qts, GI_FAULT_VADDR_OFF));
+}
+
+static void test_ginvt_remote_invalidate(const void *data)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    unsigned int tries;
+    uint64_t result, vp0_progress, vp1_progress, fault_vaddr;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    fd = g_file_open_tmp("mips64-ginvt-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_ginvt_test_program(fd);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 128M -smp 2 -cpu I6400 -bios %s "
+                      "-accel tcg,thread=multi -no-reboot -no-shutdown",
+                      image);
+    unlink(image);
+
+    result = 0;
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        result = gi_state_word(qts, GI_RESULT_OFF);
+        if (result != 0) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    vp0_progress = gi_state_word(qts, GI_VP0_PROGRESS_OFF);
+    vp1_progress = gi_state_word(qts, GI_VP1_PROGRESS_OFF);
+    fault_vaddr = gi_state_word(qts, GI_FAULT_VADDR_OFF);
+
+    /*
+     * result == GI_RESULT_REFILLED alone is fakeable: any refill fault
+     * before VP1 even runs its GINVT lands on the same handler and writes
+     * the same magic -- see the setup-fault distinction in
+     * write_ginvt_test_program(). Require the fault to have actually
+     * happened where the probe expects it: VP0 past VP1's completion, VP1
+     * itself done, and the faulting address the mapped page, so a
+     * mutation that breaks remote invalidation cannot be scored a pass by
+     * faulting for an unrelated reason instead.
+     */
+    if (tries == POLL_TRIES || result != GI_RESULT_REFILLED ||
+        vp0_progress != GI_VP0_POST_GINVT || vp1_progress != GI_VP1_DONE ||
+        fault_vaddr != GI_TEST_VA) {
+        report_ginvt_state(qts);
+    }
+
+    g_assert_cmpuint(tries, <, POLL_TRIES);
+    g_assert_cmphex(result, ==, GI_RESULT_REFILLED);
+    g_assert_cmpuint(vp0_progress, ==, GI_VP0_POST_GINVT);
+    g_assert_cmpuint(vp1_progress, ==, GI_VP1_DONE);
+    g_assert_cmphex(fault_vaddr, ==, GI_TEST_VA);
+
+    qtest_quit(qts);
+}
+
 static void test_rendezvous_thread_multi(const void *data)
 {
     run_rendezvous("tcg,thread=multi", 10000);
@@ -1416,5 +1816,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/tlb/shootdown", NULL, test_tlb_shootdown);
     qtest_add_data_func("mttcg/tlb/asid", NULL, test_tlb_asid);
     qtest_add_data_func("mttcg/smc/cross-cpu", NULL, test_smc_cross_cpu);
+    qtest_add_data_func("mttcg/ginvt/remote-invalidate", NULL,
+                        test_ginvt_remote_invalidate);
     return g_test_run();
 }
