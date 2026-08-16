@@ -2273,6 +2273,16 @@ static hwaddr sgi_bridge_compose_xtalk(SGIBridgeState *s,
  * wrong for the tail of every transfer crossing a boundary — a defect a
  * neighbouring emulator of comparable hardware carried for years, because the
  * transfers that expose it are the rare ones.
+ *
+ * Concurrency contract: this hook runs under RCU, not necessarily the BQL
+ * (see the translate doc in include/system/memory.h). Every DMA initiator
+ * on this machine — the IOC3 network device and the two SCSI adapters —
+ * reaches it from a BQL-held context, because MMIO dispatch takes the BQL
+ * and no device on this machine uses an iothread. The translation state
+ * read here, the ATE array plus the CONTROL and DIRECT_MAP registers, is
+ * only coherent under that assumption. A future BQL-free DMA path needs a
+ * full translation-state synchronization design — atomics on every read
+ * this hook makes, plus reset and migration — not spot fixes here.
  */
 static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                                           IOMMUAccessFlags flag, int iommu_idx)
