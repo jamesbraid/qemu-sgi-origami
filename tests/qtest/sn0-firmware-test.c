@@ -787,6 +787,24 @@ static void test_dual_node_inventory(const void *data)
     board = node1 + qtest_readl(qts, board + BOARD_NEXT);
     g_assert_cmpuint(qtest_readb(qts, board + BOARD_TYPE), ==,
                      BOARD_TYPE_MIDPLANE);
+
+    board = node1 + qtest_readl(qts, board + BOARD_NEXT);
+    g_assert_cmpuint(qtest_readb(qts, board + BOARD_TYPE), ==,
+                     BOARD_TYPE_BASE_IO);
+    g_assert_cmphex(qtest_readw(qts, board + BOARD_NASID), ==, 1);
+    g_assert_cmpuint(qtest_readb(qts, board + BOARD_COMPONENTS), ==, 4);
+    for (i = 0; i < 4; i++) {
+        component[i] = node1 + qtest_readl(
+            qts, board + BOARD_COMP_LIST + i * sizeof(uint32_t));
+    }
+    g_assert_cmpuint(qtest_readb(qts, component[0] + COMP_TYPE), ==,
+                     COMP_TYPE_BRIDGE);
+    g_assert_cmpuint(qtest_readb(qts, component[1] + COMP_TYPE), ==,
+                     COMP_TYPE_SCSI);
+    g_assert_cmpuint(qtest_readb(qts, component[2] + COMP_TYPE), ==,
+                     COMP_TYPE_SCSI);
+    g_assert_cmpuint(qtest_readb(qts, component[3] + COMP_TYPE), ==,
+                     COMP_TYPE_IOC3);
     g_assert_cmphex(qtest_readl(qts, board + BOARD_NEXT), ==, 0);
 
     qtest_quit(qts);

@@ -36,6 +36,7 @@
 #include "system/numa.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
+#include "net/net.h"
 #include "trace/control.h"
 #include "cpu.h"
 #include "sn0.h"
@@ -1648,8 +1649,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
  * to assuming the Hub sits at a fixed widget is the normal path on this machine
  * and not a degraded one.
  */
-static void sn0_build_graph(MachineState *machine, unsigned int node_index,
-                            bool include_base_io)
+static void sn0_build_graph(MachineState *machine, unsigned int node_index)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     SN0NodeState *node_state = &s->nodes[node_index];
@@ -1849,8 +1849,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index,
      * would put the component one slot away from where that consumer looks.
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
-              include_base_io ?
-                  SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE : 0,
+              SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE,
               midplane_component, 1, 0, node_state->nasid);
     sn0_component(graph, midplane_component, 0, SN0_COMP_MODULE_SERIAL, 0, 0);
 
@@ -1881,19 +1880,17 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index,
      * constants that place those devices on the bus above, not values asserted
      * separately that merely happen to agree with them.
      */
-    if (include_base_io) {
-        base_io_component = midplane_component + 1;
-        sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
-                  base_io_component, 4, 4, node_state->nasid);
-        sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
-                      SN0_CONSOLE_WIDGET, SN0_CONSOLE_WIDGET);
-        sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
-                      SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET);
-        sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
-                      SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET);
-        sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
-                      SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET);
-    }
+    base_io_component = midplane_component + 1;
+    sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
+              base_io_component, 4, 4, node_state->nasid);
+    sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
+                  SN0_CONSOLE_WIDGET, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
+                  SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
+                  SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET);
+    sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
+                  SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET);
 
     {
         g_autofree char *name =
@@ -2060,7 +2057,7 @@ static void sn0_build_structures(MachineState *machine,
     }
     rom_add_blob_fixed("sn0.gda", gda, sizeof(gda), node + SN0_GDA);
 
-    sn0_build_graph(machine, node_index, node_index == 0);
+    sn0_build_graph(machine, node_index);
 
     /* The memory descriptors, shaped as a real machine of this era reports. */
     mem[n].type = SN0_MEM_EXCEPTION_BLOCK;
@@ -2305,12 +2302,19 @@ static void sn0_assign_node_pci_resources(SN0MachineState *s,
 static void sn0_assign_pci_resources(void *opaque)
 {
     SN0MachineState *s = opaque;
+    MachineState *machine = MACHINE(s);
+    unsigned int node_count;
+    unsigned int node_index;
 
     if (!s->io_bridge_present) {
         return;
     }
 
-    sn0_assign_node_pci_resources(s, 0);
+    node_count = machine->numa_state && machine->numa_state->num_nodes ?
+                 machine->numa_state->num_nodes : 1;
+    for (node_index = 0; node_index < node_count; node_index++) {
+        sn0_assign_node_pci_resources(s, node_index);
+    }
 }
 
 static void sn0_machine_ready(Notifier *notifier, void *data)
@@ -2821,6 +2825,7 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node,
 static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 {
     PCIDevice *ioc3;
+    MACAddr mac = { };
     NICInfo *nd;
     unsigned int slot;
 
@@ -2831,20 +2836,24 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
     }
 
     /*
-     * Node 0 owns the machine's host network backend. Its controller claims
-     * that backend itself, so the board only adjusts the automatic address
-     * before that claim: QEMU supplies the unique suffix, while this on-board
-     * IOC3 needs SGI's OUI because the PROM reads it from the one-wire part
-     * before it starts the network loader. An explicit mac= is a replacement
-     * part's programmed identity and stays intact.
+     * Each controller claims its host network backend itself, so the board
+     * only adjusts the automatic address before that claim: QEMU supplies the
+     * unique suffix, while an on-board IOC3 needs SGI's OUI because the PROM
+     * reads it from the one-wire part before it starts the network loader. An
+     * explicit mac= is a replacement part's programmed identity and stays
+     * intact. An unbacked controller still has that physical identity.
      */
-    if (node_index == 0) {
-        nd = qemu_find_nic_info(TYPE_SGI_IOC3_ETH, true, NULL);
-        if (nd && !nd->macaddr_explicit) {
-            nd->macaddr.a[0] = 0x08;
-            nd->macaddr.a[1] = 0x00;
-            nd->macaddr.a[2] = 0x69;
-        }
+    nd = qemu_find_nic_info(TYPE_SGI_IOC3_ETH, true, NULL);
+    if (nd && !nd->macaddr_explicit) {
+        nd->macaddr.a[0] = 0x08;
+        nd->macaddr.a[1] = 0x00;
+        nd->macaddr.a[2] = 0x69;
+    } else if (!nd) {
+        qemu_macaddr_default_if_unset(&mac);
+        mac.a[0] = 0x08;
+        mac.a[1] = 0x00;
+        mac.a[2] = 0x69;
+        qdev_prop_set_macaddr(DEVICE(ioc3), "mac", mac.a);
     }
     pci_realize_and_unref(ioc3,
                           PCI_HOST_BRIDGE(&s->io_bridge[node_index])->bus,
@@ -2898,11 +2907,14 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
                 PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
         }
     } else {
-        warn_report("origin200: the base I/O controller is mapped directly "
-                    "at its crosstalk address; without synthesized firmware "
-                    "to assign it PCI resources the way real ARCS PROM does, "
-                    "the I/O bridge cannot yet carry it to a booting guest "
-                    "(an approved interim, see task #43)");
+        if (node_index == 0) {
+            warn_report(
+                "origin200: the base I/O controller is mapped directly "
+                "at its crosstalk address; without synthesized firmware "
+                "to assign it PCI resources the way real ARCS PROM does, "
+                "the I/O bridge cannot yet carry it to a booting guest "
+                "(an approved interim, see task #43)");
+        }
         memory_region_add_subregion(
             &s->nodes[node_index].xtalk,
             SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) + SN0_BRIDGE_DEVICE2,
@@ -3160,15 +3172,11 @@ static void sn0_init(MachineState *machine)
         memory_region_add_subregion(&s->nodes[1].xtalk,
                                     SN0_XTALK_BASE(SN0_WIDGET0),
                                     &s->widget0[1]);
-        if (s->io_bridge_present) {
-            memory_region_add_subregion_overlap(
-                &s->nodes[1].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
-                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[1]), 0),
-                -1);
-        }
     }
 
-    sn0_create_base_io(s, 0);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        sn0_create_base_io(s, node_index);
+    }
 
     for (node_index = 0; node_index < node_count; node_index++) {
         sn0_node_map_xtalk_windows(&s->nodes[node_index], node_index);

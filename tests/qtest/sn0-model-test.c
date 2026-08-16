@@ -45,18 +45,64 @@
 #define SN0_PI_CPU_PRESENT_A    0x000040
 #define SN0_PI_CPU_PRESENT_B    0x000048
 #define SN0_GRAPH_NODE_BOARD    0x4100
+#define SN0_GRAPH_BOARD_SIZE    0xc0
+#define SN0_GRAPH_MIDPLANE      (SN0_GRAPH_NODE_BOARD + SN0_GRAPH_BOARD_SIZE)
+#define SN0_GRAPH_BASE_IO       (SN0_GRAPH_MIDPLANE + SN0_GRAPH_BOARD_SIZE)
 #define SN0_GRAPH_COMPONENTS    0x4400
 #define SN0_GRAPH_COMP_STRIDE   0x80
+#define SN0_BOARD_BASE_IO       0x21
 #define SN0_COMP_PROCESSOR      1
 #define SN0_COMP_ENABLED        1
 
-#define SN0_DUAL_CHASSIS_ARGS \
-    "-M origin200,synthesized-firmware=off -m 128M " \
+#define SN0_DUAL_CHASSIS_TOPOLOGY \
+    "-m 128M " \
     "-object memory-backend-ram,id=ram0,size=64M " \
     "-object memory-backend-ram,id=ram1,size=64M " \
     "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
     "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
     "-smp 4,sockets=2,cores=2,threads=1"
+
+#define SN0_DUAL_CHASSIS_ARGS \
+    "-M origin200,synthesized-firmware=off " SN0_DUAL_CHASSIS_TOPOLOGY
+#define SN0_DUAL_CHASSIS_FIRMWARE_ARGS \
+    "-M origin200 " SN0_DUAL_CHASSIS_TOPOLOGY
+
+#define SN0_SPACE_XTALK         0x20000000000ULL
+#define SN0_BRIDGE_WIDGET       8
+#define SN0_BRIDGE_BASE(node)   (SN0_SPACE_XTALK + \
+                                 (uint64_t)(node) * SN0_NODE_STRIDE + \
+                                 ((uint64_t)SN0_BRIDGE_WIDGET << 24))
+#define SN0_BRIDGE_CFG0         0x020000
+#define SN0_CFG0_DEVICE_STRIDE  0x1000
+#define SN0_CFG0(node, device)  (SN0_BRIDGE_BASE(node) + SN0_BRIDGE_CFG0 + \
+                                 (device) * SN0_CFG0_DEVICE_STRIDE)
+#define SN0_BRIDGE_REG_DATA     4
+#define SN0_BRIDGE_DEVICE_REG(node, device) \
+    (SN0_BRIDGE_BASE(node) + 0x200 + 8 * (device) + SN0_BRIDGE_REG_DATA)
+#define SN0_BRIDGE_DEVICE2      0x600000
+#define SN0_IOC3_SERIAL_A       0x020178
+#define SN0_IOC3_SCRATCH        7
+
+#define SN0_SCSI_DEVICE0        0
+#define SN0_SCSI_DEVICE1        1
+#define SN0_IOC3_DEVICE         2
+#define SN0_QLOGIC_ID           0x10201077
+#define SN0_IOC3_ID             0x000310a9
+
+#define SN0_PCI_COMMAND         0x04
+#define SN0_PCI_COMMAND_IO      0x0001
+#define SN0_PCI_COMMAND_MEMORY  0x0002
+#define SN0_PCI_COMMAND_MASTER  0x0004
+#define SN0_PCI_BAR0            0x10
+#define SN0_PCI_BAR1            0x14
+#define SN0_PCI_SCSI0_MEM       0x08200000U
+#define SN0_PCI_SCSI1_MEM       0x08400000U
+#define SN0_PCI_IOC3_MEM        0x08600000U
+#define SN0_TEST_IOC3_MEM       0x10000000U
+
+#define SN0_DEV_ERROR_LOCK      (1u << 28)
+#define SN0_DEV_PAGE_CROSS      (1u << 27)
+#define SN0_DEV_MEMORY_SPACE    (1u << 12)
 
 static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
                                      const char *expected)
@@ -97,6 +143,178 @@ static void test_bridge_root_bus_names(const void *data)
 
     assert_pci_root_bus_name(qts, "/machine/bridge", "pci");
     assert_pci_root_bus_name(qts, "/machine/bridge1", "pci.1");
+
+    qtest_quit(qts);
+}
+
+static void attach_ioc3(QTestState *qts, unsigned int node)
+{
+    qtest_writel(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) + SN0_PCI_BAR0,
+                 SN0_TEST_IOC3_MEM);
+    qtest_writel(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) + SN0_PCI_COMMAND,
+                 SN0_PCI_COMMAND_MEMORY);
+    qtest_writel(qts, SN0_BRIDGE_DEVICE_REG(node, SN0_IOC3_DEVICE),
+                 SN0_DEV_MEMORY_SPACE | (SN0_TEST_IOC3_MEM >> 20));
+}
+
+static uint64_t ioc3_scratch(unsigned int node)
+{
+    return SN0_BRIDGE_BASE(node) + SN0_BRIDGE_DEVICE2 +
+           SN0_IOC3_SERIAL_A + SN0_IOC3_SCRATCH;
+}
+
+/*
+ * Each chassis carries a complete BaseIO assembly. Probe all three fixed PCI
+ * identities through each node-qualified Bridge, then write different values
+ * into the two IOC3s so an accidental alias cannot satisfy the test.
+ */
+static void test_dual_chassis_base_io(const void *data)
+{
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
+    unsigned int node;
+
+    for (node = 0; node < 2; node++) {
+        g_assert_cmphex(qtest_readl(qts,
+                            SN0_CFG0(node, SN0_SCSI_DEVICE0)), ==,
+                        SN0_QLOGIC_ID);
+        g_assert_cmphex(qtest_readl(qts,
+                            SN0_CFG0(node, SN0_SCSI_DEVICE1)), ==,
+                        SN0_QLOGIC_ID);
+        g_assert_cmphex(qtest_readl(qts,
+                            SN0_CFG0(node, SN0_IOC3_DEVICE)), ==,
+                        SN0_IOC3_ID);
+        attach_ioc3(qts, node);
+    }
+
+    qtest_writeb(qts, ioc3_scratch(0), 0x5a);
+    qtest_writeb(qts, ioc3_scratch(1), 0xa5);
+    g_assert_cmphex(qtest_readb(qts, ioc3_scratch(0)), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, ioc3_scratch(1)), ==, 0xa5);
+
+    qtest_quit(qts);
+}
+
+static char *qom_get_string(QTestState *qts, const char *path,
+                            const char *property)
+{
+    QDict *response = qtest_qmp(
+        qts, "{ 'execute': 'qom-get',"
+             " 'arguments': { 'path': %s, 'property': %s } }",
+        path, property);
+    char *value;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    value = g_strdup(qdict_get_str(response, "return"));
+    qobject_unref(response);
+    return value;
+}
+
+/*
+ * Each IOC3 carries a separately programmed station address in the one-wire
+ * identity that the stock PROM reads.  A host backend is optional, so the
+ * unbacked second controller still needs the board's SGI OUI and a distinct
+ * suffix.  The IOC3 one-wire qtests separately prove that this QOM property
+ * is the value returned by the identity part.
+ */
+static void test_dual_chassis_ioc3_network_identity(const void *data)
+{
+    g_autofree char *mac0 = NULL;
+    g_autofree char *mac1 = NULL;
+    g_autofree char *netdev0 = NULL;
+    g_autofree char *netdev1 = NULL;
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS
+                                 " -nic user,id=n0");
+
+    mac0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "mac");
+    mac1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "mac");
+    netdev0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "netdev");
+    netdev1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "netdev");
+
+    g_assert_true(g_str_has_prefix(mac0, "08:00:69:"));
+    g_assert_true(g_str_has_prefix(mac1, "08:00:69:"));
+    g_assert_cmpstr(mac0, !=, mac1);
+    g_assert_cmpstr(netdev0, ==, "n0");
+    g_assert_cmpstr(netdev1, ==, "");
+
+    qtest_quit(qts);
+
+    g_clear_pointer(&mac0, g_free);
+    g_clear_pointer(&mac1, g_free);
+    g_clear_pointer(&netdev0, g_free);
+    g_clear_pointer(&netdev1, g_free);
+
+    qts = qtest_init(SN0_DUAL_CHASSIS_ARGS
+                     " -nic user,id=n0,mac=02:11:22:33:44:50"
+                     " -nic user,id=n1,mac=02:11:22:33:44:51");
+
+    mac0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "mac");
+    mac1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "mac");
+    netdev0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "netdev");
+    netdev1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "netdev");
+
+    g_assert_cmpstr(mac0, ==, "02:11:22:33:44:50");
+    g_assert_cmpstr(mac1, ==, "02:11:22:33:44:51");
+    g_assert_cmpstr(netdev0, ==, "n0");
+    g_assert_cmpstr(netdev1, ==, "n1");
+
+    qtest_quit(qts);
+}
+
+static void assert_base_io_graph(QTestState *qts, unsigned int node)
+{
+    uint64_t node_base = node * SN0_NODE_STRIDE;
+
+    g_assert_cmphex(qtest_readl(qts, node_base + SN0_GRAPH_MIDPLANE), ==,
+                    SN0_GRAPH_BASE_IO);
+    g_assert_cmphex(qtest_readb(qts, node_base + SN0_GRAPH_BASE_IO + 5), ==,
+                    SN0_BOARD_BASE_IO);
+    g_assert_cmpuint(qtest_readb(qts,
+                         node_base + SN0_GRAPH_BASE_IO + 0x17), ==, 4);
+}
+
+static void assert_base_io_resources(QTestState *qts, unsigned int node)
+{
+    static const unsigned int device[] = {
+        SN0_SCSI_DEVICE0, SN0_SCSI_DEVICE1, SN0_IOC3_DEVICE,
+    };
+    static const uint32_t memory[] = {
+        SN0_PCI_SCSI0_MEM, SN0_PCI_SCSI1_MEM, SN0_PCI_IOC3_MEM,
+    };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(device); i++) {
+        uint32_t bar = device[i] == SN0_IOC3_DEVICE ?
+                       SN0_PCI_BAR0 : SN0_PCI_BAR1;
+        uint32_t command = device[i] == SN0_IOC3_DEVICE ?
+                           SN0_PCI_COMMAND_MEMORY |
+                           SN0_PCI_COMMAND_MASTER :
+                           SN0_PCI_COMMAND_IO | SN0_PCI_COMMAND_MEMORY |
+                           SN0_PCI_COMMAND_MASTER;
+
+        g_assert_cmphex(qtest_readl(qts, SN0_CFG0(node, device[i]) + bar), ==,
+                        memory[i]);
+        g_assert_cmphex(qtest_readl(qts,
+                            SN0_CFG0(node, device[i]) + SN0_PCI_COMMAND) &
+                        0xffff, ==, command);
+        g_assert_cmphex(qtest_readl(qts,
+                            SN0_BRIDGE_DEVICE_REG(node, device[i])), ==,
+                        SN0_DEV_ERROR_LOCK | SN0_DEV_PAGE_CROSS |
+                        SN0_DEV_MEMORY_SPACE | (memory[i] >> 20));
+    }
+}
+
+/* Firmware assignment must follow each device's own reset on every chassis. */
+static void test_dual_chassis_base_io_survives_reset(const void *data)
+{
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_FIRMWARE_ARGS);
+
+    assert_base_io_resources(qts, 0);
+    assert_base_io_resources(qts, 1);
+    assert_base_io_graph(qts, 0);
+    assert_base_io_graph(qts, 1);
+    qtest_system_reset(qts);
+    assert_base_io_resources(qts, 0);
+    assert_base_io_resources(qts, 1);
 
     qtest_quit(qts);
 }
@@ -749,6 +967,12 @@ int main(int argc, char **argv)
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
                         test_bridge_root_bus_names);
+    qtest_add_data_func("sn0/model/dual-chassis-base-io", NULL,
+                        test_dual_chassis_base_io);
+    qtest_add_data_func("sn0/model/dual-chassis-ioc3-network-identity", NULL,
+                        test_dual_chassis_ioc3_network_identity);
+    qtest_add_data_func("sn0/model/dual-chassis-base-io-survives-reset", NULL,
+                        test_dual_chassis_base_io_survives_reset);
     qtest_add_data_func("sn0/model/promdata-uses-memory-space", NULL,
                         test_promdata_uses_memory_space);
     qtest_add_data_func("sn0/model/processor-mode-bits", NULL,
