@@ -32,6 +32,7 @@
 #include "qemu/error-report.h"
 #include "qemu/accel.h"
 #include "qemu/atomic.h"
+#include "qemu/timer.h"
 #include "qapi/qapi-types-common.h"
 #include "qapi/qapi-builtin-visit.h"
 #include "qemu/units.h"
@@ -54,6 +55,7 @@ struct TCGState {
     bool one_insn_per_tb;
     int splitwx_enabled;
     unsigned long tb_size;
+    uint64_t rr_kick_period_ns;
 };
 typedef struct TCGState TCGState;
 
@@ -68,6 +70,13 @@ bool qemu_tcg_mttcg_enabled(void)
     TCGState *s = TCG_STATE(current_accel());
     return s->mttcg_enabled == ON_OFF_AUTO_ON;
 }
+
+uint64_t qemu_tcg_rr_kick_period_ns(void)
+{
+    TCGState *s = TCG_STATE(current_accel());
+
+    return s->rr_kick_period_ns;
+}
 #endif /* !CONFIG_USER_ONLY */
 
 static void tcg_accel_instance_init(Object *obj)
@@ -80,6 +89,7 @@ static void tcg_accel_instance_init(Object *obj)
 #else
     s->splitwx_enabled = 0;
 #endif
+    s->rr_kick_period_ns = NANOSECONDS_PER_SECOND / 10;
 }
 
 bool one_insn_per_tb;
@@ -230,6 +240,35 @@ static void tcg_set_tb_size(Object *obj, Visitor *v,
     s->tb_size = value;
 }
 
+static void tcg_get_rr_kick_period(Object *obj, Visitor *v,
+                                   const char *name, void *opaque,
+                                   Error **errp)
+{
+    TCGState *s = TCG_STATE(obj);
+    uint64_t value = s->rr_kick_period_ns;
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void tcg_set_rr_kick_period(Object *obj, Visitor *v,
+                                   const char *name, void *opaque,
+                                   Error **errp)
+{
+    TCGState *s = TCG_STATE(obj);
+    uint64_t value;
+
+    if (!visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    if (value == 0 || value > INT64_MAX) {
+        error_setg(errp, "rr-kick-period-ns must be between 1 and %"
+                   PRIi64, INT64_MAX);
+        return;
+    }
+
+    s->rr_kick_period_ns = value;
+}
+
 static bool tcg_get_splitwx(Object *obj, Error **errp)
 {
     TCGState *s = TCG_STATE(obj);
@@ -275,6 +314,12 @@ static void tcg_accel_class_init(ObjectClass *oc, const void *data)
         NULL, NULL);
     object_class_property_set_description(oc, "tb-size",
         "TCG translation block cache size");
+
+    object_class_property_add(oc, "rr-kick-period-ns", "uint64",
+        tcg_get_rr_kick_period, tcg_set_rr_kick_period,
+        NULL, NULL);
+    object_class_property_set_description(oc, "rr-kick-period-ns",
+        "Round-robin vCPU kick period in nanoseconds");
 
     object_class_property_add_bool(oc, "split-wx",
         tcg_get_splitwx, tcg_set_splitwx);

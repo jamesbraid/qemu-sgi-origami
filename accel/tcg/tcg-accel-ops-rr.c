@@ -24,6 +24,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "qemu/lockable.h"
 #include "system/tcg.h"
 #include "system/replay.h"
@@ -65,7 +66,8 @@ static CPUState *rr_current_cpu;
 
 static inline int64_t rr_next_kick_time(void)
 {
-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+    return sadd64_saturate(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                           qemu_tcg_rr_kick_period_ns());
 }
 
 /* Kick the currently round-robin scheduled vCPU to next */

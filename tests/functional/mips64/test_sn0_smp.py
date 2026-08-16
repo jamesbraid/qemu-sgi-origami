@@ -46,6 +46,14 @@ PROMDATA_VALUE_A = 0x11
 PROMDATA_VALUE_B = 0x22
 PROMDATA_SHARED = 0x33
 
+RR_KICK_STATE = 0x00031000
+RR_KICK_PEER_ARMED = 0x00
+RR_KICK_GO = 0x08
+RR_KICK_PEER_READY = 0x10
+RR_KICK_DONE = 0x18
+RR_KICK_TIMEOUT = 0x20
+RR_KICK_DEADLINE_TICKS = 5
+
 
 # Explicit node-one RAM is shared by all four CPUs.  An unqualified uncached
 # address instead resolves to the reading CPU's local node.
@@ -319,6 +327,80 @@ def build_promdata_cache_bypass():
     return program
 
 
+def build_rr_kick_deadline():
+    program = MipsProgram()
+
+    # Enter 64-bit kernel mode.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # Shared completion markers at 0x9000000000031000.
+    program.address_prefix(R_S0, 0x9000)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0003))
+    program.emit(mips_i(0x0d, R_AT, R_AT, 0x1000))
+    program.emit(mips_r(R_S0, R_AT, R_S0, 0, 0x25))
+
+    # Hub PI_PROCESSOR_NUMBER at 0x9200000001000020.
+    program.address_prefix(R_S1, 0x9200)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0100))
+    program.emit(mips_i(0x0d, R_AT, R_AT, 0x0020))
+    program.emit(mips_r(R_S1, R_AT, R_S1, 0, 0x25))
+
+    # Hub PI_RT_COUNT at 0x9200000001030100.
+    program.emit(mips_i(0x0f, R_ZERO, R_S2, 0x9200))
+    program.emit(mips_r(R_ZERO, R_S2, R_S2, 16, 0x38))
+    program.emit(mips_i(0x0d, R_S2, R_S2, 0x0103))
+    program.emit(mips_r(R_ZERO, R_S2, R_S2, 16, 0x38))
+    program.emit(mips_i(0x0d, R_S2, R_S2, 0x0100))
+
+    program.emit(mips_i(0x37, R_S1, R_T0, 0))
+    select_b = program.branch(0x05, R_T0, R_ZERO)
+
+    # CPU A gives the armed peer four microseconds to publish. Only the
+    # configured one microsecond RR kick can run CPU B within that interval.
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
+    wait_armed = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, RR_KICK_PEER_ARMED))
+    branch = program.branch(0x04, R_T0, R_ZERO)
+    program.patch(branch, wait_armed)
+    program.emit(mips_i(0x3f, R_S0, R_T1, RR_KICK_GO))
+    program.emit(mips_i(0x37, R_S2, R_T2, 0))
+    program.emit(mips_i(0x19, R_T2, R_T2, RR_KICK_DEADLINE_TICKS))
+    wait_peer = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T3, RR_KICK_PEER_READY))
+    peer_ready = program.branch(0x05, R_T3, R_ZERO)
+    program.emit(mips_i(0x37, R_S2, R_T3, 0))
+    program.emit(mips_r(R_T3, R_T2, R_T4, 0, 0x2b))
+    branch = program.branch(0x05, R_T4, R_ZERO)
+    program.patch(branch, wait_peer)
+    program.emit(mips_i(0x3f, R_S0, R_T1, RR_KICK_TIMEOUT))
+    timeout_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, timeout_spin)
+
+    program.patch(peer_ready, len(program.instructions))
+    program.emit(mips_i(0x3f, R_S0, R_T1, RR_KICK_DONE))
+    done_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, done_spin)
+
+    # CPU B arms first, then publishes only after CPU A starts the deadline.
+    program.patch(select_b, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T1, RR_KICK_PEER_ARMED))
+    wait_go = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, RR_KICK_GO))
+    branch = program.branch(0x04, R_T0, R_ZERO)
+    program.patch(branch, wait_go)
+    program.emit(mips_i(0x3f, R_S0, R_T1, RR_KICK_PEER_READY))
+    peer_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, peer_spin)
+    return program
+
+
 def build_four_cpu_rendezvous():
     program = MipsProgram()
 
@@ -496,6 +578,27 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[PROMDATA_UNCACHED_B // 8], PROMDATA_SHARED)
         self.assertEqual(state[PROMDATA_CACHED_A // 8], PROMDATA_VALUE_A)
         self.assertEqual(state[PROMDATA_CACHED_B // 8], PROMDATA_VALUE_B)
+
+    def test_rr_kick_period_allows_peer_before_deadline(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('rr-kick-deadline.bin')
+        build_rr_kick_deadline().write(firmware)
+
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=off,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=single,rr-kick-period-ns=1000',
+            '-icount', 'shift=2,align=off,sleep=on',
+            '-smp', '2', '-bios', firmware)
+        self.vm.launch()
+
+        time.sleep(0.75)
+        state = self.read_state(RR_KICK_STATE, 5)
+        self.assertEqual(state[RR_KICK_PEER_ARMED // 8], 1)
+        self.assertEqual(state[RR_KICK_GO // 8], 1)
+        self.assertEqual(state[RR_KICK_PEER_READY // 8], 1)
+        self.assertEqual(state[RR_KICK_DONE // 8], 1)
+        self.assertEqual(state[RR_KICK_TIMEOUT // 8], 0)
 
     def test_four_cpu_two_node_rendezvous_separates_ram_and_hub(self):
         self.set_machine('origin200')
