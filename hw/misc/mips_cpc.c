@@ -21,6 +21,7 @@
 #include "qapi/error.h"
 #include "target/mips/cpu.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
 #include "hw/core/sysbus.h"
@@ -38,6 +39,8 @@ static void mips_cpu_reset_async_work(CPUState *cs, run_on_cpu_data data)
 {
     MIPSCPCState *cpc = (MIPSCPCState *) data.host_ptr;
 
+    assert(bql_locked());
+
     cpu_reset(cs);
     cs->halted = 0;
     cpc->vp_running |= 1ULL << cs->cpu_index;
@@ -51,12 +54,25 @@ static void cpc_run_vp(MIPSCPCState *cpc, uint64_t vp_run)
         uint64_t i = 1ULL << cs->cpu_index;
         if (i & vp_run & ~cpc->vp_running) {
             /*
-             * To avoid racing with a CPU we are just kicking off.
-             * We do the final bit of preparation for the work in
-             * the target CPUs context.
+             * We do the final bit of preparation for the work in the
+             * target CPU's own context.
+             *
+             * async_run_on_cpu(), not async_safe_run_on_cpu(): the doc
+             * comment on async_safe_run_on_cpu() in include/hw/core/cpu.h
+             * says it runs with the BQL released inside an exclusive
+             * section, which only pauses other vCPU threads at their next
+             * cpu_exec() boundary -- it does not touch the main/IO
+             * thread. cpc->vp_running is also read and written directly
+             * from cpc_read()/cpc_stop_vp() under BQL-held MMIO dispatch,
+             * so the async work's write here raced them with no lock of
+             * its own. async_run_on_cpu() runs the same work on the same
+             * target thread but keeps the BQL held throughout, closing
+             * that race the same way commit "hw/mips/sn0: launch
+             * secondaries under the BQL work contract" closed the
+             * identical shape of bug in sn0_launch_cpu().
              */
-            async_safe_run_on_cpu(cs, mips_cpu_reset_async_work,
-                                  RUN_ON_CPU_HOST_PTR(cpc));
+            async_run_on_cpu(cs, mips_cpu_reset_async_work,
+                             RUN_ON_CPU_HOST_PTR(cpc));
         }
     }
 }
