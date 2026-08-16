@@ -1665,6 +1665,260 @@ static void test_ginvt_remote_invalidate(const void *data)
     qtest_quit(qts);
 }
 
+/* ---------------------------------------------------------------- */
+/* Case: mttcg/mtase/smoke                                          */
+/* ---------------------------------------------------------------- */
+
+/*
+ * MT-ASE smoke test: a 34Kf on malta, -smp 2. 34Kf has no CMGCR bit in
+ * Config3 (cpu_type_supports_cps_smp() in target/mips/cpu.c), so malta
+ * gives it two independent MIPSCPU objects (create_cpu_without_cps() in
+ * hw/mips/malta.c) rather than a CPS cluster -- this is the MT-ASE half of
+ * the same defect shape the GINVT case above covers for CPS/GINV: cross-VPE
+ * state written inline from the calling thread, guarded in this series'
+ * fourth chunk (target/mips: serialize the mttc0/mftc0 accessors; target/mips:
+ * serialize the VPE enable sweeps).
+ *
+ * This case runs on VP0 only. A genuinely cross-VPE version -- VP0 waking
+ * VP1 with EVPE, the two then exchanging an mttc0/mftc0 pair -- turned out
+ * not to be reachable, for two separate, verified reasons rather than one
+ * convenient one, and per the brief's own guidance ("if a two-VPE
+ * configuration isn't reachable... scope the smoke to what IS reachable")
+ * this is scoped to VP0's own self-referential paths instead of chasing a
+ * workaround for either:
+ *
+ * 1. VP1 can never become schedulable through EVPE alone. ase_mt_available()
+ *    CPU reset (target/mips/cpu.c) sets CP0_VPEConf0.MVP|VPA only for
+ *    cpu_index 0; every other VPE's CP0_VPEConf0 stays zero forever, and
+ *    nothing in helper_evpe() (cp0_helper.c) touches a target VPE's
+ *    CP0_VPEConf0 -- it only sets the target's CP0_MVPControl.EVP bit and
+ *    raises CPU_INTERRUPT_WAKE. mips_cpu_has_work() (target/mips/cpu.c)
+ *    forces has_work back to false whenever mips_vpe_active() is false
+ *    regardless of that interrupt, and mips_vpe_active() requires
+ *    CP0_VPEConf0.VPA -- so VP1 stays halted forever once reset. Confirmed
+ *    by running an EVPE-based two-VPE draft of this test and watching VP1's
+ *    published progress word never move off 0 for the full poll deadline.
+ * 2. The software fix for (1) -- VP0 issuing mttc0 VPEConf0 to set VP1's
+ *    VPA bit remotely -- hits the same PTC gate described below for
+ *    TCContext: gen_mftr()/gen_mttr() (target/mips/tcg/translate.c) refuse
+ *    any MFTR/MTTR naming a nonzero TargTC before it ever reaches
+ *    helper_mttc0_vpeconf0().
+ *
+ * Both are pre-existing gaps in this emulator's MT-ASE VPE-activation
+ * modeling, not something introduced or fixed here, and out of this task's
+ * scope to fix.
+ *
+ * The mttc0/mftc0 half is narrower than a genuine cross-VPE write/read
+ * would be, and that narrowing is a real, checked limitation rather than a
+ * simplification of convenience: CP0_MVPConf0 (the PTC/PVPE topology
+ * register software is meant to read to learn how many TCs exist) is
+ * allocated zeroed and never written anywhere in target/mips/cpu.c -- no
+ * setter exists, only helper_mfc0_mvpconf0()'s getter. gen_mftr()/gen_mttr()
+ * gate every MFTR/MTTR on `TargTC > (CP0_MVPConf0 & PTC_mask)`, which is
+ * `TargTC > 0` given MVPConf0 is always zero, so any encoded MFTR/MTTR
+ * naming a TargTC other than 0 is silently turned into a NOP (MTTR) or a -1
+ * read (MFTR) before it ever reaches the now-guarded
+ * helper_mttc0_tccontext()/helper_mftc0_tccontext() this chunk touches --
+ * confirmed by reading both gate conditions, not inferred.
+ *
+ * TargTC's reset default is 0, which mips_cpu_map_tc() (cp0_helper.c)
+ * resolves to the calling VPE itself, so a TargTC=0 MTTR/MFTR pair clears
+ * the PTC gate and still reaches the guarded helpers -- just self-
+ * referentially. That is what this test does for the mttc0/mftc0 half:
+ * VP0 writes then reads back its own TCContext through the cross-VPE
+ * accessor path, exercising the same BQL_LOCK_GUARD()-guarded code a
+ * genuinely cross-VPE case would run.
+ *
+ * DVPE/EVPE are not gated by PTC at all -- helper_dvpe()/helper_evpe() are
+ * dispatched straight from OPC_MFMC0, no gen_mftr()/gen_mttr() involved --
+ * so this case still executes both for real, exercising the now-guarded
+ * CPU_FOREACH sweep over every other VPE's CP0_MVPControl and the
+ * mips_vpe_sleep()/mips_vpe_wake() calls inside it. This is exactly the
+ * path where the double-lock bug fixed in mips_vpe_wake() below (a plain
+ * bql_lock() called from inside this now-BQL_LOCK_GUARD()-held sweep)
+ * showed up: caught by this smoke actually running, not by inspection.
+ * There is nothing VP0 can read back to observe DVPE/EVPE's effect on
+ * VP1's own state directly -- no mftc0-family accessor for CP0_MVPControl
+ * exists -- so "coherent results and no wedge" here means the guest
+ * reaches DONE at all: a reentrancy abort or a hang would fail exactly the
+ * assertions this case already makes.
+ *
+ * 34Kf's insn_flags is CPU_MIPS32R2 (target/mips/cpu-defs.c.inc): a plain
+ * 32-bit core, unlike every other CPU model this file uses. SD/LD and the
+ * shared state_word()/emit_sd() 64-bit helpers are MIPS64-only and take a
+ * reserved-instruction exception here -- confirmed by running an early
+ * draft that used them and reading the fault out of -d int (cause 10,
+ * "reserved instruction", at the first SD). This case publishes state
+ * with the 32-bit emit_sw() instead and reads it back with
+ * qtest_readl(), not qtest_readq().
+ */
+
+#define MT_STATE_PHYS           0x00120000u
+#define MT_VPE0_PROGRESS_OFF    0x00
+#define MT_TCCONTEXT_RESULT_OFF 0x08
+#define MT_DONE_OFF             0x10
+
+/*
+ * Recognizable, mid-range pattern: not 0 (unpublished), not a magic
+ * already used elsewhere in this file.
+ */
+#define MT_TCCONTEXT_MARKER     0x0c0de000u
+
+/* CP0 register 2 select 5: TCContext. */
+#define MT_CP0_TCCONTEXT        2
+#define MT_TCCONTEXT_SEL        5
+
+/*
+ * MFTR/MTTR (target/mips/tcg/translate.c): sub-opcode (0x0B<<21)|OPC_CP0 is
+ * MFMC0, whose low bits pick DVPE/EVPE; (0x08<<21)|OPC_CP0 is MFTR and
+ * (0x0C<<21)|OPC_CP0 is MTTR. For MFTR the CP0 register number is the rt
+ * field (20:16) and the destination GPR is rd (15:11); MTTR swaps that --
+ * source GPR in rt, CP0 register number in rd -- confirmed by reading
+ * gen_mftr()/gen_mttr()'s own parameter order at their call sites, not
+ * assumed from the mnemonics.
+ */
+#define OPC_MFTR                (OPC_CP0 | (0x08u << 21))
+#define OPC_MTTR                (OPC_CP0 | (0x0Cu << 21))
+#define OPC_DVPE                (OPC_CP0 | (0x0Bu << 21) | 0x01u)
+#define OPC_EVPE                (OPC_CP0 | (0x0Bu << 21) | 0x21u)
+
+static void emit_mftc0_tccontext(GuestImage *img, int dest)
+{
+    emit(img, OPC_MFTR | (MT_CP0_TCCONTEXT << 16) | ((uint32_t)dest << 11) |
+             MT_TCCONTEXT_SEL);
+}
+
+static void emit_mttc0_tccontext(GuestImage *img, int src)
+{
+    emit(img, OPC_MTTR | ((uint32_t)src << 16) | (MT_CP0_TCCONTEXT << 11) |
+             MT_TCCONTEXT_SEL);
+}
+
+/* rt = $zero: the previous MVPControl value this returns goes unused. */
+static void emit_dvpe(GuestImage *img)
+{
+    emit(img, OPC_DVPE);
+}
+
+static void emit_evpe(GuestImage *img)
+{
+    emit(img, OPC_EVPE);
+}
+
+static void write_mtase_test_program(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    emit_b(&img, CODE_START);
+    emit_nop(&img);
+    img.pos = CODE_START;
+
+    /* t0 = this test's state block (KSEG1). VP0 only -- see above. */
+    emit_li_kseg1(&img, R_T0, MT_STATE_PHYS);
+
+    emit_addiu(&img, R_T3, R_ZERO, 1);
+    emit_sw(&img, R_T3, R_T0, MT_VPE0_PROGRESS_OFF);
+
+    /* Self mttc0/mftc0 round trip on TCContext. */
+    emit_li(&img, R_T3, MT_TCCONTEXT_MARKER);
+    emit_mttc0_tccontext(&img, R_T3);
+    emit_mftc0_tccontext(&img, R_T4);
+    emit_sw(&img, R_T4, R_T0, MT_TCCONTEXT_RESULT_OFF);
+    emit_sync(&img);
+
+    emit_addiu(&img, R_T3, R_ZERO, 2);
+    emit_sw(&img, R_T3, R_T0, MT_VPE0_PROGRESS_OFF);
+
+    /*
+     * dvpe then evpe: exercises the now-guarded CPU_FOREACH sweep in both
+     * (see the comment above for why nothing here observes VP1 respond).
+     */
+    emit_dvpe(&img);
+    emit_evpe(&img);
+
+    emit_li(&img, R_T3, DONE_MAGIC);
+    emit_sw(&img, R_T3, R_T0, MT_DONE_OFF);
+    emit_sync(&img);
+    emit_halt(&img);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static uint32_t mt_state_word(QTestState *qts, unsigned int off)
+{
+    return qtest_readl(qts, MT_STATE_PHYS + off);
+}
+
+static void report_mtase_state(QTestState *qts)
+{
+    g_test_message("vp0 progress %" PRIu32 " tccontext 0x%" PRIx32
+                   " done 0x%" PRIx32,
+                   mt_state_word(qts, MT_VPE0_PROGRESS_OFF),
+                   mt_state_word(qts, MT_TCCONTEXT_RESULT_OFF),
+                   mt_state_word(qts, MT_DONE_OFF));
+}
+
+static void test_mtase_smoke(const void *data)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    unsigned int tries;
+    uint32_t done, tccontext;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    fd = g_file_open_tmp("mips64-mtase-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_mtase_test_program(fd);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 128M -smp 2 -cpu 34Kf -bios %s "
+                      "-accel tcg,thread=multi -no-reboot -no-shutdown",
+                      image);
+    unlink(image);
+
+    done = 0;
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        done = mt_state_word(qts, MT_DONE_OFF);
+        if (done != 0) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    tccontext = mt_state_word(qts, MT_TCCONTEXT_RESULT_OFF);
+
+    if (tries == POLL_TRIES || done != DONE_MAGIC ||
+        tccontext != MT_TCCONTEXT_MARKER) {
+        report_mtase_state(qts);
+    }
+
+    /*
+     * Reaching DONE at all is the "no wedge" proof -- see the comment
+     * above on why nothing here can also observe VP1 respond. Kept as
+     * exactly that and nothing more: a future change that turned
+     * helper_dvpe()/helper_evpe()'s CPU_FOREACH sweep into a no-op, or
+     * dropped its guard, would still reach DONE and pass every assertion
+     * below. Closing that gap needs an observable on VP1's own side --
+     * still unreachable for the two verified reasons above -- so this
+     * case stays scoped to proving the sweep does not deadlock or abort,
+     * not that it does anything.
+     */
+    g_assert_cmpuint(tries, <, POLL_TRIES);
+    g_assert_cmphex(done, ==, DONE_MAGIC);
+    /* The self-referential mttc0/mftc0 round trip landed unchanged. */
+    g_assert_cmphex(tccontext, ==, MT_TCCONTEXT_MARKER);
+
+    qtest_quit(qts);
+}
+
 static void test_rendezvous_thread_multi(const void *data)
 {
     run_rendezvous("tcg,thread=multi", 10000);
@@ -1818,5 +2072,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/smc/cross-cpu", NULL, test_smc_cross_cpu);
     qtest_add_data_func("mttcg/ginvt/remote-invalidate", NULL,
                         test_ginvt_remote_invalidate);
+    qtest_add_data_func("mttcg/mtase/smoke", NULL, test_mtase_smoke);
     return g_test_run();
 }
