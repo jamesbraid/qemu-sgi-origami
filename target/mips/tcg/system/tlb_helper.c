@@ -28,6 +28,7 @@
 #include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/cpu-loop.h"
 #include "exec/log.h"
+#include "hw/core/cpu.h"
 #include "exec/helper-proto.h"
 
 /* TLB management */
@@ -358,24 +359,81 @@ static void global_invalidate_tlb(CPUMIPSState *env,
     cpu_mips_tlb_flush(env);
 }
 
+/*
+ * GINVT's payload for the remote CPUs: each dispatch below owns one of
+ * these, freed by the work function that consumes it. The arguments don't
+ * fit run_on_cpu_data's single packed word, and a payload on this
+ * function's stack would outlive it once the work is merely queued rather
+ * than run inline.
+ */
+typedef struct MIPSGinvtWork {
+    uint32_t invMsgVPN2;
+    uint8_t invMsgR;
+    uint32_t invMsgMMid;
+    uint32_t type;
+} MIPSGinvtWork;
+
+static MIPSGinvtWork *ginvt_work_new(uint32_t invMsgVPN2, uint8_t invMsgR,
+                                     uint32_t invMsgMMid, uint32_t type)
+{
+    MIPSGinvtWork *w = g_new0(MIPSGinvtWork, 1);
+
+    w->invMsgVPN2 = invMsgVPN2;
+    w->invMsgR = invMsgR;
+    w->invMsgMMid = invMsgMMid;
+    w->type = type;
+    return w;
+}
+
+/* Runs on @cpu's own thread: invalidate this CPU's own TLB entries. */
+static void ginvt_work(CPUState *cpu, run_on_cpu_data data)
+{
+    MIPSGinvtWork *w = data.host_ptr;
+
+    global_invalidate_tlb(cpu_env(cpu), w->invMsgVPN2, w->invMsgR,
+                          w->invMsgMMid, w->type == 0, w->type == 3,
+                          w->type == 2, w->type == 1);
+    g_free(w);
+}
+
 void helper_ginvt(CPUMIPSState *env, target_ulong arg, uint32_t type)
 {
-    bool invAll = type == 0;
-    bool invVA = type == 1;
-    bool invMMid = type == 2;
-    bool invVAMMid = type == 3;
     uint32_t invMsgVPN2 = arg & (TARGET_PAGE_MASK << 1);
     uint8_t invMsgR = 0;
     uint32_t invMsgMMid = env->CP0_MemoryMapID;
+    CPUState *src = env_cpu(env);
     CPUState *cpu;
+    bool wait = false;
 
 #ifdef TARGET_MIPS64
     invMsgR = extract64(arg, 62, 2);
 #endif
 
     CPU_FOREACH(cpu) {
-        global_invalidate_tlb(cpu_env(cpu), invMsgVPN2, invMsgR, invMsgMMid,
-                              invAll, invVAMMid, invMMid, invVA);
+        if (cpu != src) {
+            async_run_on_cpu(cpu, ginvt_work,
+                             RUN_ON_CPU_HOST_PTR(
+                                 ginvt_work_new(invMsgVPN2, invMsgR,
+                                               invMsgMMid, type)));
+            wait = true;
+        }
+    }
+
+    /*
+     * Mirror target/hppa's ptlb (mem_helper.c): run the source CPU's own
+     * invalidation as safe work behind any remotes so this CPU cannot
+     * complete and race ahead of invalidations still queued on the
+     * others; call it directly when this is the only CPU, since there is
+     * nothing to order against.
+     */
+    if (wait) {
+        async_safe_run_on_cpu(src, ginvt_work,
+                              RUN_ON_CPU_HOST_PTR(
+                                  ginvt_work_new(invMsgVPN2, invMsgR,
+                                                invMsgMMid, type)));
+    } else {
+        global_invalidate_tlb(env, invMsgVPN2, invMsgR, invMsgMMid,
+                              type == 0, type == 3, type == 2, type == 1);
     }
 }
 
