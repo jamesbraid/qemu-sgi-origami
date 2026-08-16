@@ -3043,6 +3043,8 @@ static void sn0_init(MachineState *machine)
                              s->widget0_revision);
         qdev_prop_set_uint64(DEVICE(&s->io_bridge[1]), "onewire-serial",
                              SN0_BRIDGE_ONEWIRE_SERIAL_BASE + 1);
+        qdev_prop_set_string(DEVICE(&s->io_bridge[1]), "pci-bus-name",
+                             "pci.1");
         object_property_set_link(OBJECT(&s->io_bridge[1]), "fabric",
                                  OBJECT(system), &error_fatal);
         qdev_prop_set_uint64(DEVICE(&s->io_bridge[1]), "fabric-base",

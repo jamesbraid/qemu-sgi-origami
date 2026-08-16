@@ -2525,7 +2525,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                                     &s->device_window_io[slot]);
     }
 
-    phb->bus = pci_register_root_bus(dev, "pci", sgi_bridge_set_irq,
+    phb->bus = pci_register_root_bus(dev,
+                                     s->pci_bus_name ? s->pci_bus_name : "pci",
+                                     sgi_bridge_set_irq,
                                      sgi_bridge_map_irq, s,
                                      &s->pci_mmio, &s->pci_io,
                                      PCI_DEVFN(0, 0), SGI_BRIDGE_PINS,
@@ -2642,6 +2644,7 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
+    DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
 };
 
 static void sgi_bridge_class_init(ObjectClass *oc, const void *data)

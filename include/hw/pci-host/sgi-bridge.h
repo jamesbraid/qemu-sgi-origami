@@ -189,6 +189,9 @@ struct SGIBridgeState {
     uint64_t fabric_base;
     uint32_t fabric_node_shift;
 
+    /* The QOM identity of this Bridge's PCI root bus. */
+    char *pci_bus_name;
+
     /*
      * Every defined register in the local block, one 32-bit word per eight-byte
      * slot, indexed by the slot number. A slot the chip does not define holds
