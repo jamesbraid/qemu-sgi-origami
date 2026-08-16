@@ -600,6 +600,14 @@ void helper_mtc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask;
     uint32_t newval;
 
+    /*
+     * Pairs with helper_mttc0_vpecontrol()'s guard below: that function
+     * writes this same VPE's CP0_VPEControl from another VPE's thread,
+     * so this own-VPE write needs the same lock or the two can race
+     * each other.
+     */
+    BQL_LOCK_GUARD();
+
     mask = (1 << CP0VPECo_YSI) | (1 << CP0VPECo_GSI) |
            (1 << CP0VPECo_TE) | (0xff << CP0VPECo_TargTC);
     newval = (env->CP0_VPEControl & ~mask) | (arg1 & mask);
@@ -810,6 +818,14 @@ void helper_mtc0_tcbind(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask = (1 << CP0TCBd_TBE);
     uint32_t newval;
 
+    /*
+     * Pairs with helper_mttc0_tcbind()'s guard below: that function
+     * writes this same TC's CP0_TCBind from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other.
+     */
+    BQL_LOCK_GUARD();
+
     if (cpu->mvp->CP0_MVPControl & (1 << CP0MVPCo_VPC)) {
         mask |= (1 << CP0TCBd_CurVPE);
     }
@@ -841,6 +857,14 @@ void helper_mttc0_tcbind(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tcrestart(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * Pairs with helper_mttc0_tcrestart()'s guard below: that function
+     * writes this same TC's PC/CP0_TCStatus.TDS/LLAddr/lladdr from
+     * another VPE's thread, so this own-VPE write needs the same lock
+     * or the two can race each other.
+     */
+    BQL_LOCK_GUARD();
+
     env->active_tc.PC = arg1;
     env->active_tc.CP0_TCStatus &= ~(1 << CP0TCSt_TDS);
     env->CP0_LLAddr = 0;
@@ -924,6 +948,14 @@ void helper_mttc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * Pairs with helper_mttc0_tccontext()'s guard below: that function
+     * writes this same TC's CP0_TCContext from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other.
+     */
+    BQL_LOCK_GUARD();
+
     env->active_tc.CP0_TCContext = arg1;
 }
 
@@ -943,6 +975,14 @@ void helper_mttc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * Pairs with helper_mttc0_tcschedule()'s guard below: that function
+     * writes this same TC's CP0_TCSchedule from another VPE's thread,
+     * so this own-VPE write needs the same lock or the two can race
+     * each other.
+     */
+    BQL_LOCK_GUARD();
+
     env->active_tc.CP0_TCSchedule = arg1;
 }
 
@@ -962,6 +1002,14 @@ void helper_mttc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tcschefback(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * Pairs with helper_mttc0_tcschefback()'s guard below: that
+     * function writes this same TC's CP0_TCScheFBack from another
+     * VPE's thread, so this own-VPE write needs the same lock or the
+     * two can race each other.
+     */
+    BQL_LOCK_GUARD();
+
     env->active_tc.CP0_TCScheFBack = arg1;
 }
 
@@ -1214,6 +1262,24 @@ void helper_mtc0_count(CPUMIPSState *env, target_ulong arg1)
 void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
 {
     target_ulong old, val, mask;
+
+    /*
+     * Pairs with helper_mttc0_entryhi()'s guard below: that function
+     * writes this same VPE's CP0_EntryHi from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other. The ASID-change flush below stays inside the guard rather
+     * than moving outside it: tlb_flush() (accel/tcg/cputlb.c) asserts
+     * it is called from the target CPU's own thread
+     * (assert_cpu_is_self()) and does its own synchronization
+     * internally (qemu_spin_lock on the TLB's own lock, qatomic_set on
+     * its stat counters) -- it never takes the BQL itself, so calling
+     * it from inside an already-held BQL_LOCK_GUARD() neither
+     * double-locks nor changes what the flush does. It only serializes
+     * the EntryHi write that decides whether to flush against a
+     * concurrent helper_mttc0_entryhi() targeting this same VPE.
+     */
+    BQL_LOCK_GUARD();
+
     mask = (TARGET_PAGE_MASK << 1) | env->CP0_EntryHi_ASID_mask;
     if (((env->CP0_Config4 >> CP0C4_IE) & 0x3) >= 2) {
         mask |= 1 << CP0EnHi_EHINV;
@@ -1353,7 +1419,17 @@ target_ulong helper_mftc0_ebase(CPUMIPSState *env)
 
 void helper_mtc0_ebase(CPUMIPSState *env, target_ulong arg1)
 {
-    target_ulong mask = 0x3FFFF000 | env->CP0_EBaseWG_rw_bitmask;
+    target_ulong mask;
+
+    /*
+     * Pairs with helper_mttc0_ebase()'s guard below: that function
+     * writes this same VPE's CP0_EBase from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other.
+     */
+    BQL_LOCK_GUARD();
+
+    mask = 0x3FFFF000 | env->CP0_EBaseWG_rw_bitmask;
     if (arg1 & env->CP0_EBaseWG_rw_bitmask) {
         mask |= ~0x3FFFFFFF;
     }
@@ -1553,6 +1629,14 @@ void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
 
 void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * Pairs with helper_mttc0_debug()'s guard below: that function
+     * writes this same VPE's CP0_Debug from another VPE's thread, so
+     * this own-VPE write needs the same lock or the two can race each
+     * other.
+     */
+    BQL_LOCK_GUARD();
+
     env->CP0_Debug = (env->CP0_Debug & 0x8C03FC1F) | (arg1 & 0x13300120);
     if (arg1 & (1 << CP0DB_DM)) {
         env->hflags |= MIPS_HFLAG_DM;
