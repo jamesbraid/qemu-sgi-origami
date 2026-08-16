@@ -160,6 +160,8 @@
  */
 #define HUB_MD_INDICATOR_0      0x220050  /* real firmware's diagnostic LED, CPU A */
 #define HUB_MD_INDICATOR_1      0x220058  /* same, CPU B */
+#define HUB_MD_SN00_INDICATOR_0 0x220080  /* SN00 diagnostic indicator, CPU A */
+#define HUB_MD_SN00_INDICATOR_1 0x2200a0  /* same, CPU B */
 
 /*
  * Slot identity and microcontroller status: read-only signals sampled off the
@@ -1556,6 +1558,8 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_MD_INDICATOR_0:
     case HUB_MD_INDICATOR_1:
+    case HUB_MD_SN00_INDICATOR_0:
+    case HUB_MD_SN00_INDICATOR_1:
         {
             /*
              * Write-only: the register carries no state for a guest to read
@@ -1566,7 +1570,8 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
              * with the trace event armed and no output means no write
              * reached this register at all, not that one went unlogged.
              */
-            unsigned int cpu = (addr == HUB_MD_INDICATOR_1);
+            unsigned int cpu = (addr == HUB_MD_INDICATOR_1 ||
+                                addr == HUB_MD_SN00_INDICATOR_1);
             uint8_t code = val & 0xff;
             bool is_failure = false;
             const char *meaning = sgi_hub_led_decode(code, &is_failure);

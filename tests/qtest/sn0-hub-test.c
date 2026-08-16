@@ -106,6 +106,8 @@
 #define IO_LINK_STATUS      0x400128
 #define MD_INDICATOR_0      0x220050
 #define MD_INDICATOR_1      0x220058
+#define MD_SN00_INDICATOR_0 0x220080
+#define MD_SN00_INDICATOR_1 0x2200a0
 #define MD_PERF_CNT0        0x210010
 #define MD_PERF_CNT_MASK    0x00000000000fffffULL
 #define MD_CONFIG           0x200018
@@ -820,6 +822,36 @@ static void test_md_indicator_shown_by_default(const void *data)
      */
     g_assert_nonnull(strstr(found, "sgi_hub_led CPU 0: 0x01 "
                                    "(progress: initializing the CPU)"));
+
+    g_assert_cmpint(g_unlink(log), ==, 0);
+}
+
+static void test_sn00_indicator_shown_by_default(const void *data)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn0-sn00-led-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *found = NULL;
+    g_autoptr(GError) err = NULL;
+    QTestState *qts;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -D %s", log);
+    qtest_writeq(qts, HUB_LOCAL + MD_SN00_INDICATOR_0, 0x01);
+    qtest_writeq(qts, HUB_LOCAL + MD_SN00_INDICATOR_1, 0x02);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_SN00_INDICATOR_0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_SN00_INDICATOR_1), ==, 0);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_nonnull(strstr(found, "sgi_hub_led CPU 0: 0x01 "
+                                   "(progress: initializing the CPU)"));
+    g_assert_nonnull(strstr(found,
+                            "sgi_hub_led CPU 1: 0x02 "
+                            "(progress: testing the floating-point unit)"));
 
     g_assert_cmpint(g_unlink(log), ==, 0);
 }
@@ -1827,6 +1859,8 @@ int main(int argc, char **argv)
                         test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/md-indicator-shown-by-default", NULL,
                         test_md_indicator_shown_by_default);
+    qtest_add_data_func("sn0/hub/sn00-indicator-shown-by-default", NULL,
+                        test_sn00_indicator_shown_by_default);
     qtest_add_data_func("sn0/hub/md-indicator-suppressed", NULL,
                         test_md_indicator_suppressed);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
