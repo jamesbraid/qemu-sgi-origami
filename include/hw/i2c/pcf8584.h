@@ -75,6 +75,8 @@ struct PCF8584State {
     bool transfer;
     bool recv;                  /* current direction is slave-to-master */
     bool start_pending;         /* a repeated start awaits its address byte */
+    /* An idle data-register write awaits an immediate first START. */
+    bool start_address_staged;
 
     /*
      * The 7-bit address the open transfer is matched against, valid only

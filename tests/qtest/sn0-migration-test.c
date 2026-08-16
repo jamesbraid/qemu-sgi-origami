@@ -82,6 +82,17 @@
 #define NI_META_TABLE_LAST      0x6380f8
 #define NI_LOCAL_TABLE          0x638100
 
+/* PCF8584 data and control registers inside the Hub-local window. */
+#define I2C_DATA                0x220000
+#define I2C_CTRL                0x220008
+#define I2C_CTL_PIN             0x80
+#define I2C_CTL_ESO             0x40
+#define I2C_CTL_STA             0x04
+#define I2C_CTL_STO             0x02
+#define I2C_CTL_ACK             0x01
+#define I2C_STS_LRB             0x08
+#define ELSC_ADDR               0x08
+
 /* PCI type 0 configuration space, and the window each device sits behind. */
 #define BRIDGE_CFG0             0x020000
 #define CFG0_DEVICE_STRIDE      0x1000
@@ -264,6 +275,49 @@ static void test_network_routes_survive_migration(const void *data)
 
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+/*
+ * A first START is split across two guest writes: the address reaches the
+ * PCF8584 data register before the control write asserts START.  Migrate in
+ * that interval, then advance the destination far enough for the ELSC's
+ * arbitration timer to fire.  The staged-address state must move with the
+ * byte or the next broadcast replaces it before START consumes it.
+ */
+static void test_staged_i2c_start_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    qtest_writeq(from, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN | I2C_CTL_ESO);
+    qtest_writeq(from, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
+    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + I2C_DATA), ==,
+                    ELSC_ADDR << 1);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    qtest_clock_step(to, 500 * 1000);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_DATA), ==,
+                    ELSC_ADDR << 1);
+    qtest_writeq(to, HUB_LOCAL + I2C_CTRL,
+                 I2C_CTL_PIN | I2C_CTL_ESO | I2C_CTL_STA | I2C_CTL_ACK);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_CTRL) & I2C_STS_LRB,
+                    ==, 0);
+    qtest_writeq(to, HUB_LOCAL + I2C_CTRL,
+                 I2C_CTL_PIN | I2C_CTL_ESO | I2C_CTL_STO);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -465,6 +519,8 @@ int main(int argc, char **argv)
                         NULL, test_a_device_window_survives_migration);
     qtest_add_data_func("sn0/migration/network-routes-survive-migration",
                         NULL, test_network_routes_survive_migration);
+    qtest_add_data_func("sn0/migration/staged-i2c-start-survives-migration",
+                        NULL, test_staged_i2c_start_survives_migration);
     qtest_add_data_func("sn0/migration/conversation-survives-migration",
                         NULL, test_a_conversation_survives_migration);
     qtest_add_data_func("sn0/migration/flash-autoselect-survives-migration",
