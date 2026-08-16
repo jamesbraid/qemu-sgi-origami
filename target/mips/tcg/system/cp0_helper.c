@@ -58,10 +58,18 @@ static inline void mips_vpe_wake(MIPSCPU *c)
      * Don't set ->halted = 0 directly, let it be done via cpu_has_work
      * because there might be other conditions that state that c should
      * be sleeping.
+     *
+     * BQL_LOCK_GUARD(), not a plain bql_lock()/bql_unlock() pair: this
+     * chunk wraps helper_dvpe()/helper_evpe()/helper_dvp()/helper_evp()'s
+     * whole VPE sweep in their own BQL_LOCK_GUARD() (target/mips/tcg/
+     * system/cp0_helper.c) to make the sweep atomic, so this now runs
+     * with the BQL already held on those paths. A plain bql_lock() there
+     * would double-lock and abort on bql_lock_impl's own
+     * !bql_locked() assertion -- caught by actually running the 34Kf
+     * qtest smoke this chunk adds, not found by inspection.
      */
-    bql_lock();
+    BQL_LOCK_GUARD();
     cpu_interrupt(CPU(c), CPU_INTERRUPT_WAKE);
-    bql_unlock();
 }
 
 static inline void mips_vpe_sleep(MIPSCPU *cpu)
@@ -236,7 +244,17 @@ uint32_t cpu_mips_get_random(CPUMIPSState *env)
 /* CP0 helpers */
 target_ulong helper_mfc0_mvpcontrol(CPUMIPSState *env)
 {
-    MIPSCPU *cpu = env_archcpu(env);
+    MIPSCPU *cpu;
+
+    /*
+     * cpu->mvp is per-CPU allocated (mvp_init(), target/mips/cpu.c), not a
+     * structure shared across sibling VPEs, so this reads the same memory
+     * helper_dvpe()/helper_evpe() write from another VPE's thread under
+     * BQL_LOCK_GUARD(). Guard the read to pair with it.
+     */
+    BQL_LOCK_GUARD();
+
+    cpu = env_archcpu(env);
     return cpu->mvp->CP0_MVPControl;
 }
 
@@ -546,9 +564,14 @@ void helper_mtc0_index(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_mvpcontrol(CPUMIPSState *env, target_ulong arg1)
 {
-    MIPSCPU *cpu = env_archcpu(env);
+    MIPSCPU *cpu;
     uint32_t mask = 0;
     uint32_t newval;
+
+    /* Pairs with helper_mfc0_mvpcontrol()'s guard; see its comment. */
+    BQL_LOCK_GUARD();
+
+    cpu = env_archcpu(env);
 
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         mask |= (1 << CP0MVPCo_CPA) | (1 << CP0MVPCo_VPC) |
@@ -1710,8 +1733,24 @@ target_ulong helper_emt(void)
 
 target_ulong helper_dvpe(CPUMIPSState *env)
 {
-    MIPSCPU *cpu = env_archcpu(env);
-    target_ulong prev = cpu->mvp->CP0_MVPControl;
+    MIPSCPU *cpu;
+    target_ulong prev;
+
+    /*
+     * Sweeps every other VPE's own cpu->mvp->CP0_MVPControl (confirmed
+     * per-CPU allocated, not a structure shared across sibling VPEs, so
+     * this genuinely writes another thread's copy) -- reviewer-found
+     * unguarded. Guard the whole sweep, not each write individually: the
+     * "disable every VPE but me" semantic is one operation, and holding
+     * the lock across it makes it atomic instead of interleavable with a
+     * concurrent dvpe/evpe on another VPE. mips_vpe_sleep() already takes
+     * its own guard (target/mips/tcg/system/cp0_helper.c); nested here,
+     * it is a no-op since BQL_LOCK_GUARD() is conditional.
+     */
+    BQL_LOCK_GUARD();
+
+    cpu = env_archcpu(env);
+    prev = cpu->mvp->CP0_MVPControl;
 
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         CPUState *cs;
@@ -1730,8 +1769,14 @@ target_ulong helper_dvpe(CPUMIPSState *env)
 
 target_ulong helper_evpe(CPUMIPSState *env)
 {
-    MIPSCPU *cpu = env_archcpu(env);
-    target_ulong prev = cpu->mvp->CP0_MVPControl;
+    MIPSCPU *cpu;
+    target_ulong prev;
+
+    /* Same sweep, same reasoning, as helper_dvpe() above. */
+    BQL_LOCK_GUARD();
+
+    cpu = env_archcpu(env);
+    prev = cpu->mvp->CP0_MVPControl;
 
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         CPUState *cs;
@@ -1754,7 +1799,18 @@ target_ulong helper_evpe(CPUMIPSState *env)
 /* R6 Multi-threading */
 target_ulong helper_dvp(CPUMIPSState *env)
 {
-    target_ulong prev = env->CP0_VPControl;
+    target_ulong prev;
+
+    /*
+     * The VPControl bit itself is already qatomic-paired (see the
+     * qatomic_set() below and mips_vp_active()'s qatomic_read()); the
+     * addition here is the sleep sweep, matching helper_dvpe()'s
+     * reasoning: one BQL critical section makes "halt every other VP"
+     * atomic as a whole, not just correct per individual VP.
+     */
+    BQL_LOCK_GUARD();
+
+    prev = env->CP0_VPControl;
 
     if (!((env->CP0_VPControl >> CP0VPCtl_DIS) & 1)) {
         CPUState *cpu;
@@ -1780,7 +1836,12 @@ target_ulong helper_dvp(CPUMIPSState *env)
 
 target_ulong helper_evp(CPUMIPSState *env)
 {
-    target_ulong prev = env->CP0_VPControl;
+    target_ulong prev;
+
+    /* Same reasoning as helper_dvp() above. */
+    BQL_LOCK_GUARD();
+
+    prev = env->CP0_VPControl;
 
     if ((env->CP0_VPControl >> CP0VPCtl_DIS) & 1) {
         CPUState *cpu;
