@@ -45,6 +45,7 @@
 #define MD_SLOT_ID_USTAT            0x220048
 #define MD_SLOT_FLASH_READY_LOW     (1ULL << 0)
 #define MD_SLOT_FLASH_READY_HIGH    (1ULL << 4)
+#define MD_SLOT_MASTER_MODULE       (1ULL << 7)
 
 #define PI_REGION_PRESENT   0x000018
 #define PI_PROCESSOR_NUMBER 0x000020
@@ -283,11 +284,11 @@ static void sn0_hub_attach_ioc3(QTestState *qts)
  * one that has to hold, and a model setting only the bit a one-sided test names
  * would pass it while still hanging the firmware that reads the other.
  *
- * Nothing else in this register is asserted. The remaining fields sample a
- * second board's master/slave sense, a bus-fault line, a jumper identity and a
- * processor-speed strap — signals this machine does not have — and the register
- * table declares no reset value for any of them, so an assertion here would
- * certify a choice rather than a fact.
+ * Nothing else in this register is asserted here. The separate dual-node test
+ * covers the second processor module's master/slave sense; the remaining
+ * fields sample signals this model does not have, and the register table
+ * declares no reset value for them, so an assertion would certify a choice
+ * rather than a fact.
  */
 static void test_the_flash_ready_signal_reads_ready_at_both_bits(
     const void *data)
@@ -299,6 +300,43 @@ static void test_the_flash_ready_signal_reads_ready_at_both_bits(
                     MD_SLOT_FLASH_READY_LOW);
     g_assert_cmphex(slot & MD_SLOT_FLASH_READY_HIGH, ==,
                     MD_SLOT_FLASH_READY_HIGH);
+
+    qtest_quit(qts);
+}
+
+static void assert_dual_node_master_slave_sense(QTestState *qts)
+{
+    uint64_t node0 = qtest_readq(qts, HUB_BY_NODE + MD_SLOT_ID_USTAT);
+    uint64_t node1 = qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE +
+                                      MD_SLOT_ID_USTAT);
+    uint64_t ready = MD_SLOT_FLASH_READY_LOW | MD_SLOT_FLASH_READY_HIGH;
+
+    g_assert_cmphex(node0 & ready, ==, ready);
+    g_assert_cmphex(node1 & ready, ==, ready);
+    g_assert_cmphex(node0 & MD_SLOT_MASTER_MODULE, ==,
+                    MD_SLOT_MASTER_MODULE);
+    g_assert_cmphex(node1 & MD_SLOT_MASTER_MODULE, ==, 0);
+}
+
+/*
+ * The console-bearing node 0 has the module-controller switch in its master
+ * position; node 1 has it in the slave position. If the roles are reversed,
+ * firmware selects a global master without a console. The input is a physical
+ * strap, so a machine reset must not change either reading.
+ */
+static void test_dual_node_master_slave_sense(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+
+    assert_dual_node_master_slave_sense(qts);
+    qtest_system_reset(qts);
+    assert_dual_node_master_slave_sense(qts);
 
     qtest_quit(qts);
 }
@@ -2049,6 +2087,8 @@ int main(int argc, char **argv)
                         test_the_widget_control_reset_values);
     qtest_add_data_func("sn0/hub/flash-ready-at-both-bits", NULL,
                         test_the_flash_ready_signal_reads_ready_at_both_bits);
+    qtest_add_data_func("sn0/hub/dual-node-master-slave-sense", NULL,
+                        test_dual_node_master_slave_sense);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,

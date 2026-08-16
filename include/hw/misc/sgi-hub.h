@@ -107,6 +107,9 @@ struct SGIHubState {
     /* Node number preprogrammed by synthesized firmware, or zero at reset. */
     uint32_t nasid;
 
+    /* Whether this processor module is the Origin 200 slave chassis. */
+    bool slave_module;
+
     /* Whether the direct inter-node CrayLink has a peer at the far end. */
     bool network_link_up;
 

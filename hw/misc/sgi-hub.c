@@ -175,17 +175,18 @@
  * a boot that stops with nothing logged, which is the same shape as a crosstalk
  * link that never comes up.
  *
- * Every other field samples something this board does not have — a second
- * board's master/slave sense, a bus-fault line, a jumper identity and a
- * processor-speed strap — so they read clear, and no test asserts them. The
- * register table declares no reset value for any field in either variant, which
- * is what a read-only status register sampling external signals looks like, so
- * what the absent signals read is this machine's decision rather than a
- * transcribed one.
+ * The machine supplies the master/slave sense sampled by each Origin 200
+ * processor module. The remaining fields sample signals this model does not
+ * have: a bus-fault line, a jumper identity and a processor-speed strap. They
+ * read clear. The register table declares no reset value for any field in
+ * either variant, which is what a read-only status register sampling external
+ * signals looks like, so what the absent signals read is this machine's
+ * decision rather than a transcribed one.
  */
 #define HUB_MD_SLOT_ID_USTAT    0x220048
 #define MD_SLOT_FLASH_READY_LOW  (1ULL << 0)
 #define MD_SLOT_FLASH_READY_HIGH (1ULL << 4)
+#define MD_SLOT_MASTER_MODULE    (1ULL << 7)
 #define MD_SLOT_FLASH_READY     (MD_SLOT_FLASH_READY_LOW | \
                                  MD_SLOT_FLASH_READY_HIGH)
 #define IO_XTALK_TIMEOUT_MASK   0xffULL
@@ -1227,7 +1228,8 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         s->ni_vector_status = 0;
         return 0;
     case HUB_MD_SLOT_ID_USTAT:
-        return MD_SLOT_FLASH_READY;
+        return MD_SLOT_FLASH_READY |
+               (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
     case HUB_MD_CONFIG:
         return s->md_config;
     case HUB_MD_ONEWIRE:
@@ -2147,6 +2149,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
+    DEFINE_PROP_BOOL("slave-module", SGIHubState, slave_module, false),
     DEFINE_PROP_BOOL("network-link-up", SGIHubState, network_link_up, false),
     DEFINE_PROP_LINK("network-peer", SGIHubState, network_peer, TYPE_SGI_HUB,
                      SGIHubState *),
