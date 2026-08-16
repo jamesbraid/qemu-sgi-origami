@@ -54,6 +54,20 @@ RR_KICK_DONE = 0x18
 RR_KICK_TIMEOUT = 0x20
 RR_KICK_DEADLINE_TICKS = 5
 
+SLICE_B_STATE = 0x00032000
+SLICE_B_PROCESSOR_NUMBER = 0x00
+SLICE_B_IOC3_ID = 0x08
+SLICE_B_UART_SCRATCH = 0x10
+SLICE_B_ARB_HELD = 0x18
+SLICE_B_START_ADDRESS = 0x20
+SLICE_B_START_STATUS = 0x28
+SLICE_B_VER_PREFIX = 0x30
+SLICE_B_STATE_WORDS = 7
+
+ELSC_HOLD_TICKS = 313
+ELSC_PRESTART_TICKS = 625
+PCF_LRB = 0x08
+
 
 # Explicit node-one RAM is shared by all four CPUs.  An unqualified uncached
 # address instead resolves to the reading CPU's local node.
@@ -325,6 +339,12 @@ class MipsProgram:
         Path(path).write_bytes(image)
 
 
+def load_xkphys_address(program, register, prefix, offset):
+    program.address_prefix(register, prefix)
+    load_u32(program, R_AT, offset)
+    program.emit(mips_r(register, R_AT, register, 0, 0x25))
+
+
 def build_rtc_rendezvous():
     program = MipsProgram()
 
@@ -548,6 +568,132 @@ def build_rr_kick_deadline():
     peer_spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, peer_spin)
+    return program
+
+
+def build_slice_b_console_boundary():
+    program = MipsProgram()
+
+    # Enter the 64-bit kernel mode selected by the real PROM.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # Shared uncached state at 0x9000000000032000.
+    load_xkphys_address(program, R_S0, 0x9000, SLICE_B_STATE)
+
+    # Select slice B using this CPU's live Hub processor-number register.
+    load_xkphys_address(program, R_S1, 0x9200, 0x01000020)
+    program.emit(mips_i(0x37, R_S1, R_S3, 0))
+    select_b = program.branch(0x05, R_S3, R_ZERO)
+    park_a = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, park_a)
+    program.patch(select_b, len(program.instructions))
+    program.emit(mips_i(0x3f, R_S0, R_S3, SLICE_B_PROCESSOR_NUMBER))
+
+    # Traverse slice B's local xTalk path to IOC3 configuration and UART A.
+    load_xkphys_address(program, R_T0, 0x9200, 0x08022000)
+    program.emit(mips_i(0x23, R_T0, R_T1, 0))
+    program.emit(mips_i(0x3f, R_S0, R_T1, SLICE_B_IOC3_ID))
+
+    load_xkphys_address(program, R_T0, 0x9200, 0x0862017f)
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 0x5a))
+    program.emit(mips_i(0x28, R_T0, R_T1, 0))
+    program.emit(mips_i(0x24, R_T0, R_T1, 0))
+    program.emit(mips_i(0x3f, R_S0, R_T1, SLICE_B_UART_SCRATCH))
+
+    # Hub PCF8584 data/control and real-time counter registers.
+    load_xkphys_address(program, R_S2, 0x9200, 0x01220000)
+    program.emit(mips_i(0x19, R_S2, R_S1, 8))
+    load_xkphys_address(program, R_T4, 0x9200, 0x01030100)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0xc0))
+    program.emit(mips_i(0x3f, R_S1, R_T0, 0))
+
+    # Derive code 1 from PI_PROCESSOR_NUMBER, then require absence, signal,
+    # and an uninterrupted hold beyond the controller's 250 us threshold.
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0xe0))
+    program.emit(mips_r(R_T0, R_S3, R_S3, 0, 0x2d))
+    wait_absent = len(program.instructions)
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))
+    program.emit(mips_r(R_T0, R_S3, R_T1, 0, 0x26))
+    program.emit(mips_i(0x0c, R_T1, R_T1, 0xfff7))
+    branch = program.branch(0x04, R_T1, R_ZERO)
+    program.patch(branch, wait_absent)
+    program.emit(mips_i(0x37, R_S1, R_T0, 0))
+    program.emit(mips_i(0x0c, R_T0, R_T0, 1))
+    branch = program.branch(0x04, R_T0, R_ZERO)
+    program.patch(branch, wait_absent)
+
+    wait_signal = len(program.instructions)
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))
+    program.emit(mips_r(R_T0, R_S3, R_T1, 0, 0x26))
+    program.emit(mips_i(0x0c, R_T1, R_T1, 0xfff7))
+    got_signal = program.branch(0x04, R_T1, R_ZERO)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, wait_signal)
+    program.patch(got_signal, len(program.instructions))
+    program.emit(mips_i(0x37, R_S1, R_T1, 0))
+    program.emit(mips_i(0x0c, R_T1, R_T1, 1))
+    branch = program.branch(0x04, R_T1, R_ZERO)
+    program.patch(branch, wait_signal)
+    program.emit(mips_r(R_ZERO, R_T0, R_S3, 0, 0x2d))
+    program.emit(mips_i(0x37, R_T4, R_T2, 0))
+
+    hold_signal = len(program.instructions)
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))
+    branch = program.branch(0x05, R_T0, R_S3)
+    program.patch(branch, wait_absent)
+    program.emit(mips_i(0x37, R_S1, R_T0, 0))
+    program.emit(mips_i(0x0c, R_T0, R_T0, 1))
+    branch = program.branch(0x04, R_T0, R_ZERO)
+    program.patch(branch, wait_absent)
+    program.emit(mips_i(0x37, R_T4, R_T0, 0))
+    program.emit(mips_r(R_T0, R_T2, R_T0, 0, 0x2f))
+    program.emit(mips_i(0x0b, R_T0, R_T1, ELSC_HOLD_TICKS))
+    branch = program.branch(0x05, R_T1, R_ZERO)
+    program.patch(branch, hold_signal)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, SLICE_B_ARB_HELD))
+
+    # Delay a staged first address across an arbitration update, then issue
+    # one `ver` command and capture its response prefix.
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0x10))
+    program.emit(mips_i(0x3f, R_S2, R_T0, 0))
+    program.emit(mips_i(0x37, R_T4, R_T2, 0))
+    wait_prestart = len(program.instructions)
+    program.emit(mips_i(0x37, R_T4, R_T0, 0))
+    program.emit(mips_r(R_T0, R_T2, R_T0, 0, 0x2f))
+    program.emit(mips_i(0x0b, R_T0, R_T1, ELSC_PRESTART_TICKS))
+    branch = program.branch(0x05, R_T1, R_ZERO)
+    program.patch(branch, wait_prestart)
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))
+    program.emit(mips_i(0x3f, R_S0, R_T0, SLICE_B_START_ADDRESS))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0xc5))
+    program.emit(mips_i(0x3f, R_S1, R_T0, 0))
+    program.emit(mips_i(0x37, R_S1, R_T0, 0))
+    program.emit(mips_i(0x3f, R_S0, R_T0, SLICE_B_START_STATUS))
+    for value in (3, ord('v'), ord('e'), ord('r'), 0xb0):
+        program.emit(mips_i(0x19, R_ZERO, R_T0, value))
+        program.emit(mips_i(0x3f, R_S2, R_T0, 0))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0x45))
+    program.emit(mips_i(0x3f, R_S1, R_T0, 0))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0x11))
+    program.emit(mips_i(0x3f, R_S2, R_T0, 0))
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))  # discard PCF data latch
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))  # response length
+    program.emit(mips_i(0x37, R_S2, R_T1, 0))
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))
+    program.emit(mips_r(R_ZERO, R_T1, R_T1, 8, 0x38))
+    program.emit(mips_r(R_T1, R_T0, R_T1, 0, 0x25))
+    program.emit(mips_i(0x3f, R_S0, R_T1, SLICE_B_VER_PREFIX))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0xc2))
+    program.emit(mips_i(0x3f, R_S1, R_T0, 0))
+
+    spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, spin)
     return program
 
 
@@ -985,6 +1131,27 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[RR_KICK_PEER_READY // 8], 1)
         self.assertEqual(state[RR_KICK_DONE // 8], 1)
         self.assertEqual(state[RR_KICK_TIMEOUT // 8], 0)
+
+    def test_slice_b_reaches_console_boundary(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('slice-b-console-boundary.bin')
+        build_slice_b_console_boundary().write(firmware)
+
+        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.add_args('-accel', 'tcg,thread=single',
+                         '-m', '64M', '-smp', '2', '-bios', firmware)
+        self.vm.launch()
+
+        time.sleep(0.75)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        state = self.read_state(SLICE_B_STATE, SLICE_B_STATE_WORDS)
+        self.assertEqual(state[SLICE_B_PROCESSOR_NUMBER // 8], 1, state)
+        self.assertEqual(state[SLICE_B_IOC3_ID // 8], 0x000310a9, state)
+        self.assertEqual(state[SLICE_B_UART_SCRATCH // 8], 0x5a, state)
+        self.assertEqual(state[SLICE_B_ARB_HELD // 8], 1, state)
+        self.assertEqual(state[SLICE_B_START_ADDRESS // 8], 0x10, state)
+        self.assertEqual(state[SLICE_B_START_STATUS // 8] & PCF_LRB, 0, state)
+        self.assertEqual(state[SLICE_B_VER_PREFIX // 8], 0x6f6b, state)
 
     def test_four_cpu_two_node_rendezvous_separates_ram_and_hub(self):
         self.set_machine('origin200')
