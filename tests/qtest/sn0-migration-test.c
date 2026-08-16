@@ -58,8 +58,10 @@
  * matching how every sn0-*-test.c file in this tree already stands alone.
  */
 #define SPACE_XTALK             0x20000000000ULL
+#define NODE_STRIDE             0x100000000ULL
 #define BRIDGE_WIDGET           8
 #define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE_FOR_NODE(n) (BRIDGE_BASE + (uint64_t)(n) * NODE_STRIDE)
 #define REG_DATA                4
 #define REG(offset)             (BRIDGE_BASE + (offset) + REG_DATA)
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
@@ -100,6 +102,9 @@
 #define CFG0(device, function)  (BRIDGE_BASE + BRIDGE_CFG0 + \
                                  (device) * CFG0_DEVICE_STRIDE + \
                                  (function) * CFG0_FUNCTION_STRIDE)
+#define CFG0_FOR_NODE(node, device) \
+    (BRIDGE_BASE_FOR_NODE(node) + BRIDGE_CFG0 + \
+     (device) * CFG0_DEVICE_STRIDE)
 
 /*
  * A card to probe with, the same in-tree device sn0-bridge-test.c uses for
@@ -111,6 +116,7 @@
 
 #define PCI_COMMAND             0x04
 #define PCI_COMMAND_MEMORY      0x0002
+#define PCI_BAR0                0x10
 #define PCI_BAR1                0x14
 
 /* A 32-bit scratch register in the card's memory-mapped register file. */
@@ -123,6 +129,25 @@
 #define PROBE_WINDOW             1
 #define PROBE_WINDOW_OFFSET      0x400000
 #define WINDOW(offset)           (BRIDGE_BASE + (offset))
+
+#define IOC3_SLOT                2
+#define IOC3_PCI_MMIO            0x10000000u
+#define IOC3_WINDOW_OFFSET       0x600000
+#define IOC3_SERIAL_A            0x020178
+#define IOC3_SCRATCH             7
+#define IOC3_SCRATCH_AT(node)    (BRIDGE_BASE_FOR_NODE(node) + \
+                                  IOC3_WINDOW_OFFSET + IOC3_SERIAL_A + \
+                                  IOC3_SCRATCH)
+
+#define DUAL_CHASSIS_TOPOLOGY \
+    "-m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
+#define MACHINE_DUAL \
+    "-M origin200,synthesized-firmware=off " DUAL_CHASSIS_TOPOLOGY
 
 /*
  * The board identity part's one-wire register, and the slot widths a guest
@@ -180,6 +205,49 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
     }
+}
+
+static void attach_node_ioc3(QTestState *qts, unsigned int node)
+{
+    qtest_writel(qts, CFG0_FOR_NODE(node, IOC3_SLOT) + PCI_BAR0,
+                 IOC3_PCI_MMIO);
+    qtest_writel(qts, CFG0_FOR_NODE(node, IOC3_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + BRIDGE_DEVICE(IOC3_SLOT) +
+                       REG_DATA,
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+/* Two equal devfns on different root buses must migrate independently. */
+static void test_dual_base_io_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_DUAL);
+    attach_node_ioc3(from, 0);
+    attach_node_ioc3(from, 1);
+    qtest_writeb(from, IOC3_SCRATCH_AT(0), 0x5a);
+    qtest_writeb(from, IOC3_SCRATCH_AT(1), 0xa5);
+    g_assert_cmphex(qtest_readb(from, IOC3_SCRATCH_AT(0)), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(from, IOC3_SCRATCH_AT(1)), ==, 0xa5);
+
+    dest_cmdline = g_strdup_printf(MACHINE_DUAL " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(0)), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(1)), ==, 0xa5);
+
+    qtest_quit(to);
+    qtest_quit(from);
 }
 
 /*
@@ -517,6 +585,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/migration/device-window-survives-migration",
                         NULL, test_a_device_window_survives_migration);
+    qtest_add_data_func("sn0/migration/dual-base-io-survives-migration",
+                        NULL, test_dual_base_io_survives_migration);
     qtest_add_data_func("sn0/migration/network-routes-survive-migration",
                         NULL, test_network_routes_survive_migration);
     qtest_add_data_func("sn0/migration/staged-i2c-start-survives-migration",
