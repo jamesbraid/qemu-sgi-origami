@@ -92,6 +92,7 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
      */
     tlb->UC0 = 0;
     tlb->UC1 = 0;
+#if defined(TARGET_MIPS64)
     if (env->insn_flags & INSN_R10K) {
         tlb->UC0 = extract64(env->CP0_EntryLo0, CP0EnLo_UC, 2);
         tlb->UC1 = extract64(env->CP0_EntryLo1, CP0EnLo_UC, 2);
@@ -100,6 +101,7 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
         tlb->XI1 = 0;
         tlb->RI1 = 0;
     }
+#endif
 }
 
 static void r4k_helper_tlbinv(CPUMIPSState *env)
@@ -284,12 +286,16 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
         env->CP0_EntryLo0 = tlb->G | (tlb->V0 << 1) | (tlb->D0 << 2) |
                         ((uint64_t)tlb->RI0 << CP0EnLo_RI) |
                         ((uint64_t)tlb->XI0 << CP0EnLo_XI) | (tlb->C0 << 3) |
+#if defined(TARGET_MIPS64)
                         ((uint64_t)tlb->UC0 << CP0EnLo_UC) |
+#endif
                         get_entrylo_pfn_from_tlb(tlb->PFN[0] >> 12);
         env->CP0_EntryLo1 = tlb->G | (tlb->V1 << 1) | (tlb->D1 << 2) |
                         ((uint64_t)tlb->RI1 << CP0EnLo_RI) |
                         ((uint64_t)tlb->XI1 << CP0EnLo_XI) | (tlb->C1 << 3) |
+#if defined(TARGET_MIPS64)
                         ((uint64_t)tlb->UC1 << CP0EnLo_UC) |
+#endif
                         get_entrylo_pfn_from_tlb(tlb->PFN[1] >> 12);
     }
 }
