@@ -13,7 +13,6 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
-#include "qemu/main-loop.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
@@ -1259,8 +1258,6 @@ static void sn0_launch_cpu(CPUState *cs, run_on_cpu_data data)
     SN0LaunchData *launch = data.host_ptr;
     CPUMIPSState *env = cpu_env(cs);
 
-    assert(bql_locked());
-
     cpu_reset(cs);
     sn0_mode_bits_reset(cs);
     env->active_tc.PC = (int32_t)(0xa0000000 + SN0_FW_TEXT_LOCAL +
@@ -1312,8 +1309,24 @@ static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
     launch->call_parm = env->active_tc.gpr[7];
     launch->stack_addr = env->active_tc.gpr[8];
     launch->gp_addr = env->active_tc.gpr[9];
-    async_run_on_cpu(target, sn0_launch_cpu,
-                     RUN_ON_CPU_HOST_PTR(launch));
+
+    /*
+     * async_safe_run_on_cpu(), not async_run_on_cpu(): sn0_launch_cpu()
+     * calls cpu_reset(), which bulk-rewrites the target's architectural
+     * CPU state. Queueing that under async_safe_run_on_cpu() runs it
+     * inside start_exclusive()'s quiescent section, which upstream
+     * relies on to keep a live peer's BQL-free read of that state (see
+     * mips_vp_active()/mips_vpe_active() in target/mips/cpu.c) from
+     * overlapping the reset. R10000 carries none of the CP0 Config bits
+     * those readers require, so no peer on this machine reaches them
+     * today -- but the target CPU state cpu_reset() rewrites is not
+     * scoped to what happens to be reachable here, and async_run_on_cpu()
+     * would leave the same class of race live in this dispatch that
+     * "hw/misc/mips_cpc: quiesce peers for the VP-run reset" closed in
+     * the CPC's.
+     */
+    async_safe_run_on_cpu(target, sn0_launch_cpu,
+                          RUN_ON_CPU_HOST_PTR(launch));
     return ARCS_ESUCCESS;
 }
 
