@@ -21,6 +21,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/main-loop.h"
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "internal.h"
@@ -63,6 +64,8 @@ static void cpu_mips_timer_expire(CPUMIPSState *env)
 
 uint32_t cpu_mips_get_count(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     if (env->CP0_Cause & (1 << CP0Ca_DC)) {
         return env->CP0_Count;
     } else {
@@ -86,6 +89,9 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
      * So env->timer may be NULL, so treat timer as disabled in that case.
      */
     MIPSCPU *cpu = env_archcpu(env);
+
+    BQL_LOCK_GUARD();
+
     if (env->CP0_Cause & (1 << CP0Ca_DC) || !env->timer) {
         env->CP0_Count = count;
     } else {
@@ -99,6 +105,8 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
 
 void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
 {
+    BQL_LOCK_GUARD();
+
     env->CP0_Compare = value;
     if (!(env->CP0_Cause & (1 << CP0Ca_DC))) {
         cpu_mips_timer_update(env);
