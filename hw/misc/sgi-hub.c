@@ -23,6 +23,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/nvram/eeprom_at24c.h"
@@ -1047,11 +1048,21 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
     hwaddr target_addr = HUB_NI_STATUS + addr;
     uint64_t type = parms & NI_VECTOR_TYPE_MASK;
     uint64_t response_type = type;
-    uint64_t source = s->network_peer ?
-        (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
-        NI_STATUS_NODE_SHIFT : 0;
+    uint64_t source;
     uint64_t value = 0;
     bool success = false;
+
+    /*
+     * network_peer is a raw pointer to the other chassis's Hub, read and
+     * dereferenced below with no lock of its own; it is serialized only by
+     * BQL MMIO dispatch, so this function must not run off the BQL. Assert
+     * before the first dereference, not after.
+     */
+    assert(bql_locked());
+
+    source = s->network_peer ?
+        (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
+        NI_STATUS_NODE_SHIFT : 0;
 
     if (s->network_peer && s->ni_vector == 0) {
         switch (type) {
@@ -1145,6 +1156,13 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     case HUB_PI_REGION_PRESENT:
         return s->pi_region_present;
     case HUB_PI_PROCESSOR_NUMBER:
+        /*
+         * Sound under MTTCG: MMIO is dispatched on the reading vCPU's own
+         * thread and current_cpu is thread-local, so each reader gets its
+         * own answer and can never be misattributed to another vCPU's read
+         * racing it. The !current_cpu case covers a main-loop or qtest
+         * reader, which has no processor of its own to name.
+         */
         if (current_cpu && current_cpu->cpu_index >= s->cpu_base &&
             current_cpu->cpu_index < s->cpu_base + s->cpus) {
             return current_cpu->cpu_index - s->cpu_base;
