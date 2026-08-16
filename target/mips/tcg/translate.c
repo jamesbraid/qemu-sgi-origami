@@ -13609,6 +13609,16 @@ static void decode_opc_special3_r6(CPUMIPSState *env, DisasContext *ctx)
             break;
         case 2:    /* GINVT */
             gen_helper_0e1i(ginvt, cpu_gpr[rs], extract32(ctx->opcode, 8, 2));
+            /*
+             * helper_ginvt() dispatches the issuing VP's own invalidation
+             * through async_safe_run_on_cpu(), deferred to drain at the
+             * next TB boundary or exclusive section -- it does not happen
+             * inline. Without ending the TB here, translation continues
+             * past this instruction using the stale local mapping GINVT
+             * was just asked to invalidate. Same idiom OPC_SYNCI's own
+             * decode case uses elsewhere in this file, for the same reason.
+             */
+            ctx->base.is_jmp = DISAS_STOP;
             break;
         default:
             gen_reserved_instruction(ctx);

@@ -1306,6 +1306,16 @@ static void run_rendezvous(const char *accel, unsigned int increments)
 #define GI_RESULT_OFF       0x10
 #define GI_VPN_OFF          0x18
 #define GI_FAULT_VADDR_OFF  0x20  /* BadVAddr, captured by the refill handler */
+/*
+ * Set nonzero by VP1 immediately before its own same-TB self-check
+ * GINVT (see write_ginvt_test_program()'s self-check block); the refill
+ * handler checks this, not GI_VP1_PROGRESS_OFF, so the self-check
+ * cannot disturb the value the remote-invalidation assertions above
+ * already depend on being GI_VP1_DONE. Zero vs nonzero only -- no
+ * specific value to match -- see the handler's own comment for why.
+ */
+#define GI_SELFCHECK_ARMED_OFF   0x28
+#define GI_SELFCHECK_RESULT_OFF  0x30
 
 #define GI_TEST_VA          0x10000000  /* region 00, well below USEG_LIMIT */
 #define GI_TEST_PHYS        0x00200000u /* clear of GI_STATE_PHYS, the flash */
@@ -1518,6 +1528,70 @@ static void write_ginvt_test_program(int fd)
     emit_addiu(&img, R_T3, R_ZERO, GI_VP1_DONE);
     emit_sd(&img, R_T3, R_T0, GI_VP1_PROGRESS_OFF);
 
+    /*
+     * Same-TB self-check. The remote-invalidation GINVT above proves
+     * VP1's write reaches VP0's TLB eventually, through a cross-TB retry
+     * on VP0's side (the poll loop it waits in before rechecking). It
+     * says nothing about GINVT's own issuing thread: helper_ginvt()
+     * dispatches the issuer's own invalidation through
+     * async_safe_run_on_cpu() (tlb_helper.c), deferred to drain at a TB
+     * boundary or exclusive section, not inline. Install a mapping on
+     * VP1 itself, GINVT it, and read it back with no intervening branch:
+     * if the TB did not end at the GINVT, this straight-line read could
+     * still see the pre-invalidation entry.
+     *
+     * ERL is still set from VP1's own reset -- a separate CPU from VP0,
+     * which cleared its own copy already -- and region 00 is EU
+     * (ERL-unmapped) under I6400's default SegCtl2, so this has to be
+     * cleared before the mapping below goes through the TLB at all;
+     * mirrors VP0's own setup above. The physical page already holds
+     * GI_TEST_PATTERN, written by VP0 before it published the VPN this
+     * VP already waited on, so nothing here needs to seed it again.
+     */
+    emit_li(&img, R_T3, GI_STATUS_BEV_ONLY);
+    emit_mtc0(&img, R_T3, CP0_STATUS, 0);
+
+    emit_addiu(&img, R_T3, R_ZERO, 0);
+    emit_mtc0(&img, R_T3, CP0_INDEX, 0);
+    emit_li(&img, R_T3, GI_TEST_VA);
+    emit_dmtc0(&img, R_T3, CP0_ENTRYHI, 0);
+    emit_addiu(&img, R_T3, R_ZERO, 0);
+    emit_mtc0(&img, R_T3, CP0_PAGEMASK, 0);
+    emit_li(&img, R_T3, ((GI_TEST_PHYS >> 12) << 6) | 0x16);
+    emit_dmtc0(&img, R_T3, CP0_ENTRYLO0, 0);
+    emit_li(&img, R_T3, (((GI_TEST_PHYS + 0x1000u) >> 12) << 6) | 0x16);
+    emit_dmtc0(&img, R_T3, CP0_ENTRYLO1, 0);
+    emit_tlbwi(&img);
+
+    emit_li(&img, R_T6, GI_TEST_VA);
+    emit_li(&img, R_T3, GI_TEST_PATTERN);
+    recheck = img.pos;
+    emit_ld(&img, R_T4, R_T6, 0);
+    emit_bne(&img, R_T4, R_T3, recheck);
+    emit_nop(&img);
+
+    emit_addiu(&img, R_T3, R_ZERO, 1);
+    emit_sd(&img, R_T3, R_T0, GI_SELFCHECK_ARMED_OFF);
+    emit_sync(&img);
+
+    emit_li(&img, R_T5, GI_TEST_VA);
+    emit_ginvt(&img, R_T5, GINVT_TYPE_VA);
+    emit_sync(&img);
+    /* No branch since the GINVT above: this load is the self-check. */
+    emit_ld(&img, R_T4, R_T6, 0);
+
+    /*
+     * Only reached if the load above did not fault -- the mapping is
+     * still live, meaning the self-invalidation has not taken effect.
+     * The refill handler below writes the passing result for the case
+     * that does fault; this is the explicit failing one for the case
+     * that does not, so a mutated tree reports FAIL rather than hanging
+     * on a poll that never sees GI_SELFCHECK_RESULT_OFF change.
+     */
+    emit_li(&img, R_T3, GI_RESULT_STALE);
+    emit_sd(&img, R_T3, R_T0, GI_SELFCHECK_RESULT_OFF);
+    emit_sync(&img);
+
     {
         unsigned int vp1_park = img.pos;
         emit_wait(&img);
@@ -1551,6 +1625,54 @@ static void write_ginvt_test_program(int fd)
 
     emit_mfc0(&img, R_T4, CP0_BADVADDR, 0);
     emit_sd(&img, R_T4, R_T0, GI_FAULT_VADDR_OFF);
+
+    /*
+     * The self-check's own fault (see the self-check block in VP1's
+     * body) is checked first and independently of everything below, and
+     * gated on CPUNum as well as the armed flag -- not the flag alone.
+     * VP0's own remote-invalidation retry and VP1's self-check run on
+     * independent threads with no ordering between them, so VP0's fault
+     * can land after VP1 has already armed the flag; a flag-only check
+     * would then misattribute VP0's fault to the self-check and park VP0
+     * in the wrong place, leaving GI_RESULT_OFF unwritten forever.
+     * Caught empirically, not by inspection: a flag-only version of
+     * this check hit the race twice in 40 back-to-back runs (both
+     * timeouts showed vp0 progress=4, vp1 progress=3, result=0x0 -- VP0
+     * had reached its retry and never finished it), zero in 100 runs
+     * after adding CPUNum. Only CPUNum 1 (VP1) can ever be the
+     * self-check's own fault. This must not touch GI_RESULT_OFF or
+     * GI_VP1_PROGRESS_OFF --
+     * both already asserted elsewhere against the remote-invalidation
+     * case this fault has nothing to do with.
+     *
+     * The armed flag itself only needs to distinguish zero from
+     * nonzero, not match a specific value -- one fewer register and no
+     * magic-constant load, which the tight VEC_TLB_REFILL..
+     * VEC_XTLB_REFILL budget below has no room to spare for.
+     */
+    emit_mfc0(&img, R_T4, CP0_EBASE, CP0_EBASE_SEL);
+    emit_andi(&img, R_T4, R_T4, CPUNUM_MASK);
+    {
+        unsigned int not_vp1 = emit_beq_fwd(&img, R_T4, R_ZERO);
+        unsigned int not_selfcheck;
+
+        emit_ld(&img, R_T4, R_T0, GI_SELFCHECK_ARMED_OFF); /* delay slot */
+        not_selfcheck = emit_beq_fwd(&img, R_T4, R_ZERO);
+        emit_nop(&img);
+
+        emit_li(&img, R_T3, GI_RESULT_REFILLED);
+        emit_sd(&img, R_T3, R_T0, GI_SELFCHECK_RESULT_OFF);
+        emit_sync(&img);
+        {
+            unsigned int selfcheck_park = img.pos;
+            emit_wait(&img);
+            emit_b(&img, selfcheck_park);
+            emit_nop(&img);
+        }
+
+        patch_fwd(&img, not_vp1);
+        patch_fwd(&img, not_selfcheck);
+    }
 
     emit_ld(&img, R_T5, R_T0, GI_VP0_PROGRESS_OFF);
     emit_addiu(&img, R_T7, R_ZERO, GI_VP0_POST_GINVT);
@@ -1609,7 +1731,7 @@ static void test_ginvt_remote_invalidate(const void *data)
     g_autofree char *image = NULL;
     QTestState *qts;
     unsigned int tries;
-    uint64_t result, vp0_progress, vp1_progress, fault_vaddr;
+    uint64_t result, vp0_progress, vp1_progress, fault_vaddr, selfcheck_result;
     int fd;
 
     if (!qtest_has_accel("tcg")) {
@@ -1661,6 +1783,33 @@ static void test_ginvt_remote_invalidate(const void *data)
     g_assert_cmpuint(vp0_progress, ==, GI_VP0_POST_GINVT);
     g_assert_cmpuint(vp1_progress, ==, GI_VP1_DONE);
     g_assert_cmphex(fault_vaddr, ==, GI_TEST_VA);
+
+    /*
+     * Same-TB self-check (sol's finding): polled separately from the
+     * remote-invalidation result above because the two faults land on
+     * independent threads (VP0's cross-TB retry, VP1's own straight-line
+     * recheck after its self-GINVT) with no ordering guarantee between
+     * them. A stale (non-fault) outcome writes GI_RESULT_STALE here
+     * explicitly -- see the self-check block in
+     * write_ginvt_test_program() -- so a regression fails this assertion
+     * rather than timing out waiting for a word that will never change.
+     */
+    selfcheck_result = 0;
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        selfcheck_result = gi_state_word(qts, GI_SELFCHECK_RESULT_OFF);
+        if (selfcheck_result != 0) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    if (tries == POLL_TRIES || selfcheck_result != GI_RESULT_REFILLED) {
+        report_ginvt_state(qts);
+        g_test_message("selfcheck result 0x%" PRIx64, selfcheck_result);
+    }
+
+    g_assert_cmpuint(tries, <, POLL_TRIES);
+    g_assert_cmphex(selfcheck_result, ==, GI_RESULT_REFILLED);
 
     qtest_quit(qts);
 }
