@@ -388,6 +388,85 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
 }
 
 /*
+ * Once firmware has observed and held its arbitration signal, it stages the
+ * first address byte in the PCF8584 before asserting START.  The controller's
+ * free-running broadcast must not replace that staged byte if its nominal
+ * hold expires between the two MMIO writes.  Advancing past the remainder of
+ * the modeled hold makes that boundary deterministic rather than relying on
+ * host scheduling to happen to split the writes.
+ */
+static void test_arbitration_preserves_staged_start(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[8], resp[RESP_CAP];
+    uint8_t signal;
+    unsigned req_len, resp_len, i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    signal = arb_wait_for_signal(qts);
+    arb_assert_held(qts, signal, ARB_HOLD_ASSERT_NS);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
+    qtest_clock_step(qts, 100 * 1000);
+
+    g_assert_cmphex(read_data(qts), ==, ELSC_ADDR << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+
+    req_len = build_request(req, "ver");
+    for (i = 0; i < req_len; i++) {
+        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, req[i]);
+    }
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+
+    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    resp_len = (unsigned)resp[0] + 2;
+    g_assert_cmpuint(resp_len, <=, sizeof(resp));
+    for (i = 1; i < resp_len; i++) {
+        if (i == resp_len - 1) {
+            qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);
+        }
+        resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    }
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], >=, 2);
+    g_assert(resp[1] == 'o' && resp[2] == 'k');
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STO);
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    /* Reset also releases an address staged without a following START. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
+    qtest_system_reset(qts);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    /* A benign control change must not abandon the staged address. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_ACK);
+    qtest_clock_step(qts, 100 * 1000);
+    g_assert_cmphex(read_data(qts), ==, ELSC_ADDR << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STO);
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    qtest_quit(qts);
+}
+
+/*
  * The AUX serial port, for "acp" output: a ring-buffer chardev captures
  * whatever this device writes out, which is enough to verify the output
  * direction without needing a live connection -- QMP's ringbuf-write and
@@ -785,6 +864,8 @@ int main(int argc, char **argv)
                         test_arbitration_repeats);
     qtest_add_data_func("sn0/elsc/arbitration-visits-other-processor-codes",
                         NULL, test_arbitration_visits_other_processor_codes);
+    qtest_add_data_func("sn0/elsc/arbitration-preserves-staged-start", NULL,
+                        test_arbitration_preserves_staged_start);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,

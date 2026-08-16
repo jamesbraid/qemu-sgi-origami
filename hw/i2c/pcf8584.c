@@ -81,6 +81,7 @@ static void pcf8584_stop(PCF8584State *s)
     s->transfer = false;
     s->recv = false;
     s->start_pending = false;
+    s->start_address_staged = false;
     s->status |= I2C_PCF_BB;
 }
 
@@ -94,6 +95,8 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
     bool recv = addr & 1;
     uint8_t addr7 = addr >> 1;
     int rc;
+
+    s->start_address_staged = false;
 
     /*
      * QEMU's I2C core only rescans the bus for a matching slave when no
@@ -164,6 +167,7 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
          * control write that will generate the start.
          */
         s->data = val;
+        s->start_address_staged = true;
         return;
     }
 
@@ -347,7 +351,15 @@ static int pcf8584_bcast_rx_send(I2CSlave *dev, uint8_t data)
 {
     PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
 
-    rx->chip->data = data;
+    /*
+     * The synthetic receiver and the guest-visible transmit path share the
+     * modeled data register.  Once the guest has staged a first-start
+     * address, preserve it until START consumes it, or STOP or reset abandons
+     * it; otherwise a scheduler-delayed START can target an arbitration byte.
+     */
+    if (!rx->chip->start_address_staged) {
+        rx->chip->data = data;
+    }
     return 0;
 }
 
@@ -379,6 +391,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->transfer = false;
     s->recv = false;
     s->start_pending = false;
+    s->start_address_staged = false;
     s->cur_addr7 = 0;
     pcf8584_update_irq(s);
 }
@@ -402,7 +415,7 @@ static void pcf8584_realize(DeviceState *dev, Error **errp)
 
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(own_address, PCF8584State),
@@ -414,6 +427,7 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL(transfer, PCF8584State),
         VMSTATE_BOOL(recv, PCF8584State),
         VMSTATE_BOOL(start_pending, PCF8584State),
+        VMSTATE_BOOL_V(start_address_staged, PCF8584State, 2),
         VMSTATE_UINT8(cur_addr7, PCF8584State),
         VMSTATE_END_OF_LIST()
     },
