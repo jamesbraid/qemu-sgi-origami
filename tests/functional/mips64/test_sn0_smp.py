@@ -91,6 +91,68 @@ PI_INT_MODIFY_SET = 0x100
 PI_INT_MAILBOX = 12
 
 
+# Dual-node stress state, node-one-explicit like FOUR_CPU_TEST_STATE, on its
+# own page so the two tests' firmware images never share an address.
+#
+# Addressing fact this file's ROM builders rely on throughout, stated once
+# here because this test is the first to depend on both directions of it:
+# hw/mips/sn0.c gives every CPU a private address space in which an
+# uncached reference with no NASID bits set (offset below 4 GiB) always
+# resolves to the reading CPU's own node -- true for every CPU, on every
+# node, including node zero. Node one's memory additionally has a
+# NASID-explicit address (offset at or above 4 GiB) that reaches it from
+# any CPU regardless of node, which is what FOUR_CPU_TEST_STATE already
+# relies on. Node zero's memory has no such reader-independent address
+# under a synthesized-firmware -bios boot (the one exception in the model,
+# an alias substitution used only when booting a real kernel image, does
+# not apply here) -- so a node-one CPU has no way to name node zero's RAM
+# explicitly, only its own. This is a fact about this QEMU model as built,
+# not a claim about what real Origin/SN0 hardware does with a NASID-zero
+# address; that is an open question for the machine stream, not this file.
+DUAL_NODE_TEST_STATE = 0x100040000
+DUAL_NODE_PAGE = 0x0004
+DUAL_COUNTER_A = 0x00      # node-0 pair only, reached by every CPU that
+                           # touches it via an explicit node-1 address
+DUAL_COUNTER_B = 0x08      # node-1 pair only, reached via their own local
+                           # (unqualified) address -- the same physical
+                           # word as DUAL_COUNTER_A's form, by construction
+DUAL_COUNTER_C = 0x10      # all four CPUs: node-0's pair explicit, node-1's
+                           # pair local, on the same word -- mixed
+                           # local/remote contention
+DUAL_PHASE1_DONE = 0x18    # 4 words
+DUAL_PHASE2_FLAG = 0x38    # 4 words, one per CPU's own outbound channel
+DUAL_PHASE2_PAYLOAD = 0x58  # 4 words
+DUAL_PHASE2_FAULTS = 0x78  # 4 words: this CPU's own mismatch count, not a
+                           # recorded value -- the state dump covers that
+DUAL_PHASE2_DONE = 0x98    # 4 words
+DUAL_PHASE3_DONE = 0xb8    # 4 words
+DUAL_STATE_WORDS = 27
+
+# Sized to stay comfortably inside the 30 s host poll ceiling in CI, not
+# tuned as a soak test -- a real soak run scales these up externally.
+# DUAL_NODE_COUNT_REMOTE and DUAL_NODE_COUNT_MIXED specifically also carry
+# this test's only mutation coverage of the contended-counter phase: at
+# 200/50 a lowered (non-atomic) compare-exchange lost updates on only
+# roughly 3 of 15 mutated runs, because a lost update needs two CPUs
+# inside the same read-modify-write window and that is rare at this
+# volume. This method is the only place that phase is covered at all --
+# no qtest or functional soak path exercises it -- so the budget is
+# raised 10x here to make that window common enough to catch reliably in
+# one run, not tuned as a soak test either.
+DUAL_NODE_COUNT_REMOTE = 2000
+DUAL_NODE_COUNT_MIXED = 500
+DUAL_NODE_ORDER_ROUNDS = 20
+DUAL_NODE_MAILBOX_ROUNDS = 20
+
+# The icount method's reduced budget: enough rounds to still exercise every
+# phase, small enough that single-threaded round-robin scheduling covers it
+# well inside a few seconds.
+DUAL_NODE_COUNT_REMOTE_ICOUNT = 20
+DUAL_NODE_COUNT_MIXED_ICOUNT = 8
+DUAL_NODE_ORDER_ROUNDS_ICOUNT = 4
+DUAL_NODE_MAILBOX_ROUNDS_ICOUNT = 4
+
+
 def mips_i(op, rs, rt, immediate):
     return op << 26 | rs << 21 | rt << 16 | immediate & 0xffff
 
@@ -128,6 +190,39 @@ def emit_wait_for_words(program, offset, wait_limit):
     return complete
 
 
+def emit_wait_for_all_done(program, offset, wait_limit):
+    """Spin until all FOUR_CPU_COUNT words at offset(s0) hold literal 1 --
+    the DONE-marker convention store_cpu_word's dual-node-stress callers
+    use for phase-boundary rendezvous (every CPU writes the same value 1
+    into its own slot, so the host's own done == [1, 1, 1, 1] checks line
+    up). Deliberately distinct from emit_wait_for_words above, whose
+    per-CPU cpu+1 publish values suit build_four_cpu_rendezvous but not
+    this uniform marker."""
+    load_u32(program, R_T3, wait_limit)
+    wait = len(program.instructions)
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 1))  # t1 = 1, the expected value
+    program.emit(mips_i(0x19, R_ZERO, R_T2, 0))  # t2 = 0, mismatch accumulator
+    for cpu in range(FOUR_CPU_COUNT):
+        program.emit(mips_i(0x37, R_S0, R_T0, offset + cpu * 8))
+        program.emit(mips_r(R_T0, R_T1, R_T0, 0, 0x26))  # xor t0, t0, t1
+        program.emit(mips_r(R_T2, R_T0, R_T2, 0, 0x25))  # or t2, t2, t0
+    complete = program.branch(0x04, R_T2, R_ZERO)
+    program.instructions[complete + 1] = mips_i(0x19, R_T3, R_T3, -1)
+    branch = program.branch(0x05, R_T3, R_ZERO)
+    program.patch(branch, wait)
+    return complete
+
+
+def emit_unreachable(program):
+    """A bare infinite spin: somewhere harmless for a wait's own timeout
+    branch to go when its wait_limit is FOUR_CPU_WAIT_LIMIT_UNBOUNDED and
+    that branch is therefore provably dead code, since every caller in
+    this file needs the function's shape either way."""
+    spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, spin)
+
+
 def emit_timeout(program, offset, marker):
     program.emit(mips_i(0x19, R_S1, R_T0, marker))
     store_cpu_word(program, offset, R_T0)
@@ -159,6 +254,47 @@ def atomic_add(program, base, offset, value):
     program.patch(retry_branch, retry)
     program.patch(complete, len(program.instructions))
     program.emit(0x0000000f)  # sync
+
+
+def emit_repeat(program, count, body, counter=R_T3):
+    """Run body(program) count times. count must fit daddiu's 16-bit
+    signed immediate, true of every count this file passes. Pass a
+    different counter register when body itself calls something that
+    clobbers t3, such as emit_wait_for_mailbox's own timeout counter."""
+    program.emit(mips_i(0x19, R_ZERO, counter, count))  # daddiu ctr,zero,count
+    loop = len(program.instructions)
+    body(program)
+    program.emit(mips_i(0x19, counter, counter, -1))    # daddiu ctr, ctr, -1
+    branch = program.branch(0x05, counter, R_ZERO)      # bne ctr, zero, loop
+    program.patch(branch, loop)
+
+
+def emit_wait_for_flag(program, base, offset, want_set):
+    """Spin (guest-side unbounded -- the host poll deadline is the real
+    timeout for the tests that use this) until the word at offset(base)
+    is nonzero (want_set) or zero (not want_set)."""
+    wait = len(program.instructions)
+    program.emit(mips_i(0x37, base, R_T0, offset))  # ld t0, offset(base)
+    branch = program.branch(0x04 if want_set else 0x05, R_T0, R_ZERO)
+    program.patch(branch, wait)
+
+
+def emit_dual_node_page_base(program, reg, explicit):
+    """Compute DUAL_NODE_TEST_STATE's page into reg: node one's real
+    memory if explicit, or the reader's own node's memory if not -- see
+    the addressing-fact comment by DUAL_NODE_TEST_STATE. Both forms name
+    the identical physical page for a node-one reader; only a node-zero
+    reader needs explicit=True to reach it at all."""
+    program.address_prefix(reg, 0x9000)
+    if explicit:
+        program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0001))    # lui at, 1
+        program.emit(mips_r(R_ZERO, R_AT, R_AT, 16, 0x38))  # dsll at,at,16
+        program.emit(mips_i(0x0f, R_ZERO, R_T0, DUAL_NODE_PAGE))
+        program.emit(mips_r(R_AT, R_T0, R_AT, 0, 0x25))     # or at,at,t0
+        program.emit(mips_r(reg, R_AT, reg, 0, 0x25))       # or reg,reg,at
+    else:
+        program.emit(mips_i(0x0f, R_ZERO, R_AT, DUAL_NODE_PAGE))
+        program.emit(mips_r(reg, R_AT, reg, 0, 0x25))       # or reg,reg,at
 
 
 class MipsProgram:
@@ -514,6 +650,221 @@ def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     return program
 
 
+def build_dual_node_stress(counter_n=DUAL_NODE_COUNT_REMOTE,
+                           counter_nc=DUAL_NODE_COUNT_MIXED,
+                           order_rounds=DUAL_NODE_ORDER_ROUNDS,
+                           mailbox_rounds=DUAL_NODE_MAILBOX_ROUNDS):
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode selected by the real PROM.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # Identity: the same NASID-and-slice decode build_four_cpu_rendezvous
+    # uses. s1 ends up the global index 0..3 (node*2 + slice), s2 its byte
+    # offset into any four-slot array, s3 this CPU's own node's Hub
+    # PI_INT_MODIFY address.
+    program.address_prefix(R_S3, 0x9200)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0100))
+    program.emit(mips_i(0x0d, R_AT, R_AT, 0x0020))
+    program.emit(mips_r(R_S3, R_AT, R_S3, 0, 0x25))
+    program.emit(mips_i(0x37, R_S3, R_S2, 0))  # ld s2, PI_PROCESSOR_NUMBER
+
+    program.address_prefix(R_T0, 0x9200)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0160))
+    program.emit(mips_r(R_T0, R_AT, R_T0, 0, 0x25))
+    program.emit(mips_i(0x37, R_T0, R_T0, 0))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))  # dsrl t0, t0, 8
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 1, 0x38))  # dsll t0, t0, 1
+    program.emit(mips_r(R_T0, R_S2, R_S1, 0, 0x25))    # or s1, t0, s2 (index)
+    program.emit(mips_r(R_ZERO, R_S1, R_S2, 3, 0x38))  # dsll s2, s1, 3 (byte)
+
+    program.address_prefix(R_S3, 0x9200)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0100))
+    program.emit(mips_i(0x0d, R_AT, R_AT, 0x0090))
+    program.emit(mips_r(R_S3, R_AT, R_S3, 0, 0x25))    # s3 = own PI_INT_MODIFY
+
+    # Phase 1: remote contended counters. Node zero's pair reaches
+    # DUAL_COUNTER_A only through the explicit node-one address -- a
+    # genuine crossbar crossing on every increment; node one's pair reaches
+    # DUAL_COUNTER_B only through its own local address, which (see the
+    # addressing-fact comment by DUAL_NODE_TEST_STATE) names the identical
+    # physical word. Both pairs then add a short run on DUAL_COUNTER_C, so
+    # one word sees both shapes of contention -- two genuinely remote CPUs
+    # and two same-node CPUs -- at once. s0 ends this phase holding
+    # whichever page-base form this CPU used; that form stays correct for
+    # every later access through s0, by the same equivalence.
+    program.emit(mips_i(0x0c, R_S1, R_T1, 2))    # andi t1, s1, 2 (node one?)
+    node0 = program.branch(0x04, R_T1, R_ZERO)   # beq t1, zero -> node0
+
+    emit_dual_node_page_base(program, R_S0, explicit=False)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    emit_repeat(program, counter_n,
+               lambda p: atomic_add(p, R_S0, DUAL_COUNTER_B, R_T0))
+    emit_repeat(program, counter_nc,
+               lambda p: atomic_add(p, R_S0, DUAL_COUNTER_C, R_T0))
+    phase1_join = program.branch(0x04, R_ZERO, R_ZERO)
+
+    program.patch(node0, len(program.instructions))
+    emit_dual_node_page_base(program, R_S0, explicit=True)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    emit_repeat(program, counter_n,
+               lambda p: atomic_add(p, R_S0, DUAL_COUNTER_A, R_T0))
+    emit_repeat(program, counter_nc,
+               lambda p: atomic_add(p, R_S0, DUAL_COUNTER_C, R_T0))
+
+    program.patch(phase1_join, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    store_cpu_word(program, DUAL_PHASE1_DONE, R_T0)
+
+    # All four CPUs rendezvous here before any of them starts phase 2.
+    # Without this, DUAL_PHASE1_DONE and DUAL_PHASE2_DONE are written but
+    # never consumed by anything -- a scheduler could legally run one node
+    # through every phase to completion before the other node's CPUs ever
+    # left phase 1, and the host would still see phase 3's final markers
+    # settle to [1, 1, 1, 1] and score the run green, without phase 2's
+    # cross-node traffic ever actually overlapping phase 1's contended
+    # counters on the other node. wait_limit is unbounded for the same
+    # reason phase 3's mailbox waits are (see below): a thread=multi vCPU
+    # that wins a host core can burn through any finite guest budget before
+    # a host-starved peer publishes, so the host's own poll deadline in
+    # wait_for_dual_node_state is the only timeout that can fire correctly.
+    complete = emit_wait_for_all_done(program, DUAL_PHASE1_DONE,
+                                      FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+    emit_unreachable(program)
+    program.patch(complete, len(program.instructions))
+
+    # Phase 2: cross-node writer/reader ordering. Every CPU owns one
+    # outbound channel -- its own DUAL_PHASE2_FLAG/PAYLOAD slot -- that its
+    # partner on the other node reads, and reads its partner's channel in
+    # turn; both directions run concurrently, order_rounds each, gated by
+    # the flag so a reader's round always observes its writer's matching
+    # round (the flag ack blocks the writer's next round until the reader
+    # has consumed the current one, so the two sides' round counts can
+    # never drift apart). s0 still holds whichever page-base form phase 1
+    # left it with, and both t2 (own channel) and t1 (partner's channel)
+    # below are built from that same s0 -- so the asymmetry phase 1 already
+    # has is total here too, not per-leg: DUAL_NODE_TEST_STATE's backing
+    # page is node one's physical RAM (see the addressing-fact comment by
+    # its definition), so node-one CPUs' write AND read both stay local,
+    # and node-zero CPUs' write AND read are both remote. Only node-zero
+    # CPUs issue remote accesses in this phase -- the same model constraint
+    # DUAL_COUNTER_A/B already document, not new here. The phase still
+    # exercises a genuinely remote write and a genuinely remote read, just
+    # not from both nodes as requester; symmetric requester-node coverage
+    # would need a second state page living on node zero, which the
+    # model's own addressing fact rules out under a synthesized -bios boot.
+    # t2 holds this CPU's own channel base (s0+s2) and t1 its partner's
+    # (s0 + partner index * 8, partner index = this index XOR 2) for the
+    # whole phase.
+    program.emit(mips_r(R_S0, R_S2, R_T2, 0, 0x2d))    # daddu t2, s0, s2
+    program.emit(mips_i(0x0e, R_S1, R_AT, 2))          # xori at, s1, 2
+    program.emit(mips_r(R_ZERO, R_AT, R_AT, 3, 0x38))  # dsll at, at, 3
+    program.emit(mips_r(R_S0, R_AT, R_T1, 0, 0x2d))    # daddu t1, s0, at
+
+    def emit_order_round(p):
+        # Wait for my own previous round to be acked (my flag cleared by
+        # my partner's read) before overwriting the payload -- without
+        # this a faster CPU can race ahead and overwrite its channel
+        # several times before a slower partner ever reads it, which is
+        # exactly the mismatch this phase would then wrongly report.
+        # Round one's wait is immediate: the flag starts at zero.
+        emit_wait_for_flag(p, R_T2, DUAL_PHASE2_FLAG, want_set=False)
+
+        # Write my channel: publish the round tag, release, then flag it.
+        # t3 is this round's tag -- emit_repeat's own countdown, read here
+        # only, never written, so reusing it costs nothing extra.
+        p.emit(mips_i(0x3f, R_T2, R_T3, DUAL_PHASE2_PAYLOAD))
+        p.emit(0x0000000f)  # sync
+        p.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+        p.emit(mips_i(0x3f, R_T2, R_T0, DUAL_PHASE2_FLAG))
+
+        # Read my partner's channel: wait for their flag, acquire, then
+        # compare their payload against the same round tag -- correct
+        # because the flag handshake never lets either side's round count
+        # get ahead of the other's.
+        emit_wait_for_flag(p, R_T1, DUAL_PHASE2_FLAG, want_set=True)
+        p.emit(0x0000000f)  # sync -- required: after flag, before payload
+        p.emit(mips_i(0x37, R_T1, R_T0, DUAL_PHASE2_PAYLOAD))
+        mismatch = p.branch(0x05, R_T0, R_T3)
+        ok = p.branch(0x04, R_ZERO, R_ZERO)
+        p.patch(mismatch, len(p.instructions))
+        p.emit(mips_i(0x37, R_T2, R_T0, DUAL_PHASE2_FAULTS))
+        p.emit(mips_i(0x19, R_T0, R_T0, 1))
+        p.emit(mips_i(0x3f, R_T2, R_T0, DUAL_PHASE2_FAULTS))
+        p.patch(ok, len(p.instructions))
+
+        # Ack: clear the partner's flag so their next round can start.
+        p.emit(mips_i(0x3f, R_T1, R_ZERO, DUAL_PHASE2_FLAG))
+
+    emit_repeat(program, order_rounds, emit_order_round)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    store_cpu_word(program, DUAL_PHASE2_DONE, R_T0)
+
+    # Second rendezvous: all four CPUs before phase 3 starts, same reason
+    # and same unbounded wait_limit as the phase 1/2 barrier above -- phase
+    # 3's mailbox traffic must provably overlap phase 2's cross-node
+    # ordering rounds on the other node, not merely follow them once both
+    # nodes happen to finish in whatever order the scheduler picked.
+    complete = emit_wait_for_all_done(program, DUAL_PHASE2_DONE,
+                                      FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+    emit_unreachable(program)
+    program.patch(complete, len(program.instructions))
+
+    # Phase 3: the four-CPU test's local mailbox exchange, sustained for
+    # mailbox_rounds instead of run once, concurrently on both node pairs
+    # -- this is node-local by construction (see PI_INT_MODIFY at s3, the
+    # reading CPU's own node), the same as it is in build_four_cpu_
+    # rendezvous; the "cross-node" property under test here is that it
+    # keeps working correctly while phases 1 and 2 hammer the crossbar
+    # with real remote traffic on the other CPUs, not that any single
+    # exchange itself crosses nodes. Both waits use emit_wait_for_mailbox
+    # with an unbounded budget, same as everywhere else in this file's
+    # thread=multi paths -- the host poll deadline is the real timeout --
+    # so its own timeout branch is genuinely unreachable; give it
+    # somewhere harmless to go rather than omit it, since the function's
+    # shape always needs one (emit_unreachable, defined above).
+    # counter=R_T4 here because emit_wait_for_mailbox uses t3 as its own
+    # timeout counter, which would otherwise collide with emit_repeat's
+    # default round counter.
+    def emit_mailbox_round_a(p):
+        p.emit(mips_i(0x19, R_ZERO, R_T0,
+                      PI_INT_MODIFY_SET | PI_INT_MAILBOX))
+        p.emit(mips_i(0x3f, R_S3, R_T0, 0))
+        p.emit(0x0000000f)  # sync
+        complete = emit_wait_for_mailbox(p, False,
+                                         FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+        emit_unreachable(p)
+        p.patch(complete, len(p.instructions))
+
+    def emit_mailbox_round_b(p):
+        complete = emit_wait_for_mailbox(p, True,
+                                         FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+        emit_unreachable(p)
+        p.patch(complete, len(p.instructions))
+        p.emit(mips_i(0x19, R_ZERO, R_T0, PI_INT_MAILBOX))
+        p.emit(mips_i(0x3f, R_S3, R_T0, 0))
+        p.emit(0x0000000f)  # sync
+
+    program.emit(mips_i(0x0c, R_S1, R_T1, 1))    # andi t1, s1, 1 (odd = B)
+    role_b = program.branch(0x05, R_T1, R_ZERO)
+    emit_repeat(program, mailbox_rounds, emit_mailbox_round_a, counter=R_T4)
+    to_done = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(role_b, len(program.instructions))
+    emit_repeat(program, mailbox_rounds, emit_mailbox_round_b, counter=R_T4)
+    program.patch(to_done, len(program.instructions))
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    store_cpu_word(program, DUAL_PHASE3_DONE, R_T0)
+    spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, spin)
+    return program
+
+
 class SN0SMPMachine(QemuSystemTest):
 
     def read_test_state(self, words):
@@ -559,6 +910,21 @@ class SN0SMPMachine(QemuSystemTest):
         self.vm.cmd('human-monitor-command', command_line='stop')
         state = self.read_state(FOUR_CPU_TEST_STATE, FOUR_CPU_STATE_WORDS)
         self.fail(f'four-CPU state did not settle: {state}')
+
+    def wait_for_dual_node_state(self, timeout=30):
+        deadline = time.monotonic() + timeout
+        state = []
+        while time.monotonic() < deadline:
+            state = self.read_state(DUAL_NODE_TEST_STATE, DUAL_STATE_WORDS)
+            done = state[DUAL_PHASE3_DONE // 8:
+                        DUAL_PHASE3_DONE // 8 + FOUR_CPU_COUNT]
+            if done == [1, 1, 1, 1]:
+                return state
+            time.sleep(0.01)
+
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        state = self.read_state(DUAL_NODE_TEST_STATE, DUAL_STATE_WORDS)
+        self.fail(f'dual-node stress state did not settle: {state}')
 
     def test_rtc_poll_allows_peer_progress(self):
         self.set_machine('origin200')
@@ -735,6 +1101,81 @@ class SN0SMPMachine(QemuSystemTest):
                          f'SN0 mailbox completion markers: {state}')
         self.assertEqual(hub_done, [1, 2, 3, 4],
                          f'SN0 phase completion markers: {state}')
+
+    def test_dual_node_stress_thread_multi(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('dual-node-stress-thread-multi.bin')
+        build_dual_node_stress().write(firmware)
+
+        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=multi',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+        state = self.wait_for_dual_node_state(timeout=30)
+
+        counter_a = state[DUAL_COUNTER_A // 8]
+        counter_b = state[DUAL_COUNTER_B // 8]
+        counter_c = state[DUAL_COUNTER_C // 8]
+        order_faults = state[DUAL_PHASE2_FAULTS // 8:
+                             DUAL_PHASE2_FAULTS // 8 + FOUR_CPU_COUNT]
+
+        self.assertEqual(counter_a, 2 * DUAL_NODE_COUNT_REMOTE,
+                         f'remote-only counter A: {state}')
+        self.assertEqual(counter_b, 2 * DUAL_NODE_COUNT_REMOTE,
+                         f'local-only counter B: {state}')
+        self.assertEqual(counter_c, 4 * DUAL_NODE_COUNT_MIXED,
+                         f'mixed local/remote counter C: {state}')
+        self.assertEqual(order_faults, [0, 0, 0, 0],
+                         f'cross-node writer/reader ordering faults: {state}')
+
+    def test_dual_node_stress_icount(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('dual-node-stress-icount.bin')
+        build_dual_node_stress(
+            counter_n=DUAL_NODE_COUNT_REMOTE_ICOUNT,
+            counter_nc=DUAL_NODE_COUNT_MIXED_ICOUNT,
+            order_rounds=DUAL_NODE_ORDER_ROUNDS_ICOUNT,
+            mailbox_rounds=DUAL_NODE_MAILBOX_ROUNDS_ICOUNT).write(firmware)
+
+        self.vm.set_machine('origin200,debug-leds=off')
+        # The deterministic test-of-the-test: the same ROM, a reduced
+        # budget, and the single-threaded round-robin scheduler icount
+        # requires, proving the ROM's correctness does not depend on
+        # thread=multi's scheduling.
+        self.vm.add_args(
+            '-accel', 'tcg,thread=single',
+            '-icount', 'shift=2,align=off,sleep=on',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+        state = self.wait_for_dual_node_state(timeout=30)
+
+        counter_a = state[DUAL_COUNTER_A // 8]
+        counter_b = state[DUAL_COUNTER_B // 8]
+        counter_c = state[DUAL_COUNTER_C // 8]
+        order_faults = state[DUAL_PHASE2_FAULTS // 8:
+                             DUAL_PHASE2_FAULTS // 8 + FOUR_CPU_COUNT]
+
+        self.assertEqual(counter_a, 2 * DUAL_NODE_COUNT_REMOTE_ICOUNT,
+                         f'remote-only counter A: {state}')
+        self.assertEqual(counter_b, 2 * DUAL_NODE_COUNT_REMOTE_ICOUNT,
+                         f'local-only counter B: {state}')
+        self.assertEqual(counter_c, 4 * DUAL_NODE_COUNT_MIXED_ICOUNT,
+                         f'mixed local/remote counter C: {state}')
+        self.assertEqual(order_faults, [0, 0, 0, 0],
+                         f'cross-node writer/reader ordering faults: {state}')
 
 
 if __name__ == '__main__':
