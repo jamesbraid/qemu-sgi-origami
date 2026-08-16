@@ -62,7 +62,20 @@ void sync_c0_status(CPUMIPSState *env, CPUMIPSState *cpu, int tc)
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
 {
     uint32_t mask = env->CP0_Status_rw_bitmask;
-    target_ulong old = env->CP0_Status;
+    target_ulong old;
+
+    /*
+     * helper_mttc0_status (cp0_helper.c) writes another VPE's CP0_Status
+     * directly, under BQL_LOCK_GUARD(); this is the plain, own-VPE side of
+     * the same field, reached from the owning VPE's own thread. Guarding
+     * only the remote side would leave the identical asymmetric-guard
+     * race the Cause/Compare/Count fix closed elsewhere in this series,
+     * just on this register instead. Guard first, before the read below,
+     * for the same reason cpu_mips_store_cause() does.
+     */
+    BQL_LOCK_GUARD();
+
+    old = env->CP0_Status;
 
     if (env->insn_flags & ISA_MIPS_R6) {
         bool has_supervisor = extract32(mask, CP0St_KSU, 2) == 0x3;

@@ -264,6 +264,8 @@ target_ulong helper_mfc0_tcstatus(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcstatus(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -281,6 +283,8 @@ target_ulong helper_mfc0_tcbind(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcbind(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -298,6 +302,8 @@ target_ulong helper_mfc0_tcrestart(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcrestart(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -315,6 +321,8 @@ target_ulong helper_mfc0_tchalt(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tchalt(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -332,6 +340,8 @@ target_ulong helper_mfc0_tccontext(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tccontext(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -349,6 +359,8 @@ target_ulong helper_mfc0_tcschedule(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcschedule(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -366,6 +378,8 @@ target_ulong helper_mfc0_tcschefback(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcschefback(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -383,6 +397,8 @@ target_ulong helper_mfc0_count(CPUMIPSState *env)
 
 target_ulong helper_mftc0_entryhi(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -391,6 +407,8 @@ target_ulong helper_mftc0_entryhi(CPUMIPSState *env)
 
 target_ulong helper_mftc0_cause(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -399,6 +417,8 @@ target_ulong helper_mftc0_cause(CPUMIPSState *env)
 
 target_ulong helper_mftc0_status(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -447,6 +467,8 @@ target_ulong helper_mfc0_debug(CPUMIPSState *env)
 
 target_ulong helper_mftc0_debug(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     int32_t tcstatus;
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
@@ -563,6 +585,8 @@ void helper_mtc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     uint32_t mask;
@@ -579,6 +603,8 @@ void helper_mttc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 
 target_ulong helper_mftc0_vpecontrol(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     /* FIXME: Mask away return zero on read bits.  */
@@ -587,6 +613,8 @@ target_ulong helper_mftc0_vpecontrol(CPUMIPSState *env)
 
 target_ulong helper_mftc0_vpeconf0(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -613,6 +641,8 @@ void helper_mtc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     uint32_t mask = 0;
@@ -706,6 +736,8 @@ void helper_mtc0_tcstatus(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcstatus(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -732,6 +764,8 @@ void helper_mtc0_tcbind(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcbind(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     uint32_t mask = (1 << CP0TCBd_TBE);
     uint32_t newval;
@@ -761,6 +795,8 @@ void helper_mtc0_tcrestart(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcrestart(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -795,6 +831,8 @@ void helper_mtc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     MIPSCPU *other_cpu = env_archcpu(other);
@@ -821,6 +859,8 @@ void helper_mtc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -838,6 +878,8 @@ void helper_mtc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -855,6 +897,8 @@ void helper_mtc0_tcschefback(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcschefback(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1134,6 +1178,8 @@ void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_entryhi(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1181,6 +1227,8 @@ void helper_mtc0_status(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_status(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     uint32_t mask = env->CP0_Status_rw_bitmask & ~0xf1000018;
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
@@ -1215,6 +1263,8 @@ void helper_mttc0_cause(CPUMIPSState *env, target_ulong arg1)
 
 target_ulong helper_mftc0_epc(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1223,6 +1273,8 @@ target_ulong helper_mftc0_epc(CPUMIPSState *env)
 
 target_ulong helper_mftc0_ebase(CPUMIPSState *env)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1240,6 +1292,8 @@ void helper_mtc0_ebase(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_ebase(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     target_ulong mask = 0x3FFFF000 | env->CP0_EBaseWG_rw_bitmask;
@@ -1251,6 +1305,8 @@ void helper_mttc0_ebase(CPUMIPSState *env, target_ulong arg1)
 
 target_ulong helper_mftc0_configx(CPUMIPSState *env, target_ulong idx)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1437,6 +1493,8 @@ void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_debug(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     uint32_t val = arg1 & ((1 << CP0DB_SSt) | (1 << CP0DB_Halt));
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
