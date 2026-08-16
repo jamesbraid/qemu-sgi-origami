@@ -305,12 +305,24 @@ static inline int mips_vp_active(const CPUMIPSState *env)
         return 1;
     }
 
-    /* Check if the virtual processor is disabled due to a DVP */
+    /*
+     * Check if the virtual processor is disabled due to a DVP. Each VPE
+     * writes only its own CP0_VPControl, from its own thread (helper_dvp
+     * and helper_evp below; direct mtc0/dmtc0 writes to VPControl are
+     * ignored -- see translate.c), but this scan reads every other VPE's
+     * copy from whichever thread is asking, so pair the qatomic_set() at
+     * the two publish sites with an untorn qatomic_read() here.
+     */
     CPU_FOREACH(cs) {
         CPUMIPSState *other_env = cpu_env(cs);
+        int32_t other_vpcontrol;
 
-        if ((other_env != env) &&
-            ((other_env->CP0_VPControl >> CP0VPCtl_DIS) & 1)) {
+        if (other_env == env) {
+            continue;
+        }
+
+        other_vpcontrol = qatomic_read(&other_env->CP0_VPControl);
+        if ((other_vpcontrol >> CP0VPCtl_DIS) & 1) {
             return 0;
         }
     }

@@ -69,10 +69,17 @@ static inline void mips_vpe_sleep(MIPSCPU *cpu)
     CPUState *cs = CPU(cpu);
 
     /*
-     * The VPE was shut off, really go to bed.
-     * Reset any old _WAKE requests.
+     * The VPE was shut off, really go to bed. dvp/dvpe and their mtc0
+     * TCHalt sibling all walk CPU_FOREACH and can name a peer VPE here,
+     * so this runs on the requesting VPE's thread, not the target's.
+     * Request the halt through cpu_interrupt() instead of writing
+     * cs->halted directly -- the same idiom sgi_hub_set_cpu_enable() uses
+     * to stop a peer processor from a register write -- and let the
+     * target's own thread apply it at the next TB boundary. Reset any old
+     * _WAKE request under the same lock, mirroring mips_vpe_wake()'s.
      */
-    cs->halted = 1;
+    BQL_LOCK_GUARD();
+    cpu_interrupt(cs, CPU_INTERRUPT_HALT);
     cpu_reset_interrupt(cs, CPU_INTERRUPT_WAKE);
 }
 
@@ -1701,7 +1708,14 @@ target_ulong helper_dvp(CPUMIPSState *env)
                 mips_vpe_sleep(other_cpu);
             }
         }
-        env->CP0_VPControl |= (1 << CP0VPCtl_DIS);
+        /*
+         * Publish the DisableVP bit atomically: mips_vp_active() reads
+         * every VPE's CP0_VPControl from CPU_FOREACH scans that can run on
+         * any thread, so this store must be untorn and visible to their
+         * qatomic_read(), not just committed to env in program order here.
+         */
+        qatomic_set(&env->CP0_VPControl,
+                    env->CP0_VPControl | (1 << CP0VPCtl_DIS));
     }
     return prev;
 }
@@ -1723,7 +1737,9 @@ target_ulong helper_evp(CPUMIPSState *env)
                 mips_vpe_wake(other_cpu);
             }
         }
-        env->CP0_VPControl &= ~(1 << CP0VPCtl_DIS);
+        /* Publish under qatomic_set(), pairing with the store in helper_dvp. */
+        qatomic_set(&env->CP0_VPControl,
+                    env->CP0_VPControl & ~(1 << CP0VPCtl_DIS));
     }
     return prev;
 }
