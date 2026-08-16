@@ -389,6 +389,23 @@ static ssize_t glue(load_elf, SZ)(const char *name, int fd,
     }
     if (pentry) {
         *pentry = ehdr.e_entry;
+#if SZ == 32
+        /*
+         * A 32-bit MIPS ELF's entry point is the low half of a
+         * kseg0/kseg1-style compatibility address: bit 31 set means the
+         * missing upper 32 bits of the real virtual address are all ones,
+         * not all zeros. Sign-extend instead of the implicit zero-extend
+         * above, so a MIPS64 kernel's 0x8xxxxxxx-range entry point lands
+         * on its canonical compatibility-segment address rather than an
+         * unmapped low one. A no-op below 0x80000000, where sign- and
+         * zero-extension agree, and scoped to MIPS/nanoMIPS -- every
+         * other 32-bit-ELF architecture's entry point is a plain
+         * unsigned address and stays zero-extended.
+         */
+        if (elf_machine == EM_MIPS || elf_machine == EM_NANOMIPS) {
+            *pentry = (int64_t)(int32_t)ehdr.e_entry;
+        }
+#endif
     }
 
     glue(load_symbols, SZ)(&ehdr, fd, must_swab, clear_lsb, sym_cb);
