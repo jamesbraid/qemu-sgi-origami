@@ -50,6 +50,57 @@
 #define SN0_COMP_PROCESSOR      1
 #define SN0_COMP_ENABLED        1
 
+#define SN0_DUAL_CHASSIS_ARGS \
+    "-M origin200,synthesized-firmware=off -m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
+
+static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
+                                     const char *expected)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     bridge);
+    QList *children;
+    const QListEntry *entry;
+    const char *name = NULL;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    children = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *type = qdict_get_try_str(child, "type");
+
+        if (type && g_str_equal(type, "child<PCI>")) {
+            g_assert_null(name);
+            name = qdict_get_str(child, "name");
+        }
+    }
+
+    g_assert_nonnull(name);
+    g_assert_cmpstr(name, ==, expected);
+    qobject_unref(response);
+}
+
+/*
+ * Each physical chassis owns a Bridge and therefore a separate PCI root bus.
+ * Keep the original bus name for node 0, since it is part of existing device
+ * migration paths, and give node 1 a stable identity of its own before it
+ * grows devices at the same devfns.
+ */
+static void test_bridge_root_bus_names(const void *data)
+{
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
+
+    assert_pci_root_bus_name(qts, "/machine/bridge", "pci");
+    assert_pci_root_bus_name(qts, "/machine/bridge1", "pci.1");
+
+    qtest_quit(qts);
+}
+
 static uint32_t read_config0(QTestState *qts)
 {
     g_autofree char *registers = qtest_hmp(qts, "info registers");
@@ -696,6 +747,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
                         test_architecture_boundaries);
+    qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
+                        test_bridge_root_bus_names);
     qtest_add_data_func("sn0/model/promdata-uses-memory-space", NULL,
                         test_promdata_uses_memory_space);
     qtest_add_data_func("sn0/model/processor-mode-bits", NULL,
