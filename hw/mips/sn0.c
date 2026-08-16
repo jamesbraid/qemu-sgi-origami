@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
@@ -1257,6 +1258,8 @@ static void sn0_launch_cpu(CPUState *cs, run_on_cpu_data data)
     SN0LaunchData *launch = data.host_ptr;
     CPUMIPSState *env = cpu_env(cs);
 
+    assert(bql_locked());
+
     cpu_reset(cs);
     sn0_mode_bits_reset(cs);
     env->active_tc.PC = (int32_t)(0xa0000000 + SN0_FW_TEXT_LOCAL +
@@ -1271,7 +1274,6 @@ static void sn0_launch_cpu(CPUState *cs, run_on_cpu_data data)
     }
     cs->halted = 0;
     cs->exception_index = -1;
-    cpu_resume(cs);
     g_free(launch);
 }
 
@@ -1309,8 +1311,8 @@ static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
     launch->call_parm = env->active_tc.gpr[7];
     launch->stack_addr = env->active_tc.gpr[8];
     launch->gp_addr = env->active_tc.gpr[9];
-    async_safe_run_on_cpu(target, sn0_launch_cpu,
-                          RUN_ON_CPU_HOST_PTR(launch));
+    async_run_on_cpu(target, sn0_launch_cpu,
+                     RUN_ON_CPU_HOST_PTR(launch));
     return ARCS_ESUCCESS;
 }
 
