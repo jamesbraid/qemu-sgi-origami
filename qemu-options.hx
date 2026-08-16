@@ -246,6 +246,7 @@ DEF("accel", HAS_ARG, QEMU_OPTION_accel,
     "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"
     "                kvm-shadow-mem=size of KVM shadow MMU in bytes\n"
     "                one-insn-per-tb=on|off (one guest instruction per TCG translation block)\n"
+    "                rr-kick-period-ns=n (single-threaded TCG round-robin kick period)\n"
     "                split-wx=on|off (enable TCG split w^x mapping)\n"
     "                tb-size=n (TCG translation block cache size)\n"
     "                dirty-ring-size=n (KVM dirty ring GFN count, default 0)\n"
@@ -281,6 +282,12 @@ SRST
         each translation block. This slows down emulation a lot, but
         can be useful in some situations, such as when trying to analyse
         the logs produced by the ``-d`` option.
+
+    ``rr-kick-period-ns=n``
+        Sets the periodic kick interval for single-threaded TCG's
+        round-robin vCPU scheduler. The default is 100000000 nanoseconds.
+        A shorter interval lets another vCPU run sooner when the guest has
+        no earlier timer deadline, at the cost of more scheduler overhead.
 
     ``split-wx=on|off``
         Controls the use of split w^x mapping for the TCG code generation

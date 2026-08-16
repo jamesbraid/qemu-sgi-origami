@@ -37,4 +37,10 @@ void tcg_update_all_cflags(void);
  */
 bool qemu_tcg_mttcg_enabled(void);
 
+/**
+ * qemu_tcg_rr_kick_period_ns:
+ * Return the single-threaded round-robin vCPU kick period.
+ */
+uint64_t qemu_tcg_rr_kick_period_ns(void);
+
 #endif
