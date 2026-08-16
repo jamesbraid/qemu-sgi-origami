@@ -265,8 +265,8 @@ struct SN0MachineState {
      * the assignment has to run again every time the machine resets, and it
      * needs these to still have somewhere to reach the devices from.
      */
-    PCIDevice *pci_ioc3;
-    PCIDevice *pci_scsi[SN0_SCSI_ADAPTERS];
+    PCIDevice *pci_ioc3[SN0_ORIGIN200_MAX_NODES];
+    PCIDevice *pci_scsi[SN0_ORIGIN200_MAX_NODES][SN0_SCSI_ADAPTERS];
 
     /*
      * Candidate values: hardware facts this machine asserts without having
@@ -2270,20 +2270,16 @@ static void sn0_mode_bits_reset(void *opaque)
  * evidence the machine has been proven to DMA correctly, and do not read
  * its absence-until-now as evidence it did not matter.
  */
-static void sn0_assign_pci_resources(void *opaque)
+static void sn0_assign_node_pci_resources(SN0MachineState *s,
+                                          unsigned int node_index)
 {
-    SN0MachineState *s = opaque;
     unsigned int slot;
 
-    if (!s->io_bridge_present) {
-        return;
-    }
-
-    pci_default_write_config(s->pci_ioc3, PCI_BASE_ADDRESS_0,
+    pci_default_write_config(s->pci_ioc3[node_index], PCI_BASE_ADDRESS_0,
                              SN0_PCI_IOC3_MEM, 4);
-    pci_default_write_config(s->pci_ioc3, PCI_COMMAND,
+    pci_default_write_config(s->pci_ioc3[node_index], PCI_COMMAND,
                              PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, 2);
-    sgi_bridge_assign_window(&s->io_bridge[0], SN0_IOC3_DEVICE,
+    sgi_bridge_assign_window(&s->io_bridge[node_index], SN0_IOC3_DEVICE,
                              SN0_PCI_IOC3_MEM,
                              true);
 
@@ -2291,16 +2287,30 @@ static void sn0_assign_pci_resources(void *opaque)
         hwaddr io_base = slot == 0 ? SN0_PCI_SCSI0_IO : SN0_PCI_SCSI1_IO;
         hwaddr mem_base = slot == 0 ? SN0_PCI_SCSI0_MEM : SN0_PCI_SCSI1_MEM;
 
-        pci_default_write_config(s->pci_scsi[slot], PCI_BASE_ADDRESS_0,
+        pci_default_write_config(s->pci_scsi[node_index][slot],
+                                 PCI_BASE_ADDRESS_0,
                                  io_base, 4);
-        pci_default_write_config(s->pci_scsi[slot], PCI_BASE_ADDRESS_1,
+        pci_default_write_config(s->pci_scsi[node_index][slot],
+                                 PCI_BASE_ADDRESS_1,
                                  mem_base, 4);
-        pci_default_write_config(s->pci_scsi[slot], PCI_COMMAND,
+        pci_default_write_config(s->pci_scsi[node_index][slot], PCI_COMMAND,
                                  PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
                                  PCI_COMMAND_MASTER, 2);
-        sgi_bridge_assign_window(&s->io_bridge[0], SN0_SCSI_DEVICE0 + slot,
+        sgi_bridge_assign_window(&s->io_bridge[node_index],
+                                 SN0_SCSI_DEVICE0 + slot,
                                  mem_base, true);
     }
+}
+
+static void sn0_assign_pci_resources(void *opaque)
+{
+    SN0MachineState *s = opaque;
+
+    if (!s->io_bridge_present) {
+        return;
+    }
+
+    sn0_assign_node_pci_resources(s, 0);
 }
 
 static void sn0_machine_ready(Notifier *notifier, void *data)
@@ -2808,18 +2818,108 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node,
         &node->hub_regs_node_view);
 }
 
+static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
+{
+    PCIDevice *ioc3;
+    NICInfo *nd;
+    unsigned int slot;
+
+    ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
+    if (node_index == 0) {
+        qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
+                          serial_hd(SN0_IOC3_CHARDEV));
+    }
+
+    /*
+     * Node 0 owns the machine's host network backend. Its controller claims
+     * that backend itself, so the board only adjusts the automatic address
+     * before that claim: QEMU supplies the unique suffix, while this on-board
+     * IOC3 needs SGI's OUI because the PROM reads it from the one-wire part
+     * before it starts the network loader. An explicit mac= is a replacement
+     * part's programmed identity and stays intact.
+     */
+    if (node_index == 0) {
+        nd = qemu_find_nic_info(TYPE_SGI_IOC3_ETH, true, NULL);
+        if (nd && !nd->macaddr_explicit) {
+            nd->macaddr.a[0] = 0x08;
+            nd->macaddr.a[1] = 0x00;
+            nd->macaddr.a[2] = 0x69;
+        }
+    }
+    pci_realize_and_unref(ioc3,
+                          PCI_HOST_BRIDGE(&s->io_bridge[node_index])->bus,
+                          &error_fatal);
+    s->pci_ioc3[node_index] = ioc3;
+
+    /*
+     * The controller's second interrupt does not reach the Bridge through
+     * PCI's own INTx routing: sgi_bridge_map_irq() has no rule for it other
+     * than the slot-equals-pin default, which would land it on pin 2
+     * alongside the controller's own ethernet interrupt, reached through the
+     * chip's ordinary PCI interrupt pin, rather than the pin the board
+     * actually wires the second one to. Connected directly to the Bridge's
+     * matching input instead, wired regardless of whether the bridge is the
+     * machine's default path to the controller, the same way the bridge's
+     * fabric link is always set: the wire exists on the real board whether or
+     * not a guest currently reaches the controller through the bridge's own
+     * window.
+     */
+    qdev_connect_gpio_out(DEVICE(ioc3), 0,
+                          qdev_get_gpio_in(DEVICE(&s->io_bridge[node_index]),
+                                           SN0_IOC3_SUPERIO_PIN));
+
+    if (s->io_bridge_present) {
+        memory_region_add_subregion_overlap(
+            &s->nodes[node_index].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
+            sysbus_mmio_get_region(
+                SYS_BUS_DEVICE(&s->io_bridge[node_index]), 0), -1);
+
+        /*
+         * The two SCSI adapters the base I/O board carries, at the first two
+         * PCI devices. They exist only when the bridge is asked for, because
+         * a guest can only reach them through the bridge's own per-device
+         * decode — unlike the controller above, nothing here gives them a
+         * direct fallback mapping, so without the bridge there is nowhere a
+         * guest could reach them at.
+         *
+         * They are created with no drive attached. A machine that invented
+         * backing storage would be describing a disk nobody asked for, and the
+         * adapters answer their register contract with an empty bus — a disk
+         * arrives on the command line, behind the first adapter, when a guest
+         * needs to boot from one.
+         *
+         * sn0_assign_pci_resources assigns each resource at reset rather than
+         * here — see that function for why realize is the wrong point to do
+         * it.
+         */
+        for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
+            s->pci_scsi[node_index][slot] = pci_create_simple(
+                PCI_HOST_BRIDGE(&s->io_bridge[node_index])->bus,
+                PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
+        }
+    } else {
+        warn_report("origin200: the base I/O controller is mapped directly "
+                    "at its crosstalk address; without synthesized firmware "
+                    "to assign it PCI resources the way real ARCS PROM does, "
+                    "the I/O bridge cannot yet carry it to a booting guest "
+                    "(an approved interim, see task #43)");
+        memory_region_add_subregion(
+            &s->nodes[node_index].xtalk,
+            SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) + SN0_BRIDGE_DEVICE2,
+            &SGI_IOC3(ioc3)->bar);
+    }
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     MemoryRegion *system = get_system_memory();
     hwaddr node = SN0_NODE_BASE(0);
-    PCIDevice *ioc3;
-    NICInfo *nd;
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
     uint64_t ram_offset = 0;
-    unsigned int node_count, node_index, slot;
+    unsigned int node_count, node_index;
 
     node_count = machine->numa_state && machine->numa_state->num_nodes ?
                  machine->numa_state->num_nodes : 1;
@@ -3068,86 +3168,7 @@ static void sn0_init(MachineState *machine)
         }
     }
 
-    ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
-    qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
-                      serial_hd(SN0_IOC3_CHARDEV));
-    /*
-     * The controller's ethernet block is the machine's only network device.
-     * It claims the command-line backend itself, so the board only adjusts
-     * the automatic address before that claim: QEMU supplies the unique
-     * suffix, while this on-board IOC3 needs SGI's OUI because the PROM reads
-     * it from the one-wire part before it starts the network loader. An
-     * explicit mac= is a replacement part's programmed identity and stays
-     * intact.
-     */
-    nd = qemu_find_nic_info(TYPE_SGI_IOC3_ETH, true, NULL);
-    if (nd) {
-        if (!nd->macaddr_explicit) {
-            nd->macaddr.a[0] = 0x08;
-            nd->macaddr.a[1] = 0x00;
-            nd->macaddr.a[2] = 0x69;
-        }
-    }
-    pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(&s->io_bridge[0])->bus,
-                          &error_fatal);
-
-    s->pci_ioc3 = ioc3;
-
-    /*
-     * The controller's second interrupt does not reach the Bridge through
-     * PCI's own INTx routing: sgi_bridge_map_irq() has no rule for it other
-     * than the slot-equals-pin default, which would land it on pin 2
-     * alongside the controller's own ethernet interrupt, reached through the
-     * chip's ordinary PCI interrupt pin, rather than the pin the board
-     * actually wires the second one to. Connected directly
-     * to the Bridge's matching input instead, wired regardless of whether the
-     * bridge is the machine's default path to the controller, the same way
-     * the bridge's fabric link is always set: the wire exists on the real
-     * board whether or not a guest currently reaches the controller through
-     * the bridge's own window.
-     */
-    qdev_connect_gpio_out(DEVICE(ioc3), 0,
-                          qdev_get_gpio_in(DEVICE(&s->io_bridge[0]),
-                                           SN0_IOC3_SUPERIO_PIN));
-
-    if (s->io_bridge_present) {
-        memory_region_add_subregion_overlap(
-            &s->nodes[0].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
-            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[0]), 0), -1);
-
-        /*
-         * The two SCSI adapters the base I/O board carries, at the first two
-         * PCI devices. They exist only when the bridge is asked for, because
-         * a guest can only reach them through the bridge's own per-device
-         * decode — unlike the controller above, nothing here gives them a
-         * direct fallback mapping, so without the bridge there is nowhere a
-         * guest could reach them at.
-         *
-         * They are created with no drive attached. A machine that invented
-         * backing storage would be describing a disk nobody asked for, and the
-         * adapters answer their register contract with an empty bus — a disk
-         * arrives on the command line, behind the first adapter, when a guest
-         * needs to boot from one.
-         *
-         * What assigns each of their PCI resources is sn0_assign_pci_resources
-         * below, not here — see that function for why realize is the wrong
-         * point to do it.
-         */
-        for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
-            s->pci_scsi[slot] = pci_create_simple(
-                PCI_HOST_BRIDGE(&s->io_bridge[0])->bus,
-                PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
-        }
-    } else {
-        warn_report("origin200: the base I/O controller is mapped directly "
-                    "at its crosstalk address; without synthesized firmware "
-                    "to assign it PCI resources the way real ARCS PROM does, "
-                    "the I/O bridge cannot yet carry it to a booting guest "
-                    "(an approved interim, see task #43)");
-        memory_region_add_subregion(&s->nodes[0].xtalk,
-                                    SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) +
-                                    SN0_BRIDGE_DEVICE2, &SGI_IOC3(ioc3)->bar);
-    }
+    sn0_create_base_io(s, 0);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         sn0_node_map_xtalk_windows(&s->nodes[node_index], node_index);
