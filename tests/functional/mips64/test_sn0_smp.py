@@ -71,6 +71,20 @@ FOUR_CPU_STATE_WORDS = 28
 
 FOUR_CPU_COUNT = 4
 FOUR_CPU_WAIT_LIMIT = 0x00400000
+# Effectively unbounded, for the thread=multi twin. Under real MTTCG a
+# busy-waiting vCPU that gets a full host core burns through any finite
+# guest instruction budget in real time far faster than a host-starved
+# peer can publish, so a bounded budget false-positives under load. The
+# host-side poll deadline in wait_for_four_cpu_state is the real timeout
+# for that test; this value only keeps the guest from declaring failure
+# first.
+#
+# load_u32's lui sign-extends bit 31 on mips64, and this value's bit 31
+# is set, so the register it loads into is not 0x00000000ffffffff but
+# the 64-bit maximum, 0xffffffffffffffff. Intended: the guest side of
+# this budget must never fire, and 2**64-1 iterations is further from
+# firing than 2**32-1 would have been.
+FOUR_CPU_WAIT_LIMIT_UNBOUNDED = 0xffffffff
 FOUR_CPU_BASE_TIMEOUT = 0x1000
 FOUR_CPU_HUB_TIMEOUT = 0x2000
 PI_INT_MODIFY_SET = 0x100
@@ -98,8 +112,8 @@ def store_cpu_word(program, offset, value):
     program.emit(0x0000000f)  # sync
 
 
-def emit_wait_for_words(program, offset):
-    load_u32(program, R_T3, FOUR_CPU_WAIT_LIMIT)
+def emit_wait_for_words(program, offset, wait_limit):
+    load_u32(program, R_T3, wait_limit)
     wait = len(program.instructions)
     program.emit(mips_i(0x19, R_ZERO, R_T2, 0))
     for cpu in range(FOUR_CPU_COUNT):
@@ -122,8 +136,8 @@ def emit_timeout(program, offset, marker):
     program.patch(branch, spin)
 
 
-def emit_wait_for_mailbox(program, want_set):
-    load_u32(program, R_T3, FOUR_CPU_WAIT_LIMIT)
+def emit_wait_for_mailbox(program, want_set, wait_limit):
+    load_u32(program, R_T3, wait_limit)
     wait = len(program.instructions)
     program.emit(mips_i(0x37, R_S3, R_T0, 8))  # PI_INT_PEND0
     program.emit(mips_i(0x0c, R_T0, R_T0, 1 << PI_INT_MAILBOX))
@@ -401,7 +415,7 @@ def build_rr_kick_deadline():
     return program
 
 
-def build_four_cpu_rendezvous():
+def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program = MipsProgram()
 
     # Enter the same 64-bit kernel mode selected by the real PROM.
@@ -453,7 +467,7 @@ def build_four_cpu_rendezvous():
     # Baseline: uncached shared RAM only.  Each CPU owns one unique word.
     program.emit(mips_i(0x19, R_S1, R_T0, 1))
     store_cpu_word(program, FOUR_CPU_BASE_PUBLISH, R_T0)
-    complete = emit_wait_for_words(program, FOUR_CPU_BASE_PUBLISH)
+    complete = emit_wait_for_words(program, FOUR_CPU_BASE_PUBLISH, wait_limit)
     emit_timeout(program, FOUR_CPU_BASE_FAILURE, FOUR_CPU_BASE_TIMEOUT)
     program.patch(complete, len(program.instructions))
     program.emit(mips_i(0x19, R_S1, R_T0, 1))
@@ -461,7 +475,7 @@ def build_four_cpu_rendezvous():
 
     # SN0 phase starts with the same four-way RAM rendezvous.
     store_cpu_word(program, FOUR_CPU_HUB_PUBLISH, R_T0)
-    complete = emit_wait_for_words(program, FOUR_CPU_HUB_PUBLISH)
+    complete = emit_wait_for_words(program, FOUR_CPU_HUB_PUBLISH, wait_limit)
     emit_timeout(program, FOUR_CPU_HUB_FAILURE, FOUR_CPU_HUB_TIMEOUT)
     program.patch(complete, len(program.instructions))
 
@@ -476,13 +490,13 @@ def build_four_cpu_rendezvous():
     program.emit(0x0000000f)  # sync
     program.emit(mips_i(0x19, R_S1, R_T0, 1))
     store_cpu_word(program, FOUR_CPU_MAILBOX_DONE, R_T0)
-    source_complete = emit_wait_for_mailbox(program, False)
+    source_complete = emit_wait_for_mailbox(program, False, wait_limit)
     emit_timeout(program, FOUR_CPU_HUB_FAILURE, FOUR_CPU_HUB_TIMEOUT)
     program.patch(source_complete, len(program.instructions))
     source_done = program.branch(0x04, R_ZERO, R_ZERO)
 
     program.patch(receiver, len(program.instructions))
-    receiver_complete = emit_wait_for_mailbox(program, True)
+    receiver_complete = emit_wait_for_mailbox(program, True, wait_limit)
     emit_timeout(program, FOUR_CPU_HUB_FAILURE, FOUR_CPU_HUB_TIMEOUT)
     program.patch(receiver_complete, len(program.instructions))
     program.emit(mips_i(0x19, R_ZERO, R_T0, PI_INT_MAILBOX))
@@ -523,8 +537,8 @@ class SN0SMPMachine(QemuSystemTest):
         self.log.info('state at %#x: %s', address, state)
         return state
 
-    def wait_for_four_cpu_state(self):
-        deadline = time.monotonic() + 10
+    def wait_for_four_cpu_state(self, timeout=10):
+        deadline = time.monotonic() + timeout
         state = []
         while time.monotonic() < deadline:
             state = self.read_state(FOUR_CPU_TEST_STATE,
@@ -538,6 +552,12 @@ class SN0SMPMachine(QemuSystemTest):
             if any(failures) or done == [1, 2, 3, 4]:
                 return state
             time.sleep(0.01)
+
+        # Stop before the diagnostic read, the same order read_test_state
+        # uses, so the dump is one consistent snapshot rather than a value
+        # from mid-poll that may already be stale by the time it prints.
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        state = self.read_state(FOUR_CPU_TEST_STATE, FOUR_CPU_STATE_WORDS)
         self.fail(f'four-CPU state did not settle: {state}')
 
     def test_rtc_poll_allows_peer_progress(self):
@@ -606,8 +626,11 @@ class SN0SMPMachine(QemuSystemTest):
         build_four_cpu_rendezvous().write(firmware)
 
         self.vm.set_machine('origin200,debug-leds=off')
-        # MIPS64 does not support MTTCG. Icount gives the supported
-        # single-threaded scheduler a bounded instruction budget per CPU.
+        # icount is the deterministic reference: a bounded instruction
+        # budget per CPU under the single-threaded scheduler.
+        # test_four_cpu_two_node_rendezvous_thread_multi is the twin that
+        # covers thread=multi, which QEMU accepts for this target with a
+        # warning until mips64 advertises MTTCG support.
         self.vm.add_args(
             '-accel', 'tcg,thread=single',
             '-icount', 'shift=2,align=off,sleep=on',
@@ -620,6 +643,62 @@ class SN0SMPMachine(QemuSystemTest):
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_four_cpu_state()
+        entry_node0 = self.read_state(FOUR_CPU_ENTRY_NODE0, 2)
+        entry_node1 = self.read_state(FOUR_CPU_ENTRY_NODE1, 2)
+
+        baseline_publish = state[FOUR_CPU_BASE_PUBLISH // 8:
+                                 FOUR_CPU_BASE_PUBLISH // 8 + FOUR_CPU_COUNT]
+        baseline_done = state[FOUR_CPU_BASE_DONE // 8:
+                              FOUR_CPU_BASE_DONE // 8 + FOUR_CPU_COUNT]
+        baseline_failures = state[FOUR_CPU_BASE_FAILURE // 8:
+                                  FOUR_CPU_BASE_FAILURE // 8 + FOUR_CPU_COUNT]
+        hub_publish = state[FOUR_CPU_HUB_PUBLISH // 8:
+                            FOUR_CPU_HUB_PUBLISH // 8 + FOUR_CPU_COUNT]
+        hub_done = state[FOUR_CPU_HUB_DONE // 8:
+                         FOUR_CPU_HUB_DONE // 8 + FOUR_CPU_COUNT]
+        hub_failures = state[FOUR_CPU_HUB_FAILURE // 8:
+                             FOUR_CPU_HUB_FAILURE // 8 + FOUR_CPU_COUNT]
+        mailbox_done = state[FOUR_CPU_MAILBOX_DONE // 8:
+                             FOUR_CPU_MAILBOX_DONE // 8 + FOUR_CPU_COUNT]
+
+        self.assertEqual(entry_node0, [2, 1],
+                         f'node-zero CPU entry and PI markers: {state}')
+        self.assertEqual(entry_node1, [2, 1],
+                         f'node-one CPU entry and PI markers: {state}')
+        self.assertEqual(baseline_failures, [0, 0, 0, 0],
+                         f'baseline RAM failure markers: {state}')
+        self.assertEqual(baseline_publish, [1, 2, 3, 4],
+                         f'baseline RAM publication markers: {state}')
+        self.assertEqual(baseline_done, [1, 2, 3, 4],
+                         f'baseline RAM completion markers: {state}')
+        self.assertEqual(hub_failures, [0, 0, 0, 0],
+                         f'SN0 mailbox failure markers: {state}')
+        self.assertEqual(hub_publish, [1, 2, 3, 4],
+                         f'SN0 RAM publication markers: {state}')
+        self.assertEqual(mailbox_done, [1, 2, 3, 4],
+                         f'SN0 mailbox completion markers: {state}')
+        self.assertEqual(hub_done, [1, 2, 3, 4],
+                         f'SN0 phase completion markers: {state}')
+
+    def test_four_cpu_two_node_rendezvous_thread_multi(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('four-cpu-rendezvous-thread-multi.bin')
+        build_four_cpu_rendezvous(
+            wait_limit=FOUR_CPU_WAIT_LIMIT_UNBOUNDED).write(firmware)
+
+        self.vm.set_machine('origin200,debug-leds=off')
+        # No -icount: QEMU hard-errors combining it with thread=multi.
+        self.vm.add_args(
+            '-accel', 'tcg,thread=multi',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+        state = self.wait_for_four_cpu_state(timeout=30)
         entry_node0 = self.read_state(FOUR_CPU_ENTRY_NODE0, 2)
         entry_node1 = self.read_state(FOUR_CPU_ENTRY_NODE1, 2)
 
