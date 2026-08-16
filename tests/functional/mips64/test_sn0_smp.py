@@ -4,6 +4,7 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+import os
 import re
 import struct
 import time
@@ -67,6 +68,41 @@ SLICE_B_STATE_WORDS = 7
 ELSC_HOLD_TICKS = 313
 ELSC_PRESTART_TICKS = 625
 PCF_LRB = 0x08
+
+
+# QEMU's 100 ms default is the negative control.  The regular test pins
+# 100 us so the peer can answer inside its 10 ms protocol deadline.
+PEER_SCRATCH_RR_KICK_PERIOD_NS = int(os.getenv(
+    'QEMU_TEST_SN0_RR_KICK_PERIOD_NS', '100000'))
+PEER_SCRATCH_DEADLINE_TICKS = 12500  # 10 milliseconds at 1.25 MHz
+PEER_SCRATCH_IDENTITY_BASE = 0x10
+PEER_SCRATCH_ARMED = 0x21
+PEER_SCRATCH_GO = 0x22
+PEER_SCRATCH_DONE = 0x23
+PEER_SCRATCH_TIMEOUT = 0x2f
+
+HUB_BY_NODE = 0x20001800000
+HUB_NODE_STRIDE = 0x100000000
+HUB_PI_INT_MODIFY = 0x000090
+HUB_PI_INT_PEND1 = 0x0000a0
+HUB_PI_RT_COUNT = 0x030100
+HUB_NI_STATUS = 0x600000
+HUB_NI_SCRATCH_0 = 0x600100
+HUB_NI_SCRATCH_1 = 0x600108
+HUB_NI_VECTOR_PARMS = 0x600200
+HUB_NI_VECTOR = 0x600208
+HUB_NI_VECTOR_STATUS = 0x600300
+HUB_NI_VECTOR_READ_DATA = 0x600310
+HUB_NI_BASE = HUB_NI_STATUS
+HUB_NI_SCRATCH_0_REL = HUB_NI_SCRATCH_0 - HUB_NI_BASE
+HUB_NI_SCRATCH_1_REL = HUB_NI_SCRATCH_1 - HUB_NI_BASE
+HUB_NI_VECTOR_PARMS_REL = HUB_NI_VECTOR_PARMS - HUB_NI_BASE
+HUB_NI_VECTOR_REL = HUB_NI_VECTOR - HUB_NI_BASE
+HUB_NI_VECTOR_READ_DATA_REL = HUB_NI_VECTOR_READ_DATA - HUB_NI_BASE
+NI_VECTOR_VALID = 1 << 63
+NI_VECTOR_RESPONSE_MASK = 0x7  # includes the modeled address-error response
+PEER_SCRATCH_INTERRUPT = 114
+PEER_SCRATCH_PEND1 = 1 << (PEER_SCRATCH_INTERRUPT - 64)
 
 
 # Explicit node-one RAM is shared by all four CPUs.  An unqualified uncached
@@ -343,6 +379,20 @@ def load_xkphys_address(program, register, prefix, offset):
     program.address_prefix(register, prefix)
     load_u32(program, R_AT, offset)
     program.emit(mips_r(register, R_AT, register, 0, 0x25))
+
+
+def emit_local_hub_address(program, register, offset):
+    load_xkphys_address(program, register, 0x9200, 0x01000000 + offset)
+
+
+def emit_peer_scratch_read(program):
+    # A zero route names the other Origin 200 chassis directly.
+    program.emit(mips_i(0x3f, R_S0, R_ZERO, HUB_NI_VECTOR_REL))
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        HUB_NI_SCRATCH_1_REL))
+    program.emit(mips_i(0x3f, R_S0, R_T0, HUB_NI_VECTOR_PARMS_REL))
+    program.emit(mips_i(0x37, R_S0, R_T0,
+                        HUB_NI_VECTOR_READ_DATA_REL))
 
 
 def build_rtc_rendezvous():
@@ -694,6 +744,100 @@ def build_slice_b_console_boundary():
     spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, spin)
+    return program
+
+
+def build_peer_scratch_deadline():
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode selected by the real PROM.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # s0 is this CPU's NI register block, s1 its PI block, and s2 its RTC.
+    emit_local_hub_address(program, R_S0, HUB_NI_BASE)
+    emit_local_hub_address(program, R_S1, 0)
+    emit_local_hub_address(program, R_S2, HUB_PI_RT_COUNT)
+
+    # Only the A slice on each node participates; both B slices stay parked.
+    program.emit(mips_i(0x37, R_S1, R_T0, 0x20))  # PI_PROCESSOR_NUMBER
+    park_b = program.branch(0x05, R_T0, R_ZERO)
+
+    # Publish a node-specific identity and announce readiness locally.
+    program.emit(mips_i(0x37, R_S0, R_T0, 0))  # NI_STATUS
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))  # dsrl t0, t0, 8
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    program.emit(mips_i(0x19, R_T0, R_T1, PEER_SCRATCH_IDENTITY_BASE))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_0_REL))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, PEER_SCRATCH_ARMED))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    program.emit(0x0000000f)  # sync
+    node1 = program.branch(0x05, R_T0, R_ZERO)
+
+    # Node zero waits until its peer is armed, then starts the timed handoff.
+    wait_armed = len(program.instructions)
+    emit_peer_scratch_read(program)
+    branch = program.branch(0x05, R_T0, R_T1)
+    program.patch(branch, wait_armed)
+
+    program.emit(mips_i(0x37, R_S2, R_T2, 0))
+    program.emit(mips_i(0x19, R_T2, R_T2,
+                        PEER_SCRATCH_DEADLINE_TICKS))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, PEER_SCRATCH_GO))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T1, PEER_SCRATCH_DONE))
+
+    wait_done = len(program.instructions)
+    emit_peer_scratch_read(program)
+    program.emit(mips_i(0x37, R_S2, R_T3, 0))
+    program.emit(mips_r(R_T3, R_T2, R_T4, 0, 0x2b))  # sltu t4,t3,t2
+    timed_out = program.branch(0x04, R_T4, R_ZERO)
+    branch = program.branch(0x05, R_T0, R_T1)
+    program.patch(branch, wait_done)
+
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    done_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, done_spin)
+
+    program.patch(timed_out, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, PEER_SCRATCH_TIMEOUT))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    timeout_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, timeout_spin)
+
+    # Node one answers GO, waits for the coordinator's terminal marker, then
+    # leaves interrupt 114 as its final device-side action.
+    program.patch(node1, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, PEER_SCRATCH_GO))
+    wait_go = len(program.instructions)
+    emit_peer_scratch_read(program)
+    branch = program.branch(0x05, R_T0, R_T1)
+    program.patch(branch, wait_go)
+
+    program.emit(mips_i(0x19, R_ZERO, R_T1, PEER_SCRATCH_DONE))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    program.emit(0x0000000f)  # sync
+    wait_peer_done = len(program.instructions)
+    emit_peer_scratch_read(program)
+    branch = program.branch(0x05, R_T0, R_T1)
+    program.patch(branch, wait_peer_done)
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PEER_SCRATCH_INTERRUPT))
+    program.emit(mips_i(0x3f, R_S1, R_T0, HUB_PI_INT_MODIFY))
+    node1_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, node1_spin)
+
+    program.patch(park_b, len(program.instructions))
+    b_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, b_spin)
     return program
 
 
@@ -1152,6 +1296,55 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[SLICE_B_START_ADDRESS // 8], 0x10, state)
         self.assertEqual(state[SLICE_B_START_STATUS // 8] & PCF_LRB, 0, state)
         self.assertEqual(state[SLICE_B_VER_PREFIX // 8], 0x6f6b, state)
+
+    def test_peer_scratch_handoff_before_rtc_deadline(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('peer-scratch-deadline.bin')
+        build_peer_scratch_deadline().write(firmware)
+
+        # Preassigned NASIDs represent the node-numbering phase that precedes
+        # this scratch exchange in the stock PROM.
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel',
+            f'tcg,thread=single,rr-kick-period-ns='
+            f'{PEER_SCRATCH_RR_KICK_PERIOD_NS}',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        # A monitor request interrupts TCG. Let the race settle, stop exactly
+        # once, and only then collect the independent per-node snapshots.
+        time.sleep(0.75)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        hubs = []
+        for node in range(2):
+            hub = HUB_BY_NODE + node * HUB_NODE_STRIDE
+            scratch = self.read_state(hub + HUB_NI_SCRATCH_0, 2)
+            vector = self.read_state(hub + HUB_NI_VECTOR, 1)[0]
+            status = self.read_state(hub + HUB_NI_VECTOR_STATUS, 1)[0]
+            read_data = self.read_state(
+                hub + HUB_NI_VECTOR_READ_DATA, 1)[0]
+            pend1 = self.read_state(hub + HUB_PI_INT_PEND1, 1)[0]
+            hubs.append((scratch, vector, status, read_data, pend1))
+
+        for node, (scratch, vector, status, read_data, _) in enumerate(hubs):
+            self.assertEqual(
+                scratch,
+                [PEER_SCRATCH_IDENTITY_BASE + node, PEER_SCRATCH_DONE], hubs)
+            self.assertEqual(vector, 0, hubs)
+            self.assertEqual(
+                status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
+                NI_VECTOR_VALID, hubs)
+            self.assertEqual(read_data, PEER_SCRATCH_DONE, hubs)
+        self.assertEqual(hubs[0][4], 0, hubs)
+        self.assertEqual(hubs[1][4], PEER_SCRATCH_PEND1, hubs)
 
     def test_four_cpu_two_node_rendezvous_separates_ram_and_hub(self):
         self.set_machine('origin200')
