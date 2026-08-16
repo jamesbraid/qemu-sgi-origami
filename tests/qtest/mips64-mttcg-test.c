@@ -49,6 +49,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "hw/misc/mips_cmgcr.h"
 
 #define NR_CPUS             4
 
@@ -2209,6 +2210,85 @@ static void test_smc_cross_cpu(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Case: gcr/no-cpu-context
+ *
+ * Regression for a real crash, not an MTTCG race: gcr_read()/gcr_write()
+ * (hw/misc/mips_cmgcr.c) built the per-VP GCR view from
+ * current_cpu->cpu_index unconditionally. current_cpu is thread-local,
+ * set only while a vCPU thread is actively executing guest code -- a
+ * qtest MMIO command, or a monitor memory poke, runs on the main thread
+ * with no vCPU of its own to name, finds it NULL, and SIGSEGVs the whole
+ * process. Reproduced without ever letting the guest run at all: -S
+ * holds every vCPU at reset, so no vCPU thread ever sets current_cpu,
+ * and the reads and writes below are certain to run with it NULL.
+ *
+ * I6400 (cpu_type_supports_cps_smp()) so malta actually instantiates the
+ * CPS cluster and its GCR device -- the same CPU model the ginvt case
+ * above already uses for its own CPS-only feature.
+ */
+static void test_gcr_no_cpu_context(const void *data)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = qtest_initf("-M malta -m 128M -smp 2 -cpu I6400 "
+                      "-accel tcg,thread=multi -no-reboot -no-shutdown -S");
+
+    /*
+     * GCR_CONFIG_OFS is a defined read (always 0) and, since it is not
+     * one of gcr_write()'s own switch cases, an inert write too -- the
+     * assertion here is "the process is still alive to answer with the
+     * defined value", not any particular register's semantics.
+     */
+    g_assert_cmphex(qtest_readl(qts, GCR_BASE_ADDR + GCR_CONFIG_OFS), ==, 0);
+    qtest_writel(qts, GCR_BASE_ADDR + GCR_CONFIG_OFS, 0);
+
+    /*
+     * MIPS_CLCB_OFS + GCR_CL_RESETBASE_OFS is the one write case that
+     * mutates real state instead of GCR's own bookkeeping: with no
+     * current_cpu to attribute it to, the write must be ignored rather
+     * than silently landing on VP0's real exception_base. mips_gcr_reset()
+     * sets every VP's reset_base to 0xBFC00000 & GCR_CL_RESET_BASE_MSK;
+     * write something else, then read the same offset back and confirm
+     * it is still the reset default, not the value just written.
+     */
+    qtest_writel(qts, GCR_BASE_ADDR + MIPS_CLCB_OFS + GCR_CL_RESETBASE_OFS,
+                0x12345000);
+    g_assert_cmphex(qtest_readl(qts, GCR_BASE_ADDR + MIPS_CLCB_OFS +
+                               GCR_CL_RESETBASE_OFS),
+                    ==, 0xBFC00000 & GCR_CL_RESET_BASE_MSK);
+
+    /*
+     * MIPS_COCB_OFS + GCR_CL_RESETBASE_OFS is the same shape one level
+     * removed: it dispatches the mutation onto another VP via
+     * run_on_cpu() rather than writing it in-line, but with no
+     * current_cpu that target is whatever VP0's own "other" field
+     * names (0 by mips_gcr_reset()'s own default, i.e. VP0 again here)
+     * -- still a real VP's real exception_base, still attributed to a
+     * write nobody issued. Same check: write something else, read the
+     * same offset back, confirm it is still the reset default.
+     */
+    qtest_writel(qts, GCR_BASE_ADDR + MIPS_COCB_OFS + GCR_CL_RESETBASE_OFS,
+                0x54321000);
+    g_assert_cmphex(qtest_readl(qts, GCR_BASE_ADDR + MIPS_COCB_OFS +
+                               GCR_CL_RESETBASE_OFS),
+                    ==, 0xBFC00000 & GCR_CL_RESET_BASE_MSK);
+
+    /*
+     * If gcr_read()/gcr_write() had crashed, this round trip -- or the
+     * qtest_quit() teardown below -- observes QEMU gone rather than
+     * answering, and the test aborts instead of passing.
+     */
+    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2222,5 +2302,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/ginvt/remote-invalidate", NULL,
                         test_ginvt_remote_invalidate);
     qtest_add_data_func("mttcg/mtase/smoke", NULL, test_mtase_smoke);
+    qtest_add_data_func("mttcg/gcr/no-cpu-context", NULL,
+                        test_gcr_no_cpu_context);
     return g_test_run();
 }

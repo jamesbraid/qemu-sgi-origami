@@ -107,7 +107,16 @@ static inline void update_gic_base(MIPSGCRState *gcr, uint64_t val)
 static uint64_t gcr_read(void *opaque, hwaddr addr, unsigned size)
 {
     MIPSGCRState *gcr = (MIPSGCRState *) opaque;
-    MIPSGCRVPState *current_vps = &gcr->vps[current_cpu->cpu_index];
+    /*
+     * current_cpu is thread-local and set by the vCPU thread whose MMIO
+     * access this is; it is NULL for a qtest command or a monitor memory
+     * poke, neither of which has a processor of its own to name. Falls
+     * back to VP0's view rather than crashing -- the same !current_cpu
+     * convention hw/misc/sgi-hub.c's HUB_PI_PROCESSOR_NUMBER read already
+     * uses for this identical MTTCG thread-local shape.
+     */
+    int cur_index = current_cpu ? current_cpu->cpu_index : 0;
+    MIPSGCRVPState *current_vps = &gcr->vps[cur_index];
     MIPSGCRVPState *other_vps = &gcr->vps[current_vps->other];
 
     switch (addr) {
@@ -167,7 +176,18 @@ static void set_exception_base(CPUState *cpu, run_on_cpu_data data)
 static void gcr_write(void *opaque, hwaddr addr, uint64_t data, unsigned size)
 {
     MIPSGCRState *gcr = (MIPSGCRState *)opaque;
-    MIPSGCRVPState *current_vps = &gcr->vps[current_cpu->cpu_index];
+    /*
+     * current_cpu is thread-local and set by the vCPU thread whose MMIO
+     * access this is; it is NULL for a qtest command or a monitor memory
+     * poke, neither of which has a processor of its own to name. Falls
+     * back to VP0's view rather than crashing -- the same !current_cpu
+     * convention hw/misc/sgi-hub.c's HUB_PI_PROCESSOR_NUMBER read already
+     * uses for this identical MTTCG thread-local shape. The CLCB
+     * RESETBASE case below reuses cur_index rather than re-reading
+     * current_cpu, for the same reason.
+     */
+    int cur_index = current_cpu ? current_cpu->cpu_index : 0;
+    MIPSGCRVPState *current_vps = &gcr->vps[cur_index];
     MIPSGCRVPState *other_vps = &gcr->vps[current_vps->other];
 
     switch (addr) {
@@ -181,9 +201,23 @@ static void gcr_write(void *opaque, hwaddr addr, uint64_t data, unsigned size)
         update_cpc_base(gcr, data);
         break;
     case MIPS_CLCB_OFS + GCR_CL_RESETBASE_OFS:
-        /* The issuing VP's own exception_base: same thread, no dispatch. */
+        /*
+         * The issuing VP's own exception_base: same thread, no dispatch.
+         * With no current_cpu there is no issuing VP to attribute this
+         * to -- cur_index's VP0 fallback is fine for the read side and
+         * for GCR's own bookkeeping elsewhere, but here it would put a
+         * live, silent write into VP0's actual architectural
+         * exception_base for a write nobody issued. Skip the mutation
+         * entirely instead.
+         */
+        if (!current_cpu) {
+            qemu_log_mask(LOG_UNIMP,
+                         "GCR CLCB RESETBASE write with no current vCPU, "
+                         "ignored\n");
+            break;
+        }
         current_vps->reset_base = data & GCR_CL_RESET_BASE_MSK;
-        cpu_set_exception_base(current_cpu->cpu_index,
+        cpu_set_exception_base(cur_index,
                                get_exception_base(current_vps));
         break;
     case MIPS_COCB_OFS + GCR_CL_RESETBASE_OFS:
@@ -198,7 +232,27 @@ static void gcr_write(void *opaque, hwaddr addr, uint64_t data, unsigned size)
          * usual writer (VP0 setting VP1's reset vector before waking it)
          * targets a VP that is expected to still be halted, which
          * run_on_cpu() does not block on.
+         *
+         * With no current_cpu, current_vps is the VP0 fallback and
+         * current_vps->other names whatever VP0's own other field
+         * happens to hold -- always a real, in-range VP
+         * (MIPS_CLCB_OFS + GCR_CL_OTHER_OFS bounds it against
+         * gcr->num_vps on write, and it defaults to 0). Dispatching
+         * there would mutate that VP's real exception_base, attributed
+         * to a write nobody issued -- worse than the CLCB case above,
+         * since the target is not even VP0 itself. Skip the bookkeeping
+         * write and the dispatch together, not just the dispatch: only
+         * skipping the dispatch would leave GCR's own view of the
+         * target's reset_base disagreeing with what the target VP's
+         * real exception_base still holds, the same
+         * device-view-vs-real-state desync the CLCB fix above avoids.
          */
+        if (!current_cpu) {
+            qemu_log_mask(LOG_UNIMP,
+                         "GCR COCB RESETBASE write with no current vCPU, "
+                         "ignored\n");
+            break;
+        }
         other_vps->reset_base = data & GCR_CL_RESET_BASE_MSK;
         run_on_cpu(qemu_get_cpu(current_vps->other), set_exception_base,
                   RUN_ON_CPU_TARGET_PTR(get_exception_base(other_vps)));
