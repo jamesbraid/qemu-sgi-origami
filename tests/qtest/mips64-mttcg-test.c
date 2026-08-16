@@ -36,6 +36,8 @@
  *   tlb/asid          ASID-tagged translation must follow EntryHi.ASID swaps.
  *                     Underneath: the flush on ASID change in the EntryHi
  *                     write path.
+ *   smc/cross-cpu     A peer's store into code another vCPU is executing must
+ *                     take effect and never yield a torn instruction.
  *
  * ABA: QEMU lowers SC to a compare-exchange against the value LL read, so it
  * cannot tell a word that never changed from one that changed and changed
@@ -236,6 +238,11 @@ static void emit_sd(GuestImage *img, int rt, int base, uint16_t off)
     emit_immediate(img, OPC_SD, base, rt, off);
 }
 
+static void emit_sw(GuestImage *img, int rt, int base, uint16_t off)
+{
+    emit_immediate(img, OPC_SW, base, rt, off);
+}
+
 static void emit_lld(GuestImage *img, int rt, int base, uint16_t off)
 {
     emit_immediate(img, OPC_LLD, base, rt, off);
@@ -244,6 +251,11 @@ static void emit_lld(GuestImage *img, int rt, int base, uint16_t off)
 static void emit_scd(GuestImage *img, int rt, int base, uint16_t off)
 {
     emit_immediate(img, OPC_SCD, base, rt, off);
+}
+
+static void emit_synci(GuestImage *img, int base, uint16_t off)
+{
+    emit(img, OPC_SYNCI | (base << 21) | off);
 }
 
 static void emit_sll(GuestImage *img, int rd, int rt, int sa)
@@ -269,6 +281,16 @@ static void emit_and(GuestImage *img, int rd, int rs, int rt)
 static void emit_sltu(GuestImage *img, int rd, int rs, int rt)
 {
     emit_reg3(img, OPC_SLTU, rd, rs, rt);
+}
+
+static void emit_jr_hb(GuestImage *img, int rs)
+{
+    emit(img, OPC_JR | (rs << 21) | HINT_HB);
+}
+
+static void emit_jalr(GuestImage *img, int rd, int rs)
+{
+    emit(img, OPC_JALR | (rs << 21) | (rd << 11));
 }
 
 static void emit_mfc0(GuestImage *img, int rt, int rd, int sel)
@@ -377,6 +399,19 @@ static void emit_li(GuestImage *img, int rt, uint64_t value)
     g_assert_cmpuint(value, <, 0x80000000ULL);
     emit_lui(img, rt, value >> 16);
     emit_ori(img, rt, rt, value & 0xffff);
+}
+
+/*
+ * Load an address in one of the 32-bit compatibility segments.  Here the sign
+ * extension lui performs is the point rather than a hazard: KSEG1 0xa0300000
+ * becomes 0xffffffffa0300000, which is the address the guest actually uses.
+ */
+static void emit_li_addr(GuestImage *img, int rt, uint32_t value)
+{
+    emit_lui(img, rt, value >> 16);
+    if (value & 0xffff) {
+        emit_ori(img, rt, rt, value & 0xffff);
+    }
 }
 
 /* Publish a word for this CPU and make it visible before anything after it. */
@@ -843,6 +878,251 @@ static void build_tlb_asid(GuestImage *img)
 }
 
 /* ---------------------------------------------------------------- */
+/* Case: smc/cross-cpu                                              */
+/* ---------------------------------------------------------------- */
+
+#define SMC_READY_OFF       0x100
+#define SMC_ROUND_OFF       0x108
+#define SMC_EXPECT_OFF      0x110
+#define SMC_PREV_OFF        0x118
+#define SMC_ACK_OFF         0x120
+#define SMC_SEEN_OFF        0x128
+#define SMC_STALE_OFF       0x130
+#define SMC_FAULT_OFF       0x138
+#define SMC_BADK_OFF        0x140
+#define SMC_BADR_OFF        0x148
+
+/*
+ * Two patch sites in different physical pages, so alternating between them
+ * exercises two translations rather than one.  Executed through KSEG0 and
+ * patched through KSEG1: the patcher's store therefore goes straight to
+ * memory with no dirty line to write back, and the executor is the one that
+ * invalidates its instruction stream, which is the handshake the
+ * architecture asks for.
+ */
+#define SMC_SITE0_KSEG0     0x80300000
+#define SMC_SITE0_KSEG1     0xa0300000
+#define SMC_SITE1_KSEG0     0x80302000
+#define SMC_SITE1_KSEG1     0xa0302000
+
+#define SMC_ROUNDS          64
+#define SMC_K_BASE          0x1000
+
+#define SMC_EXECUTOR        0
+#define SMC_PATCHER         1
+
+/*
+ * The two instructions the site is built from, spelled with the same opcode
+ * macros the emitters use so the site cannot drift from the encodings the
+ * rest of the file agrees on.  The patched one is "ori v0, zero, K", of which
+ * only the top half is fixed; K is OR-ed in at patch time.
+ */
+#define SMC_ORI_V0_HI       ((OPC_ORI | ((uint32_t)R_V0 << 16)) >> 16)
+#define SMC_JR_RA           (OPC_JR | ((uint32_t)R_RA << 21))
+
+/* Build "ori v0, zero, K" for the K held in kreg, leaving it in dst. */
+static void emit_build_patch_word(GuestImage *img, int dst, int kreg)
+{
+    emit_lui(img, dst, SMC_ORI_V0_HI);
+    emit_reg3(img, OPC_OR, dst, dst, kreg);
+}
+
+static void build_smc_cross_cpu(GuestImage *img)
+{
+    unsigned int not_patcher, not_executor, loop, site0, joined;
+    unsigned int retry, got_current, not_stale, fault_done;
+
+    /*
+     * CPUs other than the executor and the patcher take no part.  They still
+     * publish, so the host can confirm all four booted and neither of the two
+     * that matter is silently standing in for another.
+     */
+    emit_addiu(img, R_T3, R_ZERO, SMC_PATCHER);
+    not_patcher = emit_bne_fwd(img, R_K0, R_T3);
+    emit_nop(img);
+
+    /* ---- patcher ---- */
+
+    /* Lay down both sites: ori v0, zero, K_BASE / jr ra / nop. */
+    emit_li(img, R_S0, SMC_K_BASE);
+    emit_build_patch_word(img, R_T4, R_S0);
+    emit_li(img, R_T5, SMC_JR_RA);
+    emit_li_addr(img, R_S2, SMC_SITE0_KSEG1);
+    emit_sw(img, R_T4, R_S2, 0);
+    emit_sw(img, R_T5, R_S2, 4);
+    emit_sw(img, R_ZERO, R_S2, 8);
+    emit_li_addr(img, R_S3, SMC_SITE1_KSEG1);
+    emit_sw(img, R_T4, R_S3, 0);
+    emit_sw(img, R_T5, R_S3, 4);
+    emit_sw(img, R_ZERO, R_S3, 8);
+    emit_sync(img);
+
+    emit_li(img, R_T3, DONE_MAGIC);
+    emit_sd(img, R_T3, R_T0, SMC_READY_OFF);
+    emit_sync(img);
+
+    /* s0 = round, s1 = previous K. */
+    emit_li(img, R_S1, SMC_K_BASE);
+    emit_addiu(img, R_S0, R_ZERO, 1);
+
+    loop = img->pos;
+    emit_publish(img, R_S0, PROGRESS_OFF);
+
+    /* Alternate sites: odd rounds patch site 1, even rounds site 0. */
+    emit_andi(img, R_T3, R_S0, 1);
+    site0 = emit_beq_fwd(img, R_T3, R_ZERO);
+    emit_nop(img);
+    emit_reg3(img, OPC_OR, R_T6, R_S3, R_ZERO);
+    joined = emit_b_fwd(img);
+    emit_nop(img);
+    patch_fwd(img, site0);
+    emit_reg3(img, OPC_OR, R_T6, R_S2, R_ZERO);
+    patch_fwd(img, joined);
+
+    /* K for this round, then the instruction that materialises it. */
+    emit_addiu(img, R_T7, R_ZERO, SMC_K_BASE);
+    emit_addu(img, R_T7, R_T7, R_S0);
+    emit_build_patch_word(img, R_T4, R_T7);
+    emit_sw(img, R_T4, R_T6, 0);
+    emit_sync(img);
+
+    /* Announce what to expect before announcing that the round is open. */
+    emit_sd(img, R_S1, R_T0, SMC_PREV_OFF);
+    emit_sd(img, R_T7, R_T0, SMC_EXPECT_OFF);
+    emit_sync(img);
+    emit_sd(img, R_S0, R_T0, SMC_ROUND_OFF);
+    emit_sync(img);
+
+    emit_wait_ge(img, R_S0, SMC_ACK_OFF);
+
+    emit_reg3(img, OPC_OR, R_S1, R_T7, R_ZERO);
+    emit_addiu(img, R_S0, R_S0, 1);
+    emit_addiu(img, R_T3, R_ZERO, SMC_ROUNDS);
+    emit_sltu(img, R_T4, R_T3, R_S0);
+    emit_beq(img, R_T4, R_ZERO, loop);
+    emit_nop(img);
+    emit_done_and_halt(img);
+
+    patch_fwd(img, not_patcher);
+
+    emit_addiu(img, R_T3, R_ZERO, SMC_EXECUTOR);
+    not_executor = emit_bne_fwd(img, R_K0, R_T3);
+    emit_nop(img);
+
+    /* ---- executor ---- */
+
+    emit_li(img, R_T3, DONE_MAGIC);
+    emit_wait_ge(img, R_T3, SMC_READY_OFF);
+    emit_sync(img);
+
+    emit_li_addr(img, R_S2, SMC_SITE0_KSEG0);
+    emit_li_addr(img, R_S3, SMC_SITE1_KSEG0);
+    emit_addiu(img, R_S0, R_ZERO, 1);
+
+    loop = img->pos;
+    emit_publish(img, R_S0, PROGRESS_OFF);
+    emit_wait_ge(img, R_S0, SMC_ROUND_OFF);
+    emit_sync(img);
+
+    emit_ld(img, R_S4, R_T0, SMC_EXPECT_OFF);
+    emit_ld(img, R_S5, R_T0, SMC_PREV_OFF);
+
+    emit_andi(img, R_T3, R_S0, 1);
+    site0 = emit_beq_fwd(img, R_T3, R_ZERO);
+    emit_nop(img);
+    emit_reg3(img, OPC_OR, R_S1, R_S3, R_ZERO);
+    joined = emit_b_fwd(img);
+    emit_nop(img);
+    patch_fwd(img, site0);
+    emit_reg3(img, OPC_OR, R_S1, R_S2, R_ZERO);
+    patch_fwd(img, joined);
+
+    /*
+     * synci writes back and invalidates the line the patch landed in, and the
+     * hazard-clearing jump keeps the following fetch from being satisfied out
+     * of anything synci was meant to discard.
+     *
+     * Neither does what its name says here, and that is worth knowing rather
+     * than assuming: QEMU models no cache, and its JR decoding passes hint 0
+     * whatever the encoding holds, so jr.hb runs as a plain jump.  What makes
+     * cross-CPU patching land under TCG is elsewhere — the patcher's store
+     * invalidates the translated block, and synci ends this one.  The
+     * handshake is written out anyway because a guest that leaves it out is
+     * riding undefined behaviour on hardware, and this case would then be
+     * asserting something about QEMU that no real machine promises.
+     */
+    retry = img->pos;
+    emit_synci(img, R_S1, 0);
+    emit_lui(img, R_T9, 0xbfc0);
+    /* Filled in below once the address after the hazard barrier is known. */
+    {
+        unsigned int ori_at = img->pos;
+        unsigned int after;
+
+        emit_ori(img, R_T9, R_T9, 0);
+        emit_jr_hb(img, R_T9);
+        emit_nop(img);
+        after = img->pos;
+        stl_be_p(img->code + ori_at,
+                 (ldl_be_p(img->code + ori_at) & 0xffff0000u) | after);
+    }
+
+    emit_jalr(img, R_RA, R_S1);
+    emit_nop(img);
+
+    /* v0 now holds whatever the patched instruction materialised. */
+    got_current = emit_beq_fwd(img, R_V0, R_S4);
+    emit_nop(img);
+    not_stale = emit_bne_fwd(img, R_V0, R_S5);
+    emit_nop(img);
+
+    /* The previous round's value is tolerated; count it and look again. */
+    emit_ld(img, R_T3, R_T0, SMC_STALE_OFF);
+    emit_daddiu(img, R_T3, R_T3, 1);
+    emit_sd(img, R_T3, R_T0, SMC_STALE_OFF);
+    emit_sync(img);
+    emit_b(img, retry);
+    emit_nop(img);
+
+    /* Anything else is a torn or invented instruction. */
+    patch_fwd(img, not_stale);
+    emit_ld(img, R_T3, R_T0, SMC_FAULT_OFF);
+    fault_done = emit_bne_fwd(img, R_T3, R_ZERO);
+    emit_nop(img);
+    emit_sd(img, R_V0, R_T0, SMC_BADK_OFF);
+    emit_sd(img, R_S0, R_T0, SMC_BADR_OFF);
+    emit_li(img, R_T3, FAULT_MAGIC);
+    emit_sd(img, R_T3, R_T0, SMC_FAULT_OFF);
+    emit_sync(img);
+    patch_fwd(img, fault_done);
+    /*
+     * Release the patcher before stopping.  Without this it waits on an
+     * acknowledgement that is never coming, never reaches DONE, and the host
+     * reports a deadline it could have reported as the fault it actually is.
+     */
+    emit_addiu(img, R_T3, R_ZERO, SMC_ROUNDS);
+    emit_sd(img, R_T3, R_T0, SMC_ACK_OFF);
+    emit_sync(img);
+    emit_done_and_halt(img);
+
+    patch_fwd(img, got_current);
+    emit_sd(img, R_V0, R_T0, SMC_SEEN_OFF);
+    emit_sync(img);
+    emit_sd(img, R_S0, R_T0, SMC_ACK_OFF);
+    emit_sync(img);
+
+    emit_addiu(img, R_S0, R_S0, 1);
+    emit_addiu(img, R_T3, R_ZERO, SMC_ROUNDS);
+    emit_sltu(img, R_T4, R_T3, R_S0);
+    emit_beq(img, R_T4, R_ZERO, loop);
+    emit_nop(img);
+    emit_done_and_halt(img);
+
+    patch_fwd(img, not_executor);
+    emit_done_and_halt(img);
+}
+
+/* ---------------------------------------------------------------- */
 /* Host side                                                        */
 /* ---------------------------------------------------------------- */
 
@@ -1082,6 +1362,50 @@ static void test_tlb_asid(const void *data)
     qtest_quit(qts);
 }
 
+static void test_smc_cross_cpu(const void *data)
+{
+    QTestState *qts;
+    bool done;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = boot_case("tcg,thread=multi", build_smc_cross_cpu);
+    done = wait_for_done(qts);
+
+    if (!done || state_word(qts, SMC_FAULT_OFF) != 0) {
+        report_common(qts);
+        g_test_message("round %" PRIu64 " ack %" PRIu64 " expect %" PRIu64
+                       " seen %" PRIu64 " stale %" PRIu64,
+                       state_word(qts, SMC_ROUND_OFF),
+                       state_word(qts, SMC_ACK_OFF),
+                       state_word(qts, SMC_EXPECT_OFF),
+                       state_word(qts, SMC_SEEN_OFF),
+                       state_word(qts, SMC_STALE_OFF));
+        g_test_message("executor read 0x%" PRIx64 " in round %" PRIu64,
+                       state_word(qts, SMC_BADK_OFF),
+                       state_word(qts, SMC_BADR_OFF));
+    }
+
+    g_assert_true(done);
+    assert_common(qts);
+    /* Never a value outside {previous, current}: no torn instruction. */
+    g_assert_cmphex(state_word(qts, SMC_FAULT_OFF), ==, 0);
+    /* Every round's patch arrived, in its own round. */
+    g_assert_cmpuint(state_word(qts, SMC_ACK_OFF), ==, SMC_ROUNDS);
+    g_assert_cmpuint(state_word(qts, SMC_SEEN_OFF), ==,
+                     SMC_K_BASE + SMC_ROUNDS);
+
+    if (state_word(qts, SMC_STALE_OFF) != 0) {
+        g_test_message("executor saw the previous round's value %" PRIu64
+                       " times", state_word(qts, SMC_STALE_OFF));
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1091,5 +1415,6 @@ int main(int argc, char **argv)
                         test_rendezvous_round_robin);
     qtest_add_data_func("mttcg/tlb/shootdown", NULL, test_tlb_shootdown);
     qtest_add_data_func("mttcg/tlb/asid", NULL, test_tlb_asid);
+    qtest_add_data_func("mttcg/smc/cross-cpu", NULL, test_smc_cross_cpu);
     return g_test_run();
 }
