@@ -44,6 +44,7 @@
  */
 #define MD_SLOT_ID_USTAT            0x220048
 #define MD_SLOT_FLASH_READY_LOW     (1ULL << 0)
+#define MD_SLOT_XJMP_ID             (1ULL << 2)
 #define MD_SLOT_FLASH_READY_HIGH    (1ULL << 4)
 #define MD_SLOT_MASTER_MODULE       (1ULL << 7)
 
@@ -285,10 +286,10 @@ static void sn0_hub_attach_ioc3(QTestState *qts)
  * would pass it while still hanging the firmware that reads the other.
  *
  * Nothing else in this register is asserted here. The separate dual-node test
- * covers the second processor module's master/slave sense; the remaining
- * fields sample signals this model does not have, and the register table
- * declares no reset value for them, so an assertion would certify a choice
- * rather than a fact.
+ * covers the physical XIO-jumper and master/slave straps on both processor
+ * modules; the remaining fields sample signals this model does not have, and
+ * the register table declares no reset value for them, so an assertion would
+ * certify a choice rather than a fact.
  */
 static void test_the_flash_ready_signal_reads_ready_at_both_bits(
     const void *data)
@@ -313,16 +314,19 @@ static void assert_dual_node_master_slave_sense(QTestState *qts)
 
     g_assert_cmphex(node0 & ready, ==, ready);
     g_assert_cmphex(node1 & ready, ==, ready);
+    g_assert_cmphex(node0 & MD_SLOT_XJMP_ID, ==, MD_SLOT_XJMP_ID);
+    g_assert_cmphex(node1 & MD_SLOT_XJMP_ID, ==, MD_SLOT_XJMP_ID);
     g_assert_cmphex(node0 & MD_SLOT_MASTER_MODULE, ==,
                     MD_SLOT_MASTER_MODULE);
     g_assert_cmphex(node1 & MD_SLOT_MASTER_MODULE, ==, 0);
 }
 
 /*
- * The console-bearing node 0 has the module-controller switch in its master
- * position; node 1 has it in the slave position. If the roles are reversed,
- * firmware selects a global master without a console. The input is a physical
- * strap, so a machine reset must not change either reading.
+ * Each plain Origin 200 processor module has its XIO jumper fitted. The
+ * console-bearing node 0 has the module-controller switch in its master
+ * position; node 1 has it in the slave position. If either identity is wrong,
+ * firmware takes a different platform path. These inputs are physical straps,
+ * so a machine reset must not change their readings.
  */
 static void test_dual_node_master_slave_sense(const void *data)
 {
