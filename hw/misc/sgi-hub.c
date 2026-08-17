@@ -589,6 +589,59 @@
                                  NI_STATUS_NODE_MASK)
 
 /*
+ * These registers carry the boot rendezvous between processors and Hubs.
+ * Keep their trace separate from the generic MMIO trace so a diagnostic run
+ * does not have to record every device access in the machine. cpu_base stays
+ * unique while real firmware changes the live NASID from its zero reset value.
+ */
+static bool sgi_hub_protocol_write_register(hwaddr addr)
+{
+    switch (addr) {
+    case HUB_PI_RT_COUNT:
+    case HUB_PI_RT_PENDING_A:
+    case HUB_PI_RT_PENDING_B:
+    case HUB_PI_RT_ENABLE_A:
+    case HUB_PI_RT_ENABLE_B:
+    case HUB_PI_CPU_ENABLE_A:
+    case HUB_PI_CPU_ENABLE_B:
+    case HUB_PI_INT_MODIFY:
+    case HUB_PI_RT_COMPARE_A:
+    case HUB_PI_RT_COMPARE_B:
+    case HUB_NI_STATUS:
+    case HUB_NI_SCRATCH_0:
+    case HUB_NI_SCRATCH_1:
+    case HUB_NI_VECTOR:
+    case HUB_NI_VECTOR_DATA:
+    case HUB_NI_VECTOR_CLEAR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static uint32_t sgi_hub_programmed_nasid(const SGIHubState *s)
+{
+    return (s->ni_status & NI_STATUS_NODE_MASK) >> NI_STATUS_NODE_SHIFT;
+}
+
+static void sgi_hub_trace_protocol_write(SGIHubState *s, hwaddr addr,
+                                         uint64_t value, unsigned int size)
+{
+    CPUState *cpu;
+
+    if (!sgi_hub_protocol_write_register(addr)) {
+        return;
+    }
+
+    cpu = current_cpu;
+    trace_sgi_hub_protocol_write(
+        cpu ? cpu->cpu_index : -1, s->cpu_base,
+        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+/*
  * The interrupt-modify register: seven bits naming an interrupt number and one
  * bit saying what to do with it. Numbers 0 through 63 are the first pending
  * bank and 64 through 127 the second, so the number's top bit selects the bank.
@@ -963,9 +1016,18 @@ static void sgi_hub_onewire_slot_done(void *opaque)
 static void sgi_hub_rt_expire(void *opaque)
 {
     SGIHubCounterLine *line = opaque;
+    SGIHubState *s = line->hub;
 
-    line->hub->pi_rt_pending[line->index] = 1;
-    sgi_hub_update_irq(line->hub);
+    s->pi_rt_pending[line->index] = 1;
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_EXPIRE)) {
+        trace_sgi_hub_rt_expire(
+            s->cpu_base, sgi_hub_programmed_nasid(s), line->index,
+            sgi_hub_rt_count(s), qatomic_read(&s->pi_rt_compare[line->index]),
+            s->pi_rt_enable[line->index],
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    sgi_hub_update_irq(s);
 }
 
 static uint8_t *sgi_hub_route_entry(SGIHubState *s, hwaddr addr)
@@ -1101,11 +1163,23 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
         (source << NI_VECTOR_TARGET_SHIFT) |
         (parms & (NI_VECTOR_PIOID_MASK | NI_VECTOR_WRITEID_MASK)) |
         (addr & NI_VECTOR_STATUS_ADDR_MASK) | response_type;
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_VECTOR_COMPLETE)) {
+        CPUState *cpu = current_cpu;
+
+        trace_sgi_hub_vector_complete(
+            cpu ? cpu->cpu_index : -1, sgi_hub_programmed_nasid(s),
+            s->network_peer ?
+                (int)sgi_hub_programmed_nasid(s->network_peer) : -1,
+            cpu ? cpu->cc->get_pc(cpu) : 0, parms, s->ni_vector_data, value,
+            s->ni_vector_status, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
 }
 
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
+    uint64_t value;
     uint8_t *route;
     unsigned int n;
 
@@ -1134,11 +1208,21 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     switch (addr) {
-    case HUB_PI_RT_COUNT:     return sgi_hub_rt_count(s);
-    case HUB_PI_RT_COMPARE_A: return sgi_hub_rt_compare_read(s, 0);
-    case HUB_PI_RT_COMPARE_B: return sgi_hub_rt_compare_read(s, 1);
-    case HUB_PI_RT_PENDING_A: return s->pi_rt_pending[0];
-    case HUB_PI_RT_PENDING_B: return s->pi_rt_pending[1];
+    case HUB_PI_RT_COUNT:
+        value = sgi_hub_rt_count(s);
+        goto trace_rt_count_read;
+    case HUB_PI_RT_COMPARE_A:
+        value = sgi_hub_rt_compare_read(s, 0);
+        goto trace_protocol_read;
+    case HUB_PI_RT_COMPARE_B:
+        value = sgi_hub_rt_compare_read(s, 1);
+        goto trace_protocol_read;
+    case HUB_PI_RT_PENDING_A:
+        value = s->pi_rt_pending[0];
+        goto trace_protocol_read;
+    case HUB_PI_RT_PENDING_B:
+        value = s->pi_rt_pending[1];
+        goto trace_protocol_read;
     case HUB_PI_RT_ENABLE_A:  return s->pi_rt_enable[0];
     case HUB_PI_RT_ENABLE_B:  return s->pi_rt_enable[1];
     case HUB_PI_RT_LOCAL_CTRL: return s->pi_rt_local_ctrl;
@@ -1172,9 +1256,11 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     case HUB_PI_CALIAS_SIZE:
         return s->pi_calias_size;
     case HUB_PI_INT_PEND0:
-        return qatomic_read(&s->pi_int_pend[0]);
+        value = qatomic_read(&s->pi_int_pend[0]);
+        goto trace_protocol_read;
     case HUB_PI_INT_PEND1:
-        return qatomic_read(&s->pi_int_pend[1]);
+        value = qatomic_read(&s->pi_int_pend[1]);
+        goto trace_protocol_read;
     case HUB_PI_INT_MASK0_A:
         return s->pi_int_mask[0];
     case HUB_PI_INT_MASK1_A:
@@ -1211,22 +1297,27 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     case HUB_NI_STATUS:
         return s->ni_status;
     case HUB_NI_SCRATCH_0:
-        return s->ni_scratch[0];
+        value = s->ni_scratch[0];
+        goto trace_protocol_read;
     case HUB_NI_SCRATCH_1:
-        return s->ni_scratch[1];
+        value = s->ni_scratch[1];
+        goto trace_protocol_read;
     case HUB_NI_VECTOR:
         return s->ni_vector;
     case HUB_NI_VECTOR_DATA:
         return s->ni_vector_data;
     case HUB_NI_VECTOR_STATUS:
-        return s->ni_vector_status;
+        value = s->ni_vector_status;
+        goto trace_protocol_read;
     case HUB_NI_RETURN_VECTOR:
         return s->ni_return_vector;
     case HUB_NI_VECTOR_READ_DATA:
-        return s->ni_vector_read_data;
+        value = s->ni_vector_read_data;
+        goto trace_protocol_read;
     case HUB_NI_VECTOR_CLEAR:
         s->ni_vector_status = 0;
-        return 0;
+        value = 0;
+        goto trace_protocol_read;
     case HUB_MD_SLOT_ID_USTAT:
         return MD_SLOT_FLASH_READY |
                (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
@@ -1251,6 +1342,30 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
                       "\n", addr);
         return 0;
     }
+
+trace_rt_count_read:
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_COUNT_READ)) {
+        CPUState *cpu = current_cpu;
+
+        trace_sgi_hub_rt_count_read(
+            cpu ? cpu->cpu_index : -1, s->cpu_base,
+            sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+            value, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    return value;
+
+trace_protocol_read:
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_READ)) {
+        CPUState *cpu = current_cpu;
+
+        trace_sgi_hub_protocol_read(
+            cpu ? cpu->cpu_index : -1, s->cpu_base,
+            sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+            addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    return value;
 }
 
 /*
@@ -1451,6 +1566,10 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     SGIHubState *s = opaque;
     uint8_t *route;
     unsigned int n;
+
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_WRITE)) {
+        sgi_hub_trace_protocol_write(s, addr, val, size);
+    }
 
     if (sgi_hub_bwin_entry(addr, &n)) {
         /*
