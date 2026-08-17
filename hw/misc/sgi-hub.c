@@ -176,15 +176,16 @@
  * link that never comes up.
  *
  * The machine supplies the master/slave sense sampled by each Origin 200
- * processor module. The remaining fields sample signals this model does not
- * have: a bus-fault line, a jumper identity and a processor-speed strap. They
- * read clear. The register table declares no reset value for any field in
- * either variant, which is what a read-only status register sampling external
- * signals looks like, so what the absent signals read is this machine's
- * decision rather than a transcribed one.
+ * processor module and the XIO jumper fitted to every plain Origin 200 module.
+ * The remaining fields sample signals this model does not have: a bus-fault
+ * line and a processor-speed strap. They read clear. The register table
+ * declares no reset value for any field in either variant, which is what a
+ * read-only status register sampling external signals looks like, so what the
+ * absent signals read is this machine's decision rather than a transcribed one.
  */
 #define HUB_MD_SLOT_ID_USTAT    0x220048
 #define MD_SLOT_FLASH_READY_LOW  (1ULL << 0)
+#define MD_SLOT_XJMP_ID          (1ULL << 2)
 #define MD_SLOT_FLASH_READY_HIGH (1ULL << 4)
 #define MD_SLOT_MASTER_MODULE    (1ULL << 7)
 #define MD_SLOT_FLASH_READY     (MD_SLOT_FLASH_READY_LOW | \
@@ -1347,7 +1348,7 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         value = 0;
         goto trace_protocol_read;
     case HUB_MD_SLOT_ID_USTAT:
-        return MD_SLOT_FLASH_READY |
+        return MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
                (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
     case HUB_MD_CONFIG:
         return s->md_config;
