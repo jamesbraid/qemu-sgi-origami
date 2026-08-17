@@ -1346,6 +1346,65 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(hubs[0][4], 0, hubs)
         self.assertEqual(hubs[1][4], PEER_SCRATCH_PEND1, hubs)
 
+    def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file(
+            'peer-scratch-deadline-thread-multi.bin')
+        build_peer_scratch_deadline().write(firmware)
+
+        # No RR tuning at all -- not even rr-kick-period-ns: this is the
+        # direct test of the concurrency problem the deadline ROM exists
+        # for. Under real MTTCG, node one's own vCPU thread runs the peer
+        # scratch exchange concurrently with node zero's rather than
+        # waiting on a round-robin kick, so the 10 ms protocol deadline
+        # must be met with no scheduler tuning at all.
+        # test_peer_scratch_handoff_before_rtc_deadline is the
+        # single-threaded reference this twin covers with thread=multi.
+
+        # Preassigned NASIDs represent the node-numbering phase that
+        # precedes this scratch exchange in the stock PROM.
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        # No -icount: QEMU hard-errors combining it with thread=multi.
+        self.vm.add_args(
+            '-accel', 'tcg,thread=multi',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        # A monitor request interrupts TCG. Let the race settle, stop
+        # exactly once, and only then collect the independent per-node
+        # snapshots -- same order as the single-threaded test above.
+        time.sleep(0.75)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        hubs = []
+        for node in range(2):
+            hub = HUB_BY_NODE + node * HUB_NODE_STRIDE
+            scratch = self.read_state(hub + HUB_NI_SCRATCH_0, 2)
+            vector = self.read_state(hub + HUB_NI_VECTOR, 1)[0]
+            status = self.read_state(hub + HUB_NI_VECTOR_STATUS, 1)[0]
+            read_data = self.read_state(
+                hub + HUB_NI_VECTOR_READ_DATA, 1)[0]
+            pend1 = self.read_state(hub + HUB_PI_INT_PEND1, 1)[0]
+            hubs.append((scratch, vector, status, read_data, pend1))
+
+        for node, (scratch, vector, status, read_data, _) in enumerate(hubs):
+            self.assertEqual(
+                scratch,
+                [PEER_SCRATCH_IDENTITY_BASE + node, PEER_SCRATCH_DONE], hubs)
+            self.assertEqual(vector, 0, hubs)
+            self.assertEqual(
+                status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
+                NI_VECTOR_VALID, hubs)
+            self.assertEqual(read_data, PEER_SCRATCH_DONE, hubs)
+        self.assertEqual(hubs[0][4], 0, hubs)
+        self.assertEqual(hubs[1][4], PEER_SCRATCH_PEND1, hubs)
+
     def test_four_cpu_two_node_rendezvous_separates_ram_and_hub(self):
         self.set_machine('origin200')
         firmware = self.scratch_file('four-cpu-rendezvous.bin')
