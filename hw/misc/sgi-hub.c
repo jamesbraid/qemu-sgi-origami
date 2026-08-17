@@ -908,6 +908,34 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     }
 }
 
+static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
+{
+    unsigned int i;
+
+    if (!current_cpu ||
+        (current_cpu->cpu_index >= s->cpu_base &&
+         current_cpu->cpu_index < s->cpu_base + s->cpus)) {
+        return;
+    }
+
+    /*
+     * The stock PROM writes directly into the peer Hub's scratch registers
+     * during discovery. On real processors the target node is running at the
+     * same time and can consume that phase change immediately. Under RR TCG,
+     * the writer can otherwise exhaust the firmware's timeout before any CPU
+     * on the target node runs. End the writer's slice without changing Hub or
+     * interrupt state, matching the scheduling assists used by the local
+     * progress mailboxes above.
+     */
+    for (i = 0; i < s->cpus; i++) {
+        CPUState *peer = qemu_get_cpu(s->cpu_base + i);
+
+        if (peer) {
+            qemu_cpu_kick(peer);
+        }
+    }
+}
+
 /* Where the counter has got to, from the clock rather than from stored state. */
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
@@ -1813,9 +1841,11 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_NI_SCRATCH_0:
         s->ni_scratch[0] = val;
+        sgi_hub_kick_remote_scratch_peer(s);
         break;
     case HUB_NI_SCRATCH_1:
         s->ni_scratch[1] = val;
+        sgi_hub_kick_remote_scratch_peer(s);
         break;
     case HUB_NI_VECTOR:
         s->ni_vector = val;
