@@ -18,6 +18,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
+#include "qemu/main-loop.h"
 #include "qemu/plugin.h"
 
 #include "cpu.h"
@@ -414,6 +415,27 @@ void helper_ginvt(CPUMIPSState *env, target_ulong arg, uint32_t type)
 #ifdef TARGET_MIPS64
     invMsgR = extract64(arg, 62, 2);
 #endif
+
+    /*
+     * async_run_on_cpu() only takes work_mutex, not the BQL, to queue
+     * the remote invalidations below. A peer's idle-wait loop
+     * (qemu_process_cpu_events() -> cpu_thread_is_idle() ->
+     * cpu_work_list_empty()) checks its own work list and blocks on
+     * cpu->halt_cond as one BQL-held sequence; if this dispatch is not
+     * also BQL-held, its cpu_exit()-driven kick can land in the
+     * window between that peer's check and its actual
+     * qemu_cond_wait() call, where the broadcast reaches nobody and is
+     * lost -- delaying this VP's queued invalidation past when the R6
+     * GINV ASE's global-invalidate semantics call for it. Holding the
+     * BQL across the whole dispatch, including the trailing
+     * async_safe_run_on_cpu() call below, removes the window: a peer
+     * mid-check-then-wait still holds the BQL, so this dispatch cannot
+     * even begin until that peer either finishes without blocking or
+     * is already inside qemu_cond_wait() (which releases the BQL as
+     * part of blocking) -- the kick can no longer be sent to a thread
+     * that has not started waiting yet.
+     */
+    BQL_LOCK_GUARD();
 
     CPU_FOREACH(cpu) {
         if (cpu != src) {
