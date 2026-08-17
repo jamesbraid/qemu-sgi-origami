@@ -11,7 +11,7 @@
 #define TCG_ACCEL_OPS_RR_H
 
 /* Kick all RR vCPUs. */
-void rr_kick_vcpu_thread(CPUState *unused);
+void rr_kick_vcpu_thread(CPUState *requested);
 
 /* start the round robin vcpu thread */
 void rr_start_vcpu_thread(CPUState *cpu);
