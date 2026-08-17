@@ -81,6 +81,14 @@ PEER_SCRATCH_GO = 0x22
 PEER_SCRATCH_DONE = 0x23
 PEER_SCRATCH_TIMEOUT = 0x2f
 
+REMOTE_SCRATCH_RR_KICK_PERIOD_NS = 100000000
+REMOTE_SCRATCH_DEADLINE_TICKS = 12500  # 10 milliseconds at 1.25 MHz
+REMOTE_SCRATCH_IDENTITY_BASE = 0x30
+REMOTE_SCRATCH_ARMED = 0x31
+REMOTE_SCRATCH_GO = 0x32
+REMOTE_SCRATCH_DONE = 0x33
+REMOTE_SCRATCH_TIMEOUT = 0x3f
+
 HUB_BY_NODE = 0x20001800000
 HUB_NODE_STRIDE = 0x100000000
 HUB_PI_INT_MODIFY = 0x000090
@@ -841,6 +849,101 @@ def build_peer_scratch_deadline():
     return program
 
 
+def build_remote_scratch_notification():
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode selected by the real PROM.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    emit_local_hub_address(program, R_S0, HUB_NI_BASE)
+    emit_local_hub_address(program, R_S1, 0)
+    emit_local_hub_address(program, R_S2, HUB_PI_RT_COUNT)
+
+    # Node one's globally addressed NI_SCRATCH_0. The stock PROM uses this
+    # form to publish into the peer Hub rather than issuing vector PIO.
+    program.address_prefix(R_S3, 0x9200)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 1))
+    program.emit(mips_r(R_ZERO, R_AT, R_AT, 16, 0x38))
+    program.emit(mips_r(R_S3, R_AT, R_S3, 0, 0x25))
+    load_u32(program, R_AT, 0x01000000 + HUB_NI_SCRATCH_0)
+    program.emit(mips_r(R_S3, R_AT, R_S3, 0, 0x25))
+
+    # Only the A slice on each node participates. The B slices enter WAIT so
+    # they do not consume an RR quantum between the two protocol endpoints.
+    program.emit(mips_i(0x37, R_S1, R_T0, 0x20))
+    park_b = program.branch(0x05, R_T0, R_ZERO)
+
+    program.emit(mips_i(0x37, R_S0, R_T0, 0))  # NI_STATUS
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    program.emit(mips_i(0x19, R_T0, R_T1, REMOTE_SCRATCH_IDENTITY_BASE))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_0_REL))
+    node1 = program.branch(0x05, R_T0, R_ZERO)
+
+    # Node zero waits for node one, writes directly into the remote Hub, and
+    # requires the peer to answer before the firmware-scale RTC deadline.
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_ARMED))
+    wait_armed = len(program.instructions)
+    emit_peer_scratch_read(program)
+    branch = program.branch(0x05, R_T0, R_T1)
+    program.patch(branch, wait_armed)
+
+    program.emit(mips_i(0x37, R_S2, R_T2, 0))
+    program.emit(mips_i(0x19, R_T2, R_T2,
+                        REMOTE_SCRATCH_DEADLINE_TICKS))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_GO))
+    program.emit(mips_i(0x3f, R_S3, R_T1, 0))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_DONE))
+
+    wait_done = len(program.instructions)
+    emit_peer_scratch_read(program)
+    complete = program.branch(0x04, R_T0, R_T1)
+    program.emit(mips_i(0x37, R_S2, R_T3, 0))
+    program.emit(mips_r(R_T3, R_T2, R_T4, 0, 0x2b))
+    branch = program.branch(0x05, R_T4, R_ZERO)
+    program.patch(branch, wait_done)
+
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_TIMEOUT))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    timeout_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, timeout_spin)
+
+    program.patch(complete, len(program.instructions))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    done_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, done_spin)
+
+    # Node one polls the local Hub register that node zero addresses directly
+    # and publishes completion through its other local scratch register.
+    program.patch(node1, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_ARMED))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_GO))
+    wait_go = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, HUB_NI_SCRATCH_0_REL))
+    branch = program.branch(0x05, R_T0, R_T1)
+    program.patch(branch, wait_go)
+    program.emit(mips_i(0x19, R_ZERO, R_T1, REMOTE_SCRATCH_DONE))
+    program.emit(mips_i(0x3f, R_S0, R_T1, HUB_NI_SCRATCH_1_REL))
+    node1_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, node1_spin)
+
+    program.patch(park_b, len(program.instructions))
+    park = len(program.instructions)
+    program.emit(0x42000020)  # wait
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, park)
+    return program
+
+
 def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program = MipsProgram()
 
@@ -1345,6 +1448,39 @@ class SN0SMPMachine(QemuSystemTest):
             self.assertEqual(read_data, PEER_SCRATCH_DONE, hubs)
         self.assertEqual(hubs[0][4], 0, hubs)
         self.assertEqual(hubs[1][4], PEER_SCRATCH_PEND1, hubs)
+
+    def test_remote_hub_scratch_write_schedules_peer(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('remote-scratch-notification.bin')
+        build_remote_scratch_notification().write(firmware)
+
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel',
+            f'tcg,thread=single,rr-kick-period-ns='
+            f'{REMOTE_SCRATCH_RR_KICK_PERIOD_NS}',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        time.sleep(0.75)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        scratch = []
+        for node in range(2):
+            hub = HUB_BY_NODE + node * HUB_NODE_STRIDE
+            scratch.append(self.read_state(hub + HUB_NI_SCRATCH_0, 2))
+
+        self.assertEqual(scratch[0],
+                         [REMOTE_SCRATCH_IDENTITY_BASE,
+                          REMOTE_SCRATCH_DONE], scratch)
+        self.assertEqual(scratch[1],
+                         [REMOTE_SCRATCH_GO, REMOTE_SCRATCH_DONE], scratch)
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')
