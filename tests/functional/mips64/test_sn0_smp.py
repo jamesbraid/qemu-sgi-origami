@@ -89,6 +89,16 @@ REMOTE_SCRATCH_GO = 0x32
 REMOTE_SCRATCH_DONE = 0x33
 REMOTE_SCRATCH_TIMEOUT = 0x3f
 
+RR_HANDOFF_TEST_STATE = 0x100050000
+RR_HANDOFF_PAGE = 0x0005
+RR_HANDOFF_READY = 0x00       # 4 words
+RR_HANDOFF_GO = 0x20
+RR_HANDOFF_ACK = 0x28
+RR_HANDOFF_VIOLATION = 0x30   # 4 words
+RR_HANDOFF_FAIR = 0x50        # 4 words
+RR_HANDOFF_INITIATOR_DONE = 0x70
+RR_HANDOFF_STATE_WORDS = 15
+
 HUB_BY_NODE = 0x20001800000
 HUB_NODE_STRIDE = 0x100000000
 HUB_PI_INT_MODIFY = 0x000090
@@ -944,6 +954,103 @@ def build_remote_scratch_notification():
     return program
 
 
+def build_local_hub_handoff_ordering():
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode selected by the real PROM.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # s1 is global CPU index (NASID * 2 + slice), s2 its byte offset.
+    emit_local_hub_address(program, R_S3, 0)
+    program.emit(mips_i(0x37, R_S3, R_S2, 0x20))
+    emit_local_hub_address(program, R_T0, HUB_NI_STATUS)
+    program.emit(mips_i(0x37, R_T0, R_T0, 0))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 1, 0x38))
+    program.emit(mips_r(R_T0, R_S2, R_S1, 0, 0x25))
+    program.emit(mips_r(R_ZERO, R_S1, R_S2, 3, 0x38))
+
+    # Shared uncached node-one RAM at 0x9000000100050000.
+    program.address_prefix(R_S0, 0x9000)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 1))
+    program.emit(mips_r(R_ZERO, R_AT, R_AT, 16, 0x38))
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, RR_HANDOFF_PAGE))
+    program.emit(mips_r(R_AT, R_T0, R_AT, 0, 0x25))
+    program.emit(mips_r(R_S0, R_AT, R_S0, 0, 0x25))
+
+    # s3 is this CPU's node-local PI_INT_MODIFY register.
+    emit_local_hub_address(program, R_S3, HUB_PI_INT_MODIFY)
+
+    program.emit(mips_i(0x19, R_S1, R_T0, 1))
+    store_cpu_word(program, RR_HANDOFF_READY, R_T0)
+    ready = emit_wait_for_words(program, RR_HANDOFF_READY,
+                                FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+    emit_unreachable(program)
+    program.patch(ready, len(program.instructions))
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0))
+    cpu0 = program.branch(0x04, R_S1, R_T0)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    cpu1 = program.branch(0x04, R_S1, R_T0)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 2))
+    cpu2 = program.branch(0x04, R_S1, R_T0)
+
+    def emit_observer():
+        emit_wait_for_flag(program, R_S0, RR_HANDOFF_GO, want_set=True)
+        program.emit(mips_i(0x37, R_S0, R_T0, RR_HANDOFF_ACK))
+        acknowledged = program.branch(0x05, R_T0, R_ZERO)
+        program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
+        store_cpu_word(program, RR_HANDOFF_VIOLATION, R_T1)
+        program.patch(acknowledged, len(program.instructions))
+        emit_wait_for_flag(program, R_S0, RR_HANDOFF_ACK, want_set=True)
+        program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
+        store_cpu_word(program, RR_HANDOFF_FAIR, R_T1)
+        spin = len(program.instructions)
+        branch = program.branch(0x04, R_ZERO, R_ZERO)
+        program.patch(branch, spin)
+
+    # CPU3 falls through; CPU2 uses the identical observer role.
+    emit_observer()
+    program.patch(cpu2, len(program.instructions))
+    emit_observer()
+
+    # CPU1 publishes GO, then its node-local Hub write requests CPU0.
+    program.patch(cpu1, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_GO))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PI_INT_MAILBOX))
+    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_ACK, want_set=True)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0,
+                        RR_HANDOFF_INITIATOR_DONE))
+    cpu1_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, cpu1_spin)
+
+    # CPU0 acknowledges the mailbox before either unrelated node may run.
+    program.patch(cpu0, len(program.instructions))
+    pending = emit_wait_for_mailbox(program, True,
+                                    FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+    emit_unreachable(program)
+    program.patch(pending, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_ACK))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T0, PI_INT_MAILBOX))
+    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
+    cpu0_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, cpu0_spin)
+    return program
+
+
 def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program = MipsProgram()
 
@@ -1481,6 +1588,43 @@ class SN0SMPMachine(QemuSystemTest):
                           REMOTE_SCRATCH_DONE], scratch)
         self.assertEqual(scratch[1],
                          [REMOTE_SCRATCH_GO, REMOTE_SCRATCH_DONE], scratch)
+
+    def test_local_hub_handoff_selects_requested_peer(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('local-hub-handoff-ordering.bin')
+        build_local_hub_handoff_ordering().write(firmware)
+
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=single,rr-kick-period-ns=100000000',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        # Four 100 ms virtual slices plus startup must complete even when the
+        # host delays QEMU. This wait does not participate in guest ordering.
+        time.sleep(1.5)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        state = self.read_state(RR_HANDOFF_TEST_STATE,
+                                RR_HANDOFF_STATE_WORDS)
+        self.assertEqual(state[RR_HANDOFF_READY // 8:
+                               RR_HANDOFF_READY // 8 + 4],
+                         [1, 2, 3, 4], state)
+        self.assertEqual(state[RR_HANDOFF_GO // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_ACK // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_VIOLATION // 8:
+                               RR_HANDOFF_VIOLATION // 8 + 4],
+                         [0, 0, 0, 0], state)
+        self.assertEqual(state[RR_HANDOFF_FAIR // 8:
+                               RR_HANDOFF_FAIR // 8 + 4],
+                         [0, 0, 1, 1], state)
+        self.assertEqual(state[RR_HANDOFF_INITIATOR_DONE // 8], 1, state)
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')

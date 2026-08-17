@@ -892,6 +892,16 @@ bool qemu_cpu_is_self(CPUState *cpu);
 void qemu_cpu_kick(CPUState *cpu);
 
 /**
+ * qemu_cpu_handoff:
+ * @cpu: The vCPU that should run next.
+ *
+ * Ends the current accelerator slice and, where supported, asks the
+ * accelerator to run @cpu next. Accelerators without ordered handoff support
+ * fall back to qemu_cpu_kick().
+ */
+void qemu_cpu_handoff(CPUState *cpu);
+
+/**
  * cpu_is_stopped:
  * @cpu: The CPU to check.
  *
