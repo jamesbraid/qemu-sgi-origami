@@ -1914,7 +1914,9 @@ static void test_stock_prom_hubs_start_unnumbered(const void *data)
     g_assert_cmphex(status & NVS_TARGET_MASK, ==, 0);
 
     qtest_writeq(qts, node0 + NI_VECTOR_DATA, peer_status | (1ULL << 8));
-    vector_operation(qts, node0, NI_STATUS, PIOTYPE_WRITE);
+    status = vector_operation(qts, node0, NI_STATUS, PIOTYPE_WRITE);
+    g_assert_cmphex(status & NVS_TARGET_MASK, ==,
+                    1ULL << NVS_TARGET_SHIFT);
     g_assert_cmphex(qtest_readq(qts, node1 + NI_STATUS) & NI_NODE_MASK,
                     ==, 1ULL << 8);
 

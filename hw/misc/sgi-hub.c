@@ -1555,10 +1555,6 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
      */
     assert(bql_locked());
 
-    source = s->network_peer ?
-        (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
-        NI_STATUS_NODE_SHIFT : 0;
-
     if (s->network_peer && s->ni_vector == 0) {
         switch (type) {
         case NI_VECTOR_READ:
@@ -1587,6 +1583,10 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
             break;
         }
     }
+
+    source = s->network_peer ?
+        (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
+        NI_STATUS_NODE_SHIFT : 0;
 
     if (!success) {
         response_type = NI_VECTOR_ADDRESS_ERROR;
