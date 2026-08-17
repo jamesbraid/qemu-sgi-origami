@@ -97,7 +97,10 @@ RR_HANDOFF_ACK = 0x28
 RR_HANDOFF_VIOLATION = 0x30   # 4 words
 RR_HANDOFF_FAIR = 0x50        # 4 words
 RR_HANDOFF_INITIATOR_DONE = 0x70
-RR_HANDOFF_STATE_WORDS = 15
+RR_HANDOFF_WRAP_GO = 0x78
+RR_HANDOFF_WRAP_ACK = 0x80
+RR_HANDOFF_WRAP_FAIR = 0x88   # 4 words
+RR_HANDOFF_STATE_WORDS = 21
 
 HUB_BY_NODE = 0x20001800000
 HUB_NODE_STRIDE = 0x100000000
@@ -1009,14 +1012,40 @@ def build_local_hub_handoff_ordering():
         emit_wait_for_flag(program, R_S0, RR_HANDOFF_ACK, want_set=True)
         program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
         store_cpu_word(program, RR_HANDOFF_FAIR, R_T1)
-        spin = len(program.instructions)
-        branch = program.branch(0x04, R_ZERO, R_ZERO)
-        program.patch(branch, spin)
 
-    # CPU3 falls through; CPU2 uses the identical observer role.
+    # CPU3 falls through. After the first handoff, it repeatedly requests
+    # CPU2 from the end of the RR list until the wrapped successor, CPU0,
+    # proves that it ran. This catches a lost CPU3 -> CPU0 wraparound.
     emit_observer()
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_WRAP_GO))
+    program.emit(0x0000000f)  # sync
+    wrap_request = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, RR_HANDOFF_WRAP_FAIR))
+    wrap_done = program.branch(0x05, R_T0, R_ZERO)
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PI_INT_MAILBOX))
+    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, wrap_request)
+    program.patch(wrap_done, len(program.instructions))
+    cpu3_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, cpu3_spin)
+
+    # CPU2 acknowledges the end-of-list request but does not issue another
+    # Hub write. The scheduler must resume CPU0 after CPU2's one-shot slice.
     program.patch(cpu2, len(program.instructions))
     emit_observer()
+    wrap_pending = emit_wait_for_mailbox(program, True,
+                                         FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+    emit_unreachable(program)
+    program.patch(wrap_pending, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_WRAP_ACK))
+    cpu2_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, cpu2_spin)
 
     # CPU1 publishes GO, then its node-local Hub write requests CPU0.
     program.patch(cpu1, len(program.instructions))
@@ -1030,6 +1059,10 @@ def build_local_hub_handoff_ordering():
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
     program.emit(mips_i(0x3f, R_S0, R_T0,
                         RR_HANDOFF_INITIATOR_DONE))
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_GO, want_set=True)
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_ACK, want_set=True)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    store_cpu_word(program, RR_HANDOFF_WRAP_FAIR, R_T0)
     cpu1_spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, cpu1_spin)
@@ -1045,6 +1078,10 @@ def build_local_hub_handoff_ordering():
     program.emit(0x0000000f)  # sync
     program.emit(mips_i(0x19, R_ZERO, R_T0, PI_INT_MAILBOX))
     program.emit(mips_i(0x3f, R_S3, R_T0, 0))
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_GO, want_set=True)
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_ACK, want_set=True)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    store_cpu_word(program, RR_HANDOFF_WRAP_FAIR, R_T0)
     cpu0_spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, cpu0_spin)
@@ -1625,6 +1662,11 @@ class SN0SMPMachine(QemuSystemTest):
                                RR_HANDOFF_FAIR // 8 + 4],
                          [0, 0, 1, 1], state)
         self.assertEqual(state[RR_HANDOFF_INITIATOR_DONE // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_WRAP_GO // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_WRAP_ACK // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_WRAP_FAIR // 8:
+                               RR_HANDOFF_WRAP_FAIR // 8 + 4],
+                         [1, 1, 0, 0], state)
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')

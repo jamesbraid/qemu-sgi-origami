@@ -323,17 +323,18 @@ static void *rr_cpu_thread_fn(void *arg)
             int discard_reason = 0;
             unsigned int request_generation = 0;
             uint64_t request = qatomic_xchg(&rr_handoff_request, 0);
+            CPUState *normal_cpu = cpu ? cpu : first_cpu;
 
             if (request) {
                 int requested_cpu = (uint32_t)request - 1;
 
                 handoff_cpu = rr_handoff_cpu(request, &request_generation,
                                               &discard_reason);
-                if (handoff_cpu == cpu) {
+                if (handoff_cpu == normal_cpu) {
                     discard_reason = RR_HANDOFF_DISCARD_ALREADY_NEXT;
                     handoff_cpu = NULL;
-                } else if (handoff_cpu && cpu) {
-                    resume_cpu_index = cpu->cpu_index;
+                } else if (handoff_cpu && normal_cpu) {
+                    resume_cpu_index = normal_cpu->cpu_index;
                     resume_generation = request_generation;
                 }
 
