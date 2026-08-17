@@ -903,7 +903,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
         CPUState *peer = qemu_get_cpu(s->cpu_base + i);
 
         if (peer && peer != current_cpu) {
-            qemu_cpu_kick(peer);
+            qemu_cpu_handoff(peer);
         }
     }
 }
@@ -931,7 +931,7 @@ static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
         CPUState *peer = qemu_get_cpu(s->cpu_base + i);
 
         if (peer) {
-            qemu_cpu_kick(peer);
+            qemu_cpu_handoff(peer);
         }
     }
 }
@@ -958,7 +958,7 @@ static uint64_t sgi_hub_rt_compare_read(SGIHubState *s, unsigned int i)
      * time slice.
      */
     if (owner && owner != current_cpu) {
-        qemu_cpu_kick(owner);
+        qemu_cpu_handoff(owner);
     }
     return qatomic_read(&s->pi_rt_compare[i]);
 }
@@ -1691,7 +1691,7 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
          */
         peer = qemu_get_cpu(s->cpu_base + (i ^ 1));
         if (peer && (i ^ 1) < s->cpus) {
-            qemu_cpu_kick(peer);
+            qemu_cpu_handoff(peer);
         }
         break;
     }

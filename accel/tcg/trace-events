@@ -6,6 +6,9 @@ rr_kick_request(int requester_cpu, int requested_cpu, int64_t realtime_ns, int64
 rr_kick_timer(int cpu, int64_t realtime_ns, int64_t virtual_ns) "cpu %d realtime_ns %" PRId64 " virtual_ns %" PRId64
 rr_vcpu_slice_begin(int cpu, uint64_t pc, int64_t budget, int64_t realtime_ns, int64_t virtual_ns) "cpu %d pc 0x%016" PRIx64 " budget %" PRId64 " realtime_ns %" PRId64 " virtual_ns %" PRId64
 rr_vcpu_slice_end(int cpu, uint64_t pc, int reason, bool exit_request, uint32_t interrupt_request, int64_t realtime_ns, int64_t virtual_ns) "cpu %d pc 0x%016" PRIx64 " reason 0x%x exit_request %d interrupt_request 0x%x realtime_ns %" PRId64 " virtual_ns %" PRId64
+disable rr_handoff_request(int requester_cpu, int requested_cpu, bool accepted, uint32_t generation, int64_t realtime_ns, int64_t virtual_ns) "requester_cpu %d requested_cpu %d accepted %d generation %" PRIu32 " realtime_ns %" PRId64 " virtual_ns %" PRId64
+disable rr_handoff_select(int requested_cpu, int resume_cpu, uint32_t generation, int64_t realtime_ns, int64_t virtual_ns) "requested_cpu %d resume_cpu %d generation %" PRIu32 " realtime_ns %" PRId64 " virtual_ns %" PRId64
+disable rr_handoff_discard(int requested_cpu, int reason, uint32_t requested_generation, uint32_t current_generation, int64_t realtime_ns, int64_t virtual_ns) "requested_cpu %d reason %d requested_generation %" PRIu32 " current_generation %" PRIu32 " realtime_ns %" PRId64 " virtual_ns %" PRId64
 
 # cpu-exec.c
 exec_tb(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
