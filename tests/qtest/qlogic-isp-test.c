@@ -71,8 +71,11 @@
 #define ISP_MAILBOX4_SIGNATURE  0x0001
 
 #define ISP_MBOX_CMD_NOP                 0x0000
+#define ISP_MBOX_CMD_LOAD_RAM            0x0001
 #define ISP_MBOX_CMD_EXEC_FIRMWARE       0x0002
+#define ISP_MBOX_CMD_DUMP_RAM            0x0003
 #define ISP_MBOX_CMD_WRITE_RAM_WORD      0x0004
+#define ISP_MBOX_CMD_READ_RAM_WORD       0x0005
 #define ISP_MBOX_CMD_VERIFY_CHECKSUM     0x0007
 #define ISP_MBOX_CMD_ABOUT_FIRMWARE      0x0008
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
@@ -1029,6 +1032,231 @@ static void test_verify_checksum_failure(void *obj, void *data,
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(1)), ==, 0x000a);
     qlogic_isp_ack(dev, io);
 
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Loads the mailboxes a block RAM transfer takes and rings the doorbell.
+ *
+ * The high halves of the host address are written even when they are zero.
+ * The mailboxes are plain storage that persists from one command to the next,
+ * so a value an earlier command left in either one would be reassembled into
+ * this transfer's address — a bug this suite would otherwise create for
+ * itself rather than find.
+ *
+ * Writing the argument layout out here once is also what pins it: the offset
+ * within the adapter in mailbox 1, the host address split across mailboxes 2
+ * and 3 with the high half first, the word count in mailbox 4. That split is
+ * taken from a driver's source rather than observed on this machine, so a
+ * transposition of the two halves is exactly the error worth failing a test
+ * rather than a firmware boot.
+ */
+static void qlogic_isp_ram_block_call(QPCIDevice *dev, QPCIBar io,
+                                      uint16_t cmd, uint16_t base,
+                                      uint64_t host, uint16_t count)
+{
+    qpci_io_writew(dev, io, ISP_MAILBOX(4), count);
+    qpci_io_writew(dev, io, ISP_MAILBOX(6), (host >> 48) & 0xffff);
+    qpci_io_writew(dev, io, ISP_MAILBOX(7), (host >> 32) & 0xffff);
+    qlogic_isp_mbox_call4(dev, io, cmd, base,
+                          (host >> 16) & 0xffff, host & 0xffff);
+}
+
+/*
+ * A word written to the adapter's memory is the word read back out of it.
+ *
+ * Mailbox 2 is loaded with a value that is not the answer before each read,
+ * because that is the mailbox the answer arrives in: a model that never wrote
+ * it would otherwise pass by handing back the caller's own argument. The reads
+ * run in the opposite order from the writes, so a model answering with the
+ * most recently written word regardless of offset fails too.
+ *
+ * The highest offset the adapter has is included because it is the boundary
+ * where an off-by-one in indexing would land outside the storage.
+ */
+static void test_read_ram_word_round_trip(void *obj, void *data,
+                                          QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    const uint16_t offsets[] = { 0x0000, 0x1234, 0xffff };
+    const uint16_t values[] = { 0xa5a5, 0x0001, 0xdead };
+    size_t i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(offsets); i++) {
+        qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_WRITE_RAM_WORD,
+                              offsets[i], values[i], 0);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                        ISP_MBOX_COMPLETE);
+        qlogic_isp_ack(dev, io);
+    }
+
+    for (i = ARRAY_SIZE(offsets); i-- > 0; ) {
+        qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_READ_RAM_WORD,
+                              offsets[i], 0x5a5a, 0xc3c3);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                        ISP_MBOX_COMPLETE);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(2)), ==, values[i]);
+        /*
+         * Mailbox 3 is an output of this command and reads zero. It is loaded
+         * non-zero above, so this fails against a model that answers only
+         * mailbox 2 and leaves the previous command's value in 3.
+         */
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(3)), ==, 0);
+        qlogic_isp_ack(dev, io);
+    }
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * A block loaded into the adapter and dumped back out is the same block, and
+ * the single-word path agrees with what the block path moved.
+ *
+ * The destination is filled with something other than the pattern first, so
+ * that a dump which never ran is distinguishable from one that copied
+ * correctly — against a zeroed destination those two look the same wherever
+ * the pattern happens to be zero.
+ *
+ * The wrap is driven rather than reasoned about: a two-word load based at the
+ * adapter's highest offset has to put its second word at offset zero, because
+ * the offset is a 16-bit quantity and there is no storage past the end of it.
+ */
+static void test_ram_block_dma_round_trip(void *obj, void *data,
+                                          QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t src, dst;
+    const uint16_t base = 0x2000;
+    const uint16_t count = 8;
+    uint8_t pattern[16], filler[16], got[16];
+    size_t i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    src = guest_alloc(alloc, sizeof(pattern));
+    dst = guest_alloc(alloc, sizeof(got));
+
+    for (i = 0; i < sizeof(pattern); i++) {
+        pattern[i] = 0x10 + i;
+        filler[i] = 0xbb;
+    }
+    qtest_memwrite(qts, src, pattern, sizeof(pattern));
+    qtest_memwrite(qts, dst, filler, sizeof(filler));
+
+    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_LOAD_RAM, base, src,
+                              count);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_DUMP_RAM, base, dst,
+                              count);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qtest_memread(qts, dst, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), pattern, sizeof(pattern));
+
+    /*
+     * The block path and the single-word path address the same storage. The
+     * first pattern word sits little-endian in guest memory, which is the
+     * order the byte-order check pins on its own.
+     */
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_READ_RAM_WORD, base,
+                          0x5a5a, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(2)), ==,
+                    pattern[0] | (pattern[1] << 8));
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_LOAD_RAM, 0xffff, src, 2);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_READ_RAM_WORD, 0x0000,
+                          0x5a5a, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(2)), ==,
+                    pattern[2] | (pattern[3] << 8));
+    qlogic_isp_ack(dev, io);
+
+    guest_free(alloc, src);
+    guest_free(alloc, dst);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The order the block path lays bytes down in guest memory.
+ *
+ * A load followed by a dump round-trips under either byte order, because it
+ * uses one accessor in both directions — so the round-trip check cannot see
+ * this at all. Only reading the raw bytes can, and only a word whose two
+ * halves differ makes the two orders tell apart.
+ *
+ * Both directions are driven, because a model could be little-endian on the
+ * way out and big-endian on the way in and still satisfy either half alone.
+ * The assertions name explicit byte values rather than deriving them from the
+ * host's own layout, so this means the same thing on a big-endian host.
+ */
+static void test_ram_dma_byte_order(void *obj, void *data,
+                                    QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t buf;
+    const uint16_t base = 0x3000;
+    uint8_t raw[2];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    buf = guest_alloc(alloc, sizeof(raw));
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_WRITE_RAM_WORD, base,
+                          0x1234, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_DUMP_RAM, base, buf, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qtest_memread(qts, buf, raw, sizeof(raw));
+    g_assert_cmphex(raw[0], ==, 0x34);
+    g_assert_cmphex(raw[1], ==, 0x12);
+
+    raw[0] = 0x78;
+    raw[1] = 0x56;
+    qtest_memwrite(qts, buf, raw, sizeof(raw));
+
+    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_LOAD_RAM, base, buf, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_READ_RAM_WORD, base,
+                          0x5a5a, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(2)), ==, 0x5678);
+    qlogic_isp_ack(dev, io);
+
+    guest_free(alloc, buf);
     qpci_iounmap(dev, io);
 }
 
@@ -2548,6 +2776,12 @@ static void qlogic_isp_register_nodes(void)
                  test_firmware_download, NULL);
     qos_add_test("verify-checksum-failure", "qlogic-isp1040",
                  test_verify_checksum_failure, NULL);
+    qos_add_test("read-ram-word-round-trip", "qlogic-isp1040",
+                 test_read_ram_word_round_trip, NULL);
+    qos_add_test("ram-block-dma-round-trip", "qlogic-isp1040",
+                 test_ram_block_dma_round_trip, NULL);
+    qos_add_test("ram-dma-byte-order", "qlogic-isp1040",
+                 test_ram_dma_byte_order, NULL);
     qos_add_test("about-firmware", "qlogic-isp1040",
                  test_about_firmware, NULL);
     qos_add_test("get-firmware-status", "qlogic-isp1040",
