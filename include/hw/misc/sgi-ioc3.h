@@ -195,7 +195,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
  * A guest reaches this while attaching its serial child even when it goes on
  * to drive the ports through the byte-wide 16550 windows instead, which is
  * what both of ours do -- the registers have to answer before a driver gets
- * far enough to decide it does not want them.
+ * far enough to decide it does not want them. The firmware's own base I/O
+ * diagnostic goes further and drives the engines, in loopback, on both ports.
  */
 #define SGI_IOC3_SDMA_RING_HI       0x0b0
 #define SGI_IOC3_SDMA_RING_LO       0x0b4
@@ -212,6 +213,100 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SDMA_SHADOW        0x18
 
 #define SGI_IOC3_SDMA_BASE          SGI_IOC3_SDMA_RING_HI
+#define SGI_IOC3_SDMA_PORT_REGS     7
+#define SGI_IOC3_SDMA_PORT_STRIDE  (SGI_IOC3_SDMA_PORT_B - SGI_IOC3_SDMA_PORT_A)
+
+/*
+ * The ring base pair. The low word carries a 4 KB-aligned base in bits 12 up
+ * and, in its bottom bit, which of the two ring sizes is selected -- so the
+ * size bit sits inside the register but outside the address, and a model
+ * or-ing the whole word into its arithmetic lands one ring-size-select bit
+ * away from where the guest put its rings.
+ */
+#define SGI_IOC3_SDMA_RING_4K       (1u << 0)
+#define SGI_IOC3_SDMA_RING_ADDRESS  0xfffff000u
+#define SGI_IOC3_SDMA_RING_1K_SIZE  0x400
+#define SGI_IOC3_SDMA_RING_4K_SIZE  0x1000
+
+/*
+ * One base covers four rings in a fixed order -- port A transmit, port A
+ * receive, port B transmit, port B receive -- so a ring's address comes from
+ * its port and direction and there is no register anywhere that reads it
+ * back.
+ */
+#define SGI_IOC3_SDMA_RING_TX       0
+#define SGI_IOC3_SDMA_RING_RX       1
+#define SGI_IOC3_SDMA_RING_DIRS     2
+
+/* The port control register. */
+#define SGI_IOC3_SDMA_HIGH_WATER    0x1ffu
+#define SGI_IOC3_SDMA_TX_TIMER_RUN  (1u << 16)
+#define SGI_IOC3_SDMA_FLOW_CONTROL  (1u << 17)
+#define SGI_IOC3_SDMA_POST_ON_CD    (1u << 18)
+#define SGI_IOC3_SDMA_POST_ON_CTS   (1u << 19)
+#define SGI_IOC3_SDMA_QUAD_SPEED    (1u << 20)
+#define SGI_IOC3_SDMA_NO_DIVIDER    (1u << 21)
+#define SGI_IOC3_SDMA_RX_TO_MEMORY  (1u << 27)
+#define SGI_IOC3_SDMA_ENABLE        (1u << 28)
+#define SGI_IOC3_SDMA_PAUSE         (1u << 29)
+#define SGI_IOC3_SDMA_PAUSED        (1u << 30)
+#define SGI_IOC3_SDMA_RESET         (1u << 31)
+
+/*
+ * Three of the control register's bits are not settings the guest stores. Two
+ * are hardware's own read-backs -- the transmit timer running, and the pause
+ * having taken effect -- and the third is a command that acts and is gone.
+ */
+#define SGI_IOC3_SDMA_CTRL_UNSTORED (SGI_IOC3_SDMA_TX_TIMER_RUN | \
+                                     SGI_IOC3_SDMA_PAUSED | \
+                                     SGI_IOC3_SDMA_RESET)
+
+/*
+ * The index registers address the ring in eight-byte units, so the pointer
+ * occupies bits three upward and its width follows the ring size. The two
+ * hardware advances report how many bytes are still inside the engine
+ * alongside the pointer, and the receive consume index carries the bit that
+ * arms the receive timer.
+ */
+#define SGI_IOC3_SDMA_ARM_RX_TIMER  (1u << 31)
+#define SGI_IOC3_SDMA_HELD_SHIFT    24
+#define SGI_IOC3_SDMA_TX_HELD       (0xfu << SGI_IOC3_SDMA_HELD_SHIFT)
+#define SGI_IOC3_SDMA_RX_HELD       (0x7u << SGI_IOC3_SDMA_HELD_SHIFT)
+
+/* The receive timer: a twelve-bit reload, and the count read back above it. */
+#define SGI_IOC3_SDMA_TIMER_RELOAD  0xfffu
+#define SGI_IOC3_SDMA_TIMER_COUNT   0x0fff0000u
+
+/*
+ * A ring entry is eight bytes carrying four characters: four data bytes, then
+ * four status-or-control bytes, one for each of them. Software can test all
+ * four validity flags with a single word read of the status half, which is why
+ * the two halves are grouped rather than interleaved.
+ */
+#define SGI_IOC3_SDMA_ENTRY_SIZE    8
+#define SGI_IOC3_SDMA_ENTRY_CHARS   4
+
+/*
+ * A transmit entry's control byte: a two-bit type saying what the data byte
+ * beside it is, and -- independent of the type -- a request for an interrupt
+ * once that byte has gone out.
+ */
+#define SGI_IOC3_SDMA_TX_TYPE       0xc0
+#define SGI_IOC3_SDMA_TX_NOTHING    0x00
+#define SGI_IOC3_SDMA_TX_CHARACTER  0x40
+#define SGI_IOC3_SDMA_TX_MODEM      0x80
+#define SGI_IOC3_SDMA_TX_DELAY      0xc0
+#define SGI_IOC3_SDMA_TX_INTERRUPT  0x20
+
+/* A receive entry's status byte. */
+#define SGI_IOC3_SDMA_RX_OVERRUN    0x01
+#define SGI_IOC3_SDMA_RX_PARITY     0x02
+#define SGI_IOC3_SDMA_RX_FRAMING    0x04
+#define SGI_IOC3_SDMA_RX_BREAK      0x08
+#define SGI_IOC3_SDMA_RX_CTS        0x10
+#define SGI_IOC3_SDMA_RX_CD         0x20
+#define SGI_IOC3_SDMA_RX_MODEM_OK   0x40
+#define SGI_IOC3_SDMA_RX_DATA_OK    0x80
 
 /*
  * The ethernet block sits behind SGI_IOC3_ENET_BASE (hw/net/sgi-ioc3-eth.h)
@@ -263,12 +358,33 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_BYTEBUS_DEV0   0x80000
 
 /*
- * The two serial ports' bits, which are pass-throughs: they follow the 16550's
- * own interrupt level rather than latching, so a write cannot clear them and
- * what really quiets one is the register read the guest's serial driver does.
+ * A serial port owns nine consecutive bits of the SuperIO interrupt status
+ * register, and port B's nine sit directly above port A's.
  */
-#define SGI_IOC3_INT_SERIAL_A   (1u << 6)
-#define SGI_IOC3_INT_SERIAL_B   (1u << 15)
+#define SGI_IOC3_INT_PORT_STRIDE 9
+#define SGI_IOC3_INT_TX_RING_EMPTY 0
+#define SGI_IOC3_INT_RX_RING_FULL  1
+#define SGI_IOC3_INT_RX_HIGH_WATER 2
+#define SGI_IOC3_INT_RX_TIMER      3
+#define SGI_IOC3_INT_CD_CHANGED    4
+#define SGI_IOC3_INT_CTS_CHANGED   5
+#define SGI_IOC3_INT_PASSTHROUGH_SOURCE 6
+#define SGI_IOC3_INT_TX_DONE       7
+#define SGI_IOC3_INT_PCI_ERROR     8
+
+#define SGI_IOC3_SERIAL_SOURCE(port, source) \
+    (1u << ((port) * SGI_IOC3_INT_PORT_STRIDE + (source)))
+
+/*
+ * The two ports' pass-through bits, which are the odd ones out among the
+ * eighteen: they follow the 16550's own interrupt level rather than latching,
+ * so a write cannot clear them and what really quiets one is the register read
+ * the guest's serial driver does.
+ */
+#define SGI_IOC3_INT_SERIAL_A \
+    SGI_IOC3_SERIAL_SOURCE(0, SGI_IOC3_INT_PASSTHROUGH_SOURCE)
+#define SGI_IOC3_INT_SERIAL_B \
+    SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_PASSTHROUGH_SOURCE)
 #define SGI_IOC3_INT_PASSTHROUGH (SGI_IOC3_INT_SERIAL_A | SGI_IOC3_INT_SERIAL_B)
 
 struct SGIIOC3State {
@@ -340,6 +456,46 @@ struct SGIIOC3State {
      */
     MemoryRegion sdma;
     uint32_t sdma_reg[SGI_IOC3_SDMA_REGS];
+
+    /*
+     * Whether this port's engine is already on the stack. A transmit walk in
+     * loopback hands the port's own receiver a character inside the register
+     * write that sends it, and the register file answers by raising the
+     * port's interrupt, which reaches this chip and would start a second walk
+     * underneath the first -- one that would post the packer's half-filled
+     * entry in the middle of the burst that is still filling it. Reading a
+     * character out of the port does the same thing one layer down. Not
+     * migrated: it is only ever true while a call is in progress, and no
+     * migration happens inside one.
+     */
+    bool sdma_busy[SGI_IOC3_SERIAL_PORTS];
+
+    /*
+     * The receive packer: a ring entry under construction, and how many of
+     * its four characters are in it. An entry reaches memory once four
+     * characters have been packed into it, which is what the produce index's
+     * own held-character count is reporting -- an engine writing an entry per
+     * character would hold nothing and give a driver four times the entries
+     * for the same text.
+     */
+    uint8_t sdma_packer[SGI_IOC3_SERIAL_PORTS][SGI_IOC3_SDMA_ENTRY_SIZE];
+    uint8_t sdma_packed[SGI_IOC3_SERIAL_PORTS];
+
+    /*
+     * Whether anything has reached the receive ring since the sources for it
+     * were last raised. The two a delivery prompts a driver with are raised
+     * at the end of a burst rather than per entry, so this is what tells an
+     * idle port from one that has just filled the ring.
+     */
+    bool sdma_delivered[SGI_IOC3_SERIAL_PORTS];
+
+    /*
+     * Where the serial engines read and write their rings. It is the chip's
+     * own PCI address space, so every transfer goes through the Bridge's
+     * translation the way the guest programmed it -- the ethernet block is
+     * handed the same space for the same reason.
+     */
+    AddressSpace *dma_as;
 
     /*
      * The PS/2 controller. Only its control and status register holds anything
