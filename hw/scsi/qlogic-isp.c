@@ -640,6 +640,15 @@ typedef struct QLogicISPRequest {
     SCSIRequest *sreq;
     QEMUSGList qsg;
     uint32_t handle;
+    /*
+     * Set when this request's ring is word-value, which makes its data
+     * buffers word-value too. Such a request does not hand the generic SCSI
+     * layer its scatter-gather list: the bytes have to be corrected on the
+     * way past, so the transfer goes through this file a chunk at a time
+     * instead, and word_pos is how far along the segments that has got.
+     */
+    bool word_value;
+    uint64_t word_pos;
 } QLogicISPRequest;
 
 /*
@@ -1574,10 +1583,84 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
  * INQUIRY of the first probed target, because nothing before that point in
  * this model's own test suite ever sent a command with a data phase.
  */
+/*
+ * Moves one chunk of a word-value request's data between the SCSI layer's
+ * buffer and the guest's, correcting the byte order on the way.
+ *
+ * The SCSI layer's buffer is the bounce. That matters most on the way out:
+ * the guest's buffer holds the guest's data and we were given it to read,
+ * so correcting it where it lies would be writing memory that is not ours
+ * to write -- and there is no later moment at which putting it back would
+ * be safe, since the transfer is asynchronous. Copying through a buffer we
+ * own avoids the question entirely, and doing the same on the way in costs
+ * nothing and leaves the guest's buffer written exactly once.
+ *
+ * Segments are corrected individually and only where the address says to.
+ * A segment the guest placed below four gigabytes is byte-stream and is
+ * copied untouched, which is what keeps disk blocks intact.
+ */
+static void qlogic_isp_transfer_data(SCSIRequest *sreq, uint32_t len)
+{
+    QLogicISPRequest *req = sreq->hba_private;
+    uint8_t *buf = scsi_req_get_buf(sreq);
+    bool to_device = !sreq->cmd.mode || sreq->cmd.mode == SCSI_XFER_TO_DEV;
+    uint64_t skip = req->word_pos;
+    uint32_t done = 0;
+    int i;
+
+    for (i = 0; i < req->qsg.nsg && done < len; i++) {
+        uint64_t seg_len = req->qsg.sg[i].len;
+        uint64_t base = req->qsg.sg[i].base;
+        uint32_t chunk;
+        g_autofree uint8_t *tmp = NULL;
+
+        if (skip >= seg_len) {
+            skip -= seg_len;
+            continue;
+        }
+        base += skip;
+        seg_len -= skip;
+        skip = 0;
+
+        chunk = MIN(seg_len, len - done);
+        tmp = g_malloc(chunk);
+
+        if (to_device) {
+            dma_memory_read(req->qsg.as, base, tmp, chunk,
+                            MEMTXATTRS_UNSPECIFIED);
+            if ((req->qsg.sg[i].base >> 32) != 0) {
+                qlogic_isp_normalise_words(tmp, chunk);
+            }
+            memcpy(buf + done, tmp, chunk);
+        } else {
+            memcpy(tmp, buf + done, chunk);
+            if ((req->qsg.sg[i].base >> 32) != 0) {
+                qlogic_isp_normalise_words(tmp, chunk);
+            }
+            dma_memory_write(req->qsg.as, base, tmp, chunk,
+                             MEMTXATTRS_UNSPECIFIED);
+        }
+        done += chunk;
+    }
+
+    req->word_pos += done;
+    scsi_req_continue(sreq);
+}
+
 static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
+    /*
+     * A word-value request answers with no list on purpose, which sends the
+     * SCSI layer down its transfer_data path: its own buffer becomes the
+     * bounce this correction needs. Handing over the list instead would have
+     * the generic DMA code move the bytes straight into the guest's memory
+     * with no opportunity to correct them.
+     */
+    if (req->word_value) {
+        return NULL;
+    }
     return &req->qsg;
 }
 
@@ -1586,6 +1669,7 @@ static const struct SCSIBusInfo qlogic_isp_scsi_info = {
     .max_target = 16,
     .max_lun = 8,
     .get_sg_list = qlogic_isp_get_sg_list,
+    .transfer_data = qlogic_isp_transfer_data,
     .complete = qlogic_isp_scsi_complete,
     .cancel = qlogic_isp_scsi_cancel,
 };
@@ -1692,6 +1776,7 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
+    req->word_value = wv;
     pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
     qlogic_isp_read_segments(s, &req->qsg, addr, entry_count, seg_count);
 
@@ -1798,6 +1883,7 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
+    req->word_value = wv;
     pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
     qlogic_isp_read_segments_a64(s, &req->qsg, addr, entry_count, seg_count);
 
