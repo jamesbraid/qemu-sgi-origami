@@ -192,6 +192,7 @@ qtests_mips64 = \
                                                    'sn0-bridge-test',
                                                    'sn0-firmware-test',
                                                    'sn0-ioc3-test',
+                                                   'sn0-ioc3-serial-test',
                                                    'sn0-qlogic-isp-test',
                                                    'sn0-hub-test',
                                                    'sn0-i2c-test',

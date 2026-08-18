@@ -33,6 +33,7 @@
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
+#include "system/dma.h"
 #include "net/net.h"
 #include "trace.h"
 
@@ -102,6 +103,8 @@ static void sgi_ioc3_update_irq(SGIIOC3State *s)
  * and no write to the status register can clear it. What really quiets it is
  * the register read the guest's own serial driver performs.
  */
+static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port);
+
 static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
 {
     SGIIOC3State *s = opaque;
@@ -109,6 +112,22 @@ static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
 
     s->int_status = (s->int_status & ~bit) | (level ? bit : 0);
     sgi_ioc3_update_irq(s);
+
+    /*
+     * The port asserting is also the one moment this model can see that a
+     * character has arrived from outside, so it is where the engine gets to
+     * move it. That covers a guest whose own serial driver has the 16550's
+     * receive interrupt enabled; one that disables the 16550 entirely and
+     * receives through the rings alone would leave characters in the port's
+     * FIFO until something else reached the engine, and no guest on this
+     * machine's path does that -- the firmware's diagnostic runs both ports
+     * in loopback, where every character is delivered inside the write that
+     * sent it. An IRIX guest driving the rings is what would settle whether
+     * the gap is worth a poll of its own.
+     */
+    if (level) {
+        sgi_ioc3_sdma_run(s, port);
+    }
 }
 
 /*
@@ -605,6 +624,45 @@ static const MemoryRegionOps sgi_ioc3_kbc_ops = {
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
 };
+/*
+ * The two serial ports' DMA engines.
+ *
+ * Each port has an engine that moves characters between a pair of memory
+ * rings and the port's own 16550, and one base register covers all four
+ * rings: port A transmit, port A receive, port B transmit, port B receive,
+ * in that fixed order, each of the size the base register's low bit selects.
+ * So a ring's address comes from its port and its direction and there is no
+ * register that reads it back -- which is why every ring address this file
+ * computes is asserted in the qtest by reading the memory the engine wrote.
+ *
+ * Nothing here is on the console's path. The firmware and both guests drive
+ * these ports through the byte-wide 16550 windows with ring DMA switched off,
+ * and an engine only ever walks a ring once a guest has set the enable bit,
+ * so a console that works stays working whatever this code does. What does
+ * drive the engines is the firmware's own base I/O diagnostic, which puts
+ * both ports in loopback and hands each one a full ring.
+ */
+
+/*
+ * The handful of 16550 register bits the engine needs. The register file's
+ * own definitions are private to hw/char/serial.c, so these are restated here
+ * rather than reached for -- they are the 16550's published layout, not that
+ * file's invention, and this device already reaches the register file only
+ * through its published ops.
+ */
+#define UART_RBR_THR    0
+#define UART_MCR        4
+#define UART_LSR        5
+#define UART_MSR        6
+
+#define UART_LSR_DR     0x01
+#define UART_LSR_OE     0x02
+#define UART_LSR_PE     0x04
+#define UART_LSR_FE     0x08
+#define UART_LSR_BI     0x10
+
+#define UART_MSR_CTS    0x10
+#define UART_MSR_DCD    0x80
 
 /*
  * Which of a port's seven serial DMA registers hardware owns, as an offset
@@ -619,14 +677,15 @@ static const MemoryRegionOps sgi_ioc3_kbc_ops = {
  * The shared ring base pair below both ports is writable, which is why an
  * offset before port A's base reports itself as belonging to neither port.
  */
-static bool sgi_ioc3_sdma_port_offset(hwaddr addr, hwaddr *offset)
+static bool sgi_ioc3_sdma_port_offset(hwaddr reg, unsigned int *port,
+                                      hwaddr *offset)
 {
-    hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
-
     if (reg >= SGI_IOC3_SDMA_PORT_B) {
+        *port = 1;
         *offset = reg - SGI_IOC3_SDMA_PORT_B;
         return true;
     } else if (reg >= SGI_IOC3_SDMA_PORT_A) {
+        *port = 0;
         *offset = reg - SGI_IOC3_SDMA_PORT_A;
         return true;
     }
@@ -634,19 +693,502 @@ static bool sgi_ioc3_sdma_port_offset(hwaddr addr, hwaddr *offset)
     return false;
 }
 
+/* Where one of a port's seven registers lives in the block's storage. */
+static uint32_t *sgi_ioc3_sdma_port_reg(SGIIOC3State *s, unsigned int port,
+                                        hwaddr offset)
+{
+    hwaddr reg = SGI_IOC3_SDMA_PORT_A + port * SGI_IOC3_SDMA_PORT_STRIDE +
+                 offset;
+
+    return &s->sdma_reg[(reg - SGI_IOC3_SDMA_BASE) / 4];
+}
+
+static uint32_t sgi_ioc3_sdma_control(SGIIOC3State *s, unsigned int port)
+{
+    return *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_CONTROL);
+}
+
+/*
+ * The ring size the base register currently selects, and with it the width of
+ * every index register's pointer field. The two are the same fact: an index
+ * addresses the ring in eight-byte units and cannot leave it, so the pointer
+ * is exactly as wide as the ring is long.
+ */
+static uint32_t sgi_ioc3_sdma_ring_size(SGIIOC3State *s)
+{
+    uint32_t lo = s->sdma_reg[(SGI_IOC3_SDMA_RING_LO - SGI_IOC3_SDMA_BASE) / 4];
+
+    return (lo & SGI_IOC3_SDMA_RING_4K) ? SGI_IOC3_SDMA_RING_4K_SIZE
+                                        : SGI_IOC3_SDMA_RING_1K_SIZE;
+}
+
+static uint32_t sgi_ioc3_sdma_pointer_mask(SGIIOC3State *s)
+{
+    return (sgi_ioc3_sdma_ring_size(s) - 1) & ~(SGI_IOC3_SDMA_ENTRY_SIZE - 1);
+}
+
+/*
+ * One ring's address. The four rings are one allocation four ring-sizes long
+ * and are told apart by port and direction alone, and the base register's
+ * size-select bit is inside the register but outside the address -- masking
+ * it off here is the whole of that, and getting it wrong puts every ring one
+ * byte away from where the guest built it.
+ */
+static uint64_t sgi_ioc3_sdma_ring(SGIIOC3State *s, unsigned int port,
+                                   unsigned int direction)
+{
+    uint32_t hi = s->sdma_reg[(SGI_IOC3_SDMA_RING_HI - SGI_IOC3_SDMA_BASE) / 4];
+    uint32_t lo = s->sdma_reg[(SGI_IOC3_SDMA_RING_LO - SGI_IOC3_SDMA_BASE) / 4];
+    uint64_t base = ((uint64_t)hi << 32) | (lo & SGI_IOC3_SDMA_RING_ADDRESS);
+    unsigned int index = port * SGI_IOC3_SDMA_RING_DIRS + direction;
+
+    return base + (uint64_t)index * sgi_ioc3_sdma_ring_size(s);
+}
+
+/*
+ * Raise one of a port's nine interrupt sources. It is or-ed into whatever the
+ * register already holds rather than written over a value read earlier,
+ * because the register belongs to no one engine: a transmit walk in loopback
+ * delivers characters to the same chip's receiver before it returns, so any
+ * source raised inside the walk would be destroyed by a write-back of a
+ * pre-walk snapshot -- invisibly, since every register involved would still
+ * hold a legal value afterwards.
+ */
+static void sgi_ioc3_raise_serial_source(SGIIOC3State *s, unsigned int port,
+                                         unsigned int source)
+{
+    s->int_status |= SGI_IOC3_SERIAL_SOURCE(port, source);
+    sgi_ioc3_update_irq(s);
+}
+
+/* Whether the port's engine may move anything at all right now. */
+static bool sgi_ioc3_sdma_running(SGIIOC3State *s, unsigned int port)
+{
+    uint32_t control = sgi_ioc3_sdma_control(s, port);
+
+    return (control & SGI_IOC3_SDMA_ENABLE) &&
+           !(control & SGI_IOC3_SDMA_PAUSE);
+}
+
+/*
+ * Take whatever the port's receiver is holding and pack it into the receive
+ * ring, four characters to an entry, with each character's own status byte
+ * beside it.
+ */
+/*
+ * Put the packer's contents into the receive ring as one entry and start it
+ * again. Slots the engine did not fill carry neither validity flag, so an
+ * entry written short says so rather than leaving stale characters behind it.
+ */
+static void sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
+                               uint32_t *produce, uint32_t *consume,
+                               uint32_t mask)
+{
+    uint64_t ring = sgi_ioc3_sdma_ring(s, port, SGI_IOC3_SDMA_RING_RX);
+    uint32_t next = (*produce + SGI_IOC3_SDMA_ENTRY_SIZE) & mask;
+
+    /*
+     * The ring is full when the next entry the engine would fill is the one
+     * software has not consumed yet. Characters are dropped rather than
+     * written over an entry a driver has not read, and the source says so.
+     */
+    if (next == (*consume & mask)) {
+        s->sdma_packed[port] = 0;
+        memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
+        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_RING_FULL);
+        return;
+    }
+
+    dma_memory_write(s->dma_as, ring + (*produce & mask),
+                     s->sdma_packer[port], SGI_IOC3_SDMA_ENTRY_SIZE,
+                     MEMTXATTRS_UNSPECIFIED);
+    *produce = next;
+    s->sdma_packed[port] = 0;
+    memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
+    s->sdma_delivered[port] = true;
+}
+
+/*
+ * The end of a burst. A real engine keeps a short group in its packer until
+ * either a fourth character arrives or the receive timer runs out of idle
+ * time, and this model has no clock of its own to run that timer against --
+ * so what stands in for the timer expiring is the moment the engine has
+ * nothing left to do, which is the same event the timer exists to detect.
+ * That substitution is this model's, not the hardware's: a guest that armed
+ * the timer expecting a short group to sit until it expired gets it
+ * immediately instead. Nothing on this machine's path can tell the two apart,
+ * and the project's ioc3-serial-dma notebook names what would.
+ *
+ * Then the two sources a delivery prompts a driver with. The receive timer is
+ * armed through bit 31 of the consume index; the threshold is a different
+ * thing, a supply warning that fires once the characters waiting for software
+ * reach the mark the control register sets. The mark is in characters rather
+ * than entries -- the firmware's diagnostic programs 511 against 1 KB rings,
+ * which hold 128 entries of four characters, so a mark counted in entries
+ * could never be reached and a mark counted in characters is one short of
+ * full, which is what a mark set out of the way looks like.
+ */
+static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
+{
+    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_PRODUCE);
+    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_CONSUME);
+    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+    uint32_t control = sgi_ioc3_sdma_control(s, port);
+    uint32_t waiting;
+
+    if (s->sdma_packed[port]) {
+        sgi_ioc3_sdma_post(s, port, produce, consume, mask);
+    }
+
+    if (!s->sdma_delivered[port]) {
+        return;
+    }
+    s->sdma_delivered[port] = false;
+
+    if (*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) {
+        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_TIMER);
+    }
+
+    waiting = ((*produce - *consume) & mask) / SGI_IOC3_SDMA_ENTRY_SIZE *
+              SGI_IOC3_SDMA_ENTRY_CHARS;
+    if ((control & SGI_IOC3_SDMA_HIGH_WATER) &&
+        waiting >= (control & SGI_IOC3_SDMA_HIGH_WATER)) {
+        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_HIGH_WATER);
+    }
+}
+
+static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
+{
+    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_PRODUCE);
+    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_CONSUME);
+    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+    SerialState *serial = &s->serial[port];
+
+    while (sgi_ioc3_sdma_running(s, port)) {
+        uint8_t lsr = serial_io_ops.read(serial, UART_LSR, 1);
+        uint8_t msr;
+        uint8_t status;
+
+        if (!(lsr & UART_LSR_DR)) {
+            break;
+        }
+
+        /*
+         * Reading the line status register is what clears its error latches,
+         * so the value read above is the one that describes the character
+         * read here, and reading them in the other order would report the
+         * previous character's errors against this one.
+         */
+        s->sdma_packer[port][s->sdma_packed[port]] =
+            serial_io_ops.read(serial, UART_RBR_THR, 1);
+        msr = serial_io_ops.read(serial, UART_MSR, 1);
+
+        /*
+         * The status byte's two validity flags are what a driver actually
+         * tests, and they are separate: one says the data byte and the error
+         * fields mean something, the other says the modem and overrun fields
+         * do. A slot the engine did not fill carries neither, which is how a
+         * driver reading a whole entry knows where the characters stop.
+         */
+        status = SGI_IOC3_SDMA_RX_DATA_OK | SGI_IOC3_SDMA_RX_MODEM_OK;
+        if (lsr & UART_LSR_OE) {
+            status |= SGI_IOC3_SDMA_RX_OVERRUN;
+        }
+        if (lsr & UART_LSR_PE) {
+            status |= SGI_IOC3_SDMA_RX_PARITY;
+        }
+        if (lsr & UART_LSR_FE) {
+            status |= SGI_IOC3_SDMA_RX_FRAMING;
+        }
+        if (lsr & UART_LSR_BI) {
+            status |= SGI_IOC3_SDMA_RX_BREAK;
+        }
+        if (msr & UART_MSR_CTS) {
+            status |= SGI_IOC3_SDMA_RX_CTS;
+        }
+        if (msr & UART_MSR_DCD) {
+            status |= SGI_IOC3_SDMA_RX_CD;
+        }
+        s->sdma_packer[port][SGI_IOC3_SDMA_ENTRY_CHARS +
+                             s->sdma_packed[port]] = status;
+
+        /*
+         * An entry goes to memory once four characters have been packed into
+         * it, and not before. That is what the packer is: the produce index
+         * reports how many bytes it is holding precisely because a driver
+         * would otherwise see an entry per character, and the count is the
+         * difference between an engine that packs and one that flushes as it
+         * goes.
+         */
+        if (++s->sdma_packed[port] == SGI_IOC3_SDMA_ENTRY_CHARS) {
+            sgi_ioc3_sdma_post(s, port, produce, consume, mask);
+        }
+    }
+}
+
+/*
+ * Walk the transmit ring from where the engine got to as far as software has
+ * handed over, and send what each entry carries.
+ *
+ * An entry's four control bytes are typed one per data byte: a character for
+ * the transmitter, a byte for the port's modem control register, or a delay.
+ * The type both bits clear means the slot holds nothing, which is how a
+ * driver with fewer than four characters ends an entry -- an engine sending
+ * all four regardless puts three bytes of whatever was in memory on the wire
+ * after every short write.
+ */
+static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
+{
+    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_TX_PRODUCE);
+    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_TX_CONSUME);
+    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+    SerialState *serial = &s->serial[port];
+    uint64_t ring = sgi_ioc3_sdma_ring(s, port, SGI_IOC3_SDMA_RING_TX);
+    bool walked = false;
+
+    while (sgi_ioc3_sdma_running(s, port) &&
+           (*consume & mask) != (*produce & mask)) {
+        uint8_t entry[SGI_IOC3_SDMA_ENTRY_SIZE];
+        unsigned int i;
+
+        dma_memory_read(s->dma_as, ring + (*consume & mask), entry,
+                        sizeof(entry), MEMTXATTRS_UNSPECIFIED);
+
+        for (i = 0; i < SGI_IOC3_SDMA_ENTRY_CHARS; i++) {
+            uint8_t control = entry[SGI_IOC3_SDMA_ENTRY_CHARS + i];
+
+            switch (control & SGI_IOC3_SDMA_TX_TYPE) {
+            case SGI_IOC3_SDMA_TX_NOTHING:
+                /* The entry ends here, and so does this slot's interrupt. */
+                continue;
+            case SGI_IOC3_SDMA_TX_CHARACTER:
+                serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
+                /*
+                 * With the port in loopback the character it just sent is
+                 * already sitting in its own receiver, and the receive FIFO
+                 * is sixteen bytes deep against a ring the diagnostic fills
+                 * five hundred characters at a time. Draining per character
+                 * is what keeps the two in step; letting the FIFO run would
+                 * lose characters to overrun and report it as the engine's.
+                 */
+                sgi_ioc3_sdma_receive(s, port);
+                break;
+            case SGI_IOC3_SDMA_TX_MODEM:
+                serial_io_ops.write(serial, UART_MCR, entry[i], 1);
+                break;
+            case SGI_IOC3_SDMA_TX_DELAY:
+                /*
+                 * A pause in milliseconds before the next byte. Nothing in
+                 * this model has a rate for it to pace against -- the
+                 * transmitter here is instantaneous -- so the delay is
+                 * honoured by being unnecessary rather than by waiting.
+                 */
+                break;
+            }
+
+            if (control & SGI_IOC3_SDMA_TX_INTERRUPT) {
+                sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_TX_DONE);
+            }
+        }
+
+        *consume = (*consume + SGI_IOC3_SDMA_ENTRY_SIZE) & mask;
+        walked = true;
+    }
+
+    /*
+     * The queue draining is its own source, separate from the per-entry
+     * completion above, and a driver may enable either without the other. It
+     * is raised on reaching the end of a walk rather than on every idle
+     * engine, so an enabled engine with an empty ring does not raise it
+     * forever.
+     */
+    if (walked && (*consume & mask) == (*produce & mask)) {
+        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_TX_RING_EMPTY);
+    }
+}
+
+/*
+ * Both directions, in the order the hardware has them: characters go out, and
+ * anything the port has taken in comes back. The receive pass runs even when
+ * the transmit ring was empty, because a port with nothing to send still has
+ * a receiver.
+ */
+static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
+{
+    /*
+     * One walk at a time per port. Every way into this function from inside
+     * itself goes through the port's own interrupt: sending a character in
+     * loopback delivers it, and reading one out empties the receive FIFO,
+     * and the register file raises or lowers its line on both. A second walk
+     * starting there would post the packer's half-filled entry in the middle
+     * of the burst still filling it.
+     */
+    if (s->sdma_busy[port]) {
+        return;
+    }
+    s->sdma_busy[port] = true;
+
+    sgi_ioc3_sdma_transmit(s, port);
+    sgi_ioc3_sdma_receive(s, port);
+    sgi_ioc3_sdma_flush(s, port);
+
+    s->sdma_busy[port] = false;
+}
+
+/*
+ * Put one port's channels back at the start of their rings. This is the
+ * control register's top bit, which is an action rather than a setting: the
+ * firmware's diagnostic writes it, then writes the register again without it,
+ * so a model storing it would work by luck -- but a driver that wrote it once
+ * and moved on would leave the engine held in reset for good.
+ */
+static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
+{
+    /*
+     * The four indices and nothing else. What the bit resets is the channels,
+     * so the settings a driver made before it -- the watermark, the receive
+     * timer's reload -- are still the settings it meant afterwards.
+     */
+    unsigned int reg;
+
+    for (reg = SGI_IOC3_SDMA_TX_PRODUCE; reg <= SGI_IOC3_SDMA_RX_CONSUME;
+         reg += 4) {
+        *sgi_ioc3_sdma_port_reg(s, port, reg) = 0;
+    }
+
+    /* And the characters the packer was holding for an entry it never wrote. */
+    s->sdma_packed[port] = 0;
+    memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
+    s->sdma_delivered[port] = false;
+}
+
+/*
+ * One of a port's seven registers, read. Six of them read back the state they
+ * hold; the control register additionally answers two things hardware owns --
+ * the transmit timer running, which nothing in this model starts, and the
+ * pause having taken effect, which it always has, since this engine has no
+ * transfer in flight to finish first.
+ */
+static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
+                                        hwaddr offset)
+{
+    uint32_t val = *sgi_ioc3_sdma_port_reg(s, port, offset);
+
+    if (offset == SGI_IOC3_SDMA_CONTROL && (val & SGI_IOC3_SDMA_PAUSE)) {
+        val |= SGI_IOC3_SDMA_PAUSED;
+    }
+
+    /*
+     * The receive produce index reports alongside its pointer how many
+     * characters the packer is holding for an entry it has not written yet,
+     * which is the difference a driver can see between an engine that packs
+     * four to an entry and one that writes an entry per character.
+     */
+    if (offset == SGI_IOC3_SDMA_RX_PRODUCE) {
+        val |= (uint32_t)s->sdma_packed[port] << SGI_IOC3_SDMA_HELD_SHIFT;
+    }
+
+    return val;
+}
+
+/*
+ * One of a port's seven registers, written. What each one keeps is the
+ * register's own business and none of them keeps a whole word: the control
+ * register drops three bits it does not store, the indices keep a pointer as
+ * wide as the ring, and two indices and the shadow are not software's to
+ * write at all.
+ */
+static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
+                                     hwaddr offset, uint32_t val)
+{
+    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+
+    switch (offset) {
+    case SGI_IOC3_SDMA_CONTROL:
+        *sgi_ioc3_sdma_port_reg(s, port, offset) =
+            val & ~SGI_IOC3_SDMA_CTRL_UNSTORED;
+        if (val & SGI_IOC3_SDMA_RESET) {
+            sgi_ioc3_sdma_reset_port(s, port);
+        }
+        /*
+         * Enabling is a start, not only a setting. The diagnostic hands the
+         * transmit ring over before it programs the ring base and before it
+         * enables the engine at all, so an engine that walked only when
+         * software advanced the produce index would never walk here.
+         */
+        sgi_ioc3_sdma_run(s, port);
+        return;
+
+    case SGI_IOC3_SDMA_TX_PRODUCE:
+        *sgi_ioc3_sdma_port_reg(s, port, offset) = val & mask;
+        sgi_ioc3_sdma_run(s, port);
+        return;
+
+    case SGI_IOC3_SDMA_RX_CONSUME:
+        *sgi_ioc3_sdma_port_reg(s, port, offset) =
+            val & (mask | SGI_IOC3_SDMA_ARM_RX_TIMER);
+        sgi_ioc3_sdma_run(s, port);
+        return;
+
+    case SGI_IOC3_SDMA_RX_TIMER:
+        *sgi_ioc3_sdma_port_reg(s, port, offset) =
+            val & SGI_IOC3_SDMA_TIMER_RELOAD;
+        return;
+
+    case SGI_IOC3_SDMA_SHADOW:
+        /*
+         * OpenBSD writes zero here on every boot, alongside the port's
+         * control register, to put the port into pass-through mode before
+         * attaching its 16550 driver, and the firmware's diagnostic writes
+         * the modem lines it has just set through the byte-wide window. The
+         * real chip discards both the same way: the shadow is hardware's own
+         * mirror of the lines the port drives, recomputed regardless of what
+         * software last stored. Logging it would fire on every stock boot for
+         * a write that is neither a driver bug nor observable.
+         */
+        return;
+
+    case SGI_IOC3_SDMA_TX_CONSUME:
+    case SGI_IOC3_SDMA_RX_PRODUCE:
+        /*
+         * These two are the engine's side of the ring. The datasheet's
+         * contract is that no driver writes them and that a write here is a
+         * real anomaly -- and the firmware's own base I/O diagnostic writes
+         * both of them, zero, on every stock boot, which is a finding for
+         * the datasheet rather than a change to make here. It writes them
+         * immediately after resetting the channels, when they already hold
+         * zero, so refusing the write costs the diagnostic nothing.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3: write to read-only serial DMA register "
+                      "0x%03x\n",
+                      (unsigned)(SGI_IOC3_SDMA_PORT_A +
+                                 port * SGI_IOC3_SDMA_PORT_STRIDE + offset));
+        return;
+    }
+}
+
 static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
+    hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
+    unsigned int port;
+    hwaddr offset;
+    uint32_t val;
 
-    /*
-     * Every register reads back what is stored, and the hardware-owned ones
-     * stay at zero because nothing advances them: no ring is walked, so the
-     * engine is permanently where it started. A driver reading them sees an
-     * idle channel, which is what an idle channel looks like.
-     */
-    uint32_t val = s->sdma_reg[addr / 4];
+    if (sgi_ioc3_sdma_port_offset(reg, &port, &offset)) {
+        val = sgi_ioc3_sdma_read_port(s, port, offset);
+    } else {
+        val = s->sdma_reg[addr / 4];
+    }
 
-    trace_sgi_ioc3_sdma_read((uint32_t)(SGI_IOC3_SDMA_BASE + addr), val);
+    trace_sgi_ioc3_sdma_read((uint32_t)reg, val);
     return val;
 }
 
@@ -654,39 +1196,15 @@ static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     SGIIOC3State *s = opaque;
+    hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
+    unsigned int port;
     hwaddr offset;
 
-    trace_sgi_ioc3_sdma_write((uint32_t)(SGI_IOC3_SDMA_BASE + addr),
-                              (uint32_t)val);
+    trace_sgi_ioc3_sdma_write((uint32_t)reg, (uint32_t)val);
 
-    if (sgi_ioc3_sdma_port_offset(addr, &offset)) {
-        if (offset == SGI_IOC3_SDMA_SHADOW) {
-            /*
-             * OpenBSD writes zero here on every boot, alongside the port's
-             * control register, to put the port into pass-through mode
-             * before attaching its 16550 driver -- and never reads the
-             * value back on that path. The real chip discards a write here
-             * the same way: the shadow is hardware's own mirror of the
-             * lines the port drives, recomputed regardless of what software
-             * last stored, so there is nothing to log. Logging it would
-             * fire on every OpenBSD boot for a write that is neither a
-             * driver bug nor observable.
-             */
-            return;
-        }
-
-        if (offset == SGI_IOC3_SDMA_TX_CONSUME ||
-            offset == SGI_IOC3_SDMA_RX_PRODUCE) {
-            /*
-             * These two are the engine's side of the ring. No driver in any
-             * of the three trees we hold writes them, so unlike the shadow
-             * above, a write here is a real anomaly worth surfacing.
-             */
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc3: write to read-only serial DMA register "
-                          "0x%03x\n", (unsigned)(SGI_IOC3_SDMA_BASE + addr));
-            return;
-        }
+    if (sgi_ioc3_sdma_port_offset(reg, &port, &offset)) {
+        sgi_ioc3_sdma_write_port(s, port, offset, val);
+        return;
     }
 
     s->sdma_reg[addr / 4] = val;
@@ -812,6 +1330,13 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * must go through it rather than the plain system address space.
      */
     s->eth.dma_as = pci_get_address_space(dev);
+    /*
+     * And the serial engines' own, which is the same space for the same
+     * reason: their rings sit in guest memory reached through the Bridge's
+     * translation, so the transfer has to go through this chip's PCI address
+     * space rather than around it.
+     */
+    s->dma_as = pci_get_address_space(dev);
     /*
      * And its network backend, claimed here rather than by the machine that
      * plugs this chip in. The block is a child device carrying the NIC
@@ -970,8 +1495,8 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 10,
-    .minimum_version_id = 10,
+    .version_id = 11,
+    .minimum_version_id = 11,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -982,6 +1507,11 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
+        VMSTATE_UINT8_2DARRAY_V(sdma_packer, SGIIOC3State,
+                                SGI_IOC3_SERIAL_PORTS,
+                                SGI_IOC3_SDMA_ENTRY_SIZE, 11),
+        VMSTATE_UINT8_ARRAY_V(sdma_packed, SGIIOC3State,
+                              SGI_IOC3_SERIAL_PORTS, 11),
         VMSTATE_UINT32(kbc_control, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
         VMSTATE_END_OF_LIST()
