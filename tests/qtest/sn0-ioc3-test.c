@@ -843,18 +843,22 @@ static void test_the_ethernet_read_only_registers(const void *data)
  * arbitration diagnostic to report idle, and clears reset itself. Seed
  * another register as well so the test proves that reset clears the block,
  * rather than merely synthesizing the idle status on reads.
+ *
+ * The witness is the produce index rather than a ring base. The ring bases
+ * survive this reset -- see the test that asserts they do -- so seeding one
+ * would show nothing about whether the block was cleared.
  */
 static void test_the_ethernet_mac_reset_reports_idle(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
     sn0_ioc3_attach(qts);
-    qtest_writel(qts, TX_RING_LO, 0x00100000);
+    qtest_writel(qts, TX_PRODUCE, 128);
     qtest_writel(qts, MAC_CONTROL, MCR_RESET);
 
     g_assert_cmphex(qtest_readl(qts, MAC_CONTROL), ==,
                     MCR_RESET | MCR_ARB_DIAG_IDLE);
-    g_assert_cmphex(qtest_readl(qts, TX_RING_LO), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, TX_PRODUCE), ==, 0);
 
     qtest_writel(qts, MAC_CONTROL, 0);
     g_assert_cmphex(qtest_readl(qts, MAC_CONTROL), ==, 0);
@@ -1668,6 +1672,46 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
+}
+
+/*
+ * The block reset keeps the ring addresses it was given.
+ *
+ * SGI's power-on loopback diagnostic programs both ring bases, asserts the
+ * MAC control reset bit, and then programs only the four indices before
+ * starting the engine -- it never writes either base again. A reset that
+ * cleared them leaves the engine fetching descriptors from address zero, and
+ * the visible symptom is the diagnostic reporting frames sent and none
+ * received rather than anything about a register.
+ *
+ * The indices are asserted cleared in the same test, because that is the half
+ * of the reset that must still happen: a reset preserving everything would
+ * pass an assertion that only looked at the bases.
+ */
+static void test_the_block_reset_keeps_the_ring_addresses(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, TX_RING_HI, 0xa0000000);
+    qtest_writel(qts, TX_RING_LO, 0x01500001);
+    qtest_writel(qts, RX_RING_HI, 0xa0000000);
+    qtest_writel(qts, RX_RING_LO, 0x01521000);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_RESET);
+
+    g_assert_cmphex(qtest_readl(qts, TX_RING_HI), ==, 0xa0000000);
+    g_assert_cmphex(qtest_readl(qts, TX_RING_LO), ==, 0x01500001);
+    g_assert_cmphex(qtest_readl(qts, RX_RING_HI), ==, 0xa0000000);
+    g_assert_cmphex(qtest_readl(qts, RX_RING_LO), ==, 0x01521000);
+
+    /* And the engine's own state is gone. */
+    g_assert_cmphex(qtest_readl(qts, TX_PRODUCE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS), ==, 0);
+
+    qtest_quit(qts);
 }
 
 static void test_the_ethernet_receive_delivers_a_frame(const void *data)
@@ -3058,6 +3102,8 @@ int main(int argc, char **argv)
                         NULL, test_transmit_starts_when_enabled_late);
     qtest_add_data_func("sn0/ioc3/second-enable-write-does-not-resend", NULL,
                         test_a_second_enable_write_does_not_resend);
+    qtest_add_data_func("sn0/ioc3/block-reset-keeps-ring-addresses", NULL,
+                        test_the_block_reset_keeps_the_ring_addresses);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-bounds-the-inline-area",
                         NULL,
                         test_the_ethernet_transmit_bounds_the_inline_area);
