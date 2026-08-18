@@ -937,6 +937,54 @@ static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
     }
 }
 
+/*
+ * The stock PROM's slice-pair rendezvous polls a pending bank for a bit its
+ * local peer publishes through PI_INT_MODIFY, in both directions: one slice
+ * waits for the set, the other for the acknowledging clear.  On real
+ * processors the peer runs concurrently and answers inside the poll's bounded
+ * budget; under RR TCG the poller can exhaust that budget in one slice while
+ * the peer is runnable and never scheduled.  Give the reader's local peer the
+ * next slice.  The ordered handoff resumes the displaced successor and bounds
+ * nesting, so rotation fairness holds across repeated rounds.
+ *
+ * Only an unchanged re-read hands off.  A read whose value moved since the
+ * same processor's previous read is an answered one -- the producer's own
+ * verify read, or a poll observing the edge it waited for -- and the reader
+ * must keep its slice to act on it; ending its slice there hands the
+ * exchange's window to an unrelated processor.  Deliberately keyed on
+ * neither the bank's value nor the mask registers: the observed protocol
+ * polls a bank that other pending bits keep nonzero, and the polled-for
+ * bit's mask ownership names the acknowledging slice, not the producer, so
+ * either key picks the wrong reads to assist.
+ */
+static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
+{
+    uint64_t value = qatomic_read(&s->pi_int_pend[bank]);
+    unsigned int i;
+
+    if (!current_cpu || current_cpu->cpu_index < s->cpu_base ||
+        current_cpu->cpu_index >= s->cpu_base + s->cpus) {
+        return value;
+    }
+
+    i = current_cpu->cpu_index - s->cpu_base;
+    if (s->pi_int_pend_seen_valid[i][bank] &&
+        s->pi_int_pend_seen[i][bank] == value) {
+        for (i = 0; i < s->cpus; i++) {
+            CPUState *peer = qemu_get_cpu(s->cpu_base + i);
+
+            if (peer && peer != current_cpu) {
+                qemu_cpu_handoff(peer);
+            }
+        }
+        return value;
+    }
+
+    s->pi_int_pend_seen[i][bank] = value;
+    s->pi_int_pend_seen_valid[i][bank] = true;
+    return value;
+}
+
 /* Where the counter has got to, from the clock rather than from stored state. */
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
@@ -1285,10 +1333,10 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     case HUB_PI_CALIAS_SIZE:
         return s->pi_calias_size;
     case HUB_PI_INT_PEND0:
-        value = qatomic_read(&s->pi_int_pend[0]);
+        value = sgi_hub_int_pending_read(s, 0);
         goto trace_protocol_read;
     case HUB_PI_INT_PEND1:
-        value = qatomic_read(&s->pi_int_pend[1]);
+        value = sgi_hub_int_pending_read(s, 1);
         goto trace_protocol_read;
     case HUB_PI_INT_MASK0_A:
         return s->pi_int_mask[0];
@@ -2000,6 +2048,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
         timer_del(s->rt_timer[n]);
     }
     memset(s->pi_int_pend, 0, sizeof(s->pi_int_pend));
+    memset(s->pi_int_pend_seen_valid, 0, sizeof(s->pi_int_pend_seen_valid));
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
                    (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
