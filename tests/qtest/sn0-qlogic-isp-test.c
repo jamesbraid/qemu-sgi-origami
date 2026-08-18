@@ -172,7 +172,37 @@
 #define ISP_MBOX_CMD_DUMP_RAM       0x0003
 #define ISP_MBOX_CMD_WRITE_RAM_WORD 0x0004
 #define ISP_MBOX_CMD_READ_RAM_WORD  0x0005
+#define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
+#define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
 #define ISP_MBOX_COMPLETE           0x4000
+
+/* Ring entry layout, restated here the same way the mailbox offsets are. */
+#define ISP_QUEUE_ENTRY_SIZE        64
+#define ISP_ENTRY_OFF_TYPE          0
+#define ISP_ENTRY_OFF_COUNT         1
+#define ISP_ENTRY_TYPE_STATUS       0x03
+#define ISP_A64_ENTRY_TYPE_COMMAND  0x09
+#define ISP_REQ_OFF_HANDLE          4
+#define ISP_REQ_OFF_DEVICE          8
+#define ISP_REQ_OFF_CDBLEN          10
+#define ISP_REQ_OFF_SEGCOUNT        18
+#define ISP_STATUS_OFF_HANDLE       4
+#define ISP_REG_REQUEST_QUEUE       (ISP_REG_MAILBOX_BASE + 0x08)
+#define ISP_REG_RESPONSE_QUEUE      (ISP_REG_MAILBOX_BASE + 0x0a)
+
+/*
+ * A ring the guest addresses with a 64-bit base. The bridge's direct map
+ * keeps the low 31 bits, so this lands at one megabyte of real memory while
+ * still being a 64-bit address as far as the adapter is concerned -- which is
+ * the whole point, since the ring's base is what selects descriptor byte
+ * order.
+ */
+#define RING_PHYS                   0x00100000u
+#define RING_IOVA                   (0xa500000000000000ULL | RING_PHYS)
+#define RING_ENTRIES                4
+#define RESP_PHYS                   0x00110000u
+#define RESP_IOVA                   (0xa500000000000000ULL | RESP_PHYS)
+#define BRIDGE_DIRECT_MAP_REG       (BRIDGE_BASE + 0x080 + REG_DATA)
 
 /* Every access to the adapter goes through the window's byte-lane swizzle. */
 static void isp_writew(QTestState *qts, unsigned natural, uint16_t val)
@@ -505,6 +535,125 @@ static void test_read_ram_word_through_the_fabric(const void *data)
     qtest_quit(qts);
 }
 
+/* Little-endian field access into a locally built entry. */
+static void put32le(uint8_t *b, uint32_t v)
+{
+    b[0] = v; b[1] = v >> 8; b[2] = v >> 16; b[3] = v >> 24;
+}
+
+static void put16le(uint8_t *b, uint16_t v)
+{
+    b[0] = v; b[1] = v >> 8;
+}
+
+static uint32_t get32le(const uint8_t *b)
+{
+    return b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+/* Reverse each aligned 32-bit word, the correction a word-value ring needs. */
+static void normalise_words(uint8_t *buf, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + 4 <= len; i += 4) {
+        uint8_t t = buf[i];
+
+        buf[i] = buf[i + 3];
+        buf[i + 3] = t;
+        t = buf[i + 1];
+        buf[i + 1] = buf[i + 2];
+        buf[i + 2] = t;
+    }
+}
+
+static void isp_init_queue_a64(QTestState *qts, uint16_t cmd, uint16_t count,
+                               uint64_t iova)
+{
+    isp_writew(qts, ISP_MAILBOX(0), cmd);
+    isp_writew(qts, ISP_MAILBOX(1), count);
+    isp_writew(qts, ISP_MAILBOX(2), (iova >> 16) & 0xffff);
+    isp_writew(qts, ISP_MAILBOX(3), iova & 0xffff);
+    isp_writew(qts, ISP_MAILBOX(6), (iova >> 48) & 0xffff);
+    isp_writew(qts, ISP_MAILBOX(7), (iova >> 32) & 0xffff);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+}
+
+/*
+ * A ring based at a 64-bit address carries its descriptors with each aligned
+ * 32-bit word byte-reversed, and the adapter has to read and write them that
+ * way. This is the firmware's arrangement: it is the only guest that gives a
+ * queue a 64-bit base, and before this was modelled its command entries read
+ * as entry type zero and its interrupt handler read our completions the same
+ * way, in both directions at once.
+ *
+ * The command is aimed at a target with nothing behind it, which is what the
+ * machine has here. That is deliberate rather than a limitation -- an absent
+ * target still produces a completion carrying the handle, so the round trip
+ * is testable without a disk, and it is the same path a bus walk takes.
+ */
+static void test_a64_ring_is_word_value(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    const uint32_t handle = 0x1234abcd;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+
+    /* Direct map with no offset, so the low bits reach memory unchanged. */
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /*
+     * Built canonically and then reversed per word, which is how a guest on
+     * this ring lays one down. Nothing here is hand-swizzled field by field:
+     * the same one transform covers the header bytes, the 32-bit handle and
+     * the 16-bit device and length fields together, which is exactly the
+     * property that would break if the model corrected fields individually.
+     */
+    memset(entry, 0, sizeof(entry));
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, 0x0100);    /* target 1, lun 0 */
+    put16le(entry + ISP_REQ_OFF_CDBLEN, 6);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, 0);
+    normalise_words(entry, sizeof(entry));
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+
+    /* Publish one entry and let the adapter run it. */
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+
+    /*
+     * A completion appeared, and reading it back through the same correction
+     * recovers the entry type and the handle we sent. Read raw it would be
+     * neither -- which is precisely what the firmware saw before this, when
+     * its handler reported entry type zero.
+     */
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qtest_memread(qts, RESP_PHYS, status, sizeof(status));
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], !=, ISP_ENTRY_TYPE_STATUS);
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -519,6 +668,8 @@ int main(int argc, char **argv)
                         NULL, test_ram_dma_translates_through_the_bridge);
     qtest_add_data_func("sn0/qlogic-isp/read-ram-word-through-the-fabric",
                         NULL, test_read_ram_word_through_the_fabric);
+    qtest_add_data_func("sn0/qlogic-isp/a64-ring-is-word-value", NULL,
+                        test_a64_ring_is_word_value);
 
     return g_test_run();
 }
