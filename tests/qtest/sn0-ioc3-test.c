@@ -1310,6 +1310,27 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
     return len;
 }
 
+/*
+ * Whether anything is waiting on the socket, for the tests that assert a frame
+ * was NOT sent. It sets a short timeout of its own rather than inheriting the
+ * long one the presence tests use: an absence has to be waited for in full, so
+ * a ten-second wait here would be ten seconds added to the suite for every
+ * such assertion, whereas a presence test's wait ends the moment the frame
+ * lands. The wait still has to be long enough for a frame already in flight
+ * through the main loop to arrive, or the test passes for the wrong reason.
+ */
+static bool net_socket_frame_arrived(int fd)
+{
+    uint32_t hdr;
+    ssize_t got;
+
+    net_socket_set_recv_timeout(fd, 1);
+    got = recv(fd, &hdr, sizeof(hdr), 0);
+    net_socket_set_recv_timeout(fd, 10);
+
+    return got == (ssize_t)sizeof(hdr);
+}
+
 static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
 {
     int sv[2];
@@ -1352,6 +1373,101 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
     g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) &
                     (ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE), ==,
                     ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Enabling transmit is a start, not only a gate.
+ *
+ * SGI's power-on loopback diagnostic rings the doorbell first and turns
+ * transmit on afterwards -- the descriptor is queued while the enables are
+ * clear, and the MAC control write that sets them is the only event left. A
+ * model that walks the ring solely on the doorbell never sends that frame, and
+ * the firmware sits polling for a transmit-empty interrupt until it gives up.
+ * Neither guest driver orders it this way, which is why no boot caught it.
+ */
+static void test_transmit_starts_when_enabled_late(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[14] = { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00 };
+    uint8_t received[64];
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+
+    /* The doorbell, with transmit still off. Nothing may go out yet. */
+    qtest_writel(qts, TX_PRODUCE, 128);
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_TX_EMPTY, ==,
+                    0);
+
+    /* Turning transmit on is what starts it. */
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(frame));
+    g_assert_cmpmem(received, got, frame, sizeof(frame));
+
+    g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, (128u | TX_CONSUME_IDLE));
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_TX_EMPTY, ==,
+                    ENET_INT_TX_EMPTY);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * And a second MAC control write does not send the ring again. The firmware
+ * writes the register twice more after transmit comes on -- to add the receive
+ * enables -- so a model that started a walk on every write to it would send
+ * each queued frame as many times as the register is touched.
+ */
+static void test_a_second_enable_write_does_not_resend(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[14] = { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00 };
+    uint8_t received[64];
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], received, sizeof(received)),
+                    ==, sizeof(frame));
+
+    /* The receive enables arrive next, exactly as the firmware writes them. */
+    qtest_writel(qts, MAC_CONTROL,
+                 MCR_TX_DMA_EN | MCR_TX_EN | MCR_RX_DMA_EN | MCR_RX_EN);
+
+    /* Nothing further reaches the backend. */
+    g_assert_false(net_socket_frame_arrived(sv[0]));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2938,6 +3054,10 @@ int main(int argc, char **argv)
                         test_the_ethernet_mac_reset_reports_idle);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-sends-inline-frame", NULL,
                         test_the_ethernet_transmit_sends_inline_frame);
+    qtest_add_data_func("sn0/ioc3/transmit-starts-when-enabled-after-doorbell",
+                        NULL, test_transmit_starts_when_enabled_late);
+    qtest_add_data_func("sn0/ioc3/second-enable-write-does-not-resend", NULL,
+                        test_a_second_enable_write_does_not_resend);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-bounds-the-inline-area",
                         NULL,
                         test_the_ethernet_transmit_bounds_the_inline_area);
