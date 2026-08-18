@@ -22,6 +22,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "hw/misc/sgi-hub.h"
@@ -36,6 +37,7 @@
 #include "qemu/timer.h"
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
+#include "system/address-spaces.h"
 #include "qemu/host-utils.h"
 #include "system/system.h"
 #include "system/runstate.h"
@@ -152,6 +154,79 @@
 #define HUB_IO_ICRB_C_STRIDE    0x20      /* one slot to the next */
 #define HUB_IO_ICRB_C_FIRST     7
 #define HUB_IO_ICRB_C_LAST      14
+
+/*
+ * The two block transfer engines: cache-coherent memory-to-memory copy
+ * engines in the Hub's I/O section, publicly named BTE0 and BTE1
+ * (docs/datasheets/hub-bte.md). Software gives an engine a source, a
+ * destination and a length in 128-byte cache lines; the engine copies or
+ * zero-fills that range and signals completion either as a pending
+ * interrupt bit on a processor interface or as a status doubleword written
+ * to memory. The one guest consumer on our boot path is real firmware's
+ * power-on diagnostic, which launches both engines in interrupt mode and
+ * waits thirty seconds for completion interrupts no engine existed to
+ * deliver.
+ *
+ * Three facts here are load-bearing:
+ *
+ * **The engines work from reset, gated on nothing.** The diagnostic never
+ * writes the miscellaneous enable mask before launching, so a model gating
+ * launches on an enable bit that resets to zero reproduces exactly the
+ * hang this device exists to remove. Whatever those enable bits gate — the
+ * datasheet leaves their sense open — nothing the machine boots writes them
+ * before first use, so launches are not gated on them and the register
+ * stays unimplemented.
+ *
+ * **Stored addresses keep bits 39:7 and nothing else.** Real firmware
+ * stores the cached-memory window's virtual addresses — values with bits
+ * above 39 set — and depends on the register dropping them; a model that
+ * kept them would aim every transfer at nothing. Bits 6:0 sit below the
+ * cache-line size and are not stored either.
+ *
+ * **A transfer completes inside the store that launches it.** The
+ * diagnostic clears its two pending bits only when it observes both set
+ * together and does not loop back for the second — a window instant
+ * completion avoids entirely, which the datasheet documents as the correct
+ * model here. It also means a load of the control/terminate register,
+ * which stops a transfer in progress on real hardware, never has one to
+ * stop.
+ *
+ * **The engines see memory as their node's processors do.** The engines
+ * sit in the Hub's own register window and move node memory — nothing here
+ * crosses the Bridge or any crosstalk widget, so no IOMMU is involved — but
+ * the machine gives every processor a view in which an address carrying no
+ * node number names its own node, and the diagnostic fills, launches and
+ * compares its buffers through that view with node-less addresses. An
+ * engine copying through the global map instead would, on the second node,
+ * move the first node's memory while the second node's processors compared
+ * their own; so the machine hands the Hub the same node-local view and the
+ * engines copy through that.
+ */
+#define HUB_BTE_BASE            0x410000  /* engine 0; engine 1 at +0x10000 */
+#define HUB_BTE_STRIDE          0x10000
+#define HUB_BTE_LENGTH          0x00      /* length/status */
+#define HUB_BTE_SOURCE          0x08
+#define HUB_BTE_DEST            0x10
+#define HUB_BTE_CONTROL         0x18      /* a store launches; a load stops */
+#define HUB_BTE_NOTIFY          0x20      /* notification address */
+#define HUB_BTE_INTERRUPT       0x28      /* interrupt level and node */
+
+#define BTE_LENGTH_BUSY         (1ULL << 20)
+#define BTE_LENGTH_ERROR        (1ULL << 16)
+#define BTE_LENGTH_LINES        0xffffULL
+#define BTE_ADDRESS_MASK        0x000000ffffffff80ULL  /* bits 39:7 */
+#define BTE_LINE_SIZE           128
+#define BTE_CONTROL_POISON      (1ULL << 8)
+#define BTE_CONTROL_NOTIFY      (1ULL << 4)
+#define BTE_CONTROL_ZFILL       (1ULL << 0)
+#define BTE_CONTROL_MASK        (BTE_CONTROL_POISON | BTE_CONTROL_NOTIFY | \
+                                 BTE_CONTROL_ZFILL)
+#define BTE_INT_LEVEL_SHIFT     16
+#define BTE_INT_LEVEL_MASK      (0x7fULL << BTE_INT_LEVEL_SHIFT)
+#define BTE_INT_NODE_MASK       0x1ffULL
+
+/* Each engine's bit of the I/O error-clear register below. */
+#define IO_ERROR_CLEAR_BTE(engine)  (1ULL << (17 + (engine)))
 
 /*
  * Memory and directory interface. Both guests we boot read memory size
@@ -702,6 +777,28 @@ static bool sgi_hub_icrb_c_entry(hwaddr addr)
 }
 
 /*
+ * Which engine's register an address is, if it is one. The six registers
+ * sit at the base of each engine's own 64 KB block and only the aligned
+ * 64-bit addresses are registers; the rest of each block stays with the
+ * unimplemented default. The addr < base check comes first so the
+ * subtraction never wraps before the range is known good.
+ */
+static bool sgi_hub_bte_entry(hwaddr addr, unsigned int *engine, hwaddr *reg)
+{
+    hwaddr off;
+
+    if (addr < HUB_BTE_BASE) {
+        return false;
+    }
+
+    off = addr - HUB_BTE_BASE;
+    *engine = off / HUB_BTE_STRIDE;
+    *reg = off % HUB_BTE_STRIDE;
+    return *engine < SGI_HUB_BTES && *reg <= HUB_BTE_INTERRUPT &&
+           (*reg % 8) == 0;
+}
+
+/*
  * Whether addr is one of the eight memory/directory error-cluster registers
  * -- the four error registers and their four clear aliases, evenly strided
  * eight bytes apart from HUB_MD_ERROR_BASE. All eight answer identically
@@ -985,6 +1082,264 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     return value;
 }
 
+/*
+ * Truncate a stored transfer address to the bits the register keeps.
+ * Everything above bit 39 is dropped silently — real firmware stores
+ * cached-window addresses and depends on exactly that. Bits 6:0 are also
+ * not stored, but a value carrying them is misaligned programming, which
+ * no observed driver produces and the datasheet asks to be logged.
+ */
+static uint64_t sgi_hub_bte_address(unsigned int engine, const char *what,
+                                    uint64_t val)
+{
+    if (val & (BTE_LINE_SIZE - 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-hub: BTE%u %s address 0x%" PRIx64 " is not "
+                      "128-byte aligned; bits 6:0 are not stored\n",
+                      engine, what, val);
+    }
+    return val & BTE_ADDRESS_MASK;
+}
+
+/*
+ * Run one engine's armed transfer to completion. Called from the
+ * control-register store, which is the launch trigger in both observed
+ * programs; MMIO dispatch holds the BQL, which is what serialises the
+ * peer-Hub interrupt delivery below just as it does the vector PIO's.
+ *
+ * The copy is line-at-a-time through the node-local memory view the
+ * machine handed this Hub — the engines move node memory and nothing here
+ * crosses the Bridge, so no IOMMU is involved, and a node-less address
+ * names this node's memory exactly as it does for the node's processors.
+ * On our cache-less model the directory protocol's coherent traffic
+ * reduces to these plain reads and writes.
+ */
+static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
+{
+    uint64_t lines = s->bte_length[engine] & BTE_LENGTH_LINES;
+    uint64_t src = s->bte_source[engine];
+    uint64_t dst = s->bte_dest[engine];
+    uint64_t control = s->bte_control[engine];
+    uint64_t done;
+
+    trace_sgi_hub_bte_launch(engine, control, src, dst, lines);
+
+    if (control & BTE_CONTROL_POISON) {
+        /*
+         * The launch itself is in scope; the poisoned directory state the
+         * mode leaves behind belongs to the memory directory, which this
+         * model does not have. No guest we boot reaches page migration.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: BTE%u launched in poison mode; the copy "
+                      "runs but no directory state is poisoned\n", engine);
+    }
+    if (lines == 0) {
+        /*
+         * Never programmed by any observed driver — the kernel returns
+         * success without touching the engine — so what the hardware does
+         * is open. Falling through treats it as a transfer of zero lines:
+         * nothing moves, and the completion below is this model's choice
+         * on that open question, not an observed behavior.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-hub: BTE%u launched with a zero length\n", engine);
+    }
+
+    for (done = 0; done < lines; done++) {
+        uint8_t line[BTE_LINE_SIZE];
+        MemTxResult result = MEMTX_OK;
+
+        if (control & BTE_CONTROL_ZFILL) {
+            /*
+             * Whether the engine reads its source in zero-fill mode is
+             * open — every observed launch points it at a page software
+             * zeroed itself, so filling with zeros, copying the zeroed
+             * page and replicating its first line are indistinguishable.
+             * Not reading the source is the least-committal of the three.
+             */
+            memset(line, 0, sizeof(line));
+        } else {
+            result = address_space_read(&s->bte_as,
+                                        src + done * BTE_LINE_SIZE,
+                                        MEMTXATTRS_UNSPECIFIED, line,
+                                        sizeof(line));
+        }
+        if (result == MEMTX_OK) {
+            result = address_space_write(&s->bte_as,
+                                         dst + done * BTE_LINE_SIZE,
+                                         MEMTXATTRS_UNSPECIFIED, line,
+                                         sizeof(line));
+        }
+        if (result != MEMTX_OK) {
+            /*
+             * A failed transfer latches the error bit and wedges the
+             * engine: busy stays set beside error — the datasheet's one
+             * direct observation of an errored engine reads the two
+             * together — and the length field keeps the lines that never
+             * moved. A later store to length/status clears busy and never
+             * error; the engine's bit of the I/O error-clear register
+             * clears error. On real hardware the error surfaces through
+             * the Hub's own error machinery, not through a completion
+             * signal — a hardware notification write on error is not
+             * established, so neither completion path runs — and this
+             * model has no Hub error interrupt to raise in its place.
+             */
+            s->bte_length[engine] = BTE_LENGTH_BUSY | BTE_LENGTH_ERROR |
+                                    (lines - done);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-hub: BTE%u transfer failed at line %" PRIu64
+                          " (src 0x%" PRIx64 " dst 0x%" PRIx64 ")\n",
+                          engine, done, src + done * BTE_LINE_SIZE,
+                          dst + done * BTE_LINE_SIZE);
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-hub: BTE%u error latched; the Hub error "
+                          "interrupt it would raise is not modelled\n",
+                          engine);
+            return;
+        }
+    }
+
+    /*
+     * The count drained to zero and busy cleared; only a previously
+     * latched error bit could remain, and on success the register — and
+     * so the notification value below — reads zero.
+     */
+    s->bte_length[engine] &= BTE_LENGTH_ERROR;
+
+    if (control & BTE_CONTROL_NOTIFY) {
+        /*
+         * The final length/status value as one 64-bit doubleword in guest
+         * byte order at the notification address. Exactly eight bytes:
+         * whether hardware writes more of the line is unobserved, and the
+         * kernel reads only the first doubleword.
+         */
+        uint8_t status[8];
+
+        stq_be_p(status, s->bte_length[engine]);
+        if (address_space_write(&s->bte_as, s->bte_notify[engine],
+                                MEMTXATTRS_UNSPECIFIED, status,
+                                sizeof(status)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-hub: BTE%u notification address 0x%" PRIx64
+                          " reaches no memory\n",
+                          engine, s->bte_notify[engine]);
+        }
+    } else {
+        /*
+         * Interrupt mode: the completion arrives exactly as a device
+         * interrupt does, so it goes through the interrupt-modify
+         * machinery rather than a second path. The level comes from the
+         * register — the diagnostic's 63 and 62 are its choice, not the
+         * hardware's. The node field names a processor interface; this
+         * Hub and its direct network peer are the only two this machine
+         * can have.
+         */
+        uint64_t level = (s->bte_interrupt[engine] & BTE_INT_LEVEL_MASK) >>
+                         BTE_INT_LEVEL_SHIFT;
+        uint64_t node = s->bte_interrupt[engine] & BTE_INT_NODE_MASK;
+        SGIHubState *target;
+
+        if (node == sgi_hub_programmed_nasid(s)) {
+            target = s;
+        } else if (s->network_peer &&
+                   node == sgi_hub_programmed_nasid(s->network_peer)) {
+            target = s->network_peer;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-hub: BTE%u completion interrupt aimed at "
+                          "node %" PRIu64 ", which this machine does not "
+                          "have\n", engine, node);
+            return;
+        }
+        sgi_hub_int_modify(target, PI_INT_MODIFY_SET | level);
+    }
+}
+
+static uint64_t sgi_hub_bte_read(SGIHubState *s, unsigned int engine,
+                                 hwaddr reg)
+{
+    switch (reg) {
+    case HUB_BTE_LENGTH:
+        return s->bte_length[engine];
+    case HUB_BTE_SOURCE:
+        return s->bte_source[engine];
+    case HUB_BTE_DEST:
+        return s->bte_dest[engine];
+    case HUB_BTE_CONTROL:
+        /*
+         * A load stops the transfer in progress. Transfers here complete
+         * inside the store that launches them, so there is never one for
+         * this load to stop; what the load returns is unobserved — every
+         * driver discards it — and the datasheet's proposal, the written
+         * control bits, is what a register that stores its bits answers.
+         */
+        return s->bte_control[engine];
+    case HUB_BTE_NOTIFY:
+        return s->bte_notify[engine];
+    case HUB_BTE_INTERRUPT:
+        return s->bte_interrupt[engine];
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void sgi_hub_bte_write(SGIHubState *s, unsigned int engine,
+                              hwaddr reg, uint64_t val)
+{
+    switch (reg) {
+    case HUB_BTE_LENGTH:
+        /*
+         * Busy and the line count take the written value; a set error bit
+         * survives the store. SGI's own driver stores zero to a wedged
+         * engine's length/status, states the write turns off busy and
+         * will not clear the error bits, and asserts afterwards that
+         * error is still set — so a store can arm or disarm the engine
+         * but never absolve it. Whether a store can *set* the error bit
+         * is open (nothing observed writes a one there); this model does
+         * not let it, so the bit only ever reports a failure the engine
+         * actually took — a choice, not a finding. Arming is not
+         * launching: the diagnostic arms busy and length before the
+         * source register holds anything, and only the control store
+         * below starts the engine.
+         */
+        s->bte_length[engine] = (s->bte_length[engine] & BTE_LENGTH_ERROR) |
+                                (val & (BTE_LENGTH_BUSY | BTE_LENGTH_LINES));
+        break;
+    case HUB_BTE_SOURCE:
+        s->bte_source[engine] = sgi_hub_bte_address(engine, "source", val);
+        break;
+    case HUB_BTE_DEST:
+        s->bte_dest[engine] = sgi_hub_bte_address(engine, "destination",
+                                                  val);
+        break;
+    case HUB_BTE_CONTROL:
+        s->bte_control[engine] = val & BTE_CONTROL_MASK;
+        /*
+         * The store launches the armed transfer — last in both observed
+         * programming sequences, and the diagnostic's order proves the
+         * length/status store cannot be the trigger. Every observed
+         * launch has busy armed; what a control store does when busy is
+         * clear is open, and the datasheet's proposal — nothing — is
+         * implemented here.
+         */
+        if (s->bte_length[engine] & BTE_LENGTH_BUSY) {
+            sgi_hub_bte_launch(s, engine);
+        }
+        break;
+    case HUB_BTE_NOTIFY:
+        s->bte_notify[engine] = sgi_hub_bte_address(engine, "notification",
+                                                    val);
+        break;
+    case HUB_BTE_INTERRUPT:
+        s->bte_interrupt[engine] = val & (BTE_INT_LEVEL_MASK |
+                                          BTE_INT_NODE_MASK);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 /* Where the counter has got to, from the clock rather than from stored state. */
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
@@ -1259,9 +1614,13 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     uint64_t value;
     uint8_t *route;
     unsigned int n;
+    hwaddr reg;
 
     if (sgi_hub_bwin_entry(addr, &n)) {
         return s->io_bwin[n];
+    }
+    if (sgi_hub_bte_entry(addr, &n, &reg)) {
+        return sgi_hub_bte_read(s, n, reg);
     }
     route = sgi_hub_route_entry(s, addr);
     if (route) {
@@ -1643,6 +2002,7 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     SGIHubState *s = opaque;
     uint8_t *route;
     unsigned int n;
+    hwaddr reg;
 
     if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_WRITE)) {
         sgi_hub_trace_protocol_write(s, addr, val, size);
@@ -1657,6 +2017,10 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
          */
         s->io_bwin[n] = val & IO_BWIN_MASK;
         sgi_hub_bwin_follow(s, n);
+        return;
+    }
+    if (sgi_hub_bte_entry(addr, &n, &reg)) {
+        sgi_hub_bte_write(s, n, reg, val);
         return;
     }
     route = sgi_hub_route_entry(s, addr);
@@ -1866,18 +2230,32 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     case HUB_IO_ERROR_CLEAR:
         /*
          * Documented effect: writing a bit clears the corresponding error
-         * latch, including the widget status register's unrecoverable-state
-         * bit. This model has no error latches to clear -- the widget status
-         * read above always answers zero because nothing here ever raises an
-         * error in the first place -- so there is nothing this write could
-         * change. Real firmware writes here as part of its normal error-
-         * handling path (measured this session, three writes per boot), not
-         * as a guest asking for something we should be doing and are not.
+         * latch. The two block-transfer-engine bits now have a latch to
+         * clear -- a failed transfer sets the engine's error bit in its
+         * length/status register, no store to that register clears it, and
+         * this is the register the kernel writes to absolve an engine (once
+         * at every boot before first use, and during error recovery).
+         * Exactly which visible bits a clear touches is open in the
+         * datasheet; the one latched error this model has is the one it
+         * clears. Every other latch this register names still does not
+         * exist here -- the widget status register always answers zero
+         * because nothing ever raises those errors -- so the rest of the
+         * write is logged rather than acted on. Real firmware writes here
+         * as part of its normal error-handling path (measured, three
+         * writes per boot), not as a guest asking for unbuilt behaviour.
          */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to the error clear "
-                      "register 0x%" HWADDR_PRIx " (nothing here ever "
-                      "latches an error to clear)\n", val, addr);
+        for (n = 0; n < SGI_HUB_BTES; n++) {
+            if (val & IO_ERROR_CLEAR_BTE(n)) {
+                s->bte_length[n] &= ~BTE_LENGTH_ERROR;
+            }
+        }
+        if (val & ~(IO_ERROR_CLEAR_BTE(0) | IO_ERROR_CLEAR_BTE(1))) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-hub: write of 0x%" PRIx64 " to the error "
+                          "clear register 0x%" HWADDR_PRIx " (only the two "
+                          "block-transfer-engine latches exist here)\n",
+                          val, addr);
+        }
         break;
     case HUB_NI_STATUS:
         /*
@@ -2092,6 +2470,19 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->io_xtalk_prescale = 0;
     s->io_scratch[0] = 0;
     s->io_scratch[1] = 0;
+
+    /*
+     * All twelve engine registers reset to zero. No source describes what
+     * a chip reset does to an in-flight transfer, and this model never has
+     * one in flight -- transfers complete inside the store that launches
+     * them -- so zeroing the registers is the whole of the reset.
+     */
+    memset(s->bte_length, 0, sizeof(s->bte_length));
+    memset(s->bte_source, 0, sizeof(s->bte_source));
+    memset(s->bte_dest, 0, sizeof(s->bte_dest));
+    memset(s->bte_control, 0, sizeof(s->bte_control));
+    memset(s->bte_notify, 0, sizeof(s->bte_notify));
+    memset(s->bte_interrupt, 0, sizeof(s->bte_interrupt));
     s->md_perf_cnt0 = 0;
     s->md_config = MD_CONFIG_RESET;
     s->md_onewire = MD_ONEWIRE_RESET;
@@ -2154,10 +2545,16 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "space its big windows translate into");
         return;
     }
+    if (!s->memory) {
+        error_setg(errp, "the Hub needs the node-local memory view its "
+                         "block transfer engines copy through");
+        return;
+    }
 
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_hub_ops, s,
                           "sgi-hub.regs", SGI_HUB_WINDOW_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
+    address_space_init(&s->bte_as, s->memory, "sgi-hub.bte");
 
     if (s->junk_uart_present) {
         /*
@@ -2278,7 +2675,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 16,
+    .version_id = 17,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -2320,6 +2717,18 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_TIMER_PTR_V(md_onewire_timer, SGIHubState, 12),
         VMSTATE_UINT64_ARRAY_V(pi_err_spool, SGIHubState, 2, 13),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
+        /*
+         * The block transfer engines. The registers are the whole of an
+         * engine's state -- a transfer completes inside the store that
+         * launches it, so there is never an in-flight transfer to carry,
+         * and nothing is derived for post_load to re-derive.
+         */
+        VMSTATE_UINT64_ARRAY_V(bte_length, SGIHubState, SGI_HUB_BTES, 17),
+        VMSTATE_UINT64_ARRAY_V(bte_source, SGIHubState, SGI_HUB_BTES, 17),
+        VMSTATE_UINT64_ARRAY_V(bte_dest, SGIHubState, SGI_HUB_BTES, 17),
+        VMSTATE_UINT64_ARRAY_V(bte_control, SGIHubState, SGI_HUB_BTES, 17),
+        VMSTATE_UINT64_ARRAY_V(bte_notify, SGIHubState, SGI_HUB_BTES, 17),
+        VMSTATE_UINT64_ARRAY_V(bte_interrupt, SGIHubState, SGI_HUB_BTES, 17),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2360,6 +2769,8 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),
     DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
+    DEFINE_PROP_LINK("memory", SGIHubState, memory, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_BOOL("junk-uart", SGIHubState, junk_uart_present, false),
     DEFINE_PROP_LINK("junk-uart-chardev", SGIHubState, junk_uart_chr,

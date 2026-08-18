@@ -164,6 +164,15 @@ typedef struct SN0NodeState {
     SN0PromDataState promdata[SN0_CPUS_PER_NODE];
     SGIHubState hub;
 
+    /*
+     * The Hub's own view of memory, for its block transfer engines: the
+     * global map underneath and this node's memory over the node-less
+     * addresses, the same shape as each processor's local view.
+     */
+    MemoryRegion hub_memory;
+    MemoryRegion hub_memory_system;
+    MemoryRegion hub_memory_local;
+
     MemoryRegion flash;
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
@@ -2443,6 +2452,28 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
     return index / SN0_CPUS_PER_NODE;
 }
 
+/*
+ * Which node's memory an address without a NASID names on this node, in
+ * memory space. Normally the node's own. The exception is the cached
+ * low-address alias after synthesized firmware has handed a directly loaded
+ * kernel control: Linux disables PI_CALIAS_SIZE before launching remote
+ * processors, so their unqualified kernel-text addresses name node zero. A
+ * real PROM keeps the reset-local view and owns that transition itself.
+ * Shared by the processors' local views and the Hub's, so the block
+ * transfer engines always resolve a node-less address onto the same memory
+ * as the processors that programmed them.
+ */
+static hwaddr sn0_node_local_memory_base(MachineState *machine,
+                                         SN0NodeState *node,
+                                         unsigned int node_index)
+{
+    if (node_index != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
+        machine->kernel_filename) {
+        return SN0_NODE_BASE(0);
+    }
+    return SN0_NODE_BASE(node->nasid);
+}
+
 static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
                                  unsigned int node_index,
                                  unsigned int cpu_base,
@@ -2476,24 +2507,17 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
 
         /*
          * Addresses without a NASID normally name the reading processor's
-         * node.  The exception is the cached low-address alias after
-         * synthesized firmware has handed a directly loaded kernel control:
-         * Linux disables PI_CALIAS_SIZE before launching remote processors,
-         * so their unqualified kernel-text addresses name node zero.  A real
-         * PROM keeps the reset-local view and owns that transition itself.
-         * Keep the global system map underneath so an explicit NASID still
-         * reaches either node in both cases.
+         * node; sn0_node_local_memory_base() carries the one exception,
+         * which applies to memory space alone.  Keep the global system map
+         * underneath so an explicit NASID still reaches either node in
+         * both cases.
          */
         for (space = 0; space < SN0_UNCACHED_SPACES; space++) {
             g_autofree char *local_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.local-space%u", node_index, slice, space);
-            hwaddr alias_node_base = node_base;
-
-            if (space == 0 && node_index != 0 &&
-                SN0_MACHINE(machine)->synthesized_firmware &&
-                machine->kernel_filename) {
-                alias_node_base = SN0_NODE_BASE(0);
-            }
+            hwaddr alias_node_base = space == 0 ?
+                sn0_node_local_memory_base(machine, node, node_index) :
+                node_base;
 
             memory_region_init_alias(&node->local_space[slice][space],
                                      OBJECT(node), local_name, system,
@@ -2738,10 +2762,47 @@ static void sn0_node_create_hub(SN0MachineState *machine,
 {
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
+    g_autofree char *memory_name =
+        g_strdup_printf("sn0.node%u.hub.memory", node_index);
+    g_autofree char *memory_system_name =
+        g_strdup_printf("sn0.node%u.hub.memory.system", node_index);
+    g_autofree char *memory_local_name =
+        g_strdup_printf("sn0.node%u.hub.memory.local", node_index);
+    MemoryRegion *system = get_system_memory();
     MIPSCPU *cpu;
 
     memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
                        SN0_XTALK_SIZE);
+
+    /*
+     * The Hub's block transfer engines address memory the way this node's
+     * processors do: an address without a NASID names this node, and an
+     * explicit NASID still reaches either node through the global map
+     * underneath. Built here, once per node, in the same shape as each
+     * processor's memory-space local view -- the Hub cannot build it for
+     * itself, because under real firmware its programmed node number reads
+     * zero on every node. The per-processor pieces of that view -- the
+     * slice-flipped Hub-private halves and the cache-only firmware data
+     * filter -- are left out on purpose: they belong to a reading
+     * processor, and a device has no slice to flip and no cache to be
+     * private in.
+     */
+    memory_region_init(&node->hub_memory, OBJECT(node), memory_name,
+                       UINT64_MAX);
+    memory_region_init_alias(&node->hub_memory_system, OBJECT(node),
+                             memory_system_name, system, 0, UINT64_MAX);
+    memory_region_add_subregion_overlap(&node->hub_memory, 0,
+                                        &node->hub_memory_system, -1);
+    memory_region_init_alias(&node->hub_memory_local, OBJECT(node),
+                             memory_local_name, system,
+                             SN0_SPACE_MEMORY +
+                             sn0_node_local_memory_base(MACHINE(machine),
+                                                        node, node_index),
+                             SN0_NODE_SIZE);
+    memory_region_add_subregion_overlap(&node->hub_memory, SN0_SPACE_MEMORY,
+                                        &node->hub_memory_local, 0);
+    object_property_set_link(OBJECT(&node->hub), "memory",
+                             OBJECT(&node->hub_memory), &error_fatal);
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
                          machine->synthesized_firmware ? node->nasid : 0);
