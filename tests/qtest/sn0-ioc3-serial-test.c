@@ -65,6 +65,9 @@ static void sn0_ioc3_attach(QTestState *qts)
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
 }
 
+/* The chip control register, which carries the two ports' SuperIO offsets. */
+#define CHIP_CONTROL    (IOC3_BASE + 0x28)
+
 /* The SuperIO interrupt block. */
 #define INT_STATUS      (IOC3_BASE + 0x1c)
 #define INT_ENABLE_SET  (IOC3_BASE + 0x20)
@@ -213,6 +216,25 @@ static void set_loopback(QTestState *qts, unsigned int port)
 {
     qtest_writeb(qts, serial_port(port) + REG_MCR,
                  MCR_LOOPBACK | MCR_DTR | MCR_RTS);
+}
+
+/*
+ * The value the firmware writes to the chip control register: port A's
+ * SuperIO offset 0x178 divided by eight in bits 1-7, port B's 0x170 the same
+ * way in bits 8-14, and a byte bus strobe length of 4. It is written on every
+ * boot and read by nothing, so a model that dropped it would look identical
+ * from a transcript -- which is why it is asserted here or not at all.
+ */
+static void test_the_control_register_round_trips(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, CHIP_CONTROL, 0x00022e5e);
+    g_assert_cmphex(qtest_readl(qts, CHIP_CONTROL), ==, 0x00022e5e);
+
+    qtest_quit(qts);
 }
 
 /*
@@ -762,6 +784,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sn0/ioc3-serial/control-register-round-trips", NULL,
+                        test_the_control_register_round_trips);
     qtest_add_data_func("sn0/ioc3-serial/index-keeps-its-pointer-field", NULL,
                         test_an_index_keeps_only_its_pointer_field);
     qtest_add_data_func("sn0/ioc3-serial/receive-consume-keeps-arming-bit",
