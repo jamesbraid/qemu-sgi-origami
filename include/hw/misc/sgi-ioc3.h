@@ -325,6 +325,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SDMA_RX_DATA_OK    0x80
 
 /*
+ * The alias pages, one per port, each exposing that port's seven registers and
+ * nothing else so a privileged process can map them into user space without
+ * the rest of the chip. They are additional views of the same state rather
+ * than storage, and three registers are read-only through them where they are
+ * not through the main block.
+ */
+#define SGI_IOC3_SDMA_ALIAS_A       0x08000
+#define SGI_IOC3_SDMA_ALIAS_B       0x0c000
+#define SGI_IOC3_SDMA_ALIAS_SIZE    (16 * KiB)
+
+/*
  * The ethernet block sits behind SGI_IOC3_ENET_BASE (hw/net/sgi-ioc3-eth.h)
  * in the chip's window, but the block itself -- registers, engine, network
  * backend and transceiver -- is its own device now (hw/net/sgi-ioc3-eth.c,
@@ -403,6 +414,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
     SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_PASSTHROUGH_SOURCE)
 #define SGI_IOC3_INT_PASSTHROUGH (SGI_IOC3_INT_SERIAL_A | SGI_IOC3_INT_SERIAL_B)
 
+/*
+ * What one alias page's handlers are given: the chip, and which port's seven
+ * registers that page exposes.
+ */
+typedef struct SGIIOC3SerialAlias {
+    SGIIOC3State *chip;
+    unsigned int port;
+} SGIIOC3SerialAlias;
+
 struct SGIIOC3State {
     PCIDevice parent_obj;
 
@@ -472,6 +492,15 @@ struct SGIIOC3State {
      */
     MemoryRegion sdma;
     uint32_t sdma_reg[SGI_IOC3_SDMA_REGS];
+
+    /*
+     * The two alias pages, and the per-port opaque each one hands its
+     * handlers. A page's own handlers cannot tell which region they were
+     * reached through, so the port travels in the opaque rather than being
+     * recovered from the address.
+     */
+    MemoryRegion sdma_alias[SGI_IOC3_SERIAL_PORTS];
+    SGIIOC3SerialAlias sdma_alias_port[SGI_IOC3_SERIAL_PORTS];
 
     /*
      * Whether this port's engine is already on the stack. A transmit walk in
