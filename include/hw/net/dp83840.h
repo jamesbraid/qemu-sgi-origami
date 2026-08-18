@@ -119,6 +119,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
  */
 #define DP83840_LBREMR_RESET_VALUE   0x8020
 
+/*
+ * The loopback selections in that register, which are separate from the
+ * control register's own. Bits 9 and 8 choose a hundred-megabit loopback --
+ * the setting that turns the frame round at the twisted-pair transceiver
+ * beyond this part is one of them -- and bit 11 loops the ten-megabit encoder.
+ * Any of them puts the station in loopback as far as the controller is
+ * concerned, which is all the controller needs to know.
+ */
+#define DP83840_LBREMR_LB_MASK       0x0300
+#define DP83840_LBREMR_10BT_LOOPBACK 0x0800
+
 struct DP83840State {
     SysBusDevice parent_obj;
 
@@ -151,6 +162,7 @@ struct DP83840State {
 };
 
 void dp83840_reset(DP83840State *s);
+bool dp83840_in_loopback(DP83840State *s);
 uint16_t dp83840_read(DP83840State *s, int reg);
 void dp83840_write(DP83840State *s, int reg, uint16_t val);
 

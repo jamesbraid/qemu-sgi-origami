@@ -215,6 +215,26 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
     }
 }
 
+/*
+ * Whether the transceiver is looping the transmit path back to receive. The
+ * controller asks so that it can turn a frame round without putting it on the
+ * wire.
+ *
+ * Three switches select it and the diagnostic uses more than one: the control
+ * register's own loopback bit, and two fields of the loopback and bypass
+ * register -- the hundred-megabit loopback selects, one of which turns the
+ * frame round at the twisted-pair transceiver beyond this part, and the
+ * ten-megabit encoder loopback. This model does not distinguish where the
+ * frame turns round, because nothing downstream of it is modelled: the
+ * controller sees the same frame come back either way.
+ */
+bool dp83840_in_loopback(DP83840State *s)
+{
+    return (s->control & DP83840_CTRL_LOOPBACK) ||
+           (s->loopback_bypass & (DP83840_LBREMR_LB_MASK |
+                                  DP83840_LBREMR_10BT_LOOPBACK));
+}
+
 void dp83840_reset(DP83840State *s)
 {
     /*
