@@ -33,7 +33,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83840_PARTNER         0x05
 #define DP83840_EXPANSION       0x06
 #define DP83840_PCS_CONFIG      0x17
+#define DP83840_LOOPBACK_BYPASS 0x18
 #define DP83840_ADDRESS_STATUS  0x19
+#define DP83840_10BT_CONFIG     0x1c
 
 /*
  * The identity, as the two sixteen-bit words a driver reads rather than as a
@@ -88,6 +90,35 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83840_ADDR_MASK       0x001f
 #define DP83840_ADDR_10MBIT     0x0040
 
+/*
+ * Reset values, taken from the part's own published specification. SGI's
+ * power-on transceiver test compares against the same numbers through its own
+ * masks, so a public part specification and a vendor diagnostic agree on them
+ * independently -- which is what makes them the part's values rather than one
+ * reader's inference from one firmware.
+ *
+ * The control register comes up autonegotiating at a hundred megabits in full
+ * duplex. The configuration register comes up with NRZI coding enabled and the
+ * hundred-megabit good-link override in its normal position. The ten-megabit
+ * configuration register comes up transmitting link pulses over twisted pair
+ * with heartbeat and jabber enabled.
+ */
+#define DP83840_CONTROL_RESET_VALUE  (DP83840_CTRL_SPEED_100 | \
+                                      DP83840_CTRL_AUTONEG | \
+                                      DP83840_CTRL_DUPLEX)
+#define DP83840_PCS_RESET_VALUE      0x8040
+#define DP83840_10BT_RESET_VALUE     0x80b9
+
+/*
+ * The loopback and bypass register's reset value. Four of its bits are latched
+ * from package pins at reset rather than fixed, and this board's wiring for
+ * them is not observed anywhere we can read -- so they are modelled as the
+ * normal operating state, no bypass and no loopback, which is the only state a
+ * working board can be in. The two bits that are fixed in the specification,
+ * bad-start-of-stream detection and transmit-disable-during-loopback, are set.
+ */
+#define DP83840_LBREMR_RESET_VALUE   0x8020
+
 struct DP83840State {
     SysBusDevice parent_obj;
 
@@ -100,6 +131,16 @@ struct DP83840State {
     uint16_t control;
     uint16_t advertise;
     uint16_t pcs_config;
+
+    /*
+     * The two part-specific registers only SGI's power-on diagnostic reaches.
+     * Neither guest driver reads or writes either, so nothing but that
+     * diagnostic and the register suite sees them at all -- they are here
+     * because the firmware's transceiver test fails the board without them,
+     * not because a driver wanted them.
+     */
+    uint16_t loopback_bypass;
+    uint16_t tenbt_config;
 
     /*
      * Whether autonegotiation has finished. It is set the moment a guest asks

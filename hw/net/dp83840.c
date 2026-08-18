@@ -108,6 +108,17 @@ uint16_t dp83840_read(DP83840State *s, int reg)
     case DP83840_PCS_CONFIG:
         return s->pcs_config;
 
+    case DP83840_LOOPBACK_BYPASS:
+    case DP83840_10BT_CONFIG:
+        /*
+         * Storage, and read back is the whole contract. SGI's power-on
+         * transceiver test writes the loopback selects here and requires them
+         * to read back, then writes them away again and requires that too;
+         * nothing else in the machine looks at either register.
+         */
+        return reg == DP83840_LOOPBACK_BYPASS ? s->loopback_bypass
+                                              : s->tenbt_config;
+
     case DP83840_ADDRESS_STATUS:
         /*
          * Read only on the route taken when the far end cannot autonegotiate,
@@ -177,6 +188,14 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
         s->pcs_config = val;
         return;
 
+    case DP83840_LOOPBACK_BYPASS:
+        s->loopback_bypass = val;
+        return;
+
+    case DP83840_10BT_CONFIG:
+        s->tenbt_config = val;
+        return;
+
     case DP83840_STATUS:
     case DP83840_IDENTITY_HIGH:
     case DP83840_IDENTITY_LOW:
@@ -200,13 +219,24 @@ void dp83840_reset(DP83840State *s)
 {
     /*
      * Out of reset the part is autonegotiating and advertising everything it
-     * can do. The completion flag comes up set rather than clear because
-     * nothing here takes time: a driver that resets and then immediately asks
-     * for its media would otherwise be told there is none.
+     * can do, and its registers hold the values its own specification gives.
+     *
+     * The completion flag is the one place this model departs from those
+     * values, and it is a departure with nothing behind it either way. Real
+     * silicon comes up with autonegotiation incomplete and the link down, and
+     * SGI's power-on diagnostic warns about both -- but that diagnostic reads
+     * these registers long before it resets anything, so there is no interval
+     * a model could complete in that the diagnostic would not already have
+     * looked at. Reporting a settled link costs those two warnings, which the
+     * diagnostic does not fail the board for; reporting an unsettled one costs
+     * every guest its media, because both drivers report none until this flag
+     * is set. See docs/datasheets/dp83840.md.
      */
-    s->control = DP83840_CTRL_AUTONEG | DP83840_CTRL_SPEED_100;
+    s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
-    s->pcs_config = 0;
+    s->pcs_config = DP83840_PCS_RESET_VALUE;
+    s->loopback_bypass = DP83840_LBREMR_RESET_VALUE;
+    s->tenbt_config = DP83840_10BT_RESET_VALUE;
     s->autoneg_done = true;
 }
 
@@ -217,12 +247,14 @@ static void dp83840_reset_hold(Object *obj, ResetType type)
 
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(control, DP83840State),
         VMSTATE_UINT16(advertise, DP83840State),
         VMSTATE_UINT16(pcs_config, DP83840State),
+        VMSTATE_UINT16(loopback_bypass, DP83840State),
+        VMSTATE_UINT16(tenbt_config, DP83840State),
         VMSTATE_BOOL(autoneg_done, DP83840State),
         VMSTATE_END_OF_LIST()
     }

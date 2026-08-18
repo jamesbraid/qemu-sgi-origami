@@ -672,6 +672,31 @@ static void test_the_serial_dma_shadow_is_read_only(const void *data)
 #define ENET_MII_CONTROL  (IOC3_BASE + 0x148)
 #define ENET_MII_DATA_R   (IOC3_BASE + 0x14c)
 
+/*
+ * The management interface, and the transceiver on the far end of it. A guest
+ * reaches the transceiver only through these two registers: it writes an
+ * address and a register number here and reads the answer back.
+ */
+#define MII_CONTROL     (IOC3_BASE + 0x148)
+#define MII_DATA_R      (IOC3_BASE + 0x14c)
+#define MII_DATA_W      (IOC3_BASE + 0x150)
+#define MII_READ        (1u << 10)
+
+#define PHY_ADDRESS     31
+
+static uint16_t phy_read(QTestState *qts, unsigned int phy, unsigned int reg)
+{
+    qtest_writel(qts, MII_CONTROL, MII_READ | (phy << 5) | reg);
+    return qtest_readl(qts, MII_DATA_R) & 0xffff;
+}
+
+static void phy_write(QTestState *qts, unsigned int phy, unsigned int reg,
+                      uint16_t val)
+{
+    qtest_writel(qts, MII_DATA_W, val);
+    qtest_writel(qts, MII_CONTROL, (phy << 5) | reg);
+}
+
 static void test_the_ethernet_interrupt_register_acknowledges(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -2706,30 +2731,6 @@ static void test_the_clock_storage_holds_a_write(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * The management interface, and the transceiver on the far end of it. A guest
- * reaches the transceiver only through these two registers: it writes an
- * address and a register number here and reads the answer back.
- */
-#define MII_CONTROL     (IOC3_BASE + 0x148)
-#define MII_DATA_R      (IOC3_BASE + 0x14c)
-#define MII_DATA_W      (IOC3_BASE + 0x150)
-#define MII_READ        (1u << 10)
-
-#define PHY_ADDRESS     31
-
-static uint16_t phy_read(QTestState *qts, unsigned int phy, unsigned int reg)
-{
-    qtest_writel(qts, MII_CONTROL, MII_READ | (phy << 5) | reg);
-    return qtest_readl(qts, MII_DATA_R) & 0xffff;
-}
-
-static void phy_write(QTestState *qts, unsigned int phy, unsigned int reg,
-                      uint16_t val)
-{
-    qtest_writel(qts, MII_DATA_W, val);
-    qtest_writel(qts, MII_CONTROL, (phy << 5) | reg);
-}
 
 static void test_the_transceiver_answers_at_one_address(const void *data)
 {
@@ -2846,6 +2847,62 @@ static void test_the_transceiver_configuration_register(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The reset values SGI's power-on transceiver test compares against, through
+ * the masks it uses. Every one of them is also the public DP83840A datasheet's
+ * documented default, which is what makes them the part's own numbers rather
+ * than a reading of one firmware: a specification and a vendor diagnostic
+ * arrived at them independently.
+ *
+ * Asserted through the diagnostic's masks rather than as whole words. The bits
+ * outside each mask are ones the part's specification leaves as don't-care and
+ * the diagnostic does not read, so pinning them here would fix values nothing
+ * has checked.
+ */
+static void test_the_transceiver_reset_values(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /* Control: a hundred megabits, full duplex, autonegotiating. */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x00) & 0xff80, ==, 0x3100);
+
+    /* Configuration: NRZI coding on, and the good-link override off. */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x17) & 0xb8d6, ==, 0x8040);
+
+    /* Ten-megabit config: link pulses, heartbeat, twisted pair, jabber. */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x1c) & 0x003d, ==, 0x0039);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The loopback and bypass register, which only the firmware's transceiver test
+ * reaches -- neither guest driver touches it, so this is the only place its
+ * contract is checked. The diagnostic writes the two loopback selects and the
+ * ten-megabit loopback bit and requires them to read back.
+ */
+static void test_the_transceiver_loopback_register(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    phy_write(qts, PHY_ADDRESS, 0x18, 0x0b00);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x18) & 0x0b00, ==, 0x0b00);
+
+    /*
+     * And the clear, which the diagnostic issues next. A model answering with
+     * a constant that happened to carry these bits would pass the write above
+     * and fail here, and the firmware's failure line names only the set.
+     */
+    phy_write(qts, PHY_ADDRESS, 0x18, 0x0000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x18) & 0x0b00, ==, 0x0000);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2860,6 +2917,10 @@ int main(int argc, char **argv)
                         test_the_transceiver_reports_a_usable_link);
     qtest_add_data_func("sn0/ioc3/phy-configuration-register", NULL,
                         test_the_transceiver_configuration_register);
+    qtest_add_data_func("sn0/ioc3/phy-reset-values", NULL,
+                        test_the_transceiver_reset_values);
+    qtest_add_data_func("sn0/ioc3/phy-loopback-register", NULL,
+                        test_the_transceiver_loopback_register);
 
     qtest_add_data_func("sn0/ioc3/ps2-ports-read-empty", NULL,
                         test_the_ps2_ports_read_empty);
