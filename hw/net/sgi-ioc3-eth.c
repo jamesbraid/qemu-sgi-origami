@@ -125,6 +125,23 @@ static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
  * not required to keep the bits above them clear and the arm-timer bit
  * shares a register with the produce index without being part of it.
  */
+/*
+ * Whether a frame turns round inside the machine instead of reaching the wire.
+ * Two independent switches select it -- the controller's own loopback bit, and
+ * the transceiver's -- and SGI's power-on diagnostic exercises both in turn.
+ * Either one disconnects the block from the backend in both directions.
+ */
+static bool sgi_ioc3_eth_mac_loopback(SGIIOC3EthState *s)
+{
+    return sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL) &
+           SGI_IOC3_ENET_MCR_LOOPBACK;
+}
+
+static bool sgi_ioc3_eth_looping_back(SGIIOC3EthState *s)
+{
+    return sgi_ioc3_eth_mac_loopback(s) || dp83840_in_loopback(&s->phy);
+}
+
 static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
@@ -132,6 +149,17 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
     uint32_t need = SGI_IOC3_ENET_MCR_RX_DMA_EN | SGI_IOC3_ENET_MCR_RX_EN;
 
     if ((mcr & need) != need) {
+        return false;
+    }
+
+    /*
+     * Loopback disconnects the block from the wire in both directions.
+     * Refusing here keeps the backend's traffic out of a diagnostic's ring:
+     * SGI's own loopback tests count and compare the frames they find there,
+     * so one arriving from outside shifts every comparison after it and
+     * reports a data miscompare on a frame the diagnostic never sent.
+     */
+    if (sgi_ioc3_eth_looping_back(s)) {
         return false;
     }
 
@@ -153,6 +181,25 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
  * reload would need a real timer, and nothing here has one, so it is
  * reported rather than silently treated as immediate.
  */
+static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
+                                    size_t size, bool looped);
+
+static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
+                                    size_t size)
+{
+    SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
+
+    if (!sgi_ioc3_eth_can_receive(nc)) {
+        trace_sgi_ioc3_eth_rx_refused(
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME));
+        return 0;
+    }
+
+    return sgi_ioc3_eth_deliver(s, buf, size, false);
+}
+
 static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
 {
     uint32_t reload = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_TIMER) &
@@ -202,20 +249,30 @@ static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
  * is not the ring, always eight bytes an entry, but the guest-allocated
  * buffer at the far end of the pointer it holds.
  */
-static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
-                                    size_t size)
+/*
+ * Put one frame into the receive ring. `short_circuit` says the frame turned
+ * round inside the controller itself, ahead of the logic that appends a frame
+ * check sequence and builds the receive status vector, so neither is present.
+ *
+ * The two loopbacks differ here and the firmware's own expectations are what
+ * separate them. The controller's own loopback turns the frame round early:
+ * SGI's diagnostic sends a byte count and requires exactly that count back,
+ * with a status word of zero. The transceiver's loopback sends the frame the
+ * whole way through the controller and back, so the same diagnostic requires
+ * the count four higher -- the check sequence is really there -- and a status
+ * word built as usual. Only the first is a short circuit.
+ *
+ * Split from the network client's receive callback because either loopback has
+ * to reach it without going through that callback's refusal of wire traffic:
+ * while looping back the block accepts nothing from the backend, and the frame
+ * it accepts instead is its own.
+ */
+static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
+                                    size_t size, bool short_circuit)
 {
-    SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
     uint32_t consume, offset, mcr, word0, word1, lenlo, lenhi, wire_len;
     uint64_t ring_base, buf_addr;
 
-    if (!sgi_ioc3_eth_can_receive(nc)) {
-        trace_sgi_ioc3_eth_rx_refused(
-            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL),
-            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
-            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME));
-        return 0;
-    }
     if (size > SGI_IOC3_ENET_FRAME_MAX - 8) {
         size = SGI_IOC3_ENET_FRAME_MAX - 8;
     }
@@ -248,7 +305,20 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
      * check, and is silently dropped -- exactly the frames a DHCP exchange's
      * short broadcast packets tend to be.
      */
-    wire_len = (uint32_t)size + 4;
+    /*
+     * The four phantom bytes are compensation for something the wire path
+     * loses, so the loopback path must not add them. A frame off the backend
+     * arrives with the trailing FCS already stripped -- QEMU's net layer has
+     * no physical layer to have produced one -- and both guests read this
+     * field as the wire length including it, so the count has to put it back.
+     * A frame short-circuited inside the controller lost nothing, because the
+     * check sequence was never appended to it: SGI's loopback diagnostic
+     * transmits a byte count and requires the same number back, so adding four
+     * there reports a frame four bytes longer than the one it sent. A frame
+     * looped by the transceiver did go through the whole controller, and the
+     * same diagnostic requires the four counted.
+     */
+    wire_len = (uint32_t)size + (short_circuit ? 0 : 4);
 
     word0 = SGI_IOC3_ENET_RXH_VALID |
            ((wire_len << SGI_IOC3_ENET_RXH_BYTECNT_SHIFT) &
@@ -272,7 +342,8 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
                           ring_base, buf_addr, offset, wire_len, word0, word1);
 
     stl_be_dma(s->dma_as, buf_addr + 0, word0, MEMTXATTRS_UNSPECIFIED);
-    stl_be_dma(s->dma_as, buf_addr + 4, word1, MEMTXATTRS_UNSPECIFIED);
+    stl_be_dma(s->dma_as, buf_addr + 4, short_circuit ? 0 : word1,
+               MEMTXATTRS_UNSPECIFIED);
     dma_memory_write(s->dma_as, buf_addr + offset, buf, size,
                      MEMTXATTRS_UNSPECIFIED);
 
@@ -404,6 +475,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
      * sources it can see never collects the frame that is already in its
      * ring. Read the register once at the end and add to what it holds.
      */
+    bool loopback = sgi_ioc3_eth_looping_back(s);
     uint32_t raised = 0;
     bool completed_one = false;
 
@@ -448,7 +520,20 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         len = sgi_ioc3_eth_tx_gather(s, cmd, bufcnt, buf1, buf2, inline_data);
         len = MIN(len, cmd & SGI_IOC3_ENET_TXD_BYTECNT_MASK);
         if (len > 0) {
-            qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
+            if (loopback) {
+                /*
+                 * Loopback: the frame turns round inside the machine and
+                 * never reaches the wire. Delivered straight into this
+                 * device's own receive path, which is what the bit selects --
+                 * a model that sent it to the backend instead would let a
+                 * diagnostic's traffic out onto a real network and would wait
+                 * for a reply that only a far end could send.
+                 */
+                sgi_ioc3_eth_deliver(s, s->frame, len,
+                                     sgi_ioc3_eth_mac_loopback(s));
+            } else {
+                qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
+            }
         }
 
         if (cmd & SGI_IOC3_ENET_TXD_INT_DONE) {
@@ -537,8 +622,8 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     SGIIOC3EthState *s = opaque;
-    unsigned int index = addr / 4;
     bool was_enabled;
+    unsigned int index = addr / 4;
 
     trace_sgi_ioc3_eth_reg_write((uint32_t)(SGI_IOC3_ENET_BASE + addr),
                                  (uint32_t)val);

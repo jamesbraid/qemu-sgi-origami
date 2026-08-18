@@ -765,6 +765,7 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define MCR_TX_EN         (1u << 14)
 #define MCR_RX_DMA_EN     (1u << 15)
 #define MCR_RX_EN         (1u << 16)
+#define MCR_LOOPBACK      (1u << 17)
 #define MCR_ARB_DIAG_IDLE (1u << 21)
 #define MCR_RESET         (1u << 31)
 
@@ -1675,6 +1676,201 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 }
 
 /*
+ * Internal loopback, which SGI's power-on diagnostic uses to test the block's
+ * DMA without a network on the other side. With the loopback bit set a
+ * transmitted frame turns round inside the block and lands in the receive
+ * ring; it must not reach the backend at all.
+ *
+ * Both halves are asserted. A model that looped the frame back and also sent
+ * it would pass a test that only looked at the receive ring, and would put a
+ * diagnostic's traffic onto a real network -- which is exactly what the
+ * firmware's own run hit: its frame escaped, something answered it, and the
+ * answer arrived as an interrupt the diagnostic was not expecting.
+ */
+static void test_internal_loopback_turns_a_frame_round(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xbe, 0xef };
+    uint8_t landed[sizeof(frame)];
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t word0;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    /* A receive buffer to land in. */
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_PRODUCE, 8);
+
+    /* One frame to send. */
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+
+    /*
+     * Receive on, loopback selected, then transmit on -- the order the
+     * firmware uses, which also exercises the enable starting the engine.
+     */
+    qtest_writel(qts, MAC_CONTROL,
+                 MCR_LOOPBACK | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, TX_PRODUCE, 128);
+    qtest_writel(qts, MAC_CONTROL,
+                 MCR_LOOPBACK | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33) |
+                 MCR_TX_DMA_EN | MCR_TX_EN);
+
+    /* It came back: the ring advanced and the buffer holds the frame. */
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    word0 = qtest_readl(qts, rxbuf + 0);
+    g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
+
+    /*
+     * The byte count is the length sent, with no phantom frame-check bytes
+     * added. A frame off the wire gets four added back because QEMU's net
+     * layer strips a trailing check sequence the guests' drivers expect to be
+     * counted; a frame that never left the block lost nothing to strip. SGI's
+     * loopback diagnostic sends a byte count and requires the same number
+     * back, and reports a data miscompare on the header word when it differs.
+     */
+    g_assert_cmphex((word0 >> 16) & 0x7ff, ==, sizeof(frame));
+
+    qtest_memread(qts, rxbuf + 66, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    /* And it did not also go out on the wire. */
+    g_assert_false(net_socket_frame_arrived(sv[0]));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Internal loopback disconnects the receiver from the wire as well as the
+ * transmitter. A frame arriving from the backend while loopback is selected
+ * must not land in the ring: SGI's loopback diagnostic counts and compares the
+ * frames it finds there, so one from outside shifts every comparison after it.
+ * This was not hypothetical -- the firmware's own run picked up a stray frame
+ * from the host network in the middle of the test.
+ */
+static void test_internal_loopback_refuses_the_wire(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xca, 0xfe };
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_PRODUCE, 8);
+    qtest_writel(qts, MAC_CONTROL,
+                 MCR_LOOPBACK | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+    /*
+     * Waited for rather than checked once: the frame is refused inside the
+     * main loop, so a single look could pass before delivery would have
+     * happened at all. The ring index staying put through the wait is the
+     * assertion.
+     */
+    for (attempt = 0; attempt < 20; attempt++) {
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, rxbuf + 0), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The transceiver's loopback turns a frame round too, and reports it
+ * differently from the controller's own.
+ *
+ * A frame the controller short-circuits never reaches the logic that appends a
+ * check sequence or builds a status vector, so it is reported at the length
+ * sent with a zero status word. A frame the transceiver loops has been all the
+ * way through the controller, so it is reported the way a frame off the wire
+ * is. SGI's diagnostic runs both tests and requires each accordingly -- it is
+ * the firmware, not a datasheet, that separates them.
+ */
+static void test_transceiver_loopback_reports_a_wire_frame(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xd0, 0x0d };
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t word0, word1;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    /* Loopback selected in the transceiver, not in the controller. */
+    phy_write(qts, PHY_ADDRESS, 0x00, 0x4000);
+
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_PRODUCE, 8);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+
+    qtest_writel(qts, MAC_CONTROL,
+                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, TX_PRODUCE, 128);
+    qtest_writel(qts, MAC_CONTROL,
+                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33) |
+                 MCR_TX_DMA_EN | MCR_TX_EN);
+
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    /* Counted with the check sequence, and the status vector is built. */
+    word0 = qtest_readl(qts, rxbuf + 0);
+    g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
+    g_assert_cmphex((word0 >> 16) & 0x7ff, ==, sizeof(frame) + 4);
+
+    word1 = qtest_readl(qts, rxbuf + 4);
+    g_assert_cmphex(word1 & ENET_RXE_GOODPKT, ==, ENET_RXE_GOODPKT);
+
+    /* And it stayed off the wire. */
+    g_assert_false(net_socket_frame_arrived(sv[0]));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * The block reset keeps the ring addresses it was given.
  *
  * SGI's power-on loopback diagnostic programs both ring bases, asserts the
@@ -1713,6 +1909,7 @@ static void test_the_block_reset_keeps_the_ring_addresses(const void *data)
 
     qtest_quit(qts);
 }
+
 
 static void test_the_ethernet_receive_delivers_a_frame(const void *data)
 {
@@ -3102,8 +3299,15 @@ int main(int argc, char **argv)
                         NULL, test_transmit_starts_when_enabled_late);
     qtest_add_data_func("sn0/ioc3/second-enable-write-does-not-resend", NULL,
                         test_a_second_enable_write_does_not_resend);
+    qtest_add_data_func("sn0/ioc3/internal-loopback-turns-a-frame-round", NULL,
+                        test_internal_loopback_turns_a_frame_round);
     qtest_add_data_func("sn0/ioc3/block-reset-keeps-ring-addresses", NULL,
                         test_the_block_reset_keeps_the_ring_addresses);
+    qtest_add_data_func("sn0/ioc3/internal-loopback-refuses-the-wire", NULL,
+                        test_internal_loopback_refuses_the_wire);
+    qtest_add_data_func("sn0/ioc3/transceiver-loopback-reports-wire-frame",
+                        NULL,
+                        test_transceiver_loopback_reports_a_wire_frame);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-bounds-the-inline-area",
                         NULL,
                         test_the_ethernet_transmit_bounds_the_inline_area);
