@@ -100,7 +100,11 @@ RR_HANDOFF_INITIATOR_DONE = 0x70
 RR_HANDOFF_WRAP_GO = 0x78
 RR_HANDOFF_WRAP_ACK = 0x80
 RR_HANDOFF_WRAP_FAIR = 0x88   # 4 words
-RR_HANDOFF_STATE_WORDS = 21
+RR_HANDOFF_RETURN = 0xa8
+RR_HANDOFF_CHAIN_GO = 0xb0
+RR_HANDOFF_CHAIN_VIOLATION = 0xb8
+RR_HANDOFF_CHAIN_DONE = 0xc0
+RR_HANDOFF_STATE_WORDS = 25
 
 HUB_BY_NODE = 0x20001800000
 HUB_NODE_STRIDE = 0x100000000
@@ -1048,6 +1052,9 @@ def build_local_hub_handoff_ordering():
     program.patch(branch, cpu2_spin)
 
     # CPU1 publishes GO, then its node-local Hub write requests CPU0.
+    # CPU0 returns the request to CPU1 before either unrelated node may run;
+    # only CPU1 publishes ACK. This distinguishes a nested causal handoff
+    # from resuming the successor displaced by the first request.
     program.patch(cpu1, len(program.instructions))
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
     program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_GO))
@@ -1055,10 +1062,17 @@ def build_local_hub_handoff_ordering():
     program.emit(mips_i(0x19, R_ZERO, R_T0,
                         PI_INT_MODIFY_SET | PI_INT_MAILBOX))
     program.emit(mips_i(0x3f, R_S3, R_T0, 0))
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_ACK, want_set=True)
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_RETURN, want_set=True)
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_ACK))
     program.emit(mips_i(0x3f, R_S0, R_T0,
                         RR_HANDOFF_INITIATOR_DONE))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_CHAIN_GO))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PI_INT_MAILBOX))
+    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_CHAIN_DONE, want_set=True)
     emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_GO, want_set=True)
     emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_ACK, want_set=True)
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
@@ -1067,17 +1081,30 @@ def build_local_hub_handoff_ordering():
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, cpu1_spin)
 
-    # CPU0 acknowledges the mailbox before either unrelated node may run.
+    # CPU0 records its response, then the mailbox clear requests CPU1.
     program.patch(cpu0, len(program.instructions))
     pending = emit_wait_for_mailbox(program, True,
                                     FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
     emit_unreachable(program)
     program.patch(pending, len(program.instructions))
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_ACK))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_RETURN))
     program.emit(0x0000000f)  # sync
     program.emit(mips_i(0x19, R_ZERO, R_T0, PI_INT_MAILBOX))
     program.emit(mips_i(0x3f, R_S3, R_T0, 0))
+    emit_wait_for_flag(program, R_S0, RR_HANDOFF_CHAIN_GO, want_set=True)
+    pending = emit_wait_for_mailbox(program, True,
+                                    FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
+    emit_unreachable(program)
+    program.patch(pending, len(program.instructions))
+    program.emit(mips_i(0x37, R_S0, R_T0, RR_HANDOFF_FAIR + 16))
+    fair = program.branch(0x05, R_T0, R_ZERO)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0,
+                        RR_HANDOFF_CHAIN_VIOLATION))
+    program.patch(fair, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_CHAIN_DONE))
     emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_GO, want_set=True)
     emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_ACK, want_set=True)
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
@@ -1662,6 +1689,9 @@ class SN0SMPMachine(QemuSystemTest):
                                RR_HANDOFF_FAIR // 8 + 4],
                          [0, 0, 1, 1], state)
         self.assertEqual(state[RR_HANDOFF_INITIATOR_DONE // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_CHAIN_GO // 8], 1, state)
+        self.assertEqual(state[RR_HANDOFF_CHAIN_VIOLATION // 8], 0, state)
+        self.assertEqual(state[RR_HANDOFF_CHAIN_DONE // 8], 1, state)
         self.assertEqual(state[RR_HANDOFF_WRAP_GO // 8], 1, state)
         self.assertEqual(state[RR_HANDOFF_WRAP_ACK // 8], 1, state)
         self.assertEqual(state[RR_HANDOFF_WRAP_FAIR // 8:
