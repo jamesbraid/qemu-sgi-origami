@@ -34,6 +34,7 @@
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
 #include "net/net.h"
+#include "trace.h"
 
 /*
  * The ports' access contract, which is the whole reason this wrapper exists
@@ -643,7 +644,10 @@ static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
      * engine is permanently where it started. A driver reading them sees an
      * idle channel, which is what an idle channel looks like.
      */
-    return s->sdma_reg[addr / 4];
+    uint32_t val = s->sdma_reg[addr / 4];
+
+    trace_sgi_ioc3_sdma_read((uint32_t)(SGI_IOC3_SDMA_BASE + addr), val);
+    return val;
 }
 
 static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
@@ -651,6 +655,9 @@ static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
 {
     SGIIOC3State *s = opaque;
     hwaddr offset;
+
+    trace_sgi_ioc3_sdma_write((uint32_t)(SGI_IOC3_SDMA_BASE + addr),
+                              (uint32_t)val);
 
     if (sgi_ioc3_sdma_port_offset(addr, &offset)) {
         if (offset == SGI_IOC3_SDMA_SHADOW) {
