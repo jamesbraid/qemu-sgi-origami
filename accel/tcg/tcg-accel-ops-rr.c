@@ -275,6 +275,7 @@ static void *rr_cpu_thread_fn(void *arg)
     CPUState *cpu = arg;
     int resume_cpu_index = -1;
     unsigned int resume_generation = 0;
+    bool nested_handoff_used = false;
 
     assert(tcg_enabled());
     rcu_register_thread();
@@ -309,53 +310,71 @@ static void *rr_cpu_thread_fn(void *arg)
         /* Only used for icount_enabled() */
         int64_t cpu_budget = 0;
         CPUState *handoff_cpu = NULL;
+        CPUState *normal_cpu = cpu ? cpu : first_cpu;
+        int discard_reason = 0;
+        unsigned int request_generation = 0;
+        uint64_t request = 0;
 
         if (resume_cpu_index >= 0) {
             if (resume_generation == cpu_list_generation_id_get()) {
-                handoff_cpu = qemu_get_cpu(resume_cpu_index);
-                if (handoff_cpu &&
-                    (handoff_cpu->unplug || !cpu_can_run(handoff_cpu))) {
-                    handoff_cpu = NULL;
+                normal_cpu = qemu_get_cpu(resume_cpu_index);
+                if (normal_cpu &&
+                    (normal_cpu->unplug || !cpu_can_run(normal_cpu))) {
+                    normal_cpu = NULL;
                 }
+            } else {
+                normal_cpu = NULL;
             }
+            if (!normal_cpu) {
+                resume_cpu_index = -1;
+                nested_handoff_used = false;
+                normal_cpu = cpu ? cpu : first_cpu;
+            }
+        }
+
+        /* One causal return may precede the saved RR successor. */
+        if (resume_cpu_index < 0 || !nested_handoff_used) {
+            request = qatomic_xchg(&rr_handoff_request, 0);
+        }
+
+        if (request) {
+            int requested_cpu = (uint32_t)request - 1;
+
+            handoff_cpu = rr_handoff_cpu(request, &request_generation,
+                                          &discard_reason);
+            if (handoff_cpu == normal_cpu) {
+                discard_reason = RR_HANDOFF_DISCARD_ALREADY_NEXT;
+                handoff_cpu = NULL;
+            } else if (handoff_cpu && normal_cpu && resume_cpu_index < 0) {
+                resume_cpu_index = normal_cpu->cpu_index;
+                resume_generation = request_generation;
+                nested_handoff_used = false;
+            } else if (handoff_cpu) {
+                nested_handoff_used = true;
+            }
+
+            if (handoff_cpu &&
+                trace_event_get_state_backends(TRACE_RR_HANDOFF_SELECT)) {
+                trace_rr_handoff_select(
+                    handoff_cpu->cpu_index, resume_cpu_index,
+                    request_generation,
+                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            } else if (discard_reason &&
+                       trace_event_get_state_backends(
+                           TRACE_RR_HANDOFF_DISCARD)) {
+                trace_rr_handoff_discard(
+                    requested_cpu, discard_reason,
+                    request >> 32, cpu_list_generation_id_get(),
+                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            }
+        }
+
+        if (!handoff_cpu && resume_cpu_index >= 0) {
+            handoff_cpu = normal_cpu;
             resume_cpu_index = -1;
-        } else {
-            int discard_reason = 0;
-            unsigned int request_generation = 0;
-            uint64_t request = qatomic_xchg(&rr_handoff_request, 0);
-            CPUState *normal_cpu = cpu ? cpu : first_cpu;
-
-            if (request) {
-                int requested_cpu = (uint32_t)request - 1;
-
-                handoff_cpu = rr_handoff_cpu(request, &request_generation,
-                                              &discard_reason);
-                if (handoff_cpu == normal_cpu) {
-                    discard_reason = RR_HANDOFF_DISCARD_ALREADY_NEXT;
-                    handoff_cpu = NULL;
-                } else if (handoff_cpu && normal_cpu) {
-                    resume_cpu_index = normal_cpu->cpu_index;
-                    resume_generation = request_generation;
-                }
-
-                if (handoff_cpu &&
-                    trace_event_get_state_backends(
-                        TRACE_RR_HANDOFF_SELECT)) {
-                    trace_rr_handoff_select(
-                        handoff_cpu->cpu_index, resume_cpu_index,
-                        request_generation,
-                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-                } else if (discard_reason &&
-                           trace_event_get_state_backends(
-                               TRACE_RR_HANDOFF_DISCARD)) {
-                    trace_rr_handoff_discard(
-                        requested_cpu, discard_reason,
-                        request >> 32, cpu_list_generation_id_get(),
-                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-                }
-            }
+            nested_handoff_used = false;
         }
 
         if (handoff_cpu) {
