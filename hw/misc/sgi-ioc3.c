@@ -1172,19 +1172,22 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
     case SGI_IOC3_SDMA_TX_CONSUME:
     case SGI_IOC3_SDMA_RX_PRODUCE:
         /*
-         * These two are the engine's side of the ring. The datasheet's
-         * contract is that no driver writes them and that a write here is a
-         * real anomaly -- and the firmware's own base I/O diagnostic writes
-         * both of them, zero, on every stock boot, which is a finding for
-         * the datasheet rather than a change to make here. It writes them
-         * immediately after resetting the channels, when they already hold
-         * zero, so refusing the write costs the diagnostic nothing.
+         * These two are the engine's side of the ring, and software does not
+         * place them. The write is refused and traced rather than reported as
+         * guest misbehaviour: the firmware's own base I/O diagnostic writes
+         * both of them, zero, on every stock boot, so a guest error here fires
+         * on correct firmware and teaches everyone to ignore the class.
+         *
+         * Refusing is a choice this cannot justify on its own. The diagnostic
+         * writes zero onto registers the channel reset it has just issued
+         * already zeroed, so accepting and refusing leave identical state --
+         * a driver writing a non-zero index is what would tell them apart.
+         * The datasheet records that hedge with the rest of the contract.
          */
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-ioc3: write to read-only serial DMA register "
-                      "0x%03x\n",
-                      (unsigned)(SGI_IOC3_SDMA_PORT_A +
-                                 port * SGI_IOC3_SDMA_PORT_STRIDE + offset));
+        trace_sgi_ioc3_sdma_write_refused(
+            (uint32_t)(SGI_IOC3_SDMA_PORT_A +
+                       port * SGI_IOC3_SDMA_PORT_STRIDE + offset),
+            (uint32_t)val);
         return;
     }
 }
