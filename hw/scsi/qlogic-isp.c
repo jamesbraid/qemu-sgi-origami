@@ -951,7 +951,16 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             sum += s->risc_ram[(uint16_t)(start + i)];
         }
 
+        /*
+         * The sum is answered in mailbox 2 as well as mailbox 1. NetBSD's
+         * mask for this command makes both outputs, and the SGI firmware
+         * reads the one 86Box's model does not write: left alone, mailbox 2
+         * still holds whatever the previous command put there, and the
+         * firmware compares that against its own sum and reports a mismatch
+         * against a value this command never produced.
+         */
         s->mailbox[1] = sum;
+        s->mailbox[2] = sum;
         s->mailbox[0] = (sum == 0) ? ISP_MBOX_COMPLETE : ISP_MBOX_TEST_FAILED;
         break;
     }
