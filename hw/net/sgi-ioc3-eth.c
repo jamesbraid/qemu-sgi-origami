@@ -32,6 +32,21 @@ static void sgi_ioc3_enet_set(SGIIOC3EthState *s, hwaddr off, uint32_t val)
 }
 
 /*
+ * Whether the guest has asked for the buffer RAM's parity to be checked.
+ *
+ * The RAM itself is decoded by the parent chip, but the bit that turns
+ * checking on is this block's, so the parent asks rather than reaching into a
+ * register it does not own. SGI's power-on diagnostic sets this bit before it
+ * touches the window at all and leaves it set through the size probe that
+ * follows.
+ */
+bool sgi_ioc3_eth_ram_parity_enabled(SGIIOC3EthState *s)
+{
+    return sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL) &
+           SGI_IOC3_ENET_MCR_RAM_PARITY;
+}
+
+/*
  * Read the collision and deferral counters and zero them in the same step,
  * which is what the hardware does and what makes reading them a way to clear
  * them. Separate from the read handler because the clearing is the part worth

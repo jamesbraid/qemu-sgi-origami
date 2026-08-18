@@ -372,6 +372,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SSRAM_STORED   (SGI_IOC3_SSRAM_DATA | SGI_IOC3_SSRAM_PARITY)
 
 /*
+ * The checker's answer, which is generated on every read rather than stored:
+ * set when the seventeen stored bits do not carry even parity. SGI's power-on
+ * diagnostic writes deliberately bad parity and reads this bit back to decide
+ * whether the chip's parity logic works, so a window that only stored what was
+ * written fails the board.
+ */
+#define SGI_IOC3_SSRAM_PARITY_ERROR 0x00020000u
+
+/*
  * The byte bus: four device selects for byte-wide parts outside the chip. The
  * Origin 200 wires only the first, and what hangs off it is the machine's
  * real-time clock -- a Timekeeper, directly addressed, with a flat 32 KB

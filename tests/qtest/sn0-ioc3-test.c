@@ -2335,6 +2335,127 @@ static void test_the_buffer_ram_is_seventeen_bits_wide(const void *data)
 }
 
 /*
+ * The parity report the firmware's own buffer-RAM diagnostic reads back.
+ *
+ * The window stores sixteen data bits and one parity bit. Bit 17 is not
+ * storage: it is the checker's answer, set when the seventeen stored bits do
+ * not carry even parity. SGI's power-on diagnostic writes deliberately bad
+ * parity and requires the bit, and the values below are the four words it
+ * writes -- taken from the firmware's own accesses rather than composed here,
+ * so a model that satisfies this test satisfies the diagnostic.
+ *
+ * The two good-parity words are asserted alongside the two bad ones because a
+ * model that simply set the bit always would pass a test that only checked the
+ * bad ones, and would then fail the diagnostic on its first two writes.
+ */
+#define SSRAM_PARITY_ERROR    0x00020000u
+#define MAC_CONTROL_RAM_PARITY 0x00000200u
+
+/* Written by the diagnostic. The first two carry even parity, the last
+ * two odd. */
+#define SSRAM_GOOD_EVEN_DATA  0x0000aa55u
+#define SSRAM_GOOD_ODD_DATA   0x000157aau
+#define SSRAM_BAD_EVEN_DATA   0x0000bad1u
+#define SSRAM_BAD_ODD_DATA    0x0001bad0u
+
+static void test_the_buffer_ram_reports_bad_parity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Checking is off until the MAC control register enables it, and the
+     * report is asserted absent first: without this the test would pass on a
+     * model that reported unconditionally, which is a model that puts a bit
+     * into the whole-word comparison OpenBSD's size probe makes.
+     */
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_BAD_EVEN_DATA);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_BAD_EVEN_DATA);
+
+    qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
+
+    /* Even parity across the seventeen stored bits: no report. */
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_GOOD_EVEN_DATA);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_GOOD_EVEN_DATA);
+
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_GOOD_ODD_DATA);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_GOOD_ODD_DATA);
+
+    /* Odd parity: the report, and the stored seventeen bits unchanged. */
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_BAD_EVEN_DATA);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==,
+                    SSRAM_BAD_EVEN_DATA | SSRAM_PARITY_ERROR);
+
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_BAD_ODD_DATA);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==,
+                    SSRAM_BAD_ODD_DATA | SSRAM_PARITY_ERROR);
+
+    /*
+     * The report is derived on every read rather than latched at the write, so
+     * clearing the enable takes it away again and the storage underneath it is
+     * untouched.
+     */
+    qtest_writel(qts, MAC_CONTROL, 0);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_BAD_ODD_DATA);
+
+    qtest_quit(qts);
+}
+
+static void test_the_buffer_ram_ignores_a_written_parity_report(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The diagnostic's address walk sets bit 17 in every word it writes and
+     * reads it back clear without complaining, so a write to the report is
+     * ignored. Asserting it matters because storing the bit would make the
+     * checker agree with the guest instead of with the data.
+     */
+    qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
+
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_PARITY_ERROR | 0x0101u);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x0101u);
+
+    qtest_quit(qts);
+}
+
+static void test_the_size_probe_survives_parity_checking(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * The probe that decides 64 KB against 128 KB, run with checking on, which
+     * is how the firmware runs it. OpenBSD compares its second read as a whole
+     * thirty-two-bit word, so a report appearing in these two words would put
+     * a driver that found 128 KB of RAM on the branch for 64 KB -- the failure
+     * this asserts against is a console line naming the wrong size rather than
+     * anything the parity test itself would catch.
+     */
+    qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
+
+    qtest_writel(qts, SSRAM_FIRST, SSRAM_PATTERN);
+    qtest_writel(qts, SSRAM_HALFWAY, SSRAM_COMPLEMENT);
+
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_PATTERN);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_HALFWAY), ==, SSRAM_COMPLEMENT);
+
+    /* And the firmware's own pair, which it writes with checking enabled. */
+    qtest_writel(qts, SSRAM_FIRST, 0x5555u);
+    qtest_writel(qts, SSRAM_HALFWAY, 0xaaaau);
+
+    g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x5555u);
+    g_assert_cmphex(qtest_readl(qts, SSRAM_HALFWAY), ==, 0xaaaau);
+
+    qtest_quit(qts);
+}
+
+/*
  * The byte bus's first device select and the real-time clock behind it. The
  * window is byte-wide, unlike every other block on this chip, and the clock is
  * its top eight bytes.
@@ -2793,6 +2914,12 @@ int main(int argc, char **argv)
                         test_the_buffer_ram_halves_are_distinct);
     qtest_add_data_func("sn0/ioc3/buffer-ram-is-seventeen-bits-wide", NULL,
                         test_the_buffer_ram_is_seventeen_bits_wide);
+    qtest_add_data_func("sn0/ioc3/buffer-ram-reports-bad-parity", NULL,
+                        test_the_buffer_ram_reports_bad_parity);
+    qtest_add_data_func("sn0/ioc3/buffer-ram-ignores-written-parity", NULL,
+                        test_the_buffer_ram_ignores_a_written_parity_report);
+    qtest_add_data_func("sn0/ioc3/size-probe-survives-parity-checking", NULL,
+                        test_the_size_probe_survives_parity_checking);
     qtest_add_data_func("sn0/ioc3/clock-reads-the-time-it-was-given", NULL,
                         test_the_clock_reads_the_time_it_was_given);
     qtest_add_data_func("sn0/ioc3/clock-freeze-holds-an-instant", NULL,
