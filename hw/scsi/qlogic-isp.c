@@ -274,8 +274,11 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
  * error is any other value.
  */
 #define ISP_MBOX_CMD_NOP                0x0000
+#define ISP_MBOX_CMD_LOAD_RAM           0x0001
 #define ISP_MBOX_CMD_EXEC_FIRMWARE      0x0002
+#define ISP_MBOX_CMD_DUMP_RAM           0x0003
 #define ISP_MBOX_CMD_WRITE_RAM_WORD     0x0004
+#define ISP_MBOX_CMD_READ_RAM_WORD      0x0005
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST   0x0006
 #define ISP_MBOX_CMD_VERIFY_CHECKSUM    0x0007
 #define ISP_MBOX_CMD_ABOUT_FIRMWARE     0x0008
@@ -783,6 +786,48 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
 }
 
 /*
+ * Moves a block of the adapter's own memory to or from host memory, which is
+ * what the load-RAM and dump-RAM mailbox commands each ask for in one
+ * direction. Mailbox 1 is the word offset within the adapter, mailbox 4 the
+ * word count, and mailboxes 2 and 3 the host address high half first — the
+ * same four the command rings already reassemble, so the address macros are
+ * shared rather than restated and a 64-bit host address costs nothing extra.
+ *
+ * The offset advances as a uint16_t so it wraps within the adapter's own
+ * memory rather than running past the end of it, the same reasoning the
+ * checksum command's walk of the same storage already records. Every offset a
+ * uint16_t can name indexes storage sized to that range, so there is nothing
+ * to validate; the host address is the guest's business and the DMA layer's.
+ *
+ * Through the PCI DMA accessors, never cpu_physical_memory_*, so the transfer
+ * is translated by the Bridge the adapter sits behind exactly as the command
+ * rings are. Little-endian, matching those rings: this is a little-endian PCI
+ * device, and the Bridge translates addresses without swapping DMA payload, so
+ * the accessor chosen here is the byte order that lands in guest memory.
+ */
+static void qlogic_isp_ram_block_dma(QLogicISPState *s, bool to_adapter)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t base = s->mailbox[1];
+    uint16_t count = s->mailbox[4];
+    hwaddr host = ISP_MBOX_ADDR_TOP(s->mailbox)
+                | ISP_MBOX_ADDR_HIGH(s->mailbox)
+                | ISP_MBOX_ADDR_MID(s->mailbox)
+                | ISP_MBOX_ADDR_LOW(s->mailbox);
+    uint16_t i;
+
+    for (i = 0; i < count; i++) {
+        uint16_t *slot = &s->risc_ram[(uint16_t)(base + i)];
+
+        if (to_adapter) {
+            lduw_le_pci_dma(pci, host + i * 2, slot, MEMTXATTRS_UNSPECIFIED);
+        } else {
+            stw_le_pci_dma(pci, host + i * 2, *slot, MEMTXATTRS_UNSPECIFIED);
+        }
+    }
+}
+
+/*
  * Runs a mailbox command. The host writes mailbox 0 and sets the host
  * interrupt to mean "a command is ready", which is what calls this; the
  * adapter answers by writing a result into mailbox 0, taking the semaphore
@@ -817,6 +862,42 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
      */
     case ISP_MBOX_CMD_WRITE_RAM_WORD:
         s->risc_ram[s->mailbox[1]] = s->mailbox[2];
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * The mirror of the write above, and the same absence of validation for
+     * the same reason. No OS driver issues this — Linux declares the opcode
+     * and never sends it — but the SGI firmware's power-on SCSI diagnostic
+     * writes a word and reads it back, and answering it with invalid is what
+     * failed that test and cost the machine its disks.
+     *
+     * Mailbox 3 is answered too, and answered zero. No driver source shows
+     * this command's outputs, but 86Box's model of the same chip declares
+     * both mailboxes outputs and clears the second, and that model had to
+     * satisfy real firmware. Leaving mailbox 3 alone hands back whatever the
+     * previous command left there -- a value this command never wrote.
+     */
+    case ISP_MBOX_CMD_READ_RAM_WORD:
+        s->mailbox[2] = s->risc_ram[s->mailbox[1]];
+        s->mailbox[3] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * The block forms of the same two directions, which the firmware's
+     * diagnostic uses to push a pattern through the adapter's memory and read
+     * it back over DMA. A driver would reach for load-RAM to download firmware
+     * in one transfer instead of a mailbox command per word; ours never does,
+     * which is why neither appeared until the firmware was traced.
+     */
+    case ISP_MBOX_CMD_LOAD_RAM:
+        qlogic_isp_ram_block_dma(s, true);
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    case ISP_MBOX_CMD_DUMP_RAM:
+        qlogic_isp_ram_block_dma(s, false);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 

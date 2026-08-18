@@ -143,6 +143,89 @@
  */
 #define GUEST_HALFWORD(natural)  (((natural) & ~3u) | (((natural) & 3u) ^ 2u))
 
+/*
+ * What the adapter's memory DMA needs beyond plain register access: the bus
+ * master bit, an address-translation entry, and the mailbox protocol.
+ *
+ * The translation entries and the translated window are the ones
+ * tests/qtest/sn0-bridge-test.c drives with its own transfer source, restated
+ * here rather than shared the same way this file already restates IOC3's slot.
+ * What is under test is this adapter reaching guest memory the way its command
+ * rings do, not the bridge's translation in general.
+ */
+#define PCI_COMMAND_MASTER      0x0004
+#define ATE_BASE                0x010000
+#define ATE(n)                  (BRIDGE_BASE + ATE_BASE + (n) * 8)
+#define ATE_ENTRY(page, widget) ((uint64_t)(page) | \
+                                 ((uint64_t)(widget) << 8) | 1)
+#define PCI_TRANSLATED          0x40000000u
+#define PAGE_SIZE_4K            0x1000u
+#define TARGET_PAGE             0x00100000u
+
+#define ISP_REG_SEMAPHORE       0x0c
+#define ISP_REG_HOST_CMD        0xc0
+#define ISP_HOST_CMD_SHIFT      12
+#define ISP_HOST_CMD_SET_HOST_INT   0x5
+#define ISP_HOST_CMD_CLEAR_RISC_INT 0x7
+
+#define ISP_MBOX_CMD_LOAD_RAM       0x0001
+#define ISP_MBOX_CMD_DUMP_RAM       0x0003
+#define ISP_MBOX_CMD_WRITE_RAM_WORD 0x0004
+#define ISP_MBOX_CMD_READ_RAM_WORD  0x0005
+#define ISP_MBOX_COMPLETE           0x4000
+
+/* Every access to the adapter goes through the window's byte-lane swizzle. */
+static void isp_writew(QTestState *qts, unsigned natural, uint16_t val)
+{
+    qtest_writew(qts, WINDOW_DEVICE0 + GUEST_HALFWORD(natural), val);
+}
+
+static uint16_t isp_readw(QTestState *qts, unsigned natural)
+{
+    return qtest_readw(qts, WINDOW_DEVICE0 + GUEST_HALFWORD(natural));
+}
+
+static void isp_mbox_ack(QTestState *qts)
+{
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    isp_writew(qts, ISP_REG_SEMAPHORE, 0);
+}
+
+/* Puts one word into the adapter's memory and waits for the answer. */
+static void isp_write_ram_word(QTestState *qts, uint16_t addr, uint16_t val)
+{
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_WRITE_RAM_WORD);
+    isp_writew(qts, ISP_MAILBOX(1), addr);
+    isp_writew(qts, ISP_MAILBOX(2), val);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+}
+
+/*
+ * A block transfer between the adapter's memory and a PCI address, with the
+ * mailboxes loaded the way a driver loads them: the offset within the adapter
+ * in 1, the PCI address split across 2 and 3 with its high half first, the
+ * word count in 4, and the two high halves of a 64-bit address in 7 and 6
+ * written even though they are zero here, since the mailboxes persist between
+ * commands and a stale value in either would be reassembled into the address.
+ */
+static void isp_ram_block(QTestState *qts, uint16_t cmd, uint16_t base,
+                          uint32_t pci_addr, uint16_t count)
+{
+    isp_writew(qts, ISP_MAILBOX(0), cmd);
+    isp_writew(qts, ISP_MAILBOX(1), base);
+    isp_writew(qts, ISP_MAILBOX(2), pci_addr >> 16);
+    isp_writew(qts, ISP_MAILBOX(3), pci_addr & 0xffff);
+    isp_writew(qts, ISP_MAILBOX(4), count);
+    isp_writew(qts, ISP_MAILBOX(6), 0);
+    isp_writew(qts, ISP_MAILBOX(7), 0);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+}
+
 static void aim_device0_window_at_its_bar(QTestState *qts)
 {
     /*
@@ -309,6 +392,119 @@ static void test_ioc3_slot_is_exempt_at_the_same_stride(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The adapter's own memory DMA goes through the bridge's address translation,
+ * the same path its command rings take.
+ *
+ * This is the only check before a firmware boot that says so. The device-level
+ * round-trip in tests/qtest/qlogic-isp-test.c passes just as well against a
+ * model reaching guest memory directly, because on that generic PCI machine
+ * there is no translation to bypass — and a register trace of the firmware
+ * proves nothing either, since the transfer that would have faulted was
+ * refused before it began.
+ *
+ * The translated address and the physical page deliberately differ, so that a
+ * transfer landing at the untranslated address is a visible failure rather
+ * than an accidental pass. Both directions run: dump-RAM puts the adapter's
+ * own memory into the page, and load-RAM reads a second pattern back out of
+ * it, because a model could translate correctly in one direction only.
+ */
+static void test_ram_dma_translates_through_the_bridge(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    const uint16_t base = 0x1000;
+    const uint16_t first = 0x1234, second = 0x5678;
+    uint8_t seen[4];
+
+    aim_device0_window_at_its_bar(qts);
+
+    /* Nothing the adapter does reaches memory until it may master the bus. */
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+
+    /* So a byte found in the page afterwards was put there by the adapter. */
+    qtest_memset(qts, TARGET_PAGE, 0, PAGE_SIZE_4K);
+
+    isp_write_ram_word(qts, base, first);
+
+    isp_ram_block(qts, ISP_MBOX_CMD_DUMP_RAM, base, PCI_TRANSLATED, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    /*
+     * Read the raw bytes rather than a word: this asserts both that the
+     * transfer was translated and the order it laid the two halves down in,
+     * which is the decision the datasheet records and nothing else here pins.
+     */
+    qtest_memread(qts, TARGET_PAGE, seen, 2);
+    g_assert_cmphex(seen[0], ==, first & 0xff);
+    g_assert_cmphex(seen[1], ==, first >> 8);
+
+    /* The other direction, from the same translated page. */
+    seen[0] = second & 0xff;
+    seen[1] = second >> 8;
+    qtest_memwrite(qts, TARGET_PAGE, seen, 2);
+
+    isp_ram_block(qts, ISP_MBOX_CMD_LOAD_RAM, base, PCI_TRANSLATED, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_READ_RAM_WORD);
+    isp_writew(qts, ISP_MAILBOX(1), base);
+    isp_writew(qts, ISP_MAILBOX(2), 0x5a5a);    /* not the answer */
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, second);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The single-word RAM path, through the fabric, with the guard that makes it
+ * mean something: two addresses are written before either is read, and the
+ * read asks for the first. A model answering with the most recently written
+ * word, or leaving a previous command's value in the answer mailbox, returns
+ * the second value and fails. Reading the address just written cannot tell
+ * those apart from a correct implementation.
+ *
+ * This runs under check-qtest-mips64. The richer device-level suite for this
+ * command compiles into qos-test, which reports no tests on this target, so
+ * for now this is the only coverage of read RAM word that CI executes.
+ */
+static void test_read_ram_word_through_the_fabric(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    const uint16_t addr_a = 0x0800, addr_b = 0x0c00;
+    const uint16_t val_a = 0x1234, val_b = 0xfedc;
+
+    aim_device0_window_at_its_bar(qts);
+
+    isp_write_ram_word(qts, addr_a, val_a);
+    isp_write_ram_word(qts, addr_b, val_b);
+
+    /*
+     * Mailboxes 2 and 3 are loaded with values that are not the answer: 2
+     * carries the word out, and 3 is an output of this command that reads
+     * zero, so both would pass by accident if left holding the answer.
+     */
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_READ_RAM_WORD);
+    isp_writew(qts, ISP_MAILBOX(1), addr_a);
+    isp_writew(qts, ISP_MAILBOX(2), 0x5a5a);
+    isp_writew(qts, ISP_MAILBOX(3), 0xc3c3);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, val_a);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(3)), ==, 0);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -319,6 +515,10 @@ int main(int argc, char **argv)
                         NULL, test_reset_signature_through_the_fabric);
     qtest_add_data_func("sn0/qlogic-isp/ioc3-slot-is-exempt-at-the-same-stride",
                         NULL, test_ioc3_slot_is_exempt_at_the_same_stride);
+    qtest_add_data_func("sn0/qlogic-isp/ram-dma-translates-through-the-bridge",
+                        NULL, test_ram_dma_translates_through_the_bridge);
+    qtest_add_data_func("sn0/qlogic-isp/read-ram-word-through-the-fabric",
+                        NULL, test_read_ram_word_through_the_fabric);
 
     return g_test_run();
 }
