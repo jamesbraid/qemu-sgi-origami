@@ -898,6 +898,8 @@ void qemu_cpu_kick(CPUState *cpu);
  * Ends the current accelerator slice and, where supported, asks the
  * accelerator to run @cpu next. Accelerators without ordered handoff support
  * fall back to qemu_cpu_kick().
+ *
+ * Context: called with the BQL held.
  */
 void qemu_cpu_handoff(CPUState *cpu);
 
