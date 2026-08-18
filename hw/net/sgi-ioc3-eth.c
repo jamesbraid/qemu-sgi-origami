@@ -77,9 +77,41 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
     qemu_set_irq(s->irq, (status & enable) != 0);
 }
 
-static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s)
+/*
+ * Clear the block. `keep_rings` distinguishes the two resets that reach here,
+ * which clear different amounts.
+ *
+ * The device's own reset clears everything: nothing has been programmed yet
+ * and there is nothing to preserve.
+ *
+ * The MAC control register's reset bit resets the engine, not the addresses
+ * the engine was given -- so the two ring base registers survive it. That is
+ * SGI's power-on loopback diagnostic's requirement rather than a reading of
+ * the datasheet: it programs both ring bases, then asserts the reset bit, then
+ * programs only the four indices and starts the engine. It never writes either
+ * base again, so a reset that cleared them leaves the engine fetching
+ * descriptors from address zero, which is what it did here -- the diagnostic
+ * reported ten packets sent and none received. Both guest drivers program the
+ * bases after their reset rather than before, which is why no boot found this.
+ *
+ * What the reset does to everything else is unobserved. The diagnostic
+ * rewrites the indices itself, so nothing here says whether hardware cleared
+ * them, and clearing them is kept because it is what this model already did.
+ */
+static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
 {
+    uint32_t rx_hi = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_HI);
+    uint32_t rx_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_LO);
+    uint32_t tx_hi = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_RING_HI);
+    uint32_t tx_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_RING_LO);
+
     memset(s->enet_reg, 0, sizeof(s->enet_reg));
+    if (keep_rings) {
+        sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_RING_HI, rx_hi);
+        sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_RING_LO, rx_lo);
+        sgi_ioc3_enet_set(s, SGI_IOC3_ENET_TX_RING_HI, tx_hi);
+        sgi_ioc3_enet_set(s, SGI_IOC3_ENET_TX_RING_LO, tx_lo);
+    }
     s->mii_data = SGI_IOC3_ENET_MII_ABSENT;
     s->mii_data_w = 0;
     s->rx_timer_armed = false;
@@ -610,7 +642,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
     case SGI_IOC3_ENET_MAC_CONTROL:
         if (val & SGI_IOC3_ENET_MCR_RESET) {
-            sgi_ioc3_eth_reset_registers(s);
+            sgi_ioc3_eth_reset_registers(s, true);
             s->enet_reg[index] = SGI_IOC3_ENET_MCR_RESET |
                                  SGI_IOC3_ENET_MCR_ARB_DIAG_IDLE;
             return;
@@ -731,7 +763,7 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
      * register, whose transmit and receive enables sit in it: a block that
      * came up enabled would be one no driver had asked to run.
      */
-    sgi_ioc3_eth_reset_registers(s);
+    sgi_ioc3_eth_reset_registers(s, false);
 }
 
 static void sgi_ioc3_eth_init(Object *obj)
