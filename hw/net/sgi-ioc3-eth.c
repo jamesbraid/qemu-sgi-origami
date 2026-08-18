@@ -337,6 +337,18 @@ static size_t sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
  * one, since this walks the whole batch before returning, but the flag is
  * still derived rather than assumed for the one descriptor in flight).
  */
+/*
+ * Whether the transmit engine is running. Both of its enables have to be set:
+ * the DMA enable lets it fetch descriptors and the transmit enable lets it put
+ * a frame on the wire, and the datasheet gives them as separate bits.
+ */
+static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
+{
+    return (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL) &
+            (SGI_IOC3_ENET_MCR_TX_DMA_EN | SGI_IOC3_ENET_MCR_TX_EN)) ==
+           (SGI_IOC3_ENET_MCR_TX_DMA_EN | SGI_IOC3_ENET_MCR_TX_EN);
+}
+
 static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 {
     uint32_t tx_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_RING_LO);
@@ -494,6 +506,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 {
     SGIIOC3EthState *s = opaque;
     unsigned int index = addr / 4;
+    bool was_enabled;
 
     trace_sgi_ioc3_eth_reg_write((uint32_t)(SGI_IOC3_ENET_BASE + addr),
                                  (uint32_t)val);
@@ -581,14 +594,16 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         /*
          * The doorbell: software has filled one or more descriptors and this
          * write says how far. Walk the ring now rather than waiting to be
-         * asked, since nothing else here ever will be -- neither guest polls
-         * an index without an interrupt to prompt it, so the interrupt this
-         * walk raises is the only prompt there is.
+         * asked -- nothing else polls an index without an interrupt to prompt
+         * it, so the interrupt this walk raises is the only prompt there is.
+         *
+         * It is not the only thing that starts a walk, though. Software may
+         * ring the doorbell while transmit is still switched off, and the
+         * write that switches it on is what starts the engine then. The MAC
+         * control register's own handler covers that.
          */
         s->enet_reg[index] = val;
-        if ((s->enet_reg[(SGI_IOC3_ENET_MAC_CONTROL - SGI_IOC3_ENET_BASE) / 4]
-            & (SGI_IOC3_ENET_MCR_TX_DMA_EN | SGI_IOC3_ENET_MCR_TX_EN)) ==
-           (SGI_IOC3_ENET_MCR_TX_DMA_EN | SGI_IOC3_ENET_MCR_TX_EN)) {
+        if (sgi_ioc3_eth_tx_enabled(s)) {
             sgi_ioc3_eth_do_tx(s, val);
         }
         return;
@@ -600,8 +615,30 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
                                  SGI_IOC3_ENET_MCR_ARB_DIAG_IDLE;
             return;
         }
+        was_enabled = sgi_ioc3_eth_tx_enabled(s);
         s->enet_reg[index] = val;
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
+
+        /*
+         * Switching transmit on starts the engine on whatever the produce
+         * index already names. A real engine fetches descriptors whenever it
+         * is running and has not caught up with that index, so an enable that
+         * arrives after the doorbell still sends -- and SGI's power-on
+         * loopback diagnostic orders it exactly that way, queueing its
+         * descriptors and then enabling transmit. Neither guest driver does,
+         * which is why the doorbell alone looked like the whole trigger.
+         *
+         * Only on the transition, so that the further writes to this register
+         * that follow -- the diagnostic adds the receive enables in two more
+         * writes -- do not walk a ring that has already been walked. The walk
+         * itself would be harmless, since it stops immediately once the
+         * consume index has caught up, but a walk that found anything would
+         * send it twice.
+         */
+        if (!was_enabled && sgi_ioc3_eth_tx_enabled(s)) {
+            sgi_ioc3_eth_do_tx(s, sgi_ioc3_enet_get(s,
+                                                    SGI_IOC3_ENET_TX_PRODUCE));
+        }
         return;
 
     case SGI_IOC3_ENET_RX_PRODUCE:
