@@ -980,6 +980,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
     unsigned int bank = number / SGI_HUB_BANK_BITS;
     unsigned int i;
+    CPUState *primary = qemu_get_cpu(s->cpu_base);
     uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
 
     if (val & PI_INT_MODIFY_SET) {
@@ -988,6 +989,22 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
         qatomic_and(&s->pi_int_pend[bank], ~bit);
     }
     sgi_hub_update_irq(s);
+
+    /*
+     * Slice B polls PEND1 as a level mailbox. Record that slice A has changed
+     * the bank so B can inspect one snapshot before yielding back to A. The
+     * credit deliberately does not name a bit: unrelated level state can
+     * remain pending while the firmware waits for a different bit to change.
+     * Multiple writes coalesce because the pending register itself retains
+     * the complete level state.
+     */
+    /*
+     * The observed stock-PROM exchange is PEND1 bit 113. Other PEND1 writes
+     * remain on the generic observation path below.
+     */
+    if (bank == 1 && number == 113 && primary && current_cpu == primary) {
+        s->pi_int_pend1_primary_credit = true;
+    }
 
     /*
      * The PROM uses otherwise-unmasked pending bits as node-wide barrier and
@@ -1004,6 +1021,27 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
             qemu_cpu_handoff(peer);
         }
     }
+}
+
+static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank);
+
+static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
+{
+    CPUState *primary = qemu_get_cpu(s->cpu_base);
+    CPUState *secondary = qemu_get_cpu(s->cpu_base + 1);
+    uint64_t value = qatomic_read(&s->pi_int_pend[1]);
+
+    if (s->cpus >= 2 && primary && secondary && current_cpu == secondary &&
+        (value & (1ULL << (113 - SGI_HUB_BANK_BITS)))) {
+        if (s->pi_int_pend1_primary_credit) {
+            s->pi_int_pend1_primary_credit = false;
+        } else {
+            qemu_cpu_handoff(primary);
+        }
+        return value;
+    }
+
+    return sgi_hub_int_pending_read(s, 1);
 }
 
 static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
@@ -1695,7 +1733,7 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
         value = sgi_hub_int_pending_read(s, 0);
         goto trace_protocol_read;
     case HUB_PI_INT_PEND1:
-        value = sgi_hub_int_pending_read(s, 1);
+        value = sgi_hub_int_pend1_read(s);
         goto trace_protocol_read;
     case HUB_PI_INT_MASK0_A:
         return s->pi_int_mask[0];
@@ -2427,6 +2465,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     }
     memset(s->pi_int_pend, 0, sizeof(s->pi_int_pend));
     memset(s->pi_int_pend_seen_valid, 0, sizeof(s->pi_int_pend_seen_valid));
+    s->pi_int_pend1_primary_credit = false;
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     s->ni_status = NI_STATUS_RESET |
                    (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
@@ -2688,6 +2727,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIHubState, SGI_HUB_PROCESSORS),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
+        VMSTATE_BOOL_V(pi_int_pend1_primary_credit, SGIHubState, 17),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
         VMSTATE_UINT64_ARRAY_V(ni_scratch, SGIHubState, 2, 14),
@@ -2742,6 +2782,10 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 {
     SGIHubState *s = opaque;
     unsigned int n;
+
+    if (version_id < 17) {
+        s->pi_int_pend1_primary_credit = false;
+    }
 
     if (version_id < 16) {
         memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
