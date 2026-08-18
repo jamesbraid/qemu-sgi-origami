@@ -471,3 +471,4 @@ sgi_hub_vector_complete(int cpu, uint32_t source_nasid, int target_nasid, uint64
 # sgi-ioc3.c
 sgi_ioc3_sdma_read(uint32_t reg, uint32_t val) "reg 0x%03x -> 0x%08x"
 sgi_ioc3_sdma_write(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x"
+sgi_ioc3_sdma_write_refused(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x refused, hardware owns it"
