@@ -68,6 +68,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_INT_ENABLE_CLR 0x24
 
 /*
+ * The chip control register. Its two seven-bit fields tell the serial DMA
+ * engines where the ports live inside the SuperIO window, each as that port's
+ * byte offset divided by eight, and four more bits set the byte bus strobe
+ * length. The firmware writes it on every boot and no guest reads it back, so
+ * a model that dropped it would produce an identical transcript -- which is
+ * why the qtest asserts the firmware's own value rather than a boot doing it.
+ */
+#define SGI_IOC3_CHIP_CONTROL   0x28
+/*
+ * Bits 19-22 report which internal master wants the PCI bus and whether the
+ * arbiter is idle. They are hardware's to answer and nothing outside SGI's
+ * own diagnostic reads them, so the writable half stops below them.
+ */
+#define SGI_IOC3_CHIP_CTRL_MASK 0x0007ffffu
+
+/*
  * MicroLAN (one-wire) control and the pin block it shares the window with.
  * Both guests route the MicroLAN engine onto pin 8 as their first act on the
  * chip, so this has to decode and answer before any one-wire transaction can
@@ -496,6 +512,13 @@ struct SGIIOC3State {
      * handed the same space for the same reason.
      */
     AddressSpace *dma_as;
+
+    /*
+     * The chip control register, which is storage here: its port-offset
+     * fields are a multiplexer on real silicon, and the firmware and both
+     * guests program them to the two offsets this model already implements.
+     */
+    uint32_t chip_control;
 
     /*
      * The PS/2 controller. Only its control and status register holds anything

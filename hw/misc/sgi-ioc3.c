@@ -456,6 +456,8 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_IOC3_INT_ENABLE_SET:
         /* The set alias reads back the live mask; the clear alias does not. */
         return s->int_enable;
+    case SGI_IOC3_CHIP_CONTROL:
+        return s->chip_control;
     case SGI_IOC3_MICROLAN_CONTROL:
         return s->microlan_control;
     case SGI_IOC3_PIN_CONTROL_SET:
@@ -505,6 +507,19 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_IOC3_INT_ENABLE_CLR:
         s->int_enable &= ~val;
         sgi_ioc3_update_irq(s);
+        break;
+    case SGI_IOC3_CHIP_CONTROL:
+        /*
+         * Where the serial DMA engines are told the two ports live inside the
+         * SuperIO window, plus the byte bus strobe length. It is storage here
+         * and not a multiplexer: the firmware and both guests program the
+         * fields to the two offsets this chip already implements, so a model
+         * resolving a port through them and one ignoring them answer alike on
+         * every path any of them takes. Storing it is what the register
+         * contract asks for; acting on it would add a failure mode nothing
+         * exercises.
+         */
+        s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
         break;
     case SGI_IOC3_MICROLAN_CONTROL:
         /*
@@ -1453,6 +1468,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->microlan_control = 0;
     s->pin_control = 0;
     s->pin_data = 0;
+    s->chip_control = 0;
 }
 
 static void sgi_ioc3_init(Object *obj)
@@ -1507,6 +1523,7 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
+        VMSTATE_UINT32_V(chip_control, SGIIOC3State, 11),
         VMSTATE_UINT8_2DARRAY_V(sdma_packer, SGIIOC3State,
                                 SGI_IOC3_SERIAL_PORTS,
                                 SGI_IOC3_SDMA_ENTRY_SIZE, 11),
