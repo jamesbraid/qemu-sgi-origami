@@ -84,6 +84,22 @@
 #define NI_META_TABLE_LAST      0x6380f8
 #define NI_LOCAL_TABLE          0x638100
 
+/*
+ * The block transfer engines' registers and fields — this file's own copy,
+ * matching how every sn0-*-test.c file stands alone.
+ */
+#define BTE_LENGTH(e)           (0x410000 + (e) * 0x10000)
+#define BTE_SOURCE(e)           (BTE_LENGTH(e) + 0x08)
+#define BTE_DEST(e)             (BTE_LENGTH(e) + 0x10)
+#define BTE_CONTROL(e)          (BTE_LENGTH(e) + 0x18)
+#define BTE_NOTIFY(e)           (BTE_LENGTH(e) + 0x20)
+#define BTE_INTERRUPT(e)        (BTE_LENGTH(e) + 0x28)
+#define BTE_BUSY                (1ULL << 20)
+#define BTE_CTL_NOTIFY          (1ULL << 4)
+#define BTE_INT_LEVEL(l)        ((uint64_t)(l) << 16)
+#define BTE_LINE                128
+#define PI_INT_PEND0            0x000098
+
 /* PCF8584 data and control registers inside the Hub-local window. */
 #define I2C_DATA                0x220000
 #define I2C_CTRL                0x220008
@@ -522,6 +538,84 @@ static void test_a_conversation_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+/*
+ * The block transfer engines' registers are the whole of an engine's state
+ * -- a transfer completes inside the store that launches it, so there is
+ * never an in-flight transfer for the stream to carry -- but "the bit
+ * pattern survives" is the weak half of what has to hold. The strong half
+ * is that the moved state is still live: an engine armed on the source must
+ * launch on the destination from nothing but its migrated registers, so
+ * this arms engine 0 (busy and length set, addresses and interrupt word
+ * programmed, control not yet stored) before the move and stores control
+ * only on the far side.
+ */
+static void test_bte_state_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    enum { LINES = 2, SIZE = LINES * BTE_LINE };
+    uint8_t expect[SIZE], got[SIZE];
+    unsigned int i;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+
+    for (i = 0; i < SIZE; i++) {
+        expect[i] = 0x5c ^ i;
+    }
+    qtest_bufwrite(from, 0x00700000, expect, SIZE);
+    qtest_memset(from, 0x00740000, 0x3d, SIZE);
+
+    /* Engine 1 carries plain register values, distinct in every field. */
+    qtest_writeq(from, HUB_LOCAL + BTE_CONTROL(1), BTE_CTL_NOTIFY);
+    qtest_writeq(from, HUB_LOCAL + BTE_LENGTH(1), 0x0abc);
+    qtest_writeq(from, HUB_LOCAL + BTE_SOURCE(1), 0x00600000);
+    qtest_writeq(from, HUB_LOCAL + BTE_DEST(1), 0x00610000);
+    qtest_writeq(from, HUB_LOCAL + BTE_NOTIFY(1), 0x00620000);
+    qtest_writeq(from, HUB_LOCAL + BTE_INTERRUPT(1), BTE_INT_LEVEL(41) | 3);
+
+    /* Engine 0 is armed and not yet launched. */
+    qtest_writeq(from, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(from, HUB_LOCAL + BTE_SOURCE(0), 0x00700000);
+    qtest_writeq(from, HUB_LOCAL + BTE_DEST(0), 0x00740000);
+    qtest_writeq(from, HUB_LOCAL + BTE_INTERRUPT(0), BTE_INT_LEVEL(20));
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_CONTROL(1)), ==,
+                    BTE_CTL_NOTIFY);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_LENGTH(1)), ==, 0x0abc);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_SOURCE(1)), ==,
+                    0x00600000);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_DEST(1)), ==,
+                    0x00610000);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_NOTIFY(1)), ==,
+                    0x00620000);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_INTERRUPT(1)), ==,
+                    BTE_INT_LEVEL(41) | 3);
+
+    /* The armed engine launches on the destination. */
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_LENGTH(0)), ==,
+                    BTE_BUSY | LINES);
+    qtest_writeq(to, HUB_LOCAL + BTE_CONTROL(0), 0);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+    qtest_bufread(to, 0x00740000, got, SIZE);
+    g_assert_cmpmem(got, SIZE, expect, SIZE);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_INT_PEND0), ==,
+                    1ULL << 20);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 static void test_flash_autoselect_survives_migration(const void *data)
 {
     g_autofree gchar *tmpfs = NULL;
@@ -593,6 +687,8 @@ int main(int argc, char **argv)
                         NULL, test_staged_i2c_start_survives_migration);
     qtest_add_data_func("sn0/migration/conversation-survives-migration",
                         NULL, test_a_conversation_survives_migration);
+    qtest_add_data_func("sn0/migration/bte-state-survives-migration",
+                        NULL, test_bte_state_survives_migration);
     qtest_add_data_func("sn0/migration/flash-autoselect-survives-migration",
                         NULL, test_flash_autoselect_survives_migration);
     qtest_add_data_func("sn0/migration/flash-program-command-"

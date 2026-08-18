@@ -54,6 +54,9 @@ typedef struct SGIHubCounterLine {
 #define SGI_HUB_PENDING_BANKS 2
 #define SGI_HUB_BANK_BITS     64
 
+/* The two identical block transfer engines in the Hub's I/O section. */
+#define SGI_HUB_BTES 2
+
 #define SGI_HUB_BWIN_ENTRIES 7
 #define SGI_HUB_BWIN_SIZE    (512 * MiB)
 #define SGI_HUB_BWIN_TOTAL   (SGI_HUB_BWIN_ENTRIES * SGI_HUB_BWIN_SIZE)
@@ -89,6 +92,18 @@ struct SGIHubState {
      */
     MemoryRegion *xtalk;
     uint32_t xtalk_widget_shift;
+
+    /*
+     * The memory the block transfer engines copy through: the machine's
+     * node-local view, in which an address carrying no node number names
+     * this Hub's own node, exactly as it does for the node's processors.
+     * Handed in rather than derived because under real firmware the Hub's
+     * programmed node number reads zero on every node, so the Hub cannot
+     * tell which node's memory a node-less address means -- only the
+     * machine, which placed the memory, can.
+     */
+    MemoryRegion *memory;
+    AddressSpace bte_as;
 
     /*
      * Each processor has a mask for each shared pending bank, so each receives
@@ -185,6 +200,20 @@ struct SGIHubState {
     uint64_t io_xtalk_timeout;
     uint64_t io_xtalk_prescale;
     uint32_t io_bwin[SGI_HUB_BWIN_ENTRIES];
+
+    /*
+     * The block transfer engines' six registers each: length/status,
+     * source, destination, control/terminate, notification address,
+     * interrupt address. The registers are the whole of an engine's state —
+     * a launched transfer completes inside the launching store, so there is
+     * never an in-flight transfer for migration to carry.
+     */
+    uint64_t bte_length[SGI_HUB_BTES];
+    uint64_t bte_source[SGI_HUB_BTES];
+    uint64_t bte_dest[SGI_HUB_BTES];
+    uint64_t bte_control[SGI_HUB_BTES];
+    uint64_t bte_notify[SGI_HUB_BTES];
+    uint64_t bte_interrupt[SGI_HUB_BTES];
 
     /* The I/O interface's two general-purpose scratch registers. */
     uint64_t io_scratch[2];

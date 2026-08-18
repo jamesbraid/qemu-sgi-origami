@@ -106,6 +106,49 @@
 #define IO_ICRB_C_STRIDE    0x20
 #define IO_ICRB_C_LAST_OFF  (IO_ICRB_C_BASE + 7 * IO_ICRB_C_STRIDE) /* slot 14 */
 #define IO_LINK_STATUS      0x400128
+#define IO_ERROR_CLEAR      0x4001f8
+
+/*
+ * The two block transfer engines: six 64-bit registers at the base of each
+ * engine's own 64 KB block. Length/status carries busy, error and a count
+ * in 128-byte cache lines; the address registers store bits 39:7 only; a
+ * store to control/terminate launches the armed transfer and a load stops
+ * one in progress.
+ */
+#define BTE_BASE(e)         (0x410000 + (e) * 0x10000)
+#define BTE_LENGTH(e)       (BTE_BASE(e) + 0x00)
+#define BTE_SOURCE(e)       (BTE_BASE(e) + 0x08)
+#define BTE_DEST(e)         (BTE_BASE(e) + 0x10)
+#define BTE_CONTROL(e)      (BTE_BASE(e) + 0x18)
+#define BTE_NOTIFY(e)       (BTE_BASE(e) + 0x20)
+#define BTE_INTERRUPT(e)    (BTE_BASE(e) + 0x28)
+
+#define BTE_BUSY            (1ULL << 20)
+#define BTE_ERROR           (1ULL << 16)
+#define BTE_ADDR_MASK       0x000000ffffffff80ULL  /* bits 39:7 */
+#define BTE_LINE            128
+#define BTE_CTL_POISON      (1ULL << 8)
+#define BTE_CTL_NOTIFY      (1ULL << 4)
+#define BTE_CTL_ZFILL       (1ULL << 0)
+#define BTE_INT_LEVEL(l)    ((uint64_t)(l) << 16)
+
+/*
+ * The upper bits real firmware's own stores carry: it programs the engines
+ * with cached-memory-window virtual addresses, so bits above 39 are set in
+ * every stored value and the register must drop them or the diagnostic's
+ * transfers land nowhere.
+ */
+#define BTE_CACHED_UPPER    0xa800000000000000ULL
+
+/*
+ * Scratch physical memory for the small transfer tests, inside the default
+ * 64 MB machine's RAM and clear of the configuration graph, and one address
+ * beyond every populated bank for the failed-transfer test.
+ */
+#define BTE_TEST_SRC        0x00700000ULL
+#define BTE_TEST_DST        0x00740000ULL
+#define BTE_TEST_NOTIFY     0x00780000ULL
+#define BTE_TEST_HOLE       0x10000000ULL
 #define MD_INDICATOR_0      0x220050
 #define MD_INDICATOR_1      0x220058
 #define MD_SN00_INDICATOR_0 0x220080
@@ -2036,6 +2079,575 @@ static void test_io_icrb_c_family(const void *data)
     qtest_quit(qts);
 }
 
+static void test_bte_registers_reset_to_zero(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int e;
+    uint64_t reg;
+
+    /*
+     * All twelve engine registers read zero at reset, single-sourced from
+     * the register table — and returning there after a machine reset is
+     * the same contract exercised from a programmed state, which is the
+     * half a fresh boot cannot show.
+     */
+    for (e = 0; e < 2; e++) {
+        for (reg = BTE_LENGTH(e); reg <= BTE_INTERRUPT(e); reg += 8) {
+            g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + reg), ==, 0);
+        }
+    }
+
+    for (e = 0; e < 2; e++) {
+        /*
+         * Control first, while busy is clear, so nothing launches; then
+         * arm busy so the reset is clearing a genuinely armed engine.
+         */
+        qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(e),
+                     BTE_CTL_POISON | BTE_CTL_NOTIFY | BTE_CTL_ZFILL);
+        qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(e), BTE_BUSY | 0x123);
+        qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(e), BTE_TEST_SRC);
+        qtest_writeq(qts, HUB_LOCAL + BTE_DEST(e), BTE_TEST_DST);
+        qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(e), BTE_TEST_NOTIFY);
+        qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(e),
+                     BTE_INT_LEVEL(9) | 0);
+    }
+
+    qtest_system_reset(qts);
+
+    for (e = 0; e < 2; e++) {
+        for (reg = BTE_LENGTH(e); reg <= BTE_INTERRUPT(e); reg += 8) {
+            g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + reg), ==, 0);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_length_status_field_access(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int e;
+
+    /*
+     * Busy and length hold written values before a launch; the reserved
+     * ranges 63:21 and 19:17 read zero. Writing all ones everywhere except
+     * the error bit is what separates masked storage from
+     * writable-everything. The error bit is left out of the write on
+     * purpose: whether a store can set it is open (the vendor evidence
+     * says only that a store cannot clear one already set — the failed-
+     * transfer test covers that), so what is asserted of it here is only
+     * that it reads zero when the engine never took an error.
+     */
+    for (e = 0; e < 2; e++) {
+        qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(e), ~0ULL & ~BTE_ERROR);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(e)), ==,
+                        BTE_BUSY | 0xffff);
+
+        qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(e), 0);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(e)), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_address_truncation(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    static const uint64_t regs[] = { 0x08, 0x10, 0x20 }; /* src, dst, notify */
+    unsigned int e, i;
+
+    /*
+     * The truncation assertion the PROM depends on: it stores its buffer
+     * addresses as cached-memory window values, bits above 39 set, and the
+     * register keeps bits 39:7 only. Bits 6:0 sit below the cache-line
+     * size and do not survive either (misaligned programming, which the
+     * model logs as a guest error and this test only requires not to
+     * crash or store).
+     */
+    for (e = 0; e < 2; e++) {
+        for (i = 0; i < G_N_ELEMENTS(regs); i++) {
+            uint64_t reg = BTE_BASE(e) + regs[i];
+
+            qtest_writeq(qts, HUB_LOCAL + reg,
+                         BTE_CACHED_UPPER | 0x01500000ULL | 0x7f);
+            g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + reg), ==,
+                            0x01500000ULL);
+
+            qtest_writeq(qts, HUB_LOCAL + reg, ~0ULL);
+            g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + reg), ==,
+                            BTE_ADDR_MASK);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_interrupt_address_fields(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int e;
+
+    /* Level at bits 22:16 and node at 8:0 hold; reserved bits read zero. */
+    for (e = 0; e < 2; e++) {
+        qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(e), ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_INTERRUPT(e)), ==,
+                        BTE_INT_LEVEL(0x7f) | 0x1ff);
+
+        /* The diagnostic's own value for this engine round-trips whole. */
+        qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(e),
+                     BTE_INT_LEVEL(63 - e));
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_INTERRUPT(e)), ==,
+                        BTE_INT_LEVEL(63 - e));
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_control_mode_bits(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int e;
+
+    /*
+     * Mode bits hold written values, the reserved bits read zero, and a
+     * load does not fault. Busy is clear throughout, so no store here
+     * launches anything — which is itself the contract's proposal for a
+     * control store with busy clear: nothing. What a load returns is
+     * unobserved on real hardware (every driver discards it); the
+     * proposed contract, asserted here, is the written bits.
+     */
+    for (e = 0; e < 2; e++) {
+        qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(e), ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_CONTROL(e)), ==,
+                        BTE_CTL_POISON | BTE_CTL_NOTIFY | BTE_CTL_ZFILL);
+
+        qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(e), 0);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_CONTROL(e)), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_interrupt_mode_copy(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    enum { LINES = 3, SIZE = LINES * BTE_LINE };
+    uint8_t expect[SIZE], got[SIZE], notify[8];
+    unsigned int i;
+
+    for (i = 0; i < SIZE; i++) {
+        expect[i] = 0xc3 ^ i;
+    }
+    qtest_bufwrite(qts, BTE_TEST_SRC, expect, SIZE);
+    qtest_memset(qts, BTE_TEST_DST, 0x11, SIZE);
+    qtest_memset(qts, BTE_TEST_NOTIFY, 0xff, sizeof(notify));
+
+    /*
+     * The diagnostic's programming shape at one engine, but at an
+     * arbitrary interrupt level: 63 and 62 are the diagnostic's choice,
+     * not the hardware's, so the level must come from the register.
+     */
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0),
+                 BTE_CACHED_UPPER | BTE_TEST_SRC);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0),
+                 BTE_CACHED_UPPER | BTE_TEST_DST);
+    qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(0), BTE_TEST_NOTIFY);
+    qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(0), BTE_INT_LEVEL(20));
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), 0);
+
+    /* Busy cleared and the count drained by the time the guest can look. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+
+    qtest_bufread(qts, BTE_TEST_DST, got, SIZE);
+    g_assert_cmpmem(got, SIZE, expect, SIZE);
+
+    /* The programmed pending bit, and the notification path silent. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==,
+                    1ULL << 20);
+    qtest_bufread(qts, BTE_TEST_NOTIFY, notify, sizeof(notify));
+    for (i = 0; i < sizeof(notify); i++) {
+        g_assert_cmphex(notify[i], ==, 0xff);
+    }
+
+    /* The interrupt-modify register clears it, as any device interrupt. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 20);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    /*
+     * A level in the second bank lands in the second bank: number 70 is
+     * bit 6 of the second pending bank, and a model masking the level to
+     * six bits would put it at bit 6 of the first.
+     */
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(0), BTE_INT_LEVEL(70));
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==,
+                    1ULL << 6);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_bte_both_engines_the_diagnostic_shape(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    enum { SIZE = 0x80000 };  /* 4,096 cache lines, 512 KB */
+    static const uint64_t src[2] = { 0x01500000, 0x01580000 };
+    static const uint64_t dst[2] = { 0x01600000, 0x01680000 };
+    static const uint8_t fill[2] = { 0x5a, 0xa5 };
+    g_autofree uint8_t *got = g_malloc(SIZE);
+    g_autofree uint8_t *expect = g_malloc(SIZE);
+    uint64_t pend;
+    unsigned int e;
+
+    /*
+     * The exact sequence real firmware's power-on diagnostic runs: both
+     * engines armed with busy + 0x1000 lines, cached-window buffer
+     * addresses at the diagnostic's own physical locations, interrupt
+     * words naming levels 63 and 62 on node 0, then both control stores.
+     * The clear-only-if-both contract is the reason both pending bits
+     * must be observable together: the diagnostic tests engine 0's bit,
+     * tests engine 1's inside it, and does not loop back for the second.
+     */
+    for (e = 0; e < 2; e++) {
+        qtest_memset(qts, src[e], fill[e], SIZE);
+        qtest_memset(qts, dst[e], 0xcc, SIZE);
+    }
+    for (e = 0; e < 2; e++) {
+        qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(e), 0x101000);
+        qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(e),
+                     BTE_CACHED_UPPER | src[e]);
+        qtest_writeq(qts, HUB_LOCAL + BTE_DEST(e),
+                     BTE_CACHED_UPPER | dst[e]);
+        qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(e),
+                     e == 0 ? 0x3f0000 : 0x3e0000);
+    }
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), 0);
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(1), 0);
+
+    /* Both bits pending together, in one read, and nothing else. */
+    pend = qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0);
+    g_assert_cmphex(pend, ==, (1ULL << 63) | (1ULL << 62));
+
+    for (e = 0; e < 2; e++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(e)), ==, 0);
+        memset(expect, fill[e], SIZE);
+        qtest_bufread(qts, dst[e], got, SIZE);
+        g_assert_cmpmem(got, SIZE, expect, SIZE);
+    }
+
+    /* And the diagnostic's own clear path: the interrupt-modify stores. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 63);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 62);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_bte_notify_mode_copy(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    enum { LINES = 2, SIZE = LINES * BTE_LINE };
+    uint8_t expect[SIZE], got[SIZE], line[16];
+    unsigned int i;
+
+    for (i = 0; i < SIZE; i++) {
+        expect[i] = 0x35 + i;
+    }
+    qtest_bufwrite(qts, BTE_TEST_SRC, expect, SIZE);
+    qtest_memset(qts, BTE_TEST_DST, 0x22, SIZE);
+
+    /*
+     * The kernel's own completion protocol: the notification line is set
+     * to all ones before the launch and the guest spins on it changing.
+     * The engine writes its final length/status value — zero on success —
+     * as one doubleword; whether it writes more of the line is
+     * unobserved, and the proposal, asserted here, is exactly eight
+     * bytes.
+     */
+    qtest_memset(qts, BTE_TEST_NOTIFY, 0xff, sizeof(line));
+
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), BTE_TEST_DST);
+    qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(0), BTE_TEST_NOTIFY);
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), BTE_CTL_NOTIFY);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+
+    qtest_bufread(qts, BTE_TEST_NOTIFY, line, sizeof(line));
+    for (i = 0; i < 8; i++) {
+        g_assert_cmphex(line[i], ==, 0);
+    }
+    for (i = 8; i < sizeof(line); i++) {
+        g_assert_cmphex(line[i], ==, 0xff);
+    }
+
+    /* Exactly one completion signal, chosen by the notify bit. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
+
+    qtest_bufread(qts, BTE_TEST_DST, got, SIZE);
+    g_assert_cmpmem(got, SIZE, expect, SIZE);
+
+    qtest_quit(qts);
+}
+
+static void test_bte_zero_fill(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    enum { LINES = 2, SIZE = LINES * BTE_LINE };
+    uint8_t got[SIZE], zeros[SIZE];
+
+    /*
+     * The source range is zeroed first, deliberately: whether the engine
+     * reads its source in this mode is open — writing constant zeros,
+     * ignoring the source and replicating its first line are all
+     * consistent with every observed program — and a zeroed source is the
+     * shape every observed program has, so this test holds under all
+     * three candidate models rather than deciding between them. What it
+     * asserts is the guest-visible contract: the destination reads zero
+     * afterwards and the completion notification arrives.
+     */
+    qtest_memset(qts, BTE_TEST_SRC, 0x00, SIZE);
+    qtest_memset(qts, BTE_TEST_DST, 0x77, SIZE);
+    qtest_memset(qts, BTE_TEST_NOTIFY, 0xff, 8);
+
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), BTE_TEST_DST);
+    qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(0), BTE_TEST_NOTIFY);
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0),
+                 BTE_CTL_NOTIFY | BTE_CTL_ZFILL);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BTE_TEST_NOTIFY), ==, 0);
+
+    memset(zeros, 0, SIZE);
+    qtest_bufread(qts, BTE_TEST_DST, got, SIZE);
+    g_assert_cmpmem(got, SIZE, zeros, SIZE);
+
+    qtest_quit(qts);
+}
+
+static void test_bte_error_latches_and_no_store_clears_it(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    enum { LINES = 4 };
+    uint8_t notify[8];
+    uint64_t status;
+    unsigned int i;
+
+    qtest_memset(qts, BTE_TEST_SRC, 0x44, LINES * BTE_LINE);
+    qtest_memset(qts, BTE_TEST_NOTIFY, 0xff, sizeof(notify));
+
+    /*
+     * A destination beyond every populated bank: the write reaches
+     * nothing, the transfer fails, and the failure wedges the engine with
+     * busy and error set together and the unmoved lines still counted —
+     * the datasheet's one direct observation of an errored engine reads
+     * exactly that. No completion signal is fabricated: the sentinel at
+     * the notification line must stay untouched, because a hardware
+     * notification write on error is not established.
+     */
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), BTE_TEST_HOLE);
+    qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(0), BTE_TEST_NOTIFY);
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), BTE_CTL_NOTIFY);
+
+    status = qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0));
+    g_assert_cmphex(status, ==, BTE_BUSY | BTE_ERROR | LINES);
+
+    qtest_bufread(qts, BTE_TEST_NOTIFY, notify, sizeof(notify));
+    for (i = 0; i < sizeof(notify); i++) {
+        g_assert_cmphex(notify[i], ==, 0xff);
+    }
+
+    /*
+     * The vendor stall sequence exactly: a store of zero clears busy and
+     * length but never a set error bit — SGI's own driver stores zero to
+     * an errored engine and then requires the error bit still set with
+     * busy clear (the stall-path evidence in the datasheet's behavioral
+     * notes).
+     */
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==,
+                    BTE_ERROR);
+
+    /*
+     * Rearmed with the error still latched, a good notify-mode transfer
+     * completes and reports the stale error bit as its final
+     * length/status — the one non-zero notification this model can
+     * produce, and so the one place the doubleword's byte order is
+     * observable: read back as a 64-bit big-endian value it must be
+     * exactly the error bit, not its byte-swapped image.
+     */
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), BTE_TEST_DST);
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), BTE_CTL_NOTIFY);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==,
+                    BTE_ERROR);
+    g_assert_cmphex(qtest_readq(qts, BTE_TEST_NOTIFY), ==, BTE_ERROR);
+
+    /*
+     * The I/O error clear register's engine bit is the one clearing
+     * mechanism any vendor code relies on — the model's answer to an
+     * open question the datasheet narrows to exactly this. The other
+     * engine's bit must not clear it.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_ERROR_CLEAR, 1ULL << 18);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==,
+                    BTE_ERROR);
+    qtest_writeq(qts, HUB_LOCAL + IO_ERROR_CLEAR, 1ULL << 17);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_bte_engines_see_their_own_node(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    const uint64_t node1 = NODE_STRIDE;
+    const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+    uint8_t got[BTE_LINE];
+    unsigned int i;
+
+    /*
+     * The stock PROM's diagnostic on the second module fills, launches
+     * and compares its buffers with node-less addresses through a view in
+     * which those name its own node's memory. The engines must resolve
+     * the same addresses onto the same memory, or module 1's compare
+     * reads the wrong node and reports a data mismatch. Both nodes'
+     * copies of the buffer are filled with distinct bytes so the
+     * assertion below is on which node moved, not on whether anything
+     * did. The synthesized firmware is switched off so both Hubs'
+     * programmed node numbers read zero, as they do under the real PROM;
+     * the qtest reader itself reaches either node through an explicit
+     * node number.
+     */
+    qtest_memset(qts, 0x01500000, 0xaa, BTE_LINE);
+    qtest_memset(qts, node1 + 0x01500000, 0xbb, BTE_LINE);
+    qtest_memset(qts, 0x01600000, 0xcc, BTE_LINE);
+    qtest_memset(qts, node1 + 0x01600000, 0xcc, BTE_LINE);
+
+    qtest_writeq(qts, hub1 + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, hub1 + BTE_SOURCE(0), BTE_CACHED_UPPER | 0x01500000);
+    qtest_writeq(qts, hub1 + BTE_DEST(0), BTE_CACHED_UPPER | 0x01600000);
+    qtest_writeq(qts, hub1 + BTE_INTERRUPT(0), BTE_INT_LEVEL(20));
+    qtest_writeq(qts, hub1 + BTE_CONTROL(0), 0);
+
+    g_assert_cmphex(qtest_readq(qts, hub1 + BTE_LENGTH(0)), ==, 0);
+    qtest_bufread(qts, node1 + 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xbb);
+    }
+    qtest_bufread(qts, 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xcc);
+    }
+
+    /*
+     * With both programmed node numbers zero, an interrupt aimed at node
+     * zero lands on the launching Hub — node 1's own pending bank, which
+     * is where module 1's diagnostic polls for it.
+     */
+    g_assert_cmphex(qtest_readq(qts, hub1 + PI_INT_PEND0), ==, 1ULL << 20);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==, 0);
+
+    /* The notification address follows the same rule. */
+    qtest_memset(qts, 0x01700000, 0xff, 8);
+    qtest_memset(qts, node1 + 0x01700000, 0xff, 8);
+    qtest_writeq(qts, hub1 + BTE_LENGTH(1), BTE_BUSY | 1);
+    qtest_writeq(qts, hub1 + BTE_SOURCE(1), 0x01500000);
+    qtest_writeq(qts, hub1 + BTE_DEST(1), 0x01680000);
+    qtest_writeq(qts, hub1 + BTE_NOTIFY(1), 0x01700000);
+    qtest_writeq(qts, hub1 + BTE_CONTROL(1), BTE_CTL_NOTIFY);
+    g_assert_cmphex(qtest_readq(qts, node1 + 0x01700000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, 0x01700000), ==, ~0ULL);
+
+    /* And the mirror: node 0's engines leave node 1's memory alone. */
+    qtest_memset(qts, node1 + 0x01600000, 0xcc, BTE_LINE);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(0), 0x01500000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(0), 0x01600000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_INTERRUPT(0), BTE_INT_LEVEL(21));
+    qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(0), 0);
+    qtest_bufread(qts, 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xaa);
+    }
+    qtest_bufread(qts, node1 + 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xcc);
+    }
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==,
+                    1ULL << 21);
+
+    /*
+     * An explicit node number still reaches the other node through the
+     * global map underneath: node 0's engine copying node 1's buffer.
+     */
+    qtest_memset(qts, 0x01600000, 0xcc, BTE_LINE);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(0), node1 + 0x01500000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(0), 0x01600000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(0), 0);
+    qtest_bufread(qts, 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xbb);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_zero_length_and_misalignment(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t got[BTE_LINE];
+    unsigned int i;
+
+    /*
+     * Misaligned programming and an armed zero length are both unobserved
+     * on real hardware and logged as guest errors by the model; what this
+     * test requires of them is not to crash the machine. A misaligned
+     * store keeps bits 39:7 only.
+     */
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC | 0x44);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_SOURCE(0)), ==,
+                    BTE_TEST_SRC);
+
+    /*
+     * An armed zero-length launch: what hardware does is open, and the
+     * model's choice is a transfer of zero lines — nothing moves and the
+     * engine does not wedge. Busy clearing is that choice's observable
+     * half; the completion signal is deliberately left unasserted either
+     * way.
+     */
+    qtest_memset(qts, BTE_TEST_SRC, 0x99, BTE_LINE);
+    qtest_memset(qts, BTE_TEST_DST, 0x66, BTE_LINE);
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), BTE_TEST_DST);
+    qtest_writeq(qts, HUB_LOCAL + BTE_INTERRUPT(0), BTE_INT_LEVEL(5));
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), 0);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+    qtest_bufread(qts, BTE_TEST_DST, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0x66);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2148,6 +2760,29 @@ int main(int argc, char **argv)
                         test_an_empty_bus_completes_and_reads_one);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
+    qtest_add_data_func("sn0/hub/bte-registers-reset-to-zero", NULL,
+                        test_bte_registers_reset_to_zero);
+    qtest_add_data_func("sn0/hub/bte-length-status-field-access", NULL,
+                        test_bte_length_status_field_access);
+    qtest_add_data_func("sn0/hub/bte-address-truncation", NULL,
+                        test_bte_address_truncation);
+    qtest_add_data_func("sn0/hub/bte-interrupt-address-fields", NULL,
+                        test_bte_interrupt_address_fields);
+    qtest_add_data_func("sn0/hub/bte-control-mode-bits", NULL,
+                        test_bte_control_mode_bits);
+    qtest_add_data_func("sn0/hub/bte-interrupt-mode-copy", NULL,
+                        test_bte_interrupt_mode_copy);
+    qtest_add_data_func("sn0/hub/bte-diagnostic-shape", NULL,
+                        test_bte_both_engines_the_diagnostic_shape);
+    qtest_add_data_func("sn0/hub/bte-notify-mode-copy", NULL,
+                        test_bte_notify_mode_copy);
+    qtest_add_data_func("sn0/hub/bte-zero-fill", NULL, test_bte_zero_fill);
+    qtest_add_data_func("sn0/hub/bte-error-not-cleared-by-store", NULL,
+                        test_bte_error_latches_and_no_store_clears_it);
+    qtest_add_data_func("sn0/hub/bte-zero-length-and-misalignment", NULL,
+                        test_bte_zero_length_and_misalignment);
+    qtest_add_data_func("sn0/hub/bte-engines-see-their-own-node", NULL,
+                        test_bte_engines_see_their_own_node);
 
     return g_test_run();
 }
