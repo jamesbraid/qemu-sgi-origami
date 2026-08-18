@@ -1234,6 +1234,111 @@ static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
            s->sxp_bank : s->risc_bank;
 }
 
+/*
+ * Ring descriptor byte order.
+ *
+ * A guest that gives a queue a 64-bit base drives this adapter through the
+ * word-value mapping, where each aligned 32-bit word of a descriptor arrives
+ * with its bytes reversed relative to the little-endian layout the chip's own
+ * structures use. A guest that gives a 32-bit base drives the byte-stream
+ * mapping and its descriptors need no correction. The base is the signal, and
+ * it is fixed for the life of the queue because it is only ever set by the
+ * queue's own initialise command.
+ *
+ * This applies to descriptors alone. The data a command moves never passes
+ * through this file -- the segments are handed to the generic SCSI layer as a
+ * scatter-gather list and it does the transfer -- so payload is a byte stream
+ * by construction rather than by care.
+ */
+static bool qlogic_isp_rqst_word_value(QLogicISPState *s)
+{
+    return (s->rqst_base >> 32) != 0;
+}
+
+static bool qlogic_isp_resp_word_value(QLogicISPState *s)
+{
+    return (s->resp_base >> 32) != 0;
+}
+
+/* Reverse the bytes of each aligned 32-bit word of a descriptor buffer. */
+static void qlogic_isp_normalise_words(uint8_t *buf, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + 4 <= len; i += 4) {
+        uint8_t t = buf[i];
+
+        buf[i] = buf[i + 3];
+        buf[i + 3] = t;
+        t = buf[i + 1];
+        buf[i + 1] = buf[i + 2];
+        buf[i + 2] = t;
+    }
+}
+
+/*
+ * Descriptor reads, normalised.
+ *
+ * Each reads the aligned 32-bit words covering the field, reverses them when
+ * the ring is word-value, and then takes the field out little-endian. Doing it
+ * through the containing word rather than by adjusting the offset is what
+ * keeps a sub-word field correct without anyone having to reason about which
+ * end of the word it moved to.
+ */
+static uint32_t qlogic_isp_desc_ld32(PCIDevice *pci, bool wv, hwaddr addr)
+{
+    uint8_t w[4];
+
+    pci_dma_read(pci, addr, w, sizeof(w));
+    if (wv) {
+        qlogic_isp_normalise_words(w, sizeof(w));
+    }
+    return ldl_le_p(w);
+}
+
+static uint16_t qlogic_isp_desc_ld16(PCIDevice *pci, bool wv, hwaddr addr)
+{
+    unsigned int off = addr & 3;
+    uint8_t w[4];
+
+    pci_dma_read(pci, addr - off, w, sizeof(w));
+    if (wv) {
+        qlogic_isp_normalise_words(w, sizeof(w));
+    }
+    return lduw_le_p(w + off);
+}
+
+static uint8_t qlogic_isp_desc_ld8(PCIDevice *pci, bool wv, hwaddr addr)
+{
+    unsigned int off = addr & 3;
+    uint8_t w[4];
+
+    pci_dma_read(pci, addr - off, w, sizeof(w));
+    if (wv) {
+        qlogic_isp_normalise_words(w, sizeof(w));
+    }
+    return w[off];
+}
+
+/*
+ * A byte string inside a descriptor -- a command block. Read through the
+ * aligned words that cover it so the normalisation is the same one every
+ * other field gets, then take the bytes out of the middle.
+ */
+static void qlogic_isp_desc_read(PCIDevice *pci, bool wv, hwaddr addr,
+                                 uint8_t *dst, size_t len)
+{
+    unsigned int off = addr & 3;
+    size_t span = ROUND_UP(off + len, 4);
+    g_autofree uint8_t *w = g_malloc(span);
+
+    pci_dma_read(pci, addr - off, w, span);
+    if (wv) {
+        qlogic_isp_normalise_words(w, span);
+    }
+    memcpy(dst, w + off, len);
+}
+
 static hwaddr qlogic_isp_rqst_entry_addr(QLogicISPState *s, uint16_t index)
 {
     return s->rqst_base + (hwaddr)index * ISP_QUEUE_ENTRY_SIZE;
@@ -1296,32 +1401,33 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
 {
     PCIDevice *pci = PCI_DEVICE(s);
     hwaddr addr = qlogic_isp_resp_entry_addr(s, s->resp_prod);
-    uint8_t zero[ISP_QUEUE_ENTRY_SIZE];
-    uint8_t hdr[4] = { ISP_ENTRY_TYPE_STATUS, 1, 0, 0 };
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
     uint16_t clamped_sense_len = sense_len > 0
                                   ? MIN(sense_len, ISP_STATUS_SENSE_MAX) : 0;
 
-    memset(zero, 0, sizeof(zero));
-    pci_dma_write(pci, addr, zero, sizeof(zero));
-
-    pci_dma_write(pci, addr, hdr, sizeof(hdr));
-    stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_HANDLE, handle,
-                   MEMTXATTRS_UNSPECIFIED);
-    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_SCSI_STATUS, scsi_status,
-                   MEMTXATTRS_UNSPECIFIED);
-    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_COMPLETION, completion,
-                   MEMTXATTRS_UNSPECIFIED);
-    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_STATE_FLAGS, state_flags,
-                   MEMTXATTRS_UNSPECIFIED);
-    stw_le_pci_dma(pci, addr + ISP_STATUS_OFF_SENSE_LEN, clamped_sense_len,
-                   MEMTXATTRS_UNSPECIFIED);
-    stl_le_pci_dma(pci, addr + ISP_STATUS_OFF_RESID, resid,
-                   MEMTXATTRS_UNSPECIFIED);
-
+    /*
+     * Built whole, little-endian-canonical, then corrected to the ring's own
+     * byte order and written once. Assembling it in a buffer rather than as a
+     * run of stores is what lets one rule cover every field, the sub-word ones
+     * included, and it also stops the slot ever being visible half-written.
+     */
+    memset(entry, 0, sizeof(entry));
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_ENTRY_TYPE_STATUS;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    stl_le_p(entry + ISP_STATUS_OFF_HANDLE, handle);
+    stw_le_p(entry + ISP_STATUS_OFF_SCSI_STATUS, scsi_status);
+    stw_le_p(entry + ISP_STATUS_OFF_COMPLETION, completion);
+    stw_le_p(entry + ISP_STATUS_OFF_STATE_FLAGS, state_flags);
+    stw_le_p(entry + ISP_STATUS_OFF_SENSE_LEN, clamped_sense_len);
+    stl_le_p(entry + ISP_STATUS_OFF_RESID, resid);
     if (clamped_sense_len > 0) {
-        pci_dma_write(pci, addr + ISP_STATUS_OFF_SENSE_DATA, sense,
-                      clamped_sense_len);
+        memcpy(entry + ISP_STATUS_OFF_SENSE_DATA, sense, clamped_sense_len);
     }
+
+    if (qlogic_isp_resp_word_value(s)) {
+        qlogic_isp_normalise_words(entry, sizeof(entry));
+    }
+    pci_dma_write(pci, addr, entry, sizeof(entry));
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
 
@@ -1496,6 +1602,7 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
                                      uint16_t seg_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
+    bool wv = qlogic_isp_rqst_word_value(s);
     uint16_t collected = 0;
     uint16_t cont_index = s->rqst_cons;
     int conts_left = entry_count - 1;
@@ -1505,8 +1612,8 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
         hwaddr seg_addr = rqst_addr + ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE;
         uint32_t addr, len;
 
-        ldl_le_pci_dma(pci, seg_addr, &addr, MEMTXATTRS_UNSPECIFIED);
-        ldl_le_pci_dma(pci, seg_addr + 4, &len, MEMTXATTRS_UNSPECIFIED);
+        addr = qlogic_isp_desc_ld32(pci, wv, seg_addr);
+        len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
         qemu_sglist_add(qsg, addr, len);
         collected++;
     }
@@ -1521,8 +1628,8 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
             hwaddr seg_addr = cont_addr + ISP_CONT_OFF_SEGS + i * ISP_SEG_SIZE;
             uint32_t addr, len;
 
-            ldl_le_pci_dma(pci, seg_addr, &addr, MEMTXATTRS_UNSPECIFIED);
-            ldl_le_pci_dma(pci, seg_addr + 4, &len, MEMTXATTRS_UNSPECIFIED);
+            addr = qlogic_isp_desc_ld32(pci, wv, seg_addr);
+            len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
             qemu_sglist_add(qsg, addr, len);
             collected++;
         }
@@ -1552,15 +1659,13 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     SCSIDevice *sdev;
     QLogicISPRequest *req;
 
-    ldl_le_pci_dma(pci, addr + ISP_REQ_OFF_HANDLE, &handle,
-                  MEMTXATTRS_UNSPECIFIED);
-    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_DEVICE, &device,
-                    MEMTXATTRS_UNSPECIFIED);
-    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_CDBLEN, &cdb_len,
-                    MEMTXATTRS_UNSPECIFIED);
-    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_SEGCOUNT, &seg_count,
-                    MEMTXATTRS_UNSPECIFIED);
-    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+    bool wv = qlogic_isp_rqst_word_value(s);
+
+    handle = qlogic_isp_desc_ld32(pci, wv, addr + ISP_REQ_OFF_HANDLE);
+    device = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_DEVICE);
+    cdb_len = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_CDBLEN);
+    seg_count = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_SEGCOUNT);
+    qlogic_isp_desc_read(pci, wv, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
 
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
@@ -1611,6 +1716,7 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                                          uint16_t seg_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
+    bool wv = qlogic_isp_rqst_word_value(s);
     uint16_t collected = 0;
     uint16_t cont_index = s->rqst_cons;
     int conts_left = entry_count - 1;
@@ -1621,9 +1727,9 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                            + i * ISP_A64_SEG_SIZE;
         uint32_t lo, hi, len;
 
-        ldl_le_pci_dma(pci, seg_addr, &lo, MEMTXATTRS_UNSPECIFIED);
-        ldl_le_pci_dma(pci, seg_addr + 4, &hi, MEMTXATTRS_UNSPECIFIED);
-        ldl_le_pci_dma(pci, seg_addr + 8, &len, MEMTXATTRS_UNSPECIFIED);
+        lo = qlogic_isp_desc_ld32(pci, wv, seg_addr);
+        hi = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
+        len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 8);
         qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
         collected++;
     }
@@ -1639,9 +1745,9 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                                + i * ISP_A64_SEG_SIZE;
             uint32_t lo, hi, len;
 
-            ldl_le_pci_dma(pci, seg_addr, &lo, MEMTXATTRS_UNSPECIFIED);
-            ldl_le_pci_dma(pci, seg_addr + 4, &hi, MEMTXATTRS_UNSPECIFIED);
-            ldl_le_pci_dma(pci, seg_addr + 8, &len, MEMTXATTRS_UNSPECIFIED);
+            lo = qlogic_isp_desc_ld32(pci, wv, seg_addr);
+            hi = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
+            len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 8);
             qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
             collected++;
         }
@@ -1671,15 +1777,13 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     SCSIDevice *sdev;
     QLogicISPRequest *req;
 
-    ldl_le_pci_dma(pci, addr + ISP_REQ_OFF_HANDLE, &handle,
-                  MEMTXATTRS_UNSPECIFIED);
-    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_DEVICE, &device,
-                    MEMTXATTRS_UNSPECIFIED);
-    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_CDBLEN, &cdb_len,
-                    MEMTXATTRS_UNSPECIFIED);
-    lduw_le_pci_dma(pci, addr + ISP_REQ_OFF_SEGCOUNT, &seg_count,
-                    MEMTXATTRS_UNSPECIFIED);
-    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+    bool wv = qlogic_isp_rqst_word_value(s);
+
+    handle = qlogic_isp_desc_ld32(pci, wv, addr + ISP_REQ_OFF_HANDLE);
+    device = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_DEVICE);
+    cdb_len = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_CDBLEN);
+    seg_count = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_SEGCOUNT);
+    qlogic_isp_desc_read(pci, wv, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
 
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
@@ -1744,10 +1848,10 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         uint8_t entry_type;
         uint8_t entry_count;
 
-        ldub_pci_dma(pci, addr + ISP_ENTRY_OFF_TYPE, &entry_type,
-                    MEMTXATTRS_UNSPECIFIED);
-        ldub_pci_dma(pci, addr + ISP_ENTRY_OFF_COUNT, &entry_count,
-                    MEMTXATTRS_UNSPECIFIED);
+        bool wv = qlogic_isp_rqst_word_value(s);
+
+        entry_type = qlogic_isp_desc_ld8(pci, wv, addr + ISP_ENTRY_OFF_TYPE);
+        entry_count = qlogic_isp_desc_ld8(pci, wv, addr + ISP_ENTRY_OFF_COUNT);
         if (entry_count == 0) {
             entry_count = 1;
         }
@@ -1792,8 +1896,9 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
             {
                 uint32_t handle;
 
-                ldl_le_pci_dma(pci, addr + ISP_REQ_OFF_HANDLE, &handle,
-                              MEMTXATTRS_UNSPECIFIED);
+                handle = qlogic_isp_desc_ld32(
+                    pci, qlogic_isp_rqst_word_value(s),
+                    addr + ISP_REQ_OFF_HANDLE);
                 qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                        0, 0, NULL, 0);
             }
