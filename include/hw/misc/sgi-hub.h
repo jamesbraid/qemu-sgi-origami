@@ -151,6 +151,7 @@ struct SGIHubState {
     uint64_t pi_region_present;
     uint32_t pi_calias_size;
     uint64_t pi_int_pend[2];
+    bool pi_int_pend1_primary_credit;
     uint64_t pi_int_mask[4];
     uint8_t pi_cpu_enable[2];
 
