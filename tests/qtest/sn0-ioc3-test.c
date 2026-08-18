@@ -58,12 +58,25 @@
 #define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
 
+/*
+ * A node's crosstalk windows repeat node 0's one node stride up, and the
+ * second node carries its own bridge and its own controller, so the same
+ * attach sequence works there with every address offset by the stride.
+ */
+#define NODE_STRIDE     0x100000000ULL
+
+static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node)
+{
+    qtest_writel(qts, node + CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
+    qtest_writel(qts, node + CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY);
+    qtest_writel(qts, node + BRIDGE_DEVICE(PCI_IOC3_DEVICE),
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
 static void sn0_ioc3_attach(QTestState *qts)
 {
-    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
-    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
-    qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
-                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    sn0_ioc3_attach_node(qts, 0);
 }
 
 /* The two ports, at their offsets inside the byte-wide SuperIO window. */
@@ -3139,6 +3152,75 @@ static void test_the_clock_storage_holds_a_write(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The part is battery-backed: a reset line does not empty its storage. The
+ * firmware relies on exactly that -- its first environment-checking pass
+ * initializes the storage, warm-resets the machine, and expects to find its
+ * own records on the next pass. A model that cleared the cells on reset
+ * would re-warn on every boot pass and no single-pass test would notice.
+ * What a reset must clear is only a transaction left in flight, because a
+ * freeze nobody ends would hand the next guest a stopped clock.
+ */
+static void test_the_storage_survives_a_system_reset(const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0100, 0xc3);
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x7ff7, 0x3c);
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+
+    qtest_system_reset(qts);
+    /*
+     * The reset takes the bridge's window aim and the BAR with it, so the
+     * window is re-aimed the same way a fresh guest would; what is being
+     * asserted is the cells behind it, not the aim.
+     */
+    sn0_ioc3_attach(qts);
+
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x0100), ==, 0xc3);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x7ff7), ==, 0x3c);
+    g_assert_cmphex(qtest_readb(qts, RTC_CONTROL)
+                    & (RTC_CSR_READ | RTC_CSR_WRITE), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Each node's base I/O board carries its own timekeeper, so the two-node
+ * machine has two of these storages and they must not alias: the firmware
+ * initializes per-module records through one node's window, and a model
+ * backing both windows with one part would show phantom records on the
+ * other node -- or scramble both -- while every single-node test passed.
+ */
+static void test_each_node_has_its_own_storage(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,io-bridge=on -m 128 "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+
+    sn0_ioc3_attach_node(qts, 0);
+    sn0_ioc3_attach_node(qts, NODE_STRIDE);
+
+    /* A write through node 0's window must not appear in node 1's. */
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0123, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, NODE_STRIDE + BYTEBUS_DEV0 + 0x0123),
+                    ==, 0x00);
+
+    /* And each keeps its own value once both are written. */
+    qtest_writeb(qts, NODE_STRIDE + BYTEBUS_DEV0 + 0x0123, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x0123), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, NODE_STRIDE + BYTEBUS_DEV0 + 0x0123),
+                    ==, 0xa5);
+
+    qtest_quit(qts);
+}
+
 
 static void test_the_transceiver_answers_at_one_address(const void *data)
 {
@@ -3414,6 +3496,10 @@ int main(int argc, char **argv)
                         test_the_clock_control_register_reads_back);
     qtest_add_data_func("sn0/ioc3/clock-takes-a-time-a-guest-sets", NULL,
                         test_the_clock_takes_a_time_a_guest_sets);
+    qtest_add_data_func("sn0/ioc3/clock-storage-survives-a-system-reset", NULL,
+                        test_the_storage_survives_a_system_reset);
+    qtest_add_data_func("sn0/ioc3/each-node-has-its-own-storage", NULL,
+                        test_each_node_has_its_own_storage);
     qtest_add_data_func("sn0/ioc3/clock-storage-holds-a-write", NULL,
                         test_the_clock_storage_holds_a_write);
     qtest_add_data_func("sn0/ioc3/ports-are-distinct", NULL,
