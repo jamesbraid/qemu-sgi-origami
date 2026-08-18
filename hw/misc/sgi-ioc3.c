@@ -1309,8 +1309,19 @@ static const MemoryRegionOps sgi_ioc3_sdma_alias_ops = {
 static uint64_t sgi_ioc3_ssram_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
+    uint32_t word = s->ssram_word[addr / 4];
 
-    return s->ssram_word[addr / 4];
+    /*
+     * The stored word, plus the parity checker's answer above it when the
+     * ethernet block has checking turned on. Even parity across the sixteen
+     * data bits and the parity bit stored beside them is correct, so an odd
+     * count is the error this bit reports.
+     */
+    if (sgi_ioc3_eth_ram_parity_enabled(&s->eth) && (ctpop32(word) & 1)) {
+        word |= SGI_IOC3_SSRAM_PARITY_ERROR;
+    }
+
+    return word;
 }
 
 static void sgi_ioc3_ssram_write(void *opaque, hwaddr addr, uint64_t val,

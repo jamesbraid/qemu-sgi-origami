@@ -319,4 +319,6 @@ struct SGIIOC3EthState {
     bool rx_timer_armed;
 };
 
+bool sgi_ioc3_eth_ram_parity_enabled(SGIIOC3EthState *s);
+
 #endif
