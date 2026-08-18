@@ -1379,34 +1379,6 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         g_assert_cmphex(status & ENET_INT_RX_TIMER, ==, ENET_INT_RX_TIMER);
         ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
 
-        /*
-         * Then the complement, which is what makes the assertion above about
-         * the source *surviving* rather than about the register's final value.
-         * A model that cleared the status at the start of the walk and or-ed
-         * the receive source back at the end finishes with the same word and
-         * passes everything above -- and announces a receive on every
-         * transmit, including the ones nothing answers.
-         *
-         * So: a frame the backend does not understand, with a receive buffer
-         * still free so a delivery could have happened, and nothing may be
-         * raised. The consume index is checked too, because "no source" is
-         * only a statement about the source if a frame could have arrived and
-         * did not.
-         */
-        memset(frame, 0, 64);
-        memcpy(frame, gw_mac, 6);
-        memcpy(frame + 6, guest_mac, 6);
-        frame[12] = 0x88;
-        frame[13] = 0xb5;
-        tx_one(qts, base, slot + 1, frame, 64);
-
-        g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
-                        (slot + 1) * RX_RING_STRIDE);
-        status = ioc3_readl(qts, ENET_INT_STATUS);
-        g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
-                        ==, 0);
-        g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==,
-                        ENET_INT_TX_COMPLETE);
     }
 
     qtest_quit(qts);
@@ -1414,6 +1386,50 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
 
 static const uint32_t walk_sizes[] = { 74, 104, 105, 170, 554, 1042,
                                        ETHER_MAX_LEN - ETHER_FCS_LEN };
+
+/*
+ * The complement, standing alone for the reason set out in the origin200
+ * version of this case: an assertion about an absence should not inherit a
+ * wait. Nothing is asked for here, so nothing can come back, and the absence
+ * holds by construction rather than because a window expired.
+ *
+ * Two routes could bring a frame back and only one is the backend. Loopback
+ * returns a transmit into this device's own receive path whenever either
+ * selection is set. Both are clear out of reset and neither is set here, so
+ * the silence holds -- but on a state this case would otherwise never
+ * mention, which is why the MAC control write is spelled out in full.
+ */
+static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
+{
+    QTestState *qts;
+    uint8_t quiet[64];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t status;
+
+    qts = ioc3_start(ring, rxbuf, 2);
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+
+    memset(quiet, 0, sizeof(quiet));
+    memset(quiet, 0xff, 6);
+    quiet[12] = 0x88;
+    quiet[13] = 0xb5;
+    tx_one(qts, base, 0, quiet, sizeof(quiet));
+
+    /*
+     * A buffer is free and the index has not moved, so nothing arrived --
+     * which is what makes the next line a statement about the source.
+     */
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+    status = ioc3_readl(qts, ENET_INT_STATUS);
+    g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
+                    ==, 0);
+    g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==, ENET_INT_TX_COMPLETE);
+
+    qtest_quit(qts);
+}
 
 int main(int argc, char **argv)
 {
@@ -1426,6 +1442,9 @@ int main(int argc, char **argv)
      * go through the pointers, up to the largest frame a guest accepts. The
      * transmit path changes at 104 and the receive size changes at each.
      */
+    qtest_add_data_func("sgi-ioc3-eth/no-reply-raises-nothing", NULL,
+                        test_a_transmit_with_no_reply_raises_nothing);
+
     for (i = 0; i < ARRAY_SIZE(walk_sizes); i++) {
         char *name = g_strdup_printf("sgi-ioc3-eth/reply-inside-the-walk/%u",
                                      walk_sizes[i]);

@@ -2380,6 +2380,7 @@ static void test_the_rings_under_load_on_the_fabric(const void *data)
     close(sv[0]);
 }
 
+
 /*
  * The register-only ack test above checks that a write clears the status bits
  * it names; it does not check that the line those bits gate actually follows.
@@ -2574,41 +2575,91 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
                     ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD |
                     ENET_INT_TX_EMPTY | ENET_INT_TX_COMPLETE);
 
-    /*
-     * And the complement, which is what makes the check above about the source
-     * surviving rather than about the register's final value. A model that
-     * cleared the status at the start of the walk and or-ed the receive source
-     * back at the end finishes with the same word and passes everything above
-     * -- while announcing a receive on every transmit, including the ones
-     * nothing answers. A frame the backend does not understand must raise no
-     * receive source, and the consume index says a delivery could have
-     * happened and did not.
-     */
-    qtest_writel(qts, ENET_INT_STATUS, 0xffffffffu);
-    {
-        uint8_t quiet[64];
+    qtest_quit(qts);
+}
 
-        memset(quiet, 0, sizeof(quiet));
-        memset(quiet, 0xff, 6);
-        quiet[12] = 0x88;
-        quiet[13] = 0xb5;
-        qtest_memwrite(qts, desc + 128 + TXD_DATA_OFFSET, quiet,
-                       sizeof(quiet));
-        qtest_writel(qts, desc + 128 + 0,
-                     sizeof(quiet) | TXD_DATA_VALID | TXD_INT_DONE);
-        qtest_writel(qts, desc + 128 + 4, sizeof(quiet));
-        qtest_writel(qts, TX_PRODUCE, 256);
+/*
+ * The complement of the test above: a transmit that gets no reply must raise
+ * no receive source. A model that cleared the interrupt status at the start of
+ * the walk and or-ed the source back at the end finishes with the same word as
+ * a correct one, passes every assertion about a delivered reply, and announces
+ * a receive on every transmit including the ones nothing answers.
+ *
+ * WHY THIS IS ITS OWN CASE RATHER THAN A SECOND HALF OF THAT ONE, because the
+ * obvious reason is not the reason. It is not that a mutation runner cannot
+ * say which of two properties in one case a failure came from -- it can, when
+ * told which assertion to expect, and it withholds its verdict until it is
+ * told.
+ *
+ * It is that this assertion is about an absence, and an absence asserted
+ * inside a test that has just waited for a reply inherits that wait. Standing
+ * alone it needs no exchange with the backend first: nothing is being asked
+ * for, so nothing can come back, and the assertion holds by construction
+ * rather than because a window expired. An absence that depends on timing is
+ * the least trustworthy kind of assertion there is -- it passes on a slow
+ * machine for the wrong reason -- and this one no longer does.
+ *
+ * A receive buffer is left free and the consume index is checked, so "nothing
+ * was raised" is a statement about the source rather than about there being
+ * nowhere to put a frame. The frame carries an ethertype user-mode networking
+ * does not handle.
+ *
+ * There are two ways a frame can come back, and only one of them is the
+ * backend. Since the block gained loopback, a transmit also returns into this
+ * device's own receive path whenever either loopback selection is set -- the
+ * controller's own bit or the transceiver's. Both are clear out of reset and
+ * neither is set here, so the silence this case asserts holds; but it holds
+ * because of a state the case would otherwise never mention, and a default
+ * that changed underneath it would turn this from a passing test into a
+ * passing test measuring nothing. The MAC control write below is spelled out
+ * in full rather than or-ed onto whatever was there, so the loopback bit is
+ * observably clear at the point the frame goes out.
+ */
+static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
+{
+    QTestState *qts;
+    uint8_t quiet[64];
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t status;
 
-        g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
-        status = qtest_readl(qts, ENET_INT_STATUS);
-        g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
-                        ==, 0);
-        g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==,
-                        ENET_INT_TX_COMPLETE);
-    }
+    qts = sn0_ioc3_attach_with_user_net();
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_TIMER, 0);
+    qtest_writel(qts, RX_CONTROL, 0);
+    qtest_writel(qts, RX_PRODUCE, (1 << 3) | RPIR_ARM);
+
+    memset(quiet, 0, sizeof(quiet));
+    memset(quiet, 0xff, 6);
+    quiet[12] = 0x88;
+    quiet[13] = 0xb5;
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, quiet, sizeof(quiet));
+    qtest_writel(qts, desc + 0,
+                 sizeof(quiet) | TXD_DATA_VALID | TXD_INT_DONE);
+    qtest_writel(qts, desc + 4, sizeof(quiet));
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    /* Nothing was delivered, so nothing may be announced. */
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
+    status = qtest_readl(qts, ENET_INT_STATUS);
+    g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
+                    ==, 0);
+
+    /* And the transmit itself still reports, so the engine did run. */
+    g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==, ENET_INT_TX_COMPLETE);
 
     qtest_quit(qts);
 }
+
 
 static void test_the_media_interface_never_reads_busy(const void *data)
 {
@@ -3337,6 +3388,8 @@ int main(int argc, char **argv)
                         test_the_rings_under_load_on_the_fabric);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
+    qtest_add_data_func("sn0/ioc3/ethernet-no-reply-raises-nothing", NULL,
+                        test_a_transmit_with_no_reply_raises_nothing);
     qtest_add_data_func("sn0/ioc3/ethernet-reply-during-transmit", NULL,
                         test_a_reply_during_transmit_keeps_its_interrupt);
     qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
