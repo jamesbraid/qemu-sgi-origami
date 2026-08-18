@@ -55,6 +55,34 @@ RR_KICK_DONE = 0x18
 RR_KICK_TIMEOUT = 0x20
 RR_KICK_DEADLINE_TICKS = 5
 
+# The stock PROM's slice-pair rendezvous, as its four-CPU/two-node boot
+# actually runs it: bank 1's interrupt 114 set by slice A and cleared by
+# slice B through PI_INT_MODIFY, each side bounded-polling PI_INT_PEND1
+# for the other's edge, with further bank-1 bits pending across every
+# poll.  Node one's pair does not participate; its CPUs prove that the
+# rendezvous neither leaks slices to them mid-exchange nor starves them
+# across repeated rounds.
+PEND_READ_STATE = 0x100033000
+PEND_READ_ROUND = 0x00       # round armed by slice B
+PEND_READ_WINDOW_B = 0x08    # nonzero while B's bounded pending poll runs
+PEND_READ_WINDOW_A = 0x10    # nonzero while A's bounded pending poll runs
+PEND_READ_SET_A = 0x18       # A has published the bit and entered its poll
+PEND_READ_DONE_B = 0x20      # rounds B has completed
+PEND_READ_DONE_A = 0x28      # rounds A has completed
+PEND_READ_TIMEOUT = 0x30     # a bounded pending poll expired
+PEND_READ_VIOLATION = 0x38   # 4 words
+PEND_READ_FAIR = 0x58        # 4 words
+PEND_READ_STATE_WORDS = 15
+PEND_READ_ROUNDS = 8
+PEND_READ_WAIT_LIMIT = 64
+PEND_READ_INTERRUPT = 114            # bank 1, bit 50
+PEND_READ_UNRELATED_BANK1 = 112      # pending across every poll
+PEND_READ_UNRELATED_BANK0 = 12       # keeps bank 0 nonzero as well
+# Long enough that a bounded poll always expires inside one slice when
+# nothing schedules its producer, short enough that the GREEN run's
+# plain-RAM waits cost milliseconds rather than the stock gate's seconds.
+PEND_READ_RR_KICK_PERIOD_NS = 10000000
+
 SLICE_B_STATE = 0x00032000
 SLICE_B_PROCESSOR_NUMBER = 0x00
 SLICE_B_IOC3_ID = 0x08
@@ -109,7 +137,12 @@ RR_HANDOFF_STATE_WORDS = 25
 HUB_BY_NODE = 0x20001800000
 HUB_NODE_STRIDE = 0x100000000
 HUB_PI_INT_MODIFY = 0x000090
+HUB_PI_INT_PEND0 = 0x000098
 HUB_PI_INT_PEND1 = 0x0000a0
+HUB_PI_INT_MASK0_A = 0x0000a8
+HUB_PI_INT_MASK1_A = 0x0000b0
+HUB_PI_INT_MASK0_B = 0x0000b8
+HUB_PI_INT_MASK1_B = 0x0000c0
 HUB_PI_RT_COUNT = 0x030100
 HUB_NI_STATUS = 0x600000
 HUB_NI_SCRATCH_0 = 0x600100
@@ -643,6 +676,188 @@ def build_rr_kick_deadline():
     peer_spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, peer_spin)
+    return program
+
+
+PEND_READ_PEND1_BIT = 1 << (PEND_READ_INTERRUPT - 64)
+PEND_READ_MASK1_B_VALUE = (PEND_READ_PEND1_BIT |
+                           1 << (PEND_READ_UNRELATED_BANK1 - 64))
+
+
+def emit_pend1_bit_test(program):
+    """Leave 1 in t0 when PI_INT_PEND1 carries the rendezvous interrupt.
+    The read itself is the operation under test: it must schedule the
+    reader's local peer slice."""
+    program.emit(mips_i(0x37, R_S3, R_T0, HUB_PI_INT_PEND1))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0,
+                        PEND_READ_INTERRUPT - 64 - 32, 0x3e))  # dsrl32
+    program.emit(mips_i(0x0c, R_T0, R_T0, 1))
+
+
+def build_pending_read_rendezvous():
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode selected by the real PROM.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # Shared uncached node-one RAM at 0x9000000100033000.
+    program.address_prefix(R_S0, 0x9000)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0001))
+    program.emit(mips_r(R_ZERO, R_AT, R_AT, 16, 0x38))
+    load_u32(program, R_T0, PEND_READ_STATE & 0xffffffff)
+    program.emit(mips_r(R_AT, R_T0, R_AT, 0, 0x25))
+    program.emit(mips_r(R_S0, R_AT, R_S0, 0, 0x25))
+
+    # s3 is this CPU's local Hub PI block, s1 the global CPU index
+    # (NASID * 2 + slice), s2 its byte offset into four-slot arrays.
+    emit_local_hub_address(program, R_S3, 0)
+    program.emit(mips_i(0x37, R_S3, R_S2, 0x20))  # PI_PROCESSOR_NUMBER
+    emit_local_hub_address(program, R_T0, HUB_NI_STATUS)
+    program.emit(mips_i(0x37, R_T0, R_T0, 0))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 1, 0x38))
+    program.emit(mips_r(R_T0, R_S2, R_S1, 0, 0x25))
+    program.emit(mips_r(R_ZERO, R_S1, R_S2, 3, 0x38))
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 0))
+    select_a = program.branch(0x04, R_S1, R_T0)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    select_b = program.branch(0x04, R_S1, R_T0)
+
+    # CPUs 2 and 3 observe from node one.  Inside either poll window the
+    # ordered handoff must run the rendezvous pair alone -- an ordinary RR
+    # rotation would run these CPUs instead and trip the violation marker.
+    # Outside the windows they must keep running: their fairness counters
+    # advance from the first armed round until the last round completes,
+    # so a rendezvous that monopolises node zero's pair leaves them zero.
+    program.emit(mips_r(R_S0, R_S2, R_S3, 0, 0x2d))  # daddu s3, s0, s2
+    emit_wait_for_flag(program, R_S0, PEND_READ_ROUND, want_set=True)
+    observe = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_DONE_A))
+    program.emit(mips_i(0x0b, R_T0, R_T1, PEND_READ_ROUNDS))  # sltiu
+    parked = program.branch(0x04, R_T1, R_ZERO)
+    program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_WINDOW_B))
+    program.emit(mips_i(0x37, R_S0, R_T1, PEND_READ_WINDOW_A))
+    program.emit(mips_r(R_T0, R_T1, R_T0, 0, 0x25))
+    outside = program.branch(0x04, R_T0, R_ZERO)
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
+    program.emit(mips_i(0x3f, R_S3, R_T1, PEND_READ_VIOLATION))
+    program.patch(outside, len(program.instructions))
+    program.emit(mips_i(0x37, R_S3, R_T0, PEND_READ_FAIR))
+    program.emit(mips_i(0x19, R_T0, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S3, R_T0, PEND_READ_FAIR))
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, observe)
+    program.patch(parked, len(program.instructions))
+    observer_park = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, observer_park)
+
+    # Slice A publishes the rendezvous interrupt each round, then bounded-
+    # polls the pending bank for B's acknowledging clear.  The clear-side
+    # poll is announced through SET_A before B may acknowledge, so a
+    # direction-limited read assist leaves this poll to expire.
+    program.patch(select_a, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_S2, 1))  # s2 = current round
+    a_round = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_ROUND))
+    branch = program.branch(0x05, R_T0, R_S2)
+    program.patch(branch, a_round)
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PEND_READ_INTERRUPT))
+    program.emit(mips_i(0x3f, R_S3, R_T0, HUB_PI_INT_MODIFY))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, PEND_READ_WINDOW_A))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x3f, R_S0, R_S2, PEND_READ_SET_A))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T2, PEND_READ_WAIT_LIMIT))
+    a_poll = len(program.instructions)
+    emit_pend1_bit_test(program)
+    cleared = program.branch(0x04, R_T0, R_ZERO)
+    program.emit(mips_i(0x19, R_T2, R_T2, -1))
+    branch = program.branch(0x05, R_T2, R_ZERO)
+    program.patch(branch, a_poll)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 2))
+    program.emit(mips_i(0x3f, R_S0, R_T0, PEND_READ_TIMEOUT))
+    a_timeout = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, a_timeout)
+    program.patch(cleared, len(program.instructions))
+    program.emit(mips_i(0x3f, R_S0, R_ZERO, PEND_READ_WINDOW_A))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x3f, R_S0, R_S2, PEND_READ_DONE_A))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_S2, R_S2, 1))
+    program.emit(mips_i(0x0b, R_S2, R_T0, PEND_READ_ROUNDS + 1))
+    branch = program.branch(0x05, R_T0, R_ZERO)
+    program.patch(branch, a_round)
+    a_park = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, a_park)
+
+    # Slice B owns the mask and the acknowledgement, as the stock PROM's
+    # package-1 slice does.  It arms each round, bounded-polls the pending
+    # bank for A's set, and clears the interrupt only once A's clear-side
+    # poll is announced.
+    program.patch(select_b, len(program.instructions))
+    program.emit(mips_i(0x19, R_ZERO, R_T0, PEND_READ_MASK1_B_VALUE >> 48))
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 16, 0x3c))  # dsll32
+    program.emit(mips_i(0x3f, R_S3, R_T0, HUB_PI_INT_MASK1_B))
+    # Unrelated pending bits keep both banks nonzero across every poll:
+    # an assist keyed on an empty bank never fires again after these.
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PEND_READ_UNRELATED_BANK1))
+    program.emit(mips_i(0x3f, R_S3, R_T0, HUB_PI_INT_MODIFY))
+    program.emit(mips_i(0x19, R_ZERO, R_T0,
+                        PI_INT_MODIFY_SET | PEND_READ_UNRELATED_BANK0))
+    program.emit(mips_i(0x3f, R_S3, R_T0, HUB_PI_INT_MODIFY))
+
+    program.emit(mips_i(0x19, R_ZERO, R_S2, 1))  # s2 = current round
+    b_round = len(program.instructions)
+    program.emit(mips_i(0x3f, R_S0, R_S2, PEND_READ_ROUND))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, PEND_READ_WINDOW_B))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x19, R_ZERO, R_T2, PEND_READ_WAIT_LIMIT))
+    b_poll = len(program.instructions)
+    emit_pend1_bit_test(program)
+    set_seen = program.branch(0x05, R_T0, R_ZERO)
+    program.emit(mips_i(0x19, R_T2, R_T2, -1))
+    branch = program.branch(0x05, R_T2, R_ZERO)
+    program.patch(branch, b_poll)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, PEND_READ_TIMEOUT))
+    b_timeout = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, b_timeout)
+    program.patch(set_seen, len(program.instructions))
+    program.emit(mips_i(0x3f, R_S0, R_ZERO, PEND_READ_WINDOW_B))
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_i(0x3f, R_S0, R_S2, PEND_READ_DONE_B))
+    program.emit(0x0000000f)  # sync
+    b_wait_set_a = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_SET_A))
+    branch = program.branch(0x05, R_T0, R_S2)
+    program.patch(branch, b_wait_set_a)
+    program.emit(mips_i(0x19, R_ZERO, R_T0, PEND_READ_INTERRUPT))
+    program.emit(mips_i(0x3f, R_S3, R_T0, HUB_PI_INT_MODIFY))
+    b_wait_done_a = len(program.instructions)
+    program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_DONE_A))
+    branch = program.branch(0x05, R_T0, R_S2)
+    program.patch(branch, b_wait_done_a)
+    program.emit(mips_i(0x19, R_S2, R_S2, 1))
+    program.emit(mips_i(0x0b, R_S2, R_T0, PEND_READ_ROUNDS + 1))
+    branch = program.branch(0x05, R_T0, R_ZERO)
+    program.patch(branch, b_round)
+    b_park = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, b_park)
     return program
 
 
@@ -1475,6 +1690,21 @@ class SN0SMPMachine(QemuSystemTest):
         state = self.read_state(FOUR_CPU_TEST_STATE, FOUR_CPU_STATE_WORDS)
         self.fail(f'four-CPU state did not settle: {state}')
 
+    def wait_for_pending_read_state(self, timeout=30):
+        deadline = time.monotonic() + timeout
+        state = []
+        while time.monotonic() < deadline:
+            state = self.read_state(PEND_READ_STATE, PEND_READ_STATE_WORDS)
+            if (state[PEND_READ_DONE_A // 8] == PEND_READ_ROUNDS or
+                    state[PEND_READ_TIMEOUT // 8]):
+                break
+            time.sleep(0.01)
+
+        # Stop before the assertion snapshot, the same order the other
+        # waits use, so the dump is one consistent picture.
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        return self.read_state(PEND_READ_STATE, PEND_READ_STATE_WORDS)
+
     def wait_for_dual_node_state(self, timeout=30):
         deadline = time.monotonic() + timeout
         state = []
@@ -1549,6 +1779,66 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[RR_KICK_PEER_READY // 8], 1)
         self.assertEqual(state[RR_KICK_DONE // 8], 1)
         self.assertEqual(state[RR_KICK_TIMEOUT // 8], 0)
+
+    def test_pending_read_schedules_local_peer(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('pending-read-rendezvous.bin')
+        build_pending_read_rendezvous().write(firmware)
+
+        # Preassigned NASIDs represent the node-numbering phase that
+        # precedes the slice-pair rendezvous in the stock PROM.
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel',
+            f'tcg,thread=single,rr-kick-period-ns='
+            f'{PEND_READ_RR_KICK_PERIOD_NS}',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        state = self.wait_for_pending_read_state()
+
+        self.assertEqual(state[PEND_READ_TIMEOUT // 8], 0, state)
+        self.assertEqual(state[PEND_READ_DONE_B // 8],
+                         PEND_READ_ROUNDS, state)
+        self.assertEqual(state[PEND_READ_DONE_A // 8],
+                         PEND_READ_ROUNDS, state)
+        self.assertEqual(state[PEND_READ_VIOLATION // 8:
+                               PEND_READ_VIOLATION // 8 + 4],
+                         [0, 0, 0, 0], state)
+        fair = state[PEND_READ_FAIR // 8:PEND_READ_FAIR // 8 + 4]
+        self.assertEqual(fair[:2], [0, 0], state)
+        self.assertGreater(fair[2], 0, state)
+        self.assertGreater(fair[3], 0, state)
+
+        # The device-side picture the protocol leaves behind: the
+        # rendezvous interrupt acknowledged, the unrelated pending bits
+        # still held in both banks, and the second-bank mask owned by
+        # package 1 alone.  Node one's Hub took no part.
+        hub0 = HUB_BY_NODE
+        hub1 = HUB_BY_NODE + HUB_NODE_STRIDE
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_PEND0, 1)[0],
+                         1 << PEND_READ_UNRELATED_BANK0, state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_PEND1, 1)[0],
+                         1 << (PEND_READ_UNRELATED_BANK1 - 64), state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK0_A, 1)[0],
+                         0, state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK1_A, 1)[0],
+                         0, state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK0_B, 1)[0],
+                         0, state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK1_B, 1)[0],
+                         PEND_READ_MASK1_B_VALUE, state)
+        for reg in (HUB_PI_INT_PEND0, HUB_PI_INT_PEND1,
+                    HUB_PI_INT_MASK0_A, HUB_PI_INT_MASK1_A,
+                    HUB_PI_INT_MASK0_B, HUB_PI_INT_MASK1_B):
+            self.assertEqual(self.read_state(hub1 + reg, 1)[0], 0, state)
 
     def test_slice_b_reaches_console_boundary(self):
         self.set_machine('origin200')

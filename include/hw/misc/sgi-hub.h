@@ -139,6 +139,15 @@ struct SGIHubState {
     uint64_t pi_int_mask[4];
     uint8_t pi_cpu_enable[2];
 
+    /*
+     * Each local processor's last-read value of each pending bank, for the
+     * poll-versus-sample distinction the RR scheduling assist needs.  Not
+     * guest-visible state and deliberately not migrated: after a load the
+     * first re-read of every bank goes unassisted, nothing more.
+     */
+    uint64_t pi_int_pend_seen[SGI_HUB_PROCESSORS][SGI_HUB_PENDING_BANKS];
+    bool pi_int_pend_seen_valid[SGI_HUB_PROCESSORS][SGI_HUB_PENDING_BANKS];
+
     /* Virtual-clock time at which the real-time counter read zero. */
     int64_t pi_rt_origin_ns;
 
