@@ -105,14 +105,6 @@
 #define TXD_BYTECNT_MAX   2047
 
 /*
- * What the engine assembles a frame into before handing it over, which is one
- * larger than the count field can express. The two buffer-length fields are
- * eleven bits each, though, so a descriptor can describe more than either --
- * up to 4094 across the pair -- and something has to stop.
- */
-#define FRAME_ASSEMBLY_MAX 2048
-
-/*
  * The sixteen-kilobyte boundary a transfer may not cross, which is why a
  * descriptor carries two buffer pointers at all rather than one. OpenBSD names
  * it IEC_DMA_BOUNDARY and splits at it explicitly: "The chip DMA engine can
@@ -363,6 +355,21 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
 }
 
 /*
+ * Nothing may arrive. The engine transmits during the produce write, so a
+ * frame it did send is already buffered by the time this runs; a short
+ * timeout only bounds the wait for the expected silence.
+ */
+static void net_socket_expect_no_frame(int fd)
+{
+    uint32_t hdr;
+
+    net_socket_set_recv_timeout(fd, 1);
+    errno = 0;
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+/*
  * An ARP request for the address user-mode networking answers on. Padded to
  * whatever length the caller wants, because a longer frame is still a valid
  * request -- the backend reads the first forty-two bytes and ignores the
@@ -504,10 +511,9 @@ static void test_the_pointer_path_off_the_fabric(const void *data)
  * area can hold, the out-of-line pointers otherwise, split across both if it
  * is told where.
  */
-static size_t send_and_capture(QTestState *qts, int host_fd,
-                               const uint8_t *frame, uint32_t claimed_len,
-                               uint32_t actual_len, uint32_t split,
-                               uint8_t *got, size_t got_size)
+static void send_descriptor(QTestState *qts, const uint8_t *frame,
+                            uint32_t claimed_len, uint32_t actual_len,
+                            uint32_t split)
 {
     uint32_t desc = RAM_SCRATCH;
     uint32_t buf1 = RAM_SCRATCH + TX_DMA_BOUNDARY - split;
@@ -539,7 +545,14 @@ static size_t send_and_capture(QTestState *qts, int host_fd,
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
     ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
     ioc3_writel(qts, ENET_TX_PRODUCE, 128);
+}
 
+static size_t send_and_capture(QTestState *qts, int host_fd,
+                               const uint8_t *frame, uint32_t claimed_len,
+                               uint32_t actual_len, uint32_t split,
+                               uint8_t *got, size_t got_size)
+{
+    send_descriptor(qts, frame, claimed_len, actual_len, split);
     return net_socket_recv_frame(host_fd, got, got_size);
 }
 
@@ -592,11 +605,13 @@ static void test_the_inline_area_boundary(const void *data)
 }
 
 /*
- * The assembled frame's two limits disagree by one: the command word's byte
- * count is eleven bits, 2047, and the engine assembles into 2048 bytes. Either
- * side of the count's own maximum and one past it, built from the inline area
- * plus both pointers so the total is what is being tested rather than any one
- * buffer's length.
+ * The command word's byte count is eleven bits and is what the engine sends:
+ * the segment lengths say where the bytes live, the count says how many
+ * leave. Either side of the count's own maximum and totals past it, built
+ * from both pointers so the total is what is being tested rather than any
+ * one buffer's length. A total past the field wraps in the descriptor the
+ * guest actually wrote -- one past the maximum carries a count of zero and
+ * puts nothing on the wire, and 3000 carries its low eleven bits, 952.
  */
 static void test_the_assembled_frame_limit(const void *data)
 {
@@ -616,23 +631,21 @@ static void test_the_assembled_frame_limit(const void *data)
     for (n = 0; n < ARRAY_SIZE(sizes); n++) {
         uint32_t total = sizes[n];
         uint32_t part = total / 2;
+        uint32_t wire = total & TXD_BYTECNT_MAX;
 
         g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
         net_socket_set_recv_timeout(sv[0], 10);
         qts = ioc3_attach_socket(sv[1], 8);
 
-        len = send_and_capture(qts, sv[0], frame, total, total, part,
-                               got, sizeof(got));
-
-        /*
-         * The two buffer-length fields are eleven bits each, so a guest can
-         * describe far more than the engine assembles into -- 3000 here,
-         * against an assembly buffer of 2048. What leaves is the buffer's
-         * worth and no more, and the bytes it does send are the frame's own
-         * rather than whatever followed the buffer.
-         */
-        g_assert_cmpint(len, ==, MIN(total, FRAME_ASSEMBLY_MAX));
-        g_assert_cmpmem(got, len, frame, MIN(total, FRAME_ASSEMBLY_MAX));
+        if (wire == 0) {
+            send_descriptor(qts, frame, total, total, part);
+            net_socket_expect_no_frame(sv[0]);
+        } else {
+            len = send_and_capture(qts, sv[0], frame, total, total, part,
+                                   got, sizeof(got));
+            g_assert_cmpint(len, ==, wire);
+            g_assert_cmpmem(got, len, frame, wire);
+        }
 
         qtest_quit(qts);
         close(sv[0]);
