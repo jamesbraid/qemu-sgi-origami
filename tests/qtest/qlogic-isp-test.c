@@ -40,7 +40,9 @@
 #define ISP_BUS_CFG1_BURST_ENABLE   0x0004
 
 #define ISP_REG_DMA_CMD_CFG   0x20
+#define ISP_REG_DMA_CMD_CTRL  0x22
 #define ISP_REG_DMA_DATA_CFG  0x40
+#define ISP_REG_DMA_DATA_CTRL 0x42
 #define ISP_DMA_CFG_BURST_ENABLE  0x0002
 
 #define ISP_BUS_CTRL_SOFT_RESET     0x0001
@@ -519,6 +521,46 @@ static void test_dma_block_cfg(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG), ==,
                     ISP_DMA_CFG_BURST_ENABLE);
 
+    qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CFG, 0);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Each block's control register, one word past its config register, takes the
+ * value the SGI firmware's SCSI diagnostic writes and keeps nothing.
+ *
+ * What this is really guarding is the config register beside it. A control
+ * register implemented by widening the config register's own case, or by an
+ * offset mask that swallows the low bit of the address, would land this write
+ * on the config register and change a value a guest has already set — and
+ * because nothing reads the control register back, that corruption would be
+ * invisible from the control side. So the assertions are on the neighbour: the
+ * config value written first has to survive the control write next to it.
+ */
+static void test_dma_block_ctrl_is_inert(void *obj, void *data,
+                                         QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    /* Clear-channel and reset-interrupt together, as the firmware writes it. */
+    const uint16_t clear_channel = 0x000a;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    qpci_io_writew(dev, io, ISP_REG_DMA_CMD_CFG, ISP_DMA_CFG_BURST_ENABLE);
+    qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CFG, ISP_DMA_CFG_BURST_ENABLE);
+
+    qpci_io_writew(dev, io, ISP_REG_DMA_CMD_CTRL, clear_channel);
+    qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CTRL, clear_channel);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_CMD_CFG), ==,
+                    ISP_DMA_CFG_BURST_ENABLE);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_DMA_DATA_CFG), ==,
+                    ISP_DMA_CFG_BURST_ENABLE);
+
+    qpci_io_writew(dev, io, ISP_REG_DMA_CMD_CFG, 0);
     qpci_io_writew(dev, io, ISP_REG_DMA_DATA_CFG, 0);
     qpci_iounmap(dev, io);
 }
@@ -2760,6 +2802,8 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("soft-reset", "qlogic-isp1040", test_soft_reset, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
     qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
+    qos_add_test("dma-block-ctrl-is-inert", "qlogic-isp1040",
+                 test_dma_block_ctrl_is_inert, NULL);
     qos_add_test("bus-ctrl-and-status", "qlogic-isp1040",
                  test_bus_ctrl_and_status, NULL);
     qos_add_test("semaphore", "qlogic-isp1040", test_semaphore, NULL);
