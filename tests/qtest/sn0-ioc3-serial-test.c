@@ -108,6 +108,18 @@ static uint64_t sdma(unsigned int port, unsigned int reg)
     return (port ? SDMA_PORT_B : SDMA_PORT_A) + reg;
 }
 
+/*
+ * The alias pages, which expose one port's seven registers on a page of their
+ * own so a privileged process can map them without the rest of the chip.
+ */
+#define SDMA_ALIAS_A    (IOC3_BASE + 0x08000)
+#define SDMA_ALIAS_B    (IOC3_BASE + 0x0c000)
+
+static uint64_t sdma_alias(unsigned int port, unsigned int reg)
+{
+    return (port ? SDMA_ALIAS_B : SDMA_ALIAS_A) + reg;
+}
+
 /* The ring base register's low word: a size select and a 4 KB-aligned base. */
 #define RING_4K         (1u << 0)
 
@@ -306,6 +318,69 @@ static void test_the_receive_timer_keeps_twelve_bits(const void *data)
     val = qtest_readl(qts, sdma(0, SDMA_RX_TIMER));
     g_assert_cmphex(val & 0xfff, ==, 0xfff);
     g_assert_cmphex(val & ~0x0fff0fffu, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The alias pages are additional views of the same seven registers, not
+ * storage of their own, and three of the seven are read-only through the
+ * alias where they are not through the main block -- the two indices hardware
+ * advances and the 16550 shadow. A model implementing the page as a second
+ * copy passes a write-then-read of the page alone, which is why both
+ * directions are crossed here.
+ */
+static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int port;
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+
+    for (port = 0; port < 2; port++) {
+        /* Written through the alias, visible in the main block. */
+        qtest_writel(qts, sdma_alias(port, SDMA_TX_PRODUCE), 0x18);
+        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_TX_PRODUCE)),
+                        ==, 0x18);
+
+        /* Written in the main block, visible through the alias. */
+        qtest_writel(qts, sdma(port, SDMA_RX_CONSUME), 0x28);
+        g_assert_cmphex(qtest_readl(qts, sdma_alias(port, SDMA_RX_CONSUME)),
+                        ==, 0x28);
+
+        /* And the control register, which is neither an index nor read-only. */
+        qtest_writel(qts, sdma_alias(port, SDMA_CONTROL),
+                     CTRL_HIGH_WATER(0x1ff));
+        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_CONTROL)) & 0x1ff,
+                        ==, 0x1ff);
+    }
+
+    /* The two pages are two ports, not one page answering twice. */
+    qtest_writel(qts, sdma_alias(0, SDMA_TX_PRODUCE), 0x30);
+    qtest_writel(qts, sdma_alias(1, SDMA_TX_PRODUCE), 0x38);
+    g_assert_cmphex(qtest_readl(qts, sdma_alias(0, SDMA_TX_PRODUCE)), ==, 0x30);
+    g_assert_cmphex(qtest_readl(qts, sdma_alias(1, SDMA_TX_PRODUCE)), ==, 0x38);
+
+    qtest_quit(qts);
+}
+
+static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int port;
+
+    sn0_ioc3_attach(qts);
+
+    for (port = 0; port < 2; port++) {
+        qtest_writel(qts, sdma_alias(port, SDMA_TX_CONSUME), 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_TX_CONSUME)), ==, 0);
+        qtest_writel(qts, sdma_alias(port, SDMA_RX_PRODUCE), 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)), ==, 0);
+        qtest_writel(qts, sdma_alias(port, SDMA_SHADOW), 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, 0);
+    }
 
     qtest_quit(qts);
 }
@@ -793,6 +868,11 @@ int main(int argc, char **argv)
                         test_the_receive_consume_keeps_its_arming_bit);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-keeps-twelve-bits", NULL,
                         test_the_receive_timer_keeps_twelve_bits);
+    qtest_add_data_func("sn0/ioc3-serial/alias-pages-are-views", NULL,
+                        test_the_alias_pages_are_views_of_the_main_block);
+    qtest_add_data_func("sn0/ioc3-serial/alias-refuses-hardware-registers",
+                        NULL,
+                        test_the_alias_refuses_the_registers_hardware_owns);
     qtest_add_data_func("sn0/ioc3-serial/transmit-entry-sends-four", NULL,
                         test_a_transmit_entry_sends_its_four_characters);
     qtest_add_data_func("sn0/ioc3-serial/completed-transmit-raises-sources",

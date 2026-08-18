@@ -1236,6 +1236,60 @@ static const MemoryRegionOps sgi_ioc3_sdma_ops = {
 };
 
 /*
+ * The alias pages. Each is a second view of one port's seven registers, at
+ * the same order and the same four-byte stride they have in the main block,
+ * so that a privileged process can map one port's engine into user space
+ * without the rest of the chip coming with it.
+ *
+ * Three registers are read-only through the page where they are not through
+ * the main block: the two indices hardware advances and the 16550 shadow.
+ * That is the page's whole reason for existing -- what it hands out is an
+ * engine a process may drive, not a chip it may reconfigure -- and the two
+ * hardware-owned indices are already read-only either way, so the shadow is
+ * the one the distinction actually applies to.
+ */
+static uint64_t sgi_ioc3_sdma_alias_read(void *opaque, hwaddr addr,
+                                         unsigned size)
+{
+    SGIIOC3SerialAlias *alias = opaque;
+
+    if (addr >= SGI_IOC3_SDMA_PORT_REGS * 4) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-ioc3: read of serial DMA alias offset 0x%"
+                      HWADDR_PRIx " which is past the seven registers a page "
+                      "exposes\n", addr);
+        return 0;
+    }
+
+    return sgi_ioc3_sdma_read_port(alias->chip, alias->port, addr);
+}
+
+static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
+                                      unsigned size)
+{
+    SGIIOC3SerialAlias *alias = opaque;
+
+    if (addr >= SGI_IOC3_SDMA_PORT_REGS * 4) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-ioc3: write of 0x%08x to serial DMA alias offset 0x%"
+                      HWADDR_PRIx " which is past the seven registers a page "
+                      "exposes\n", (uint32_t)val, addr);
+        return;
+    }
+
+    sgi_ioc3_sdma_write_port(alias->chip, alias->port, addr, val);
+}
+
+static const MemoryRegionOps sgi_ioc3_sdma_alias_ops = {
+    .read = sgi_ioc3_sdma_alias_read,
+    .write = sgi_ioc3_sdma_alias_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+};
+/*
  * The ethernet buffer RAM. Every slot answers and keeps what it is given, and
  * the two halves of the window are separate storage, which is the whole of
  * what a driver's size probe measures: it writes a pattern at the first slot
@@ -1280,6 +1334,14 @@ static const hwaddr sgi_ioc3_serial_base[SGI_IOC3_SERIAL_PORTS] = {
 
 static const char *const sgi_ioc3_serial_name[SGI_IOC3_SERIAL_PORTS] = {
     "sgi-ioc3.serial-a", "sgi-ioc3.serial-b",
+};
+
+static const char *const sgi_ioc3_sdma_alias_name[SGI_IOC3_SERIAL_PORTS] = {
+    "sgi-ioc3.sdma-alias-a", "sgi-ioc3.sdma-alias-b",
+};
+
+static const hwaddr sgi_ioc3_sdma_alias_base[SGI_IOC3_SERIAL_PORTS] = {
+    SGI_IOC3_SDMA_ALIAS_A, SGI_IOC3_SDMA_ALIAS_B,
 };
 
 static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
@@ -1379,6 +1441,25 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
                           "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
+
+    /*
+     * And the two alias pages, one per port, well above the main block. They
+     * are views of the registers just mapped rather than storage of their
+     * own, so what makes them a second view is that their handlers reach the
+     * same accessors -- the port each page belongs to travels in its opaque,
+     * since a region's handlers cannot tell which region reached them.
+     */
+    for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
+        s->sdma_alias_port[i].chip = s;
+        s->sdma_alias_port[i].port = i;
+        memory_region_init_io(&s->sdma_alias[i], OBJECT(dev),
+                              &sgi_ioc3_sdma_alias_ops,
+                              &s->sdma_alias_port[i],
+                              sgi_ioc3_sdma_alias_name[i],
+                              SGI_IOC3_SDMA_ALIAS_SIZE);
+        memory_region_add_subregion(&s->bar, sgi_ioc3_sdma_alias_base[i],
+                                    &s->sdma_alias[i]);
+    }
 
     /*
      * The ethernet buffer RAM, the whole window rather than part of it: an
