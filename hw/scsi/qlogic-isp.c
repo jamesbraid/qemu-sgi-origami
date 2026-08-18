@@ -85,8 +85,10 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_BUS_STATUS  0x0a    /* RO: which interrupt is pending. */
 #define ISP_REG_SEMAPHORE   0x0c    /* RW: the mailbox-result lock. */
 #define ISP_REG_NVRAM       0x0e    /* RW: bit-banged serial EEPROM. */
-#define ISP_REG_DMA_CMD_CFG  0x20   /* RW: command DMA block, config register. */
-#define ISP_REG_DMA_DATA_CFG 0x40   /* RW: data DMA block, config register. */
+#define ISP_REG_DMA_CMD_CFG   0x20  /* RW: command DMA block, config. */
+#define ISP_REG_DMA_CMD_CTRL  0x22  /* WO: command DMA block, control. */
+#define ISP_REG_DMA_DATA_CFG  0x40  /* RW: data DMA block, config. */
+#define ISP_REG_DMA_DATA_CTRL 0x42  /* WO: data DMA block, control. */
 #define ISP_REG_HOST_CMD    0xc0    /* RW: command in, RISC state flags out. */
 
 /*
@@ -1980,6 +1982,21 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     case ISP_REG_DMA_DATA_CFG:
         s->dma_data_cfg = val & ISP_DMA_CFG_WRITE_MASK;
+        break;
+
+    /*
+     * Each block's control register, which quiesces the engine and drops its
+     * pending interrupt. The SGI firmware's power-on SCSI diagnostic writes
+     * both once per adapter and never reads either back, and neither bit names
+     * anything this model has: there is no transfer in flight to stop, because
+     * every transfer here completes inside the write that started it, and no
+     * interrupt of the block's own to clear. So the write is accepted and
+     * nothing is kept — recognised rather than left to the unimplemented
+     * default, which otherwise reports a register the firmware is entitled to
+     * write as a gap in the model on every boot.
+     */
+    case ISP_REG_DMA_CMD_CTRL:
+    case ISP_REG_DMA_DATA_CTRL:
         break;
 
     case ISP_REG_HOST_CMD:
