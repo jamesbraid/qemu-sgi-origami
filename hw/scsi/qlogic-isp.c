@@ -224,6 +224,14 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
  * write to it records the guest's consumer position and never touches that
  * state. See the response-queue handling in qlogic_isp_reg_read(),
  * qlogic_isp_reg_write() and qlogic_isp_post_status() below.
+ *
+ * All of that applies only while a queue exists. Both addresses are ordinary
+ * mailboxes until the guest initialises the queue behind them, and both have
+ * to be: the firmware's mailbox register test writes a walking pattern across
+ * mailboxes 1 through 7 and reads it back, long before it initialises
+ * anything, and a queue pointer answered there instead of the pattern fails
+ * that test. Each read and the response side's write are gated on the queue's
+ * own length for exactly that reason.
  */
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX_COUNT       8
@@ -698,21 +706,15 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
  * unaffected either way, since qlw_softreset() overwrites this register with
  * its own zero before ever treating it as a live pointer.
  *
- * Mailbox 4's signature lives in rqst_cons, not in s->mailbox[4]: a read of
- * that address answers from rqst_cons directly (see qlogic_isp_reg_read()),
- * the same in-and-out-share-one-address shape as mailbox 5 below, so the
- * plain array storage behind it is never consulted on the way out and
- * setting it here would only be cosmetic. rqst_cons is what a guest checking
- * this adapter's identity before any queue exists actually reads, and it is
- * also exactly what a guest reads once a real request queue is live and
- * recomputing free space from this same address — one field serving both
- * purposes because both purposes read the one register a real adapter has.
+ * Mailbox 4's signature lives in s->mailbox[4], where the register test can
+ * also reach it. A read of that address answers this adapter's own consumer
+ * position only once a request queue is live; before then it answers the
+ * array, which is both what the product-ID check wants and what the mailbox
+ * register test's echo needs.
  *
  * Mailbox 5 keeps its zero. Nothing we have observed needs 86Box's 7 there:
  * no guest this fork targets checks it as an identity field the way mailbox
- * 4 turned out to be, and this register's read path does not consult
- * s->mailbox[5] at all any more -- ISP_REG_RESPONSE_QUEUE answers from
- * s->resp_prod, per the response-queue completion-erasure fix. A raw
+ * 4 turned out to be, and zero is what the register test writes over. A raw
  * mailbox[5] reset value would only matter if some future guest read this
  * offset by its mailbox name before ever touching it as a queue pointer, and
  * no source we hold shows one doing that.
@@ -741,6 +743,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->mailbox[1] = ISP_MAILBOX1_SIGNATURE;
     s->mailbox[2] = ISP_MAILBOX2_SIGNATURE;
     s->mailbox[3] = ISP_MAILBOX3_SIGNATURE;
+    s->mailbox[4] = ISP_MAILBOX4_SIGNATURE;
 
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
@@ -766,14 +769,11 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->rqst_len = 0;
     s->resp_len = 0;
     /*
-     * ISP_MAILBOX4_SIGNATURE, not 0: rqst_cons backs a read of this same
-     * address both before any queue exists (Linux's product-ID check) and
-     * after one is live (the request-in queue pointer), and before
-     * ISP_MBOX_CMD_INIT_REQ_QUEUE runs, rqst_len is 0, so nothing here
-     * actually treats this as a live consumer position yet. INIT_REQ_QUEUE
-     * resets it to a real 0 itself once the queue it belongs to exists.
+     * A real consumer position, zero. It is only what a read of mailbox 4
+     * answers once a request queue exists; before that the mailbox array
+     * answers, carrying the identity value Linux's product-ID check reads.
      */
-    s->rqst_cons = ISP_MAILBOX4_SIGNATURE;
+    s->rqst_cons = 0;
     s->resp_prod = 0;
     s->resp_cons = 0;
 
@@ -1090,10 +1090,10 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->resp_prod = 0;
         s->resp_cons = 0;
         /*
-         * No write to mailbox[ISP_MAILBOX_RESPONSE_QUEUE] here: a read of
-         * that address answers from resp_prod directly (see
-         * qlogic_isp_reg_read()), so the plain storage backing it is never
-         * consulted and reinitialising it would only be cosmetic.
+         * No write to mailbox[ISP_MAILBOX_RESPONSE_QUEUE] here: from this
+         * point the queue is live, so a read of that address answers from
+         * resp_prod and the plain storage behind it is not consulted again
+         * until a reset clears the queue.
          */
         qlogic_isp_drop_pending_status(s);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
@@ -1817,6 +1817,15 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
      * through s->mailbox[], which this address no longer backs.
      */
     if (addr == ISP_REG_RESPONSE_QUEUE) {
+        /*
+         * Only once a response queue exists does this address carry a queue
+         * pointer. Before that it is a plain mailbox, which is what the
+         * firmware's mailbox register test writes a pattern into and reads
+         * back -- a test that runs long before any queue is initialised.
+         */
+        if (s->resp_len == 0) {
+            return s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE];
+        }
         return s->resp_prod;
     }
 
@@ -1845,6 +1854,10 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
      * often enough for a real guest to notice.
      */
     if (addr == ISP_REG_REQUEST_QUEUE) {
+        /* The same gate, and the same reason, as the response queue above. */
+        if (s->rqst_len == 0) {
+            return s->mailbox[ISP_MAILBOX_REQUEST_QUEUE];
+        }
         return s->rqst_cons;
     }
 
@@ -1908,9 +1921,17 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
      * already a valid ring index.
      */
     if (addr == ISP_REG_RESPONSE_QUEUE) {
-        if (s->resp_len != 0) {
-            s->resp_cons = val % s->resp_len;
+        /*
+         * With no queue there is no acknowledgement to record and nothing to
+         * drain, so the write is what it looks like: a mailbox store. Letting
+         * it fall through to the array is what lets the register test read
+         * its own pattern back.
+         */
+        if (s->resp_len == 0) {
+            s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE] = val;
+            return;
         }
+        s->resp_cons = val % s->resp_len;
         qlogic_isp_drain_pending_status(s);
         return;
     }

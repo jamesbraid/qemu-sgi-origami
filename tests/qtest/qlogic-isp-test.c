@@ -102,6 +102,7 @@
 
 #define ISP_FIRMWARE_STATUS_MAX_REQUESTS 512
 
+#define ISP_MBOX_CMD_MAILBOX_REG_TEST 0x0006
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE  0x0010
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE  0x0011
 #define ISP_MBOX_CMD_PARAM_ERROR     0x4006
@@ -637,16 +638,12 @@ static void test_semaphore(void *obj, void *data, QGuestAllocator *alloc)
  * decoding them to one shared register, or dropping the low address bits,
  * fails here instead of passing six independent round-trips.
  *
- * Mailboxes 4 and 5 are excluded: both are queue pointers under a second
- * name (request-in and response-in respectively), and neither is plain
- * storage — a read always answers this adapter's own position in that
- * direction, never whatever was last written here, by the datasheet's own
- * in-and-out-share-one-address requirement for both queues. Mailbox 5 has
- * been excluded since the response-queue completion-erasure fix; mailbox 4
- * joined it once the adversarial review (task #74) found the same defect
- * still open on the request queue. test_queue_pointers covers both
- * registers' actual contract; a plain write-then-read-back here would
- * assert the bug this device used to have.
+ * All eight are included, mailboxes 4 and 5 among them. Both are queue
+ * pointers under a second name, but only once the queue behind them exists;
+ * with none initialised — which is the state here — they are ordinary
+ * storage, and the firmware's own mailbox register test depends on that.
+ * test_mailbox_register_test covers the other half, where a live queue makes
+ * each answer its own count instead.
  */
 static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -659,15 +656,9 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
     io = qpci_iomap(dev, 0, NULL);
 
     for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
-        if (i == 4 || i == 5) {
-            continue;
-        }
         qpci_io_writew(dev, io, ISP_MAILBOX(i), 0x1000 + i);
     }
     for (i = 0; i < ISP_MAILBOX_COUNT; i++) {
-        if (i == 4 || i == 5) {
-            continue;
-        }
         g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==,
                         0x1000 + i);
     }
@@ -735,12 +726,22 @@ static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 0x0021);
     qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 0x0043);
 
-    /* Neither read reflects the write just sent to that same address. */
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==,
-                    ISP_MAILBOX4_SIGNATURE);
-    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    /*
+     * No queue exists yet, so both addresses are ordinary mailboxes and each
+     * reads back what was just written to it. Asserting the opposite here is
+     * what this test used to do, and it was encoding a defect: the firmware's
+     * mailbox register test writes a pattern across these two along with the
+     * rest and reads it back, before it has initialised anything.
+     */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0x0021);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0x0043);
 
     /* The mailbox name is the same address, so it reads the same answer. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==, 0x0021);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(5)), ==, 0x0043);
+
+    /* Reset restores the identity value the product-ID check reads. */
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(4)), ==,
                     ISP_MAILBOX4_SIGNATURE);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(5)), ==, 0);
@@ -1557,6 +1558,81 @@ static void test_init_queue_rejects_zero(void *obj, void *data,
  * scatter-gather path — that is worth its own test once this one is
  * trusted, not folded into the first one to pass.
  */
+/*
+ * The mailbox register test, both sides of the gate that makes it work.
+ *
+ * The firmware issues this command with a walking pattern across mailboxes 1
+ * through 7 and compares what comes back. It does so during its power-on SCSI
+ * diagnostic, long before it initialises any queue -- so mailboxes 4 and 5,
+ * which become the request and response queue pointers, have to behave as
+ * plain storage at that point. They did not, and the diagnostic failed on
+ * both: mailbox 4 answered the request consumer cursor and mailbox 5 the
+ * response producer count.
+ *
+ * The second half asserts the queue behaviour is untouched once a queue does
+ * exist, including the part that must not regress: a guest's acknowledgement
+ * write to mailbox 5 must not disturb the producer count the adapter has
+ * already published. Echo is deliberately not asserted there -- asserting it
+ * would re-encode the completion-erasure bug this gate is built to preserve
+ * the fix for.
+ */
+static void test_mailbox_register_test(void *obj, void *data,
+                                       QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    uint64_t rqst_addr, resp_addr;
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+
+    /* No queue initialised: every mailbox echoes, and the command completes. */
+    for (i = 1; i < ISP_MAILBOX_COUNT; i++) {
+        qpci_io_writew(dev, io, ISP_MAILBOX(i), 0x1111 * i);
+    }
+    qpci_io_writew(dev, io, ISP_MAILBOX(0), ISP_MBOX_CMD_MAILBOX_REG_TEST);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    for (i = 1; i < ISP_MAILBOX_COUNT; i++) {
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(i)), ==,
+                        0x1111 * i);
+    }
+    qlogic_isp_ack(dev, io);
+
+    /* With queues live, both addresses answer the adapter's own counts. */
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Nothing has been produced or consumed yet, so both read zero. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    /*
+     * An acknowledgement write to the response pointer is recorded as the
+     * guest's consumer position and must leave the adapter's published
+     * producer count alone -- which is what a read of that address answers.
+     */
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 3);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    guest_free(alloc, rqst_addr);
+    guest_free(alloc, resp_addr);
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    qpci_iounmap(dev, io);
+}
+
 static void test_command_round_trip(void *obj, void *data,
                                     QGuestAllocator *alloc)
 {
@@ -2834,6 +2910,8 @@ static void qlogic_isp_register_nodes(void)
                  test_config_setters, NULL);
     qos_add_test("init-queue-rejects-zero", "qlogic-isp1040",
                  test_init_queue_rejects_zero, NULL);
+    qos_add_test("mailbox-register-test", "qlogic-isp1040",
+                 test_mailbox_register_test, NULL);
     qos_add_test("command-round-trip", "qlogic-isp1040",
                  test_command_round_trip, NULL);
     qos_add_test("status-entry-clears-stale-bytes", "qlogic-isp1040",
