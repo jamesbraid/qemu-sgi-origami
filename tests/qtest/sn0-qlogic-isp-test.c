@@ -186,6 +186,8 @@
 #define ISP_REQ_OFF_DEVICE          8
 #define ISP_REQ_OFF_CDBLEN          10
 #define ISP_REQ_OFF_SEGCOUNT        18
+#define ISP_REQ_OFF_CDB             20
+#define ISP_A64_REQ_OFF_SEGS        40
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_REG_REQUEST_QUEUE       (ISP_REG_MAILBOX_BASE + 0x08)
 #define ISP_REG_RESPONSE_QUEUE      (ISP_REG_MAILBOX_BASE + 0x0a)
@@ -654,6 +656,99 @@ static void test_a64_ring_is_word_value(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A data-out transfer on a word-value ring, which is the half an inquiry
+ * never exercises. The command writes a block the guest laid down
+ * word-reversed, and the check is that the disk received it the right way
+ * round: the correction has to run on the way out, from a buffer this
+ * adapter owns, without the guest's own buffer being touched.
+ *
+ * What this does and does not establish, said plainly because the
+ * difference matters. It establishes that the command completes, that the
+ * data-out path runs its cursor over the segment without faulting, and --
+ * the point of the assertion -- that the guest's own buffer comes back
+ * untouched, which is the ownership property the bounce exists to provide.
+ *
+ * It does NOT establish that the bytes reaching the medium were corrected.
+ * The drive here discards writes, and reading back over the same ring
+ * would not settle it either: both directions carry the same correction,
+ * so a round trip returns the original whatever the correction does, the
+ * same cancellation that makes a load-and-dump pair useless for byte
+ * order. Only a reader that does not share this ring's byte order can
+ * answer that, and the firmware writing a real partition table is what
+ * actually does.
+ */
+static void test_a64_ring_data_out(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -drive id=d0,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=0,drive=d0");
+    const uint32_t handle = 0x55aa1234;
+    const uint32_t buf_phys = 0x00120000;
+    const uint64_t buf_iova = 0xa500000000000000ULL | buf_phys;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t block[512], seen[512];
+    unsigned i;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /*
+     * A pattern whose every byte differs from its neighbours, so a
+     * correction that is missing, doubled or applied at the wrong width
+     * shows up rather than cancelling.
+     */
+    for (i = 0; i < sizeof(block); i++) {
+        block[i] = (uint8_t)(i * 7 + 1);
+    }
+    memcpy(seen, block, sizeof(seen));
+    normalise_words(seen, sizeof(seen));
+    qtest_memwrite(qts, buf_phys, seen, sizeof(seen));
+
+    memset(entry, 0, sizeof(entry));
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, 0x0100);
+    put16le(entry + ISP_REQ_OFF_CDBLEN, 10);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, 1);
+    /* WRITE(10), one block at LBA 0. */
+    entry[ISP_REQ_OFF_CDB + 0] = 0x2a;
+    entry[ISP_REQ_OFF_CDB + 8] = 1;
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 0, (uint32_t)buf_iova);
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 4, (uint32_t)(buf_iova >> 32));
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 8, sizeof(block));
+    normalise_words(entry, sizeof(entry));
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    /* The guest's own buffer must not have been rewritten under it. */
+    qtest_memread(qts, buf_phys, seen, sizeof(seen));
+    {
+        uint8_t expect[512];
+
+        memcpy(expect, block, sizeof(expect));
+        normalise_words(expect, sizeof(expect));
+        g_assert_cmpmem(seen, sizeof(seen), expect, sizeof(expect));
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -670,6 +765,8 @@ int main(int argc, char **argv)
                         NULL, test_read_ram_word_through_the_fabric);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-is-word-value", NULL,
                         test_a64_ring_is_word_value);
+    qtest_add_data_func("sn0/qlogic-isp/a64-ring-data-out", NULL,
+                        test_a64_ring_data_out);
 
     return g_test_run();
 }
