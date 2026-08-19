@@ -824,6 +824,63 @@ static void test_verify_checksum_answers_both_mailboxes(const void *data)
     qtest_quit(qts);
 }
 
+
+/*
+ * The same block transfer through the DIRECT window, which is the one the
+ * firmware actually drives.
+ *
+ * The existing translated-window test exercises the page-mapped swap bit; the
+ * firmware's own download names an address in the 32-bit direct window and so
+ * is governed by the other bit entirely. A model consulting the wrong one of
+ * the two passes that test and fails this boot.
+ *
+ * Read the page from the host rather than dumping it back through the adapter.
+ * A dump through the same window with the same bit applies the transform a
+ * second time and cancels it exactly, which asserts nothing at all -- the same
+ * round-trip trap as a load followed by a dump, one level down.
+ */
+static void test_ram_dma_through_the_direct_window(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    const uint16_t base = 0x1000;
+    const uint16_t word = 0x1234;
+    uint8_t seen[4];
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+
+    /*
+     * The add-512-megabytes field resets SET, and left alone it moves the
+     * transfer half a gigabyte from where this test looks -- which reads as a
+     * byte-order failure and is not one.
+     */
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, TARGET_PAGE, 0, PAGE_SIZE_4K);
+    isp_write_ram_word(qts, base, word);
+
+    isp_ram_block(qts, ISP_MBOX_CMD_DUMP_RAM, base,
+                  0x80000000u | TARGET_PAGE, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    /*
+     * Two bytes written at window offset zero, with that window's bit clear,
+     * land at memory offset zero-exclusive-or-two with their halves reversed.
+     */
+    qtest_memread(qts, TARGET_PAGE + 2, seen, 2);
+    g_assert_cmphex(seen[0], ==, word >> 8);
+    g_assert_cmphex(seen[1], ==, word & 0xff);
+
+    /* And the offset an uncorrected transfer would have used is untouched. */
+    qtest_memread(qts, TARGET_PAGE, seen, 2);
+    g_assert_cmphex(seen[0], ==, 0);
+    g_assert_cmphex(seen[1], ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -842,6 +899,8 @@ int main(int argc, char **argv)
                         test_a64_ring_is_word_value);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-data-out", NULL,
                         test_a64_ring_data_out);
+    qtest_add_data_func("sn0/qlogic-isp/ram-dma-through-the-direct-window",
+                        NULL, test_ram_dma_through_the_direct_window);
     qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
                         NULL, test_verify_checksum_answers_both_mailboxes);
 
