@@ -465,18 +465,32 @@ static void test_ram_dma_translates_through_the_bridge(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * Read the raw bytes rather than a word: this asserts both that the
-     * transfer was translated and the order it laid the two halves down in,
-     * which is the decision the datasheet records and nothing else here pins.
+     * Read the raw bytes rather than a word, because a word accessor would
+     * apply its own correction and hide the very thing under test.
+     *
+     * Two effects compose here and the test pins both. The transfer goes
+     * through the page-mapped window with that window's swap bit clear, so
+     * the Bridge permutes its byte lanes: a two-byte access at window offset
+     * zero lands at memory offset zero-exclusive-or-two, and the two halves
+     * arrive in the opposite order to the little-endian store that made them.
+     */
+    qtest_memread(qts, TARGET_PAGE + 2, seen, 2);
+    g_assert_cmphex(seen[0], ==, first >> 8);
+    g_assert_cmphex(seen[1], ==, first & 0xff);
+
+    /*
+     * And nothing was written where an uncorrected transfer would have put
+     * it. Without this the test still passes against a model that writes both
+     * places, which is a thing a careless correction does.
      */
     qtest_memread(qts, TARGET_PAGE, seen, 2);
-    g_assert_cmphex(seen[0], ==, first & 0xff);
-    g_assert_cmphex(seen[1], ==, first >> 8);
+    g_assert_cmphex(seen[0], ==, 0);
+    g_assert_cmphex(seen[1], ==, 0);
 
     /* The other direction, from the same translated page. */
-    seen[0] = second & 0xff;
-    seen[1] = second >> 8;
-    qtest_memwrite(qts, TARGET_PAGE, seen, 2);
+    seen[0] = second >> 8;
+    seen[1] = second & 0xff;
+    qtest_memwrite(qts, TARGET_PAGE + 2, seen, 2);
 
     isp_ram_block(qts, ISP_MBOX_CMD_LOAD_RAM, base, PCI_TRANSLATED, 1);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);

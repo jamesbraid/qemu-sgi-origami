@@ -168,8 +168,29 @@ struct SGIBridgeState {
      * bypassing the PCI transfer helpers, which is the mistake this arrangement
      * exists to make impossible rather than to detect.
      */
-    IOMMUMemoryRegion iommu;
-    AddressSpace iommu_as;
+    /*
+     * One IOMMU region and address space per slot, rather than one shared. The
+     * translation table itself is still shared, because the chip has one; what
+     * became per-device is the attribute lookup, since the swap bits that
+     * decide whether a transfer's byte lanes are permuted live in that slot's
+     * own Device(x) register. A shared region cannot tell which device asked.
+     */
+    struct SGIBridgeDeviceDMA {
+        IOMMUMemoryRegion iommu;
+        AddressSpace as;
+        SGIBridgeState *s;
+        unsigned int slot;
+    } dma[SGI_BRIDGE_DEVICES];
+
+    /*
+     * Where a transfer goes when its byte lanes need permuting. It is a region
+     * rather than a flag because the translation entry can only say where an
+     * access lands, not what happens to the bytes on the way -- so the decision
+     * stays in translate, where the chip makes it, and the action moves into
+     * the address space translate points at.
+     */
+    MemoryRegion lane_swap;
+    AddressSpace lane_swap_as;
 
     /*
      * The fabric this chip issues interrupt packets into, and how the machine
