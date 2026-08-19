@@ -640,15 +640,6 @@ typedef struct QLogicISPRequest {
     SCSIRequest *sreq;
     QEMUSGList qsg;
     uint32_t handle;
-    /*
-     * Set when this request's ring is word-value, which makes its data
-     * buffers word-value too. Such a request does not hand the generic SCSI
-     * layer its scatter-gather list: the bytes have to be corrected on the
-     * way past, so the transfer goes through this file a chunk at a time
-     * instead, and word_pos is how far along the segments that has got.
-     */
-    bool word_value;
-    uint64_t word_pos;
 } QLogicISPRequest;
 
 /*
@@ -1253,108 +1244,35 @@ static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
 }
 
 /*
- * Ring descriptor byte order.
+ * Descriptor reads.
  *
- * A guest that gives a queue a 64-bit base drives this adapter through the
- * word-value mapping, where each aligned 32-bit word of a descriptor arrives
- * with its bytes reversed relative to the little-endian layout the chip's own
- * structures use. A guest that gives a 32-bit base drives the byte-stream
- * mapping and its descriptors need no correction. The base is the signal, and
- * it is fixed for the life of the queue because it is only ever set by the
- * queue's own initialise command.
- *
- * This applies to descriptors alone. The data a command moves never passes
- * through this file -- the segments are handed to the generic SCSI layer as a
- * scatter-gather list and it does the transfer -- so payload is a byte stream
- * by construction rather than by care.
+ * Plain little-endian, matching the rings the guest builds. Any byte-lane
+ * permutation this machine needs happens in the Bridge, on the strength of the
+ * requesting slot's own swap bits, so nothing here has to know which mapping
+ * window the ring sits in or what the guest programmed.
  */
-static bool qlogic_isp_rqst_word_value(QLogicISPState *s)
+static uint32_t qlogic_isp_desc_ld32(PCIDevice *pci, hwaddr addr)
 {
-    return (s->rqst_base >> 32) != 0;
+    uint32_t v = 0;
+
+    ldl_le_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
+    return v;
 }
 
-static bool qlogic_isp_resp_word_value(QLogicISPState *s)
+static uint16_t qlogic_isp_desc_ld16(PCIDevice *pci, hwaddr addr)
 {
-    return (s->resp_base >> 32) != 0;
+    uint16_t v = 0;
+
+    lduw_le_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
+    return v;
 }
 
-/* Reverse the bytes of each aligned 32-bit word of a descriptor buffer. */
-static void qlogic_isp_normalise_words(uint8_t *buf, size_t len)
+static uint8_t qlogic_isp_desc_ld8(PCIDevice *pci, hwaddr addr)
 {
-    size_t i;
+    uint8_t v = 0;
 
-    for (i = 0; i + 4 <= len; i += 4) {
-        uint8_t t = buf[i];
-
-        buf[i] = buf[i + 3];
-        buf[i + 3] = t;
-        t = buf[i + 1];
-        buf[i + 1] = buf[i + 2];
-        buf[i + 2] = t;
-    }
-}
-
-/*
- * Descriptor reads, normalised.
- *
- * Each reads the aligned 32-bit words covering the field, reverses them when
- * the ring is word-value, and then takes the field out little-endian. Doing it
- * through the containing word rather than by adjusting the offset is what
- * keeps a sub-word field correct without anyone having to reason about which
- * end of the word it moved to.
- */
-static uint32_t qlogic_isp_desc_ld32(PCIDevice *pci, bool wv, hwaddr addr)
-{
-    uint8_t w[4];
-
-    pci_dma_read(pci, addr, w, sizeof(w));
-    if (wv) {
-        qlogic_isp_normalise_words(w, sizeof(w));
-    }
-    return ldl_le_p(w);
-}
-
-static uint16_t qlogic_isp_desc_ld16(PCIDevice *pci, bool wv, hwaddr addr)
-{
-    unsigned int off = addr & 3;
-    uint8_t w[4];
-
-    pci_dma_read(pci, addr - off, w, sizeof(w));
-    if (wv) {
-        qlogic_isp_normalise_words(w, sizeof(w));
-    }
-    return lduw_le_p(w + off);
-}
-
-static uint8_t qlogic_isp_desc_ld8(PCIDevice *pci, bool wv, hwaddr addr)
-{
-    unsigned int off = addr & 3;
-    uint8_t w[4];
-
-    pci_dma_read(pci, addr - off, w, sizeof(w));
-    if (wv) {
-        qlogic_isp_normalise_words(w, sizeof(w));
-    }
-    return w[off];
-}
-
-/*
- * A byte string inside a descriptor -- a command block. Read through the
- * aligned words that cover it so the normalisation is the same one every
- * other field gets, then take the bytes out of the middle.
- */
-static void qlogic_isp_desc_read(PCIDevice *pci, bool wv, hwaddr addr,
-                                 uint8_t *dst, size_t len)
-{
-    unsigned int off = addr & 3;
-    size_t span = ROUND_UP(off + len, 4);
-    g_autofree uint8_t *w = g_malloc(span);
-
-    pci_dma_read(pci, addr - off, w, span);
-    if (wv) {
-        qlogic_isp_normalise_words(w, span);
-    }
-    memcpy(dst, w + off, len);
+    ldub_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
+    return v;
 }
 
 static hwaddr qlogic_isp_rqst_entry_addr(QLogicISPState *s, uint16_t index)
@@ -1442,9 +1360,6 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
         memcpy(entry + ISP_STATUS_OFF_SENSE_DATA, sense, clamped_sense_len);
     }
 
-    if (qlogic_isp_resp_word_value(s)) {
-        qlogic_isp_normalise_words(entry, sizeof(entry));
-    }
     pci_dma_write(pci, addr, entry, sizeof(entry));
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
@@ -1592,84 +1507,10 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
  * INQUIRY of the first probed target, because nothing before that point in
  * this model's own test suite ever sent a command with a data phase.
  */
-/*
- * Moves one chunk of a word-value request's data between the SCSI layer's
- * buffer and the guest's, correcting the byte order on the way.
- *
- * The SCSI layer's buffer is the bounce. That matters most on the way out:
- * the guest's buffer holds the guest's data and we were given it to read,
- * so correcting it where it lies would be writing memory that is not ours
- * to write -- and there is no later moment at which putting it back would
- * be safe, since the transfer is asynchronous. Copying through a buffer we
- * own avoids the question entirely, and doing the same on the way in costs
- * nothing and leaves the guest's buffer written exactly once.
- *
- * Segments are corrected individually and only where the address says to.
- * A segment the guest placed below four gigabytes is byte-stream and is
- * copied untouched, which is what keeps disk blocks intact.
- */
-static void qlogic_isp_transfer_data(SCSIRequest *sreq, uint32_t len)
-{
-    QLogicISPRequest *req = sreq->hba_private;
-    uint8_t *buf = scsi_req_get_buf(sreq);
-    bool to_device = !sreq->cmd.mode || sreq->cmd.mode == SCSI_XFER_TO_DEV;
-    uint64_t skip = req->word_pos;
-    uint32_t done = 0;
-    int i;
-
-    for (i = 0; i < req->qsg.nsg && done < len; i++) {
-        uint64_t seg_len = req->qsg.sg[i].len;
-        uint64_t base = req->qsg.sg[i].base;
-        uint32_t chunk;
-        g_autofree uint8_t *tmp = NULL;
-
-        if (skip >= seg_len) {
-            skip -= seg_len;
-            continue;
-        }
-        base += skip;
-        seg_len -= skip;
-        skip = 0;
-
-        chunk = MIN(seg_len, len - done);
-        tmp = g_malloc(chunk);
-
-        if (to_device) {
-            dma_memory_read(req->qsg.as, base, tmp, chunk,
-                            MEMTXATTRS_UNSPECIFIED);
-            if ((req->qsg.sg[i].base >> 32) != 0) {
-                qlogic_isp_normalise_words(tmp, chunk);
-            }
-            memcpy(buf + done, tmp, chunk);
-        } else {
-            memcpy(tmp, buf + done, chunk);
-            if ((req->qsg.sg[i].base >> 32) != 0) {
-                qlogic_isp_normalise_words(tmp, chunk);
-            }
-            dma_memory_write(req->qsg.as, base, tmp, chunk,
-                             MEMTXATTRS_UNSPECIFIED);
-        }
-        done += chunk;
-    }
-
-    req->word_pos += done;
-    scsi_req_continue(sreq);
-}
-
 static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
-    /*
-     * A word-value request answers with no list on purpose, which sends the
-     * SCSI layer down its transfer_data path: its own buffer becomes the
-     * bounce this correction needs. Handing over the list instead would have
-     * the generic DMA code move the bytes straight into the guest's memory
-     * with no opportunity to correct them.
-     */
-    if (req->word_value) {
-        return NULL;
-    }
     return &req->qsg;
 }
 
@@ -1678,7 +1519,6 @@ static const struct SCSIBusInfo qlogic_isp_scsi_info = {
     .max_target = 16,
     .max_lun = 8,
     .get_sg_list = qlogic_isp_get_sg_list,
-    .transfer_data = qlogic_isp_transfer_data,
     .complete = qlogic_isp_scsi_complete,
     .cancel = qlogic_isp_scsi_cancel,
 };
@@ -1695,7 +1535,6 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
                                      uint16_t seg_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
-    bool wv = qlogic_isp_rqst_word_value(s);
     uint16_t collected = 0;
     uint16_t cont_index = s->rqst_cons;
     int conts_left = entry_count - 1;
@@ -1705,8 +1544,8 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
         hwaddr seg_addr = rqst_addr + ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE;
         uint32_t addr, len;
 
-        addr = qlogic_isp_desc_ld32(pci, wv, seg_addr);
-        len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
+        addr = qlogic_isp_desc_ld32(pci, seg_addr);
+        len = qlogic_isp_desc_ld32(pci, seg_addr + 4);
         qemu_sglist_add(qsg, addr, len);
         collected++;
     }
@@ -1721,8 +1560,8 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
             hwaddr seg_addr = cont_addr + ISP_CONT_OFF_SEGS + i * ISP_SEG_SIZE;
             uint32_t addr, len;
 
-            addr = qlogic_isp_desc_ld32(pci, wv, seg_addr);
-            len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
+            addr = qlogic_isp_desc_ld32(pci, seg_addr);
+            len = qlogic_isp_desc_ld32(pci, seg_addr + 4);
             qemu_sglist_add(qsg, addr, len);
             collected++;
         }
@@ -1752,13 +1591,12 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     SCSIDevice *sdev;
     QLogicISPRequest *req;
 
-    bool wv = qlogic_isp_rqst_word_value(s);
 
-    handle = qlogic_isp_desc_ld32(pci, wv, addr + ISP_REQ_OFF_HANDLE);
-    device = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_DEVICE);
-    cdb_len = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_CDBLEN);
-    seg_count = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_SEGCOUNT);
-    qlogic_isp_desc_read(pci, wv, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+    handle = qlogic_isp_desc_ld32(pci, addr + ISP_REQ_OFF_HANDLE);
+    device = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_DEVICE);
+    cdb_len = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_CDBLEN);
+    seg_count = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_SEGCOUNT);
+    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
 
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
@@ -1785,7 +1623,6 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
-    req->word_value = wv;
     pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
     qlogic_isp_read_segments(s, &req->qsg, addr, entry_count, seg_count);
 
@@ -1810,7 +1647,6 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                                          uint16_t seg_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
-    bool wv = qlogic_isp_rqst_word_value(s);
     uint16_t collected = 0;
     uint16_t cont_index = s->rqst_cons;
     int conts_left = entry_count - 1;
@@ -1821,9 +1657,9 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                            + i * ISP_A64_SEG_SIZE;
         uint32_t lo, hi, len;
 
-        lo = qlogic_isp_desc_ld32(pci, wv, seg_addr);
-        hi = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
-        len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 8);
+        lo = qlogic_isp_desc_ld32(pci, seg_addr);
+        hi = qlogic_isp_desc_ld32(pci, seg_addr + 4);
+        len = qlogic_isp_desc_ld32(pci, seg_addr + 8);
         qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
         collected++;
     }
@@ -1839,9 +1675,9 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                                + i * ISP_A64_SEG_SIZE;
             uint32_t lo, hi, len;
 
-            lo = qlogic_isp_desc_ld32(pci, wv, seg_addr);
-            hi = qlogic_isp_desc_ld32(pci, wv, seg_addr + 4);
-            len = qlogic_isp_desc_ld32(pci, wv, seg_addr + 8);
+            lo = qlogic_isp_desc_ld32(pci, seg_addr);
+            hi = qlogic_isp_desc_ld32(pci, seg_addr + 4);
+            len = qlogic_isp_desc_ld32(pci, seg_addr + 8);
             qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
             collected++;
         }
@@ -1871,13 +1707,12 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     SCSIDevice *sdev;
     QLogicISPRequest *req;
 
-    bool wv = qlogic_isp_rqst_word_value(s);
 
-    handle = qlogic_isp_desc_ld32(pci, wv, addr + ISP_REQ_OFF_HANDLE);
-    device = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_DEVICE);
-    cdb_len = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_CDBLEN);
-    seg_count = qlogic_isp_desc_ld16(pci, wv, addr + ISP_REQ_OFF_SEGCOUNT);
-    qlogic_isp_desc_read(pci, wv, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+    handle = qlogic_isp_desc_ld32(pci, addr + ISP_REQ_OFF_HANDLE);
+    device = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_DEVICE);
+    cdb_len = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_CDBLEN);
+    seg_count = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_SEGCOUNT);
+    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
 
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
@@ -1892,7 +1727,6 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
-    req->word_value = wv;
     pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
     qlogic_isp_read_segments_a64(s, &req->qsg, addr, entry_count, seg_count);
 
@@ -1943,10 +1777,9 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         uint8_t entry_type;
         uint8_t entry_count;
 
-        bool wv = qlogic_isp_rqst_word_value(s);
 
-        entry_type = qlogic_isp_desc_ld8(pci, wv, addr + ISP_ENTRY_OFF_TYPE);
-        entry_count = qlogic_isp_desc_ld8(pci, wv, addr + ISP_ENTRY_OFF_COUNT);
+        entry_type = qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_TYPE);
+        entry_count = qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_COUNT);
         if (entry_count == 0) {
             entry_count = 1;
         }
@@ -1992,7 +1825,7 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
                 uint32_t handle;
 
                 handle = qlogic_isp_desc_ld32(
-                    pci, qlogic_isp_rqst_word_value(s),
+                    pci,
                     addr + ISP_REQ_OFF_HANDLE);
                 qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                        0, 0, NULL, 0);

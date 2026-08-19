@@ -314,7 +314,6 @@
 #define ATE_REMOTE_MAP          MAKE_64BIT_MASK(48, 16)
 #define ATE_ADDRESS             MAKE_64BIT_MASK(12, 36)
 #define ATE_TARGET_WIDGET       MAKE_64BIT_MASK(8, 4)
-#define ATE_BYTE_SWAP           BIT_ULL(5)
 #define ATE_BARRIER             BIT_ULL(4)
 #define ATE_PREFETCH            BIT_ULL(3)
 #define ATE_PRECISE             BIT_ULL(2)
@@ -927,9 +926,16 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
 }
 
 /*
- * Whether a narrow access through a device window needs its byte lanes
- * corrected before it reaches whichever PCI space this slot's window is
- * aimed at.
+ * Whether this slot's device needs its byte lanes corrected.
+ *
+ * TWO CALLERS, AND THEY NEED IT FOR DIFFERENT REASONS. The programmed-access
+ * windows ask because the specification's byte-lane tables put a narrow
+ * processor access at a reversed offset within its word. The DMA path asks
+ * because the IOC3 is a big-endian PCI device and both public drivers clear
+ * its DMA swap bits, so reading those bits literally would have this model
+ * reverse every Ethernet frame the part moves. The keying below, and the
+ * OpenBSD precedent for it, are common to both; the byte-lane tables cited
+ * further down are the programmed-access half of the story.
  *
  * Real Bridge hardware has exactly one mechanism for this question: the
  * per-device DEV_SWAP_PROGRAMMED bit (Table 36 of the Bridge ASIC
@@ -1844,6 +1850,23 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_BRIDGE_RW:
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
         if (sgi_bridge_is_device_register(addr, &slot)) {
+            /*
+             * This model exempts the IOC3 from the DMA byte-lane permutation
+             * on the grounds that it is a big-endian part, and both public
+             * drivers clear its swap bits to say the same thing. A guest that
+             * sets them instead is asking for something the model does not
+             * reproduce -- so say so here, where the guest's own write is in
+             * hand, rather than in the predicate, whose exemption clause
+             * returns before the bits are ever read.
+             */
+            if ((*held & (DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED)) &&
+                !sgi_bridge_slot_needs_correction(s, slot)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-bridge: slot %u holds a device this model "
+                              "exempts from the DMA byte swap, and the guest "
+                              "enabled swapping for it; the transfer will not "
+                              "be permuted\n", slot);
+            }
             sgi_bridge_aim_window(s, slot);
         } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_NIC) {
             sgi_bridge_onewire_slot(s, (uint32_t)val);
@@ -2284,14 +2307,103 @@ static hwaddr sgi_bridge_compose_xtalk(SGIBridgeState *s,
  * full translation-state synchronization design — atomics on every read
  * this hook makes, plus reset and migration — not spot fixes here.
  */
+/*
+ * Whether this model must permute byte lanes for a transfer this device is
+ * making to this PCI address.
+ *
+ * Note the inversion, which is the whole reason this reads backwards. The
+ * chip's swap bits enable a swapper that turns the crossed wiring between a
+ * big-endian crosstalk side and a little-endian PCI side into straight-through
+ * byte numbering. A byte-addressed model is straight-through already, so it is
+ * the *disabled* case that needs work here.
+ */
+static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot,
+                                            hwaddr pci_addr)
+{
+    uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+
+    if (!sgi_bridge_slot_needs_correction(s, slot)) {
+        return false;
+    }
+    /*
+     * Local space is not carried to crosstalk at all, so there is no swapper
+     * in its path. That this model passes it through to system memory anyway
+     * is a separate fidelity gap, and the swap rule must not paper over it.
+     */
+    if (pci_addr < BRIDGE_PCI_TRANSLATED) {
+        return false;
+    }
+    /*
+     * Specification Tables 48, 49 and 50: both direct windows take the
+     * direct-mapped bit and the page-mapped window takes its own.
+     */
+    return !(dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
+                                                 : DEV_SWAP_DIRECT));
+}
+
+/*
+ * The permutation itself.
+ *
+ * THE PAIR OF ENDIANNESSES HERE IS LOAD-BEARING AND LOOKS REDUNDANT. The body
+ * must stay `address_space_read`/`write` into a byte buffer: that resolves the
+ * answering region's own declared endianness before this code sees the bytes,
+ * so the only byte order left in the composition is this region's declaration
+ * against the big-endian decode below. Rewriting either half to a value
+ * accessor such as `address_space_ldl_be()` reads as a simplification and
+ * reintroduces the answering region's endianness as a live term -- at which
+ * point a transfer aimed at another widget's registers starts arriving
+ * reversed and nothing else changes.
+ *
+ * These callbacks always target system memory, never the swapping space, so
+ * there is no way back into themselves.
+ */
+static uint64_t sgi_bridge_lane_swap_read(void *opaque, hwaddr addr,
+                                          unsigned size)
+{
+    uint8_t bytes[8];
+
+    address_space_read(&address_space_memory,
+                       sgi_bridge_window_correct(addr, size),
+                       MEMTXATTRS_UNSPECIFIED, bytes, size);
+    return ldn_be_p(bytes, size);
+}
+
+static void sgi_bridge_lane_swap_write(void *opaque, hwaddr addr, uint64_t val,
+                                       unsigned size)
+{
+    uint8_t bytes[8];
+
+    stn_be_p(bytes, size, val);
+    address_space_write(&address_space_memory,
+                        sgi_bridge_window_correct(addr, size),
+                        MEMTXATTRS_UNSPECIFIED, bytes, size);
+}
+
+static const MemoryRegionOps sgi_bridge_lane_swap_ops = {
+    .read = sgi_bridge_lane_swap_read,
+    .write = sgi_bridge_lane_swap_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
 static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                                           IOMMUAccessFlags flag, int iommu_idx)
 {
-    SGIBridgeState *s = container_of(iommu, SGIBridgeState, iommu);
+    struct SGIBridgeDeviceDMA *dma =
+        container_of(iommu, struct SGIBridgeDeviceDMA, iommu);
+    SGIBridgeState *s = dma->s;
     unsigned int shift = sgi_bridge_page_shift(s);
     hwaddr page_mask = MAKE_64BIT_MASK(0, shift);
     IOMMUTLBEntry entry = {
-        .target_as = &address_space_memory,
+        /*
+         * Where the access lands is the only lever this interface offers, so
+         * it is the one the byte-lane permutation rides in on.
+         */
+        .target_as = sgi_bridge_dma_needs_correction(s, dma->slot, addr) ?
+                     &s->lane_swap_as : &address_space_memory,
         .iova = addr & ~page_mask,
         .translated_addr = 0,
         .addr_mask = page_mask,
@@ -2366,15 +2478,34 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
 }
 
 /*
- * Every device on this bus translates through the same table: the chip has one,
- * and which device asked is carried in the entry rather than in the lookup.
+ * Every device on this bus translates through the same table, because the chip
+ * has one. What is per-device is the attribute lookup: the swap bits that
+ * decide whether a transfer's byte lanes are permuted live in the requesting
+ * slot's own Device(x) register, so the requester has to be known at
+ * translate time rather than carried in the entry.
  */
 static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
                                                      int devfn)
 {
     SGIBridgeState *s = opaque;
+    unsigned int slot = PCI_SLOT(devfn);
 
-    return &s->iommu_as;
+    /*
+     * The chip decodes eight device slots and this machine populates three, so
+     * the fold below cannot be reached by anything a guest does -- it exists so
+     * that a machine wiring a device outside the chip's slots gets a defined
+     * answer rather than reading off the end. If it ever does fire, the device
+     * would silently inherit another slot's swap bits, so it is worth a look
+     * rather than a shrug.
+     */
+    if (slot >= SGI_BRIDGE_DEVICES) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-bridge: device at slot %u is outside the eight this "
+                      "chip decodes; folding onto slot %u for DMA attributes\n",
+                      slot, slot % SGI_BRIDGE_DEVICES);
+        slot %= SGI_BRIDGE_DEVICES;
+    }
+    return &s->dma[slot].as;
 }
 
 static const PCIIOMMUOps sgi_bridge_iommu_ops = {
@@ -2554,14 +2685,47 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s->widget, SGI_BRIDGE_CFG0_BASE, &s->cfg0);
 
     /*
-     * The translation every device on this bus transfers through, and the
-     * address space they are given in place of the system's.
+     * Where a transfer whose byte lanes need permuting is sent. One region for
+     * the whole chip: the decision is per device but the action is not, so
+     * eight copies of it would differ in nothing.
      */
-    memory_region_init_iommu(&s->iommu, sizeof(s->iommu),
-                             TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION, obj,
-                             "sgi-bridge.iommu", UINT64_MAX);
-    address_space_init(&s->iommu_as, MEMORY_REGION(&s->iommu),
-                       "sgi-bridge.dma");
+    memory_region_init_io(&s->lane_swap, obj, &sgi_bridge_lane_swap_ops, s,
+                          "sgi-bridge.lane-swap", UINT64_MAX);
+    /*
+     * QEMU's re-entrancy guard is per owning device, and this chip owns both
+     * ends of an ordinary transfer: the programmed-access window a guest
+     * writes a device's registers through, and the region that device's DMA
+     * then lands in. So a command issued the normal way -- guest writes a
+     * mailbox through the Bridge window, adapter fetches its descriptor --
+     * finds the Bridge already engaged and has the DMA blocked, returning
+     * zeroes with only a warning. That is not the recursion the guard exists
+     * to catch: these callbacks target system memory and never this address
+     * space, so there is no path back into themselves. The guard is measuring
+     * ownership, not recursion, and it is wrong here.
+     */
+    s->lane_swap.disable_reentrancy_guard = true;
+    address_space_init(&s->lane_swap_as, &s->lane_swap,
+                       "sgi-bridge.lane-swap");
+
+    /*
+     * The translation every device on this bus transfers through, and the
+     * address space each is given in place of the system's. One per slot,
+     * because the swap bits that steer a transfer belong to the slot that
+     * issued it and a shared region cannot tell which slot that was.
+     */
+    for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
+        g_autofree char *name = g_strdup_printf("sgi-bridge.iommu.%u", slot);
+        g_autofree char *as_name = g_strdup_printf("sgi-bridge.dma.%u", slot);
+
+        s->dma[slot].s = s;
+        s->dma[slot].slot = slot;
+        memory_region_init_iommu(&s->dma[slot].iommu,
+                                 sizeof(s->dma[slot].iommu),
+                                 TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION, obj,
+                                 name, UINT64_MAX);
+        address_space_init(&s->dma[slot].as,
+                           MEMORY_REGION(&s->dma[slot].iommu), as_name);
+    }
     pci_setup_iommu(phb->bus, &sgi_bridge_iommu_ops, s);
 
     /* The translation table, and the read-only view of its lower halves. */

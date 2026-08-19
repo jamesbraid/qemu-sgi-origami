@@ -1210,9 +1210,20 @@ static void test_a_transfer_straddling_a_page(const void *data)
     qtest_memread(qts, TARGET_PAGE_B, tail, sizeof(tail));
     qtest_memread(qts, TARGET_PAGE_AFTER_A, after, sizeof(after));
 
-    /* The head is in the page the first entry names. */
+    /*
+     * The head is in the page the first entry names.
+     *
+     * The exclusive-or is the byte-lane permutation, not this test's subject.
+     * The transfer source's swap bits are clear at reset and it transfers
+     * through the page-mapped window, so the Bridge reverses the bytes of each
+     * aligned word on the way past: the byte written at word offset i arrives
+     * at word offset i-exclusive-or-three. The transfer starts word-aligned,
+     * so that is the whole of it. What this test is actually about survives
+     * unchanged, because the permutation cannot move a byte out of its own
+     * four-byte word and therefore cannot move one across the page boundary.
+     */
     for (i = 0; i < STRADDLE_HEAD; i++) {
-        g_assert_cmpuint(head[i], ==, (uint8_t)(STRADDLE_SEED + i));
+        g_assert_cmpuint(head[i], ==, (uint8_t)(STRADDLE_SEED + (i ^ 3)));
     }
 
     /*
@@ -1222,7 +1233,7 @@ static void test_a_transfer_straddling_a_page(const void *data)
      */
     for (i = 0; i < STRADDLE_TAIL; i++) {
         g_assert_cmpuint(tail[i], ==,
-                         (uint8_t)(STRADDLE_SEED + STRADDLE_HEAD + i));
+                         (uint8_t)(STRADDLE_SEED + STRADDLE_HEAD + (i ^ 3)));
     }
 
     /*
@@ -1256,12 +1267,18 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
         g_assert_cmpuint(seen[i], ==, 0);
     }
 
-    /* And the same transfer lands once the entry is made valid. */
+    /*
+     * And the same transfer lands once the entry is made valid. The
+     * exclusive-or is the byte-lane permutation the transfer source gets for
+     * having its swap bits clear, the same one the straddle test carries; it
+     * is incidental here, and the assertion this test exists for is that the
+     * bytes arrive at all.
+     */
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
     bridge_transfer(qts, PCI_TRANSLATED, sizeof(seen), STRADDLE_SEED);
     qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
     for (i = 0; i < sizeof(seen); i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(STRADDLE_SEED + i));
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(STRADDLE_SEED + (i ^ 3)));
     }
 
     qtest_quit(qts);
