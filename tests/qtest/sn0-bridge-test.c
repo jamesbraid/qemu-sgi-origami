@@ -1681,6 +1681,158 @@ static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
     g_assert_false(bridge_log_has_the_message(MASQ_CARD_EXEMPT, 0));
 }
 
+
+/*
+ * The direct window, which is the one every guest actually drives.
+ *
+ * Reaching it needs the direct-map register cleared: the add-512-megabytes bit
+ * resets SET, and left alone it steps every direct transfer half a gigabyte
+ * down from where these tests look for it.
+ */
+#define PCI_DIRECT_32           0x80000000u
+
+static void bridge_clear_the_direct_map(QTestState *qts)
+{
+    qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
+}
+
+/*
+ * Direct window, its bit clear: permuted, exactly as the page-mapped window is
+ * with ITS bit clear. This is the window the firmware's own block-RAM download
+ * goes through, so it is the branch that carries the boot.
+ */
+static void test_dma_direct_window_swap_clear(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[SWAP_LEN + 4];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, 0);
+    bridge_clear_the_direct_map(qts);
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    bridge_transfer(qts, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN, SWAP_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+    for (i = SWAP_LEN; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, SWAP_SENTINEL);
+    }
+
+    qtest_quit(qts);
+}
+
+/* And with its bit set, untouched. */
+static void test_dma_direct_window_swap_set(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[SWAP_LEN];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    bridge_clear_the_direct_map(qts);
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    bridge_transfer(qts, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN, SWAP_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * THE ONE THAT MATTERS MOST. One device, one setting of its register, two
+ * transfers -- one through each window -- coming out in OPPOSITE orders.
+ *
+ * Three tests here catch a model reading a single swap bit for the whole
+ * device -- this one and the two page-mapped tests that name a bit. Measured
+ * by building that model rather than reasoned about, after an earlier draft of
+ * this comment claimed to be the only one and was wrong.
+ *
+ * It is still the sharpest of the three, because it is the only one where both
+ * orders come out of ONE device under ONE register setting, so it cannot be
+ * satisfied by a model that is merely inconsistent between runs. It is also the
+ * shape Linux presents, which sets the direct bit and never the page-mapped
+ * one.
+ *
+ * A red here means the model does not match the chip, and is worth stopping
+ * for -- but it is not a guest regression, because nothing that boots drives
+ * the page-mapped window.
+ */
+static void test_dma_the_two_swap_bits_are_independent(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[SWAP_LEN];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    /* Direct swapping on, page-mapped swapping off, in one register. */
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    bridge_clear_the_direct_map(qts);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_B, 0));
+
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+    bridge_fill_sentinel(qts, TARGET_PAGE_B);
+
+    bridge_transfer(qts, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN, SWAP_SEED);
+    bridge_transfer(qts, PCI_TRANSLATED, SWAP_LEN, SWAP_SEED);
+
+    /* Through the direct window, with that bit set: a plain byte stream. */
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+
+    /* Through the page-mapped window, whose own bit is clear: permuted. */
+    qtest_memread(qts, TARGET_PAGE_B, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * Local space is never permuted, whichever way the bits are set, because the
+ * chip does not carry it to crosstalk at all and so no swapper is in its path.
+ * Both settings run: with the bits clear this would be indistinguishable from
+ * a model that simply forgot the window.
+ */
+static void test_dma_local_space_is_never_swapped(const void *data)
+{
+    static const uint32_t settings[] = {
+        0, DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED,
+    };
+    unsigned int n;
+
+    for (n = 0; n < ARRAY_SIZE(settings); n++) {
+        QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+        uint8_t seen[SWAP_LEN];
+        unsigned int i;
+
+        bridge_start_the_transfer_source(qts);
+        bridge_source_with_swap(qts, settings[n]);
+        bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+        /* Below the translated window, so the bridge maps nothing. */
+        bridge_transfer(qts, TARGET_PAGE_A, SWAP_LEN, SWAP_SEED);
+
+        qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+        for (i = 0; i < SWAP_LEN; i++) {
+            g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+        }
+
+        qtest_quit(qts);
+    }
+}
+
 /* The interrupt registers, and the fields these tests drive. */
 #define BRIDGE_INT_STATUS       0x100
 #define BRIDGE_INT_ENABLE       0x108
@@ -2794,6 +2946,14 @@ int main(int argc, char **argv)
                         NULL, test_dma_plain_identity_in_the_same_slot_is_swapped);
     qtest_add_data_func("sn0/bridge/dma-swap-on-an-exempt-slot-is-reported",
                         NULL, test_dma_swap_on_an_exempt_slot_is_reported);
+    qtest_add_data_func("sn0/bridge/dma-direct-window-swap-clear", NULL,
+                        test_dma_direct_window_swap_clear);
+    qtest_add_data_func("sn0/bridge/dma-direct-window-swap-set", NULL,
+                        test_dma_direct_window_swap_set);
+    qtest_add_data_func("sn0/bridge/dma-the-two-swap-bits-are-independent",
+                        NULL, test_dma_the_two_swap_bits_are_independent);
+    qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
+                        test_dma_local_space_is_never_swapped);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
