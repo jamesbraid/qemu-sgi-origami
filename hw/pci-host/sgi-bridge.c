@@ -2401,6 +2401,17 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         /*
          * Where the access lands is the only lever this interface offers, so
          * it is the one the byte-lane permutation rides in on.
+         *
+         * THIS CALL TAKES THE RAW PCI ADDRESS AND MUST KEEP DOING SO. Which
+         * window an address falls in is what selects between the two swap
+         * bits, and the windows are defined on the address the device issued.
+         * This model does not yet decode 64-bit direct addresses properly;
+         * whoever fixes that will be normalising addresses somewhere around
+         * here, and if this call ends up below that normalisation a 64-bit
+         * address can land under the direct-window boundary. Then Linux --
+         * which sets the direct bit and leaves the page-mapped one clear --
+         * gets its buffers judged by the wrong bit and silently byte-flipped,
+         * in a commit about address decoding, months from now.
          */
         .target_as = sgi_bridge_dma_needs_correction(s, dma->slot, addr) ?
                      &s->lane_swap_as : &address_space_memory,
