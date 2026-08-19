@@ -171,10 +171,12 @@
 #define ISP_MBOX_CMD_LOAD_RAM       0x0001
 #define ISP_MBOX_CMD_DUMP_RAM       0x0003
 #define ISP_MBOX_CMD_WRITE_RAM_WORD 0x0004
+#define ISP_MBOX_CMD_VERIFY_CHECKSUM 0x0007
 #define ISP_MBOX_CMD_READ_RAM_WORD  0x0005
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
 #define ISP_MBOX_COMPLETE           0x4000
+#define ISP_MBOX_TEST_FAILED        0x4003
 
 /* Ring entry layout, restated here the same way the mailbox offsets are. */
 #define ISP_QUEUE_ENTRY_SIZE        64
@@ -763,6 +765,65 @@ static void test_a64_ring_data_out(const void *data)
     qtest_quit(qts);
 }
 
+
+/*
+ * The checksum command answers in mailbox 2 as well as mailbox 1.
+ *
+ * The firmware reads the one an emulator of the same part does not write, and
+ * a model leaving it alone hands back whatever the previous command put there
+ * -- so the failure this pins is a mailbox holding a stale value that happens
+ * to be wrong, not a mailbox holding nothing. That is why both mailboxes are
+ * poisoned first with values that are not the answer: without that, a model
+ * that never wrote mailbox 2 would pass whenever the answer happened to be
+ * what was already there, and zero is exactly such an answer.
+ */
+static void test_verify_checksum_answers_both_mailboxes(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    const uint16_t base = 0x2000;
+
+    aim_device0_window_at_its_bar(qts);
+
+    /*
+     * Word three of the image is its length. Four words, three of them zero,
+     * so the sum is the length itself -- a small non-zero value that no
+     * mailbox holds by accident.
+     */
+    isp_write_ram_word(qts, base + 3, 4);
+
+    isp_writew(qts, ISP_MAILBOX(1), base);
+    isp_writew(qts, ISP_MAILBOX(2), 0x5a5a);    /* not the answer */
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_VERIFY_CHECKSUM);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    /* A non-zero sum is a failing image, and both mailboxes carry the sum. */
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_TEST_FAILED);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1)), ==, 4);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, 4);
+    isp_mbox_ack(qts);
+
+    /*
+     * And an image that sums to zero completes. Running both halves is what
+     * stops the test passing against a model that always reports failure, or
+     * always reports the length.
+     */
+    isp_write_ram_word(qts, base, 0xfffc);
+
+    isp_writew(qts, ISP_MAILBOX(1), base);
+    isp_writew(qts, ISP_MAILBOX(2), 0x5a5a);
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_VERIFY_CHECKSUM);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1)), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, 0);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -781,6 +842,8 @@ int main(int argc, char **argv)
                         test_a64_ring_is_word_value);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-data-out", NULL,
                         test_a64_ring_data_out);
+    qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
+                        NULL, test_verify_checksum_answers_both_mailboxes);
 
     return g_test_run();
 }
