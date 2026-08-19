@@ -1614,6 +1614,73 @@ static void test_dma_plain_identity_in_the_same_slot_is_swapped(const void *data
     qtest_quit(qts);
 }
 
+
+/*
+ * The one configuration this model does not reproduce, and the message that
+ * says so.
+ *
+ * A guest enabling the DMA swap for a device this model exempts is asking for
+ * something the model will not do, so it says so once, on the register write,
+ * where the guest's own action is in hand. No guest we boot creates it.
+ *
+ * The two negatives are the test. A model that logged on every device-register
+ * write, or on every write that set any bit, would satisfy the positive alone
+ * and be useless -- so the same message must be absent when a non-exempt
+ * device gets the same bits, and absent when the exempt device gets a write
+ * with those bits clear.
+ */
+#define UNIMP_FRAGMENT  "exempts from the DMA byte swap"
+
+static bool bridge_log_has_the_message(const char *extra_device,
+                                       uint32_t swap_bits)
+{
+    g_autofree char *path = g_strdup_printf("%s/sn0-bridge-swap-XXXXXX.log",
+                                            g_get_tmp_dir());
+    g_autofree char *found = NULL;
+    QTestState *qts;
+    bool seen;
+    int fd = g_mkstemp(path);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("%s%s -d unimp -D %s", MACHINE_WITH_BRIDGE,
+                      extra_device, path);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(MASQ_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(MASQ_SLOT) >> 20) | swap_bits);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+    seen = strstr(found, UNIMP_FRAGMENT) != NULL;
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    return seen;
+}
+
+static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
+{
+    /* The configuration itself. */
+    g_assert_true(bridge_log_has_the_message(MASQ_CARD_EXEMPT,
+                                             DEV_SWAP_TRANSLATED));
+    g_assert_true(bridge_log_has_the_message(MASQ_CARD_EXEMPT,
+                                             DEV_SWAP_DIRECT));
+
+    /*
+     * Same bits, same slot, same register write -- a device the model does
+     * correct. Nothing to report, because this one works.
+     */
+    g_assert_false(bridge_log_has_the_message(MASQ_CARD_PLAIN,
+                                              DEV_SWAP_TRANSLATED));
+    g_assert_false(bridge_log_has_the_message(MASQ_CARD_PLAIN,
+                                              DEV_SWAP_DIRECT));
+
+    /*
+     * And the exempt device again with the swap bits clear, which is what
+     * every guest actually does. A model keying on the write rather than on
+     * what the write asked for would fail here.
+     */
+    g_assert_false(bridge_log_has_the_message(MASQ_CARD_EXEMPT, 0));
+}
+
 /* The interrupt registers, and the fields these tests drive. */
 #define BRIDGE_INT_STATUS       0x100
 #define BRIDGE_INT_ENABLE       0x108
@@ -2725,6 +2792,8 @@ int main(int argc, char **argv)
                         test_dma_exempt_identity_is_never_swapped);
     qtest_add_data_func("sn0/bridge/dma-plain-identity-same-slot-is-swapped",
                         NULL, test_dma_plain_identity_in_the_same_slot_is_swapped);
+    qtest_add_data_func("sn0/bridge/dma-swap-on-an-exempt-slot-is-reported",
+                        NULL, test_dma_swap_on_an_exempt_slot_is_reported);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
