@@ -1284,6 +1284,336 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
     qtest_quit(qts);
 }
 
+
+/*
+ * The DMA byte-lane swap.
+ *
+ * Patterns here are at least eight bytes and never palindromic, so that a
+ * whole-buffer reversal, an eight-byte-group reversal and the per-word one this
+ * chip performs are all distinguishable from each other. Memory is read with
+ * qtest_memread rather than a word accessor, because the value accessors apply
+ * their own target-versus-host correction and would manufacture exactly the
+ * difference under test.
+ *
+ * Every assertion that bytes are UNCHANGED is made over memory pre-filled with
+ * a sentinel, because unchanged is also what a transfer that never happened
+ * produces, and a test that cannot tell those apart is not testing anything.
+ */
+#define DEV_SWAP_TRANSLATED     (1u << 20)
+#define DEV_SWAP_DIRECT         (1u << 19)
+#define SWAP_SEED               0x40
+#define SWAP_LEN                12
+#define SWAP_SENTINEL           0xee
+
+/* The transfer source's window register, with whatever swap bits are wanted. */
+static void bridge_source_with_swap_at(QTestState *qts, unsigned int slot,
+                                       uint32_t swap_bits)
+{
+    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20) | swap_bits);
+}
+
+static void bridge_source_with_swap(QTestState *qts, uint32_t swap_bits)
+{
+    bridge_source_with_swap_at(qts, DMA_SLOT, swap_bits);
+}
+
+static void bridge_fill_sentinel(QTestState *qts, uint32_t page)
+{
+    uint8_t fill[PAGE_SIZE_4K];
+
+    memset(fill, SWAP_SENTINEL, sizeof(fill));
+    qtest_memwrite(qts, page, fill, sizeof(fill));
+}
+
+/*
+ * A transfer through the page-mapped window, with that window's swap bit
+ * clear, arrives with the bytes of each aligned word reversed and nothing
+ * outside the transfer touched.
+ */
+static void test_dma_page_mapped_swap_clear(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[SWAP_LEN + 4];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, 0);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    bridge_transfer(qts, PCI_TRANSLATED, SWAP_LEN, SWAP_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+    /* And the permutation stayed inside the transfer's own words. */
+    for (i = SWAP_LEN; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, SWAP_SENTINEL);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same transfer with that window's bit SET arrives untouched. Paired with
+ * the test above this is what pins the direction of the rule: one of the two
+ * has to be a plain byte stream, and it is this one.
+ */
+static void test_dma_page_mapped_swap_set(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[SWAP_LEN + 4];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_TRANSLATED);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    bridge_transfer(qts, PCI_TRANSLATED, SWAP_LEN, SWAP_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+    for (i = SWAP_LEN; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, SWAP_SENTINEL);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The page-mapped window follows its OWN bit. Setting the direct-mapped bit
+ * instead leaves a page-mapped transfer permuted, which is the assertion that
+ * fails against a model reading one bit for both windows.
+ */
+static void test_dma_page_mapped_ignores_the_direct_bit(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t seen[SWAP_LEN];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    bridge_transfer(qts, PCI_TRANSLATED, SWAP_LEN, SWAP_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A length that is not a multiple of four. The trailing bytes land at the top
+ * of their aligned word -- past where the transfer nominally ends -- and the
+ * offsets they would have occupied are left holding the sentinel.
+ *
+ * Seven is the length that matters and six is here to show why. Six leaves a
+ * two-byte tail; seven leaves three, which is the only cheap shape that
+ * reaches the one-byte arm of the correction.
+ */
+static void test_dma_trailing_partial_word(const void *data)
+{
+    static const unsigned int lengths[] = { 6, 7 };
+    unsigned int n;
+
+    for (n = 0; n < ARRAY_SIZE(lengths); n++) {
+        QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+        unsigned int len = lengths[n];
+        uint8_t seen[8];
+        unsigned int i;
+
+        bridge_start_the_transfer_source(qts);
+        bridge_source_with_swap(qts, 0);
+        qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+        bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+        bridge_transfer(qts, PCI_TRANSLATED, len, SWAP_SEED);
+
+        qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+        for (i = 0; i < sizeof(seen); i++) {
+            unsigned int source = i ^ 3;
+
+            if (source < len) {
+                g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + source));
+            } else {
+                /*
+                 * Nothing was written here. For length seven that is offset
+                 * four, the byte the transfer names last and the permutation
+                 * moves away from -- the one a model truncating its tail
+                 * instead of relocating it would have written.
+                 */
+                g_assert_cmpuint(seen[i], ==, SWAP_SENTINEL);
+            }
+        }
+
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * A transfer starting off a word boundary. The rule keys on each byte's own
+ * address, so the permutation is the same one and it still never leaves the
+ * word -- which a model anchoring to the start of the buffer gets wrong for
+ * every byte.
+ */
+static void test_dma_unaligned_start(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    const unsigned int start = 1, len = 5;
+    uint8_t seen[8];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, 0);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    bridge_transfer(qts, PCI_TRANSLATED + start, len, SWAP_SEED);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < sizeof(seen); i++) {
+        unsigned int pci = i ^ 3;
+
+        if (pci >= start && pci < start + len) {
+            g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + pci - start));
+        } else {
+            g_assert_cmpuint(seen[i], ==, SWAP_SENTINEL);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * Both swap bits read back clear after reset, which is what makes every test
+ * above that does not set them a test of the cleared case rather than of an
+ * unknown one.
+ */
+static void test_dma_swap_bits_reset_clear(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    unsigned int slot;
+
+    for (slot = 0; slot < BRIDGE_DEVICES; slot++) {
+        uint32_t dev = qtest_readl(qts, REG(BRIDGE_DEVICE(slot)));
+
+        g_assert_cmphex(dev & DEV_SWAP_DIRECT, ==, 0);
+        g_assert_cmphex(dev & DEV_SWAP_TRANSLATED, ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * The exemption, proved by identity rather than by slot.
+ *
+ * The bridge decides which devices are exempt from the DMA correction by PCI
+ * vendor and device id, so the test makes one device wear two identities in
+ * the same slot. Moving a real part into a slot instead would test the slot as
+ * much as the rule, and would not have shown the pair below diverging.
+ *
+ * Both halves run because bytes-identical is also what a test that never wrote
+ * the swap bit produces, and what a transfer that never happened produces. The
+ * non-exempt twin is what makes the exempt result mean something.
+ */
+#define MASQ_SLOT               7
+#define MASQ_CARD_BASE          " -device sgi-bridge-dma-test,addr=" \
+                                stringify(MASQ_SLOT)
+#define MASQ_CARD_EXEMPT        MASQ_CARD_BASE ",vendor-id=0x10A9" \
+                                ",device-id=0x0003"
+#define MASQ_CARD_PLAIN         MASQ_CARD_BASE
+
+static void masq_start(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(MASQ_SLOT, 0) + 0x10, CARD_MMIO(MASQ_SLOT));
+    qtest_writel(qts, CFG0(MASQ_SLOT, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | 0x0004);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(MASQ_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(MASQ_SLOT) >> 20));
+}
+
+static void masq_transfer(QTestState *qts, uint32_t addr, uint32_t len)
+{
+    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_ADDRESS, addr);
+    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_LENGTH, len);
+    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_SEED, SWAP_SEED);
+    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_GO, 1);
+}
+
+static void test_dma_exempt_identity_is_never_swapped(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD_EXEMPT);
+    uint8_t seen[SWAP_LEN];
+    unsigned int i;
+    uint32_t dev;
+
+    masq_start(qts);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    /*
+     * With the bit clear, where a non-exempt device would be permuted.
+     */
+    masq_transfer(qts, PCI_TRANSLATED, SWAP_LEN);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+
+    /*
+     * And with it set. Read the register back first: without that, a model
+     * that silently dropped the write would reach the same bytes by never
+     * having changed anything, and this half would pass for the wrong reason.
+     */
+    bridge_source_with_swap_at(qts, MASQ_SLOT, DEV_SWAP_TRANSLATED);
+    dev = qtest_readl(qts, REG(BRIDGE_DEVICE(MASQ_SLOT)));
+    g_assert_cmphex(dev & DEV_SWAP_TRANSLATED, ==, DEV_SWAP_TRANSLATED);
+
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+    masq_transfer(qts, PCI_TRANSLATED, SWAP_LEN);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same device, same slot, same transfer, with only its identity changed.
+ * This one IS permuted, which is what says the exemption above came from the
+ * identity rather than from the test never having exercised the correction.
+ */
+static void test_dma_plain_identity_in_the_same_slot_is_swapped(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD_PLAIN);
+    uint8_t seen[SWAP_LEN];
+    unsigned int i;
+
+    masq_start(qts);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+
+    masq_transfer(qts, PCI_TRANSLATED, SWAP_LEN);
+
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+
+    qtest_quit(qts);
+}
+
 /* The interrupt registers, and the fields these tests drive. */
 #define BRIDGE_INT_STATUS       0x100
 #define BRIDGE_INT_ENABLE       0x108
@@ -2379,6 +2709,22 @@ int main(int argc, char **argv)
                         test_the_unframed_read_matches_the_framed_one);
     qtest_add_data_func("sn0/bridge/one-wire-data-past-the-image", NULL,
                         test_the_data_past_the_image_is_unprogrammed);
+    qtest_add_data_func("sn0/bridge/dma-page-mapped-swap-clear", NULL,
+                        test_dma_page_mapped_swap_clear);
+    qtest_add_data_func("sn0/bridge/dma-page-mapped-swap-set", NULL,
+                        test_dma_page_mapped_swap_set);
+    qtest_add_data_func("sn0/bridge/dma-page-mapped-ignores-the-direct-bit",
+                        NULL, test_dma_page_mapped_ignores_the_direct_bit);
+    qtest_add_data_func("sn0/bridge/dma-trailing-partial-word", NULL,
+                        test_dma_trailing_partial_word);
+    qtest_add_data_func("sn0/bridge/dma-unaligned-start", NULL,
+                        test_dma_unaligned_start);
+    qtest_add_data_func("sn0/bridge/dma-swap-bits-reset-clear", NULL,
+                        test_dma_swap_bits_reset_clear);
+    qtest_add_data_func("sn0/bridge/dma-exempt-identity-is-never-swapped", NULL,
+                        test_dma_exempt_identity_is_never_swapped);
+    qtest_add_data_func("sn0/bridge/dma-plain-identity-same-slot-is-swapped",
+                        NULL, test_dma_plain_identity_in_the_same_slot_is_swapped);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 

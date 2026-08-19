@@ -68,8 +68,20 @@ struct SGIBridgeDMATestState {
     uint32_t length;
     uint32_t seed;
 
+    /*
+     * Where a copy reads from. A copy is how this device tests the read
+     * direction: exposing its own buffer through a register window would put
+     * the programmed-access correction in the path and the comparison would
+     * then be measuring two transforms at once.
+     */
+    uint32_t source;
+
     /* The level this device is holding its interrupt pin at. */
     uint32_t interrupt;
+
+    /* The identity this device presents, which a test may override. */
+    uint16_t vendor_id;
+    uint16_t device_id;
 
     /*
      * Which of the four legacy interrupt pins this device declares, A through
@@ -93,7 +105,12 @@ struct SGIBridgeDMATestState {
  * that follows from one that latches — both would show the bit set.
  */
 #define REG_INTERRUPT   0x10
+#define REG_SOURCE      0x14
 #define REG_WINDOW      0x20   /* size of the register block */
+
+/* What a write to REG_GO asks for. */
+#define GO_FILL         1      /* write the seeded pattern at REG_ADDRESS */
+#define GO_COPY         2      /* read REG_SOURCE, write REG_ADDRESS */
 
 /*
  * What the device writes: a byte sequence a test can predict without this file
@@ -129,6 +146,28 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
     pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
 }
 
+/*
+ * Read one place and write another, both through the bridge. With the same
+ * settings at both ends this is a pure copy and any difference is a bug; with
+ * different settings at the two ends exactly one transform sits in the path,
+ * which is what lets a test assert the read direction without a second
+ * correction cancelling the first.
+ */
+static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
+{
+    uint8_t buf[SGI_BRIDGE_DMA_TEST_MAX];
+
+    if (s->length > sizeof(buf)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge-dma-test: asked to copy %u bytes, which is "
+                      "more than this device will transfer\n", s->length);
+        return;
+    }
+
+    pci_dma_read(PCI_DEVICE(s), s->source, buf, s->length);
+    pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+}
+
 static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
                                          unsigned size)
 {
@@ -141,6 +180,8 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
         return s->length;
     case REG_SEED:
         return s->seed;
+    case REG_SOURCE:
+        return s->source;
     case REG_INTERRUPT:
         return s->interrupt;
     default:
@@ -164,7 +205,14 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
         s->seed = val;
         break;
     case REG_GO:
-        sgi_bridge_dma_test_go(s);
+        if (val == GO_COPY) {
+            sgi_bridge_dma_test_copy(s);
+        } else {
+            sgi_bridge_dma_test_go(s);
+        }
+        break;
+    case REG_SOURCE:
+        s->source = (uint32_t)val;
         break;
     case REG_INTERRUPT:
         s->interrupt = val ? 1 : 0;
@@ -197,6 +245,14 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 
     /* Say in configuration space which pin this device uses. */
     pci_config_set_interrupt_pin(dev->config, s->interrupt_pin);
+
+    /*
+     * And which part it is claiming to be. The class supplies the default;
+     * a test overrides it to stand in for a device the bridge treats
+     * differently, without needing that device to exist.
+     */
+    pci_config_set_vendor_id(dev->config, s->vendor_id);
+    pci_config_set_device_id(dev->config, s->device_id);
 
     memory_region_init_io(&s->mmio, OBJECT(s), &sgi_bridge_dma_test_ops, s,
                           "sgi-bridge-dma-test.mmio", REG_WINDOW);
@@ -231,6 +287,16 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
 
 static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_UINT8("interrupt-pin", SGIBridgeDMATestState, interrupt_pin, 1),
+    /*
+     * So a test can make this device wear another part's identity. The bridge
+     * decides which devices are exempt from its byte-lane correction by PCI
+     * vendor and device id, and a test that proved the exemption by moving a
+     * real part into a slot would be testing the slot as much as the rule.
+     */
+    DEFINE_PROP_UINT16("vendor-id", SGIBridgeDMATestState, vendor_id,
+                       SGI_BRIDGE_DMA_TEST_VENDOR),
+    DEFINE_PROP_UINT16("device-id", SGIBridgeDMATestState, device_id,
+                       SGI_BRIDGE_DMA_TEST_DEVICE),
 };
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
