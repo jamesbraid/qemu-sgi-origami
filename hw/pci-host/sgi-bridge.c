@@ -2702,6 +2702,11 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * to catch: these callbacks target system memory and never this address
      * space, so there is no path back into themselves. The guard is measuring
      * ownership, not recursion, and it is wrong here.
+     *
+     * What this does not give up: the flag is per region, so every region a
+     * transfer reaches THROUGH this one still applies its own guard one level
+     * down. A DMA aimed at another device's registers is protected there, by
+     * that device. Only this region's ownership test is waived.
      */
     s->lane_swap.disable_reentrancy_guard = true;
     address_space_init(&s->lane_swap_as, &s->lane_swap,
