@@ -2549,32 +2549,51 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
         }
 
         node->cpu[slice] = MIPS_CPU(qdev_new(machine->cpu_type));
-        node->promdata[slice].cpu = node->cpu[slice];
-        node->promdata[slice].node_base = node_base;
-        memory_region_init_ram(&node->promdata[slice].data, OBJECT(node),
-                               promdata_name, SN0_PROMDATA_SIZE, &error_fatal);
-        memory_region_init_io(&node->promdata[slice].filter, OBJECT(node),
-                              &sn0_promdata_ops, &node->promdata[slice],
-                              promdata_filter_name, SN0_PROMDATA_SIZE);
-        /*
-         * Firmware traps use cpu_memory_rw_debug() to copy results through
-         * guest pointers.  The trap and this filter share the node as their
-         * owner, so the device-wide guard would otherwise reject that
-         * intentional nested access before the filter can forward it to RAM.
-         */
-        node->promdata[slice].filter.disable_reentrancy_guard = true;
-        qemu_register_reset(sn0_promdata_reset, &node->promdata[slice]);
 
         /*
-         * The PROM addresses this cache-only data through its 0xa800...
-         * XKPHYS alias. Its cache algorithm translates to ordinary physical
-         * memory, so intercept that carrier window before shared node RAM.
-         * When the private phase ends, the filter forwards accesses to the
-         * same address in the global memory space.
+         * The cache-only private phase the filter models exists only under
+         * the real PROM: it is entered when the PROM marks FPR 0's DEX bit,
+         * which synthesized firmware never does before handing a directly
+         * loaded kernel control.  In that mode the filter would be pure
+         * forwarding -- except that an I/O region cannot back translated
+         * code, so kernel text linked into this 32 KiB window would execute
+         * one instruction per translation block.  Map the window as the
+         * plain RAM it forwards to instead, and keep the filter for real
+         * PROM boots, whose private phase genuinely needs it.
          */
-        memory_region_add_subregion_overlap(
-            &node->cpu_sysmem[slice], SN0_SPACE_MEMORY + SN0_PROMDATA_PADDR,
-            &node->promdata[slice].filter, 2);
+        if (!(SN0_MACHINE(machine)->synthesized_firmware &&
+              machine->kernel_filename)) {
+            node->promdata[slice].cpu = node->cpu[slice];
+            node->promdata[slice].node_base = node_base;
+            memory_region_init_ram(&node->promdata[slice].data, OBJECT(node),
+                                   promdata_name, SN0_PROMDATA_SIZE,
+                                   &error_fatal);
+            memory_region_init_io(&node->promdata[slice].filter, OBJECT(node),
+                                  &sn0_promdata_ops, &node->promdata[slice],
+                                  promdata_filter_name, SN0_PROMDATA_SIZE);
+            /*
+             * Firmware traps use cpu_memory_rw_debug() to copy results
+             * through guest pointers.  The trap and this filter share the
+             * node as their owner, so the device-wide guard would otherwise
+             * reject that intentional nested access before the filter can
+             * forward it to RAM.
+             */
+            node->promdata[slice].filter.disable_reentrancy_guard = true;
+            qemu_register_reset(sn0_promdata_reset, &node->promdata[slice]);
+
+            /*
+             * The PROM addresses this cache-only data through its 0xa800...
+             * XKPHYS alias. Its cache algorithm translates to ordinary
+             * physical memory, so intercept that carrier window before
+             * shared node RAM. When the private phase ends, the filter
+             * forwards accesses to the same address in the global memory
+             * space.
+             */
+            memory_region_add_subregion_overlap(
+                &node->cpu_sysmem[slice],
+                SN0_SPACE_MEMORY + SN0_PROMDATA_PADDR,
+                &node->promdata[slice].filter, 2);
+        }
         object_property_add_child(OBJECT(node), name,
                                   OBJECT(node->cpu[slice]));
         object_property_set_link(OBJECT(node->cpu[slice]), "memory",
