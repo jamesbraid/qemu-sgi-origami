@@ -1391,6 +1391,8 @@ void helper_mtc0_cause(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_cause(CPUMIPSState *env, target_ulong arg1)
 {
+    BQL_LOCK_GUARD();
+
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
