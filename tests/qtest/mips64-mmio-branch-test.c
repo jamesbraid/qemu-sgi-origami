@@ -79,6 +79,8 @@
 #define EPC_OFF             0x30
 #define ITER_OFF            0x38
 #define IRQ_OFF             0x40
+#define DEX_OFF             0x48
+#define PROBE_OFF           0x50
 
 /* Markers.  Each fits an ori immediate, and RAM arrives zeroed. */
 #define MARK_ALIVE          0x1111
@@ -115,6 +117,7 @@
 #define OPC_ANDI            (0x0cu << 26)
 #define OPC_ORI             (0x0du << 26)
 #define OPC_DADDIU          (0x19u << 26)
+#define OPC_LW              (0x23u << 26)
 #define OPC_LD              (0x37u << 26)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_SD              (0x3fu << 26)
@@ -125,6 +128,9 @@
 #define OPC_OR              (0x25u | OPC_SPECIAL)
 #define OPC_DSLL32          (0x3cu | OPC_SPECIAL)
 #define OPC_CP0             (0x10u << 26)
+#define OPC_CP1             (0x11u << 26)
+#define OPC_DMTC1           (OPC_CP1 | (0x05u << 21))
+#define OPC_DMFC1           (OPC_CP1 | (0x01u << 21))
 #define OPC_MFC0            (OPC_CP0 | (0x00u << 21))
 #define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
 #define OPC_C0              (OPC_CP0 | (0x10u << 21))
@@ -154,6 +160,16 @@
 #define STATUS_ERL_CLEAR    (-5)
 /* Status.KX is bit 7: without it the 64-bit physical segment is unusable. */
 #define STATUS_KX           0x80
+/* Status.CU1 is bit 29 and Status.FR bit 26: an unambiguous 64-bit FPU. */
+#define STATUS_FPU_ON_HI    0x2400
+
+/*
+ * The promdata filter answers from a private copy, rather than forwarding
+ * to RAM, when FPR 0 carries the PROM's boot-status DEX bit and the
+ * accessing PC is inside the boot flash or the RAM PROM copy.  The bit is
+ * 1 << 1 in the register's 64-bit view.
+ */
+#define PROM_BSR_DEX        0x2
 
 /*
  * The 64-bit physical segment at cache-coherency attribute 5, coherent
@@ -199,6 +215,7 @@ typedef struct {
     bool loop;                  /* iterate, with the timer interrupt armed */
     bool racing;                /* more than one processor runs the program */
     bool xkphys;                /* reach the snippet through XKPHYS */
+    bool dex;                   /* arm the filter's private-copy condition */
     const char *smp;            /* -smp, which is what gates CF_PARALLEL */
     const char *accel;          /* the accelerator and its thread mode */
     const char *extra;          /* anything else the configuration needs */
@@ -282,6 +299,21 @@ static void emit_nop(CodeBuf *buf)
 static void emit_eret(CodeBuf *buf)
 {
     emit(buf, OPC_ERET);
+}
+
+static void emit_dmtc1(CodeBuf *buf, int rt, int fs)
+{
+    emit(buf, OPC_DMTC1 | (rt << 16) | (fs << 11));
+}
+
+static void emit_dmfc1(CodeBuf *buf, int rt, int fs)
+{
+    emit(buf, OPC_DMFC1 | (rt << 16) | (fs << 11));
+}
+
+static void emit_lw(CodeBuf *buf, int rt, int base, uint16_t off)
+{
+    emit_immediate(buf, OPC_LW, base, rt, off);
 }
 
 static void emit_jr(CodeBuf *buf, int rs)
@@ -489,6 +521,43 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_ori(&buf, R_T5, R_ZERO, 1);
     }
 
+    if (tc->dex) {
+        /*
+         * Set the bit that arms the filter's private copy, from code that
+         * is already inside the boot flash -- this ROM runs at physical
+         * 0x1fc00000, which is the first of the two PC ranges the filter's
+         * private test accepts.  Both halves of that test are therefore
+         * satisfied for this instant, and the only thing still deciding
+         * the answer is which PC the filter reads when the first fetch
+         * into the window happens: the address it is fetching, or the
+         * address of the code that jumped there.
+         */
+        emit_mfc0(&buf, R_T1, CP0_STATUS);
+        emit_lui(&buf, R_T7, STATUS_FPU_ON_HI);
+        emit_or(&buf, R_T1, R_T1, R_T7);
+        emit_mtc0(&buf, R_T1, CP0_STATUS);
+        emit_ori(&buf, R_T7, R_ZERO, PROM_BSR_DEX);
+        emit_dmtc1(&buf, R_T7, 0);
+        /*
+         * Read it back and publish it.  A dmtc1 that the processor ignored
+         * would leave every assertion below passing for the wrong reason.
+         */
+        emit_dmfc1(&buf, R_T7, 0);
+        emit_sd(&buf, R_T7, R_T0, DEX_OFF);
+        /*
+         * Then read the window as data, from here, still inside the flash.
+         * This is the other half of the same test, and it must come back
+         * zero: the private copy is zeroed at reset, the RAM underneath
+         * holds the snippet's first instruction, and only the PC decides
+         * which of the two answers.  A zero here and a working fetch below
+         * are the same instant, the same bit and the same region resolving
+         * two different ways -- which is the whole question.
+         */
+        emit_load_addr(&buf, R_T1, tc->snippet_kseg1);
+        emit_lw(&buf, R_T7, R_T1, 0);
+        emit_sd(&buf, R_T7, R_T0, PROBE_OFF);
+    }
+
     if (tc->xkphys) {
         /* t8 = 0xa800000000000000 | snippet_phys, built in halves. */
         emit_lui(&buf, R_T8, XKPHYS_CACHED_HI);
@@ -548,12 +617,14 @@ static void report_state(QTestState *qts)
     g_test_message("alive 0x%" PRIx64 " entered 0x%" PRIx64
                    " fell 0x%" PRIx64 " target 0x%" PRIx64
                    " trap 0x%" PRIx64 " cause 0x%" PRIx64 " epc 0x%" PRIx64
-                   " iterations %" PRIu64 " interrupts %" PRIu64,
+                   " iterations %" PRIu64 " interrupts %" PRIu64
+                   " dex 0x%" PRIx64 " probe 0x%" PRIx64,
                    state_word(qts, ALIVE_OFF), state_word(qts, ENTERED_OFF),
                    state_word(qts, FELL_OFF), state_word(qts, TARGET_OFF),
                    state_word(qts, TRAP_OFF), state_word(qts, CAUSE_OFF),
                    state_word(qts, EPC_OFF), state_word(qts, ITER_OFF),
-                   state_word(qts, IRQ_OFF));
+                   state_word(qts, IRQ_OFF), state_word(qts, DEX_OFF),
+                   state_word(qts, PROBE_OFF));
 }
 
 /*
@@ -666,6 +737,26 @@ static void run_case(const void *data)
     g_assert_true(trapped);
 
     g_assert_cmphex(state_word(qts, ALIVE_OFF), ==, MARK_ALIVE);
+
+    if (tc->dex) {
+        /*
+         * Both halves before reading anything into the case: the bit is
+         * really set, and with it set the filter really does answer from
+         * the zeroed private copy when the accessing PC is in range.  If
+         * either fails, this case is not asking the question it claims to.
+         */
+        report_state(qts);
+        g_assert_cmphex(state_word(qts, DEX_OFF), ==, PROM_BSR_DEX);
+        g_assert_cmphex(state_word(qts, PROBE_OFF), ==, 0);
+    }
+
+    /*
+     * Reached only by fetching the window's first instruction.  Under an
+     * armed DEX bit this is also the answer to whether the filter sees the
+     * fetch's own PC or the jumping code's: the latter would have handed
+     * back the zeroed private copy, and a zero word is a nop, so the marker
+     * would still be whatever the ROM left in the register.
+     */
     g_assert_cmphex(state_word(qts, ENTERED_OFF), ==, MARK_ENTERED);
 
     fell = state_word(qts, FELL_OFF);
@@ -800,6 +891,20 @@ static const TestCase cases[] = {
          */
         .name = "mmio-branch/mmio/jr-xkphys",
         .kind = BRANCH_JR, .mmio = true, .xkphys = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+    }, {
+        /*
+         * The filter's private copy, armed.  If the PC the filter reads at
+         * the first fetch into the window were the jumping code's address
+         * rather than the window's, this case would take the private path
+         * once: the copy is zeroed at reset and never written outside the
+         * PROM's own phase, so the first instruction would read as all-zero
+         * -- a nop -- and the "entered" marker would never be published.
+         * It passing is the measurement that the PC is not stale.
+         */
+        .name = "mmio-branch/mmio/jr-dex-armed",
+        .kind = BRANCH_JR, .mmio = true, .dex = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
     }, {
