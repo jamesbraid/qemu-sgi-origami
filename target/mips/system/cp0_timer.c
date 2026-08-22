@@ -64,22 +64,37 @@ static void cpu_mips_timer_expire(CPUMIPSState *env)
 
 uint32_t cpu_mips_get_count(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
+    uint64_t now_ns;
 
-    if (env->CP0_Cause & (1 << CP0Ca_DC)) {
+    /*
+     * Reading needs no lock. CP0_Count and CP0_Compare are written only
+     * by the CPU that owns them, from its own thread, and this runs on
+     * that thread. What needs one is the expiry below, which reprograms
+     * the timer and raises the interrupt line -- the same work
+     * mips_timer_cb() does from the iothread.
+     */
+    if (qatomic_read(&env->CP0_Cause) & (1 << CP0Ca_DC)) {
         return env->CP0_Count;
-    } else {
-        uint64_t now_ns;
+    }
 
+    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (timer_pending(env->timer) && timer_expired(env->timer, now_ns)) {
+        /* The timer has already expired.  */
+        BQL_LOCK_GUARD();
+
+        /*
+         * Ask again now the lock is held. The callback may have run
+         * while we waited for it, in which case the timer is already
+         * reprogrammed and expiring it a second time would deliver an
+         * interrupt the guest is not owed.
+         */
         now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        if (timer_pending(env->timer)
-            && timer_expired(env->timer, now_ns)) {
-            /* The timer has already expired.  */
+        if (timer_pending(env->timer) && timer_expired(env->timer, now_ns)) {
             cpu_mips_timer_expire(env);
         }
-
-        return cpu_mips_get_count_val(env);
     }
+
+    return cpu_mips_get_count_val(env);
 }
 
 void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
