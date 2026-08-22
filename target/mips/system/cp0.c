@@ -120,12 +120,10 @@ void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
 void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
 {
     uint32_t mask = 0x00C00300;
-    uint32_t old;
+    uint32_t old, new;
     int i;
 
     BQL_LOCK_GUARD();
-
-    old = env->CP0_Cause;
 
     if (env->insn_flags & ISA_MIPS_R2) {
         mask |= 1 << CP0Ca_DC;
@@ -134,10 +132,11 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
         mask &= ~((1 << CP0Ca_WP) & val);
     }
 
-    env->CP0_Cause = (env->CP0_Cause & ~mask) | (val & mask);
+    old = cp0_cause_update(env, mask, val & mask);
+    new = (old & ~mask) | (val & mask);
 
-    if ((old ^ env->CP0_Cause) & (1 << CP0Ca_DC)) {
-        if (env->CP0_Cause & (1 << CP0Ca_DC)) {
+    if ((old ^ new) & (1 << CP0Ca_DC)) {
+        if (new & (1 << CP0Ca_DC)) {
             cpu_mips_stop_count(env);
         } else {
             cpu_mips_start_count(env);
@@ -146,8 +145,8 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
 
     /* Set/reset software interrupts */
     for (i = 0 ; i < 2 ; i++) {
-        if ((old ^ env->CP0_Cause) & (1 << (CP0Ca_IP + i))) {
-            cpu_mips_soft_irq(env, i, env->CP0_Cause & (1 << (CP0Ca_IP + i)));
+        if ((old ^ new) & (1 << (CP0Ca_IP + i))) {
+            cpu_mips_soft_irq(env, i, new & (1 << (CP0Ca_IP + i)));
         }
     }
 }
