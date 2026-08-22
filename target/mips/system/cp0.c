@@ -123,8 +123,12 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
     uint32_t old, new;
     int i;
 
-    BQL_LOCK_GUARD();
-
+    /*
+     * The store itself needs no lock: cp0_cause_update() composes with
+     * the device and timer writers of this same word, which is what the
+     * lock used to be here for. What still needs one is the work the
+     * store triggers, and each piece takes it where it is needed.
+     */
     if (env->insn_flags & ISA_MIPS_R2) {
         mask |= 1 << CP0Ca_DC;
     }
@@ -136,6 +140,14 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
     new = (old & ~mask) | (val & mask);
 
     if ((old ^ new) & (1 << CP0Ca_DC)) {
+        /*
+         * Both directions fold the ticks elapsed so far back into
+         * CP0_Count and reprogram the timer. cpu_mips_store_count()
+         * guards itself, cpu_mips_stop_count() does not, so hold the
+         * lock across either.
+         */
+        BQL_LOCK_GUARD();
+
         if (new & (1 << CP0Ca_DC)) {
             cpu_mips_stop_count(env);
         } else {
@@ -143,7 +155,7 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
         }
     }
 
-    /* Set/reset software interrupts */
+    /* Set/reset software interrupts. cpu_mips_irq_request() guards. */
     for (i = 0 ; i < 2 ; i++) {
         if ((old ^ new) & (1 << (CP0Ca_IP + i))) {
             cpu_mips_soft_irq(env, i, new & (1 << (CP0Ca_IP + i)));
