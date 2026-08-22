@@ -1266,7 +1266,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
         env->hflags &= ~(MIPS_HFLAG_KSU);
         /* EJTAG probe trap enable is not implemented... */
         if (!(env->CP0_Status & (1 << CP0St_EXL))) {
-            env->CP0_Cause &= ~(1U << CP0Ca_BD);
+            cp0_cause_update(env, 1U << CP0Ca_BD, 0);
         }
         env->active_tc.PC = env->exception_base + 0x480;
         set_hflags_for_handler(env);
@@ -1294,7 +1294,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
         env->hflags |= MIPS_HFLAG_CP0;
         env->hflags &= ~(MIPS_HFLAG_KSU);
         if (!(env->CP0_Status & (1 << CP0St_EXL))) {
-            env->CP0_Cause &= ~(1U << CP0Ca_BD);
+            cp0_cause_update(env, 1U << CP0Ca_BD, 0);
         }
         env->active_tc.PC = env->exception_base;
         set_hflags_for_handler(env);
@@ -1406,8 +1406,8 @@ void mips_cpu_do_interrupt(CPUState *cs)
     case EXCP_CpU:
         cause = 11;
         update_badinstr = 1;
-        env->CP0_Cause = (env->CP0_Cause & ~(0x3 << CP0Ca_CE)) |
-                         (env->error_code << CP0Ca_CE);
+        cp0_cause_update(env, 0x3 << CP0Ca_CE,
+                         env->error_code << CP0Ca_CE);
         goto set_EPC;
     case EXCP_OVERFLOW:
         cause = 12;
@@ -1465,9 +1465,9 @@ void mips_cpu_do_interrupt(CPUState *cs)
                 set_badinstr_registers(env);
             }
             if (env->hflags & MIPS_HFLAG_BMASK) {
-                env->CP0_Cause |= (1U << CP0Ca_BD);
+                cp0_cause_update(env, 0, 1U << CP0Ca_BD);
             } else {
-                env->CP0_Cause &= ~(1U << CP0Ca_BD);
+                cp0_cause_update(env, 1U << CP0Ca_BD, 0);
             }
             env->CP0_Status |= (1 << CP0St_EXL);
             if (env->insn_flags & ISA_MIPS3) {
@@ -1493,8 +1493,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
 
         env->active_tc.PC += offset;
         set_hflags_for_handler(env);
-        env->CP0_Cause = (env->CP0_Cause & ~(0x1f << CP0Ca_EC)) |
-                         (cause << CP0Ca_EC);
+        cp0_cause_update(env, 0x1f << CP0Ca_EC, cause << CP0Ca_EC);
         break;
     default:
         abort();

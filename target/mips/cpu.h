@@ -1484,6 +1484,40 @@ static inline bool ase_mt_available(const CPUMIPSState *env)
     return env->CP0_Config3 & (1 << CP0C3_MT);
 }
 
+/**
+ * cp0_cause_update: replace the named bits of CP0_Cause
+ * @clear: bits to clear
+ * @set: bits to set, applied after @clear
+ *
+ * Returns the value the update replaced.
+ *
+ * The fields of CP0_Cause belong to different threads: a device raises
+ * and lowers IP2-IP7 from whichever thread runs the device model, the
+ * count/compare timer owns TI, and the CPU itself writes BD, CE, EC and
+ * the software interrupt lines. No one lock covers every writer, so an
+ * update composes by touching only the bits it names rather than by
+ * writing back a whole word it read earlier.
+ */
+static inline uint32_t cp0_cause_update(CPUMIPSState *env,
+                                        uint32_t clear, uint32_t set)
+{
+    uint32_t old = qatomic_read(&env->CP0_Cause);
+
+    for (;;) {
+        uint32_t val = (old & ~clear) | set;
+        uint32_t seen;
+
+        if (val == old) {
+            return old;
+        }
+        seen = qatomic_cmpxchg(&env->CP0_Cause, (int32_t)old, (int32_t)val);
+        if (seen == old) {
+            return old;
+        }
+        old = seen;
+    }
+}
+
 static inline bool cpu_type_is_64bit(const char *cpu_type)
 {
     return cpu_type_supports_isa(cpu_type, CPU_MIPS64);
