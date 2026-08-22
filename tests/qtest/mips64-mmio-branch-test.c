@@ -156,10 +156,14 @@
 #define STATUS_KX           0x80
 
 /*
- * The 64-bit physical segment, cache-coherency attribute 2 (uncached) -- the
- * form the kernel's own fetches from this window took.
+ * The 64-bit physical segment at cache-coherency attribute 5, coherent
+ * exclusive -- the window a Linux IP27 kernel reaches physical memory
+ * through, and the one its own fetches from this region came out of.  The
+ * attribute is not decoration here: target/mips derives MemTxAttrs's
+ * mips_uncached from it, and the promdata filter's private-copy test reads
+ * that attribute.  Attribute 2 would be the uncached window, 0x9000.
  */
-#define XKPHYS_UNCACHED_HI  0xa800
+#define XKPHYS_CACHED_HI    0xa800
 
 /* Cause.ExcCode, already shifted: a syscall is 8. */
 #define CAUSE_EXCCODE_MASK  0x7c
@@ -487,7 +491,7 @@ static void build_rom(uint8_t *image, const TestCase *tc)
 
     if (tc->xkphys) {
         /* t8 = 0xa800000000000000 | snippet_phys, built in halves. */
-        emit_lui(&buf, R_T8, XKPHYS_UNCACHED_HI);
+        emit_lui(&buf, R_T8, XKPHYS_CACHED_HI);
         emit_dsll32(&buf, R_T8, R_T8);
         emit_load_addr(&buf, R_T7, tc->snippet_phys);
         emit_or(&buf, R_T8, R_T8, R_T7);
