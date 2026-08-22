@@ -59,21 +59,10 @@ void sync_c0_status(CPUMIPSState *env, CPUMIPSState *cpu, int tc)
     compute_hflags(cpu);
 }
 
-void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
+static void mips_store_status(CPUMIPSState *env, target_ulong val)
 {
     uint32_t mask = env->CP0_Status_rw_bitmask;
     target_ulong old;
-
-    /*
-     * helper_mttc0_status (cp0_helper.c) writes another VPE's CP0_Status
-     * directly, under BQL_LOCK_GUARD(); this is the plain, own-VPE side of
-     * the same field, reached from the owning VPE's own thread. Guarding
-     * only the remote side would leave the identical asymmetric-guard
-     * race the Cause/Compare/Count fix closed elsewhere in this series,
-     * just on this register instead. Guard first, before the read below,
-     * for the same reason cpu_mips_store_cause() does.
-     */
-    BQL_LOCK_GUARD();
 
     old = env->CP0_Status;
 
@@ -103,6 +92,29 @@ void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
     } else {
         compute_hflags(env);
     }
+}
+
+void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
+{
+    /*
+     * The only writer of a CPU's CP0_Status from another thread is
+     * helper_mttc0_status() (cp0_helper.c). It reaches the field through
+     * mips_cpu_map_tc(), which returns the caller's own env unless the
+     * caller has CP0_VPEConf0.MVP set -- a bit that only a processor
+     * implementing the MT ASE ever has. Where MT is absent, this field
+     * has exactly one writer, the owning VPE running on its own thread,
+     * and the lock has no second party to exclude. Take it only where
+     * there is one; a machine built from a single cpu_type is
+     * homogeneous, so the local test answers for every CPU that could
+     * address this one.
+     */
+    if (ase_mt_available(env)) {
+        BQL_LOCK_GUARD();
+        mips_store_status(env, val);
+        return;
+    }
+
+    mips_store_status(env, val);
 }
 
 void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
