@@ -94,6 +94,51 @@ static void mips_store_status(CPUMIPSState *env, target_ulong val)
     }
 }
 
+/*
+ * Put CPU_INTERRUPT_HARD back up if a pending interrupt has just become
+ * deliverable. mips_cpu_exec_interrupt() drops the flag when a pending
+ * interrupt can neither be taken nor wake the CPU, so that the exec
+ * loop's lock-free skip survives a masked window; every own-CPU change
+ * that can end such a window has to call this, or the interrupt waits
+ * for the next edge on its line.
+ *
+ * The test needs no lock. Only the CPU that owns this state calls it,
+ * from its own thread, so the mask side is single-writer. The one
+ * cross-thread input is Cause.IP, and a device that sets a bit there
+ * raises the flag itself, under the lock, as part of setting it -- so
+ * a stale read here can only miss a bit somebody else is already
+ * raising for. Reading a flag that is about to be raised costs nothing;
+ * raising one that is no longer warranted costs a single crossing,
+ * which the next rejection clears.
+ */
+void cpu_mips_reassert_interrupt(CPUMIPSState *env)
+{
+    CPUState *cs = env_cpu(env);
+
+    /*
+     * Nothing to do where the MT ASE is present, and the reads below
+     * must not happen there either. mips_cpu_exec_interrupt() excludes
+     * MT from the clear, so the flag is never down while an interrupt
+     * is pending and this function could only ever return -- but it
+     * would return after reading CP0_Status, which helper_mttc0_status()
+     * can be writing from another VPE's thread at the same moment.
+     * Testing Config3 first, a field fixed at realize, keeps the
+     * exclusion on both halves of the invariant rather than on one.
+     */
+    if (ase_mt_available(env)) {
+        return;
+    }
+
+    if (!cpu_mips_hw_interrupts_pending(env) ||
+        !cpu_mips_hw_interrupts_enabled(env) ||
+        cpu_test_interrupt(cs, CPU_INTERRUPT_HARD)) {
+        return;
+    }
+
+    BQL_LOCK_GUARD();
+    cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+}
+
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
 {
     /*
@@ -111,10 +156,11 @@ void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
     if (ase_mt_available(env)) {
         BQL_LOCK_GUARD();
         mips_store_status(env, val);
-        return;
+    } else {
+        mips_store_status(env, val);
     }
 
-    mips_store_status(env, val);
+    cpu_mips_reassert_interrupt(env);
 }
 
 void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)

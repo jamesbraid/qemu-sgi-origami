@@ -171,6 +171,7 @@ struct CPUMIPSTLBContext {
 void sync_c0_status(CPUMIPSState *env, CPUMIPSState *cpu, int tc);
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val);
 void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val);
+void cpu_mips_reassert_interrupt(CPUMIPSState *env);
 
 extern const VMStateDescription vmstate_mips_cpu;
 
@@ -195,7 +196,7 @@ static inline bool cpu_mips_hw_interrupts_pending(const CPUMIPSState *env)
     int32_t status;
     bool r;
 
-    pending = env->CP0_Cause & CP0Ca_IP_mask;
+    pending = qatomic_read(&env->CP0_Cause) & CP0Ca_IP_mask;
     status = env->CP0_Status & CP0Ca_IP_mask;
 
     if (env->CP0_Config3 & (1 << CP0C3_VEIC)) {

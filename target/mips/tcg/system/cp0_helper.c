@@ -1644,6 +1644,7 @@ void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
     } else {
         env->hflags &= ~MIPS_HFLAG_DM;
     }
+    cpu_mips_reassert_interrupt(env);
 }
 
 void helper_mttc0_debug(CPUMIPSState *env, target_ulong arg1)
