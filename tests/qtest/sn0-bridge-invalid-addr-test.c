@@ -37,9 +37,19 @@
 #define REG(offset)     (BRIDGE_BASE + (offset) + REG_DATA)
 
 #define BRIDGE_INT_STATUS   0x100
+#define BRIDGE_INT_ENABLE   0x108
 #define BRIDGE_INT_RESET    0x110
+#define BRIDGE_HOST_ERR     0x128        /* host bit for the Bridge's own errors */
+#define BRIDGE_INT_DEST_UP  0x030        /* interrupt destination, upper */
+#define BRIDGE_INT_DEST_LO  0x038        /* interrupt destination, lower */
 #define INT_INVALID_ADDR    (1u << 24)   /* "address invalid for this widget" */
 #define INT_RESET_ALL       0x7fu        /* clears every error group */
+
+/* The local Hub's interrupt registers, where the error interrupt is delivered. */
+#define HUB_LOCAL           (SPACE_XTALK + 0x01000000)
+#define PI_INT_MODIFY       0x90
+#define PI_INT_PEND0        0x98
+#define ERR_HOST_BIT        5u
 
 /* An undefined slot inside the register window: the diagnostic's provoke. */
 #define UNDEFINED_REG       0x7c
@@ -182,6 +192,34 @@ static void test_invalid_address_latches_status(const void *data)
     qtest_quit(qts);
 }
 
+static void test_invalid_address_raises_host_interrupt(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    /*
+     * Point the widget interrupt-destination pair at the local Hub's
+     * interrupt-modify register, name the host bit in the host-error field, and
+     * enable the invalid-address interrupt. A store to an undefined register
+     * then drives the error interrupt across the fabric to the Hub, setting
+     * that pending bit — the delivery the sanity diagnostic waits on. With the
+     * interrupt disabled, or with no destination programmed, no packet goes.
+     */
+    qtest_writel(qts, REG(BRIDGE_INT_DEST_LO),
+                 (uint32_t)(HUB_LOCAL - SPACE_XTALK) + PI_INT_MODIFY);
+    qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), 0);
+    qtest_writel(qts, REG(BRIDGE_HOST_ERR), ERR_HOST_BIT);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), INT_INVALID_ADDR);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+
+    qtest_writel(qts, BRIDGE_BASE + UNDEFINED_REG, 0xdeadbeefu);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==,
+                    1ULL << ERR_HOST_BIT);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -190,6 +228,8 @@ int main(int argc, char **argv)
                         NULL, test_ssram_and_undefined_slot_post);
     qtest_add_data_func("sn0/bridge/invalid-address-latches-status",
                         NULL, test_invalid_address_latches_status);
+    qtest_add_data_func("sn0/bridge/invalid-address-raises-host-interrupt",
+                        NULL, test_invalid_address_raises_host_interrupt);
 
     return g_test_run();
 }

@@ -1271,6 +1271,8 @@ static bool sgi_bridge_accepts(void *opaque, hwaddr addr, unsigned size,
  * gap in this model's register coverage look alike from here and the log is
  * where they are told apart.
  */
+static void sgi_bridge_raise_host_error(SGIBridgeState *s);
+
 static void sgi_bridge_invalid_address(SGIBridgeState *s, hwaddr addr,
                                        bool is_write)
 {
@@ -1279,6 +1281,15 @@ static void sgi_bridge_invalid_address(SGIBridgeState *s, hwaddr addr,
                   "; posting it and flagging an invalid-address error\n",
                   is_write ? "write" : "read", addr);
     s->int_error |= INT_INVALID_ADDR;
+
+    /*
+     * The status bit always latches; the host interrupt goes only if the guest
+     * enabled it. The Bridge sanity diagnostic enables it and then reads the
+     * Hub pending bit to confirm the error was reported.
+     */
+    if (s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] & INT_INVALID_ADDR) {
+        sgi_bridge_raise_host_error(s);
+    }
 }
 
 /*
@@ -2248,7 +2259,6 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
  * composing the same value from two terms by different arithmetic.
  */
 #define INT_HOST_ADDR_SHIFT     8
-#define XTALK_HOST_SHIFT        38
 #define XTALK_NODE_SHIFT        38
 
 /* Where the Hub's interrupt-modify register sits inside a node's Hub window. */
@@ -2257,33 +2267,37 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 #define HUB_INT_MODIFY_SET      0x100
 
 /*
- * Turn a pin's transition into the packet the chip really sends: a write to the
- * Hub's interrupt-modify register on the destination node, carrying the
- * interrupt number.
+ * Issue an interrupt packet into the machine's fabric: a write to the Hub's
+ * interrupt-modify register at (node, offset), carrying the host bit. Data bit
+ * 8 tells the Hub to raise the bit rather than lower it.
  *
- * The address is reconstructed from what the guest programmed, not invented
- * here. Restoring bits 17:8 of the per-pin register to bits 47:38 puts the
- * crosstalk address's top bit back and the node at bit 38; the Hub's window and
- * the register's offset complete it.
- *
- * That crosstalk address is then issued into the machine's fabric. This model's
- * fabric is addressed the processor's way rather than the packet's, so the node
- * and the offset are recomposed with the machine's own encoding — which is the
- * seam between what this chip does and how the machine represents the bus, and
- * is why the two constants for it come from the machine instead of living here.
+ * This model's fabric is addressed the processor's way rather than the packet's,
+ * so the node and the offset are recomposed with the machine's own encoding —
+ * the seam between what this chip does and how the machine represents the bus,
+ * and why the constants for it come from the machine instead of living here.
+ */
+static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, unsigned int node,
+                                         uint64_t offset, unsigned int bit,
+                                         bool set)
+{
+    uint64_t value = bit | (set ? HUB_INT_MODIFY_SET : 0);
+    hwaddr where = s->fabric_base +
+                   ((uint64_t)node << s->fabric_node_shift) + offset;
+
+    address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
+                      NULL);
+}
+
+/*
+ * A device pin's transition takes its destination and its host bit from that
+ * pin's own interrupt-address register. Bits 17:8 of that register are crosstalk
+ * address bits 47:38, which name the destination node; the Hub's window and its
+ * interrupt-modify register complete the offset.
  */
 static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
 {
     uint64_t addr = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
-    uint64_t host = (addr & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT;
-    uint64_t xtalk = (host << XTALK_HOST_SHIFT) | HUB_NODE_WINDOW |
-                     HUB_INT_MODIFY;
-    unsigned int node = (xtalk >> XTALK_NODE_SHIFT) & 0x1ff;
-    uint64_t number = addr & INT_HOST_FIELD;
-    uint64_t value = number | (set ? HUB_INT_MODIFY_SET : 0);
-    hwaddr where = s->fabric_base +
-                   ((uint64_t)node << s->fabric_node_shift) +
-                   HUB_NODE_WINDOW + HUB_INT_MODIFY;
+    unsigned int node;
 
     if (!addr) {
         /*
@@ -2298,8 +2312,38 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
         return;
     }
 
-    address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
-                      NULL);
+    node = ((addr & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT) & 0x1ff;
+    sgi_bridge_deliver_interrupt(s, node, HUB_NODE_WINDOW + HUB_INT_MODIFY,
+                                 addr & INT_HOST_FIELD, set);
+}
+
+/*
+ * The Bridge reports its own errors — as opposed to a device's — on the host
+ * bit named in the host-error field, sent to the full crosstalk address the
+ * guest wrote to the widget interrupt-destination pair. The upper register's
+ * low 16 bits are destination address bits 47:32; the lower register is bits
+ * 31:0. Node and offset then split at bit 38, as for a device pin.
+ */
+static void sgi_bridge_raise_host_error(SGIBridgeState *s)
+{
+    unsigned int number = s->reg[SGI_BRIDGE_SLOT(BRIDGE_HOST_ERR_FIELD)] &
+                          INT_HOST_FIELD;
+    uint64_t upper = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)];
+    uint64_t lower = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)];
+    uint64_t dest = ((upper & 0xffffu) << 32) | (uint32_t)lower;
+    unsigned int node;
+
+    if (!dest) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: invalid-address error with no destination "
+                      "programmed; no packet sent\n");
+        return;
+    }
+
+    node = (dest >> XTALK_NODE_SHIFT) & 0x1ff;
+    sgi_bridge_deliver_interrupt(s, node,
+                                 dest & ((1ULL << XTALK_NODE_SHIFT) - 1),
+                                 number, true);
 }
 
 static void sgi_bridge_set_irq(void *opaque, int pin, int level)
