@@ -20,6 +20,7 @@
 #include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 /* Node zero's window, and the space the Hub answers uncached references in. */
 #define NODE0           0x0000000000ULL
@@ -734,6 +735,194 @@ static void test_backdoor_tracks_populated_banks(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The promdata window holds the same bytes for every processor.
+ *
+ * Under synthesized firmware with a directly loaded kernel, an address
+ * carrying no NASID names node zero's memory rather than the reading
+ * processor's -- that is what lets one loaded image serve every processor,
+ * and sn0_node_local_memory_base() is where the machine arranges it.
+ *
+ * One range can disagree with that alias, and it is worth stating why
+ * because the disagreement is invisible from anywhere except a processor on
+ * a node other than zero. Each processor's view of the 32 KiB at 1 MiB can
+ * be covered by a filter modelling the PROM's cache-only private phase, and
+ * that filter forwards to a base of its own, taken from the owning node's
+ * NASID rather than from the alias underneath it. On node zero the two are
+ * the same value and nothing shows. On any other node under the alias they
+ * are not: the filter answers reads of the loaded kernel out of its own
+ * node's memory, which nothing ever wrote. It reads as zeroes, and zeroes
+ * are a run of nops -- which is how it was found, as a secondary processor
+ * walking through instructions that were not there.
+ *
+ * Nothing builds that filter in this configuration today, so the two
+ * processors below agree with no filter in the way. The case is here for
+ * whoever puts one back: restore it for a multi-node kernel boot with its
+ * forwarding base still derived from the NASID, and the node-one processor
+ * reads the word this test plants in node one's memory instead of the
+ * kernel's. That is also why the two words differ rather than one being
+ * zero -- a failure should name what it read, not just that it was wrong.
+ *
+ * Reads go through each processor's own address space, which is what the
+ * monitor's xp does once a processor is selected, and is the step a check
+ * on the global address space cannot substitute for: the global space has
+ * no filter in it and answers correctly however the per-processor views are
+ * wired.
+ */
+
+#define NUMA_NODE1_BASE     0x100000000ULL
+#define PROMDATA_PROBE      0x107fd0        /* inside the 32 KiB window */
+#define OUTSIDE_PROBE       0x110000        /* clear of it, as a control */
+#define KERNEL_WORD         0xc0de0001u
+#define OUTSIDE_WORD        0xc0de0002u
+#define NODE1_WORD          0xbad1bad1u
+
+/* XKPHYS, coherent exclusive: how a kernel names physical memory here. */
+#define XKPHYS_CACHED       0xa800000000000000ULL
+
+#define ELF_EHDR_SIZE       64
+#define ELF_PHDR_SIZE       56
+#define ELF_PHNUM           2
+#define ELF_PAYLOAD_OFF     (ELF_EHDR_SIZE + ELF_PHNUM * ELF_PHDR_SIZE)
+#define ELF_IMAGE_SIZE      (ELF_PAYLOAD_OFF + 8)
+
+static void elf_put_phdr(uint8_t *ph, uint64_t offset, uint64_t paddr,
+                         uint64_t size)
+{
+    stl_be_p(ph + 0, 1);            /* PT_LOAD */
+    stl_be_p(ph + 4, 5);            /* read, execute */
+    stq_be_p(ph + 8, offset);
+    stq_be_p(ph + 16, paddr);       /* p_vaddr */
+    stq_be_p(ph + 24, paddr);       /* p_paddr, which the loader translates */
+    stq_be_p(ph + 32, size);        /* p_filesz */
+    stq_be_p(ph + 40, size);        /* p_memsz */
+    stq_be_p(ph + 48, 4);
+}
+
+/*
+ * The smallest thing the machine's kernel loader accepts: a 64-bit
+ * big-endian MIPS executable with two loadable words, one inside the
+ * promdata window and one clear of it. Nothing executes it -- no processor
+ * runs at all under the qtest accelerator -- so its entry only has to be a
+ * legal address.
+ */
+static size_t build_kernel_elf(uint8_t *image)
+{
+    memset(image, 0, ELF_IMAGE_SIZE);
+
+    memcpy(image, "\x7f" "ELF", 4);
+    image[4] = 2;                   /* ELFCLASS64 */
+    image[5] = 2;                   /* ELFDATA2MSB */
+    image[6] = 1;                   /* EV_CURRENT */
+    stw_be_p(image + 16, 2);        /* ET_EXEC */
+    stw_be_p(image + 18, 8);        /* EM_MIPS */
+    stl_be_p(image + 20, 1);        /* e_version */
+    stq_be_p(image + 24, XKPHYS_CACHED | PROMDATA_PROBE);   /* e_entry */
+    stq_be_p(image + 32, ELF_EHDR_SIZE);                    /* e_phoff */
+    stw_be_p(image + 52, ELF_EHDR_SIZE);                    /* e_ehsize */
+    stw_be_p(image + 54, ELF_PHDR_SIZE);                    /* e_phentsize */
+    stw_be_p(image + 56, ELF_PHNUM);                        /* e_phnum */
+
+    elf_put_phdr(image + ELF_EHDR_SIZE, ELF_PAYLOAD_OFF,
+                 XKPHYS_CACHED | PROMDATA_PROBE, 4);
+    elf_put_phdr(image + ELF_EHDR_SIZE + ELF_PHDR_SIZE, ELF_PAYLOAD_OFF + 4,
+                 XKPHYS_CACHED | OUTSIDE_PROBE, 4);
+
+    stl_be_p(image + ELF_PAYLOAD_OFF, KERNEL_WORD);
+    stl_be_p(image + ELF_PAYLOAD_OFF + 4, OUTSIDE_WORD);
+    return ELF_IMAGE_SIZE;
+}
+
+/*
+ * One physical word as a given processor sees it, through that processor's
+ * own address space -- which is the only way to see this at all, because
+ * the global address space carries no per-processor filter and answers
+ * correctly however the per-processor views are wired.
+ *
+ * The processor has to be named in the same request as the dump. Each
+ * human-monitor-command runs on a monitor of its own, so an "xp" issued
+ * after a separate "cpu" command does not inherit that selection -- it
+ * reads processor zero and agrees with itself forever. That failure is
+ * silent, and it is the reason this does not use qtest_hmp().
+ */
+static uint32_t cpu_view_word(QTestState *qts, unsigned int cpu, uint64_t phys)
+{
+    g_autofree char *command = g_strdup_printf("xp/1wx 0x%" PRIx64, phys);
+    g_autoptr(QDict) response = NULL;
+    const char *dumped;
+    const char *value;
+    unsigned int word;
+
+    response = qtest_qmp(qts,
+                         "{ 'execute': 'human-monitor-command',"
+                         "  'arguments': { 'command-line': %s,"
+                         "                 'cpu-index': %u } }",
+                         command, cpu);
+    g_assert(qdict_haskey(response, "return"));
+    dumped = qdict_get_str(response, "return");
+    value = strchr(dumped, ':');
+    g_assert_nonnull(value);
+    g_assert_cmpint(sscanf(value + 1, " 0x%x", &word), ==, 1);
+    return word;
+}
+
+static void test_promdata_window_agrees_across_nodes(const void *data)
+{
+    uint8_t image[ELF_IMAGE_SIZE];
+    g_autofree char *path = NULL;
+    g_autofree char *quoted_path = NULL;
+    g_autofree char *args = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    size_t size;
+    int fd;
+
+    size = build_kernel_elf(image);
+    fd = g_file_open_tmp("sn0-numa-kernel-XXXXXX.elf", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image, size,
+                                      &error));
+    g_assert_no_error(error);
+
+    /*
+     * Two nodes, and synthesized firmware left on, because the low-memory
+     * alias this rests on exists only for a directly loaded kernel under
+     * firmware of the machine's own. The planted word gives node one's
+     * memory something of its own at the same offset.
+     */
+    quoted_path = g_shell_quote(path);
+    args = g_strdup_printf(
+        "-M origin200 -m 256M -smp 4,sockets=2,cores=2,threads=1 "
+        "-object memory-backend-ram,id=ram0,size=128M "
+        "-object memory-backend-ram,id=ram1,size=128M "
+        "-numa node,nodeid=0,memdev=ram0 -numa node,nodeid=1,memdev=ram1 "
+        "-kernel %s", quoted_path);
+    qts = qtest_init(args);
+    g_assert_cmpint(unlink(path), ==, 0);
+
+    /*
+     * Give node one's memory a word of its own at the same offset, so a
+     * failure names what it read rather than only that it read the wrong
+     * thing. This goes through the global address space, which has no
+     * per-processor filter in it and reaches node one's memory directly.
+     */
+    qtest_writel(qts, NUMA_NODE1_BASE + PROMDATA_PROBE, NODE1_WORD);
+    g_assert_cmphex(qtest_readl(qts, NUMA_NODE1_BASE + PROMDATA_PROBE), ==,
+                    NODE1_WORD);
+    /* And the kernel landed, so agreement below is not two empty reads. */
+    g_assert_cmphex(qtest_readl(qts, PROMDATA_PROBE), ==, KERNEL_WORD);
+
+    g_assert_cmphex(cpu_view_word(qts, 0, PROMDATA_PROBE), ==, KERNEL_WORD);
+    g_assert_cmphex(cpu_view_word(qts, 2, PROMDATA_PROBE), ==, KERNEL_WORD);
+
+    /* Clear of the window, both processors already agree by construction. */
+    g_assert_cmphex(cpu_view_word(qts, 0, OUTSIDE_PROBE), ==, OUTSIDE_WORD);
+    g_assert_cmphex(cpu_view_word(qts, 2, OUTSIDE_PROBE), ==, OUTSIDE_WORD);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -764,6 +953,8 @@ int main(int argc, char **argv)
                         test_512m_memory);
     qtest_add_data_func("sn0/address-map/hub-local-memory-alias", NULL,
                         test_hub_local_memory_alias);
+    qtest_add_data_func("sn0/address-map/promdata-window-agrees-across-nodes",
+                        NULL, test_promdata_window_agrees_across_nodes);
     qtest_add_data_func("sn0/address-map/invalid-memory-size", NULL,
                         test_invalid_memory_size);
     qtest_add_data_func("sn0/address-map/directory-backdoor", NULL,
