@@ -113,6 +113,8 @@
 #define OPC_J               (0x02u << 26)
 #define OPC_BEQ             (0x04u << 26)
 #define OPC_BNE             (0x05u << 26)
+#define OPC_BLEZ            (0x06u << 26)
+#define OPC_BGTZ            (0x07u << 26)
 #define OPC_ADDIU           (0x09u << 26)
 #define OPC_ANDI            (0x0cu << 26)
 #define OPC_ORI             (0x0du << 26)
@@ -124,6 +126,7 @@
 #define OPC_SLL             (0x00u | OPC_SPECIAL)
 #define OPC_JR              (0x08u | OPC_SPECIAL)
 #define OPC_SYSCALL         (0x0cu | OPC_SPECIAL)
+#define OPC_SUBU            (0x23u | OPC_SPECIAL)
 #define OPC_AND             (0x24u | OPC_SPECIAL)
 #define OPC_OR              (0x25u | OPC_SPECIAL)
 #define OPC_DSLL32          (0x3cu | OPC_SPECIAL)
@@ -270,6 +273,11 @@ static void emit_or(CodeBuf *buf, int rd, int rs, int rt)
     emit(buf, OPC_OR | (rs << 21) | (rt << 16) | (rd << 11));
 }
 
+static void emit_subu(CodeBuf *buf, int rd, int rs, int rt)
+{
+    emit(buf, OPC_SUBU | (rs << 21) | (rt << 16) | (rd << 11));
+}
+
 /* dsll32 rd, rt, 0 -- a plain 32-bit left shift of a 64-bit register. */
 static void emit_dsll32(CodeBuf *buf, int rd, int rt)
 {
@@ -335,6 +343,20 @@ static void emit_bne_to(CodeBuf *buf, int rs, int rt, unsigned int target)
     emit_immediate(buf, OPC_BNE, rs, rt, (uint16_t)(int16_t)words);
 }
 
+static void emit_bgtz_to(CodeBuf *buf, int rs, unsigned int target)
+{
+    int words = ((int)target - (int)buf->pos - 4) / 4;
+
+    emit_immediate(buf, OPC_BGTZ, rs, 0, (uint16_t)(int16_t)words);
+}
+
+static void emit_blez_to(CodeBuf *buf, int rs, unsigned int target)
+{
+    int words = ((int)target - (int)buf->pos - 4) / 4;
+
+    emit_immediate(buf, OPC_BLEZ, rs, 0, (uint16_t)(int16_t)words);
+}
+
 static void emit_syscall(CodeBuf *buf)
 {
     emit(buf, OPC_SYSCALL);
@@ -386,7 +408,7 @@ static void emit_load_addr(CodeBuf *buf, int rt, uint32_t addr)
  * window into whatever follows.
  */
 #define SNIPPET_TARGET_OFF  0x40
-#define SNIPPET_MAX_WORDS   33
+#define SNIPPET_MAX_WORDS   45
 
 /*
  * The looping form continues past the target: it counts the iteration,
@@ -399,7 +421,8 @@ static void emit_load_addr(CodeBuf *buf, int rt, uint32_t addr)
  * the run early with a short count.
  */
 #define LOOP_EXIT_OFF       0x58
-#define LOOP_MMIO_SUCCESS_OFF 0x78
+#define LOOP_WAIT_IRQ_OFF   0x88
+#define LOOP_MMIO_SUCCESS_OFF 0xa8
 
 static unsigned int build_snippet(uint32_t *words, const TestCase *tc)
 {
@@ -449,12 +472,28 @@ static unsigned int build_snippet(uint32_t *words, const TestCase *tc)
         g_assert_cmpuint(buf.pos, ==, LOOP_EXIT_OFF);
         if (tc->mmio) {
             /*
-             * Keep taking a branch on this MMIO page until the timer path
-             * has run.  RAM remains the no-interrupt control.
+             * The measured loop can finish before the original deadline.
+             * Refresh Compare here, then prove it stayed in the future: an
+             * mfc0 Count ends its translation block, so host scheduling can
+             * otherwise put the target behind Count before mtc0 Compare.
              */
+            emit_mfc0(&buf, R_T2, CP0_COUNT);
+            emit_addiu(&buf, R_T2, R_T2, TIMER_PERIOD);
+            emit_mtc0(&buf, R_T2, CP0_COMPARE);
+            emit_mfc0(&buf, R_T1, CP0_COUNT);
+            emit_subu(&buf, R_T1, R_T2, R_T1);
+            emit_bgtz_to(&buf, R_T1, LOOP_WAIT_IRQ_OFF);
+            emit_nop(&buf);
+            emit_blez_to(&buf, R_T1, LOOP_EXIT_OFF);
+            emit_nop(&buf);
+            emit_ori(&buf, R_T2, R_ZERO, MARK_FELL);
+            emit_sd(&buf, R_T2, R_T0, FELL_OFF);
+            emit_syscall(&buf);
+            g_assert_cmpuint(buf.pos, ==, LOOP_WAIT_IRQ_OFF);
+            /* Keep branching here until the timer path has run. */
             emit_ld(&buf, R_T2, R_T0, IRQ_OFF);
             emit_beq(&buf, R_T2, R_ZERO,
-                     (LOOP_EXIT_OFF - (int)buf.pos - 4) / 4);
+                     (LOOP_WAIT_IRQ_OFF - (int)buf.pos - 4) / 4);
             emit_nop(&buf);
             /*
              * A dropped wait branch can fall through with the pre-interrupt
