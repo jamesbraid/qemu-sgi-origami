@@ -98,6 +98,13 @@ struct SGIElscState {
     /* Supervisor mode gates the destructive commands (page 124 of the
      * Origin 200 Owner's Guide); "pas" sets it, factory default "none". */
     bool supervisor;
+
+    /*
+     * Latched the first time a console flush is dropped because no character
+     * device is attached to the AUX port, so the diagnostic below fires one
+     * line rather than one per write for the rest of a dark-console boot.
+     */
+    bool aux_no_backend_warned;
 };
 
 #endif /* HW_MISC_SGI_ELSC_H */
