@@ -146,6 +146,22 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
     if (n > 86) {
         n = 86;   /* "at most 86 characters per transaction" */
     }
+    /*
+     * A console=d guest relocates its whole session onto this port. If the rig
+     * gave the ELSC no character device, the flush below discards the bytes
+     * and the guest goes dark and deaf with nothing to show why -- the exact
+     * failure this warning exists to name. Fire it once and keep serving the
+     * protocol so the guest is not wedged, only silent.
+     */
+    if (n > 0 && !qemu_chr_fe_backend_connected(&s->chr) &&
+        !s->aux_no_backend_warned) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-elsc: guest wrote console output to the AUX serial "
+                      "port (console=d) but no character device is attached to "
+                      "it, so the output is being discarded. Attach a backend "
+                      "on serial_hd(2), the ELSC AUX port.\n");
+        s->aux_no_backend_warned = true;
+    }
     qemu_chr_fe_write_all(&s->chr, (const uint8_t *)&text[6], n);
 
     snprintf(resp, sizeof(resp), "ok %x", n);

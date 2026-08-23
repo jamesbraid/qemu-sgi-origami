@@ -522,6 +522,33 @@ static void test_acp_command_writes_to_console(const void *data)
 }
 
 /*
+ * With no character device attached to the AUX port -- a rig that forgot to
+ * drive the ELSC serial, the failure this whole change exists to make
+ * diagnosable -- an "acp" console flush must still complete the transaction
+ * and answer "ok <count>" rather than stall the bus. The bytes are discarded
+ * (nothing is attached to catch them) and the model logs a single
+ * LOG_GUEST_ERROR line naming the missing backend. The log is not observable
+ * from qtest, so what this asserts is that the protocol keeps serving with the
+ * port dark, which is what keeps a dark console from also wedging the guest.
+ */
+static void test_acp_with_no_backend_still_answers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, "acp 0 hi");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    /* "hi" is two characters, accepted count in hex is "2": "ok 2". */
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * The AUX serial port, for console input: a loopback TCP socket standing
  * in for the real cable, following the same host-socket pattern
  * tests/qtest/ipmi-bt-test.c uses for its own external chardev -- bind and
@@ -876,6 +903,8 @@ int main(int argc, char **argv)
                         test_arbitration_preserves_staged_start);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
+    qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
+                        test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
                         test_get_returns_queued_console_input);
     qtest_add_data_func("sn0/elsc/escape-byte-is-not-queued", NULL,
