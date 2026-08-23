@@ -16,6 +16,7 @@ static int cpu_post_load(void *opaque, int version_id)
     restore_msa_fp_status(env);
     compute_hflags(env);
     restore_pamask(env);
+    cpu_mips_reassert_interrupt(env);
 
     return 0;
 }
