@@ -188,7 +188,7 @@ qtests_mipsel = qtests_mips
 qtests_mips64 = \
   qtests_mips + \
   (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['mips64-mmio-branch-test',
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mmio-branch-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',
                                                    'sn0-firmware-test',
