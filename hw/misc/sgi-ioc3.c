@@ -1602,6 +1602,15 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
 
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
+
+    /*
+     * Same reasoning as the netdev/mac aliases above: the timekeeper is a
+     * child nobody outside can name, so without this alias the only way to
+     * give it a battery is for the board to reach into a child it does not
+     * otherwise touch. Unset, nothing changes -- the timekeeper stays exactly
+     * as ephemeral as it always was.
+     */
+    object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
 }
 
 static const VMStateDescription vmstate_sgi_ioc3 = {

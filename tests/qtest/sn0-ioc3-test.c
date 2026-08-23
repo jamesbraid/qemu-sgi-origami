@@ -3153,6 +3153,48 @@ static void test_the_clock_storage_holds_a_write(const void *data)
 }
 
 /*
+ * Battery power outlasts more than a reset -- a real part keeps its content
+ * with the host machine off, which a reset inside one QEMU process cannot
+ * exercise at all. An optional drive is the model's equivalent of that: unset,
+ * nothing here changes, but given one the storage has to read back across a
+ * second, independent QEMU process the same way it already does across a
+ * reset inside the first.
+ */
+static void test_the_storage_persists_across_a_process_with_a_drive(
+    const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-ioc3-nvram-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    /* The device requires an exact match to its own storage size, 32 KB. */
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
+    close(fd);
+
+    args = g_strdup_printf("%s -drive if=none,id=sgi-nvram0,file=%s,"
+                           "format=raw", RTC_ARGS, path);
+
+    qts = qtest_init(args);
+    sn0_ioc3_attach(qts);
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0100, 0xc3);
+    qtest_quit(qts);
+
+    /*
+     * A second process, not a reset inside the first -- the property this
+     * test exists to check.
+     */
+    qts = qtest_init(args);
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x0100), ==, 0xc3);
+    qtest_quit(qts);
+
+    unlink(path);
+}
+
+/*
  * The part is battery-backed: a reset line does not empty its storage. The
  * firmware relies on exactly that -- its first environment-checking pass
  * initializes the storage, warm-resets the machine, and expects to find its
@@ -3498,6 +3540,8 @@ int main(int argc, char **argv)
                         test_the_clock_takes_a_time_a_guest_sets);
     qtest_add_data_func("sn0/ioc3/clock-storage-survives-a-system-reset", NULL,
                         test_the_storage_survives_a_system_reset);
+    qtest_add_data_func("sn0/ioc3/clock-storage-persists-with-a-drive", NULL,
+                        test_the_storage_persists_across_a_process_with_a_drive);
     qtest_add_data_func("sn0/ioc3/each-node-has-its-own-storage", NULL,
                         test_each_node_has_its_own_storage);
     qtest_add_data_func("sn0/ioc3/clock-storage-holds-a-write", NULL,
