@@ -3446,10 +3446,52 @@ static void test_the_transceiver_loopback_register(const void *data)
     qtest_quit(qts);
 }
 
+static void test_pci_status_reset_value(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    /*
+     * The single-CPU IRIX miniroot's io_config_space diagnostic
+     * (diag_io6confSpace_sanity) reads the PCI Command/Status dword at
+     * configuration offset 0x04 for each device and compares all 32 bits
+     * against a per-device reset value. For the IOC3 it expects 0x02800000:
+     * Command 0, Status 0x0280 (bit 9 medium DEVSEL, bit 7 fast
+     * back-to-back capable). A model that leaves the Status half zero
+     * miscompares and the miniroot fails the I/O slot. See
+     * docs/datasheets/ioc3.md.
+     *
+     * This asserts the Status half only, not the full dword. The board
+     * (hw/mips/sn0.c) pre-enables the Command half for no-firmware bring-up,
+     * so at qtest time Command reads non-zero here; on the real machine the
+     * miniroot resets the device before the diagnostic (its console capture
+     * shows the whole dword reading 0 before this fix), which clears the
+     * writable Command bits while the read-only Status bits survive. So the
+     * reset value under test is the Status half, and the full-dword
+     * 0x02800000 the diagnostic compares is that Status half over a
+     * reset-cleared Command half — which the miniroot rerun is the gate for.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) >> 16,
+                    ==, 0x0280u);
+
+    /*
+     * The Status capability bits are read-only and the error latches are
+     * write-one-to-clear from a reset of zero, so writing all ones leaves
+     * the Status half exactly 0x0280: bits 9 and 7 still set, no other bit
+     * set, no latch spuriously raised.
+     */
+    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, 0xffffffffu);
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) >> 16,
+                    ==, 0x0280u);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sn0/ioc3/pci-status-reset-value", NULL,
+                        test_pci_status_reset_value);
     qtest_add_data_func("sn0/ioc3/phy-answers-at-one-address", NULL,
                         test_the_transceiver_answers_at_one_address);
     qtest_add_data_func("sn0/ioc3/phy-identity", NULL,

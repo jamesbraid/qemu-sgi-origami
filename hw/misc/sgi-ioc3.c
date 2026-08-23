@@ -1374,6 +1374,19 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
+    /*
+     * PCI Status reset value: config 0x04 must read back Status 0x0280
+     * (bit 9 medium DEVSEL, bit 7 fast-back-to-back capable) so a 32-bit
+     * read at reset returns 0x02800000. The single-CPU IRIX miniroot's
+     * io_config_space diagnostic compares this whole dword and fails the
+     * I/O slot on a zero Status half. Both bits are read-only --
+     * pci_init_wmask leaves wmask[PCI_STATUS] clear and only the error
+     * latches are write-one-to-clear -- so they survive the reset that
+     * clears the writable and w1c bits. See docs/datasheets/ioc3.md.
+     */
+    pci_set_word(dev->config + PCI_STATUS,
+                 PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_FAST_BACK);
+
     memory_region_init(&s->bar, OBJECT(dev), "sgi-ioc3.bar",
                        SGI_IOC3_BAR_SIZE);
 
