@@ -57,9 +57,13 @@
 #define IO_BWIN_WIDGET(w) ((uint64_t)(w) << 8)
 #define IO_BWIN_SLICE(x)  ((uint64_t)(x))
 
-/* The widget number SGI's firmware names when it wants a window to reach
- * nothing. Widget 3 is absent on this machine. */
-#define IO_BWIN_ABSENT_WIDGET  3
+/*
+ * A widget to aim the big window at that is not the bridge, used below to prove
+ * the translation entry steers the window. This machine has no crossbar, so
+ * every non-zero widget but the Hub's answers as the bridge with widget 0's
+ * identity; the Hub at widget 1 is the one target whose contents differ.
+ */
+#define IO_BWIN_HUB_WIDGET  1
 
 /*
  * The entry the firmware writes for this redirection, term by term rather than
@@ -249,10 +253,15 @@ static void test_both_windows_reach_one_device(const void *data)
      * The negative, without which the comparison above proves less than it
      * looks. Two addresses returning the same value is also what happens if
      * both land inside one over-broad mapping and the translation entry is
-     * doing nothing at all — so aim entry 6 somewhere else and require the big
-     * window to stop answering as widget 0. If it keeps answering, the entry
-     * was never steering it and the agreement above was a coincidence of
+     * doing nothing at all — so aim entry 6 at a different widget and require
+     * the big window to stop answering as widget 0. If it keeps answering, the
+     * entry was never steering it and the agreement above was a coincidence of
      * layout.
+     *
+     * The target has to be the Hub. This machine has no crossbar, so every
+     * non-zero widget but the Hub's is the bridge answering again with widget
+     * 0's identity — aiming the window at one of those would change nothing and
+     * prove nothing. Widget 1 is the one target whose contents differ.
      *
      * This also pins the thing OpenBSD depends on and nothing else here can
      * see: that big window 6 reaches widget 0 *because of the entry's
@@ -265,7 +274,7 @@ static void test_both_windows_reach_one_device(const void *data)
      * widget 0 went dark.
      */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW),
-                 IO_BWIN_WIDGET(IO_BWIN_ABSENT_WIDGET));
+                 IO_BWIN_WIDGET(IO_BWIN_HUB_WIDGET));
     g_assert_cmphex(qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA),
                     !=, through_big);
 

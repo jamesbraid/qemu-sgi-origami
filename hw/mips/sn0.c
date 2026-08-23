@@ -275,6 +275,19 @@ struct SN0MachineState {
     MemoryRegion widget0[SN0_ORIGIN200_MAX_NODES];
 
     /*
+     * The same I/O bridge seen again at every other non-zero crosstalk widget.
+     * A real Origin 200 has no crossbar: the Hub's one link ends at the bridge,
+     * and with nothing to route by widget number every widget address the Hub
+     * emits reaches the same chip, so firmware may stamp a device pointer with
+     * any widget it picks and still reach the bridge. Each view needs its own
+     * alias because a MemoryRegion has one parent. Indexed by widget number;
+     * only the net-new ones (2 through 7 and 9 through 15) are used — widget 0
+     * has its own alias above, widget 1 is the Hub, and widget 8 is the
+     * bridge's own mapping.
+     */
+    MemoryRegion widget_alias[SN0_ORIGIN200_MAX_NODES][SN0_XTALK_WIDGETS];
+
+    /*
      * Whether the I/O bridge is fitted. **On by default**, because a real
      * Origin 200 always has one and every device on this machine hangs off
      * it — both disk adapters, the base I/O controller with its serial ports,
@@ -3388,10 +3401,42 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
                                            SN0_IOC3_SUPERIO_PIN));
 
     if (s->io_bridge_present) {
+        MemoryRegion *bridge_face =
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[node_index]), 0);
+        unsigned int widget;
+
         memory_region_add_subregion_overlap(
             &s->nodes[node_index].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
-            sysbus_mmio_get_region(
-                SYS_BUS_DEVICE(&s->io_bridge[node_index]), 0), -1);
+            bridge_face, -1);
+
+        /*
+         * The bridge answers at every other non-zero widget too, because the
+         * machine has no crossbar and the Hub's link reaches it whatever widget
+         * number an address carries. Alias its full widget face onto each of the
+         * net-new widgets — 2 through 7 and 9 through 15 — leaving widget 0 (its
+         * own alias, mapped unconditionally in sn0_init), widget 1 (the Hub) and
+         * widget 8 (mapped just above) alone. This is what lets the firmware's
+         * device pointer stamped with widget 2 reach the bridge's device-1 PIO
+         * window instead of faulting, matching the ratified no-crossbar
+         * contract. Gated with the bridge because the device windows these
+         * expose are only real when the devices behind the bridge are.
+         */
+        for (widget = SN0_WIDGET0 + 2; widget < SN0_XTALK_WIDGETS; widget++) {
+            g_autofree char *name = NULL;
+
+            if (widget == SN0_CONSOLE_WIDGET) {
+                continue;
+            }
+
+            name = g_strdup_printf("sn0.node%u.xtalk.widget%u",
+                                   node_index, widget);
+            memory_region_init_alias(&s->widget_alias[node_index][widget], NULL,
+                                     name, bridge_face, 0,
+                                     SGI_BRIDGE_WIDGET_SIZE);
+            memory_region_add_subregion(&s->nodes[node_index].xtalk,
+                                        SN0_XTALK_BASE(widget),
+                                        &s->widget_alias[node_index][widget]);
+        }
 
         /*
          * The two SCSI adapters the base I/O board carries, at the first two
@@ -3645,10 +3690,13 @@ static void sn0_init(MachineState *machine)
      * read, so gating this would turn a development option into a machine no
      * guest can boot.
      *
-     * Widgets 9 through 15 are deliberately not aliased here. Real hardware
-     * would answer at those addresses too, by the same argument, but nothing
-     * reaches for them and making an absent widget answer would remove the
-     * only signal that tells one from a present one.
+     * The other non-zero widgets answer too, on the argument this once used to
+     * refuse them: a crossbar-less machine reaches the bridge at every widget
+     * number, and the firmware relies on it — the IRIX miniroot dereferences a
+     * device pointer stamped with widget 2. Those aliases go in beside the
+     * widget-8 mapping in sn0_create_base_io, gated on the bridge being fitted;
+     * widget 0 here is unconditional for the reason above, and widget 1 stays
+     * the Hub.
      */
     memory_region_init_alias(&s->widget0[0], NULL, "sn0.xtalk.widget0",
                              sysbus_mmio_get_region(
