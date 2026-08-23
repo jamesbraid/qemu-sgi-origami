@@ -386,7 +386,7 @@ static void emit_load_addr(CodeBuf *buf, int rt, uint32_t addr)
  * window into whatever follows.
  */
 #define SNIPPET_TARGET_OFF  0x40
-#define SNIPPET_MAX_WORDS   25
+#define SNIPPET_MAX_WORDS   33
 
 /*
  * The looping form continues past the target: it counts the iteration,
@@ -399,6 +399,7 @@ static void emit_load_addr(CodeBuf *buf, int rt, uint32_t addr)
  * the run early with a short count.
  */
 #define LOOP_EXIT_OFF       0x58
+#define LOOP_MMIO_SUCCESS_OFF 0x78
 
 static unsigned int build_snippet(uint32_t *words, const TestCase *tc)
 {
@@ -446,6 +447,27 @@ static unsigned int build_snippet(uint32_t *words, const TestCase *tc)
         emit_jr(&buf, R_T8);
         emit_nop(&buf);
         g_assert_cmpuint(buf.pos, ==, LOOP_EXIT_OFF);
+        if (tc->mmio) {
+            /*
+             * Keep taking a branch on this MMIO page until the timer path
+             * has run.  RAM remains the no-interrupt control.
+             */
+            emit_ld(&buf, R_T2, R_T0, IRQ_OFF);
+            emit_beq(&buf, R_T2, R_ZERO,
+                     (LOOP_EXIT_OFF - (int)buf.pos - 4) / 4);
+            emit_nop(&buf);
+            /*
+             * A dropped wait branch can fall through with the pre-interrupt
+             * zero still in t2.  Record that failure before a peer can hide
+             * it by publishing the shared interrupt count.
+             */
+            emit_bne_to(&buf, R_T2, R_ZERO, LOOP_MMIO_SUCCESS_OFF);
+            emit_nop(&buf);
+            emit_ori(&buf, R_T2, R_ZERO, MARK_FELL);
+            emit_sd(&buf, R_T2, R_T0, FELL_OFF);
+            emit_syscall(&buf);
+            g_assert_cmpuint(buf.pos, ==, LOOP_MMIO_SUCCESS_OFF);
+        }
     }
 
     emit_ori(&buf, R_T2, R_ZERO, MARK_TARGET);
@@ -778,12 +800,9 @@ static void run_case(const void *data)
              * there -- what still holds is that a dropped branch, from
              * either of them, publishes the fall-through word.
              *
-             * Interrupt coverage is asserted for the MMIO cases only, and
-             * the asymmetry is the point rather than an omission: the timer
-             * runs on virtual time, and only the MMIO path is slow enough
-             * per instruction for ticks to land densely among the branches.
-             * The same loop over RAM finishes before the timer fires at all,
-             * so there is no RAM control for the interrupt half of this.
+             * MMIO loops wait at their exit branch until the timer handler
+             * publishes an interrupt.  RAM loops exit immediately and
+             * remain the no-interrupt control.
              */
             report_state(qts);
             if (!tc->racing) {
