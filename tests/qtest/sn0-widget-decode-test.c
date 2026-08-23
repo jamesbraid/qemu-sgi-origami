@@ -81,6 +81,33 @@
 #define BRIDGE_PART         0xc002
 #define BRIDGE_MANUFACTURER 0x036
 
+/*
+ * PCI config space and device-window plumbing for the split-order test below,
+ * mirroring sn0-bridge-test.c. A card is put in a free slot, its window aimed
+ * at it, and a doubleword written through the widened widget 2. Registers are
+ * 32 bits in the low half of an eight-byte slot, so a control write goes to the
+ * offset plus four.
+ */
+#define BRIDGE_BASE            SMALL_WINDOW(BRIDGE_WIDGET)
+#define REG(off)               (BRIDGE_BASE + (off) + REG_DATA)
+#define BRIDGE_DEVICE(n)       (0x200 + 8 * (n))
+#define DEV_MEMORY_SPACE       (1u << 12)
+#define BRIDGE_CFG0            0x020000
+#define CFG0(dev, fn)          (BRIDGE_BASE + BRIDGE_CFG0 + \
+                                (dev) * 0x1000 + (fn) * 0x100)
+#define PCI_BAR1               0x14
+#define PCI_COMMAND            0x04
+#define PCI_COMMAND_MEMORY     0x0002
+#define CARD_MMIO(slot)        (0x10000000u + (slot) * 0x1000000u)
+#define ORDER_SLOT             4          /* a free PCI slot for the scratch card */
+#define ORDER_WINDOW           0x800000   /* the device-4 window's widget offset */
+/*
+ * Two adjacent 32-bit scratch registers in the lsi53c895a (SCRATCHB at 0x5c,
+ * SCRATCHC at 0x60), both read/write with no side effect, so an eight-byte
+ * access spans the pair and each half can be read back on its own.
+ */
+#define LSI_SCRATCHB           0x5c
+
 /* The widgets the widen adds: every non-zero one but the Hub's and the
  * bridge's own. */
 static const unsigned int new_widgets[] = {
@@ -260,6 +287,13 @@ static void test_the_storm_doubleword_load_completes(const void *data)
      * 0xa both returned; a bus error on either leaves it absent and this times
      * out. The 32-bit identity reads above are breadth, not this — they are the
      * weaker property the first draft of this test mistook for the check.
+     *
+     * Both dimensions were watched go red. Removing the access-width fix (the
+     * device windows back at a four-byte cap) makes this fragment time out —
+     * the doubleword bus-errors and the marker never lands. Removing the widen
+     * (widgets 2 and 0xa unmapped) makes the identity check above fail first,
+     * at widget 2 reading zero; either way the storm load has no device to
+     * reach. Neither fix alone leaves this green.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
     qts = qtest_initf("-M origin200,io-bridge=on -smp 1 -kernel %s", kernel);
@@ -274,6 +308,41 @@ static void test_the_storm_doubleword_load_completes(const void *data)
     g_assert_cmphex(marker, ==, GUEST_MARKER);
     qtest_quit(qts);
     g_unlink(kernel);
+}
+
+static void test_doubleword_split_order(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+                                 "-device lsi53c895a,addr=4");
+    uint64_t at2 = SMALL_WINDOW(2) + ORDER_WINDOW + LSI_SCRATCHB;
+
+    /*
+     * The big-endian split order is the genuinely-new behavior on the write
+     * path — an eight-byte doubleword to a device window becomes two 32-bit
+     * device cycles, the high word at the lower offset — and it is otherwise
+     * only exercised end to end by the live boot. A qtest wide access cannot
+     * test the width (it chunks through address_space and would pass even at a
+     * four-byte cap, which is what the fragment above is for), but it does honor
+     * the region's byte order, so it is the right tool for the order alone.
+     *
+     * Put a card in a free slot, aim its window at it, then write a doubleword
+     * whose halves differ through the widened widget 2 and read each half back.
+     * The high word must land at the lower offset; if the split were reversed
+     * the two reads below would swap, so this asserts the order, not merely that
+     * two reads agree. The bridge's per-cycle byte-lane correction cancels
+     * across the write and the read, so each half round-trips its own value.
+     */
+    qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_BAR1, CARD_MMIO(ORDER_SLOT));
+    qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(ORDER_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(ORDER_SLOT) >> 20));
+
+    qtest_writeq(qts, at2, 0x1122334455667788ULL);
+
+    g_assert_cmphex(qtest_readl(qts, at2), ==, 0x11223344u);
+    g_assert_cmphex(qtest_readl(qts, at2 + 4), ==, 0x55667788u);
+
+    qtest_quit(qts);
 }
 
 static void test_widget_1_stays_the_hub(const void *data)
@@ -321,6 +390,8 @@ int main(int argc, char **argv)
                         NULL, test_new_widgets_are_one_bridge);
     qtest_add_data_func("sn0/widget-decode/storm-doubleword-load-completes",
                         NULL, test_the_storm_doubleword_load_completes);
+    qtest_add_data_func("sn0/widget-decode/doubleword-split-order",
+                        NULL, test_doubleword_split_order);
     qtest_add_data_func("sn0/widget-decode/widget-1-stays-the-hub",
                         NULL, test_widget_1_stays_the_hub);
     qtest_add_data_func("sn0/widget-decode/gated-with-the-bridge",
