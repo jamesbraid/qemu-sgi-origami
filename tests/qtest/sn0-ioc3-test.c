@@ -3406,6 +3406,17 @@ static void test_the_transceiver_reset_values(const void *data)
     /* Ten-megabit config: link pulses, heartbeat, twisted pair, jabber. */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x1c) & 0x003d, ==, 0x0039);
 
+    /*
+     * Status, link-partner and expansion, read here before any control-register
+     * write, as the firmware's power-on diagnostic reads them: no link, no
+     * completed autonegotiation, no partner -- a board on a bench with no cable.
+     * A model that came up with the link already live answered these three
+     * wrong, which is exactly what the diagnostic's reset-value warnings caught.
+     */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x01) & 0xf83f, ==, 0x7809);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x05) & 0xe3ff, ==, 0x0000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x06) & 0x001f, ==, 0x0000);
+
     qtest_quit(qts);
 }
 
