@@ -97,6 +97,14 @@ struct SGIBridgeState {
     MemoryRegion reserved_data_half;
 
     /*
+     * The external-SSRAM window, which on an Origin 200 holds nothing: the
+     * board fits no external static RAM. It answers reads rather than faulting,
+     * because the PROM sizes the RAM with an unguarded probe that expects a
+     * completing access, not a bus error.
+     */
+    MemoryRegion ssram;
+
+    /*
      * The window a processor reads PCI configuration space through. Type 0
      * only: there is no PCI-to-PCI bridge on this machine, and Linux's own
      * driver says outright that it uses type 0 accesses only.
@@ -301,6 +309,15 @@ struct SGIBridgeState {
      * cleared on service would tell it a device had gone quiet when it had not.
      */
     uint8_t pin_level;
+
+    /*
+     * Latched error bits of the interrupt status register (bits 31:8), as
+     * opposed to the device pins (7:0) which follow the level and never latch.
+     * The model raises one of them: the invalid-address bit, set when a guest
+     * touches an undefined address inside the register window. It stays set
+     * until the guest clears it through the reset-interrupt-status register.
+     */
+    uint32_t int_error;
 
     /* What the identification register answers with. */
     uint32_t revision;

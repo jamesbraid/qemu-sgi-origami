@@ -260,6 +260,10 @@
 
 /* The eight device pins live at the bottom of the status and enable words. */
 #define INT_DEVICE_PINS         0xffu
+/* Bit 24, "address invalid for this widget": set when a guest touches an
+ * undefined address inside the register window. The one error bit this model
+ * raises. */
+#define INT_INVALID_ADDR        (1u << 24)
 /* All a guest may enable: bit 31, the multiple-error flag, has no bit. */
 #define INT_ENABLE_WRITABLE     0x7fffffffu
 /* Seven group bits, each clearing one group of error conditions at once. */
@@ -301,6 +305,10 @@
 #define BRIDGE_ATE_SIZE         (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_ENTRY_SIZE)
 #define BRIDGE_ATE_LOW_BASE     0x011000
 #define BRIDGE_ATE_LOW_STRIDE   4
+
+/* The external-SSRAM window: 512 KB at 0x08_0000, unpopulated on this board. */
+#define BRIDGE_SSRAM_BASE       0x080000
+#define BRIDGE_SSRAM_SIZE       (512 * KiB)
 #define BRIDGE_ATE_LOW_SIZE     (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_LOW_STRIDE)
 
 /*
@@ -756,10 +764,13 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
      * not, and the device would never be serviced again. It would also pass a
      * simple test, and boot, and then hang.
      *
-     * So this register holds nothing. Its value is composed from the pins each
-     * time it is read, which makes a latching model impossible to write here
-     * rather than merely wrong: there is no bit to latch. The error bits above
-     * the pins read zero because this model produces no errors.
+     * So the pin bits hold nothing: composed from the devices each time the
+     * register is read, they can never latch. The error bits above them are
+     * different — an error is a past event a driver reads after the fact, so
+     * those do latch. The register is therefore composed (LIVE) rather than
+     * stored, ORing the live pins with the one latched error this model raises,
+     * the invalid-address bit (held in int_error, cleared through the reset
+     * register); the rest stay zero.
      */
     [SGI_BRIDGE_SLOT(BRIDGE_INT_STATUS)] = {
         "interrupt status", SGI_BRIDGE_LIVE, 0, 0 },
@@ -768,11 +779,11 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         "interrupt enable", SGI_BRIDGE_RW, 0, INT_ENABLE_WRITABLE },
 
     /*
-     * Writing a one to a group bit clears every error bit in that group. This
-     * model raises no error bits, so every group is already clear and the write
-     * is a strobe with nothing to do — which is why it is not storage: a
-     * register that read back the ones a guest wrote would say the groups were
-     * still being cleared. Linux writes all seven at start of day.
+     * Writing a one to a group bit clears every error bit in that group. The
+     * one error this model raises is the invalid-address bit, so a group write
+     * clears int_error (the write handler does it). The register itself is not
+     * storage: one that read back the ones a guest wrote would say the groups
+     * were still being cleared. Linux writes all seven at start of day.
      */
     [SGI_BRIDGE_SLOT(BRIDGE_INT_RESET)] = {
         "reset interrupt status", SGI_BRIDGE_WO, 0, INT_RESET_GROUPS },
@@ -1234,23 +1245,40 @@ static uint32_t sgi_bridge_identification(SGIBridgeState *s)
 }
 
 /*
- * Which addresses this model answers. The chip defines the first 0x300 bytes of
- * a 64 KB register block and decodes the rest of it, so an access above 0x300,
- * or to a slot with no register in it, or to the wrong half of a slot, is a
- * question we have not answered and is told so rather than served a zero.
+ * The chip defines the first 0x300 bytes of a 64 KB register block and decodes
+ * the whole block. A defined register answers normally; an access above 0x300,
+ * to a slot with no register, or to the wrong half of a slot is an undefined
+ * address, which the real Bridge does not refuse with a bus error — it posts
+ * the access and flags it asynchronously as an invalid-address error. So every
+ * access within the block's width is accepted here, and the read and write
+ * handlers below tell a defined register from an undefined address and raise
+ * the error for the latter. (This is why the block bus-errored undefined
+ * addresses once: a firmware self-test provokes one deliberately and fails on
+ * any synchronous processor exception, so posting is what lets it pass.)
  */
 static bool sgi_bridge_accepts(void *opaque, hwaddr addr, unsigned size,
                                bool is_write, MemTxAttrs attrs)
 {
-    if (!sgi_bridge_reg(addr)) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-bridge: %s of register 0x%" HWADDR_PRIx " which "
-                      "this model does not implement; raising a bus error "
-                      "rather than answering\n",
-                      is_write ? "write" : "read", addr);
-        return false;
-    }
     return true;
+}
+
+/*
+ * Post an access to an undefined address in the register window and record the
+ * invalid-address error, rather than raising a synchronous bus error. The
+ * failing access completes; the error is reported asynchronously through the
+ * interrupt status register's bit 24, which a guest polls or takes an interrupt
+ * on. Still logged, because a genuine firmware probe of an unused slot and a
+ * gap in this model's register coverage look alike from here and the log is
+ * where they are told apart.
+ */
+static void sgi_bridge_invalid_address(SGIBridgeState *s, hwaddr addr,
+                                       bool is_write)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-bridge: %s of undefined register 0x%" HWADDR_PRIx
+                  "; posting it and flagging an invalid-address error\n",
+                  is_write ? "write" : "read", addr);
+    s->int_error |= INT_INVALID_ADDR;
 }
 
 /*
@@ -1264,10 +1292,13 @@ static uint32_t sgi_bridge_live(SGIBridgeState *s, hwaddr addr)
     switch (addr - SGI_BRIDGE_REG_DATA) {
     case BRIDGE_INT_STATUS:
         /*
-         * The pins as they are now, and no error bits: this model produces no
-         * errors, so every condition above the pins is clear.
+         * The device pins as they are now, composed live so the register
+         * follows the level and never latches, ORed with the latched error
+         * bits. The one error this model raises is the invalid-address bit,
+         * set when a guest touches an undefined register-window address and
+         * held until the reset-interrupt-status register clears it.
          */
-        return s->pin_level & INT_DEVICE_PINS;
+        return (s->pin_level & INT_DEVICE_PINS) | s->int_error;
     default:
         g_assert_not_reached();
     }
@@ -1278,8 +1309,11 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
     SGIBridgeState *s = opaque;
     const SGIBridgeReg *reg = sgi_bridge_reg(addr);
 
-    /* Anything else was refused before it reached here. */
-    g_assert(reg);
+    /* An undefined address in the block posts and flags rather than faulting. */
+    if (!reg) {
+        sgi_bridge_invalid_address(s, addr, false);
+        return ~(uint64_t)0;
+    }
 
     switch (reg->access) {
     case SGI_BRIDGE_LIVE:
@@ -1834,10 +1868,16 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
 {
     SGIBridgeState *s = opaque;
     const SGIBridgeReg *reg = sgi_bridge_reg(addr);
-    uint32_t *held = &s->reg[addr / SGI_BRIDGE_REG_SLOT];
+    uint32_t *held;
     unsigned int slot;
 
-    g_assert(reg);
+    /* An undefined address in the block posts and flags rather than faulting. */
+    if (!reg) {
+        sgi_bridge_invalid_address(s, addr, true);
+        return;
+    }
+
+    held = &s->reg[addr / SGI_BRIDGE_REG_SLOT];
 
     switch (reg->access) {
     case SGI_BRIDGE_LIVE:
@@ -1848,10 +1888,16 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case SGI_BRIDGE_WO:
         /*
-         * A strobe. Every one of them asks this model to release something it
-         * never held, so accepting the write and doing nothing is the whole of
-         * the behaviour; the register keeps reading its reset value.
+         * A strobe. Most ask this model to release something it never held, so
+         * accepting the write and doing nothing is the whole of the behaviour.
+         * The one with an effect is the reset-interrupt-status register: a one
+         * in a group bit clears that group's latched errors, and the only one
+         * this model latches is the invalid-address bit.
          */
+        if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_INT_RESET &&
+            ((uint32_t)val & INT_RESET_GROUPS)) {
+            s->int_error = 0;
+        }
         return;
     case SGI_BRIDGE_RW:
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
@@ -1942,6 +1988,36 @@ static const MemoryRegionOps sgi_bridge_reserved_data_half_ops = {
     .valid.accepts = sgi_bridge_reserved_data_half_accepts,
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
+};
+
+/*
+ * The external-SSRAM window. This board fits no external RAM, so every access
+ * completes but the reads float high. The PROM sizes the RAM with an unguarded
+ * probe — it writes a pattern and reads it back, expecting a completing access,
+ * not a bus error — and a window that returned the written pattern would make
+ * it believe RAM is present. All-ones is the natural float of an undriven bus
+ * and differs from any probe pattern, so the size probes as zero. Writes are
+ * dropped. Crosstalk addresses this space in doublewords, so accepts up to
+ * eight bytes.
+ */
+static uint64_t sgi_bridge_ssram_read(void *opaque, hwaddr addr, unsigned size)
+{
+    return ~(uint64_t)0;
+}
+
+static void sgi_bridge_ssram_write(void *opaque, hwaddr addr, uint64_t val,
+                                   unsigned size)
+{
+}
+
+static const MemoryRegionOps sgi_bridge_ssram_ops = {
+    .read = sgi_bridge_ssram_read,
+    .write = sgi_bridge_ssram_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
 };
 
 /*
@@ -2563,6 +2639,7 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
         sgi_bridge_identification(s);
 
     s->pin_level = 0;
+    s->int_error = 0;
 
     /*
      * Every entry resets with its valid bit clear, which is the state that says
@@ -2610,6 +2687,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                           "sgi-bridge.reserved-data-half", 4);
     memory_region_add_subregion_overlap(&s->widget, BRIDGE_RESERVED_DATA_HALF,
                                         &s->reserved_data_half, 1);
+    memory_region_init_io(&s->ssram, obj, &sgi_bridge_ssram_ops, s,
+                          "sgi-bridge.ssram", BRIDGE_SSRAM_SIZE);
+    memory_region_add_subregion(&s->widget, BRIDGE_SSRAM_BASE, &s->ssram);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->widget);
 
     /*
@@ -2780,12 +2860,13 @@ static int sgi_bridge_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_bridge = {
     .name = "sgi-bridge",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = sgi_bridge_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIBridgeState, SGI_BRIDGE_REG_SLOTS),
         VMSTATE_UINT8(pin_level, SGIBridgeState),
+        VMSTATE_UINT32_V(int_error, SGIBridgeState, 4),
         VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
                                SGI_BRIDGE_ATE_ENTRIES, 2),
         /*
