@@ -1,12 +1,14 @@
-# Tests for the matrix manifest parser
+# Tests for the matrix manifest parser and per-cell command-line builder
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from lib_matrix import Cell, MatrixError, parse_matrix
+from lib_matrix import (Cell, MatrixError, machine_props, parse_matrix,
+                         qemu_args)
 
 
 STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
@@ -115,3 +117,83 @@ def test_rejects_wrong_field_count(tmp_path):
 
     with pytest.raises(MatrixError):
         parse_matrix(manifest)
+
+
+# Tests for the per-cell QEMU command-line builder
+
+# A known-good Cell, typed rather than string-valued, so each test can
+# override just the field it cares about.
+BASE_CELL = Cell(
+    id='firmware_smoke',
+    guest='prom',
+    scenario='smoke',
+    cpus=1,
+    nodes=1,
+    mem='64M',
+    accel='wallclock',
+    firmware='synth',
+    speed='quick',
+    timeout=120,
+    attempts=1,
+    min_passes=1,
+    expect='pass',
+    xfail_oracle='',
+    xfail_signature='',
+)
+
+
+def make_cell(**overrides):
+    return replace(BASE_CELL, **overrides)
+
+
+def test_machine_props_prom():
+    synth_cell = make_cell(firmware='synth')
+    assert (machine_props(synth_cell) ==
+            'origin200,synthesized-firmware=on,debug-leds=on')
+
+    prom_cell = make_cell(firmware='prom')
+    assert (machine_props(prom_cell) ==
+            'origin200,synthesized-firmware=off,debug-leds=on')
+
+
+def test_icount_regime():
+    args = qemu_args(make_cell(accel='icount'))
+    joined = ' '.join(args)
+
+    assert '-accel tcg,thread=single' in joined
+    assert '-icount shift=2,align=off,sleep=on' in joined
+
+
+def test_mttcg_regime():
+    args = qemu_args(make_cell(accel='mttcg'))
+    joined = ' '.join(args)
+
+    assert '-accel tcg,thread=multi' in joined
+    assert '-icount' not in args
+
+
+def test_wallclock_regime():
+    args = qemu_args(make_cell(accel='wallclock'))
+    joined = ' '.join(args)
+
+    assert '-accel tcg,thread=single' in joined
+    assert '-icount' not in args
+
+
+def test_single_node_no_numa():
+    args = qemu_args(make_cell(cpus=1, nodes=1))
+    joined = ' '.join(args)
+
+    assert '-smp 1' in joined
+    assert '-numa' not in args
+
+
+def test_two_node_numa():
+    args = qemu_args(make_cell(cpus=4, nodes=2, mem='128M'))
+    joined = ' '.join(args)
+
+    assert '-smp 4,sockets=2,cores=2,threads=1' in joined
+    assert '-object memory-backend-ram,id=ram0,size=64M' in joined
+    assert '-object memory-backend-ram,id=ram1,size=64M' in joined
+    assert '-numa node,nodeid=0,memdev=ram0,cpus=0-1' in joined
+    assert '-numa node,nodeid=1,memdev=ram1,cpus=2-3' in joined

@@ -5,10 +5,10 @@
 The matrix manifest is a pipe-delimited table, one cell per line: `#`
 comments and blank lines are ignored, and each row's pipe-separated
 fields follow the exact order of the Cell dataclass below.
-parse_matrix() is the only entry point here; later stages of this
-subsystem (the per-cell command-line builder, the oracle/retry/verdict
-logic, the generic test body, and the meson projection) all build on
-the Cell records it returns.
+parse_matrix() turns a manifest into Cell records; machine_props() and
+qemu_args() turn a Cell into the -M value and the rest of the QEMU
+command line. Later stages of this subsystem (the oracle/retry/verdict
+logic, the generic test body, and the meson projection) build on both.
 """
 
 from dataclasses import dataclass, fields
@@ -115,3 +115,68 @@ def _validate(path, lineno, cell):
         raise MatrixError(
             f'{path}:{lineno}: xfail cell {cell.id!r} needs both '
             'xfail_oracle and xfail_signature')
+
+
+# The two accelerator regimes a cell's accel field may select between:
+# icount is the only one that runs deterministically (single-threaded
+# TCG with instruction-counted virtual time), mttcg is real
+# multi-threaded TCG, and wallclock/roundrobin both run single-threaded
+# TCG against the host clock, without icount.
+_ACCEL_ARGS = {
+    'icount': ['-accel', 'tcg,thread=single',
+               '-icount', 'shift=2,align=off,sleep=on'],
+    'mttcg': ['-accel', 'tcg,thread=multi'],
+    'wallclock': ['-accel', 'tcg,thread=single'],
+    'roundrobin': ['-accel', 'tcg,thread=single'],
+}
+
+_MEM_RE = re.compile(r'^(\d+)([A-Za-z]*)$')
+
+
+def machine_props(cell):
+    """Build the -M origin200,... machine property string for a cell."""
+    synthesized = 'on' if cell.firmware == 'synth' else 'off'
+    return f'origin200,synthesized-firmware={synthesized},debug-leds=on'
+
+
+def qemu_args(cell):
+    """Build the QEMU args that follow -M for a cell: accelerator (plus
+    icount, for the icount regime), -m, -smp, and, for a multi-node
+    cell, one memory-backend-ram object and one -numa node per node.
+    """
+    args = list(_ACCEL_ARGS[cell.accel])
+    args += ['-m', cell.mem]
+
+    if cell.nodes == 1:
+        args += ['-smp', str(cell.cpus)]
+        return args
+
+    cpus_per_node = cell.cpus // cell.nodes
+    args += ['-smp',
+             f'{cell.cpus},sockets={cell.nodes},'
+             f'cores={cpus_per_node},threads=1']
+
+    per_node_mem = _split_mem(cell.mem, cell.nodes)
+    for node in range(cell.nodes):
+        args += ['-object',
+                 f'memory-backend-ram,id=ram{node},size={per_node_mem}']
+    for node in range(cell.nodes):
+        lo = node * cpus_per_node
+        hi = lo + cpus_per_node - 1
+        args += ['-numa',
+                 f'node,nodeid={node},memdev=ram{node},cpus={lo}-{hi}']
+
+    return args
+
+
+def _split_mem(mem, nodes):
+    """Split a memory size string (e.g. '128M') evenly across nodes."""
+    match = _MEM_RE.match(mem)
+    if not match:
+        raise MatrixError(f'unrecognised mem size {mem!r}')
+    value, suffix = match.groups()
+    value = int(value)
+    if value % nodes != 0:
+        raise MatrixError(
+            f'mem {mem!r} does not split evenly across {nodes} nodes')
+    return f'{value // nodes}{suffix}'
