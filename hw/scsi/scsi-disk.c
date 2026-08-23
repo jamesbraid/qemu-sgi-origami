@@ -2021,6 +2021,11 @@ static void scsi_disk_emulate_write_data(SCSIRequest *req)
         scsi_req_complete(&r->req, GOOD);
         break;
 
+    case SEND_DIAGNOSTIC:
+        /* Diagnostic parameter list received; a healthy drive accepts it. */
+        scsi_req_complete(&r->req, GOOD);
+        break;
+
     default:
         abort();
     }
@@ -2276,6 +2281,14 @@ static int32_t scsi_disk_emulate_command(SCSIRequest *req, uint8_t *buf)
         break;
     case FORMAT_UNIT:
         trace_scsi_disk_emulate_command_FORMAT_UNIT(r->req.cmd.xfer);
+        break;
+    case SEND_DIAGNOSTIC:
+        trace_scsi_disk_emulate_command_SEND_DIAGNOSTIC(
+                (req->cmd.buf[1] >> 2) & 1, r->req.cmd.xfer);
+        /*
+         * Report a successful self-test.  A page-format request's parameter
+         * list is accepted and discarded in scsi_disk_emulate_write_data().
+         */
         break;
     default:
         trace_scsi_disk_emulate_command_UNKNOWN(buf[0],

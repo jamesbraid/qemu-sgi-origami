@@ -262,6 +262,44 @@ static void test_write_to_cdrom(void *obj, void *data,
     qvirtio_scsi_pci_free(vs);
 }
 
+/*
+ * SEND DIAGNOSTIC: a healthy drive passes its default self-test and accepts a
+ * page-format parameter list instead of answering INVALID OPCODE.  IRIX fx
+ * runs the default self-test when it opens a drive and reports the disk broken
+ * ("Illegal request: Invalid command code") if it fails.
+ */
+static void test_send_diagnostic(void *obj, void *data,
+                                 QGuestAllocator *t_alloc)
+{
+    QVirtioSCSI *scsi = obj;
+    QVirtioSCSIQueues *vs;
+    /* Default self-test: SELFTEST set, empty parameter list. */
+    const uint8_t selftest_cdb[VIRTIO_SCSI_CDB_SIZE] = {
+        0x1d, 0x04, 0x00, 0x00, 0x00, 0x00
+    };
+    /* Page format: PF set, a four-byte parameter list follows. */
+    const uint8_t page_format_cdb[VIRTIO_SCSI_CDB_SIZE] = {
+        0x1d, 0x10, 0x00, 0x00, 0x04, 0x00
+    };
+    uint8_t page[4] = { 0 };
+    struct virtio_scsi_cmd_resp resp;
+
+    alloc = t_alloc;
+    vs = qvirtio_scsi_init(scsi->vdev);
+
+    /* The self-test issued at drive open must succeed. */
+    virtio_scsi_do_command(vs, selftest_cdb, NULL, 0, NULL, 0, &resp);
+    g_assert_cmphex(resp.response, ==, 0);
+    g_assert_cmphex(resp.status, ==, GOOD);
+
+    /* A parameter-list request must complete without aborting QEMU. */
+    virtio_scsi_do_command(vs, page_format_cdb, NULL, 0, page, sizeof(page),
+                           &resp);
+    g_assert_cmphex(resp.response, ==, 0);
+
+    qvirtio_scsi_pci_free(vs);
+}
+
 static void test_iothread_attach_node(void *obj, void *data,
                                       QGuestAllocator *t_alloc)
 {
@@ -401,6 +439,9 @@ static void register_virtio_scsi_test(void)
 
     opts.before = virtio_scsi_setup_cd;
     qos_add_test("write-to-cdrom", "virtio-scsi", test_write_to_cdrom, &opts);
+
+    opts.before = virtio_scsi_setup;
+    qos_add_test("send-diagnostic", "virtio-scsi", test_send_diagnostic, &opts);
 
     opts.before = virtio_scsi_setup_iothread;
     opts.edge = (QOSGraphEdgeOptions) {
