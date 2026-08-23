@@ -3430,8 +3430,8 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 
             name = g_strdup_printf("sn0.node%u.xtalk.widget%u",
                                    node_index, widget);
-            memory_region_init_alias(&s->widget_alias[node_index][widget], NULL,
-                                     name, bridge_face, 0,
+            memory_region_init_alias(&s->widget_alias[node_index][widget],
+                                     OBJECT(s), name, bridge_face, 0,
                                      SGI_BRIDGE_WIDGET_SIZE);
             memory_region_add_subregion(&s->nodes[node_index].xtalk,
                                         SN0_XTALK_BASE(widget),
