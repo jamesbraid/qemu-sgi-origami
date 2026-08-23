@@ -21,13 +21,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu/bcd.h"
 #include "qemu/log.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "system/rtc.h"
 #include "qemu/cutils.h"
+#include "qemu/error-report.h"
 
 /*
  * The time a read of the clock should report: the frozen instant if software
@@ -93,6 +96,23 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
     }
 }
 
+/*
+ * Every write into a cell, including the two bytes in the clock block that
+ * are genuine storage rather than derived from the running clock -- the
+ * control register and the weekday. This is the one place that has to know
+ * a drive is attached, so nothing else in the file does. A backing-store
+ * failure is reported and otherwise ignored: the guest's write already
+ * landed in s->cell, and a host-side write failure is not something the
+ * guest did wrong.
+ */
+static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
+{
+    s->cell[addr] = val;
+    if (s->blk && blk_pwrite(s->blk, addr, 1, &s->cell[addr], 0) < 0) {
+        error_report("m48t35: write to backing store failed");
+    }
+}
+
 static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
 {
     /*
@@ -120,7 +140,7 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
          * value away, but a silent drop is not something to leave in a device
          * because nobody currently looks.
          */
-        s->cell[M48T35_WEEKDAY] = val;
+        m48t35_store(s, M48T35_WEEKDAY, val);
         break;
     case M48T35_DAY:
         s->staged_mday = from_bcd(val);
@@ -205,7 +225,7 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
         s->time_offset = mktimegm(&tm) - mktimegm(&now);
     }
 
-    s->cell[M48T35_CONTROL] = val;
+    m48t35_store(s, M48T35_CONTROL, val);
 }
 
 static uint64_t m48t35_read(void *opaque, hwaddr addr, unsigned size)
@@ -253,7 +273,7 @@ static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     }
 
-    s->cell[addr] = val;
+    m48t35_store(s, addr, val);
 }
 
 /*
@@ -293,6 +313,39 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
 {
     M48T35State *s = M48T35(dev);
 
+    /*
+     * The drive is optional, and the check is exact rather than a minimum:
+     * a file of any other length is not this part's content, not a partial
+     * write to grow later. Same contract hw/nvram/mac_nvram.c's blk-backed
+     * NVRAM uses for the same reason -- a size mismatch is a configuration
+     * mistake to report, not a size to adapt to.
+     */
+    if (s->blk) {
+        int64_t len = blk_getlength(s->blk);
+
+        if (len < 0) {
+            error_setg_errno(errp, -len,
+                             "m48t35: could not get the length of the "
+                             "nvram backing file");
+            return;
+        }
+        if (len != M48T35_SIZE) {
+            error_setg(errp,
+                      "m48t35: nvram backing file is %" PRId64 " bytes, "
+                      "not the required %u", len, M48T35_SIZE);
+            return;
+        }
+        if (blk_set_perm(s->blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                         BLK_PERM_ALL, errp) < 0) {
+            return;
+        }
+        if (blk_pread(s->blk, 0, M48T35_SIZE, s->cell, 0) < 0) {
+            error_setg(errp, "m48t35: could not read the nvram backing "
+                      "file");
+            return;
+        }
+    }
+
     memory_region_init_io(&s->iomem, OBJECT(dev), &m48t35_ops, s,
                           "m48t35", M48T35_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
@@ -318,6 +371,10 @@ static const VMStateDescription vmstate_m48t35 = {
     }
 };
 
+static const Property m48t35_properties[] = {
+    DEFINE_PROP_DRIVE("drive", M48T35State, blk),
+};
+
 static void m48t35_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -326,6 +383,7 @@ static void m48t35_class_init(ObjectClass *oc, const void *data)
     dc->desc = "M48T35-class Timekeeper NVRAM and real-time clock";
     dc->realize = m48t35_realize;
     dc->vmsd = &vmstate_m48t35;
+    device_class_set_props(dc, m48t35_properties);
     rc->phases.hold = m48t35_reset_hold;
 }
 

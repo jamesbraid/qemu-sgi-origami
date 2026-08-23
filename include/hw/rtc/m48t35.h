@@ -9,6 +9,7 @@
 
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
+#include "system/block-backend.h"
 
 #define TYPE_M48T35 "m48t35"
 OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
@@ -66,6 +67,15 @@ struct M48T35State {
      * places to be wrong.
      */
     uint8_t cell[M48T35_SIZE];
+
+    /*
+     * The battery, optional. Unset, a fresh process starts from zeroed
+     * cells exactly as it always has; given a drive of exactly M48T35_SIZE
+     * bytes, the cells are loaded from it on realize and every write goes
+     * back to it, so content outlives the process the way the real part's
+     * content outlives the host machine being off.
+     */
+    BlockBackend *blk;
 
     /*
      * What the clock reads relative to the host's, in seconds. A guest that

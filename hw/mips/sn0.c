@@ -32,6 +32,7 @@
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
+#include "system/block-backend.h"
 #include "system/numa.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
@@ -2948,6 +2949,23 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
         mac.a[2] = 0x69;
         qdev_prop_set_macaddr(DEVICE(ioc3), "mac", mac.a);
     }
+
+    /*
+     * The timekeeper's battery, optional and per node: each base I/O board
+     * carries its own, so the id is derived from node_index rather than
+     * fixed, the same way a two-node machine's two controllers are never
+     * confused for each other anywhere else in this file. Unnamed, nothing
+     * changes -- the timekeeper stays exactly as ephemeral as it always was.
+     */
+    {
+        g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", node_index);
+        BlockBackend *nvram_blk = blk_by_name(nvram_id);
+
+        if (nvram_blk) {
+            qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", nvram_blk);
+        }
+    }
+
     pci_realize_and_unref(ioc3,
                           PCI_HOST_BRIDGE(&s->io_bridge[node_index])->bus,
                           &error_fatal);
