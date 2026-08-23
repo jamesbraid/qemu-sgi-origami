@@ -7,8 +7,10 @@ comments and blank lines are ignored, and each row's pipe-separated
 fields follow the exact order of the Cell dataclass below.
 parse_matrix() turns a manifest into Cell records; machine_props() and
 qemu_args() turn a Cell into the -M value and the rest of the QEMU
-command line. Later stages of this subsystem (the oracle/retry/verdict
-logic, the generic test body, and the meson projection) build on both.
+command line; verdict() turns a cell and its recorded AttemptResults
+into a pass/fail/xfail/xpass/error outcome. Later stages of this
+subsystem (the generic test body and the meson projection) build on
+all three.
 """
 
 from dataclasses import dataclass, fields
@@ -167,6 +169,54 @@ def qemu_args(cell):
                  f'node,nodeid={node},memdev=ram{node},cpus={lo}-{hi}']
 
     return args
+
+
+@dataclass
+class AttemptResult:
+    """The outcome of one boot attempt against a cell's oracle.
+
+    reached_oracle is True when the attempt observed its expected
+    success signal (a progress code, exit marker, or console pattern,
+    depending on the cell's oracle). signature is the failure
+    signature recorded when it did not, for matching against an xfail
+    cell's xfail_signature. infra_error is set instead of either when
+    the attempt could not run to a real verdict at all — a missing
+    asset, a QEMU crash, a timeout with no signature captured.
+    """
+    reached_oracle: bool
+    signature: str | None = None
+    infra_error: str | None = None
+
+
+def verdict(cell, attempts):
+    """Decide a cell's verdict from its recorded AttemptResults.
+
+    Returns one of 'pass', 'fail', 'xfail', 'xpass', 'error'.
+
+    An infra_error on any attempt always wins: it is never absorbed
+    into a pass or an xfail, because it means the attempt never
+    produced a real answer about the guest. Otherwise a 'pass' cell
+    passes once at least min_passes attempts reached the oracle, and
+    an 'xfail' cell passes (as 'xfail') only when every attempt that
+    missed the oracle failed with exactly the recorded xfail_signature
+    — reaching the oracle at all is an 'xpass', and missing it with a
+    different signature is a real 'fail'.
+    """
+    if any(attempt.infra_error for attempt in attempts):
+        return 'error'
+
+    if cell.expect == 'pass':
+        reached = sum(1 for attempt in attempts if attempt.reached_oracle)
+        return 'pass' if reached >= cell.min_passes else 'fail'
+
+    # cell.expect == 'xfail'
+    if all(attempt.reached_oracle for attempt in attempts):
+        return 'xpass'
+    signatures = {attempt.signature for attempt in attempts
+                  if not attempt.reached_oracle}
+    if signatures == {cell.xfail_signature}:
+        return 'xfail'
+    return 'fail'
 
 
 def _split_mem(mem, nodes):
