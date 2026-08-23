@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from lib_matrix import (Cell, MatrixError, machine_props, parse_matrix,
-                         qemu_args)
+from lib_matrix import (AttemptResult, Cell, MatrixError, machine_props,
+                         parse_matrix, qemu_args, verdict)
 
 
 STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
@@ -197,3 +197,67 @@ def test_two_node_numa():
     assert '-object memory-backend-ram,id=ram1,size=64M' in joined
     assert '-numa node,nodeid=0,memdev=ram0,cpus=0-1' in joined
     assert '-numa node,nodeid=1,memdev=ram1,cpus=2-3' in joined
+
+
+# Tests for the oracle/retry/expected-failure verdict
+
+PASS_CELL = make_cell(expect='pass', attempts=3, min_passes=2)
+
+XFAIL_CELL = make_cell(expect='xfail', attempts=1, min_passes=1,
+                        xfail_oracle='firmware',
+                        xfail_signature='reset_vector_trap')
+
+
+def test_pass_meets_threshold():
+    attempts = [
+        AttemptResult(reached_oracle=True),
+        AttemptResult(reached_oracle=True),
+        AttemptResult(reached_oracle=False),
+    ]
+
+    assert verdict(PASS_CELL, attempts) == 'pass'
+
+
+def test_fail_below_threshold():
+    attempts = [
+        AttemptResult(reached_oracle=True),
+        AttemptResult(reached_oracle=False),
+        AttemptResult(reached_oracle=False),
+    ]
+
+    assert verdict(PASS_CELL, attempts) == 'fail'
+
+
+def test_infra_error_is_error_not_pass():
+    attempts = [
+        AttemptResult(reached_oracle=True),
+        AttemptResult(reached_oracle=False,
+                       infra_error='missing asset: origin200-prom.bin'),
+        AttemptResult(reached_oracle=True),
+    ]
+
+    assert verdict(PASS_CELL, attempts) == 'error'
+
+
+def test_xfail_matching_signature():
+    attempts = [
+        AttemptResult(reached_oracle=False,
+                       signature='reset_vector_trap'),
+    ]
+
+    assert verdict(XFAIL_CELL, attempts) == 'xfail'
+
+
+def test_xfail_wrong_signature_is_fail():
+    attempts = [
+        AttemptResult(reached_oracle=False,
+                       signature='unexpected_nmi'),
+    ]
+
+    assert verdict(XFAIL_CELL, attempts) == 'fail'
+
+
+def test_xfail_that_passes_is_xpass():
+    attempts = [AttemptResult(reached_oracle=True)]
+
+    assert verdict(XFAIL_CELL, attempts) == 'xpass'
