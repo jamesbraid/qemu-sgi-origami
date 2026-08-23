@@ -958,10 +958,51 @@ static void test_ram_dma_through_the_direct_window(const void *data)
     qtest_quit(qts);
 }
 
+static void test_pci_status_reset_value(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    /*
+     * The single-CPU IRIX miniroot's io_config_space diagnostic
+     * (diag_io6confSpace_sanity) reads the PCI Command/Status dword at
+     * configuration offset 0x04 for each device and compares all 32 bits
+     * against a per-device reset value. For this adapter it expects
+     * 0x02000000: Command 0, Status 0x0200 (bit 9, medium DEVSEL). A model
+     * that leaves the Status half zero miscompares and the miniroot fails
+     * the I/O slot. See docs/datasheets/isp1040.md.
+     *
+     * This asserts the Status half only, not the full dword. The board
+     * (hw/mips/sn0.c) pre-enables the Command half for no-firmware bring-up,
+     * so at qtest time Command reads non-zero here; on the real machine the
+     * miniroot resets the device before the diagnostic (its console capture
+     * shows the whole dword reading 0 before this fix), which clears the
+     * writable Command bits while the read-only Status bits survive. So the
+     * reset value under test is the Status half, and the full-dword
+     * 0x02000000 the diagnostic compares is that Status half over a
+     * reset-cleared Command half — which the miniroot rerun is the gate for.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND) >> 16,
+                    ==, 0x0200u);
+
+    /*
+     * The Status capability bits are read-only and the error latches are
+     * write-one-to-clear from a reset of zero, so writing all ones leaves
+     * the Status half exactly 0x0200: bit 9 still set, no other bit set,
+     * no latch spuriously raised.
+     */
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND, 0xffffffffu);
+    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND) >> 16,
+                    ==, 0x0200u);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("sn0/qlogic-isp/pci-status-reset-value", NULL,
+                        test_pci_status_reset_value);
     qtest_add_data_func("sn0/qlogic-isp/swap-bit-is-unset", NULL,
                         test_swap_bit_is_unset);
     qtest_add_data_func("sn0/qlogic-isp/reset-signature-through-the-fabric",
