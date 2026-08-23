@@ -2319,3 +2319,248 @@
 # Since: 1.2
 ##
 { 'command': 'query-cpu-definitions', 'returns': ['CpuDefinitionInfo'] }
+
+##
+# @SgiOriginCpuState:
+#
+# Non-stop diagnostic state for one Origin processor.
+#
+# @index: global CPU index
+#
+# @interrupt-request: pending generic CPU interrupt bits
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginCpuState',
+  'data': { 'index': 'int',
+            'interrupt-request': 'uint32' } }
+
+##
+# @SgiOriginPcf8584State:
+#
+# Internal state of one Origin Hub's PCF8584 I2C controller.
+#
+# @data: data register
+#
+# @control: control register
+#
+# @status: status register
+#
+# @transfer: current transfer phase
+#
+# @receiving: whether the controller is receiving
+#
+# @start-pending: whether a START is pending
+#
+# @address-staged: whether an address is staged
+#
+# @address: current seven-bit bus address
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginPcf8584State',
+  'data': { 'data': 'uint8',
+            'control': 'uint8',
+            'status': 'uint8',
+            'transfer': 'bool',
+            'receiving': 'bool',
+            'start-pending': 'bool',
+            'address-staged': 'bool',
+            'address': 'uint8' } }
+
+##
+# @SgiOriginElscState:
+#
+# Internal queue and arbitration state of one Origin ELSC.
+#
+# @rx-length: received request bytes
+#
+# @tx-length: response bytes
+#
+# @tx-position: next response byte
+#
+# @arbitration-code: current arbitration code
+#
+# @arbitration-present: whether the arbitration signal is asserted
+#
+# @queue-length: queued console input bytes
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginElscState',
+  'data': { 'rx-length': 'uint32',
+            'tx-length': 'uint32',
+            'tx-position': 'uint32',
+            'arbitration-code': 'uint32',
+            'arbitration-present': 'bool',
+            'queue-length': 'uint32' } }
+
+##
+# @SgiOriginHubState:
+#
+# Non-stop diagnostic state for one Origin Hub and its controller bus.
+#
+# @node: machine node index
+#
+# @nasid: programmed node identifier
+#
+# @cpu-a-enabled: whether processor A is enabled
+#
+# @cpu-b-enabled: whether processor B is enabled
+#
+# @pending0: first Hub interrupt pending bank
+#
+# @pending1: second Hub interrupt pending bank
+#
+# @mask-a0: processor A mask for pending bank zero
+#
+# @mask-a1: processor A mask for pending bank one
+#
+# @mask-b0: processor B mask for pending bank zero
+#
+# @mask-b1: processor B mask for pending bank one
+#
+# @rt-compare-a: processor A real-time comparator
+#
+# @rt-compare-b: processor B real-time comparator
+#
+# @rt-pending-a: processor A comparator pending bit
+#
+# @rt-pending-b: processor B comparator pending bit
+#
+# @rt-enabled-a: processor A comparator interrupt enable
+#
+# @rt-enabled-b: processor B comparator interrupt enable
+#
+# @pcf8584: I2C controller state
+#
+# @elsc: system-controller state
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginHubState',
+  'data': { 'node': 'int',
+            'nasid': 'uint32',
+            'cpu-a-enabled': 'bool',
+            'cpu-b-enabled': 'bool',
+            'pending0': 'uint64',
+            'pending1': 'uint64',
+            'mask-a0': 'uint64',
+            'mask-a1': 'uint64',
+            'mask-b0': 'uint64',
+            'mask-b1': 'uint64',
+            'rt-compare-a': 'uint64',
+            'rt-compare-b': 'uint64',
+            'rt-pending-a': 'bool',
+            'rt-pending-b': 'bool',
+            'rt-enabled-a': 'bool',
+            'rt-enabled-b': 'bool',
+            'pcf8584': 'SgiOriginPcf8584State',
+            'elsc': 'SgiOriginElscState' } }
+
+##
+# @SgiOriginFlightEvent:
+#
+# One recent Origin device transition.
+#
+# @sequence: machine-wide event sequence
+#
+# @virtual-time-ns: QEMU virtual-clock timestamp
+#
+# @node: machine node index
+#
+# @component: device that recorded the transition
+#
+# @operation: operation that caused the transition
+#
+# @address: device-local address or register identifier
+#
+# @value: transferred value
+#
+# @size: access width in bytes
+#
+# @cpu-index: issuing processor index, for vCPU MMIO accesses
+#
+# @pc: issuing processor's store or load PC, for vCPU MMIO accesses
+#
+# @before: packed device state before the transition, when applicable
+#
+# @after: packed device state after the transition, when applicable
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginFlightEvent',
+  'data': { 'sequence': 'uint64',
+            'virtual-time-ns': 'int64',
+            'node': 'int',
+            'component': 'str',
+            'operation': 'str',
+            'address': 'uint64',
+            'value': 'uint64',
+            'size': 'uint8',
+            '*cpu-index': 'int',
+            '*pc': 'uint64',
+            '*before': 'uint64',
+            '*after': 'uint64' } }
+
+##
+# @SgiOriginFlightRecorder:
+#
+# Bounded recent Origin device transitions.
+#
+# @enabled: whether the machine is recording transitions
+#
+# @next-sequence: sequence assigned to the next event
+#
+# @dropped: events overwritten after the ring filled
+#
+# @events: retained events ordered oldest to newest
+#
+# A machine reset discards earlier history and device reset activity
+# before the guest resumes.
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginFlightRecorder',
+  'data': { 'enabled': 'bool',
+            'next-sequence': 'uint64',
+            'dropped': 'uint64',
+            'events': ['SgiOriginFlightEvent'] } }
+
+##
+# @SgiOriginState:
+#
+# Non-stop diagnostic state for an SGI Origin machine.  The CPU list
+# contains immutable identity and atomically observed interrupt bits.
+# The command does not read live architectural registers under MTTCG.
+#
+# @query-sequence: sequence number incremented for each query
+#
+# @cpus: processor observations
+#
+# @hubs: Hub and controller-bus observations
+#
+# @flight-recorder: recent device transitions
+#
+# Since: 11.1
+##
+{ 'struct': 'SgiOriginState',
+  'data': { 'query-sequence': 'uint64',
+            'cpus': ['SgiOriginCpuState'],
+            'hubs': ['SgiOriginHubState'],
+            'flight-recorder': 'SgiOriginFlightRecorder' } }
+
+##
+# @x-query-origin-state:
+#
+# Return live SGI Origin diagnostics without stopping the machine.
+# The command does not wait for a vCPU rendezvous.
+#
+# @event-limit: newest flight-recorder events to return, up to 4096
+#     (default: 256)
+#
+# Since: 11.1
+##
+{ 'command': 'x-query-origin-state',
+  'data': { '*event-limit': 'uint32' },
+  'returns': 'SgiOriginState' }

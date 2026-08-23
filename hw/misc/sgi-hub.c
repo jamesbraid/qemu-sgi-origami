@@ -695,7 +695,7 @@ static bool sgi_hub_protocol_write_register(hwaddr addr)
     }
 }
 
-static uint32_t sgi_hub_programmed_nasid(const SGIHubState *s)
+uint32_t sgi_hub_programmed_nasid(const SGIHubState *s)
 {
     return (s->ni_status & NI_STATUS_NODE_MASK) >> NI_STATUS_NODE_SHIFT;
 }
@@ -1646,7 +1646,8 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
     }
 }
 
-static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
+                                      unsigned size)
 {
     SGIHubState *s = opaque;
     uint64_t value;
@@ -2034,8 +2035,178 @@ static const char *sgi_hub_led_decode(uint8_t code, bool *is_failure)
     return NULL;
 }
 
-static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
-                          unsigned size)
+static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
+                                     uint64_t write_value, uint64_t *value)
+{
+    uint8_t *route;
+    unsigned int n;
+    hwaddr reg;
+
+    if (sgi_hub_bwin_entry(addr, &n)) {
+        *value = s->io_bwin[n];
+        return true;
+    }
+    if (sgi_hub_bte_entry(addr, &n, &reg)) {
+        *value = sgi_hub_bte_read(s, n, reg);
+        return true;
+    }
+    route = sgi_hub_route_entry(s, addr);
+    if (route) {
+        *value = *route;
+        return true;
+    }
+
+    switch (addr) {
+    case HUB_PI_RT_COUNT:
+        *value = sgi_hub_rt_count(s);
+        return true;
+    case HUB_PI_RT_COMPARE_A:
+        *value = qatomic_read(&s->pi_rt_compare[0]);
+        return true;
+    case HUB_PI_RT_COMPARE_B:
+        *value = qatomic_read(&s->pi_rt_compare[1]);
+        return true;
+    case HUB_PI_RT_PENDING_A:
+        *value = s->pi_rt_pending[0];
+        return true;
+    case HUB_PI_RT_PENDING_B:
+        *value = s->pi_rt_pending[1];
+        return true;
+    case HUB_PI_RT_ENABLE_A:
+        *value = s->pi_rt_enable[0];
+        return true;
+    case HUB_PI_RT_ENABLE_B:
+        *value = s->pi_rt_enable[1];
+        return true;
+    case HUB_PI_RT_LOCAL_CTRL:
+        *value = s->pi_rt_local_ctrl;
+        return true;
+    case HUB_PI_ERR_SPOOL_A:
+        *value = s->pi_err_spool[0];
+        return true;
+    case HUB_PI_ERR_SPOOL_B:
+        *value = s->pi_err_spool[1];
+        return true;
+    case HUB_PI_CPU_ENABLE_A:
+        *value = s->pi_cpu_enable[0];
+        return true;
+    case HUB_PI_CPU_ENABLE_B:
+        *value = s->pi_cpu_enable[1];
+        return true;
+    case HUB_PI_INT_MODIFY:
+        *value = qatomic_read(&s->pi_int_pend[
+            (write_value & PI_INT_MODIFY_NUMBER) / SGI_HUB_BANK_BITS]);
+        return true;
+    case HUB_PI_REGION_PRESENT:
+        *value = s->pi_region_present;
+        return true;
+    case HUB_PI_CALIAS_SIZE:
+        *value = s->pi_calias_size;
+        return true;
+    case HUB_PI_INT_MASK0_A:
+        *value = s->pi_int_mask[0];
+        return true;
+    case HUB_PI_INT_MASK1_A:
+        *value = s->pi_int_mask[1];
+        return true;
+    case HUB_PI_INT_MASK0_B:
+        *value = s->pi_int_mask[2];
+        return true;
+    case HUB_PI_INT_MASK1_B:
+        *value = s->pi_int_mask[3];
+        return true;
+    case HUB_IO_WIDGET_CONTROL:
+        *value = s->io_widget_control;
+        return true;
+    case HUB_IO_XTALK_TIMEOUT:
+        *value = s->io_xtalk_timeout;
+        return true;
+    case HUB_IO_XTALK_PRESCALE:
+        *value = s->io_xtalk_prescale;
+        return true;
+    case HUB_IO_SCRATCH_0:
+        *value = s->io_scratch[0];
+        return true;
+    case HUB_IO_SCRATCH_1:
+        *value = s->io_scratch[1];
+        return true;
+    case HUB_IO_LINK_STATUS:
+        *value = s->io_link_status;
+        return true;
+    case HUB_MD_CONFIG:
+        *value = s->md_config;
+        return true;
+    case HUB_MD_ONEWIRE:
+        *value = s->md_onewire;
+        return true;
+    case HUB_MD_PERF_CNT0:
+        *value = s->md_perf_cnt0;
+        return true;
+    case HUB_NI_STATUS:
+        *value = s->ni_status;
+        return true;
+    case HUB_NI_SCRATCH_0:
+        *value = s->ni_scratch[0];
+        return true;
+    case HUB_NI_SCRATCH_1:
+        *value = s->ni_scratch[1];
+        return true;
+    case HUB_NI_VECTOR:
+        *value = s->ni_vector;
+        return true;
+    case HUB_NI_VECTOR_DATA:
+        *value = s->ni_vector_data;
+        return true;
+    case HUB_NI_VECTOR_STATUS:
+    case HUB_NI_VECTOR_CLEAR:
+        *value = s->ni_vector_status;
+        return true;
+    case HUB_NI_RETURN_VECTOR:
+        *value = s->ni_return_vector;
+        return true;
+    case HUB_NI_VECTOR_READ_DATA:
+        *value = s->ni_vector_read_data;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
+                                          uint64_t *value)
+{
+    if (addr == HUB_NI_VECTOR_CLEAR) {
+        *value = s->ni_vector_status;
+        return true;
+    }
+    return false;
+}
+
+static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIHubState *s = opaque;
+    uint64_t before = 0;
+    uint64_t value;
+    uint64_t after = 0;
+    bool has_before_after;
+
+    if (likely(!s->diagnostic)) {
+        return sgi_hub_read_internal(opaque, addr, size);
+    }
+
+    has_before_after = sgi_hub_diagnostic_read_value(s, addr, &before);
+    value = sgi_hub_read_internal(opaque, addr, size);
+    if (has_before_after &&
+        !sgi_hub_diagnostic_read_value(s, addr, &after)) {
+        has_before_after = false;
+    }
+    device_diagnostic_record(s->diagnostic, "hub", "mmio-read", addr,
+                             value, size, has_before_after, before, after);
+    return value;
+}
+
+static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
+                                   unsigned size)
 {
     SGIHubState *s = opaque;
     uint8_t *route;
@@ -2426,6 +2597,28 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     }
 }
 
+static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
+                          unsigned size)
+{
+    SGIHubState *s = opaque;
+    uint64_t before = 0;
+    uint64_t after = 0;
+    bool has_before;
+    bool has_after;
+
+    if (likely(!s->diagnostic)) {
+        sgi_hub_write_internal(opaque, addr, val, size);
+        return;
+    }
+
+    has_before = sgi_hub_diagnostic_value(s, addr, val, &before);
+    sgi_hub_write_internal(opaque, addr, val, size);
+    has_after = sgi_hub_diagnostic_value(s, addr, val, &after);
+    device_diagnostic_record(s->diagnostic, "hub", "mmio-write", addr,
+                             val, size, has_before && has_after,
+                             before, after);
+}
+
 static const MemoryRegionOps sgi_hub_ops = {
     .read = sgi_hub_read,
     .write = sgi_hub_write,
@@ -2611,6 +2804,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                        s->junk_uart_chr, DEVICE_BIG_ENDIAN);
     }
 
+    s->i2c.diagnostic = s->diagnostic;
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c), errp)) {
         return;
     }
@@ -2643,7 +2837,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                             s->elsc_dip_switches);
         qdev_prop_set_chr(DEVICE(elsc), "chardev",
                           serial_hd(SN0_ELSC_CHARDEV));
+        s->elsc = SGI_ELSC(elsc);
+        s->elsc->diagnostic = s->diagnostic;
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
+            s->elsc = NULL;
             return;
         }
     }

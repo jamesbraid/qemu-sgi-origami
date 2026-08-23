@@ -21,6 +21,8 @@
 #define HW_MIPS_SN0_H
 
 #include "cpu.h"
+#include "qapi/error.h"
+#include "qapi/qapi-types-machine.h"
 
 /*
  * M mode: the node number is address bits 39:32 and a node owns 4 GB. N mode,
@@ -726,5 +728,7 @@
  */
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffff  /* bits 24:0, latched at reset */
+
+SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp);
 
 #endif /* HW_MIPS_SN0_H */

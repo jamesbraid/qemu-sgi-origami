@@ -69,6 +69,7 @@
 
 #define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
 #define MACHINE                 "-M origin200"
+#define MACHINE_RECORDING       "-M origin200,diagnostic-recording=on"
 
 /* The Hub's boot-flash view and AMD command offsets. */
 #define SPACE_HUB               0x10000000000ULL
@@ -99,6 +100,7 @@
 #define BTE_INT_LEVEL(l)        ((uint64_t)(l) << 16)
 #define BTE_LINE                128
 #define PI_INT_PEND0            0x000098
+#define PI_REGION_PRESENT       0x000018
 
 /* PCF8584 data and control registers inside the Hub-local window. */
 #define I2C_DATA                0x220000
@@ -221,6 +223,32 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
     }
+}
+
+static QDict *query_origin_state(QTestState *qts)
+{
+    return qtest_qmp_assert_success_ref(
+        qts, "{'execute': 'x-query-origin-state', "
+             "'arguments': {'event-limit': 4096}}");
+}
+
+static bool has_hub_write(QDict *state, uint64_t address, uint64_t value)
+{
+    QDict *recorder = qdict_get_qdict(state, "flight-recorder");
+    const QListEntry *entry;
+
+    for (entry = qlist_first(qdict_get_qlist(recorder, "events")); entry;
+         entry = qlist_next(entry)) {
+        QDict *event = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (!strcmp(qdict_get_str(event, "component"), "hub") &&
+            !strcmp(qdict_get_str(event, "operation"), "mmio-write") &&
+            qdict_get_uint(event, "address") == address &&
+            qdict_get_uint(event, "value") == value) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void attach_node_ioc3(QTestState *qts, unsigned int node)
@@ -673,6 +701,52 @@ static void test_flash_program_command_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+static void test_enabled_recorder_remains_wired_after_migration(
+    const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    QDict *source_state;
+    QDict *destination_state;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_RECORDING);
+    qtest_writeq(from, HUB_LOCAL + PI_REGION_PRESENT,
+                 0x0123456789abcdefULL);
+    source_state = query_origin_state(from);
+    g_assert_true(has_hub_write(source_state, PI_REGION_PRESENT,
+                                0x0123456789abcdefULL));
+
+    dest_cmdline = g_strdup_printf(MACHINE_RECORDING " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    destination_state = query_origin_state(to);
+    g_assert_true(qdict_get_bool(qdict_get_qdict(destination_state,
+                                                "flight-recorder"),
+                                 "enabled"));
+    g_assert_false(has_hub_write(destination_state, PI_REGION_PRESENT,
+                                 0x0123456789abcdefULL));
+    qobject_unref(destination_state);
+
+    qtest_writeq(to, HUB_LOCAL + PI_REGION_PRESENT,
+                 0xfedcba9876543210ULL);
+    destination_state = query_origin_state(to);
+    g_assert_true(has_hub_write(destination_state, PI_REGION_PRESENT,
+                                0xfedcba9876543210ULL));
+
+    qobject_unref(destination_state);
+    qobject_unref(source_state);
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -694,6 +768,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/migration/flash-program-command-"
                         "survives-migration",
                         NULL, test_flash_program_command_survives_migration);
+    qtest_add_data_func("sn0/migration/enabled-recorder-remains-wired",
+                        NULL,
+                        test_enabled_recorder_remains_wired_after_migration);
 
     return g_test_run();
 }
