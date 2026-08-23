@@ -2116,6 +2116,18 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     /* The adapter presents one interrupt line, and it is a level. */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
+    /*
+     * PCI Status reset value: config 0x04 must read back Status 0x0200
+     * (bit 9, medium DEVSEL) so a 32-bit read at reset returns 0x02000000.
+     * The single-CPU IRIX miniroot's io_config_space diagnostic compares
+     * this whole dword and fails the I/O slot on a zero Status half. The
+     * bit is read-only -- pci_init_wmask leaves wmask[PCI_STATUS] clear and
+     * only the error latches are write-one-to-clear -- so it survives the
+     * reset that clears the writable and w1c bits. See
+     * docs/datasheets/isp1040.md.
+     */
+    pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
+
     memory_region_init_io(&s->io, OBJECT(s), &qlogic_isp_reg_ops, s,
                           "qlogic-isp-io", QLOGIC_ISP_REG_WINDOW_SIZE);
     memory_region_init_io(&s->mmio, OBJECT(s), &qlogic_isp_reg_ops, s,
