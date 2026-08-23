@@ -23,6 +23,30 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
 
 /*
+ * Which -serial line each of the machine's character devices comes from,
+ * named rather than written as bare indices at the call sites, because the
+ * collision this numbering exists to prevent is invisible at any one of them:
+ * a device takes an index in one file and only a second device taking the
+ * same index in another file is the defect, so no single site reads wrong.
+ * Defined here, in the header both the machine and the Hub include, so the
+ * whole assignment sits in one place -- two of the four backends are wired by
+ * the Hub rather than by the machine, and a split definition would be exactly
+ * the cross-file collision the naming exists to prevent.
+ *
+ * The three shipped rear-panel connectors come first: index 0 and 1 are the
+ * base I/O controller's ports A and B (port A is also the synthesized
+ * firmware's console), and index 2 is the system controller's AUX port -- the
+ * one a console=d guest relocates its session onto. Index 3 is the bring-up
+ * port, which no shipped machine has and which is off unless asked for, so the
+ * optional part carries the highest index and the numbering of the shipped
+ * ports does not move when the option is used.
+ */
+#define SN0_IOC3_SERIAL_A_CHARDEV  0
+#define SN0_IOC3_SERIAL_B_CHARDEV  1
+#define SN0_ELSC_CHARDEV           2
+#define SN0_JUNK_UART_CHARDEV      3
+
+/*
  * What a comparator's timer is handed when it expires. A timer callback gets
  * one pointer, and both processors' comparators run the same callback, so the
  * pointer has to name which of the two fired rather than just the Hub.

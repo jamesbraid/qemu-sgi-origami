@@ -37,6 +37,14 @@
  * emit. */
 #define RESP_CAP 96
 
+/*
+ * The ELSC AUX port is serial_hd(2): indices 0 and 1 are the two IOC3 rear
+ * ports (hw/misc/sgi-hub.h, SN0_ELSC_CHARDEV). So two placeholder serial
+ * lines come before the chardev standing in for the AUX cable, putting it on
+ * the index the model reads for this device.
+ */
+#define ELSC_AUX_LEADING_SERIALS "-serial none -serial none "
+
 static uint8_t frame_checksum(const uint8_t *buf, unsigned len)
 {
     uint8_t sum = 0;
@@ -477,7 +485,7 @@ static void test_arbitration_preserves_staged_start(const void *data)
 static void test_acp_command_writes_to_console(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -serial none "
+        "-M origin200 " ELSC_AUX_LEADING_SERIALS
         "-chardev ringbuf,id=aux,size=4096 -serial chardev:aux");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
@@ -569,7 +577,7 @@ static void test_get_returns_queued_console_input(const void *data)
     uint16_t port;
     int lfd = aux_listen(&port);
     g_autofree char *args = g_strdup_printf(
-        "-M origin200 -serial none "
+        "-M origin200 " ELSC_AUX_LEADING_SERIALS
         "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
         "-serial chardev:aux", port);
     QTestState *qts = qtest_init(args);
@@ -610,7 +618,7 @@ static void test_escape_byte_is_not_queued(const void *data)
     uint16_t port;
     int lfd = aux_listen(&port);
     g_autofree char *args = g_strdup_printf(
-        "-M origin200 -serial none "
+        "-M origin200 " ELSC_AUX_LEADING_SERIALS
         "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
         "-serial chardev:aux", port);
     QTestState *qts = qtest_init(args);

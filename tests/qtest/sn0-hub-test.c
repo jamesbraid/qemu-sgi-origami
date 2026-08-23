@@ -1081,12 +1081,13 @@ static void test_junk_uart_range_is_exact(const void *data)
  * period when fitting the optional port and supplying the backends aborted the
  * machine before it started.
  *
- * So this case supplies them: three null backends, which is what the machine
- * wants with the optional port fitted -- the base I/O controller's port A, the
- * system controller, and the bring-up port. If any two devices name the same
- * index, QEMU refuses at realize and qtest_init never returns a machine, so
- * reaching the assertion at all is most of the result. The assertion then only
- * has to show the port is genuinely there rather than quietly skipped.
+ * So this case supplies them: four null backends, which is what the machine
+ * wants with the optional port fitted -- the base I/O controller's ports A and
+ * B, the system controller's AUX port, and the bring-up port. If any two
+ * devices name the same index, QEMU refuses at realize and qtest_init never
+ * returns a machine, so reaching the assertion at all is most of the result.
+ * The assertion then only has to show the port is genuinely there rather than
+ * quietly skipped.
  *
  * It has to be a test rather than a rule because the defect exists at no
  * single call site: each device names an index that is correct on its own, and
@@ -1096,7 +1097,8 @@ static void test_junk_uart_range_is_exact(const void *data)
 static void test_every_chardev_claim_is_distinct(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,junk-uart=on "
-                                 "-serial null -serial null -serial null");
+                                 "-serial null -serial null "
+                                 "-serial null -serial null");
     uint8_t readback[8];
     static const uint8_t present[8] = { 0, 0, 0, 0, 0, 0, 0, 0x55 };
 

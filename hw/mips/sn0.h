@@ -602,21 +602,13 @@
 #define SN0_CONSOLE_BAUD        9600
 
 /*
- * Which -serial the machine's character devices come from, named rather than
- * written as bare indices at the three call sites, because the collision this
- * numbering exists to prevent is invisible at any one of them: a device takes
- * an index in one file and only a second device taking the same index in
- * another file is the defect, so no single site reads wrong.
- *
- * Index 0 is the base I/O controller's port A and the synthesized firmware's
- * console. Index 1 is the system controller, which every Origin 200 has.
- * Index 2 is the bring-up port, which no shipped machine has and which is off
- * unless asked for — so the optional part carries the highest index and the
- * default machine's numbering does not move when the option is used.
+ * The machine's -serial line assignment (SN0_IOC3_SERIAL_A_CHARDEV and the
+ * rest) lives in hw/misc/sgi-hub.h, the header both this machine and the Hub
+ * include. Two of the four backends -- the system controller's AUX port and
+ * the bring-up UART -- are wired by the Hub rather than here, so the scheme
+ * has to sit somewhere both translation units see it, all four indices in one
+ * place where a clash between them is visible.
  */
-#define SN0_IOC3_CHARDEV        0
-#define SN0_ELSC_CHARDEV        1
-#define SN0_JUNK_UART_CHARDEV   2
 #define SN0_GDA                 0x11000
 #define SN0_GDA_SIZE            0x400
 #define SN0_GDA_SIGNATURE       0x58464552  /* "XFER" */

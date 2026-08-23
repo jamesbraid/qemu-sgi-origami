@@ -2629,10 +2629,11 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * addressed slave on the chip's own bus is nearly the whole of the
      * wiring. It also needs to know how many processors' arbitration
      * signals to rotate through (this node's own populated count), and the
-     * chardev behind its AUX serial port -- the second -serial device, so
-     * it does not contend with the IOC3's own first port or the
-     * synthesized-firmware console shortcut, both of which claim
-     * serial_hd(0).
+     * chardev behind its AUX serial port -- serial_hd(SN0_ELSC_CHARDEV), so it
+     * does not contend with the two IOC3 rear ports on serial_hd(0) and (1) or
+     * the synthesized-firmware console shortcut, which shares the IOC3's own
+     * serial_hd(0). This is the port a console=d guest relocates onto, so a
+     * rig that means to see that session has to drive this index.
      */
     {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
@@ -2640,7 +2641,8 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
         qdev_prop_set_uint8(DEVICE(elsc), "dip-switches",
                             s->elsc_dip_switches);
-        qdev_prop_set_chr(DEVICE(elsc), "chardev", serial_hd(1));
+        qdev_prop_set_chr(DEVICE(elsc), "chardev",
+                          serial_hd(SN0_ELSC_CHARDEV));
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
             return;
         }
