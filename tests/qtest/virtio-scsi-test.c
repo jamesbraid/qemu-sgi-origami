@@ -300,6 +300,33 @@ static void test_send_diagnostic(void *obj, void *data,
     qvirtio_scsi_pci_free(vs);
 }
 
+/*
+ * MODE SENSE Format Device (page 0x03) carries sectors-per-track.  Some
+ * initiators read their geometry from it and cannot open a disk that answers
+ * CHECK CONDITION here, so the page must be reported for a hard disk.
+ */
+static void test_mode_sense_format_device(void *obj, void *data,
+                                          QGuestAllocator *t_alloc)
+{
+    QVirtioSCSI *scsi = obj;
+    QVirtioSCSIQueues *vs;
+    /* MODE SENSE(6), Format Device page, 36-byte allocation. */
+    const uint8_t cdb[VIRTIO_SCSI_CDB_SIZE] = {
+        0x1a, 0x00, 0x03, 0x00, 0x24, 0x00
+    };
+    uint8_t buf[36] = { 0 };
+    struct virtio_scsi_cmd_resp resp;
+
+    alloc = t_alloc;
+    vs = qvirtio_scsi_init(scsi->vdev);
+
+    virtio_scsi_do_command(vs, cdb, buf, sizeof(buf), NULL, 0, &resp);
+    g_assert_cmphex(resp.response, ==, 0);
+    g_assert_cmphex(resp.status, ==, GOOD);
+
+    qvirtio_scsi_pci_free(vs);
+}
+
 static void test_iothread_attach_node(void *obj, void *data,
                                       QGuestAllocator *t_alloc)
 {
@@ -442,6 +469,10 @@ static void register_virtio_scsi_test(void)
 
     opts.before = virtio_scsi_setup;
     qos_add_test("send-diagnostic", "virtio-scsi", test_send_diagnostic, &opts);
+
+    opts.before = virtio_scsi_setup;
+    qos_add_test("mode-sense-format-device", "virtio-scsi",
+                 test_mode_sense_format_device, &opts);
 
     opts.before = virtio_scsi_setup_iothread;
     opts.edge = (QOSGraphEdgeOptions) {

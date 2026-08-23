@@ -1139,6 +1139,7 @@ static int mode_sense_page(SCSIDiskState *s, int page, uint8_t **p_outbuf,
 {
     static const int mode_sense_valid[0x3f] = {
         [MODE_PAGE_VENDOR_SPECIFIC]        = (1 << TYPE_DISK) | (1 << TYPE_ROM),
+        [MODE_PAGE_FORMAT_DEVICE]          = (1 << TYPE_DISK),
         [MODE_PAGE_HD_GEOMETRY]            = (1 << TYPE_DISK),
         [MODE_PAGE_FLEXIBLE_DISK_GEOMETRY] = (1 << TYPE_DISK),
         [MODE_PAGE_CACHING]                = (1 << TYPE_DISK) | (1 << TYPE_ROM),
@@ -1169,6 +1170,23 @@ static int mode_sense_page(SCSIDiskState *s, int page, uint8_t **p_outbuf,
      * 2-byte and 4-byte headers.
      */
     switch (page) {
+    case MODE_PAGE_FORMAT_DEVICE:
+        length = 0x16;
+        if (page_control == 1) { /* Changeable Values */
+            break;
+        }
+        /* Sectors per track */
+        p[8] = (s->qdev.conf.secs >> 8) & 0xff;
+        p[9] = s->qdev.conf.secs & 0xff;
+        /* Data bytes per physical sector */
+        p[10] = (s->qdev.blocksize >> 8) & 0xff;
+        p[11] = s->qdev.blocksize & 0xff;
+        /* Interleave */
+        p[13] = 1;
+        /* Hard-sectored formatting */
+        p[18] = 0x40;
+        break;
+
     case MODE_PAGE_HD_GEOMETRY:
         length = 0x16;
         if (page_control == 1) { /* Changeable Values */
