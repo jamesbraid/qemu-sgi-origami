@@ -1162,19 +1162,25 @@ static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
 }
 
 /*
- * A device window takes accesses of one, two and four bytes — the same
- * widths configuration space does, and for the same reason: both bounds are
- * declared so the memory system never reshapes an access before this code
- * sees it, because the width is a term in the byte-lane correction and an
- * access that arrived widened or split would be corrected by the wrong
- * amount.
+ * A device window takes accesses of one, two, four and eight bytes. The whole
+ * Bridge widget space is doubleword-addressed by crosstalk, so a processor
+ * doubleword (8-byte) load or store is a native access here, not only the
+ * narrower forms — the firmware's own device-pointer dereference is one, and
+ * a model capping the width at four rejects it with a bus error. The Bridge
+ * serves a doubleword to a 32-bit device as two 32-bit cycles at the two word
+ * offsets, so declaring valid up to eight while leaving impl at four makes the
+ * memory system split a doubleword into exactly those two four-byte device
+ * accesses (big-endian: the high word at the lower offset). The narrower widths
+ * still arrive unreshaped, and each split half is a four-byte access in its own
+ * right, so the byte-lane correction — which takes the width as a term — is
+ * applied per cycle by the same rule and never sees a reshaped width.
  */
 static const MemoryRegionOps sgi_bridge_window_mem_ops = {
     .read = sgi_bridge_window_mem_read,
     .write = sgi_bridge_window_mem_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1,
-    .valid.max_access_size = 4,
+    .valid.max_access_size = 8,
     .impl.min_access_size = 1,
     .impl.max_access_size = 4,
 };
@@ -1184,7 +1190,7 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
     .write = sgi_bridge_window_io_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid.min_access_size = 1,
-    .valid.max_access_size = 4,
+    .valid.max_access_size = 8,
     .impl.min_access_size = 1,
     .impl.max_access_size = 4,
 };

@@ -199,6 +199,7 @@ qtests_mips64 = \
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
                                                    'sn0-widget0-test',
+                                                   'sn0-widget-decode-test',
                                                    'sn0-model-test',
                                                    'sn0-smp-test',
                                                    'sn0-migration-test',
