@@ -1415,11 +1415,12 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
 
 /*
  * Arm one comparator against the counter as it stands now. The distance is
- * taken forward and wrapping, so a comparator left behind the counter waits a
- * full revolution rather than firing at once.
+ * taken forward and wrapping; a comparator the counter has already passed is
+ * a match and is delivered at once, which the arm below detects rather than
+ * arming a deadline a revolution away.
  *
  * The distance is one to 2^52 rather than zero to 2^52 - 1, so a comparator
- * that already equals the counter waits a revolution too. No manual states
+ * that already equals the counter counts as passed as well. No manual states
  * which way the hardware goes — a continuous equality comparator would call
  * that a match, a counter that has to count into the value would not — and
  * neither guest can tell us, because Linux clears the pending bit straight
@@ -1430,32 +1431,80 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
  * zero or negative, does not write the comparator at all: it runs the timeout
  * handler in software instead. Routing around the hardware costs something,
  * and nobody pays it for a comparator that would have fired immediately by
- * itself — so the engineers who had the part appear to have believed an
- * already-reached value does not fire again until wraparound. That is an
- * inference from a design decision rather than a documented statement, which
- * is why it is written here and not asserted in the datasheet, but it agrees
- * with the choice this code had already made for a different reason: of two
- * readings we cannot separate, take the one that cannot produce a zero-length
- * interval, because an interval of no time is a timer that fires forever.
+ * itself — which reads as a belief that an already-reached value does not
+ * fire until wraparound.
+ *
+ * That inference no longer decides it, because the same public sources cut
+ * both ways. Linux writes this comparator behind the counter routinely and
+ * carries a read-back guard for exactly that case, so its authors expected a
+ * behind-write to be possible and detectable; and it advertises a maximum
+ * interval of the whole counter space, which only means anything under wrap.
+ * The firmware writes the comparator constantly and races the same window
+ * every boot without ever being observed to lose. What the silicon does with
+ * a value the counter has passed remains unobserved.
+ *
+ * So the choice is made on failure mode rather than on evidence. Wrapping
+ * strands the interrupt for a full revolution — 114 years here — which is
+ * silent and permanent for any writer without a read-back guard. Matching at
+ * once costs a guarded writer one early tick, and an unguarded one a livelock
+ * if its handler outruns its own interval, which is loud and diagnosable in
+ * seconds. Of two behaviours we cannot separate, take the one that fails
+ * where somebody will see it.
  */
-static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
+static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
+{
+    s->pi_rt_pending[index] = 1;
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_EXPIRE)) {
+        trace_sgi_hub_rt_expire(
+            s->cpu_base, sgi_hub_programmed_nasid(s), index,
+            sgi_hub_rt_count(s), qatomic_read(&s->pi_rt_compare[index]),
+            s->pi_rt_enable[index],
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    sgi_hub_update_irq(s);
+}
+
+/*
+ * Arm the comparator, or match it now if the counter has already passed it.
+ *
+ * @programmed says the guest wrote this deadline. Only then is an already
+ * reached value a match: moving the counter under a comparator is a change of
+ * origin rather than a deadline, and at reset both comparators read zero, so
+ * treating that as a match would pend two interrupts the guest never asked
+ * for on the first counter write of every boot.
+ *
+ * The space is modular, so a value one tick behind and one a full revolution
+ * ahead are the same number and no scheme can separate them. Splitting at half
+ * a revolution puts every deadline a guest actually programs — milliseconds —
+ * on the future side, and accepts that an arm asking for the longest possible
+ * interval matches immediately instead.
+ */
+static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index, bool programmed)
 {
     uint64_t ticks = ((qatomic_read(&s->pi_rt_compare[index]) -
                        sgi_hub_rt_count(s) - 1) &
                       PI_RT_MASK) + 1;
+
+    if (programmed && ticks > (PI_RT_MASK >> 1)) {
+        /*
+         * Delete rather than leave armed: the wrap deadline this comparator
+         * would otherwise still carry would deliver a second pend later for a
+         * match already made.
+         */
+        timer_del(s->rt_timer[index]);
+        sgi_hub_rt_match(s, index);
+        return;
+    }
 
     timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               muldiv64(ticks, NANOSECONDS_PER_SECOND, PI_RT_HZ));
 }
 
 /*
- * A match. Set the pending bit and recompute the line; the enable bit decides
- * whether that reaches the processor.
- *
- * Deliberately not re-armed here. A comparator would match again one full
- * revolution later, which at 1.25 MHz over 52 bits is longer than any run, and
- * re-arming at the match point risks a zero-length interval that would fire
- * forever. The guests that use the comparator rewrite it from every handler.
+ * Deliberately not re-armed at a match. A comparator would match again one
+ * full revolution later, which at 1.25 MHz over 52 bits is longer than any
+ * run. The guests that use it rewrite it from every handler.
  */
 /*
  * A bit slot finished.
@@ -1486,18 +1535,8 @@ static void sgi_hub_onewire_slot_done(void *opaque)
 static void sgi_hub_rt_expire(void *opaque)
 {
     SGIHubCounterLine *line = opaque;
-    SGIHubState *s = line->hub;
 
-    s->pi_rt_pending[line->index] = 1;
-    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_EXPIRE)) {
-        trace_sgi_hub_rt_expire(
-            s->cpu_base, sgi_hub_programmed_nasid(s), line->index,
-            sgi_hub_rt_count(s), qatomic_read(&s->pi_rt_compare[line->index]),
-            s->pi_rt_enable[line->index],
-            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-    }
-    sgi_hub_update_irq(s);
+    sgi_hub_rt_match(line->hub, line->index);
 }
 
 static uint8_t *sgi_hub_route_entry(SGIHubState *s, hwaddr addr)
@@ -2291,8 +2330,8 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
     case HUB_PI_RT_COUNT:
         sgi_hub_rt_set(s, val);
         /* Moving the counter moves every deadline standing against it. */
-        sgi_hub_rt_arm(s, 0);
-        sgi_hub_rt_arm(s, 1);
+        sgi_hub_rt_arm(s, 0, false);
+        sgi_hub_rt_arm(s, 1, false);
         break;
     case HUB_PI_RT_COMPARE_A:
     case HUB_PI_RT_COMPARE_B: {
@@ -2300,7 +2339,7 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         CPUState *peer;
 
         qatomic_set(&s->pi_rt_compare[i], val & PI_RT_MASK);
-        sgi_hub_rt_arm(s, i);
+        sgi_hub_rt_arm(s, i, true);
 
         /*
          * The boot PROM uses these registers as progress mailboxes while the

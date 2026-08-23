@@ -413,6 +413,105 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 }
 
 /*
+ * A comparator written at or behind the live count is a match the counter has
+ * already made, and it is delivered at once rather than a revolution later.
+ *
+ * Under the wrap this replaces, the pending bit stayed clear for 2^52 ticks --
+ * 114 years at 1.25 MHz -- so a guest that lost the race between reading the
+ * count and writing the deadline lost that interrupt for the life of the
+ * machine. Asserting the pend is the whole contract.
+ */
+static void test_a_behind_comparator_matches_at_once(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+
+    /* One millisecond in, name a deadline the counter passed long ago. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The match is applied inside the write, not queued for the next main-loop
+ * pass -- which is what separates this from arming a timer for now.
+ *
+ * A queued match is cancelled by any later write to the same comparator, and
+ * Linux guarantees one: its clockevent reads the count back, sees the target
+ * passed, and reprograms within a few instructions. So the second write here
+ * is not incidental to the test, it is the case the queued form fails.
+ */
+static void test_a_behind_match_survives_an_immediate_rewrite(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 1);
+    /* The guard's retry, arriving before any queued callback could run. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_HZ);
+
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * An arm asking for the longest possible interval matches immediately, and
+ * that is accepted rather than accidental.
+ *
+ * The space is modular: a target a full revolution ahead and one a single tick
+ * behind are the same 52-bit number, so no rule can separate them and any
+ * behind-detection must treat them alike. Recorded as a test so the behaviour
+ * is a decision on the record rather than a surprise to whoever meets it.
+ */
+static void test_a_maximum_interval_arm_matches_at_once(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t count;
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A,
+                 (count + PI_RT_MASK) & PI_RT_MASK);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Moving the counter past a comparator pends nothing.
+ *
+ * Only a written deadline is a deadline. Both comparators read zero out of
+ * reset, so a firmware that sets the counter origin -- which every boot does,
+ * before programming either comparator -- would otherwise be handed two
+ * interrupts it never asked for, delivered the moment it first enabled the
+ * clock.
+ */
+static void test_moving_the_counter_past_a_comparator_pends_nothing(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    /* Comparators still at their reset value; step the origin past them. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * Writable, and still running afterwards. Both halves in one test on purpose:
  * a counter that accepts a write and then stops reads back correctly at the
  * instant of the write, so asserting the write alone would pass a frozen
@@ -504,12 +603,18 @@ static void test_the_comparator_pends_with_its_interrupt_off(const void *data)
 }
 
 /*
- * A comparator left behind the counter waits a full revolution rather than
- * matching at once. Fifty-two bits at 1.25 MHz is longer than any run, so the
- * observable effect is that a stale value never fires — and the failure this
- * guards against is the opposite one, where it fires immediately and forever.
+ * A comparator the counter has passed matches ONCE, not repeatedly.
+ *
+ * This is the guard the old wrap semantics provided for free and the reason
+ * that reading was chosen: a match delivered at the match point can re-arm at
+ * the same point and fire forever. Nothing re-arms here -- the timer is
+ * deleted and the pend latched once -- so once the guest acknowledges, the
+ * comparator stays quiet until it is written again. A model that fired
+ * immediately AND repeatedly would pass the matches-at-once test above and
+ * fail this one.
  */
-static void test_a_comparator_behind_the_counter_does_not_fire(const void *data)
+static void test_a_behind_comparator_matches_once_not_repeatedly(
+    const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
@@ -517,6 +622,11 @@ static void test_a_comparator_behind_the_counter_does_not_fire(const void *data)
     qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS / 2);
 
+    /* The match is immediate. */
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+
+    /* Acknowledge, then let a full second of counter run past it. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
     qtest_clock_step(qts, PI_RT_NS_PER_SEC);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
 
@@ -2740,12 +2850,20 @@ int main(int argc, char **argv)
                         test_the_real_time_counter_is_writable_and_keeps_running);
     qtest_add_data_func("sn0/hub/rt-counter-width", NULL,
                         test_the_real_time_counter_is_fifty_two_bits);
+    qtest_add_data_func("sn0/hub/behind-comparator-matches-at-once", NULL,
+                        test_a_behind_comparator_matches_at_once);
+    qtest_add_data_func("sn0/hub/behind-match-survives-rewrite", NULL,
+                        test_a_behind_match_survives_an_immediate_rewrite);
+    qtest_add_data_func("sn0/hub/maximum-interval-arm-matches", NULL,
+                        test_a_maximum_interval_arm_matches_at_once);
+    qtest_add_data_func("sn0/hub/counter-move-pends-nothing", NULL,
+                        test_moving_the_counter_past_a_comparator_pends_nothing);
     qtest_add_data_func("sn0/hub/rt-comparator-raises-line", NULL,
                         test_the_comparator_raises_and_releases_the_line);
     qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
                         test_the_comparator_pends_with_its_interrupt_off);
-    qtest_add_data_func("sn0/hub/rt-comparator-behind-waits", NULL,
-                        test_a_comparator_behind_the_counter_does_not_fire);
+    qtest_add_data_func("sn0/hub/behind-comparator-matches-once", NULL,
+                        test_a_behind_comparator_matches_once_not_repeatedly);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
                         test_interrupt_modify_sets_and_clears);
     qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,
