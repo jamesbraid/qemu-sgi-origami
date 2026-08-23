@@ -1,0 +1,2 @@
+# id | guest | scenario | cpus | nodes | mem | accel | firmware | speed | timeout | attempts | min_passes | expect | xfail_oracle | xfail_signature
+firmware_smoke | prom | smoke | 1 | 1 | 64M | wallclock | synth | quick | 120 | 1 | 1 | pass |  |
