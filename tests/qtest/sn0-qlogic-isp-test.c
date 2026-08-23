@@ -191,6 +191,7 @@
 #define ISP_REQ_OFF_CDB             20
 #define ISP_A64_REQ_OFF_SEGS        40
 #define ISP_STATUS_OFF_HANDLE       4
+#define ISP_STATUS_OFF_SCSI_STATUS  8
 #define ISP_REG_REQUEST_QUEUE       (ISP_REG_MAILBOX_BASE + 0x08)
 #define ISP_REG_RESPONSE_QUEUE      (ISP_REG_MAILBOX_BASE + 0x0a)
 
@@ -569,6 +570,11 @@ static uint32_t get32le(const uint8_t *b)
     return b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24);
 }
 
+static uint16_t get16le(const uint8_t *b)
+{
+    return b[0] | (b[1] << 8);
+}
+
 /* Reverse each aligned 32-bit word, the correction a word-value ring needs. */
 static void normalise_words(uint8_t *buf, size_t len)
 {
@@ -765,6 +771,77 @@ static void test_a64_ring_data_out(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A drive self-test completes with GOOD status through the adapter's command
+ * ring. IRIX fx issues SEND DIAGNOSTIC when it opens a disk; before scsi-disk
+ * answered the opcode the target returned CHECK CONDITION and fx reported the
+ * disk broken ("Illegal request: Invalid command code"). This drives the same
+ * crosstalk -> Bridge -> PCI -> scsi-disk path fx takes, and asserts the SCSI
+ * status the adapter posts back is GOOD.
+ */
+static void build_a64_command(uint8_t *entry, uint32_t handle, uint8_t op,
+                              uint8_t op_byte1)
+{
+    memset(entry, 0, ISP_QUEUE_ENTRY_SIZE);
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, 0x0100);    /* target 1, lun 0 */
+    put16le(entry + ISP_REQ_OFF_CDBLEN, 6);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, 0);
+    entry[ISP_REQ_OFF_CDB + 0] = op;
+    entry[ISP_REQ_OFF_CDB + 1] = op_byte1;
+    normalise_words(entry, ISP_QUEUE_ENTRY_SIZE);
+}
+
+static void test_a64_ring_send_diagnostic(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -drive id=d0,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=0,drive=d0");
+    const uint32_t diag_handle = 0x5d1a0001;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /*
+     * The drive raises a power-on UNIT ATTENTION on its first command, so send
+     * a TEST UNIT READY to absorb it, then the SEND DIAGNOSTIC self-test whose
+     * status we check. Both entries go in one doorbell.
+     */
+    build_a64_command(entry, 0x5d1a0000, 0x00, 0x00);   /* TEST UNIT READY */
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+    build_a64_command(entry, diag_handle, 0x1d, 0x04);  /* SEND DIAGNOSTIC */
+    qtest_memwrite(qts, RING_PHYS + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 2);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 2);
+
+    qtest_memread(qts, RESP_PHYS + ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, diag_handle);
+    /* GOOD, not CHECK CONDITION. */
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
 
 /*
  * The checksum command answers in mailbox 2 as well as mailbox 1.
@@ -899,6 +976,8 @@ int main(int argc, char **argv)
                         test_a64_ring_is_word_value);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-data-out", NULL,
                         test_a64_ring_data_out);
+    qtest_add_data_func("sn0/qlogic-isp/a64-ring-send-diagnostic", NULL,
+                        test_a64_ring_send_diagnostic);
     qtest_add_data_func("sn0/qlogic-isp/ram-dma-through-the-direct-window",
                         NULL, test_ram_dma_through_the_direct_window);
     qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
