@@ -10,6 +10,7 @@
 #define HW_MISC_SGI_ELSC_H
 
 #include "hw/i2c/i2c.h"
+#include "hw/core/device-diagnostic.h"
 #include "qemu/timer.h"
 #include "chardev/char-fe.h"
 #include "qom/object.h"
@@ -41,6 +42,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 
 struct SGIElscState {
     I2CSlave parent_obj;
+    DeviceDiagnosticSink *diagnostic;
+    bool diagnostic_arbitration_broadcast;
 
     /*
      * The request being written to us, accumulated one byte per I2C send

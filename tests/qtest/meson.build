@@ -204,7 +204,8 @@ qtests_mips64 = \
                                                    'sn0-model-test',
                                                    'sn0-smp-test',
                                                    'sn0-migration-test',
-                                                   'sn0-snapshot-test'] : [])
+                                                   'sn0-snapshot-test',
+                                                   'sn0-debug-test'] : [])
 
 qtests_mips64el = qtests_mips
 

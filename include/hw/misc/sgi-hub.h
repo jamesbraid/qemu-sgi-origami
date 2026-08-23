@@ -13,9 +13,11 @@
 
 #include "qemu/units.h"
 #include "hw/core/irq.h"
+#include "hw/core/device-diagnostic.h"
 #include "qemu/timer.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/pcf8584.h"
+#include "hw/misc/sgi-elsc.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
@@ -89,6 +91,7 @@ struct SGIHubState {
     SysBusDevice parent_obj;
 
     MemoryRegion regs;
+    DeviceDiagnosticSink *diagnostic;
 
     /*
      * The real PCF8584 I2C-bus controller, mapped over this window's I2C
@@ -100,6 +103,9 @@ struct SGIHubState {
      * name it.
      */
     PCF8584State i2c;
+
+    /* Diagnostic reference; the I2C bus retains object ownership. */
+    SGIElscState *elsc;
 
     /* The seven big windows, as one region for the machine to place. */
     MemoryRegion bwin;
@@ -288,5 +294,7 @@ struct SGIHubState {
     bool junk_uart_present;
     Chardev *junk_uart_chr;
 };
+
+uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
 
 #endif /* HW_MISC_SGI_HUB_H */

@@ -90,6 +90,7 @@ if have_system
   stub_ss.add(files('qmp-cpu-mips.c'))
   stub_ss.add(files('qmp-cpu-ppc.c'))
   stub_ss.add(files('qmp-cpu-riscv.c'))
+  stub_ss.add(files('qmp-origin.c'))
   stub_ss.add(files('qmp-cpu-s390x.c'))
   stub_ss.add(files('qmp-cpu-s390x-kvm.c'))
   if have_hmp
