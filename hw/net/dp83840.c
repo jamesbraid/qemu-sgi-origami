@@ -17,11 +17,14 @@
  * generic one, and widens the contract by two registers belonging to this part
  * alone.
  *
- * The link is always up. There is no cable in the machine model and nothing
- * that would drive a change, so the transceiver reports a good link from reset
- * and autonegotiation finishes the moment it is asked for. Both drivers poll
- * with timeouts long enough that they cannot tell this from a real part, and a
- * model that made them wait would only be slower.
+ * The link comes up when a guest asks for it, not before. Out of reset this
+ * is a board with no cable -- link down, autonegotiation incomplete -- which
+ * is the state SGI's power-on diagnostic reads and checks against the part's
+ * documented reset values. When a guest writes the control register to bring
+ * the interface into use, the model stands in as a cooperative far end and the
+ * link comes up at once: there is no real cable to negotiate against, and both
+ * drivers poll for completion with generous timeouts. See dp83840_reset() and
+ * dp83840_write().
  */
 
 #include "qemu/osdep.h"
@@ -44,9 +47,9 @@
 
 /*
  * The status word, derived on every read rather than stored. Two of its bits
- * depend on state a guest can change -- whether autonegotiation has completed,
- * and it can restart one -- so a stored copy would be a second place for the
- * answer to live and a second place for it to go stale.
+ * depend on state a guest can change -- whether the link has come up, and it
+ * can take it back down with a reset -- so a stored copy would be a second
+ * place for the answer to live and a second place for it to go stale.
  *
  * The link bit is worth a word of its own. On real hardware it latches low, so
  * both drivers read this register twice and take the union of the two reads to
@@ -54,16 +57,20 @@
  * reporting the live level satisfies that: the union of two identical answers
  * is that answer. What a model must not do is latch the bit and then fail to
  * clear it, because the second read would report a link that is not there.
+ *
+ * The link bit and the completion bit come up clear and go together: until a
+ * guest has driven the control register to bring the interface up, this is a
+ * board on a bench with no cable, reporting no link and no completed
+ * autonegotiation -- which is what SGI's power-on diagnostic reads and expects.
  */
 static uint16_t dp83840_status(DP83840State *s)
 {
     uint16_t status = DP83840_STAT_EXTENDED | DP83840_STAT_CAN_AUTONEG |
-                      DP83840_STAT_LINK |
                       DP83840_STAT_100_FDX | DP83840_STAT_100_HDX |
                       DP83840_STAT_10_FDX | DP83840_STAT_10_HDX;
 
     if (s->autoneg_done) {
-        status |= DP83840_STAT_AUTONEG_OK;
+        status |= DP83840_STAT_LINK | DP83840_STAT_AUTONEG_OK;
     }
 
     return status;
@@ -93,17 +100,19 @@ uint16_t dp83840_read(DP83840State *s, int reg)
          * which is what puts the driver on the route it trusts: it intersects
          * the two words and reads the media out of the result, so a partner
          * offering nothing in common would leave the guest with a link and no
-         * usable media.
+         * usable media. Not valid before autonegotiation completes -- the
+         * part's own datasheet says so -- so this reads zero until then.
          */
-        return DP83840_ADVERTISE_RESET;
+        return s->autoneg_done ? DP83840_ADVERTISE_RESET : 0;
 
     case DP83840_EXPANSION:
         /*
          * The far end can autonegotiate. This single bit chooses which of two
          * routes the driver takes to a media type, and the other one ends at a
          * register whose duplex reporting the driver's own comment distrusts.
+         * Same validity rule as the partner register above.
          */
-        return DP83840_EXP_PARTNER_AUTONEG;
+        return s->autoneg_done ? DP83840_EXP_PARTNER_AUTONEG : 0;
 
     case DP83840_PCS_CONFIG:
         return s->pcs_config;
@@ -151,25 +160,24 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
          * for it to go away, and a model that left either set would hold the
          * driver in a loop until its timeout expired. Both take effect here and
          * are gone before the guest can look.
+         *
+         * Reset returns the part to its cable-less bench state, link down.
          */
         if (val & DP83840_CTRL_RESET) {
             dp83840_reset(s);
             return;
         }
 
-        if (val & DP83840_CTRL_RESTART) {
-            s->autoneg_done = true;
-        }
-
         /*
-         * Asking for autonegotiation completes it, for the same reason: the
-         * driver will not believe anything it reads until the completion bit is
-         * set, and reports no media at all in the meantime -- a working link
-         * that looks dead.
+         * Any other write to this register is a guest configuring the interface
+         * to carry traffic -- enabling or restarting autonegotiation, or
+         * forcing a speed and duplex. That is what brings the link up. There is
+         * no cable to negotiate against, so we stand in as a cooperative far
+         * end and the negotiation always succeeds; the completion is immediate
+         * because nothing here takes time and both drivers poll for it with
+         * generous timeouts. Isolating the part takes it back off the link.
          */
-        if (val & DP83840_CTRL_AUTONEG) {
-            s->autoneg_done = true;
-        }
+        s->autoneg_done = !(val & DP83840_CTRL_ISOLATE);
 
         s->control = val & ~(DP83840_CTRL_RESET | DP83840_CTRL_RESTART);
         return;
@@ -241,23 +249,24 @@ void dp83840_reset(DP83840State *s)
      * Out of reset the part is autonegotiating and advertising everything it
      * can do, and its registers hold the values its own specification gives.
      *
-     * The completion flag is the one place this model departs from those
-     * values, and it is a departure with nothing behind it either way. Real
-     * silicon comes up with autonegotiation incomplete and the link down, and
-     * SGI's power-on diagnostic warns about both -- but that diagnostic reads
-     * these registers long before it resets anything, so there is no interval
-     * a model could complete in that the diagnostic would not already have
-     * looked at. Reporting a settled link costs those two warnings, which the
-     * diagnostic does not fail the board for; reporting an unsettled one costs
-     * every guest its media, because both drivers report none until this flag
-     * is set. See docs/datasheets/dp83840.md.
+     * The link is not one of those values. Real silicon comes up with the link
+     * down and autonegotiation incomplete, and stays that way until a link is
+     * actually established -- on a bench with no cable, that never happens.
+     * SGI's power-on diagnostic reads the status, link-partner and expansion
+     * registers early, as pure reads before it has written the control register
+     * at all, and expects exactly that bench state: no link, no completed
+     * autonegotiation, no partner. A model that came up with the link already
+     * live answered those reads wrong, which is what the diagnostic's three
+     * reset-value warnings were reporting. The link comes up instead when a
+     * guest writes the control register to bring the interface into use -- see
+     * dp83840_write(). See docs/datasheets/dp83840.md.
      */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
     s->pcs_config = DP83840_PCS_RESET_VALUE;
     s->loopback_bypass = DP83840_LBREMR_RESET_VALUE;
     s->tenbt_config = DP83840_10BT_RESET_VALUE;
-    s->autoneg_done = true;
+    s->autoneg_done = false;
 }
 
 static void dp83840_reset_hold(Object *obj, ResetType type)

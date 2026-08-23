@@ -154,9 +154,12 @@ struct DP83840State {
     uint16_t tenbt_config;
 
     /*
-     * Whether autonegotiation has finished. It is set the moment a guest asks
-     * for autonegotiation, because nothing here takes time and a driver that
-     * polls for completion would otherwise poll out its timeout.
+     * Whether a link has come up. False out of reset -- a cable-less board on
+     * a bench, which is exactly what SGI's power-on diagnostic reads before it
+     * has written this part -- and true once a guest configures the control
+     * register to bring the interface up. See dp83840_write() and
+     * dp83840_reset(). Gates the link and completion bits in the status word
+     * and whether the partner and expansion registers answer non-zero.
      */
     bool autoneg_done;
 };
