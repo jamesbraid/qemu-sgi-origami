@@ -202,7 +202,14 @@ def verdict(cell, attempts):
     — reaching the oracle at all is an 'xpass', and missing it with a
     different signature is a real 'fail'.
     """
-    if any(attempt.infra_error for attempt in attempts):
+    if not attempts:
+        raise MatrixError(
+            f'cell {cell.id!r}: verdict() needs at least one attempt')
+
+    # infra_error is SET when it is not None, not merely truthy: a
+    # recorded empty string is still a recorded infra error, distinct
+    # from the None a clean attempt leaves it at.
+    if any(attempt.infra_error is not None for attempt in attempts):
         return 'error'
 
     if cell.expect == 'pass':

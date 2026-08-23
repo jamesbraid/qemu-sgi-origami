@@ -261,3 +261,46 @@ def test_xfail_that_passes_is_xpass():
     attempts = [AttemptResult(reached_oracle=True)]
 
     assert verdict(XFAIL_CELL, attempts) == 'xpass'
+
+
+def test_infra_error_empty_string_still_counts_as_set():
+    # infra_error is SET (not None), even though '' is falsy — must
+    # not be skipped by a truthiness check.
+    attempts = [AttemptResult(reached_oracle=True, infra_error='')]
+
+    assert verdict(PASS_CELL, attempts) == 'error'
+
+
+def test_infra_error_on_xfail_cell_is_error():
+    attempts = [AttemptResult(reached_oracle=False,
+                               infra_error='qemu crashed')]
+
+    assert verdict(XFAIL_CELL, attempts) == 'error'
+
+
+def test_verdict_raises_on_no_attempts():
+    with pytest.raises(MatrixError):
+        verdict(PASS_CELL, [])
+
+
+def test_xfail_multi_attempt_mismatched_signatures_is_fail():
+    # Two attempts both miss the oracle, but with different failure
+    # signatures — only one of them matches xfail_signature, so the
+    # cell did not fail the one specific way it's allowed to.
+    attempts = [
+        AttemptResult(reached_oracle=False, signature='reset_vector_trap'),
+        AttemptResult(reached_oracle=False, signature='unexpected_nmi'),
+    ]
+
+    assert verdict(XFAIL_CELL, attempts) == 'fail'
+
+
+def test_xfail_multi_attempt_matching_signatures_is_xfail():
+    # Two attempts both miss the oracle with the same expected
+    # signature — every failing attempt agrees, so the cell is xfail.
+    attempts = [
+        AttemptResult(reached_oracle=False, signature='reset_vector_trap'),
+        AttemptResult(reached_oracle=False, signature='reset_vector_trap'),
+    ]
+
+    assert verdict(XFAIL_CELL, attempts) == 'xfail'
