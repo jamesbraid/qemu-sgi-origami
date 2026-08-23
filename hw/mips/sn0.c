@@ -2926,7 +2926,9 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
     if (node_index == 0) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
-                          serial_hd(SN0_IOC3_CHARDEV));
+                          serial_hd(SN0_IOC3_SERIAL_A_CHARDEV));
+        qdev_prop_set_chr(DEVICE(ioc3), "chardev-b",
+                          serial_hd(SN0_IOC3_SERIAL_B_CHARDEV));
     }
 
     /*
@@ -3323,7 +3325,7 @@ static void sn0_init(MachineState *machine)
         uint64_t private_vector[SN0_ARCS_PRIVATE_ENTRIES];
         hwaddr trap_vaddr = (hwaddr)(int32_t)(0xa0000000 + SN0_ARCS_TRAP_LOCAL);
 
-        s->console = serial_hd(SN0_IOC3_CHARDEV);
+        s->console = serial_hd(SN0_IOC3_SERIAL_A_CHARDEV);
 
         sn0_build_arcs(fw, fw_vaddr, trap_vaddr, vector, SN0_ARCS_ENTRIES,
                        0, 0);
@@ -3664,9 +3666,10 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "have -- SGI fits one only for manufacturing and bring-up. Off by "
         "default: real firmware treats this port as its highest-priority "
         "console candidate and stops probing at the first one that answers, "
-        "so fitting it unasked would hide the two real candidates behind "
-        "it. On, it takes the second character device, not the first, "
-        "which stays the base I/O controller's.");
+        "so fitting it unasked would hide the real candidates behind "
+        "it. On, it takes the fourth character device (serial_hd index 3); "
+        "the first three stay the base I/O controller's two ports and the "
+        "system controller's AUX port.");
 
     object_class_property_add_bool(oc, "debug-leds",
                                    sn0_get_debug_leds, sn0_set_debug_leds);

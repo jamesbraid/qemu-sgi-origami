@@ -26,6 +26,10 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
 /* Crosstalk space, and the chip's window inside the console widget. */
 #define SPACE_XTALK     0x20000000000ULL
 #define CONSOLE_WIDGET  8
@@ -177,6 +181,51 @@ static void serial_socket_deadline(int fd)
 
     g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
                     ==, 0);
+}
+
+/*
+ * A loopback TCP listener the guest's serial_hd(1) connects out to, so a
+ * character leaving port B's own 16550 arrives here. qtest_init_with_serial
+ * only ever wires serial_hd(0), and the other port-B tests reach the line
+ * through the 16550's internal loopback, so this host socket is the only proof
+ * that chardev-b is wired from serial_hd(1) rather than left dark. It follows
+ * the same bind-listen-before-init pattern sn0-elsc-test.c uses for the AUX
+ * port.
+ */
+static int portb_listen(uint16_t *port)
+{
+    struct sockaddr_in addr = { 0 };
+    socklen_t addrlen = sizeof(addr);
+    int lfd;
+
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+
+    lfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    g_assert(lfd >= 0);
+    g_assert(bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    g_assert(getsockname(lfd, (struct sockaddr *)&addr, &addrlen) == 0);
+    *port = ntohs(addr.sin_port);
+    g_assert(listen(lfd, 1) == 0);
+    return lfd;
+}
+
+static int portb_accept(int lfd)
+{
+    fd_set readfds;
+    struct timeval tv = { .tv_sec = 10 };
+    int fd, val;
+
+    FD_ZERO(&readfds);
+    FD_SET(lfd, &readfds);
+    g_assert_cmpint(select(lfd + 1, &readfds, NULL, NULL, &tv), ==, 1);
+    fd = accept(lfd, NULL, 0);
+    g_assert(fd >= 0);
+    val = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
+    serial_socket_deadline(fd);
+    return fd;
 }
 
 /*
@@ -581,6 +630,47 @@ static void test_port_b_uses_the_second_two_rings(const void *data)
 }
 
 /*
+ * Port B's backend comes from serial_hd(1): the two IOC3 rear ports are
+ * serial_hd(0) and serial_hd(1) (hw/misc/sgi-hub.h). A character the port-B
+ * transmit engine sends -- with the port out of loopback, so it goes out the
+ * line rather than back to its own receiver -- has to arrive on the host
+ * socket attached to serial_hd(1). Before chardev-b was wired the property was
+ * defined but never set, so every character port B sent went to a NULL backend
+ * and this read would time out. serial_hd(0) is left empty here, so the byte
+ * arriving proves the second port's chardev, not the first's.
+ */
+static void test_port_b_transmits_through_serial_hd_1(const void *data)
+{
+    uint16_t port;
+    int lfd = portb_listen(&port);
+    g_autofree char *args = g_strdup_printf(
+        "-M origin200,io-bridge=on -serial none "
+        "-chardev socket,id=portb,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:portb", port);
+    QTestState *qts = qtest_init(args);
+    int fd = portb_accept(lfd);
+    const uint8_t out[4] = { 'p', 'o', 'r', 't' };
+    const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    char got[4];
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 1);
+    enable_dma(qts, 1);
+
+    write_transmit_entry(qts, RING_TX(1), 0, out, control);
+    qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 8);
+
+    g_assert_cmpint(read(fd, got, sizeof(got)), ==, (int)sizeof(got));
+    g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
  * The ring-size select is bit 0 of the base register and the base is bits 12
  * upward, so the select bit must never reach an address. A base written with
  * the bit set resolves to the same rings as one written without it, and this
@@ -886,6 +976,8 @@ int main(int argc, char **argv)
                         test_port_a_uses_the_first_two_rings);
     qtest_add_data_func("sn0/ioc3-serial/port-b-uses-the-second-two-rings",
                         NULL, test_port_b_uses_the_second_two_rings);
+    qtest_add_data_func("sn0/ioc3-serial/port-b-transmits-through-serial-hd-1",
+                        NULL, test_port_b_transmits_through_serial_hd_1);
     qtest_add_data_func("sn0/ioc3-serial/size-bit-is-not-an-address", NULL,
                         test_the_size_bit_is_not_part_of_the_address);
     qtest_add_data_func("sn0/ioc3-serial/pause-is-acknowledged", NULL,
