@@ -2865,13 +2865,55 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
             hwaddr alias_node_base = space == 0 ?
                 sn0_node_local_memory_base(machine, node, node_index) :
                 node_base;
+            hwaddr local_offset = 0;
+            hwaddr local_size = SN0_NODE_SIZE;
+
+            /*
+             * In crosstalk space, self-decode only the Hub's own window.
+             *
+             * An address carrying no node name and an address naming node
+             * zero are the same bits, because node zero's offset is zero.
+             * Redirecting a whole node's worth of every space therefore
+             * captured not only the nameless addresses it was meant for but
+             * every explicit reference to node zero as well -- so a
+             * processor elsewhere aiming at node zero's Hub reached its own,
+             * and the interrupt it sent arrived where nobody was waiting for
+             * it. Measured: from the second node, no cross-node interrupt
+             * store ever crossed.
+             *
+             * The hardware separates the two by decoding a small window --
+             * the Hub's eight megabytes -- as "the reading node's own Hub"
+             * from anywhere, and putting the explicit form outside it.
+             * Narrow to that window and the distinction returns: nameless
+             * Hub addresses still find the reader's own node, and every
+             * other crosstalk address, node zero's included, falls through
+             * to the global map, where the per-node explicit view at
+             * SN0_HUB_NODE_WINDOW already answers.
+             *
+             * Scoped to crosstalk space, which is where the Hub lives and
+             * where the fault was measured. The other spaces keep the wide
+             * alias; whether they need the same treatment is unmeasured, and
+             * guessing at it would put an unobserved claim in the map.
+             *
+             * The big windows sit outside this window, so a nameless
+             * reference to them no longer resolves to the reader's own node.
+             * That follows from the hardware's own window being the Hub's
+             * alone, and the ROM suite and firmware boot are what say the
+             * guests do not rely on the wider behaviour.
+             */
+            if (SN0_SPACE(space) == SN0_SPACE_XTALK) {
+                local_offset = SN0_HUB_LOCAL_WINDOW;
+                local_size = SGI_HUB_WINDOW_SIZE;
+            }
 
             memory_region_init_alias(&node->local_space[slice][space],
                                      OBJECT(node), local_name, system,
-                                     SN0_SPACE(space) + alias_node_base,
-                                     SN0_NODE_SIZE);
+                                     SN0_SPACE(space) + alias_node_base +
+                                     local_offset,
+                                     local_size);
             memory_region_add_subregion_overlap(
-                &node->cpu_sysmem[slice], SN0_SPACE(space),
+                &node->cpu_sysmem[slice],
+                SN0_SPACE(space) + local_offset,
                 &node->local_space[slice][space], 0);
         }
 
