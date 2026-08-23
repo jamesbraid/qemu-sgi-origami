@@ -666,7 +666,7 @@ static QTestState *start_case(const TestCase *tc)
     build_rom(image, tc);
     words = build_snippet(snippet, tc);
 
-    fd = g_file_open_tmp("mips64-mmio-branch-XXXXXX.bin", &path, &error);
+    fd = g_file_open_tmp("sn0-mmio-branch-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     close(fd);
     g_assert_true(g_file_set_contents(path, (const char *)image,
