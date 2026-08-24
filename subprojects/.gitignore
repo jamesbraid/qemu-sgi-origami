@@ -6,6 +6,7 @@
 /keycodemapdb
 /libvfio-user
 /slirp
+/libslirp-v4.8.0
 /anyhow-*
 /attrs-*
 /bitfield-struct-*
@@ -20,3 +21,6 @@
 
 # Workaround for Meson v1.9.0 https://github.com/mesonbuild/meson/issues/14948
 /.wraplock
+# The wrap applies this fork-carried series to the vendored libslirp;
+# the root *.patch ignore must not swallow it.
+!packagefiles/libslirp-sgi-prom.patch
