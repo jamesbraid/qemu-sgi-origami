@@ -226,19 +226,27 @@ def verdict(cell, attempts):
     return 'fail'
 
 
-_PROGRESS_CODE_RE = re.compile(r'sgi_hub_led CPU \d+: (0x[0-9a-f]{2})')
+_PROGRESS_CODE_RE = re.compile(r'sgi_hub_led CPU \d+: (0x[0-9a-f]{2}) \((\w+):')
 
 
 def first_progress_code(text):
     """Return the first firmware boot-progress code in text, or None.
 
     The Hub's debug-leds trace event prints a line of the form
-    'sgi_hub_led CPU N: 0xNN (...)' for every write to its indicator
-    register; this scans arbitrary captured QEMU output for the first
-    one and returns its code, e.g. '0x03'.
+    'sgi_hub_led CPU N: 0xNN (KIND: meaning)' for every write to its
+    indicator register, where KIND is 'progress', 'FAILURE' (a
+    diagnosed self-test failure such as ECC or FPU), or 'undecoded'.
+    A failure line has the identical shape a progress line does, so
+    this only ever returns a code whose kind is explicitly 'progress'
+    -- scoring a FAILURE code as progress would be a false pass for a
+    cell that actually hit one -- skipping past any failure or
+    undecoded line that appears first.
     """
-    match = _PROGRESS_CODE_RE.search(text)
-    return match.group(1) if match else None
+    for match in _PROGRESS_CODE_RE.finditer(text):
+        code, kind = match.group(1), match.group(2)
+        if kind == 'progress':
+            return code
+    return None
 
 
 def _split_mem(mem, nodes):
