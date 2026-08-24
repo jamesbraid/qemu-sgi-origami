@@ -441,6 +441,34 @@ typedef struct mips_def_t mips_def_t;
 #define R10K_SCACHE_DWORDS     (R10K_SCACHE_SIZE / 8)
 #define R10K_SCACHE_TAGLO_MASK 0xffffcdff
 #define R10K_SCACHE_TAGHI_MASK 0x8000000f
+
+/*
+ * The R10000's on-chip primary caches, both 32 Kbytes and two-way set
+ * associative: the instruction cache in 64-byte blocks holding predecoded
+ * 36-bit instructions, the data cache in 32-byte blocks. Their index
+ * diagnostic operations use the virtual address — VA[13:6] or VA[13:5]
+ * names the set, VA[13:2] a word, and VA[0] the way. The tag masks are the
+ * defined TagLo/TagHi bits of each cache's tag format; the
+ * least-recently-used bit at TagLo[3] belongs to the set rather than to a
+ * way, like the secondary cache's most-recently-used bit, and is kept
+ * aside the same way.
+ */
+#define R10K_PCACHE_SIZE       (32 * 1024)
+#define R10K_PCACHE_WAYS       2
+#define R10K_PCACHE_WORDS      (R10K_PCACHE_SIZE / 4)
+#define R10K_ICACHE_LINE_SIZE  64
+#define R10K_ICACHE_SETS       (R10K_PCACHE_SIZE / R10K_ICACHE_LINE_SIZE / \
+                                R10K_PCACHE_WAYS)
+#define R10K_ICACHE_TAGS       (R10K_ICACHE_SETS * R10K_PCACHE_WAYS)
+#define R10K_DCACHE_LINE_SIZE  32
+#define R10K_DCACHE_SETS       (R10K_PCACHE_SIZE / R10K_DCACHE_LINE_SIZE / \
+                                R10K_PCACHE_WAYS)
+#define R10K_DCACHE_TAGS       (R10K_DCACHE_SETS * R10K_PCACHE_WAYS)
+#define R10K_PCACHE_TAGLO_LRU  (1 << 3)
+#define R10K_ICACHE_TAGLO_MASK 0xffffff4d
+#define R10K_ICACHE_TAGHI_MASK 0x0000000f
+#define R10K_DCACHE_TAGLO_MASK 0xffffffcf
+#define R10K_DCACHE_TAGHI_MASK 0xe000000f
 /* CP0 Register 28 */
 #define CP0_REG28__TAGLO           0
 #define CP0_REG28__DATALO          1
@@ -1249,6 +1277,24 @@ typedef struct CPUArchState {
     uint8_t r10k_scache_mru[R10K_SCACHE_SETS];
     uint64_t r10k_scache_data[R10K_SCACHE_DWORDS];
     uint16_t r10k_scache_ecc[R10K_SCACHE_QUADWORDS];
+
+    /*
+     * R10000 primary-cache diagnostic state. The tag arrays keep each tag's
+     * defined TagLo bits except the set-wide least-recently-used bit, which
+     * lives in its own per-set array; the data arrays keep a predecoded
+     * 36-bit instruction or a 32-bit word per entry with the parity bits
+     * software staged through the ECC register beside them.
+     */
+    uint32_t r10k_icache_taglo[R10K_ICACHE_TAGS];
+    uint8_t r10k_icache_taghi[R10K_ICACHE_TAGS];
+    uint8_t r10k_icache_lru[R10K_ICACHE_SETS];
+    uint64_t r10k_icache_data[R10K_PCACHE_WORDS];
+    uint8_t r10k_icache_parity[R10K_PCACHE_WORDS];
+    uint32_t r10k_dcache_taglo[R10K_DCACHE_TAGS];
+    uint32_t r10k_dcache_taghi[R10K_DCACHE_TAGS];
+    uint8_t r10k_dcache_lru[R10K_DCACHE_SETS];
+    uint32_t r10k_dcache_data[R10K_PCACHE_WORDS];
+    uint8_t r10k_dcache_parity[R10K_PCACHE_WORDS];
 /*
  * CP0 Register 30
  */

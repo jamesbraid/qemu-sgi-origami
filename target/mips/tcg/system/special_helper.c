@@ -184,6 +184,87 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
 
     if (env->insn_flags & INSN_R10K) {
         /*
+         * The primary caches are virtually indexed: VA[13:6] names an
+         * instruction-cache set, VA[13:5] a data-cache set, VA[13:2] a word
+         * for the data operations, and VA[0] the way throughout. Their index
+         * diagnostic operations move whole tag and data entries between the
+         * arrays and the TagLo/TagHi/ECC staging registers; the set-wide
+         * least-recently-used bit rides in TagLo bit 3 either way.
+         */
+        if (cache_type == 0 && (cache_operation == 0b001 ||
+                                cache_operation == 0b010)) {
+            unsigned int way = addr & 1;
+            unsigned int set = extract64(addr, 6, 8);
+            unsigned int tag = set * R10K_PCACHE_WAYS + way;
+
+            if (cache_operation == 0b010) { /* Index Store Tag (I) */
+                env->r10k_icache_taglo[tag] = env->CP0_TagLo &
+                    (R10K_ICACHE_TAGLO_MASK & ~R10K_PCACHE_TAGLO_LRU);
+                env->r10k_icache_taghi[tag] =
+                    env->CP0_TagHi & R10K_ICACHE_TAGHI_MASK;
+                env->r10k_icache_lru[set] = extract32(env->CP0_TagLo, 3, 1);
+            } else { /* Index Load Tag (I) */
+                env->CP0_TagLo = env->r10k_icache_taglo[tag] |
+                    (env->r10k_icache_lru[set] << 3);
+                env->CP0_TagHi = env->r10k_icache_taghi[tag];
+            }
+            return;
+        }
+        if (cache_type == 1 && (cache_operation == 0b001 ||
+                                cache_operation == 0b010)) {
+            unsigned int way = addr & 1;
+            unsigned int set = extract64(addr, 5, 9);
+            unsigned int tag = set * R10K_PCACHE_WAYS + way;
+
+            if (cache_operation == 0b010) { /* Index Store Tag (D) */
+                env->r10k_dcache_taglo[tag] = env->CP0_TagLo &
+                    (R10K_DCACHE_TAGLO_MASK & ~R10K_PCACHE_TAGLO_LRU);
+                env->r10k_dcache_taghi[tag] =
+                    env->CP0_TagHi & R10K_DCACHE_TAGHI_MASK;
+                env->r10k_dcache_lru[set] = extract32(env->CP0_TagLo, 3, 1);
+            } else { /* Index Load Tag (D) */
+                env->CP0_TagLo = env->r10k_dcache_taglo[tag] |
+                    (env->r10k_dcache_lru[set] << 3);
+                env->CP0_TagHi = env->r10k_dcache_taghi[tag];
+            }
+            return;
+        }
+        if ((cache_type == 0 || cache_type == 1) &&
+            (cache_operation == 0b110 || cache_operation == 0b111)) {
+            unsigned int way = addr & 1;
+            unsigned int entry = extract64(addr, 2, 12) * R10K_PCACHE_WAYS +
+                                 way;
+
+            if (cache_type == 0) {
+                if (cache_operation == 0b111) { /* Index Store Data (I) */
+                    env->r10k_icache_data[entry] =
+                        (uint64_t)(env->CP0_TagHi & 0xf) << 32 |
+                        (uint32_t)env->CP0_TagLo;
+                    env->r10k_icache_parity[entry] = env->CP0_ErrCtl & 1;
+                } else { /* Index Load Data (I) */
+                    uint64_t data = env->r10k_icache_data[entry];
+
+                    env->CP0_TagLo = (uint32_t)data;
+                    env->CP0_TagHi = data >> 32;
+                    env->CP0_ErrCtl = env->r10k_icache_parity[entry];
+                }
+            } else {
+                if (cache_operation == 0b111) { /* Index Store Data (D) */
+                    env->r10k_dcache_data[entry] = env->CP0_TagLo;
+                    env->r10k_dcache_parity[entry] = env->CP0_ErrCtl & 0xf;
+                } else { /* Index Load Data (D) */
+                    /*
+                     * The data-cache word format leaves TagHi "Not Used"
+                     * rather than reserved, so the load fills TagLo and the
+                     * parity bits and leaves TagHi alone.
+                     */
+                    env->CP0_TagLo = env->r10k_dcache_data[entry];
+                    env->CP0_ErrCtl = env->r10k_dcache_parity[entry];
+                }
+            }
+            return;
+        }
+        /*
          * The CPU definition fixes the R10000 secondary cache at the Origin
          * 200 reset-mode value: 1 MiB, two ways, and 128-byte blocks.  Its
          * index diagnostic operations use the translated physical address
