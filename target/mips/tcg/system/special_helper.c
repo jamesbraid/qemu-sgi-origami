@@ -170,6 +170,43 @@ void helper_deret(CPUMIPSState *env)
     debug_post_eret(env);
 }
 
+/*
+ * Invalidate one primary instruction-cache way: the state bit and the state
+ * parity bit go to zero, and nothing else moves — the tag address, the tag
+ * parity bit and the set's least-recently-used bit all stay.
+ */
+static void r10k_icache_invalidate(CPUMIPSState *env, unsigned int tag)
+{
+    env->r10k_icache_taglo[tag] &= ~((1 << 6) | (1 << 2));
+}
+
+/*
+ * Invalidate one primary data-cache way: state to invalid, the secondary-way
+ * bit to zero, the state modifier back to normal (001), state parity to
+ * zero. On hardware an inconsistent block is written back to the secondary
+ * cache first; this model's memory is always current and its cache arrays
+ * are diagnostic stores beside it, so a write back has nothing to move.
+ */
+static void r10k_dcache_invalidate(CPUMIPSState *env, unsigned int tag)
+{
+    env->r10k_dcache_taglo[tag] &= ~((3 << 6) | (1 << 2) | (1 << 1));
+    env->r10k_dcache_taghi[tag] =
+        (env->r10k_dcache_taghi[tag] & ~(7u << 29)) | (1u << 29);
+}
+
+/* The physical address bits 39:12 a primary cache tag carries. */
+static uint64_t r10k_icache_tag_pa(CPUMIPSState *env, unsigned int tag)
+{
+    return ((uint64_t)env->r10k_icache_taghi[tag] << 24) |
+           (env->r10k_icache_taglo[tag] >> 8);
+}
+
+static uint64_t r10k_dcache_tag_pa(CPUMIPSState *env, unsigned int tag)
+{
+    return ((uint64_t)(env->r10k_dcache_taghi[tag] & 0xf) << 24) |
+           (env->r10k_dcache_taglo[tag] >> 8);
+}
+
 void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
 {
     static const char *const type_name[] = {
@@ -191,6 +228,57 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
          * arrays and the TagLo/TagHi/ECC staging registers; the set-wide
          * least-recently-used bit rides in TagLo bit 3 either way.
          */
+        if (cache_type == 0 && cache_operation == 0b000) {
+            /* Index Invalidate (I) */
+            unsigned int set = extract64(addr, 6, 8);
+
+            r10k_icache_invalidate(env, set * R10K_PCACHE_WAYS + (addr & 1));
+            return;
+        }
+        if (cache_type == 1 && cache_operation == 0b000) {
+            /* Index WriteBack Invalidate (D) */
+            unsigned int set = extract64(addr, 5, 9);
+
+            r10k_dcache_invalidate(env, set * R10K_PCACHE_WAYS + (addr & 1));
+            return;
+        }
+        if ((cache_type == 0 && cache_operation == 0b100) ||
+            (cache_type == 1 && (cache_operation == 0b100 ||
+                                 cache_operation == 0b101))) {
+            /*
+             * Hit Invalidate (I)/(D) and Hit WriteBack Invalidate (D): both
+             * ways at the virtual index are compared against the physical
+             * address, and a valid matching way is invalidated. The write
+             * back distinguishing the last of the three has nothing to move
+             * in this model.
+             */
+            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
+                                                      GETPC());
+            unsigned int w;
+
+            for (w = 0; w < R10K_PCACHE_WAYS; w++) {
+                if (cache_type == 0) {
+                    unsigned int tag = extract64(addr, 6, 8) *
+                                       R10K_PCACHE_WAYS + w;
+
+                    if ((env->r10k_icache_taglo[tag] & (1 << 6)) &&
+                        r10k_icache_tag_pa(env, tag) ==
+                        extract64(paddr, 12, 28)) {
+                        r10k_icache_invalidate(env, tag);
+                    }
+                } else {
+                    unsigned int tag = extract64(addr, 5, 9) *
+                                       R10K_PCACHE_WAYS + w;
+
+                    if ((env->r10k_dcache_taglo[tag] & (3 << 6)) &&
+                        r10k_dcache_tag_pa(env, tag) ==
+                        extract64(paddr, 12, 28)) {
+                        r10k_dcache_invalidate(env, tag);
+                    }
+                }
+            }
+            return;
+        }
         if (cache_type == 0 && (cache_operation == 0b001 ||
                                 cache_operation == 0b010)) {
             unsigned int way = addr & 1;
