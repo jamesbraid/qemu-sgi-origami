@@ -423,6 +423,29 @@ static const VMStateDescription mips_vmstate_r10k_pcache = {
     }
 };
 
+/*
+ * The CacheErr register is loaded by a Cache Error exception, which nothing
+ * raises yet, so today this always carries zero; it travels so the register
+ * keeps its contents once the cache-error delivery path can load it.
+ */
+static bool mips_r10k_cacherr_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.insn_flags & INSN_R10K;
+}
+
+static const VMStateDescription mips_vmstate_r10k_cacherr = {
+    .name = "cpu/r10k-cacherr",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_cacherr_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(env.CP0_CacheErr, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_r10k_diagnostic_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -664,6 +687,7 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r10k_scache,
         &mips_vmstate_r10k_pcache,
+        &mips_vmstate_r10k_cacherr,
         &mips_vmstate_r10k_diagnostic,
         &mips_vmstate_r10k_watch,
         &mips_vmstate_octeon_multiplier,

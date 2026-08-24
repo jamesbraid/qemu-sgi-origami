@@ -1262,6 +1262,13 @@ typedef struct CPUArchState {
 #define CP0EC_SPR 28
 #define CP0EC_ITC 26
 /*
+ * CP0 Register 27, the CacheErr register: read-only to software, loaded by
+ * hardware when a Cache Error exception is taken. Nothing in the model
+ * raises that exception yet, so the register holds its reset value of zero
+ * until the cache-error delivery path exists to load it.
+ */
+    int32_t CP0_CacheErr;
+/*
  * CP0 Register 28
  */
     uint64_t CP0_TagLo;
