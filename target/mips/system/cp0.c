@@ -163,7 +163,7 @@ void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
     cpu_mips_reassert_interrupt(env);
 }
 
-void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
+static void mips_store_cause(CPUMIPSState *env, target_ulong val)
 {
     uint32_t mask = 0x00C00300;
     uint32_t old, new;
@@ -206,5 +206,28 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
         if ((old ^ new) & (1 << (CP0Ca_IP + i))) {
             cpu_mips_soft_irq(env, i, new & (1 << (CP0Ca_IP + i)));
         }
+    }
+}
+
+void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val)
+{
+    /*
+     * Where the MT ASE is present, helper_mttc0_cause() runs this same
+     * store against this CPU's Cause from another VPE's thread, under the
+     * big lock. The compare-and-swap keeps the word itself consistent
+     * either way, but the side effects above are computed from one call's
+     * own old/new snapshot and applied after its swap: two unserialized
+     * stores that both move the DC bit or a software interrupt line could
+     * apply their timer and line effects in the opposite order to their
+     * swaps, leaving the timer or the line disagreeing with the register.
+     * Take the lock where that second writer can exist, exactly as
+     * cpu_mips_store_status() does; where MT is absent, every bit this
+     * store owns has one writer and the lock-free path stands.
+     */
+    if (ase_mt_available(env)) {
+        BQL_LOCK_GUARD();
+        mips_store_cause(env, val);
+    } else {
+        mips_store_cause(env, val);
     }
 }
