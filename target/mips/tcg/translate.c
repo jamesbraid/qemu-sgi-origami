@@ -5957,7 +5957,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_27:
         switch (sel) {
         case CP0_REG27__CACHERR:
-            tcg_gen_movi_tl(arg, 0); /* unimplemented */
+            /* Read-only; loaded only by a Cache Error exception. */
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_CacheErr));
             register_name = "CacheErr";
             break;
         default:
@@ -6738,7 +6739,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_27:
         switch (sel) {
         case CP0_REG27__CACHERR:
-            /* ignored */
+            /* Read-only: loaded by a Cache Error exception, never by MTC0. */
             register_name = "CacheErr";
             break;
         default:
@@ -7503,9 +7504,9 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         break;
     case CP0_REGISTER_27:
         switch (sel) {
-        /* ignored */
         case CP0_REG27__CACHERR:
-            tcg_gen_movi_tl(arg, 0); /* unimplemented */
+            /* Read-only; loaded only by a Cache Error exception. */
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_CacheErr));
             register_name = "CacheErr";
             break;
         default:
@@ -8270,7 +8271,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_27:
         switch (sel) {
         case CP0_REG27__CACHERR:
-            /* ignored */
+            /* Read-only: loaded by a Cache Error exception, never by MTC0. */
             register_name = "CacheErr";
             break;
         default:
