@@ -91,6 +91,8 @@ static bool mips_r10k_perf_counting(CPUMIPSState *env, unsigned ctr)
     case 1:
         return ctl & CP0PC_S;
     case 2:
+    case 3:
+        /* KSU=3 is implemented as User mode on the R10000 (manual 14.10). */
         return ctl & CP0PC_U;
     default:
         return false;
