@@ -17,6 +17,11 @@ slow_qtests = {
   'boot-serial-test': 360,
   'qos-test': 120,
   'vmgenid-test': 610,
+  # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
+  # headroom and they time out under CI load. Give them the 120s slow budget.
+  'sn0-ioc3-test': 120,
+  'sn0-hub-test': 120,
+  'sn0-bridge-test': 120,
 }
 
 qtests_generic = [
