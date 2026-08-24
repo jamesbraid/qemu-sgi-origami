@@ -47,7 +47,7 @@ def make_row(**overrides):
 
 def write_manifest(tmp_path, *lines):
     manifest = tmp_path / 'matrix'
-    manifest.write_text('\n'.join(lines) + '\n')
+    manifest.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return manifest
 
 
@@ -97,6 +97,34 @@ def test_rejects_non_identifier_id(tmp_path):
 
 def test_rejects_bad_speed(tmp_path):
     manifest = write_manifest(tmp_path, make_row(speed='fast'))
+
+    with pytest.raises(MatrixError):
+        parse_matrix(manifest)
+
+
+def test_rejects_bad_guest(tmp_path):
+    manifest = write_manifest(tmp_path, make_row(guest='solaris'))
+
+    with pytest.raises(MatrixError):
+        parse_matrix(manifest)
+
+
+def test_rejects_bad_accel(tmp_path):
+    manifest = write_manifest(tmp_path, make_row(accel='kvm'))
+
+    with pytest.raises(MatrixError):
+        parse_matrix(manifest)
+
+
+def test_rejects_bad_expect(tmp_path):
+    manifest = write_manifest(tmp_path, make_row(expect='maybe'))
+
+    with pytest.raises(MatrixError):
+        parse_matrix(manifest)
+
+
+def test_rejects_bad_firmware(tmp_path):
+    manifest = write_manifest(tmp_path, make_row(firmware='prm'))
 
     with pytest.raises(MatrixError):
         parse_matrix(manifest)
@@ -198,6 +226,11 @@ def test_two_node_numa():
     assert '-object memory-backend-ram,id=ram1,size=64M' in joined
     assert '-numa node,nodeid=0,memdev=ram0,cpus=0-1' in joined
     assert '-numa node,nodeid=1,memdev=ram1,cpus=2-3' in joined
+
+
+def test_cpus_not_divisible_by_nodes_rejected():
+    with pytest.raises(MatrixError):
+        qemu_args(make_cell(cpus=3, nodes=2, mem='128M'))
 
 
 # Tests for the oracle/retry/expected-failure verdict
