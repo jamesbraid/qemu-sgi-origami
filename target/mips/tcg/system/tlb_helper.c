@@ -1733,6 +1733,38 @@ void mips_cpu_do_interrupt(CPUState *cs)
     case EXCP_CACHE:
         cause = 30;
         offset = 0x100;
+        if (env->insn_flags & INSN_R10K) {
+            /*
+             * A Cache Error is an error-level exception on the R10000:
+             * "the CP0 Status register ERL bit is asserted. Instruction
+             * fetching begins from 0xa0000100 or 0xbfc00300, depending on
+             * the CP0 Status register BEV bit. The CP0 ErrorEPC register
+             * is loaded" (User's Manual version 2.0, section 9.4). EPC,
+             * EXL and Cause stay untouched -- exception codes 24 to 30
+             * are reserved on this processor, so the delivery writes no
+             * code. "While the CP0 Status register ERL bit is asserted,
+             * any subsequent Cache Error exceptions are ignored", so one
+             * arriving with ERL up leaves every register and the PC
+             * alone.
+             */
+            if (env->CP0_Status & (1 << CP0St_ERL)) {
+                break;
+            }
+            env->CP0_ErrorEPC = exception_resume_pc(env);
+            env->hflags &= ~MIPS_HFLAG_BMASK;
+            env->CP0_Status |= (1 << CP0St_ERL);
+            env->hflags |= MIPS_HFLAG_64 | MIPS_HFLAG_CP0;
+            env->hflags &= ~(MIPS_HFLAG_AWRAP | MIPS_HFLAG_KSU);
+            if (env->CP0_Status & (1 << CP0St_BEV)) {
+                env->active_tc.PC = env->exception_base + 0x200;
+            } else {
+                /* The non-boot vector is uncached, past a suspect cache. */
+                env->active_tc.PC = KSEG1_BASE | (env->CP0_EBase & 0x1FFFF000);
+            }
+            env->active_tc.PC += offset;
+            set_hflags_for_handler(env);
+            break;
+        }
  set_EPC:
         if (!(env->CP0_Status & (1 << CP0St_EXL))) {
             env->CP0_EPC = exception_resume_pc(env);
