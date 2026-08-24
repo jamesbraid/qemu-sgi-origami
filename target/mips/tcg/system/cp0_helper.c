@@ -1548,9 +1548,21 @@ void helper_mtc0_maari(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_watchlo(CPUMIPSState *env, target_ulong arg1, uint32_t sel)
 {
+    if (env->insn_flags & INSN_R10K) {
+        /*
+         * Physical address bits 31:3 above the two enable bits, trap on
+         * load and trap on store; bit 2 is ignored on write and reads as
+         * zero. The MIPS32 mask below would clear both enables. Only
+         * selector zero reaches here: the R10000 has one watch pair.
+         */
+        env->CP0_WatchLo[sel] = arg1 & (CP0WL_R10K_MASK |
+                                        CP0WL_R10K_R | CP0WL_R10K_W);
+        mips_r10k_watch_changed(env, true);
+        return;
+    }
     /*
      * Watch exceptions for instructions, data loads, data stores
-     * not implemented.
+     * not implemented outside the R10000 family.
      */
     env->CP0_WatchLo[sel] = (arg1 & ~0x7);
 }
@@ -1559,6 +1571,17 @@ void helper_mtc0_watchhi(CPUMIPSState *env, target_ulong arg1, uint32_t sel)
 {
     uint64_t mask = 0x40000FF8 | (env->CP0_EntryHi_ASID_mask << CP0WH_ASID);
     uint64_t m_bit = env->CP0_WatchHi[sel] & (1 << CP0WH_M); /* read-only */
+
+    if (env->insn_flags & INSN_R10K) {
+        /*
+         * Physical address bits 39:32 in bits 7:0; bits 31:8 are ignored
+         * on write and read as zero. No M bit, no ASID: the register is
+         * only the top of the watched physical address.
+         */
+        env->CP0_WatchHi[sel] = arg1 & 0xff;
+        mips_r10k_watch_changed(env, false);
+        return;
+    }
     if ((env->CP0_Config5 >> CP0C5_MI) & 1) {
         mask |= 0xFFFFFFFF00000000ULL; /* MMID */
     }

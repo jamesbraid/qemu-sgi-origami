@@ -172,6 +172,7 @@ void sync_c0_status(CPUMIPSState *env, CPUMIPSState *cpu, int tc);
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val);
 void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val);
 void cpu_mips_reassert_interrupt(CPUMIPSState *env);
+void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written);
 
 extern const VMStateDescription vmstate_mips_cpu;
 

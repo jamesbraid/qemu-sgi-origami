@@ -1111,6 +1111,21 @@ typedef struct CPUArchState {
 #define CP0WH_ASID 16
 #define CP0WH_M    31
 /*
+ * The R10000 family's WatchLo layout: physical address bits 31:3 above two
+ * enable bits, trap-on-load and trap-on-store, with bit 2 ignored on write
+ * and read as zero. WatchHi carries physical address bits 39:32.
+ */
+#define CP0WL_R10K_MASK 0xfffffff8u
+#define CP0WL_R10K_R    (1u << 1)
+#define CP0WL_R10K_W    (1u << 0)
+    /*
+     * A Watch exception the R10000 postponed because EXL or ERL was set when
+     * the watched doubleword was referenced. The latch is architecturally
+     * invisible; it drains into a Watch exception when both bits clear, and
+     * a system reset or an MTC0 to WatchLo empties it.
+     */
+    uint32_t CP0_R10K_DelayedWatch;
+/*
  * CP0 Register 20
  */
     target_ulong CP0_XContext;
@@ -1453,6 +1468,15 @@ enum {
  * cleared when VPE goes from active to inactive.
  */
 #define CPU_INTERRUPT_WAKE CPU_INTERRUPT_TGT_INT_0
+
+/*
+ * A postponed R10000 Watch exception waiting for EXL and ERL to clear.
+ * Raised when a watched reference is made under either bit, so the exec
+ * loop revisits deliverability at each block boundary; delivered and
+ * cleared by mips_cpu_exec_interrupt(), or cleared by the MTC0 to WatchLo
+ * that empties the latch.
+ */
+#define CPU_INTERRUPT_DWATCH CPU_INTERRUPT_TGT_INT_1
 
 #define CPU_RESOLVING_TYPE TYPE_MIPS_CPU
 

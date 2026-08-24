@@ -399,6 +399,22 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
         env->CP0_WatchLo[7] = 0;
         env->CP0_WatchHi[7] = 0;
     }
+    if (env->insn_flags & INSN_R10K) {
+        int i;
+
+        /*
+         * The R10000 family's WatchHi is only physical address bits 39:32;
+         * it has no M bit, so the chain-marking initialisation above would
+         * read back as an address bit that was never written. A reset also
+         * clears a postponed Watch exception, which
+         * memset(env, ...) above already did, and any watchpoints planted
+         * for the old registers are dismissed on sight because the
+         * enables are now clear.
+         */
+        for (i = 0; i < 8; i++) {
+            env->CP0_WatchHi[i] = 0;
+        }
+    }
     /* Count register increments in debug mode, EJTAG version 1 */
     env->CP0_Debug = (1 << CP0DB_CNT) | (0x1 << CP0DB_VER);
 
@@ -735,6 +751,8 @@ static const TCGCPUOps mips_tcg_ops = {
     .tlb_fill = mips_cpu_tlb_fill,
     .pointer_wrap = mips_pointer_wrap,
     .cpu_exec_interrupt = mips_cpu_exec_interrupt,
+    .debug_check_watchpoint = mips_debug_check_watchpoint,
+    .debug_excp_handler = mips_debug_excp_handler,
     .cpu_exec_halt = mips_cpu_has_work,
     .cpu_exec_reset = cpu_reset,
     .do_interrupt = mips_cpu_do_interrupt,
