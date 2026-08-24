@@ -207,6 +207,82 @@ static uint64_t r10k_dcache_tag_pa(CPUMIPSState *env, unsigned int tag)
            (env->r10k_dcache_taglo[tag] >> 8);
 }
 
+/* The physical address bits 39:18 a secondary cache tag carries. */
+static uint64_t r10k_scache_tag_pa(CPUMIPSState *env, unsigned int tag)
+{
+    return ((uint64_t)env->r10k_scache_taghi[tag] << 18) |
+           (env->r10k_scache_taglo[tag] >> 14);
+}
+
+/*
+ * Invalidating a secondary block extends to the primary blocks that are its
+ * subsets. The primary caches are virtually indexed, which is why the
+ * secondary tag keeps its block's virtual index bits VA[13:12]: they name
+ * the primary sets to interrogate, and the block's physical address decides
+ * a match.
+ */
+static void r10k_scache_invalidate_subsets(CPUMIPSState *env, uint64_t block,
+                                           unsigned int pidx)
+{
+    unsigned int i, w;
+
+    for (i = 0; i < R10K_SCACHE_LINE_SIZE / R10K_ICACHE_LINE_SIZE; i++) {
+        uint64_t sub = block + i * R10K_ICACHE_LINE_SIZE;
+        unsigned int set = (pidx << 6) | extract64(sub, 6, 6);
+
+        for (w = 0; w < R10K_PCACHE_WAYS; w++) {
+            unsigned int tag = set * R10K_PCACHE_WAYS + w;
+
+            if ((env->r10k_icache_taglo[tag] & (1 << 6)) &&
+                r10k_icache_tag_pa(env, tag) == extract64(sub, 12, 28)) {
+                r10k_icache_invalidate(env, tag);
+            }
+        }
+    }
+    for (i = 0; i < R10K_SCACHE_LINE_SIZE / R10K_DCACHE_LINE_SIZE; i++) {
+        uint64_t sub = block + i * R10K_DCACHE_LINE_SIZE;
+        unsigned int set = (pidx << 7) | extract64(sub, 5, 7);
+
+        for (w = 0; w < R10K_PCACHE_WAYS; w++) {
+            unsigned int tag = set * R10K_PCACHE_WAYS + w;
+
+            if ((env->r10k_dcache_taglo[tag] & (3 << 6)) &&
+                r10k_dcache_tag_pa(env, tag) == extract64(sub, 12, 28)) {
+                r10k_dcache_invalidate(env, tag);
+            }
+        }
+    }
+}
+
+/*
+ * Invalidate one secondary way. The tag array is built so all of a tag's
+ * bits are written at once, so the whole entry is rewritten: state to
+ * invalid, the tag from the operation's physical address, the virtual
+ * index from its VA[13:12]. Hardware generates fresh ECC over those
+ * fields; the model keeps no ECC machinery and nothing ever checks these
+ * bits, so it stores zero. The MRU bit is pointed away from the
+ * invalidated way. A dirty block would be written back to the system
+ * interface first, and a clean one announced deleted; the model's memory
+ * is always current, so neither has anything to move.
+ */
+static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
+                                   unsigned int way, uint64_t paddr,
+                                   target_ulong vaddr)
+{
+    unsigned int tag = set * R10K_SCACHE_WAYS + way;
+
+    r10k_scache_invalidate_subsets(env,
+                                   (r10k_scache_tag_pa(env, tag) << 18) |
+                                   (paddr & 0x3ff80),
+                                   extract32(env->r10k_scache_taglo[tag],
+                                             7, 2));
+    env->r10k_scache_taglo[tag] =
+        (uint32_t)(extract64(paddr, 18, 18) << 14) |
+        ((uint32_t)extract64(vaddr, 12, 2) << 7);
+    env->r10k_scache_taghi[tag] = extract64(paddr, 36, 4);
+    env->r10k_scache_mru[set] = way ^ 1;
+}
+
 void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
 {
     static const char *const type_name[] = {
@@ -349,6 +425,59 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
                     env->CP0_TagLo = env->r10k_dcache_data[entry];
                     env->CP0_ErrCtl = env->r10k_dcache_parity[entry];
                 }
+            }
+            return;
+        }
+        if (cache_type == 3 && cache_operation == 0b000) {
+            /*
+             * Index WriteBack Invalidate (S): the physical address indexes
+             * the set and its bit zero names the way, with no tag compare.
+             * A block already invalid is left entirely alone — no tag
+             * rewrite, and the MRU bit stays where it was.
+             */
+            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
+                                                      GETPC());
+            unsigned int way = paddr & 1;
+            unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
+                               (R10K_SCACHE_SETS - 1);
+
+            if (env->r10k_scache_taglo[set * R10K_SCACHE_WAYS + way] &
+                (3 << 10)) {
+                r10k_scache_invalidate(env, set, way, paddr, addr);
+            }
+            return;
+        }
+        if (cache_type == 3 && (cache_operation == 0b100 ||
+                                cache_operation == 0b101)) {
+            /*
+             * Hit Invalidate (S) and Hit WriteBack Invalidate (S): both
+             * ways' tags are compared against the physical address, and a
+             * valid matching way is invalidated. Either way the outcome is
+             * recorded in the Status register's CH bit — set on a hit,
+             * cleared on a miss — which is what tells a diagnostic whether
+             * its operation found the block.
+             */
+            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
+                                                      GETPC());
+            unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
+                               (R10K_SCACHE_SETS - 1);
+            unsigned int w;
+            bool hit = false;
+
+            for (w = 0; w < R10K_SCACHE_WAYS; w++) {
+                unsigned int tag = set * R10K_SCACHE_WAYS + w;
+
+                if ((env->r10k_scache_taglo[tag] & (3 << 10)) &&
+                    r10k_scache_tag_pa(env, tag) == extract64(paddr, 18, 22)) {
+                    r10k_scache_invalidate(env, set, w, paddr, addr);
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                env->CP0_Status |= 1 << CP0St_CH;
+            } else {
+                env->CP0_Status &= ~(1 << CP0St_CH);
             }
             return;
         }
