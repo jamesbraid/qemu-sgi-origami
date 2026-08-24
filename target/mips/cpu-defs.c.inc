@@ -573,11 +573,15 @@ const mips_def_t mips_defs[] =
         /*
          * The processor every SGI Origin shipped with. Config0 uses the
          * R10000's own layout, whose bits 24..0 come from the reset mode bits
-         * the board drives: the values here describe an Origin 200, with 32
-         * Kbyte primary caches (hardwired), a 1 Mbyte secondary cache with a
-         * 128-byte block, its system interface and secondary cache clocks at
-         * half the 180 MHz processor clock, and kseg0 cacheable noncoherent.
-         * Bit 31 of that layout is the top bit of the primary instruction
+         * the board drives. On the Origin 200 machine the board does drive
+         * them: its ratified mode word (SN0_PROCESSOR_MODE_BITS, hw/mips/
+         * sn0.h) is latched over bits 24..0 at every reset, so of this
+         * default only the hardwired cache size fields above them reach a
+         * guest there. The mode-bit values below are a fallback for a bare
+         * R10000 on some other machine, and they are not the Origin 200's:
+         * the board's word differs in the kseg0 algorithm, the secondary
+         * cache clock divisor and the outstanding-request limit.
+         * Bit 31 of the layout is the top bit of the primary instruction
          * cache size field and reads zero, so it does not claim a second
          * Config register the way a MIPS32 processor's bit 31 would.
          *
