@@ -242,15 +242,21 @@ static inline void update_fcr31(CPUMIPSState *env, uintptr_t pc)
  * operation is not performed, so its softfloat flags are discarded and
  * the cause field carries E alone.
  */
+static G_NORETURN void raise_unimplemented_operation(CPUMIPSState *env,
+                                                     uintptr_t pc)
+{
+    set_float_exception_flags(0, &env->active_fpu.fp_status);
+    SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
+    do_raise_exception(env, EXCP_FPE, pc);
+}
+
 static void check_denormal_result_d(CPUMIPSState *env, uint64_t ret,
                                     uintptr_t pc)
 {
     if (unlikely((env->insn_flags & INSN_R10K) &&
                  !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
                  float64_is_denormal(ret))) {
-        set_float_exception_flags(0, &env->active_fpu.fp_status);
-        SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
-        do_raise_exception(env, EXCP_FPE, pc);
+        raise_unimplemented_operation(env, pc);
     }
 }
 
@@ -260,9 +266,7 @@ static void check_denormal_result_s(CPUMIPSState *env, uint32_t ret,
     if (unlikely((env->insn_flags & INSN_R10K) &&
                  !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
                  float32_is_denormal(ret))) {
-        set_float_exception_flags(0, &env->active_fpu.fp_status);
-        SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
-        do_raise_exception(env, EXCP_FPE, pc);
+        raise_unimplemented_operation(env, pc);
     }
 }
 
@@ -315,15 +319,35 @@ uint64_t helper_float_cvtd_l(CPUMIPSState *env, uint64_t dt0)
     return fdt2;
 }
 
+/*
+ * "In the R10000, the conversion allows only up to 51 bits; otherwise an
+ * Unimplemented Operation exception is taken" (R10000 User's Manual
+ * version 2.0, section 15.5, CVT.L.fmt errata). A NaN, an infinity or an
+ * out-of-range source has no 51-bit result either and is refused the
+ * same way, in place of the architectural Invalid and saturated result
+ * the operating system's assist path delivers after the trap.
+ */
+static void check_cvt_l_result(CPUMIPSState *env, uint64_t ret, bool invalid,
+                               uintptr_t pc)
+{
+    if (unlikely((env->insn_flags & INSN_R10K) &&
+                 (invalid || ret != (uint64_t)sextract64(ret, 0, 52)))) {
+        raise_unimplemented_operation(env, pc);
+    }
+}
+
 uint64_t helper_float_cvt_l_d(CPUMIPSState *env, uint64_t fdt0)
 {
     uint64_t dt2;
+    bool invalid;
 
     dt2 = float64_to_int64(fdt0, &env->active_fpu.fp_status);
-    if (get_float_exception_flags(&env->active_fpu.fp_status)
-        & (float_flag_invalid | float_flag_overflow)) {
+    invalid = get_float_exception_flags(&env->active_fpu.fp_status)
+        & (float_flag_invalid | float_flag_overflow);
+    if (invalid) {
         dt2 = FP_TO_INT64_OVERFLOW;
     }
+    check_cvt_l_result(env, dt2, invalid, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -331,12 +355,15 @@ uint64_t helper_float_cvt_l_d(CPUMIPSState *env, uint64_t fdt0)
 uint64_t helper_float_cvt_l_s(CPUMIPSState *env, uint32_t fst0)
 {
     uint64_t dt2;
+    bool invalid;
 
     dt2 = float32_to_int64(fst0, &env->active_fpu.fp_status);
-    if (get_float_exception_flags(&env->active_fpu.fp_status)
-        & (float_flag_invalid | float_flag_overflow)) {
+    invalid = get_float_exception_flags(&env->active_fpu.fp_status)
+        & (float_flag_invalid | float_flag_overflow);
+    if (invalid) {
         dt2 = FP_TO_INT64_OVERFLOW;
     }
+    check_cvt_l_result(env, dt2, invalid, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
