@@ -386,6 +386,43 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
  * before the widening still loads, at the price of resetting a register
  * that holds nothing an operating system relies on.
  */
+static bool mips_r10k_pcache_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.insn_flags & INSN_R10K;
+}
+
+static const VMStateDescription mips_vmstate_r10k_pcache = {
+    .name = "cpu/r10k-pcache",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_pcache_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(env.r10k_icache_taglo, MIPSCPU,
+                             R10K_ICACHE_TAGS),
+        VMSTATE_UINT8_ARRAY(env.r10k_icache_taghi, MIPSCPU,
+                            R10K_ICACHE_TAGS),
+        VMSTATE_UINT8_ARRAY(env.r10k_icache_lru, MIPSCPU,
+                            R10K_ICACHE_SETS),
+        VMSTATE_UINT64_ARRAY(env.r10k_icache_data, MIPSCPU,
+                             R10K_PCACHE_WORDS),
+        VMSTATE_UINT8_ARRAY(env.r10k_icache_parity, MIPSCPU,
+                            R10K_PCACHE_WORDS),
+        VMSTATE_UINT32_ARRAY(env.r10k_dcache_taglo, MIPSCPU,
+                             R10K_DCACHE_TAGS),
+        VMSTATE_UINT32_ARRAY(env.r10k_dcache_taghi, MIPSCPU,
+                             R10K_DCACHE_TAGS),
+        VMSTATE_UINT8_ARRAY(env.r10k_dcache_lru, MIPSCPU,
+                            R10K_DCACHE_SETS),
+        VMSTATE_UINT32_ARRAY(env.r10k_dcache_data, MIPSCPU,
+                             R10K_PCACHE_WORDS),
+        VMSTATE_UINT8_ARRAY(env.r10k_dcache_parity, MIPSCPU,
+                            R10K_PCACHE_WORDS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_r10k_diagnostic_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -626,6 +663,7 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_timer,
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r10k_scache,
+        &mips_vmstate_r10k_pcache,
         &mips_vmstate_r10k_diagnostic,
         &mips_vmstate_r10k_watch,
         &mips_vmstate_octeon_multiplier,
