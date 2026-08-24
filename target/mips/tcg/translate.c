@@ -13762,6 +13762,16 @@ static void decode_opc_special2_legacy(CPUMIPSState *env, DisasContext *ctx)
         gen_muldiv(ctx, op1, rd & 3, rs, rt);
         break;
     case OPC_MUL:
+        /*
+         * A MIPS32 instruction in a major opcode the R10000 does not
+         * define, so there it is a Reserved Instruction (the same cause
+         * list). Left ungated for the other pre-MIPS32 models that
+         * accept it.
+         */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_reserved_instruction(ctx);
+            break;
+        }
         gen_arith(ctx, op1, rd, rs, rt);
         break;
     case OPC_CLO:
@@ -15400,6 +15410,16 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
         }
         break;
     case OPC_MDMX:
+        /*
+         * The R10000 has no MDMX, and an undefined major opcode takes a
+         * Reserved Instruction exception (User's Manual version 2.0,
+         * Reserved Instruction exception causes). The silent acceptance
+         * below stands for the other processors.
+         */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_reserved_instruction(ctx);
+            break;
+        }
         /* MDMX: Not implemented. */
         break;
     case OPC_PCREL:
