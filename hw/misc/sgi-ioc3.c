@@ -457,7 +457,15 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         /* The set alias reads back the live mask; the clear alias does not. */
         return s->int_enable;
     case SGI_IOC3_CHIP_CONTROL:
-        return s->chip_control;
+        /*
+         * The stored control bits, plus the read-only arbiter-status field.
+         * Bit 22 reports the PCI arbiter idle. The model has no serial-DMA
+         * engine driving PCI traffic, so the arbiter is always idle and the
+         * read reports it. On our machine's boot the kernel's serial console
+         * setup did not complete until this bit read idle; leaving it clear
+         * hung the boot there.
+         */
+        return s->chip_control | SGI_IOC3_CHIP_CTRL_ARB_IDLE;
     case SGI_IOC3_MICROLAN_CONTROL:
         return s->microlan_control;
     case SGI_IOC3_PIN_CONTROL_SET:

@@ -71,17 +71,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
  * The chip control register. Its two seven-bit fields tell the serial DMA
  * engines where the ports live inside the SuperIO window, each as that port's
  * byte offset divided by eight, and four more bits set the byte bus strobe
- * length. The firmware writes it on every boot and no guest reads it back, so
- * a model that dropped it would produce an identical transcript -- which is
- * why the qtest asserts the firmware's own value rather than a boot doing it.
+ * length. The firmware writes it on every boot and no guest reads those fields
+ * back, so a model that dropped them would produce an identical transcript --
+ * which is why the qtest asserts the firmware's own value rather than a boot
+ * doing it.
  */
 #define SGI_IOC3_CHIP_CONTROL   0x28
 /*
- * Bits 19-22 report which internal master wants the PCI bus and whether the
- * arbiter is idle. They are hardware's to answer and nothing outside SGI's
- * own diagnostic reads them, so the writable half stops below them.
+ * Bits 19-21 report which internal master wants the PCI bus and bit 22 reports
+ * the PCI arbiter idle. Both are diagnostic status the hardware answers, so the
+ * writable mask stops below them and a write cannot store them. The model has
+ * no serial-DMA engine driving PCI traffic, so the arbiter is always idle and
+ * the read reports it. On our machine's boot the kernel's serial console setup
+ * looped on this register and did not proceed until bit 22 read idle.
  */
 #define SGI_IOC3_CHIP_CTRL_MASK 0x0007ffffu
+#define SGI_IOC3_CHIP_CTRL_ARB_IDLE 0x00400000u
 
 /*
  * MicroLAN (one-wire) control and the pin block it shares the window with.
