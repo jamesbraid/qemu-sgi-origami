@@ -1669,12 +1669,35 @@ void helper_mtc0_diagnostic(CPUMIPSState *env, target_ulong arg1)
      * caches and the instruction TLB last did, and its gaps are reserved and
      * read as zero.
      *
-     * No branch prediction table exists behind those fields. A diagnostic that
-     * starts a table read therefore reads back the state it last wrote rather
-     * than a table entry; nothing an operating system does goes near it, and
-     * modeling the table would mean modeling branch prediction.
+     * Every write also names a table operation, because the operation field
+     * has no idle value: 00 reads the indexed entry into the state field, 01
+     * writes the state field into the indexed entry, 10 and 11 set a whole
+     * line of eight entries to zeroes or ones. On hardware a read's result
+     * arrives only once the table port frees up, which is why the manual's
+     * read sequence parks in a jump before looking; here it is simply done.
      */
+    uint32_t idx, line, i;
+
     env->CP0_Diagnostic = arg1 & CP0DI_WRITABLE;
+
+    idx = extract64(env->CP0_Diagnostic, CP0DI_BPIdx, 9);
+    switch (extract64(env->CP0_Diagnostic, CP0DI_BPOp, 2)) {
+    case 0: /* table read */
+        env->CP0_Diagnostic = deposit64(env->CP0_Diagnostic, CP0DI_BPState, 2,
+                                        env->r10k_bpt[idx]);
+        break;
+    case 1: /* table write */
+        env->r10k_bpt[idx] = extract64(env->CP0_Diagnostic, CP0DI_BPState, 2);
+        break;
+    case 2: /* initialize a line to all zeroes (strongly not taken) */
+    case 3: /* initialize a line to all ones (strongly taken) */
+        line = idx & ~(R10K_BPT_LINE - 1);
+        for (i = 0; i < R10K_BPT_LINE; i++) {
+            env->r10k_bpt[line + i] =
+                (env->CP0_Diagnostic & (1 << CP0DI_BPOp)) ? 3 : 0;
+        }
+        break;
+    }
 }
 
 void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,

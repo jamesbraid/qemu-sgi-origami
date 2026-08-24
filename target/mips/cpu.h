@@ -1162,6 +1162,17 @@ typedef struct CPUArchState {
 #define CP0DI_WRITABLE ((3 << CP0DI_BPOp) | (0x1ff << CP0DI_BPIdx) | \
                         (3 << CP0DI_BPState) | (3 << CP0DI_BPMode))
 /*
+ * The branch prediction table those fields operate on: 512 two-bit entries,
+ * indexed by VA[11:3] of a branch, initialized in lines of eight entries
+ * named by the upper six index bits. Only the register's table operations
+ * touch it here — the model predicts no branches, so the entries hold what
+ * the operations put there where real hardware's are rewritten by every
+ * verified conditional branch.
+ */
+#define R10K_BPT_ENTRIES  512
+#define R10K_BPT_LINE     8
+    uint8_t r10k_bpt[R10K_BPT_ENTRIES];
+/*
  * CP0 Register 23
  */
     int32_t CP0_Debug;
