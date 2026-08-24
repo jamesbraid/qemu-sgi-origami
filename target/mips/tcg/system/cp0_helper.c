@@ -1581,8 +1581,7 @@ void helper_mtc0_framemask(CPUMIPSState *env, target_ulong arg1)
     /*
      * Sixteen bits, masking physical address bits 39:24 out of an entry as it
      * is written to the TLB. The rest of the register is ignored on write and
-     * reads as zero. The masking itself is not modeled; a guest that writes
-     * zero here, which is what one does, gets the same behaviour either way.
+     * reads as zero. The masking itself is applied by r4k_fill_tlb().
      *
      * The register belongs to the R10000 family alone, but the translator lets
      * any processor without release 6 reach it, so only narrow it where its

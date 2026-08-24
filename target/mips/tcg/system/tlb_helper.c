@@ -55,6 +55,32 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
 {
     r4k_tlb_t *tlb;
     uint64_t mask = env->CP0_PageMask >> (TARGET_PAGE_BITS + 1);
+    uint64_t lo0 = env->CP0_EntryLo0;
+    uint64_t lo1 = env->CP0_EntryLo1;
+
+#if defined(TARGET_MIPS64)
+    /*
+     * The R10000 family's FrameMask register masks EntryLo bits 33:18 out
+     * of an entry as it is written, on the indexed and the random write
+     * alike: a one in FrameMask bit N forces EntryLo bit N + 18 to zero in
+     * the stored entry, and a zero lets the EntryLo bit pass. The manual's
+     * FrameMask register section gives the correspondence and the reset
+     * value of zero. A kernel that parks software page-table bits in the
+     * top of the frame number field programs this mask so those bits never
+     * become physical address bits 39:24.
+     *
+     * The clamp to sixteen bits mirrors the write helper's: every value the
+     * helper stores already fits, but the field is int32_t, and a stray
+     * high bit arriving through an incoming migration stream would
+     * sign-extend here and mask far more than the register can name.
+     */
+    if (env->insn_flags & INSN_R10K) {
+        uint64_t framemask = (uint64_t)(env->CP0_Framemask & 0xffff) << 18;
+
+        lo0 &= ~framemask;
+        lo1 &= ~framemask;
+    }
+#endif
 
     /* XXX: detect conflicting TLBs and raise a MCHECK exception when needed */
     tlb = &env->tlb->mmu.r4k.tlb[idx];
@@ -70,19 +96,19 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
     tlb->ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     tlb->MMID = env->CP0_MemoryMapID;
     tlb->PageMask = env->CP0_PageMask;
-    tlb->G = env->CP0_EntryLo0 & env->CP0_EntryLo1 & 1;
-    tlb->V0 = (env->CP0_EntryLo0 & 2) != 0;
-    tlb->D0 = (env->CP0_EntryLo0 & 4) != 0;
-    tlb->C0 = (env->CP0_EntryLo0 >> 3) & 0x7;
-    tlb->XI0 = (env->CP0_EntryLo0 >> CP0EnLo_XI) & 1;
-    tlb->RI0 = (env->CP0_EntryLo0 >> CP0EnLo_RI) & 1;
-    tlb->PFN[0] = (get_tlb_pfn_from_entrylo(env->CP0_EntryLo0) & ~mask) << 12;
-    tlb->V1 = (env->CP0_EntryLo1 & 2) != 0;
-    tlb->D1 = (env->CP0_EntryLo1 & 4) != 0;
-    tlb->C1 = (env->CP0_EntryLo1 >> 3) & 0x7;
-    tlb->XI1 = (env->CP0_EntryLo1 >> CP0EnLo_XI) & 1;
-    tlb->RI1 = (env->CP0_EntryLo1 >> CP0EnLo_RI) & 1;
-    tlb->PFN[1] = (get_tlb_pfn_from_entrylo(env->CP0_EntryLo1) & ~mask) << 12;
+    tlb->G = lo0 & lo1 & 1;
+    tlb->V0 = (lo0 & 2) != 0;
+    tlb->D0 = (lo0 & 4) != 0;
+    tlb->C0 = (lo0 >> 3) & 0x7;
+    tlb->XI0 = (lo0 >> CP0EnLo_XI) & 1;
+    tlb->RI0 = (lo0 >> CP0EnLo_RI) & 1;
+    tlb->PFN[0] = (get_tlb_pfn_from_entrylo(lo0) & ~mask) << 12;
+    tlb->V1 = (lo1 & 2) != 0;
+    tlb->D1 = (lo1 & 4) != 0;
+    tlb->C1 = (lo1 >> 3) & 0x7;
+    tlb->XI1 = (lo1 >> CP0EnLo_XI) & 1;
+    tlb->RI1 = (lo1 >> CP0EnLo_RI) & 1;
+    tlb->PFN[1] = (get_tlb_pfn_from_entrylo(lo1) & ~mask) << 12;
 
     /*
      * The top two bits of each low half are either the read-inhibit and
