@@ -160,6 +160,14 @@ FOP_PROTO(abs)
 FOP_PROTO(chs)
 #undef FOP_PROTO
 
+/* The R10000's arithmetic ABS.fmt and NEG.fmt, which touch the FSR. */
+#define FOP_PROTO(op)                                 \
+DEF_HELPER_2(float_ ## op ## _s_r10k, i32, env, i32)  \
+DEF_HELPER_2(float_ ## op ## _d_r10k, i64, env, i64)
+FOP_PROTO(abs)
+FOP_PROTO(chs)
+#undef FOP_PROTO
+
 #define FOP_PROTO(op)                            \
 DEF_HELPER_2(float_ ## op ## _s, i32, env, i32)  \
 DEF_HELPER_2(float_ ## op ## _d, i64, env, i64)  \

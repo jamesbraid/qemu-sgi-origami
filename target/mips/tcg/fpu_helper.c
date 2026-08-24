@@ -1023,6 +1023,69 @@ uint64_t helper_float_chs_ps(uint64_t fdt0)
     return ((uint64_t)wth0 << 32) | wt0;
 }
 
+/*
+ * The same operations with the R10000's semantics. There ABS.fmt and
+ * NEG.fmt are arithmetic — "This operation is arithmetic; a NaN operand
+ * signals invalid operation" (VR10000 Instruction Set User's Manual,
+ * ABS.fmt and NEG.fmt) — so a NaN operand signals Invalid, trapping when
+ * the enable is set and otherwise delivering the default quiet NaN.
+ */
+uint64_t helper_float_abs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
+{
+    uint64_t dt2;
+
+    if (float64_is_any_nan(fdt0)) {
+        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
+        dt2 = float64_default_nan(&env->active_fpu.fp_status);
+    } else {
+        dt2 = float64_abs(fdt0);
+    }
+    update_fcr31(env, GETPC());
+    return dt2;
+}
+
+uint32_t helper_float_abs_s_r10k(CPUMIPSState *env, uint32_t fst0)
+{
+    uint32_t wt2;
+
+    if (float32_is_any_nan(fst0)) {
+        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
+        wt2 = float32_default_nan(&env->active_fpu.fp_status);
+    } else {
+        wt2 = float32_abs(fst0);
+    }
+    update_fcr31(env, GETPC());
+    return wt2;
+}
+
+uint64_t helper_float_chs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
+{
+    uint64_t dt2;
+
+    if (float64_is_any_nan(fdt0)) {
+        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
+        dt2 = float64_default_nan(&env->active_fpu.fp_status);
+    } else {
+        dt2 = float64_chs(fdt0);
+    }
+    update_fcr31(env, GETPC());
+    return dt2;
+}
+
+uint32_t helper_float_chs_s_r10k(CPUMIPSState *env, uint32_t fst0)
+{
+    uint32_t wt2;
+
+    if (float32_is_any_nan(fst0)) {
+        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
+        wt2 = float32_default_nan(&env->active_fpu.fp_status);
+    } else {
+        wt2 = float32_chs(fst0);
+    }
+    update_fcr31(env, GETPC());
+    return wt2;
+}
+
 /* MIPS specific unary operations */
 uint64_t helper_float_recip_d(CPUMIPSState *env, uint64_t fdt0)
 {
