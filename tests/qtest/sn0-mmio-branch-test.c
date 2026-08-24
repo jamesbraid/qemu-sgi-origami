@@ -81,6 +81,7 @@
 #define IRQ_OFF             0x40
 #define DEX_OFF             0x48
 #define PROBE_OFF           0x50
+#define PROBE2_OFF          0x58
 
 /* Markers.  Each fits an ori immediate, and RAM arrives zeroed. */
 #define MARK_ALIVE          0x1111
@@ -168,9 +169,12 @@
 
 /*
  * The promdata filter answers from a private copy, rather than forwarding
- * to RAM, when FPR 0 carries the PROM's boot-status DEX bit and the
- * accessing PC is inside the boot flash or the RAM PROM copy.  The bit is
- * 1 << 1 in the register's 64-bit view.
+ * to RAM, when FPR 0 carries the PROM's boot-status DEX bit, the accessing
+ * PC is inside the boot flash or the RAM PROM copy, and the access is a
+ * cached one -- an uncached reference goes to the memory system on real
+ * hardware, past the cache-resident data the filter stands in for, so it
+ * always sees the RAM underneath.  The bit is 1 << 1 in the register's
+ * 64-bit view.
  */
 #define PROM_BSR_DEX        0x2
 
@@ -606,17 +610,23 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_dmfc1(&buf, R_T7, 0);
         emit_sd(&buf, R_T7, R_T0, DEX_OFF);
         /*
-         * Then read the window as data, from here, still inside the flash.
-         * This is the other half of the same test, and it must come back
-         * zero: the private copy is zeroed at reset, the RAM underneath
-         * holds the snippet's first instruction, and only the PC decides
-         * which of the two answers.  A zero here and a working fetch below
-         * are the same instant, the same bit and the same region resolving
-         * two different ways -- which is the whole question.
+         * Then read the window as data, from here, still inside the flash,
+         * through both of the unmapped kernel segments.  The kseg1 read is
+         * uncached, so it carries the uncached attribute and the filter
+         * forwards it to the RAM underneath, which holds the snippet's
+         * first instruction.  The kseg0 read is cached, so with the DEX bit
+         * armed and this PC inside the flash it must come back zero: the
+         * private copy is zeroed at reset, and only the cached read from a
+         * PROM PC sees it.  The zero here and a working fetch below are the
+         * same instant, the same bit and the same region resolving two
+         * different ways -- which is the whole question.
          */
         emit_load_addr(&buf, R_T1, tc->snippet_kseg1);
         emit_lw(&buf, R_T7, R_T1, 0);
         emit_sd(&buf, R_T7, R_T0, PROBE_OFF);
+        emit_load_addr(&buf, R_T1, tc->snippet_phys | 0x80000000);
+        emit_lw(&buf, R_T7, R_T1, 0);
+        emit_sd(&buf, R_T7, R_T0, PROBE2_OFF);
     }
 
     if (tc->xkphys) {
@@ -679,13 +689,14 @@ static void report_state(QTestState *qts)
                    " fell 0x%" PRIx64 " target 0x%" PRIx64
                    " trap 0x%" PRIx64 " cause 0x%" PRIx64 " epc 0x%" PRIx64
                    " iterations %" PRIu64 " interrupts %" PRIu64
-                   " dex 0x%" PRIx64 " probe 0x%" PRIx64,
+                   " dex 0x%" PRIx64 " probe 0x%" PRIx64
+                   " probe2 0x%" PRIx64,
                    state_word(qts, ALIVE_OFF), state_word(qts, ENTERED_OFF),
                    state_word(qts, FELL_OFF), state_word(qts, TARGET_OFF),
                    state_word(qts, TRAP_OFF), state_word(qts, CAUSE_OFF),
                    state_word(qts, EPC_OFF), state_word(qts, ITER_OFF),
                    state_word(qts, IRQ_OFF), state_word(qts, DEX_OFF),
-                   state_word(qts, PROBE_OFF));
+                   state_word(qts, PROBE_OFF), state_word(qts, PROBE2_OFF));
 }
 
 /*
@@ -801,14 +812,19 @@ static void run_case(const void *data)
 
     if (tc->dex) {
         /*
-         * Both halves before reading anything into the case: the bit is
-         * really set, and with it set the filter really does answer from
-         * the zeroed private copy when the accessing PC is in range.  If
-         * either fails, this case is not asking the question it claims to.
+         * All three checks before reading anything into the case: the bit
+         * is really set; with it set the filter really does answer a
+         * cached read from a PROM PC out of the zeroed private copy; and
+         * an uncached read of the same word from the same PC goes past the
+         * private copy to the RAM underneath, which holds the snippet's
+         * first instruction.  If any of these fails, this case is not
+         * asking the question it claims to.
          */
         report_state(qts);
         g_assert_cmphex(state_word(qts, DEX_OFF), ==, PROM_BSR_DEX);
-        g_assert_cmphex(state_word(qts, PROBE_OFF), ==, 0);
+        g_assert_cmphex(state_word(qts, PROBE2_OFF), ==, 0);
+        g_assert_cmphex(state_word(qts, PROBE_OFF), ==,
+                        OPC_ORI | (R_T2 << 16) | MARK_ENTERED);
     }
 
     /*
