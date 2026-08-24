@@ -1534,9 +1534,20 @@ static void check_mips4_enabled(DisasContext *ctx)
 }
 
 /*
+ * Refuse the current instruction with the Unimplemented Operation
+ * exception: a Floating-Point exception with the E bit of the FCSR cause
+ * field, which has no enable and always traps.
+ */
+static void gen_fp_unimplemented(DisasContext *ctx)
+{
+    save_cpu_state(ctx, 1);
+    gen_helper_raise_fp_unimplemented(tcg_env);
+    ctx->base.is_jmp = DISAS_NORETURN;
+}
+
+/*
  * The same gate for the MIPS IV floating-point operations the R10000 refuses
- * with the Unimplemented Operation exception instead: a Floating-Point
- * exception with the E bit of the FCSR cause field, raised for the compares
+ * with the Unimplemented Operation exception instead: raised for the compares
  * naming a nonzero condition code, the conditional moves of floating-point
  * registers, and the reciprocal estimates (the same manual's Table 17-4).
  */
@@ -1544,9 +1555,45 @@ static void check_mips4_enabled_fp(DisasContext *ctx)
 {
     if (unlikely((ctx->insn_flags & INSN_R10K) &&
                  !(ctx->hflags & MIPS_HFLAG_COP1X))) {
-        save_cpu_state(ctx, 1);
-        gen_helper_raise_fp_unimplemented(tcg_env);
-        ctx->base.is_jmp = DISAS_NORETURN;
+        gen_fp_unimplemented(ctx);
+    }
+}
+
+/*
+ * Whether a COP1 word in the format space (bits 25:24 = 2 or 3) is one of
+ * the R10000's instructions: the MIPS IV set, formats S, D, W and L. Any
+ * other function or format is refused with the Unimplemented Operation
+ * exception at the decode above, section 17.6's format-space half.
+ */
+static bool r10k_cop1_fmt_defined(uint32_t opcode)
+{
+    uint32_t fmt = extract32(opcode, 21, 5);
+    uint32_t func = extract32(opcode, 0, 6);
+
+    switch (fmt) {
+    case 0x10: /* S */
+    case 0x11: /* D */
+        switch (func) {
+        case 0x00 ... 0x0f: /* arithmetic, ABS/MOV/NEG, the rounds */
+        case 0x11 ... 0x13: /* MOVCF, MOVZ, MOVN */
+        case 0x15:          /* RECIP */
+        case 0x16:          /* RSQRT */
+        case 0x24:          /* CVT.W */
+        case 0x25:          /* CVT.L */
+        case 0x30 ... 0x3f: /* the compares */
+            return true;
+        case 0x20:          /* CVT.S, from double only */
+            return fmt == 0x11;
+        case 0x21:          /* CVT.D, from single only */
+            return fmt == 0x10;
+        default:
+            return false;
+        }
+    case 0x14: /* W */
+    case 0x15: /* L */
+        return func == 0x20 || func == 0x21; /* CVT.S, CVT.D */
+    default:
+        return false;
     }
 }
 
@@ -1556,6 +1603,19 @@ static void check_mips4_enabled_fp(DisasContext *ctx)
  */
 void check_cp1_64bitmode(DisasContext *ctx)
 {
+    /*
+     * "The attempted execution of the L format takes an Unimplemented
+     * Operation exception when the MIPS III mode is not enabled" (R10000
+     * User's Manual version 2.0, section 17.6). MIPS III mode is the
+     * 64-bit operation grant: kernel always, supervisor through SX, user
+     * through UX. With the mode enabled but FR clear the manual says
+     * nothing, and the Reserved Instruction refusal below stands.
+     */
+    if (unlikely((ctx->insn_flags & INSN_R10K) &&
+                 !(ctx->hflags & MIPS_HFLAG_64))) {
+        gen_fp_unimplemented(ctx);
+        return;
+    }
     if (unlikely(~ctx->hflags & MIPS_HFLAG_F64)) {
         gen_reserved_instruction(ctx);
     }
@@ -14985,6 +15045,27 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
 
     case OPC_CP1:
         op1 = MASK_CP1(ctx->opcode);
+
+        /*
+         * The R10000 splits its undefined COP1 encodings by bits 25:24 of
+         * the word: "undefined opcodes (bits 25:24 are 0 or 1) take
+         * Reserved Instruction exceptions and undefined formats (bits
+         * 25:24 are 2 or 3) take Unimplemented Operation exceptions"
+         * (User's Manual version 2.0, section 17.6). The move and branch
+         * subspace already reaches Reserved Instruction through the
+         * ordinary checks; this is the format-space half, screened against
+         * the processor's own instruction set before the shared decoder
+         * can turn a word it happens to know — a later revision's
+         * instruction, or the paired-single format — into the wrong
+         * refusal or an execution.
+         */
+        if ((ctx->insn_flags & INSN_R10K) &&
+            extract32(ctx->opcode, 24, 2) >= 2 &&
+            !r10k_cop1_fmt_defined(ctx->opcode)) {
+            check_cp1_enabled(ctx);
+            gen_fp_unimplemented(ctx);
+            break;
+        }
 
         switch (op1) {
         case OPC_MFHC1:
