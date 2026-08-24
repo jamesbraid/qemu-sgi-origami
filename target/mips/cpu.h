@@ -1140,10 +1140,13 @@ typedef struct CPUArchState {
     int32_t CP0_Framemask;
 /*
  * CP0 Register 22, the R10000 family's Diagnostic register. Architecturally 64
- * bits wide, but every field it defines lies in the low half and the rest is
- * reserved, so the low half is all there is to store.
+ * bits wide, and not all of its fields lie in the low half: the instruction
+ * TLB miss counter sits at bits 51:48. The model never moves that counter —
+ * there is no instruction TLB behind it — but the register is stored at its
+ * architectural width so a doubleword read is a read of the whole register
+ * rather than a sign extension of half of it.
  */
-    int32_t CP0_Diagnostic;
+    uint64_t CP0_Diagnostic;
 #define CP0DI_BPOp    0  /*  1..0  branch prediction table operation */
 #define CP0DI_BPIdx   3  /* 11..3  branch prediction table index */
 #define CP0DI_BPState 14 /* 15..14 branch prediction table entry state */

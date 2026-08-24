@@ -379,6 +379,31 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
 };
 
 /*
+ * The Diagnostic register is 64 bits wide and used to be stored, and sent,
+ * as its low word. The whole register travels here instead; the word the
+ * main section used to carry is now an unused slot there, so a stream from
+ * before the widening still loads, at the price of resetting a register
+ * that holds nothing an operating system relies on.
+ */
+static bool mips_r10k_diagnostic_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.insn_flags & INSN_R10K;
+}
+
+static const VMStateDescription mips_vmstate_r10k_diagnostic = {
+    .name = "cpu/r10k-diagnostic",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_diagnostic_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(env.CP0_Diagnostic, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
  * The postponed Watch exception is invisible in the architectural
  * registers, so it travels on its own: a guest that referenced its watched
  * doubleword under EXL and has not yet cleared the bit is owed a Watch
@@ -573,7 +598,8 @@ const VMStateDescription vmstate_mips_cpu = {
         VMSTATE_UINT64_ARRAY(env.CP0_WatchHi, MIPSCPU, 8),
         VMSTATE_UINTTL(env.CP0_XContext, MIPSCPU),
         VMSTATE_INT32(env.CP0_Framemask, MIPSCPU),
-        VMSTATE_INT32(env.CP0_Diagnostic, MIPSCPU),
+        /* was the low word of CP0_Diagnostic, now in cpu/r10k-diagnostic */
+        VMSTATE_UNUSED(sizeof(int32_t)),
         VMSTATE_INT32(env.CP0_Debug, MIPSCPU),
         VMSTATE_UINTTL(env.CP0_DEPC, MIPSCPU),
         VMSTATE_INT32_ARRAY(env.CP0_Performance, MIPSCPU, 4),
@@ -598,6 +624,7 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_timer,
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r10k_scache,
+        &mips_vmstate_r10k_diagnostic,
         &mips_vmstate_r10k_watch,
         &mips_vmstate_octeon_multiplier,
         &mips_vmstate_octeon_crypto,
