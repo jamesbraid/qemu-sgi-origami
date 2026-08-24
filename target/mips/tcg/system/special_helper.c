@@ -140,7 +140,15 @@ static inline void exception_return(CPUMIPSState *env)
 void helper_eret(CPUMIPSState *env)
 {
     exception_return(env);
-    env->CP0_LLAddr = 1;
+    /*
+     * ERET breaks the load-linked link, and the link is env->lladdr. The
+     * R10000's LLAddr register is a plain scratch word the link never
+     * touches (manual 14.15), so only the older processors' register
+     * takes the poison value.
+     */
+    if (!(env->insn_flags & INSN_R10K)) {
+        env->CP0_LLAddr = 1;
+    }
     env->lladdr = 1;
 }
 
