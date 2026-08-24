@@ -1078,6 +1078,15 @@ uint32_t compute_pagemask(uint32_t val)
 
 void helper_mtc0_pagemask(CPUMIPSState *env, target_ulong arg1)
 {
+    /*
+     * The R10000's mask field is bits 24:13 - seven sizes, 4 Kbyte to
+     * 16 Mbyte (manual 14.5) - and the fields either side are reserved,
+     * written as zeroes and returning zeroes. Drop them before the width
+     * check so a reserved bit can neither read back nor widen a page.
+     */
+    if (env->insn_flags & INSN_R10K) {
+        arg1 &= 0x01ffe000;
+    }
     env->CP0_PageMask = compute_pagemask(arg1);
 }
 
