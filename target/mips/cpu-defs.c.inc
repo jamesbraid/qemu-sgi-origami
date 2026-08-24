@@ -652,7 +652,15 @@ const mips_def_t mips_defs[] =
         /* A full 64-bit FPU that does not use the fcr0 feature bits. */
         .CP1_fcr0 = (0x9 << FCR0_PRID) | (0x0 << FCR0_REV),
         .CP1_fcr31 = 0,
-        .CP1_fcr31_rw_bitmask = 0x0183FFFF,
+        /*
+         * The MIPS IV compare model: eight condition bits, bit 23 and bits
+         * 31:25, all written by a control-register move — the manual's FSR
+         * chapter leaves only bits 22:18 unimplemented, ignored on write
+         * and zero on read. The single-condition-bit mask this entry was
+         * derived from dropped the upper seven, which silently corrupted
+         * any context restore carrying a compare result there.
+         */
+        .CP1_fcr31_rw_bitmask = 0xFF83FFFF,
         .SEGBITS = 44,
         .PABITS = 40,
         .insn_flags = CPU_MIPS4 | INSN_R10K,
