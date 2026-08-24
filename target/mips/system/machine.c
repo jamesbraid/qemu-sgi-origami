@@ -17,6 +17,13 @@ static int cpu_post_load(void *opaque, int version_id)
     compute_hflags(env);
     restore_pamask(env);
     cpu_mips_reassert_interrupt(env);
+    if (env->CP0_R10K_DelayedWatch) {
+        /*
+         * A postponed Watch exception crossed with us; keep the exec loop
+         * revisiting its deliverability as it did on the source.
+         */
+        cpu_interrupt(env_cpu(env), CPU_INTERRUPT_DWATCH);
+    }
 
     return 0;
 }
@@ -370,6 +377,31 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
     }
 };
 
+/*
+ * The postponed Watch exception is invisible in the architectural
+ * registers, so it travels on its own: a guest that referenced its watched
+ * doubleword under EXL and has not yet cleared the bit is owed a Watch
+ * exception on the far side.
+ */
+static bool mips_r10k_watch_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return (cpu->env.insn_flags & INSN_R10K) &&
+           cpu->env.CP0_R10K_DelayedWatch;
+}
+
+static const VMStateDescription mips_vmstate_r10k_watch = {
+    .name = "cpu/r10k-watch",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_watch_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(env.CP0_R10K_DelayedWatch, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_octeon_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -539,6 +571,7 @@ const VMStateDescription vmstate_mips_cpu = {
     .subsections = (const VMStateDescription * const []) {
         &mips_vmstate_timer,
         &mips_vmstate_r10k_scache,
+        &mips_vmstate_r10k_watch,
         &mips_vmstate_octeon_multiplier,
         &mips_vmstate_octeon_crypto,
         NULL

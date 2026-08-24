@@ -5637,6 +5637,12 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_18:
         switch (sel) {
         case CP0_REG18__WATCHLO0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_1e0i(mfc0_watchlo, arg, sel);
+            register_name = "WatchLo";
+            break;
         case CP0_REG18__WATCHLO1:
         case CP0_REG18__WATCHLO2:
         case CP0_REG18__WATCHLO3:
@@ -5655,6 +5661,12 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_19:
         switch (sel) {
         case CP0_REG19__WATCHHI0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_1e0i(mfc0_watchhi, arg, sel);
+            register_name = "WatchHi";
+            break;
         case CP0_REG19__WATCHHI1:
         case CP0_REG19__WATCHHI2:
         case CP0_REG19__WATCHHI3:
@@ -6395,6 +6407,12 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_18:
         switch (sel) {
         case CP0_REG18__WATCHLO0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_0e1i(mtc0_watchlo, arg, sel);
+            register_name = "WatchLo";
+            break;
         case CP0_REG18__WATCHLO1:
         case CP0_REG18__WATCHLO2:
         case CP0_REG18__WATCHLO3:
@@ -6413,6 +6431,12 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_19:
         switch (sel) {
         case CP0_REG19__WATCHHI0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_0e1i(mtc0_watchhi, arg, sel);
+            register_name = "WatchHi";
+            break;
         case CP0_REG19__WATCHHI1:
         case CP0_REG19__WATCHHI2:
         case CP0_REG19__WATCHHI3:
@@ -7158,6 +7182,12 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_18:
         switch (sel) {
         case CP0_REG18__WATCHLO0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_1e0i(dmfc0_watchlo, arg, sel);
+            register_name = "WatchLo";
+            break;
         case CP0_REG18__WATCHLO1:
         case CP0_REG18__WATCHLO2:
         case CP0_REG18__WATCHLO3:
@@ -7176,6 +7206,12 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_19:
         switch (sel) {
         case CP0_REG19__WATCHHI0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_1e0i(dmfc0_watchhi, arg, sel);
+            register_name = "WatchHi";
+            break;
         case CP0_REG19__WATCHHI1:
         case CP0_REG19__WATCHHI2:
         case CP0_REG19__WATCHHI3:
@@ -7901,6 +7937,12 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_18:
         switch (sel) {
         case CP0_REG18__WATCHLO0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_0e1i(mtc0_watchlo, arg, sel);
+            register_name = "WatchLo";
+            break;
         case CP0_REG18__WATCHLO1:
         case CP0_REG18__WATCHLO2:
         case CP0_REG18__WATCHLO3:
@@ -7919,6 +7961,12 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_19:
         switch (sel) {
         case CP0_REG19__WATCHHI0:
+            /* The R10000 family has this one watch pair and no selector. */
+            CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
+                      (ctx->insn_flags & INSN_R10K));
+            gen_helper_0e1i(mtc0_watchhi, arg, sel);
+            register_name = "WatchHi";
+            break;
         case CP0_REG19__WATCHHI1:
         case CP0_REG19__WATCHHI2:
         case CP0_REG19__WATCHHI3:
