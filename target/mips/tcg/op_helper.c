@@ -352,6 +352,36 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     CPUMIPSState *env = cpu_env(cs);
 
     /*
+     * On the R10000 family a failed store is not the processor's to report.
+     * The R10000 User's Manual version 2.0 gives the Bus Error exception one
+     * cause, and every request kind in it is a read: "a processor block read,
+     * upgrade, or double/single/partial-word read request receives an
+     * external ERR completion response". An uncached store leaves the
+     * processor as a double/single/partial-word write request, which its
+     * System interface chapter shows as one address cycle and one data cycle
+     * with no completion response at all — the write is posted, and whatever
+     * becomes of it is the memory system's to report. On the real machine
+     * that report is an I/O-system error register and an error interrupt;
+     * the parts of that this tree models live in the devices themselves, and
+     * a write that reaches no device at all completes silently here, named
+     * only by the log line below.
+     *
+     * A store through a *cached* mapping could still take a bus error on
+     * real hardware — its cache refill is the block read, and gaining
+     * ownership is the upgrade, in the cause above. TCG has no cache model,
+     * so every store that gets this far is treated as the posted uncached
+     * write, which is what device probing actually uses.
+     */
+    if (access_type == MMU_DATA_STORE && (env->insn_flags & INSN_R10K)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "mips: store of %u byte%s at 0x%" VADDR_PRIx
+                      " (physical 0x%" HWADDR_PRIx ") reached no device; the "
+                      "write is posted and completes\n",
+                      size, size == 1 ? "" : "s", addr, physaddr);
+        return;
+    }
+
+    /*
      * An access that reaches no device is otherwise entirely silent. The
      * processor raises a bus error, the guest's handler usually panics
      * somewhere unrelated, and nothing anywhere names the address that started
