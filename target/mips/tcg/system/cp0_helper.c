@@ -1478,7 +1478,21 @@ target_ulong helper_mftc0_configx(CPUMIPSState *env, target_ulong idx)
 
 void helper_mtc0_config0(CPUMIPSState *env, target_ulong arg1)
 {
-    env->CP0_Config0 = (env->CP0_Config0 & 0x81FFFFF8) | (arg1 & 0x00000007);
+    uint32_t keep = 0x81FFFFF8;
+
+    /*
+     * The R10000's Config layout (manual 14.14) hardwires the primary
+     * cache size fields in bits 31:26 and reserves 25:22; the generic
+     * preserve mask was cut for the MIPS32 layout and zeroes 30:25, which
+     * destroys both cache size fields on any read-modify-write. The kseg0
+     * algorithm in bits 2:0 stays software's, the field the manual carries
+     * forward from the R4400; everything else is hardwired or latched from
+     * the reset mode bits, so a write leaves it alone.
+     */
+    if (env->insn_flags & INSN_R10K) {
+        keep = 0xFFFFFFF8;
+    }
+    env->CP0_Config0 = (env->CP0_Config0 & keep) | (arg1 & 0x00000007);
 }
 
 void helper_mtc0_config2(CPUMIPSState *env, target_ulong arg1)
