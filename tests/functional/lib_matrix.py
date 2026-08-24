@@ -50,6 +50,7 @@ _ID_RE = re.compile(r'^[a-z0-9_]+$')
 _VALID_GUESTS = {'prom', 'linux', 'openbsd', 'irix'}
 _VALID_SPEEDS = {'quick', 'thorough'}
 _VALID_ACCELS = {'icount', 'mttcg', 'wallclock', 'roundrobin'}
+_VALID_FIRMWARE = {'synth', 'prom'}
 _VALID_EXPECTS = {'pass', 'xfail'}
 
 
@@ -109,6 +110,9 @@ def _validate(path, lineno, cell):
     if cell.accel not in _VALID_ACCELS:
         raise MatrixError(
             f'{path}:{lineno}: unknown accel {cell.accel!r}')
+    if cell.firmware not in _VALID_FIRMWARE:
+        raise MatrixError(
+            f'{path}:{lineno}: unknown firmware {cell.firmware!r}')
     if cell.expect not in _VALID_EXPECTS:
         raise MatrixError(
             f'{path}:{lineno}: unknown expect {cell.expect!r}')
@@ -153,6 +157,10 @@ def qemu_args(cell):
         args += ['-smp', str(cell.cpus)]
         return args
 
+    if cell.cpus % cell.nodes != 0:
+        raise MatrixError(
+            f'cell {cell.id!r}: cpus {cell.cpus} does not split evenly '
+            f'across {cell.nodes} nodes')
     cpus_per_node = cell.cpus // cell.nodes
     args += ['-smp',
              f'{cell.cpus},sockets={cell.nodes},'
