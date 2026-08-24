@@ -193,6 +193,16 @@ static void mips_store_cause(CPUMIPSState *env, target_ulong val)
     if (env->insn_flags & ISA_MIPS_R6) {
         mask &= ~((1 << CP0Ca_WP) & val);
     }
+    if (env->insn_flags & INSN_R10K) {
+        /*
+         * The R10000 has no IV or WP: its Cause bits 27:16 are reserved,
+         * written as zeroes and returning zeroes (manual 14.11), and every
+         * bit but the two software interrupts is read-only. Letting bit 23
+         * latch would also move interrupt dispatch to a vector this
+         * processor does not have.
+         */
+        mask &= 0x00000300;
+    }
 
     old = cp0_cause_update(env, mask, val & mask);
     new = (old & ~mask) | (val & mask);
