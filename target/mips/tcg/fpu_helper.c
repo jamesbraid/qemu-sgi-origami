@@ -176,6 +176,18 @@ void helper_ctc1(CPUMIPSState *env, target_ulong arg1, uint32_t fs, uint32_t rt)
     }
 }
 
+/*
+ * Refuse an instruction with the Unimplemented Operation exception: a
+ * Floating-Point exception whose FCSR cause field holds only the E bit,
+ * which has no enable and always traps. The caller has already saved the
+ * CPU state.
+ */
+void helper_raise_fp_unimplemented(CPUMIPSState *env)
+{
+    SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
+    do_raise_exception(env, EXCP_FPE, 0);
+}
+
 static inline int ieee_to_mips_xcpt(int ieee_xcpt)
 {
     int mips_xcpt = 0;
