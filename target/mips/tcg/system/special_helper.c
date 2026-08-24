@@ -296,6 +296,41 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
     target_ulong index = addr & 0x1fffffff;
 
     if (env->insn_flags & INSN_R10K) {
+        hwaddr paddr;
+
+        /*
+         * Combinations Table 10-1 does not list are undefined; they stay
+         * inert, taking none of the exceptions the defined operations do.
+         */
+        if (cache_type == 2 || cache_operation == 0b011) {
+            return;
+        }
+
+        /*
+         * Address bit 0 of an Index operation is the way indicator and is
+         * never checked. Bit 1 of an Index operation, and both low bits of
+         * a Hit operation or the Cache Barrier, generate an Address Error
+         * if set. That is the whole of the check: a CacheOp names no access
+         * size, so beyond these bits there is no alignment to enforce, and
+         * the privilege address errors come out of translation below.
+         */
+        if (addr & ((cache_operation == 0b100 || cache_operation == 0b101)
+                    ? 3 : 2)) {
+            if (!(env->hflags & MIPS_HFLAG_DM)) {
+                env->CP0_BadVAddr = addr;
+            }
+            do_raise_exception_err(env, EXCP_AdEL, 0, GETPC());
+        }
+
+        /*
+         * TLB Refill and TLB Invalid exceptions can occur on any operation,
+         * index forms included — unmapped addresses avoid them by never
+         * missing, not by being exempt. The translation is a load, so a
+         * CacheOp never takes a TLB Modified exception, and no memory
+         * access is made, so no Watch exception fires for one.
+         */
+        paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD, GETPC());
+
         /*
          * The primary caches are virtually indexed: VA[13:6] names an
          * instruction-cache set, VA[13:5] a data-cache set, VA[13:2] a word
@@ -328,8 +363,6 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
              * back distinguishing the last of the three has nothing to move
              * in this model.
              */
-            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
-                                                      GETPC());
             unsigned int w;
 
             for (w = 0; w < R10K_PCACHE_WAYS; w++) {
@@ -435,8 +468,6 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
              * A block already invalid is left entirely alone — no tag
              * rewrite, and the MRU bit stays where it was.
              */
-            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
-                                                      GETPC());
             unsigned int way = paddr & 1;
             unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
                                (R10K_SCACHE_SETS - 1);
@@ -457,8 +488,6 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
              * cleared on a miss — which is what tells a diagnostic whether
              * its operation found the block.
              */
-            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
-                                                      GETPC());
             unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
                                (R10K_SCACHE_SETS - 1);
             unsigned int w;
@@ -491,8 +520,6 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
                                cache_operation == 0b010 ||
                                cache_operation == 0b110 ||
                                cache_operation == 0b111)) {
-            hwaddr paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD,
-                                                      GETPC());
             unsigned int way = paddr & 1;
 
             if (cache_operation == 0b001 || cache_operation == 0b010) {
