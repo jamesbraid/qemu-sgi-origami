@@ -836,6 +836,14 @@ typedef struct CPUArchState {
  * CP0 Register 11
  */
     int32_t CP0_Compare;
+    /*
+     * The timer's own contribution to Cause.IP7: raised when Count reaches
+     * Compare, cleared by a Compare write. Kept apart from Cause because on
+     * the R10000 family the performance counters share IP[7], so the line
+     * is the OR of this and the counters' overflow condition, and neither
+     * source may clear what the other asserted.
+     */
+    uint32_t cp0_timer_ip7;
 /*
  * CP0 Register 12
  */
@@ -1184,8 +1192,25 @@ typedef struct CPUArchState {
      * by the selector: even selectors are the control registers and odd ones
      * the counters. The R10000 family reaches the same four through its own
      * move instructions, whose low bits land in the same place.
+     *
+     * On the R10000 family a counter whose control register selects the
+     * Cycles event and enables the current processor mode is live: its slot
+     * holds the counter value minus the current cycle count, the way
+     * CP0_Count is kept, and the value is reassembled on read. Every other
+     * slot holds its value directly.
      */
     int32_t CP0_Performance[4];
+/*
+ * The R10000 family's performance control register layout: an event
+ * number, an interrupt enable, and one count enable per processor mode.
+ */
+#define CP0PC_EVENT   5        /* 8..5 the event counted */
+#define CP0PC_IE      (1 << 4) /* assert IP[7] while counter bit 31 is set */
+#define CP0PC_U       (1 << 3) /* count in user mode, EXL and ERL clear */
+#define CP0PC_S       (1 << 2) /* count in supervisor mode, EXL and ERL clear */
+#define CP0PC_K       (1 << 1) /* count in kernel mode, EXL and ERL clear */
+#define CP0PC_EXL     (1 << 0) /* count while EXL is set, ERL clear */
+#define CP0PC_MASK    0x1ff
 /*
  * CP0 Register 26
  */
@@ -1345,6 +1370,12 @@ typedef struct CPUArchState {
 
     const mips_def_t *cpu_model;
     QEMUTimer *timer; /* Internal timer */
+    /*
+     * Deadline for the next IP[7] edge a live R10000 performance counter
+     * will produce: crossing into bit 31, or wrapping back out of it.
+     * NULL on every other processor.
+     */
+    QEMUTimer *r10k_perf_timer;
     target_ulong exception_base; /* ExceptionBase input to the core */
 } CPUMIPSState;
 

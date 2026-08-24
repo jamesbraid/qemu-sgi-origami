@@ -153,7 +153,19 @@ void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
      * homogeneous, so the local test answers for every CPU that could
      * address this one.
      */
-    if (ase_mt_available(env)) {
+    if (cpu_mips_r10k_perf_mode_sensitive(env)) {
+        /*
+         * A live R10000 performance counter changes representation with
+         * the mode, so the write happens between the freeze/thaw pair,
+         * under the lock so the counters' deadline callback cannot read
+         * one mid-fold. Only a guest that is actually profiling pays.
+         */
+        BQL_LOCK_GUARD();
+
+        cpu_mips_r10k_perf_freeze(env);
+        mips_store_status(env, val);
+        cpu_mips_r10k_perf_thaw(env);
+    } else if (ase_mt_available(env)) {
         BQL_LOCK_GUARD();
         mips_store_status(env, val);
     } else {

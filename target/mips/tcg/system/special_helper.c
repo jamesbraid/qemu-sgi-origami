@@ -20,6 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
 #include "exec/translation-block.h"
@@ -103,15 +104,33 @@ bool mips_io_recompile_replay_branch(CPUState *cs, const TranslationBlock *tb)
     return false;
 }
 
-static inline void exception_return(CPUMIPSState *env)
+static void exception_return_mode(CPUMIPSState *env)
 {
-    debug_pre_eret(env);
     if (env->CP0_Status & (1 << CP0St_ERL)) {
         mips_env_set_pc(env, env->CP0_ErrorEPC);
         env->CP0_Status &= ~(1 << CP0St_ERL);
     } else {
         mips_env_set_pc(env, env->CP0_EPC);
         env->CP0_Status &= ~(1 << CP0St_EXL);
+    }
+}
+
+static inline void exception_return(CPUMIPSState *env)
+{
+    debug_pre_eret(env);
+    if (cpu_mips_r10k_perf_mode_sensitive(env)) {
+        /*
+         * A live R10000 performance counter changes representation with
+         * the mode; the freeze/thaw pair and its lock, as in
+         * cpu_mips_store_status().
+         */
+        BQL_LOCK_GUARD();
+
+        cpu_mips_r10k_perf_freeze(env);
+        exception_return_mode(env);
+        cpu_mips_r10k_perf_thaw(env);
+    } else {
+        exception_return_mode(env);
     }
     compute_hflags(env);
     cpu_mips_reassert_interrupt(env);

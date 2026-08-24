@@ -5780,7 +5780,9 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             break;
         case CP0_REG25__PERFCNT0:
             CP0_CHECK(ctx->insn_flags & INSN_R10K);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[1]));
+            /* Assembled from the clock while the counter counts cycles. */
+            gen_helper_mfc0_r10k_performance(arg, tcg_env,
+                                             tcg_constant_i32(sel));
             register_name = "Performance1";
             break;
         case CP0_REG25__PERFCTL1:
@@ -5790,7 +5792,9 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             break;
         case CP0_REG25__PERFCNT1:
             CP0_CHECK(ctx->insn_flags & INSN_R10K);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[3]));
+            /* Assembled from the clock while the counter counts cycles. */
+            gen_helper_mfc0_r10k_performance(arg, tcg_env,
+                                             tcg_constant_i32(sel));
             register_name = "Performance3";
             break;
         case CP0_REG25__PERFCTL2:
@@ -7321,7 +7325,9 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             break;
         case CP0_REG25__PERFCNT0:
             CP0_CHECK(ctx->insn_flags & INSN_R10K);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[1]));
+            /* Assembled from the clock while the counter counts cycles. */
+            gen_helper_mfc0_r10k_performance(arg, tcg_env,
+                                             tcg_constant_i32(sel));
             register_name = "Performance1";
             break;
         case CP0_REG25__PERFCTL1:
@@ -7331,7 +7337,9 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             break;
         case CP0_REG25__PERFCNT1:
             CP0_CHECK(ctx->insn_flags & INSN_R10K);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[3]));
+            /* Assembled from the clock while the counter counts cycles. */
+            gen_helper_mfc0_r10k_performance(arg, tcg_env,
+                                             tcg_constant_i32(sel));
             register_name = "Performance3";
             break;
         case CP0_REG25__PERFCTL2:
