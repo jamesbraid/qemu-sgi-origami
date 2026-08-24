@@ -1503,6 +1503,41 @@ void check_cop1x(DisasContext *ctx)
 }
 
 /*
+ * Verify that the MIPS IV extension is enabled right now. On the R10000 the
+ * Status register's XX bit gates it in user mode while kernel and supervisor
+ * mode always have it, which is exactly what the COP1X hflag tracks for that
+ * processor; the MIPS IV instructions outside the COP1X opcode are refused
+ * with a Reserved Instruction exception (R10000 User's Manual version 2.0,
+ * section 17.4 and Table 17-4). Narrowed to the R10000: whether the VR5432
+ * gates these instructions the same way has not been checked against its
+ * manual, and widening the gate would change that model's behaviour.
+ */
+static void check_mips4_enabled(DisasContext *ctx)
+{
+    if (unlikely((ctx->insn_flags & INSN_R10K) &&
+                 !(ctx->hflags & MIPS_HFLAG_COP1X))) {
+        gen_reserved_instruction(ctx);
+    }
+}
+
+/*
+ * The same gate for the MIPS IV floating-point operations the R10000 refuses
+ * with the Unimplemented Operation exception instead: a Floating-Point
+ * exception with the E bit of the FCSR cause field, raised for the compares
+ * naming a nonzero condition code, the conditional moves of floating-point
+ * registers, and the reciprocal estimates (the same manual's Table 17-4).
+ */
+static void check_mips4_enabled_fp(DisasContext *ctx)
+{
+    if (unlikely((ctx->insn_flags & INSN_R10K) &&
+                 !(ctx->hflags & MIPS_HFLAG_COP1X))) {
+        save_cpu_state(ctx, 1);
+        gen_helper_raise_fp_unimplemented(tcg_env);
+        ctx->base.is_jmp = DISAS_NORETURN;
+    }
+}
+
+/*
  * Verify that the processor is running with 64-bit floating-point
  * operations enabled.
  */
@@ -8868,6 +8903,7 @@ static void gen_compute_branch1(DisasContext *ctx, uint32_t op,
 
     if (cc != 0) {
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1);
+        check_mips4_enabled(ctx);
     }
 
     btarget = ctx->base.pc_next + 4 + offset;
@@ -9668,10 +9704,12 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         break;
     case OPC_MOVCF_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
+        check_mips4_enabled_fp(ctx);
         gen_movcf_s(ctx, fs, fd, (ft >> 2) & 0x7, ft & 0x1);
         break;
     case OPC_MOVZ_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
+        check_mips4_enabled_fp(ctx);
         {
             TCGLabel *l1 = gen_new_label();
             TCGv_i32 fp0;
@@ -9687,6 +9725,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         break;
     case OPC_MOVN_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
+        check_mips4_enabled_fp(ctx);
         {
             TCGLabel *l1 = gen_new_label();
             TCGv_i32 fp0;
@@ -9701,6 +9740,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         }
         break;
     case OPC_RECIP_S:
+        check_mips4_enabled_fp(ctx);
         {
             TCGv_i32 fp0 = tcg_temp_new_i32();
 
@@ -9710,6 +9750,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         }
         break;
     case OPC_RSQRT_S:
+        check_mips4_enabled_fp(ctx);
         {
             TCGv_i32 fp0 = tcg_temp_new_i32();
 
@@ -9924,6 +9965,9 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         if (ctx->opcode & (1 << 6)) {
             gen_cmpabs_s(ctx, func - 48, ft, fs, cc);
         } else {
+            if (cc != 0) {
+                check_mips4_enabled_fp(ctx);
+            }
             gen_cmp_s(ctx, func - 48, ft, fs, cc);
         }
         break;
@@ -10152,10 +10196,12 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         break;
     case OPC_MOVCF_D:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
+        check_mips4_enabled_fp(ctx);
         gen_movcf_d(ctx, fs, fd, (ft >> 2) & 0x7, ft & 0x1);
         break;
     case OPC_MOVZ_D:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
+        check_mips4_enabled_fp(ctx);
         {
             TCGLabel *l1 = gen_new_label();
             TCGv_i64 fp0;
@@ -10171,6 +10217,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         break;
     case OPC_MOVN_D:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
+        check_mips4_enabled_fp(ctx);
         {
             TCGLabel *l1 = gen_new_label();
             TCGv_i64 fp0;
@@ -10185,6 +10232,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         }
         break;
     case OPC_RECIP_D:
+        check_mips4_enabled_fp(ctx);
         check_cp1_registers(ctx, fs | fd);
         {
             TCGv_i64 fp0 = tcg_temp_new_i64();
@@ -10195,6 +10243,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         }
         break;
     case OPC_RSQRT_D:
+        check_mips4_enabled_fp(ctx);
         check_cp1_registers(ctx, fs | fd);
         {
             TCGv_i64 fp0 = tcg_temp_new_i64();
@@ -10356,6 +10405,9 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
         if (ctx->opcode & (1 << 6)) {
             gen_cmpabs_d(ctx, func - 48, ft, fs, cc);
         } else {
+            if (cc != 0) {
+                check_mips4_enabled_fp(ctx);
+            }
             gen_cmp_d(ctx, func - 48, ft, fs, cc);
         }
         break;
@@ -13294,6 +13346,7 @@ static void decode_opc_special_legacy(CPUMIPSState *env, DisasContext *ctx)
     case OPC_MOVZ:
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1 |
                    INSN_LOONGSON2E | INSN_LOONGSON2F);
+        check_mips4_enabled(ctx);
         gen_cond_move(ctx, op1, rd, rs, rt);
         break;
     case OPC_MFHI:          /* Move from HI/LO */
@@ -13306,6 +13359,7 @@ static void decode_opc_special_legacy(CPUMIPSState *env, DisasContext *ctx)
         break;
     case OPC_MOVCI:
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1);
+        check_mips4_enabled(ctx);
         if (env->CP0_Config1 & (1 << CP0C1_FP)) {
             check_cp1_enabled(ctx);
             gen_movci(ctx, rd, rs, (ctx->opcode >> 18) & 0x7,
@@ -14863,6 +14917,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
         break;
     case OPC_PREF:
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1 | INSN_R5900);
+        check_mips4_enabled(ctx);
         /* Treat as NOP. */
         break;
 
@@ -15076,6 +15131,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
                 break;
             case OPC_PREFX:
                 check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R2);
+                check_mips4_enabled(ctx);
                 /* Treat as NOP. */
                 break;
             case OPC_ALNV_PS:

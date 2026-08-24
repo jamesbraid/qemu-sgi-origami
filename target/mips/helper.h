@@ -91,6 +91,7 @@ DEF_HELPER_2(yield, tl, env, tl)
 /* CP1 functions */
 DEF_HELPER_2(cfc1, tl, env, i32)
 DEF_HELPER_4(ctc1, void, env, tl, i32, i32)
+DEF_HELPER_1(raise_fp_unimplemented, noreturn, env)
 
 DEF_HELPER_2(float_cvtd_s, i64, env, i32)
 DEF_HELPER_2(float_cvtd_w, i64, env, i32)
