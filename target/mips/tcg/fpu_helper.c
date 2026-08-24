@@ -235,6 +235,38 @@ static inline void update_fcr31(CPUMIPSState *env, uintptr_t pc)
 }
 
 /*
+ * Refuse a denormalized result the R10000 way: with the FSR's FS bit
+ * clear "A denormalized result causes an Unimplemented Operation
+ * exception" (R10000 User's Manual version 2.0, section 15.4); with it
+ * set softfloat has already flushed the result to zero. The refused
+ * operation is not performed, so its softfloat flags are discarded and
+ * the cause field carries E alone.
+ */
+static void check_denormal_result_d(CPUMIPSState *env, uint64_t ret,
+                                    uintptr_t pc)
+{
+    if (unlikely((env->insn_flags & INSN_R10K) &&
+                 !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+                 float64_is_denormal(ret))) {
+        set_float_exception_flags(0, &env->active_fpu.fp_status);
+        SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
+        do_raise_exception(env, EXCP_FPE, pc);
+    }
+}
+
+static void check_denormal_result_s(CPUMIPSState *env, uint32_t ret,
+                                    uintptr_t pc)
+{
+    if (unlikely((env->insn_flags & INSN_R10K) &&
+                 !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+                 float32_is_denormal(ret))) {
+        set_float_exception_flags(0, &env->active_fpu.fp_status);
+        SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
+        do_raise_exception(env, EXCP_FPE, pc);
+    }
+}
+
+/*
  * Float support.
  * Single precition routines have a "s" suffix, double precision a
  * "d" suffix, 32bit integer "w", 64bit integer "l", paired single "ps",
@@ -350,6 +382,7 @@ uint32_t helper_float_cvts_d(CPUMIPSState *env, uint64_t fdt0)
     uint32_t fst2;
 
     fst2 = float64_to_float32(fdt0, &env->active_fpu.fp_status);
+    check_denormal_result_s(env, fst2, GETPC());
     update_fcr31(env, GETPC());
     return fst2;
 }
@@ -1039,7 +1072,13 @@ uint64_t helper_float_abs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
         dt2 = float64_default_nan(&env->active_fpu.fp_status);
     } else {
         dt2 = float64_abs(fdt0);
+        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+            float64_is_denormal(dt2)) {
+            /* Arithmetic, so the FS flush applies; the sign survives. */
+            dt2 &= 1ULL << 63;
+        }
     }
+    check_denormal_result_d(env, dt2, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -1053,7 +1092,12 @@ uint32_t helper_float_abs_s_r10k(CPUMIPSState *env, uint32_t fst0)
         wt2 = float32_default_nan(&env->active_fpu.fp_status);
     } else {
         wt2 = float32_abs(fst0);
+        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+            float32_is_denormal(wt2)) {
+            wt2 &= 1U << 31;
+        }
     }
+    check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
     return wt2;
 }
@@ -1067,7 +1111,12 @@ uint64_t helper_float_chs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
         dt2 = float64_default_nan(&env->active_fpu.fp_status);
     } else {
         dt2 = float64_chs(fdt0);
+        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+            float64_is_denormal(dt2)) {
+            dt2 &= 1ULL << 63;
+        }
     }
+    check_denormal_result_d(env, dt2, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -1081,7 +1130,12 @@ uint32_t helper_float_chs_s_r10k(CPUMIPSState *env, uint32_t fst0)
         wt2 = float32_default_nan(&env->active_fpu.fp_status);
     } else {
         wt2 = float32_chs(fst0);
+        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+            float32_is_denormal(wt2)) {
+            wt2 &= 1U << 31;
+        }
     }
+    check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
     return wt2;
 }
@@ -1092,6 +1146,7 @@ uint64_t helper_float_recip_d(CPUMIPSState *env, uint64_t fdt0)
     uint64_t fdt2;
 
     fdt2 = float64_div(float64_one, fdt0, &env->active_fpu.fp_status);
+    check_denormal_result_d(env, fdt2, GETPC());
     update_fcr31(env, GETPC());
     return fdt2;
 }
@@ -1101,6 +1156,7 @@ uint32_t helper_float_recip_s(CPUMIPSState *env, uint32_t fst0)
     uint32_t fst2;
 
     fst2 = float32_div(float32_one, fst0, &env->active_fpu.fp_status);
+    check_denormal_result_s(env, fst2, GETPC());
     update_fcr31(env, GETPC());
     return fst2;
 }
@@ -1293,6 +1349,7 @@ uint64_t helper_float_add_d(CPUMIPSState *env,
     uint64_t dt2;
 
     dt2 = float64_add(fdt0, fdt1, &env->active_fpu.fp_status);
+    check_denormal_result_d(env, dt2, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -1303,6 +1360,7 @@ uint32_t helper_float_add_s(CPUMIPSState *env,
     uint32_t wt2;
 
     wt2 = float32_add(fst0, fst1, &env->active_fpu.fp_status);
+    check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
     return wt2;
 }
@@ -1329,6 +1387,7 @@ uint64_t helper_float_sub_d(CPUMIPSState *env,
     uint64_t dt2;
 
     dt2 = float64_sub(fdt0, fdt1, &env->active_fpu.fp_status);
+    check_denormal_result_d(env, dt2, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -1339,6 +1398,7 @@ uint32_t helper_float_sub_s(CPUMIPSState *env,
     uint32_t wt2;
 
     wt2 = float32_sub(fst0, fst1, &env->active_fpu.fp_status);
+    check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
     return wt2;
 }
@@ -1365,6 +1425,7 @@ uint64_t helper_float_mul_d(CPUMIPSState *env,
     uint64_t dt2;
 
     dt2 = float64_mul(fdt0, fdt1, &env->active_fpu.fp_status);
+    check_denormal_result_d(env, dt2, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -1375,6 +1436,7 @@ uint32_t helper_float_mul_s(CPUMIPSState *env,
     uint32_t wt2;
 
     wt2 = float32_mul(fst0, fst1, &env->active_fpu.fp_status);
+    check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
     return wt2;
 }
@@ -1401,6 +1463,7 @@ uint64_t helper_float_div_d(CPUMIPSState *env,
     uint64_t dt2;
 
     dt2 = float64_div(fdt0, fdt1, &env->active_fpu.fp_status);
+    check_denormal_result_d(env, dt2, GETPC());
     update_fcr31(env, GETPC());
     return dt2;
 }
@@ -1411,6 +1474,7 @@ uint32_t helper_float_div_s(CPUMIPSState *env,
     uint32_t wt2;
 
     wt2 = float32_div(fst0, fst1, &env->active_fpu.fp_status);
+    check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
     return wt2;
 }
@@ -1627,6 +1691,7 @@ uint64_t helper_float_madd_d(CPUMIPSState *env, uint64_t fst0,
     fst0 = float64_mul(fst0, fst1, &env->active_fpu.fp_status);
     fst0 = float64_add(fst0, fst2, &env->active_fpu.fp_status);
 
+    check_denormal_result_d(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1637,6 +1702,7 @@ uint32_t helper_float_madd_s(CPUMIPSState *env, uint32_t fst0,
     fst0 = float32_mul(fst0, fst1, &env->active_fpu.fp_status);
     fst0 = float32_add(fst0, fst2, &env->active_fpu.fp_status);
 
+    check_denormal_result_s(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1666,6 +1732,7 @@ uint64_t helper_float_msub_d(CPUMIPSState *env, uint64_t fst0,
     fst0 = float64_mul(fst0, fst1, &env->active_fpu.fp_status);
     fst0 = float64_sub(fst0, fst2, &env->active_fpu.fp_status);
 
+    check_denormal_result_d(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1676,6 +1743,7 @@ uint32_t helper_float_msub_s(CPUMIPSState *env, uint32_t fst0,
     fst0 = float32_mul(fst0, fst1, &env->active_fpu.fp_status);
     fst0 = float32_sub(fst0, fst2, &env->active_fpu.fp_status);
 
+    check_denormal_result_s(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1706,6 +1774,7 @@ uint64_t helper_float_nmadd_d(CPUMIPSState *env, uint64_t fst0,
     fst0 = float64_add(fst0, fst2, &env->active_fpu.fp_status);
     fst0 = float64_chs(fst0);
 
+    check_denormal_result_d(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1717,6 +1786,7 @@ uint32_t helper_float_nmadd_s(CPUMIPSState *env, uint32_t fst0,
     fst0 = float32_add(fst0, fst2, &env->active_fpu.fp_status);
     fst0 = float32_chs(fst0);
 
+    check_denormal_result_s(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1749,6 +1819,7 @@ uint64_t helper_float_nmsub_d(CPUMIPSState *env, uint64_t fst0,
     fst0 = float64_sub(fst0, fst2, &env->active_fpu.fp_status);
     fst0 = float64_chs(fst0);
 
+    check_denormal_result_d(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
@@ -1760,6 +1831,7 @@ uint32_t helper_float_nmsub_s(CPUMIPSState *env, uint32_t fst0,
     fst0 = float32_sub(fst0, fst2, &env->active_fpu.fp_status);
     fst0 = float32_chs(fst0);
 
+    check_denormal_result_s(env, fst0, GETPC());
     update_fcr31(env, GETPC());
     return fst0;
 }
