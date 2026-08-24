@@ -84,6 +84,9 @@
 #define PI_RT_COMPARE_A     0x000108
 #define PI_RT_PENDING_A     0x000120
 #define PI_RT_ENABLE_A      0x000140
+#define PI_RT_COMPARE_B     0x000110
+#define PI_RT_PENDING_B     0x000128
+#define PI_RT_ENABLE_B      0x000148
 #define PI_RT_LOCAL_CTRL       0x000160
 #define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
@@ -98,6 +101,7 @@
 #define HUB_IRQ_BANK0       0
 #define HUB_IRQ_BANK1       1
 #define HUB_IRQ_RT_A        2
+#define HUB_IRQ_RT_B        3
 #define HUB_IRQ_BANK0_B     4
 #define HUB_IRQ_BANK1_B     5
 
@@ -593,6 +597,46 @@ static void test_the_comparator_raises_and_releases_the_line(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
     g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same contract for the SECOND processor's comparator. Every real-time
+ * counter test above drives the first processor's registers; the second
+ * processor's had no coverage at all, which matters because a node's two
+ * processors take the counter on separate lines -- sysbus irq 2 and irq 3 --
+ * and a guest whose tick runs on the second processor depends entirely on
+ * the path none of those tests touch.
+ */
+static void test_the_second_processors_comparator_raises_its_own_line(
+    const void *data)
+{
+    /*
+     * Two processors, so the second slice is populated and its comparator
+     * arms: the Hub arms a comparator only for a populated slice, so on a
+     * one-processor node slice B's timer never arms at all.
+     */
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_B, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_B, PI_RT_MS);
+
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_B), ==, 0);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_B));
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_B), ==, 1);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_RT_B));
+
+    /* The first processor's line must not follow the second's. */
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_B, 0);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_B));
 
     qtest_quit(qts);
 }
@@ -3084,6 +3128,8 @@ int main(int argc, char **argv)
                         test_moving_the_counter_past_a_comparator_pends_nothing);
     qtest_add_data_func("sn0/hub/rt-comparator-raises-line", NULL,
                         test_the_comparator_raises_and_releases_the_line);
+    qtest_add_data_func("sn0/hub/rt-second-processor-line", NULL,
+                        test_the_second_processors_comparator_raises_its_own_line);
     qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
                         test_the_comparator_pends_with_its_interrupt_off);
     qtest_add_data_func("sn0/hub/behind-comparator-matches-once", NULL,
