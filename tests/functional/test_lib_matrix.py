@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from lib_matrix import (AttemptResult, Cell, MatrixError, machine_props,
-                         parse_matrix, qemu_args, verdict)
+from lib_matrix import (AttemptResult, Cell, MatrixError,
+                         first_progress_code, machine_props, parse_matrix,
+                         qemu_args, verdict)
 
 
 STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
@@ -304,3 +305,19 @@ def test_xfail_multi_attempt_matching_signatures_is_xfail():
     ]
 
     assert verdict(XFAIL_CELL, attempts) == 'xfail'
+
+
+# Tests for the firmware progress-code oracle
+
+def test_first_progress_code_found():
+    text = ('some preceding boot noise\n'
+            'sgi_hub_led CPU 0: 0x03 (progress: something)\n'
+            'trailing noise\n')
+
+    assert first_progress_code(text) == '0x03'
+
+
+def test_first_progress_code_absent():
+    text = 'no progress codes in this console capture at all\n'
+
+    assert first_progress_code(text) is None

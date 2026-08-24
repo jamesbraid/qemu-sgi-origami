@@ -226,6 +226,21 @@ def verdict(cell, attempts):
     return 'fail'
 
 
+_PROGRESS_CODE_RE = re.compile(r'sgi_hub_led CPU \d+: (0x[0-9a-f]{2})')
+
+
+def first_progress_code(text):
+    """Return the first firmware boot-progress code in text, or None.
+
+    The Hub's debug-leds trace event prints a line of the form
+    'sgi_hub_led CPU N: 0xNN (...)' for every write to its indicator
+    register; this scans arbitrary captured QEMU output for the first
+    one and returns its code, e.g. '0x03'.
+    """
+    match = _PROGRESS_CODE_RE.search(text)
+    return match.group(1) if match else None
+
+
 def _split_mem(mem, nodes):
     """Split a memory size string (e.g. '128M') evenly across nodes."""
     match = _MEM_RE.match(mem)
