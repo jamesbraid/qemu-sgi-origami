@@ -739,19 +739,24 @@ void helper_mtc0_vpeopt(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_entrylo0(CPUMIPSState *env, target_ulong arg1)
 {
+    target_ulong rxi;
+
+#if defined(TARGET_MIPS64)
     /*
-     * A 32-bit write assigns rather than merges, so on the R10000 family it
-     * clears an uncached attribute that a doubleword write had set. The manual
-     * says only that the attribute cannot be programmed from 32-bit user or
-     * supervisor mode, not that a 32-bit write clears one; a guest that set the
-     * attribute with a doubleword write and then updated the frame number with
-     * a word write would lose the space it had named. Left as it is because
-     * both operating systems use the doubleword form throughout their refill
-     * paths, so nothing reaches it, but it is a divergence rather than a
-     * decision.
+     * The R10000 moves all sixty-four general register bits on a word-sized
+     * MTC0 to a 64-bit register (Table 14-26), the same store the doubleword
+     * form makes. A 32-bit-mode register file holds the sign-extended word,
+     * which is how the manual's "EntryLo[33:31] ... can only be set to all
+     * zeroes or all ones" (14.3) comes about, and how the sign reaches the
+     * uncached attribute in the top two bits.
      */
+    if (env->insn_flags & INSN_R10K) {
+        helper_dmtc0_entrylo0(env, arg1);
+        return;
+    }
+#endif
     /* 1k pages not implemented */
-    target_ulong rxi = arg1 & (env->CP0_PageGrain & (3u << CP0PG_XIE));
+    rxi = arg1 & (env->CP0_PageGrain & (3u << CP0PG_XIE));
     env->CP0_EntryLo0 = (arg1 & MTC0_ENTRYLO_MASK(env))
                         | (rxi << (CP0EnLo_XI - 30));
 }
@@ -1031,8 +1036,17 @@ void helper_mttc0_tcschefback(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_entrylo1(CPUMIPSState *env, target_ulong arg1)
 {
+    target_ulong rxi;
+
+#if defined(TARGET_MIPS64)
+    /* All sixty-four bits, as for EntryLo0 above. */
+    if (env->insn_flags & INSN_R10K) {
+        helper_dmtc0_entrylo1(env, arg1);
+        return;
+    }
+#endif
     /* 1k pages not implemented */
-    target_ulong rxi = arg1 & (env->CP0_PageGrain & (3u << CP0PG_XIE));
+    rxi = arg1 & (env->CP0_PageGrain & (3u << CP0PG_XIE));
     env->CP0_EntryLo1 = (arg1 & MTC0_ENTRYLO_MASK(env))
                         | (rxi << (CP0EnLo_XI - 30));
 }
