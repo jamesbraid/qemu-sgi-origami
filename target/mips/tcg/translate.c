@@ -1546,6 +1546,20 @@ static void gen_fp_unimplemented(DisasContext *ctx)
 }
 
 /*
+ * Refuse a COP2-family instruction the R10000 way: the coprocessor is
+ * defined but absent, and Status.CU2 — an ordinary read/write bit —
+ * selects between Coprocessor Unusable and Reserved Instruction (User's
+ * Manual version 2.0, sections 14.11 and 17.7), so the choice has to be
+ * made from live state at execution.
+ */
+static void gen_cop2_exception_r10k(DisasContext *ctx)
+{
+    save_cpu_state(ctx, 1);
+    gen_helper_raise_cop2_exception(tcg_env);
+    ctx->base.is_jmp = DISAS_NORETURN;
+}
+
+/*
  * The same gate for the MIPS IV floating-point operations the R10000 refuses
  * with the Unimplemented Operation exception instead: raised for the compares
  * naming a nonzero condition code, the conditional moves of floating-point
@@ -15252,8 +15266,12 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             gen_loongson_lswc2(ctx, rt, rs, rd);
         } else {
             /* OPC_LWC2, OPC_SWC2 */
-            /* COP2: Not implemented. */
-            generate_exception_err(ctx, EXCP_CpU, 2);
+            if (ctx->insn_flags & INSN_R10K) {
+                gen_cop2_exception_r10k(ctx);
+            } else {
+                /* COP2: Not implemented. */
+                generate_exception_err(ctx, EXCP_CpU, 2);
+            }
         }
         break;
     case OPC_BEQZC: /* OPC_JIC, OPC_LDC2 */
@@ -15271,11 +15289,19 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             gen_loongson_lsdc2(ctx, rt, rs, rd);
         } else {
             /* OPC_LWC2, OPC_SWC2 */
-            /* COP2: Not implemented. */
-            generate_exception_err(ctx, EXCP_CpU, 2);
+            if (ctx->insn_flags & INSN_R10K) {
+                gen_cop2_exception_r10k(ctx);
+            } else {
+                /* COP2: Not implemented. */
+                generate_exception_err(ctx, EXCP_CpU, 2);
+            }
         }
         break;
     case OPC_CP2:
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_cop2_exception_r10k(ctx);
+            break;
+        }
         check_insn(ctx, ASE_LMMI);
         /* Note that these instructions use different fields.  */
         gen_loongson_multimedia(ctx, sa, rd, rt);

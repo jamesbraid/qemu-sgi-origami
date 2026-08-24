@@ -55,6 +55,24 @@ void helper_raise_exception(CPUMIPSState *env, uint32_t exception)
     do_raise_exception(env, exception, GETPC());
 }
 
+/*
+ * Coprocessor 2 is defined but does not exist in the R10000: its
+ * instructions "always cause an exception, but the exception code depends
+ * upon whether the coprocessor, as indicated by CU2, is enabled" —
+ * Coprocessor Unusable with CU2 clear, Reserved Instruction with it set
+ * (R10000 User's Manual version 2.0, sections 14.11 and 17.7). CU2 is an
+ * ordinary read/write Status bit, so the choice is run-time state, read
+ * here rather than baked into the translation.
+ */
+void helper_raise_cop2_exception(CPUMIPSState *env)
+{
+    if (env->CP0_Status & (1 << CP0St_CU2)) {
+        do_raise_exception(env, EXCP_RI, 0);
+    } else {
+        do_raise_exception_err(env, EXCP_CpU, 2, 0);
+    }
+}
+
 void helper_raise_exception_debug(CPUMIPSState *env)
 {
     do_raise_exception(env, EXCP_DEBUG, 0);

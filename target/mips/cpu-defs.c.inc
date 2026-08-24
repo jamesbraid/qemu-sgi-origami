@@ -644,15 +644,18 @@ const mips_def_t mips_defs[] =
         .SYNCI_Step = 32,
         .CCRes = 2,
         /*
-         * Two bits more than the R4000 mask this was derived from. Bit 31 is
-         * XX rather than a fourth coprocessor's usable bit, and bit 16 is the
+         * Three bits more than the R4000 mask this was derived from. Bit 31
+         * is XX rather than a fourth coprocessor's usable bit, bit 30 is
+         * CU2 — a functional usability bit for a coprocessor that does not
+         * exist, selecting which exception its instructions take (User's
+         * Manual version 2.0, sections 14.11 and 17.7) — and bit 16 is the
          * cache error disable, which software asserts to stop parity and ECC
          * errors raising exceptions. The two bits above the diagnostic status
          * field stay read-only because they are reserved, and the fields that
          * report what the hardware last did stay read-only because they are
          * status rather than control.
          */
-        .CP0_Status_rw_bitmask = 0xB679FFFF,
+        .CP0_Status_rw_bitmask = 0xF679FFFF,
         /* A full 64-bit FPU that does not use the fcr0 feature bits. */
         .CP1_fcr0 = (0x9 << FCR0_PRID) | (0x0 << FCR0_REV),
         .CP1_fcr31 = 0,
