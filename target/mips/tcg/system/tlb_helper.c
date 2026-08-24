@@ -1561,7 +1561,15 @@ void mips_cpu_do_interrupt(CPUState *cs)
         }
         env->hflags |= MIPS_HFLAG_CP0;
         env->hflags &= ~(MIPS_HFLAG_KSU);
-        if (!(env->CP0_Status & (1 << CP0St_EXL))) {
+        /*
+         * "The Cause register remains unchanged" during an NMI, and the
+         * Soft Reset preserved-register list does not name it either
+         * (R10000 User's Manual version 2.0, chapter 17). These entries
+         * report through ErrorEPC, so the branch-delay bit still
+         * describes the exception that wrote EPC.
+         */
+        if (!(env->insn_flags & INSN_R10K) &&
+            !(env->CP0_Status & (1 << CP0St_EXL))) {
             cp0_cause_update(env, 1U << CP0Ca_BD, 0);
         }
         env->active_tc.PC = env->exception_base;
