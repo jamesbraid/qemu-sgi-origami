@@ -5825,7 +5825,12 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
          * as it did before that register was modeled.
          */
         if (ctx->insn_flags & INSN_R10K) {
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
+            /* A 64-bit register: a word read returns its low word. */
+            TCGv_i64 tmp = tcg_temp_new_i64();
+
+            tcg_gen_ld_i64(tmp, tcg_env,
+                           offsetof(CPUMIPSState, CP0_Diagnostic));
+            gen_move_low32(arg, tmp);
         } else {
             tcg_gen_movi_tl(arg, 0);
         }
@@ -7371,7 +7376,9 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
          * as it did before that register was modeled.
          */
         if (ctx->insn_flags & INSN_R10K) {
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Diagnostic));
+            /* A 64-bit register: a doubleword read returns all of it. */
+            tcg_gen_ld_tl(arg, tcg_env,
+                          offsetof(CPUMIPSState, CP0_Diagnostic));
         } else {
             tcg_gen_movi_tl(arg, 0);
         }
