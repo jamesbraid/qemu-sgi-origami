@@ -192,7 +192,8 @@ qtests_mipsel = qtests_mips
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
-  (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test',
+                                                 'mips64-status-re-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mmio-branch-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',

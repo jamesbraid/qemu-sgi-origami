@@ -1363,6 +1363,23 @@ void helper_mtc0_status(CPUMIPSState *env, target_ulong arg1)
     cpu_mips_store_status(env, arg1);
     val = env->CP0_Status;
 
+    /*
+     * The R10000's RE bit promises reverse-endian user-mode loads and
+     * stores (manual 14.10), and its Status mask leaves the bit writable.
+     * The model stores it and implements none of the semantics — an
+     * address swizzle within each aligned doubleword, not a byte-order
+     * flip — so a guest that sets it would run with plain big-endian
+     * user data access and no other symptom. Say so instead. Only on
+     * this family: other models store the bit silently today and keep
+     * doing so.
+     */
+    if ((env->insn_flags & INSN_R10K) && (val & ~old & (1 << CP0St_RE))) {
+        qemu_log_mask(LOG_UNIMP,
+                      "mips: Status.RE set: reverse-endian user mode is "
+                      "not implemented; user-mode loads and stores keep "
+                      "the machine byte order\n");
+    }
+
     if (qemu_loglevel_mask(CPU_LOG_EXEC)) {
         qemu_log("Status %08x (%08x) => %08x (%08x) Cause %08x",
                 old, old & env->CP0_Cause & CP0Ca_IP_mask,
