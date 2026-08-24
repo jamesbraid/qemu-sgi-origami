@@ -1363,7 +1363,20 @@ void gen_store_fpr32(DisasContext *ctx, TCGv_i32 t, int reg)
     }
     t64 = tcg_temp_new_i64();
     tcg_gen_extu_i32_i64(t64, t);
-    tcg_gen_deposit_i64(fpu_f64[reg], fpu_f64[reg], t64, 0, 32);
+    /*
+     * The upper 32 bits of the destination register are architecturally
+     * undefined for single and word format writes, and the R10000 clears
+     * them where the R4400 preserved them (R10000 User's Manual version
+     * 2.0, section 15.5 Moves and Conditional Moves — stated there for
+     * every S and W format result, MOV.S, MTC1 and LWC1 alike). Only with
+     * FR set: with it clear the upper halves are the odd singles, and the
+     * pairing is what those bits mean.
+     */
+    if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+        tcg_gen_mov_i64(fpu_f64[reg], t64);
+    } else {
+        tcg_gen_deposit_i64(fpu_f64[reg], fpu_f64[reg], t64, 0, 32);
+    }
 }
 
 static void gen_load_fpr32h(DisasContext *ctx, TCGv_i32 t, int reg)
@@ -9346,6 +9359,26 @@ static inline void gen_movcf_s(DisasContext *ctx, int fs, int fd, int cc,
     TCGv_i32 t0 = tcg_temp_new_i32();
     TCGLabel *l1 = gen_new_label();
 
+    /*
+     * MOVT.S, MOVF.S, MOVZ.S and MOVN.S on the R10000 clear the upper 32
+     * bits of the destination "even though the condition is false" (User's
+     * Manual version 2.0, section 15.5), so the false leg writes the
+     * destination's own low half back instead of skipping the write.
+     */
+    if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+        TCGv_i64 t1 = tcg_temp_new_i64();
+        TCGv_i64 t_fs = tcg_temp_new_i64();
+        TCGv_i64 t_fd = tcg_temp_new_i64();
+
+        tcg_gen_andi_i32(t0, fpu_fcr31, 1 << get_fp_bit(cc));
+        tcg_gen_extu_i32_i64(t1, t0);
+        tcg_gen_extract_i64(t_fs, fpu_f64[fs], 0, 32);
+        tcg_gen_extract_i64(t_fd, fpu_f64[fd], 0, 32);
+        tcg_gen_movcond_i64(tf ? TCG_COND_NE : TCG_COND_EQ, fpu_f64[fd],
+                            t1, tcg_constant_i64(0), t_fs, t_fd);
+        return;
+    }
+
     if (tf) {
         cond = TCG_COND_EQ;
     } else {
@@ -9357,6 +9390,27 @@ static inline void gen_movcf_s(DisasContext *ctx, int fs, int fd, int cc,
     gen_load_fpr32(ctx, t0, fs);
     gen_store_fpr32(ctx, t0, fd);
     gen_set_label(l1);
+}
+
+/*
+ * The register-conditional forms of the same clearing rule: the selected
+ * low half — the source's when the condition holds, the destination's own
+ * when it does not — lands zero-extended.
+ */
+static void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft,
+                             bool on_zero)
+{
+    TCGv t0 = tcg_temp_new();
+    TCGv_i64 cond = tcg_temp_new_i64();
+    TCGv_i64 t_fs = tcg_temp_new_i64();
+    TCGv_i64 t_fd = tcg_temp_new_i64();
+
+    gen_load_gpr(t0, ft);
+    tcg_gen_extu_tl_i64(cond, t0);
+    tcg_gen_extract_i64(t_fs, fpu_f64[fs], 0, 32);
+    tcg_gen_extract_i64(t_fd, fpu_f64[fd], 0, 32);
+    tcg_gen_movcond_i64(on_zero ? TCG_COND_EQ : TCG_COND_NE, fpu_f64[fd],
+                        cond, tcg_constant_i64(0), t_fs, t_fd);
 }
 
 static inline void gen_movcf_d(DisasContext *ctx, int fs, int fd, int cc,
@@ -9698,7 +9752,9 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
     case OPC_MOVZ_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
         check_mips4_enabled_fp(ctx);
-        {
+        if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+            gen_movzn_s_r10k(ctx, fs, fd, ft, true);
+        } else {
             TCGLabel *l1 = gen_new_label();
             TCGv_i32 fp0;
 
@@ -9714,7 +9770,9 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
     case OPC_MOVN_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
         check_mips4_enabled_fp(ctx);
-        {
+        if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+            gen_movzn_s_r10k(ctx, fs, fd, ft, false);
+        } else {
             TCGLabel *l1 = gen_new_label();
             TCGv_i32 fp0;
 
