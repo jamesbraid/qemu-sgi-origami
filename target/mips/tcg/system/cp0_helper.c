@@ -216,29 +216,31 @@ static void sync_c0_entryhi(CPUMIPSState *cpu, int tc)
     *tcst |= asid;
 }
 
-/* XXX: do not use a global */
+/*
+ * The Random register. The R10000 manual (14.2) has it set to its upper
+ * bound — the entry count minus one — by reset and by every write to the
+ * Wired register, decrementing from there once per cycle in which an
+ * instruction graduates, wrapping from the Wired floor back to the upper
+ * bound, and readable "to verify proper operation of the processor".
+ *
+ * The decrement basis is approximated: this model counts no graduation
+ * cycles, so the register decrements once per consultation — a read or a
+ * random TLB write — instead. The consulting instruction itself graduates,
+ * so this is a lower bound on the hardware's decrement, and it keeps the
+ * register deterministic for a diagnostic that reads it. Reset and the
+ * Wired write helper reload the upper bound; the bounds themselves are the
+ * manual's, and a TLB write random still lands within them.
+ */
 uint32_t cpu_mips_get_random(CPUMIPSState *env)
 {
-    static uint32_t seed = 1;
-    static uint32_t prev_idx;
-    uint32_t idx;
-    uint32_t nb_rand_tlb = env->tlb->nb_tlb - env->CP0_Wired;
+    uint32_t upper = env->tlb->nb_tlb - 1;
+    uint32_t val = env->CP0_Random;
 
-    if (nb_rand_tlb == 1) {
-        return env->tlb->nb_tlb - 1;
+    if (val < env->CP0_Wired || val > upper) {
+        val = upper;
     }
-
-    /* Don't return same value twice, so get another value */
-    do {
-        /*
-         * Use a simple algorithm of Linear Congruential Generator
-         * from ISO/IEC 9899 standard.
-         */
-        seed = 1103515245 * seed + 12345;
-        idx = (seed >> 16) % nb_rand_tlb + env->CP0_Wired;
-    } while (idx == prev_idx);
-    prev_idx = idx;
-    return idx;
+    env->CP0_Random = (val == env->CP0_Wired) ? upper : val - 1;
+    return val;
 }
 
 /* CP0 helpers */
@@ -1193,6 +1195,8 @@ void helper_mtc0_wired(CPUMIPSState *env, target_ulong arg1)
     } else {
         env->CP0_Wired = arg1 % env->tlb->nb_tlb;
     }
+    /* A Wired write sets Random back to its upper bound. */
+    env->CP0_Random = env->tlb->nb_tlb - 1;
 }
 
 void helper_mtc0_pwctl(CPUMIPSState *env, target_ulong arg1)
