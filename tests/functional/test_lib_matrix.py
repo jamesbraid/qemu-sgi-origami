@@ -321,3 +321,19 @@ def test_first_progress_code_absent():
     text = 'no progress codes in this console capture at all\n'
 
     assert first_progress_code(text) is None
+
+
+def test_first_progress_code_ignores_failure_kind():
+    # The trace event uses the identical line shape for a diagnosed
+    # self-test failure (ECC, FPU, ...); scoring that as progress would
+    # be a false pass for a real firmware cell that hit one.
+    text = 'sgi_hub_led CPU 0: 0x81 (FAILURE: something)\n'
+
+    assert first_progress_code(text) is None
+
+
+def test_first_progress_code_skips_failure_to_find_progress():
+    text = ('sgi_hub_led CPU 0: 0x81 (FAILURE: something)\n'
+            'sgi_hub_led CPU 0: 0x03 (progress: something)\n')
+
+    assert first_progress_code(text) == '0x03'

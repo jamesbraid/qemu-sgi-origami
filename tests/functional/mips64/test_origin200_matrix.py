@@ -49,7 +49,13 @@ def _boot_one_attempt(test, cell, attempt_index):
 
     log_path = test.log_file(f'{name}.log')
     result = _wait_for_oracle(test, vm, cell, log_path)
-    vm.shutdown()
+    # A VM that crashed mid-boot has already exited on its own. A
+    # graceful shutdown() against an already-dead process still raises
+    # AbnormalShutdown even though qemu is in fact gone -- uncaught,
+    # that would abort test_cell() before a multi-attempt cell's later
+    # attempts run, defeating the retry loop on exactly the crash path
+    # retries exist for. hard=True skips the graceful attempt instead.
+    vm.shutdown(hard=vm.exitcode() is not None)
     return result
 
 
@@ -135,9 +141,19 @@ class OriginMatrix(QemuSystemTest):
     truth for what cells exist."""
 
 
-for _cell in parse_matrix(MATRIX_PATH):
-    setattr(OriginMatrix, 'test_' + _cell.id, _make(_cell))
-del _cell
+def _register_matrix_cells():
+    """Attach one test_<id> method to OriginMatrix per manifest row.
+
+    A plain module-level for loop would leak its loop variable, which
+    NameErrors on del if the manifest is ever empty; wrapping it in a
+    function scopes that variable away and stays empty-safe by
+    construction -- zero rows means zero iterations, nothing more.
+    """
+    for cell in parse_matrix(MATRIX_PATH):
+        setattr(OriginMatrix, 'test_' + cell.id, _make(cell))
+
+
+_register_matrix_cells()
 
 
 if __name__ == '__main__':
