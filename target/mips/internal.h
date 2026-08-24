@@ -377,6 +377,20 @@ static inline void compute_hflags(CPUMIPSState *env)
          (env->CP0_Status & (1 << CP0St_UX)))) {
         env->hflags |= MIPS_HFLAG_64;
     }
+    /*
+     * On the R10000 family the SX bit is what allows the MIPS III
+     * instructions in supervisor mode; with it clear they take a reserved
+     * instruction exception there. Kernel mode keeps every instruction
+     * regardless of KX, exception and error level force kernel mode before
+     * this point, and user mode is already gated by UX above. The generic
+     * grant stands for the other processors, where 64-bit operations are
+     * always valid above user mode.
+     */
+    if ((env->insn_flags & INSN_R10K) &&
+        (env->hflags & MIPS_HFLAG_KSU) == MIPS_HFLAG_SM &&
+        !(env->CP0_Status & (1 << CP0St_SX))) {
+        env->hflags &= ~MIPS_HFLAG_64;
+    }
 
     if (!(env->insn_flags & ISA_MIPS3)) {
         env->hflags |= MIPS_HFLAG_AWRAP;
