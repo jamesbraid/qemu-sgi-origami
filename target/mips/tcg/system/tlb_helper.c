@@ -1525,10 +1525,29 @@ void mips_cpu_do_interrupt(CPUState *cs)
         break;
     case EXCP_SRESET:
         env->CP0_Status |= (1 << CP0St_SR);
+        if (env->insn_flags & INSN_R10K) {
+            /*
+             * The NMI bit tells the two warm entries apart: an NMI sets
+             * it, a Soft Reset writes it back to zero (R10000 User's
+             * Manual version 2.0, the Diagnostic Status field in section
+             * 14.10). Both entries clear TS, as on the R4400.
+             */
+            env->CP0_Status &= ~((1 << CP0St_NMI) | (1 << CP0St_TS));
+        }
         memset(env->CP0_WatchLo, 0, sizeof(env->CP0_WatchLo));
         goto set_error_EPC;
     case EXCP_NMI:
         env->CP0_Status |= (1 << CP0St_NMI);
+        if (env->insn_flags & INSN_R10K) {
+            /*
+             * "Both Soft Reset and NMI exceptions set the SR bit" (R10000
+             * User's Manual version 2.0, chapter 17, NMI Exception), so a
+             * handler cannot mistake either warm entry for a cold reset;
+             * TS is cleared as on a Soft Reset.
+             */
+            env->CP0_Status |= (1 << CP0St_SR);
+            env->CP0_Status &= ~(1 << CP0St_TS);
+        }
  set_error_EPC:
         env->CP0_ErrorEPC = exception_resume_pc(env);
         env->hflags &= ~MIPS_HFLAG_BMASK;
