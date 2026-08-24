@@ -895,6 +895,7 @@ typedef struct CPUArchState {
 #define CP0St_TS    21
 #define CP0St_SR    20
 #define CP0St_NMI   19
+#define CP0St_CH    18
 #define CP0St_IM    8
 #define CP0St_KX    7
 #define CP0St_SX    6
