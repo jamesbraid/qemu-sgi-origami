@@ -6,6 +6,10 @@ test_mips64_timeouts = {
   'origin200_matrix' : 180,
   'prom_boot' : 700,
   'diag' : 1800,
+  # A single netboot pass, smaller than the two-pass factory-diagnostics
+  # check's 1800s: BOOT_TIMEOUT_SECONDS in test_prom_sash.py keeps a 60s
+  # margin under this.
+  'prom_sash' : 900,
 }
 
 tests_mips64_system_quick = [
@@ -19,4 +23,5 @@ tests_mips64_system_thorough = [
   'tuxrun',
   'prom_boot',
   'diag',
+  'prom_sash',
 ]
