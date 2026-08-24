@@ -1442,10 +1442,20 @@ void mips_cpu_do_interrupt(CPUState *cs)
         (env->hflags & MIPS_HFLAG_DM)) {
         cs->exception_index = EXCP_DINT;
     }
+    /*
+     * Entering an exception raises EXL or ERL, which can stop a live
+     * R10000 performance counter; hold the counters still across the
+     * mode change, as cpu_mips_store_status() does. The caller holds the
+     * big lock, so the pair needs no lock of its own here. The
+     * semihosting case returns without touching the mode, so it thaws on
+     * its way out.
+     */
+    cpu_mips_r10k_perf_freeze(env);
     offset = 0x180;
     switch (cs->exception_index) {
     case EXCP_SEMIHOST:
         cs->exception_index = EXCP_NONE;
+        cpu_mips_r10k_perf_thaw(env);
         mips_semihosting(env);
         env->active_tc.PC += env->error_code;
         qemu_plugin_vcpu_hostcall_cb(cs, last_pc);
@@ -1739,6 +1749,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
     default:
         qemu_plugin_vcpu_exception_cb(cs, last_pc);
     }
+    cpu_mips_r10k_perf_thaw(env);
     cs->exception_index = EXCP_NONE;
 }
 

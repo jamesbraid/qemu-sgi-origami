@@ -1639,16 +1639,20 @@ void helper_mtc0_diagnostic(CPUMIPSState *env, target_ulong arg1)
 void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
                                   uint32_t sel)
 {
-    if (sel & 1) {
-        /* A counter: 32 bits wide, and nothing here increments it. */
-        env->CP0_Performance[sel] = arg1;
-    } else {
-        /*
-         * A control register: an event number, an interrupt enable, and one
-         * mode bit per privilege level.
-         */
-        env->CP0_Performance[sel] = arg1 & 0x1ff;
-    }
+    /*
+     * Odd selectors are the 32-bit counters, even ones the control
+     * registers, which keep an event number, an interrupt enable, and one
+     * count enable per processor mode. The store also settles what the
+     * write means for IP[7] and for the counting machinery, over in
+     * cp0_timer.c with the rest of it.
+     */
+    cpu_mips_store_r10k_perf(env, arg1, sel);
+}
+
+target_ulong helper_mfc0_r10k_performance(CPUMIPSState *env, uint32_t sel)
+{
+    /* A counter that is counting cycles is assembled from the clock. */
+    return (int32_t)cpu_mips_get_r10k_perf(env, sel);
 }
 
 void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)

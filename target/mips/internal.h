@@ -228,6 +228,12 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t value);
 void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value);
 void cpu_mips_start_count(CPUMIPSState *env);
 void cpu_mips_stop_count(CPUMIPSState *env);
+uint32_t cpu_mips_get_r10k_perf(CPUMIPSState *env, unsigned sel);
+void cpu_mips_store_r10k_perf(CPUMIPSState *env, uint32_t val, unsigned sel);
+bool cpu_mips_r10k_perf_mode_sensitive(CPUMIPSState *env);
+void cpu_mips_r10k_perf_freeze(CPUMIPSState *env);
+void cpu_mips_r10k_perf_thaw(CPUMIPSState *env);
+void cpu_mips_r10k_perf_post_load(CPUMIPSState *env);
 
 static inline void mips_env_set_pc(CPUMIPSState *env, target_ulong value)
 {

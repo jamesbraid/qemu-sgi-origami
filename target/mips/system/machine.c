@@ -24,6 +24,7 @@ static int cpu_post_load(void *opaque, int version_id)
          */
         cpu_interrupt(env_cpu(env), CPU_INTERRUPT_DWATCH);
     }
+    cpu_mips_r10k_perf_post_load(env);
 
     return 0;
 }
@@ -402,6 +403,31 @@ static const VMStateDescription mips_vmstate_r10k_watch = {
     }
 };
 
+/*
+ * On the R10000 family, whether the timer is holding IP[7] up decides what
+ * a performance counter write may take down on the far side, so a pending
+ * timer level travels. Other processors reconstruct exactly the old
+ * behaviour from Cause alone, and a clear level matches the field's
+ * default, so neither sends the section.
+ */
+static bool mips_timer_ip7_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return (cpu->env.insn_flags & INSN_R10K) && cpu->env.cp0_timer_ip7;
+}
+
+static const VMStateDescription mips_vmstate_timer_ip7 = {
+    .name = "cpu/timer-ip7",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_timer_ip7_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(env.cp0_timer_ip7, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_octeon_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -570,6 +596,7 @@ const VMStateDescription vmstate_mips_cpu = {
     },
     .subsections = (const VMStateDescription * const []) {
         &mips_vmstate_timer,
+        &mips_vmstate_timer_ip7,
         &mips_vmstate_r10k_scache,
         &mips_vmstate_r10k_watch,
         &mips_vmstate_octeon_multiplier,
