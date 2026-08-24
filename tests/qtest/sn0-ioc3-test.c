@@ -89,6 +89,15 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define INT_ENABLE_SET  (IOC3_BASE + 0x20)
 #define INT_ENABLE_CLR  (IOC3_BASE + 0x24)
 
+/*
+ * The chip control register and the read-only arbiter-status bit our boot's
+ * serial setup loops on. Bit 22 reports the PCI arbiter idle; a read that
+ * never sets it hangs the boot there.
+ */
+#define CHIP_CONTROL        (IOC3_BASE + 0x28)
+#define CHIP_CTRL_ARB_IDLE  0x00400000u
+#define CHIP_CTRL_STROBE    0x00078000u  /* writable, no status bits */
+
 #define INT_SERIAL_A    (1u << 6)
 #define INT_SERIAL_B    (1u << 15)
 #define INT_KEYBOARD    (1u << 22)   /* a latched bit, for contrast */
@@ -298,6 +307,37 @@ static void test_the_enable_mask_has_two_write_aliases(const void *data)
     qtest_writel(qts, INT_ENABLE_SET, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET), ==,
                     INT_SERIAL_A | INT_KEYBOARD);
+
+    qtest_quit(qts);
+}
+
+static void test_the_arbiter_reports_idle(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint32_t cr;
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Bit 22 reports the PCI arbiter idle. The model has no serial-DMA engine
+     * driving PCI traffic, so the arbiter is always idle: the read must report
+     * it. On our machine's boot the kernel's serial console setup looped on
+     * this register until bit 22 read idle, so leaving it clear hung the boot.
+     * The assertion pins that exact bit, so a later change masking it away
+     * fails this test rather than a boot.
+     */
+    cr = qtest_readl(qts, CHIP_CONTROL);
+    g_assert_cmphex(cr & CHIP_CTRL_ARB_IDLE, ==, CHIP_CTRL_ARB_IDLE);
+
+    /*
+     * Writing the register with the idle bit clear still reads it back set,
+     * and the writable field beside it keeps what was written. The idle bit
+     * survives the write; the write mask is what keeps it out of stored state.
+     */
+    qtest_writel(qts, CHIP_CONTROL, CHIP_CTRL_STROBE);
+    cr = qtest_readl(qts, CHIP_CONTROL);
+    g_assert_cmphex(cr & CHIP_CTRL_ARB_IDLE, ==, CHIP_CTRL_ARB_IDLE);
+    g_assert_cmphex(cr & CHIP_CTRL_STROBE, ==, CHIP_CTRL_STROBE);
 
     qtest_quit(qts);
 }
@@ -3607,6 +3647,8 @@ int main(int argc, char **argv)
                         test_a_wide_access_is_not_narrowed);
     qtest_add_data_func("sn0/ioc3/enable-mask-two-aliases", NULL,
                         test_the_enable_mask_has_two_write_aliases);
+    qtest_add_data_func("sn0/ioc3/arbiter-reports-idle", NULL,
+                        test_the_arbiter_reports_idle);
     qtest_add_data_func("sn0/ioc3/serial-bit-ignores-acknowledgement", NULL,
                         test_a_serial_bit_ignores_an_acknowledgement);
     qtest_add_data_func("sn0/ioc3/second-interrupt-reaches-bridge-pin-3",
