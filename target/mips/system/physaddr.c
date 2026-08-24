@@ -79,7 +79,8 @@ static int get_seg_physical_address(CPUMIPSState *env, hwaddr *physical,
                                     MMUAccessType access_type, int mmu_idx,
                                     unsigned int am, bool eu,
                                     target_ulong segmask,
-                                    hwaddr physical_base)
+                                    hwaddr physical_base, unsigned int cca,
+                                    MemTxAttrs *attrs)
 {
     int mapped = is_seg_am_mapped(am, eu, mmu_idx);
 
@@ -89,9 +90,19 @@ static int get_seg_physical_address(CPUMIPSState *env, hwaddr *physical,
     } else if (mapped) {
         /* The segment is TLB mapped */
         return env->tlb->map_address(env, physical, prot, real_address,
-                                     access_type);
+                                     access_type, attrs);
     } else {
-        /* The segment is unmapped */
+        /*
+         * The segment is unmapped. On the R10000 family an unmapped
+         * reference whose cache algorithm is uncached or uncached
+         * accelerated is an uncached request on the system interface, and
+         * the machine is entitled to tell it apart from a cached one — the
+         * Origin's boot firmware depends on the distinction while it runs
+         * with its data cache standing in for memory.
+         */
+        if ((env->insn_flags & INSN_R10K) && (cca == 2 || cca == 7)) {
+            attrs->mips_uncached = 1;
+        }
         *physical = physical_base | (real_address & segmask);
         *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
         return TLBRET_MATCH;
@@ -101,20 +112,23 @@ static int get_seg_physical_address(CPUMIPSState *env, hwaddr *physical,
 static int get_segctl_physical_address(CPUMIPSState *env, hwaddr *physical,
                                        int *prot, target_ulong real_address,
                                        MMUAccessType access_type, int mmu_idx,
-                                       uint16_t segctl, target_ulong segmask)
+                                       uint16_t segctl, target_ulong segmask,
+                                       MemTxAttrs *attrs)
 {
     unsigned int am = (segctl & CP0SC_AM_MASK) >> CP0SC_AM;
     bool eu = (segctl >> CP0SC_EU) & 1;
     hwaddr pa = ((hwaddr)segctl & CP0SC_PA_MASK) << 20;
+    unsigned int cca = (segctl & CP0SC_C_MASK) >> CP0SC_C;
 
     return get_seg_physical_address(env, physical, prot, real_address,
                                     access_type, mmu_idx, am, eu, segmask,
-                                    pa & ~(hwaddr)segmask);
+                                    pa & ~(hwaddr)segmask, cca, attrs);
 }
 
 int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                          int *prot, target_ulong real_address,
-                         MMUAccessType access_type, int mmu_idx)
+                         MMUAccessType access_type, int mmu_idx,
+                         MemTxAttrs *attrs)
 {
     /* User mode can only access useg/xuseg */
 #if defined(TARGET_MIPS64)
@@ -139,13 +153,14 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         }
         ret = get_segctl_physical_address(env, physical, prot,
                                           real_address, access_type,
-                                          mmu_idx, segctl, 0x3FFFFFFF);
+                                          mmu_idx, segctl, 0x3FFFFFFF,
+                                          attrs);
 #if defined(TARGET_MIPS64)
     } else if (address < 0x4000000000000000ULL) {
         /* xuseg */
         if (UX && address <= (0x3FFFFFFFFFFFFFFFULL & env->SEGMask)) {
             ret = env->tlb->map_address(env, physical, prot,
-                                        real_address, access_type);
+                                        real_address, access_type, attrs);
         } else {
             ret = TLBRET_BADADDR;
         }
@@ -154,7 +169,7 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         if ((supervisor_mode || kernel_mode) &&
             SX && address <= (0x7FFFFFFFFFFFFFFFULL & env->SEGMask)) {
             ret = env->tlb->map_address(env, physical, prot,
-                                        real_address, access_type);
+                                        real_address, access_type, attrs);
         } else {
             ret = TLBRET_BADADDR;
         }
@@ -177,10 +192,9 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
          * widget, or for a special memory operation.
          */
         hwaddr window = 0;
+        unsigned int cca = (address >> 59) & 0x7;
 
         if (env->insn_flags & INSN_R10K) {
-            unsigned int cca = (address >> 59) & 0x7;
-
             if (cca == 2 || cca == 7) {
                 /*
                  * The attribute is a separate signal, not address, so it has
@@ -222,7 +236,7 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                 ret = get_seg_physical_address(env, physical, prot,
                                                real_address, access_type,
                                                mmu_idx, am, false, env->PAMask,
-                                               window);
+                                               window, cca, attrs);
             } else {
                 ret = TLBRET_BADADDR;
             }
@@ -234,7 +248,7 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         if (kernel_mode && KX &&
             address <= (0xFFFFFFFF7FFFFFFFULL & env->SEGMask)) {
             ret = env->tlb->map_address(env, physical, prot,
-                                        real_address, access_type);
+                                        real_address, access_type, attrs);
         } else {
             ret = TLBRET_BADADDR;
         }
@@ -243,17 +257,20 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         /* kseg0 */
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
-                                          env->CP0_SegCtl1 >> 16, 0x1FFFFFFF);
+                                          env->CP0_SegCtl1 >> 16, 0x1FFFFFFF,
+                                          attrs);
     } else if (address < KSEG2_BASE) {
         /* kseg1 */
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
-                                          env->CP0_SegCtl1, 0x1FFFFFFF);
+                                          env->CP0_SegCtl1, 0x1FFFFFFF,
+                                          attrs);
     } else if (address < KSEG3_BASE) {
         /* sseg (kseg2) */
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
-                                          env->CP0_SegCtl0 >> 16, 0x1FFFFFFF);
+                                          env->CP0_SegCtl0 >> 16, 0x1FFFFFFF,
+                                          attrs);
     } else {
         /*
          * kseg3
@@ -261,7 +278,8 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
          */
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
-                                          env->CP0_SegCtl0, 0x1FFFFFFF);
+                                          env->CP0_SegCtl0, 0x1FFFFFFF,
+                                          attrs);
     }
     return ret;
 }
@@ -269,11 +287,12 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
 hwaddr mips_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr)
 {
     CPUMIPSState *env = cpu_env(cs);
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
     hwaddr phys_addr;
     int prot;
 
     if (get_physical_address(env, &phys_addr, &prot, addr, MMU_DATA_LOAD,
-                             mips_env_mmu_index(env)) != 0) {
+                             mips_env_mmu_index(env), &attrs) != 0) {
         return -1;
     }
     return phys_addr;

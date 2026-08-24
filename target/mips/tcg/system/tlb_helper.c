@@ -573,7 +573,8 @@ void helper_ginvt(CPUMIPSState *env, target_ulong arg, uint32_t type)
 
 /* no MMU emulation */
 static int no_mmu_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
-                              target_ulong address, MMUAccessType access_type)
+                              target_ulong address, MMUAccessType access_type,
+                              MemTxAttrs *attrs)
 {
     *physical = address;
     *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
@@ -583,7 +584,7 @@ static int no_mmu_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
 /* fixed mapping MMU emulation */
 static int fixed_mmu_map_address(CPUMIPSState *env, hwaddr *physical,
                                  int *prot, target_ulong address,
-                                 MMUAccessType access_type)
+                                 MMUAccessType access_type, MemTxAttrs *attrs)
 {
     if (address <= (int32_t)0x7FFFFFFFUL) {
         if (!(env->CP0_Status & (1 << CP0St_ERL))) {
@@ -603,7 +604,8 @@ static int fixed_mmu_map_address(CPUMIPSState *env, hwaddr *physical,
 
 /* MIPS32/MIPS64 R4000-style MMU emulation */
 static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
-                           target_ulong address, MMUAccessType access_type)
+                           target_ulong address, MMUAccessType access_type,
+                           MemTxAttrs *attrs)
 {
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = env->CP0_MemoryMapID;
@@ -648,13 +650,18 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                  * address, and only when the entry's cache algorithm is
                  * uncached or uncached accelerated. Without this a mapped
                  * uncached page aimed at the Hub or a crossbar widget would
-                 * quietly read node memory instead.
+                 * quietly read node memory instead. The access is also marked
+                 * uncached, so the machine can tell an uncached reference to
+                 * memory from a cached one — the two have the same physical
+                 * address, since the attribute that names memory is window
+                 * zero.
                  */
                 if ((env->insn_flags & INSN_R10K) && (cca == 2 || cca == 7)) {
                     unsigned int uc = n ? tlb->UC1 : tlb->UC0;
 
                     window = (hwaddr)((uc + 1) & 3) <<
                              MIPS_UNCACHED_WINDOW_SHIFT;
+                    attrs->mips_uncached = 1;
                 }
 
                 *physical = window | tlb->PFN[n] | (address & (mask >> 1));
@@ -868,6 +875,7 @@ static int walk_directory(CPUMIPSState *env, uint64_t *vaddr,
     int psn = (env->CP0_PWCtl >> CP0PC_PSN) & 0x3F;
     int hugepg = (env->CP0_PWCtl >> CP0PC_HUGEPG) & 0x1;
     int pf_ptew = (env->CP0_PWField >> CP0PF_PTEW) & 0x3F;
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
     uint64_t entry;
     uint64_t paddr;
     int prot;
@@ -875,7 +883,7 @@ static int walk_directory(CPUMIPSState *env, uint64_t *vaddr,
     uint64_t w = 0;
 
     if (get_physical_address(env, &paddr, &prot, *vaddr, MMU_DATA_LOAD,
-                             ptw_mmu_idx) != TLBRET_MATCH) {
+                             ptw_mmu_idx, &attrs) != TLBRET_MATCH) {
         /* wrong base address */
         return 0;
     }
@@ -902,7 +910,7 @@ static int walk_directory(CPUMIPSState *env, uint64_t *vaddr,
                 *pw_entrylo0 = entry;
             }
             if (get_physical_address(env, &paddr, &prot, vaddr2, MMU_DATA_LOAD,
-                                     ptw_mmu_idx) != TLBRET_MATCH) {
+                                     ptw_mmu_idx, &attrs) != TLBRET_MATCH) {
                 return 0;
             }
             if (!get_pte(env, vaddr2, leaf_mop, &entry, ptw_mmu_idx)) {
@@ -932,6 +940,7 @@ static bool page_table_walk_refill(CPUMIPSState *env, vaddr address,
     int mdw = (env->CP0_PWSize >> CP0PS_MDW) & 0x3F;
     int ptw = (env->CP0_PWSize >> CP0PS_PTW) & 0x3F;
     int ptew = (env->CP0_PWSize >> CP0PS_PTEW) & 0x3F;
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
 
     /* Initial values */
     bool huge_page = false;
@@ -1057,7 +1066,7 @@ static bool page_table_walk_refill(CPUMIPSState *env, vaddr address,
     /* Leaf Level Page Table - First half of PTE pair */
     vaddr |= ptoffset0;
     if (get_physical_address(env, &paddr, &prot, vaddr, MMU_DATA_LOAD,
-                             ptw_mmu_idx) != TLBRET_MATCH) {
+                             ptw_mmu_idx, &attrs) != TLBRET_MATCH) {
         return false;
     }
     if (!get_pte(env, vaddr, leaf_mop, &dir_entry, ptw_mmu_idx)) {
@@ -1069,7 +1078,7 @@ static bool page_table_walk_refill(CPUMIPSState *env, vaddr address,
     /* Leaf Level Page Table - Second half of PTE pair */
     vaddr |= ptoffset1;
     if (get_physical_address(env, &paddr, &prot, vaddr, MMU_DATA_LOAD,
-                             ptw_mmu_idx) != TLBRET_MATCH) {
+                             ptw_mmu_idx, &attrs) != TLBRET_MATCH) {
         return false;
     }
     if (!get_pte(env, vaddr, leaf_mop, &dir_entry, ptw_mmu_idx)) {
@@ -1290,7 +1299,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     /* data access */
     /* XXX: put correct access by using cpu_restore_state() correctly */
     ret = get_physical_address(env, &physical, &prot, address,
-                               access_type, mmu_idx);
+                               access_type, mmu_idx, &attrs);
     switch (ret) {
     case TLBRET_MATCH:
         qemu_log_mask(CPU_LOG_MMU,
@@ -1304,15 +1313,6 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         break;
     }
     if (ret == TLBRET_MATCH) {
-#if defined(TARGET_MIPS64)
-        if ((env->insn_flags & INSN_R10K) &&
-            address >= UINT64_C(0x8000000000000000) &&
-            address < UINT64_C(0xc000000000000000)) {
-            unsigned int cca = (address >> 59) & 7;
-
-            attrs.mips_uncached = cca == 2 || cca == 7;
-        }
-#endif
         if (unlikely((env->insn_flags & INSN_R10K) &&
                      (env->CP0_WatchLo[0] &
                       (CP0WL_R10K_R | CP0WL_R10K_W)))) {
@@ -1334,7 +1334,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 
         if (page_table_walk_refill(env, address, ptw_mmu_idx)) {
             ret = get_physical_address(env, &physical, &prot, address,
-                                       access_type, mmu_idx);
+                                       access_type, mmu_idx, &attrs);
             if (ret == TLBRET_MATCH) {
                 tlb_set_page(cs, address & TARGET_PAGE_MASK,
                              physical & TARGET_PAGE_MASK, prot,
@@ -1355,6 +1355,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 hwaddr cpu_mips_translate_address(CPUMIPSState *env, target_ulong address,
                                   MMUAccessType access_type, uintptr_t retaddr)
 {
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
     hwaddr physical;
     int prot;
     int ret = 0;
@@ -1362,7 +1363,7 @@ hwaddr cpu_mips_translate_address(CPUMIPSState *env, target_ulong address,
 
     /* data access */
     ret = get_physical_address(env, &physical, &prot, address, access_type,
-                               mips_env_mmu_index(env));
+                               mips_env_mmu_index(env), &attrs);
     if (ret == TLBRET_MATCH) {
         return physical;
     }

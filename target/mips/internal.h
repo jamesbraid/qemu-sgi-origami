@@ -119,7 +119,8 @@ enum {
 
 int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                          int *prot, target_ulong real_address,
-                         MMUAccessType access_type, int mmu_idx);
+                         MMUAccessType access_type, int mmu_idx,
+                         MemTxAttrs *attrs);
 hwaddr mips_cpu_get_phys_addr_debug(CPUState *cpu, vaddr addr);
 
 typedef struct r4k_tlb_t r4k_tlb_t;
@@ -154,7 +155,8 @@ struct CPUMIPSTLBContext {
     uint32_t nb_tlb;
     uint32_t tlb_in_use;
     int (*map_address)(CPUMIPSState *env, hwaddr *physical, int *prot,
-                       target_ulong address, MMUAccessType access_type);
+                       target_ulong address, MMUAccessType access_type,
+                       MemTxAttrs *attrs);
     void (*helper_tlbwi)(CPUMIPSState *env);
     void (*helper_tlbwr)(CPUMIPSState *env);
     void (*helper_tlbp)(CPUMIPSState *env);
