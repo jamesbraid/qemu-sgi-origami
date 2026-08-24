@@ -82,7 +82,12 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
     }
 #endif
 
-    /* XXX: detect conflicting TLBs and raise a MCHECK exception when needed */
+    /*
+     * The R10000 family invalidates conflicting entries before this fill
+     * runs, in r10k_invalidate_conflicts().
+     * XXX: other processors should detect conflicting TLBs and raise a
+     * MCHECK exception when needed.
+     */
     tlb = &env->tlb->mmu.r4k.tlb[idx];
     if (env->CP0_EntryHi & (1 << CP0EnHi_EHINV)) {
         tlb->EHINV = 1;
@@ -161,6 +166,69 @@ static void r4k_helper_tlbinvf(CPUMIPSState *env)
     cpu_mips_tlb_flush(env);
 }
 
+/*
+ * The R10000 family never lets a TLB write create a multiple match: every
+ * other entry the new one overlaps - even in the wired area - is invalidated
+ * before the new entry is written, and the Status register's TS bit records
+ * that this happened. No exception is raised; software clears TS by writing
+ * a zero to it. The manual's Status register section describes this under
+ * the diagnostic status field, contrasting it with the R4400's TLB shutdown.
+ *
+ * Overlap means a single translation could match both entries: the virtual
+ * page numbers coincide under the wider of the two page masks, and the
+ * address space identifiers agree unless either entry is global. Invalidated
+ * entries are marked the way tlbinv marks them, which takes them out of
+ * every match; the valid bits stay untouched because a cleared valid bit
+ * still matches, it just faults instead of translating.
+ */
+static void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
+{
+#if defined(TARGET_MIPS64)
+    target_ulong mask, VPN;
+    uint16_t ASID;
+    bool G, conflict = false;
+    int i;
+
+    if (!(env->insn_flags & INSN_R10K)) {
+        return;
+    }
+
+    /* 1k pages are not supported. */
+    mask = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);
+    VPN = env->CP0_EntryHi & (TARGET_PAGE_MASK << 1) & env->SEGMask;
+    ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    G = env->CP0_EntryLo0 & env->CP0_EntryLo1 & 1;
+
+    for (i = 0; i < env->tlb->nb_tlb; i++) {
+        r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
+        target_ulong both = mask | tlb->PageMask;
+
+        if (i == idx || tlb->EHINV) {
+            continue;
+        }
+        if ((tlb->VPN & ~both) != (VPN & ~both)) {
+            continue;
+        }
+        if (!G && !tlb->G && tlb->ASID != ASID) {
+            continue;
+        }
+        tlb->EHINV = 1;
+        conflict = true;
+    }
+
+    if (conflict) {
+        env->CP0_Status |= 1 << CP0St_TS;
+        /*
+         * An invalidated entry may live on as a shadow copy, and its pages
+         * may be in QEMU's own TLB: discard both, or a stale translation
+         * outlives the entry that carried it.
+         */
+        r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+        cpu_mips_tlb_flush(env);
+    }
+#endif
+}
+
 static void r4k_helper_tlbwi(CPUMIPSState *env)
 {
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
@@ -206,6 +274,7 @@ static void r4k_helper_tlbwi(CPUMIPSState *env)
     }
 
     r4k_invalidate_tlb(env, idx, 0);
+    r10k_invalidate_conflicts(env, idx);
     r4k_fill_tlb(env, idx);
 }
 
@@ -214,6 +283,7 @@ static void r4k_helper_tlbwr(CPUMIPSState *env)
     int r = cpu_mips_get_random(env);
 
     r4k_invalidate_tlb(env, r, 1);
+    r10k_invalidate_conflicts(env, r);
     r4k_fill_tlb(env, r);
 }
 
@@ -302,7 +372,16 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
     r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
 
     if (tlb->EHINV) {
-        env->CP0_EntryHi = 1 << CP0EnHi_EHINV;
+        /*
+         * The R10000 family has no EHINV: EntryHi bits 12:8 read as zero
+         * there, and the bit would stick, because the EntryHi write helper
+         * only clears it on a processor whose Config4 grants the feature.
+         * Once stuck, the fill helper reads it back as "write an invalid
+         * entry" and every later TLB write is silently thrown away. Present
+         * an invalidated entry as all zeroes instead.
+         */
+        env->CP0_EntryHi = (env->insn_flags & INSN_R10K)
+                           ? 0 : 1 << CP0EnHi_EHINV;
         env->CP0_PageMask = 0;
         env->CP0_EntryLo0 = 0;
         env->CP0_EntryLo1 = 0;
