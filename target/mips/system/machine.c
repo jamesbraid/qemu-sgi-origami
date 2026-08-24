@@ -380,7 +380,8 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
 
 /*
  * The Diagnostic register is 64 bits wide and used to be stored, and sent,
- * as its low word. The whole register travels here instead; the word the
+ * as its low word. The whole register travels here instead, along with the
+ * branch prediction table its operation fields read and write; the word the
  * main section used to carry is now an unused slot there, so a stream from
  * before the widening still loads, at the price of resetting a register
  * that holds nothing an operating system relies on.
@@ -399,6 +400,7 @@ static const VMStateDescription mips_vmstate_r10k_diagnostic = {
     .needed = mips_r10k_diagnostic_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(env.CP0_Diagnostic, MIPSCPU),
+        VMSTATE_UINT8_ARRAY(env.r10k_bpt, MIPSCPU, R10K_BPT_ENTRIES),
         VMSTATE_END_OF_LIST()
     }
 };
