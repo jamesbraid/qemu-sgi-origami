@@ -387,7 +387,19 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
         env->CP0_EntryLo0 = 0;
         env->CP0_EntryLo1 = 0;
     } else {
-        env->CP0_EntryHi = mi ? tlb->VPN : tlb->VPN | tlb->ASID;
+        target_ulong VPN = tlb->VPN;
+
+        /*
+         * The R10000's TLBR pseudocode (manual 14.35) reads EntryHi as the
+         * entry and-not its page mask word, so virtual page number bits a
+         * guest wrote under a large page's mask present as zeroes. The fill
+         * keeps the entry as written, and lookup masks at compare time, so
+         * only this architectural read-back needs the clearing.
+         */
+        if (env->insn_flags & INSN_R10K) {
+            VPN &= ~(target_ulong)tlb->PageMask;
+        }
+        env->CP0_EntryHi = mi ? VPN : VPN | tlb->ASID;
         env->CP0_MemoryMapID = tlb->MMID;
         env->CP0_PageMask = tlb->PageMask;
         env->CP0_EntryLo0 = tlb->G | (tlb->V0 << 1) | (tlb->D0 << 2) |
