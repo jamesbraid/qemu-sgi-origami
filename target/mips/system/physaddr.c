@@ -157,8 +157,18 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                                           attrs);
 #if defined(TARGET_MIPS64)
     } else if (address < 0x4000000000000000ULL) {
-        /* xuseg */
-        if (UX && address <= (0x3FFFFFFFFFFFFFFFULL & env->SEGMask)) {
+        /*
+         * xuseg. On the R10000 family the space above 2 Gbytes exists only
+         * while ERL is clear: the manual's 64-bit kernel mode user space
+         * section says that with UX = 0 or ERL = 1 only the low 2 Gbytes
+         * are selected, and everything from 0x0000000080000000 to the top
+         * of the region is an address error. The low 2 Gbytes are the useg
+         * branch above, which the segment control's erl-unmapped bit
+         * already turns into an unmapped alias of physical memory.
+         */
+        bool erl = (env->insn_flags & INSN_R10K) && mmu_idx == 3;
+
+        if (UX && !erl && address <= (0x3FFFFFFFFFFFFFFFULL & env->SEGMask)) {
             ret = env->tlb->map_address(env, physical, prot,
                                         real_address, access_type, attrs);
         } else {
