@@ -1281,21 +1281,19 @@ endif
 
 slirp = not_found
 if not get_option('slirp').auto() or have_system
-  slirp = dependency('slirp', required: get_option('slirp'),
-                     method: 'pkg-config')
-  # slirp < 4.7 is incompatible with CFI support in QEMU.  This is because
-  # it passes function pointers within libslirp as callbacks for timers.
-  # When using a system-wide shared libslirp, the type information for the
-  # callback is missing and the timer call produces a false positive with CFI.
-  # Do not use the "version" keyword argument to produce a better error.
-  # with control-flow integrity.
-  if get_option('cfi') and slirp.found() and slirp.version().version_compare('<4.7')
-    if get_option('slirp').enabled()
-      error('Control-Flow Integrity requires libslirp 4.7.')
-    else
-      warning('Cannot use libslirp since Control-Flow Integrity requires libslirp >= 4.7.')
-      slirp = not_found
-    endif
+  # Always the vendored subproject, never a system libslirp. This fork's
+  # machines netboot through slirp fixes the subproject's wrap applies
+  # (subprojects/packagefiles/libslirp-sgi-prom.patch); resolving a system
+  # library here would silently reintroduce the unpatched behaviour the
+  # moment an environment happens to carry one. Linked statically, so the
+  # guarantee travels with the binary rather than with whatever the loader
+  # finds at run time. Static linkage also retires upstream's CFI concern
+  # with shared libslirp: the callback type information CFI needs is
+  # present when the library is compiled in.
+  libslirp_proj = subproject('libslirp', required: get_option('slirp'),
+                             default_options: ['default_library=static'])
+  if libslirp_proj.found()
+    slirp = libslirp_proj.get_variable('libslirp_dep')
   endif
 endif
 

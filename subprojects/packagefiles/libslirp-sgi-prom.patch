@@ -1,0 +1,331 @@
+From: origami QEMU bring-up
+Subject: [PATCH] tftp,bootp: tolerate RRQ padding, unicast replies to ciaddr
+
+The IP27 PROM pads its TFTP read request with uninitialised buffer
+bytes after the transfer mode, and reopens sash64 through a second
+BOOTP round with ciaddr set. Stock libslirp rejects the padded request
+as malformed and broadcasts the reply the PROM expects unicast, so the
+boot fails both ways.
+
+Tolerate the padding the way dnsmasq does: when the request does not
+end in a NUL, trim it to the last NUL-terminated field, so the padding
+is ignored but whole options preceding it still negotiate; stop option
+parsing at a field with no value. Unicast the reply to ciaddr when the
+client set it. The tests land with the fixes and run under meson test.
+
+This is the squash of the two-commit series prepared for upstream,
+applying to libslirp v4.8.0 with `git apply`. The QEMU fork's meson
+wrap carries the same squash and applies it to the vendored subproject.
+
+diff --git a/meson.build b/meson.build
+index d20cec4..38ada96 100644
+--- a/meson.build
++++ b/meson.build
+@@ -213,6 +213,26 @@ ncsitest = executable('ncsitest', 'test/ncsitest.c',
+ 
+ test('ncsi', ncsitest)
+ 
++tftptest = executable('tftptest', 'test/tftptest.c',
++  link_with: [lib],
++  c_args : cargs,
++  link_args : vflag,
++  include_directories: ['src'],
++  dependencies: [glib_dep, platform_deps]
++)
++
++test('tftp', tftptest)
++
++bootptest = executable('bootptest', 'test/bootptest.c',
++  link_with: [lib],
++  c_args : cargs,
++  link_args : vflag,
++  include_directories: ['src'],
++  dependencies: [glib_dep, platform_deps]
++)
++
++test('bootp', bootptest)
++
+ if install_devel
+   install_headers(['src/libslirp.h'], subdir : 'slirp')
+ 
+diff --git a/src/bootp.c b/src/bootp.c
+index 147955f..cf69b95 100644
+--- a/src/bootp.c
++++ b/src/bootp.c
+@@ -380,7 +380,12 @@ static void bootp_reply(Slirp *slirp,
+     assert(q < end);
+     *q++ = RFC1533_END;
+ 
+-    daddr.sin_addr.s_addr = 0xffffffffu;
++    if (bp->bp_ciaddr.s_addr) {
++        /* the client named its own address, so it expects a unicast reply */
++        daddr.sin_addr = bp->bp_ciaddr;
++    } else {
++        daddr.sin_addr.s_addr = 0xffffffffu;
++    }
+ 
+     assert(q <= end);
+ 
+diff --git a/src/tftp.c b/src/tftp.c
+index 1b39692..44f8b64 100644
+--- a/src/tftp.c
++++ b/src/tftp.c
+@@ -373,8 +373,11 @@ static void tftp_handle_rrq(Slirp *slirp, struct sockaddr_storage *srcsas,
+     }
+ 
+     if (tp->x.tp_buf[pktlen - 1] != 0) {
+-        tftp_send_error(spt, 2, "Access violation", tp);
+-        return;
++        /* trailing padding after the mode: trim to the last NUL-terminated
++         * field, like dnsmasq, keeping whole options before the padding */
++        while (pktlen > k && tp->x.tp_buf[pktlen - 1] != 0) {
++            pktlen--;
++        }
+     }
+ 
+     while (k < pktlen && nb_options < G_N_ELEMENTS(option_name)) {
+@@ -384,8 +387,8 @@ static void tftp_handle_rrq(Slirp *slirp, struct sockaddr_storage *srcsas,
+         k += strlen(key) + 1;
+ 
+         if (k >= pktlen) {
+-            tftp_send_error(spt, 2, "Access violation", tp);
+-            return;
++            /* option name without a value: trailing padding, stop */
++            break;
+         }
+ 
+         value = &tp->x.tp_buf[k];
+diff --git a/test/bootptest.c b/test/bootptest.c
+new file mode 100644
+index 0000000..74bceb2
+--- /dev/null
++++ b/test/bootptest.c
+@@ -0,0 +1,84 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++
++/*
++ * This test checks where the BOOTP server addresses its reply: unicast to
++ * ciaddr when the client set it, broadcast otherwise.
++ */
++
++#include <stdint.h>
++#include <string.h>
++#include <assert.h>
++
++#include <glib.h>
++
++#include "slirp.h"
++
++static uint8_t reply[IP_MAXPACKET];
++
++static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque)
++{
++    assert(len <= IP_MAXPACKET);
++    memcpy(opaque, buf, len);
++    return len;
++}
++
++static int64_t clock_get_ns(void *opaque)
++{
++    return 0;
++}
++
++/* A DHCPREQUEST broadcast from 10.0.2.15, 68 -> 67, precomputed IP header
++ * checksum, no UDP checksum. ciaddr sits at offset 54, zero until the test
++ * sets it. */
++static uint8_t request[ETH_HLEN + 272] = {
++    /* ethernet */
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x52, 0x54, 0, 0x12, 0x34, 0x56,
++    0x08, 0x00,
++    /* IPv4, 272 bytes, UDP, 10.0.2.15 -> 255.255.255.255 */
++    0x45, 0, 0x01, 0x10, 0, 0, 0, 0, 64, 17, 0x6d, 0xcf,
++    10, 0, 2, 15, 0xff, 0xff, 0xff, 0xff,
++    /* UDP, 252 bytes */
++    0, 68, 0, 67, 0, 252, 0, 0,
++    /* BOOTREQUEST, ethernet, hlen 6 */
++    1, 1, 6,
++    /* client hardware address */
++    [70] = 0x52, 0x54, 0, 0x12, 0x34, 0x56,
++    /* DHCP cookie, message type DHCPREQUEST, end */
++    [278] = RFC1533_COOKIE, RFC2132_MSG_TYPE, 1, DHCPREQUEST, RFC1533_END,
++};
++
++/* Send the request and return the reply's IP destination, host order. */
++static uint32_t reply_dst(Slirp *slirp)
++{
++    memset(reply, 0, sizeof(reply));
++    slirp_input(slirp, request, sizeof(request));
++    return ((uint32_t)reply[30] << 24) | (reply[31] << 16) |
++           (reply[32] << 8) | reply[33];
++}
++
++int main(void)
++{
++    SlirpConfig config = {
++        .version = SLIRP_CONFIG_VERSION_MAX,
++        .in_enabled = true,
++        .vnetwork.s_addr = htonl(0x0a000200),
++        .vnetmask.s_addr = htonl(0xffffff00),
++        .vhost.s_addr = htonl(0x0a000202),
++        .vdhcp_start.s_addr = htonl(0x0a00020f),
++    };
++    SlirpCb callbacks = {
++        .send_packet = send_packet,
++        .clock_get_ns = clock_get_ns,
++    };
++    Slirp *slirp = slirp_new(&config, &callbacks, reply);
++
++    /* Acquisition, ciaddr still zero: the reply is broadcast. */
++    assert(reply_dst(slirp) == 0xffffffff);
++
++    /* The client now has its address and sets ciaddr: unicast to it. */
++    memcpy(request + 54, "\x0a\x00\x02\x0f", 4);
++    assert(reply_dst(slirp) == 0x0a00020f);
++
++    slirp_cleanup(slirp);
++    return 0;
++}
+diff --git a/test/tftptest.c b/test/tftptest.c
+new file mode 100644
+index 0000000..3e71a99
+--- /dev/null
++++ b/test/tftptest.c
+@@ -0,0 +1,138 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++
++/*
++ * This test checks how the TFTP server parses a read request: trailing
++ * padding after the transfer mode is ignored, options are still negotiated.
++ */
++
++#include <stdint.h>
++#include <string.h>
++#include <assert.h>
++
++#include <glib.h>
++#include <glib/gstdio.h>
++
++#include "slirp.h"
++
++static uint8_t reply[IP_MAXPACKET];
++
++static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque)
++{
++    assert(len <= IP_MAXPACKET);
++    memcpy(opaque, buf, len);
++    return len;
++}
++
++static int64_t clock_get_ns(void *opaque)
++{
++    return 0;
++}
++
++/* Ethernet+IPv4+UDP headers for 10.0.2.15:9069 -> 10.0.2.2:69 carrying an
++ * IP datagram of len bytes, no UDP checksum. The IP header checksum only
++ * varies with the length here, hence the 0x62dd. */
++#define HEADERS(len) \
++    0x52, 0x55, 10, 0, 2, 2, 0x52, 0x54, 0, 0x12, 0x34, 0x56, 0x08, 0x00, \
++    0x45, 0, 0, len, 0, 0, 0, 0, 64, 17, 0x62, 0xdd - (len), \
++    10, 0, 2, 15, 10, 0, 2, 2, \
++    0x23, 0x6d, 0, 69, 0, (len) - 20, 0, 0
++
++static const uint8_t plain[] = {
++    HEADERS(41),
++    0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
++};
++
++static const uint8_t option[] = {
++    HEADERS(53),
++    0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
++    'b', 'l', 'k', 's', 'i', 'z', 'e', 0, '5', '1', '2', 0,
++};
++
++/* The last four bytes are replaced with each pad under test. */
++static uint8_t padded[] = {
++    HEADERS(45),
++    0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
++    0, 0, 0, 0,
++};
++
++/* Options first, then the same pads: the padding must not cost the client
++ * its negotiation. */
++static uint8_t option_padded[] = {
++    HEADERS(57),
++    0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
++    'b', 'l', 'k', 's', 'i', 'z', 'e', 0, '5', '1', '2', 0,
++    0, 0, 0, 0,
++};
++
++/* Trailing bytes seen from clients that pad their request: one fails the
++ * terminating-NUL check, one parses as an empty option, one as an unknown
++ * option with no value. */
++static const uint8_t pads[][4] = {
++    { 0x50, 0x10, 0xff, 0xff },
++    { 0x00, 0xc0, 0x00, 0x00 },
++    { 0x01, 0x00, 0x00, 0x00 },
++};
++
++/* An ARP reply teaching slirp the client's address, so replies to 10.0.2.15
++ * are delivered instead of held for resolution. */
++static const uint8_t arp[] = {
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x52, 0x54, 0, 0x12, 0x34, 0x56,
++    0x08, 0x06,
++    0, 1, 8, 0, 6, 4, 0, 2,
++    0x52, 0x54, 0, 0x12, 0x34, 0x56, 10, 0, 2, 15,
++    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++};
++
++static uint16_t reply_op(Slirp *slirp, const uint8_t *frame, size_t len)
++{
++    const struct tftp_t *tp = (void *)(reply + ETH_HLEN + sizeof(struct ip));
++
++    memset(reply, 0, sizeof(reply));
++    slirp_input(slirp, frame, len);
++    return ntohs(tp->hdr.tp_op);
++}
++
++int main(void)
++{
++    SlirpConfig config = {
++        .version = SLIRP_CONFIG_VERSION_MAX,
++        .in_enabled = true,
++        .vnetwork.s_addr = htonl(0x0a000200),
++        .vnetmask.s_addr = htonl(0xffffff00),
++        .vhost.s_addr = htonl(0x0a000202),
++        .vdhcp_start.s_addr = htonl(0x0a00020f),
++    };
++    SlirpCb callbacks = {
++        .send_packet = send_packet,
++        .clock_get_ns = clock_get_ns,
++    };
++    char *dir = g_dir_make_tmp("slirp-tftp-XXXXXX", NULL);
++    char *file = g_build_filename(dir, "boot", NULL);
++    Slirp *slirp;
++    unsigned i;
++
++    gboolean wrote = g_file_set_contents(file, "data", -1, NULL);
++    assert(wrote);
++    config.tftp_path = dir;
++    slirp = slirp_new(&config, &callbacks, reply);
++    slirp_input(slirp, arp, sizeof(arp));
++
++    assert(reply_op(slirp, plain, sizeof(plain)) == TFTP_DATA);
++    assert(reply_op(slirp, option, sizeof(option)) == TFTP_OACK);
++    for (i = 0; i < G_N_ELEMENTS(pads); i++) {
++        memcpy(padded + sizeof(padded) - 4, pads[i], 4);
++        assert(reply_op(slirp, padded, sizeof(padded)) == TFTP_DATA);
++    }
++    for (i = 0; i < G_N_ELEMENTS(pads); i++) {
++        memcpy(option_padded + sizeof(option_padded) - 4, pads[i], 4);
++        assert(reply_op(slirp, option_padded, sizeof(option_padded))
++               == TFTP_OACK);
++    }
++
++    slirp_cleanup(slirp);
++    g_remove(file);
++    g_rmdir(dir);
++    g_free(file);
++    g_free(dir);
++    return 0;
++}
