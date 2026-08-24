@@ -8831,6 +8831,19 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
         break;
     case OPC_MFTR:
         check_cp0_enabled(ctx);
+        /*
+         * On the R10000 this is the branch-on-coprocessor-0 encoding
+         * space, and the processor has no coprocessor 0 condition:
+         * "execution of a branch on Coprocessor 0 instruction takes a
+         * Reserved Instruction exception" (User's Manual version 2.0,
+         * hazards chapter). Without the gate the MT-ASE decode below
+         * reads a per-thread register into the general register named
+         * by the branch offset's bits 15:11.
+         */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_reserved_instruction(ctx);
+            return;
+        }
         if (rd == 0) {
             /* Treat as NOP. */
             return;
@@ -8841,6 +8854,16 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
         break;
     case OPC_MTTR:
         check_cp0_enabled(ctx);
+        /*
+         * The companion slot at rs = 0x0C. The manual leaves undefined
+         * COP0 functions undefined, and the MT-ASE decode below would
+         * silently write coprocessor 0 state, so the same refusal is
+         * the only safe reading.
+         */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_reserved_instruction(ctx);
+            return;
+        }
         gen_mttr(env, ctx, rd, rt, (ctx->opcode >> 5) & 1,
                  ctx->opcode & 0x7, (ctx->opcode >> 4) & 1);
         opn = "mttr";
