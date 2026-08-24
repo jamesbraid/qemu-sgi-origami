@@ -5712,6 +5712,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_23:
         switch (sel) {
         case CP0_REG23__DEBUG:
+            /* The R10000 family has no EJTAG; its register 23 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             gen_helper_mfc0_debug(arg, tcg_env); /* EJTAG support */
             register_name = "Debug";
             break;
@@ -5747,6 +5749,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_24:
         switch (sel) {
         case CP0_REG24__DEPC:
+            /* The R10000 family has no EJTAG; its register 24 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             /* EJTAG support */
             tcg_gen_ld_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             tcg_gen_ext32s_tl(arg, arg);
@@ -6459,6 +6463,8 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_23:
         switch (sel) {
         case CP0_REG23__DEBUG:
+            /* The R10000 family has no EJTAG; its register 23 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             gen_helper_mtc0_debug(tcg_env, arg); /* EJTAG support */
             /* DISAS_STOP isn't good enough here, hflags may have changed. */
             gen_save_pc(ctx->base.pc_next + 4);
@@ -6509,6 +6515,8 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_24:
         switch (sel) {
         case CP0_REG24__DEPC:
+            /* The R10000 family has no EJTAG; its register 24 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             /* EJTAG support */
             tcg_gen_st_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             register_name = "DEPC";
@@ -7222,6 +7230,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_23:
         switch (sel) {
         case CP0_REG23__DEBUG:
+            /* The R10000 family has no EJTAG; its register 23 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             gen_helper_mfc0_debug(arg, tcg_env); /* EJTAG support */
             register_name = "Debug";
             break;
@@ -7257,6 +7267,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_24:
         switch (sel) {
         case CP0_REG24__DEPC:
+            /* The R10000 family has no EJTAG; its register 24 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             /* EJTAG support */
             tcg_gen_ld_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             register_name = "DEPC";
@@ -7955,6 +7967,8 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_23:
         switch (sel) {
         case CP0_REG23__DEBUG:
+            /* The R10000 family has no EJTAG; its register 23 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             gen_helper_mtc0_debug(tcg_env, arg); /* EJTAG support */
             /* DISAS_STOP isn't good enough here, hflags may have changed. */
             gen_save_pc(ctx->base.pc_next + 4);
@@ -8003,6 +8017,8 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_24:
         switch (sel) {
         case CP0_REG24__DEPC:
+            /* The R10000 family has no EJTAG; its register 24 is undefined. */
+            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
             /* EJTAG support */
             tcg_gen_st_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             register_name = "DEPC";
