@@ -3,10 +3,9 @@
  * What the Origin 200 model says this machine must be.
  *
  * Generated from docs/machines/origin200.yaml and
- * docs/machines/klconfig-layout.yaml by
- * tools/origami model generate klconfig origin200 --c-header PATH.
- * Do not edit: regenerate. tools/origami --qemu-src PATH model check
- * qtest-header verifies that regenerating produces exactly this file.
+ * docs/machines/klconfig-layout.yaml by tools/gen-klconfig --c-header.
+ * Do not edit: regenerate. tools/check-model-header verifies that
+ * regenerating produces exactly this file, so an edit here is caught.
  *
  * The point of generating it is that the emulator's machine and the firmware
  * it synthesises stop being two hand-written descriptions that can disagree.
