@@ -367,8 +367,18 @@ static inline void compute_hflags(CPUMIPSState *env)
     if (!(env->CP0_Status & (1 << CP0St_EXL)) &&
         !(env->CP0_Status & (1 << CP0St_ERL)) &&
         !(env->hflags & MIPS_HFLAG_DM)) {
-        env->hflags |= (env->CP0_Status >> CP0St_KSU) &
-                       MIPS_HFLAG_KSU;
+        uint32_t ksu = extract32(env->CP0_Status, CP0St_KSU, 2);
+
+        /*
+         * KSU=3 is an undefined mode the R10000 defines: "The R10000
+         * processor implements this as User mode" (manual 14.10). Left
+         * raw, the value lands on the ERL mmu index and behaves as a
+         * kernel variant instead.
+         */
+        if (ksu == MIPS_HFLAG_KSU && (env->insn_flags & INSN_R10K)) {
+            ksu = MIPS_HFLAG_UM;
+        }
+        env->hflags |= ksu;
     }
 #if defined(TARGET_MIPS64)
     if ((env->insn_flags & ISA_MIPS3) &&
