@@ -1805,6 +1805,17 @@ void mips_cpu_do_interrupt(CPUState *cs)
     default:
         abort();
     }
+    /*
+     * The R10000's LL/SC rules put "exception" first in the list of
+     * events a sequence must not contain "or the Store Conditional will
+     * fail" (User's Manual version 2.0, chapter 1), so entry alone
+     * breaks the link -- a handler that comes back without an ERET does
+     * not restore it. The in-band poison value is helper_eret()'s: never
+     * a valid word address, so no later store-conditional can match it.
+     */
+    if (env->insn_flags & INSN_R10K) {
+        env->lladdr = 1;
+    }
     if (qemu_loglevel_mask(CPU_LOG_INT)
         && cs->exception_index != EXCP_EXT_INTERRUPT) {
         qemu_log("%s: PC " TARGET_FMT_lx " EPC " TARGET_FMT_lx " cause %d\n"
