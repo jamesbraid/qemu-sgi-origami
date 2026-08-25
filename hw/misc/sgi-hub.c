@@ -2349,9 +2349,23 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
          * immediately visible to the peer; kick that vCPU so host scheduling
          * cannot turn the firmware's instruction-count timeout into a false
          * dead-processor report. This changes no register or interrupt state.
+         *
+         * Only while the comparator is a mailbox, which the slice's own
+         * interrupt enable distinguishes: the arbitration polls with the
+         * interrupt disabled, while a guest that has enabled it is writing a
+         * deadline from its own tick path and re-arms on every tick. Under
+         * round-robin, a handoff here ends the writer's slice between its
+         * compare write and its read-back of the count, so the wall-clock
+         * time the peer's slice consumes lands inside that window and every
+         * deadline the guest asks for has already passed when it checks —
+         * the Linux SMP boot livelocked at its clocksource switch on
+         * exactly that loop. The gate assumes a deadline writer enables the
+         * interrupt first, as Linux does; a guest that polled a deadline
+         * with the interrupt disabled would still donate its slice here and
+         * could meet the same livelock.
          */
         peer = qemu_get_cpu(s->cpu_base + (i ^ 1));
-        if (peer && (i ^ 1) < s->cpus) {
+        if (!s->pi_rt_enable[i] && peer && (i ^ 1) < s->cpus) {
             qemu_cpu_handoff(peer);
         }
         break;
