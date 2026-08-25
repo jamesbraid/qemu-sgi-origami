@@ -2142,7 +2142,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     stl_be_p(console + 0x1c, 0);                /* console type */
     stw_be_p(console + 0x20, 0);                /* node identifier */
     console[0x22] = SN0_CONSOLE_WIDGET;
-    console[0x23] = 1;                          /* devices behind the bridge */
+    console[0x23] = SN0_IOC3_DEVICE;            /* controller's PCI device */
 
     /* Board 0: the node board, with its processors, Hub and memory banks. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
