@@ -571,6 +571,17 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
                                      ISP_STATE_FLAG_TRANSFER_COMPLETE)
 
 /*
+ * status_flags (offset 14) is a field distinct from state_flags: it reports
+ * conditions about the completion rather than which phases the command
+ * reached. IRIX reads its timeout bit to accept an incomplete completion as a
+ * benign selection timeout -- a stricter check than the four public parallel-
+ * SCSI ISP drivers, which key only on state_flags. The bit value is NetBSD
+ * ispmbox.h's RQSTF_TIMEOUT; qla1280.h and qlwreg.h carry the field but
+ * enumerate none of its bits, consistent with a reader they do not model.
+ */
+#define ISP_STATUS_FLAG_TIMEOUT           0x0040
+
+/*
  * A status entry the response ring had no room for. Real hardware never
  * builds this list — the datasheet's own words are that it never reaches the
  * full case — but a model with no bus latency can, and dropping a completion
@@ -586,6 +597,7 @@ typedef struct QLogicISPPendingStatus {
     uint16_t scsi_status;
     uint16_t completion;
     uint16_t state_flags;
+    uint16_t status_flags;
     uint32_t resid;
     uint8_t sense[ISP_STATUS_SENSE_MAX];
     int sense_len;
@@ -1348,16 +1360,17 @@ static bool qlogic_isp_resp_has_room(QLogicISPState *s)
  * either source, so it is written zero along with everything else rather
  * than guessed) and the eight FCP-response/reserved bytes at offset 24 are
  * two fields with no confirmed reader; zeroing the whole slot first covers
- * them the same way it covers status_flags, so a future guest that does
- * read one of them sees a defined value rather than a previous command's
- * leftovers, without this function needing to know what that value should
- * be. sense_len and state_flags are the two fields a confirmed reader
- * exists for — Linux's driver, in both cases (see their own definitions).
+ * them, so a future guest that does read one of them sees a defined value
+ * rather than a previous command's leftovers, without this function needing
+ * to know what that value should be. sense_len, state_flags and status_flags
+ * are the fields a confirmed reader exists for — Linux's driver for the first
+ * two, IRIX for the status_flags timeout bit — so each is written explicitly.
  */
 static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
                                        uint16_t scsi_status,
                                        uint16_t completion,
-                                       uint16_t state_flags, uint32_t resid,
+                                       uint16_t state_flags,
+                                       uint16_t status_flags, uint32_t resid,
                                        const uint8_t *sense, int sense_len)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -1379,6 +1392,7 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
     stw_le_p(entry + ISP_STATUS_OFF_SCSI_STATUS, scsi_status);
     stw_le_p(entry + ISP_STATUS_OFF_COMPLETION, completion);
     stw_le_p(entry + ISP_STATUS_OFF_STATE_FLAGS, state_flags);
+    stw_le_p(entry + ISP_STATUS_OFF_STATUS_FLAGS, status_flags);
     stw_le_p(entry + ISP_STATUS_OFF_SENSE_LEN, clamped_sense_len);
     stl_le_p(entry + ISP_STATUS_OFF_RESID, resid);
     if (clamped_sense_len > 0) {
@@ -1409,7 +1423,7 @@ static void qlogic_isp_drain_pending_status(QLogicISPState *s)
         QTAILQ_REMOVE(&s->pending_status, pending, next);
         qlogic_isp_post_one_status(s, pending->handle, pending->scsi_status,
                                    pending->completion, pending->state_flags,
-                                   pending->resid,
+                                   pending->status_flags, pending->resid,
                                    pending->sense_len > 0 ? pending->sense
                                                            : NULL,
                                    pending->sense_len);
@@ -1430,7 +1444,8 @@ static void qlogic_isp_drain_pending_status(QLogicISPState *s)
  */
 static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
                                    uint16_t scsi_status, uint16_t completion,
-                                   uint16_t state_flags, uint32_t resid,
+                                   uint16_t state_flags, uint16_t status_flags,
+                                   uint32_t resid,
                                    const uint8_t *sense, int sense_len)
 {
     if (s->resp_len == 0) {
@@ -1461,6 +1476,7 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
         pending->scsi_status = scsi_status;
         pending->completion = completion;
         pending->state_flags = state_flags;
+        pending->status_flags = status_flags;
         pending->resid = resid;
         pending->sense_len = sense_len > 0
                               ? MIN(sense_len, ISP_STATUS_SENSE_MAX) : 0;
@@ -1472,7 +1488,7 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
     }
 
     qlogic_isp_post_one_status(s, handle, scsi_status, completion,
-                               state_flags, resid,
+                               state_flags, status_flags, resid,
                                sense, sense_len);
 }
 
@@ -1499,10 +1515,12 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
      * The full set of phase bits is written anyway, since it is the true
      * record of what happened -- every phase this model has, this command
      * actually went through -- rather than an arbitrary placeholder chosen
-     * because nothing currently reads it.
+     * because nothing currently reads it. status_flags is likewise a
+     * no-error path here: the timeout bit belongs to the missing-target
+     * completion, not to a command that reached its target, so it is zero.
      */
     qlogic_isp_post_status(s, req->handle, scsi_status, completion,
-                           ISP_STATE_FLAGS_ALL_PHASES, resid, sense,
+                           ISP_STATE_FLAGS_ALL_PHASES, 0, resid, sense,
                            sense_len);
 
     scsi_req_unref(req->sreq);
@@ -1630,18 +1648,28 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     if (!sdev) {
         /*
          * The one call site in this file that produces an incomplete
-         * completion, which is exactly the code both guest drivers read
-         * state_flags to interpret. What actually happened here is that
-         * this adapter looked for a device at the requested target and lun
-         * and found none -- it reached the bus, so ISP_STATE_FLAG_GOT_BUS
-         * is true, but got no further, so nothing past it is. Linux's own
+         * completion, which is exactly the code the guest drivers read the
+         * flag words to interpret. What actually happened here is that this
+         * adapter looked for a device at the requested target and lun and
+         * found none -- it reached the bus, so ISP_STATE_FLAG_GOT_BUS is
+         * true, but got no further, so nothing past it is. Linux's own
          * qla1280_return_status() walks exactly this ladder and reports
-         * DID_BAD_TARGET for precisely this bit pattern, which is the
-         * correct reason and not the plausible-but-wrong one a previous
+         * DID_BAD_TARGET for precisely this state_flags pattern, which is
+         * the correct reason and not the plausible-but-wrong one a previous
          * ring slot's leftover bits would have produced.
+         *
+         * state_flags alone satisfies the Linux, OpenBSD and NetBSD/FreeBSD
+         * drivers, which read no further on an incomplete completion. IRIX
+         * is stricter: it also checks status_flags and treats a missing
+         * target as a benign empty slot only when the selection-timeout bit
+         * is set there, faulting the probe otherwise. Both words therefore
+         * must tell the same story -- reached the bus, selected nothing,
+         * timed out -- so the timeout bit is set here alongside GOT_BUS.
+         * This is what lets IRIX walk an ISP1040 bus with empty targets.
          */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS, 0, NULL, 0);
+                               ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
+                               0, NULL, 0);
         return;
     }
 
@@ -1744,8 +1772,17 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
 
     sdev = scsi_device_find(&s->bus, 0, target, lun);
     if (!sdev) {
+        /*
+         * The 64-bit-addressing request path's own missing-target case,
+         * identical in meaning to the 32-bit one: the adapter reached the
+         * bus and selected nothing. GOT_BUS in state_flags and the
+         * selection-timeout bit in status_flags together make an empty
+         * target a benign no-device slot for every guest driver, IRIX's
+         * stricter status_flags check included.
+         */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS, 0, NULL, 0);
+                               ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
+                               0, NULL, 0);
         return;
     }
 
@@ -1853,7 +1890,7 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
                     pci,
                     addr + ISP_REQ_OFF_HANDLE);
                 qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                                       0, 0, NULL, 0);
+                                       0, 0, 0, NULL, 0);
             }
             break;
         }
