@@ -15,6 +15,9 @@ from qemu_test import QemuSystemTest
 
 R_ZERO = 0
 R_AT = 1
+R_A0 = 4
+R_A1 = 5
+R_A2 = 6
 R_T0 = 8
 R_T1 = 9
 R_T2 = 10
@@ -54,6 +57,28 @@ RR_KICK_PEER_READY = 0x10
 RR_KICK_DONE = 0x18
 RR_KICK_TIMEOUT = 0x20
 RR_KICK_DEADLINE_TICKS = 5
+
+# A comparator write is a scheduling boundary only while the register is a
+# mailbox.  Slice A times its own compare writes with the RTC read-back the
+# kernel tick uses, first with the slice's interrupt disabled (the mailbox
+# shape: the write must donate the slice, so the delta spans the peer's
+# quantum) and then enabled (the deadline shape: the write must keep the
+# slice, so the delta stays within the writer's own few instructions).
+# Slice B spins so any donated quantum is fully consumed.
+RT_TICK_STATE = 0x00032000
+RT_TICK_MAILBOX_KEPT = 0x00
+RT_TICK_MAILBOX_MAX = 0x08
+RT_TICK_DEADLINE_KEPT = 0x10
+RT_TICK_DEADLINE_MAX = 0x18
+RT_TICK_DONE = 0x20
+RT_TICK_STATE_WORDS = 5
+RT_TICK_ITERATIONS = 16
+# Donation costs the peer's whole quantum (10 ms below, 12500 RTC ticks);
+# an undonated write-and-read-back costs a few instructions.  2 ms splits
+# the two by better than 5x in both directions.
+RT_TICK_KEPT_BUDGET_TICKS = 2 * RTC_TICKS_PER_MS
+RT_TICK_RR_KICK_PERIOD_NS = 10000000
+RT_TICK_FUTURE_TICKS = 0x7000
 
 # The stock PROM's slice-pair rendezvous, as its four-CPU/two-node boot
 # actually runs it: bank 1's interrupt 114 set by slice A and cleared by
@@ -676,6 +701,84 @@ def build_rr_kick_deadline():
     peer_spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, peer_spin)
+    return program
+
+
+HUB_PI_RT_COMPARE_A = 0x000108
+HUB_PI_RT_ENABLE_A = 0x000140
+
+
+def emit_rt_tick_phase(program, kept_slot, max_slot):
+    """Time RT_TICK_ITERATIONS compare writes with the tick's read-back
+    shape: read the count, write the comparator a safe distance ahead,
+    read the count again.  Publish how many write windows stayed within
+    the kept budget, and the widest window seen."""
+    program.emit(mips_i(0x19, R_ZERO, R_A0, RT_TICK_ITERATIONS))
+    program.emit(mips_i(0x19, R_ZERO, R_T4, 0))    # windows kept
+    program.emit(mips_i(0x19, R_ZERO, R_A2, 0))    # widest window
+    loop = len(program.instructions)
+    program.emit(mips_i(0x37, R_S2, R_T0, 0))      # t0 = RT count
+    program.emit(mips_i(0x19, R_T0, R_T1, RT_TICK_FUTURE_TICKS))
+    program.emit(mips_i(0x3f, R_S3, R_T1, HUB_PI_RT_COMPARE_A))
+    program.emit(mips_i(0x37, R_S2, R_T2, 0))      # t2 = RT count again
+    program.emit(mips_r(R_T2, R_T0, R_T3, 0, 0x2f))  # dsubu t3, t2, t0
+    program.emit(mips_i(0x0b, R_T3, R_AT, RT_TICK_KEPT_BUDGET_TICKS))
+    over_budget = program.branch(0x04, R_AT, R_ZERO)
+    program.emit(mips_i(0x19, R_T4, R_T4, 1))
+    program.patch(over_budget, len(program.instructions))
+    program.emit(mips_r(R_A2, R_T3, R_AT, 0, 0x2b))  # sltu at, a2, t3
+    not_wider = program.branch(0x04, R_AT, R_ZERO)
+    program.emit(mips_r(R_T3, R_ZERO, R_A2, 0, 0x25))  # move a2, t3
+    program.patch(not_wider, len(program.instructions))
+    program.emit(mips_i(0x19, R_A0, R_A0, 0xffff))
+    branch = program.branch(0x05, R_A0, R_ZERO)
+    program.patch(branch, loop)
+    program.emit(mips_i(0x3f, R_S0, R_T4, kept_slot))
+    program.emit(mips_i(0x3f, R_S0, R_A2, max_slot))
+
+
+def build_rt_tick_write_keeps_slice():
+    program = MipsProgram()
+
+    # Enter 64-bit kernel mode.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # Shared result block at 0x9000000000032000.
+    program.address_prefix(R_S0, 0x9000)
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0003))
+    program.emit(mips_i(0x0d, R_AT, R_AT, 0x2000))
+    program.emit(mips_r(R_S0, R_AT, R_S0, 0, 0x25))
+
+    emit_local_hub_address(program, R_S1, 0x000020)  # PI_PROCESSOR_NUMBER
+    emit_local_hub_address(program, R_S2, 0x030100)  # PI_RT_COUNT
+    emit_local_hub_address(program, R_S3, 0)         # PI block base
+
+    program.emit(mips_i(0x37, R_S1, R_T0, 0))
+    select_b = program.branch(0x05, R_T0, R_ZERO)
+
+    # The mailbox shape: interrupt disabled, every write donates.
+    program.emit(mips_i(0x3f, R_S3, R_ZERO, HUB_PI_RT_ENABLE_A))
+    emit_rt_tick_phase(program, RT_TICK_MAILBOX_KEPT, RT_TICK_MAILBOX_MAX)
+
+    # The deadline shape: interrupt enabled, every write keeps the slice.
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S3, R_T0, HUB_PI_RT_ENABLE_A))
+    emit_rt_tick_phase(program, RT_TICK_DEADLINE_KEPT, RT_TICK_DEADLINE_MAX)
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T0, RT_TICK_DONE))
+    done_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, done_spin)
+
+    # Slice B spins so a donated quantum is fully consumed.
+    program.patch(select_b, len(program.instructions))
+    b_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, b_spin)
     return program
 
 
@@ -1779,6 +1882,50 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[RR_KICK_PEER_READY // 8], 1)
         self.assertEqual(state[RR_KICK_DONE // 8], 1)
         self.assertEqual(state[RR_KICK_TIMEOUT // 8], 0)
+
+    def wait_for_rt_tick_state(self, timeout=30):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.read_state(RT_TICK_STATE, RT_TICK_STATE_WORDS)
+            if state[RT_TICK_DONE // 8] == 1:
+                break
+            time.sleep(0.05)
+
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        return self.read_state(RT_TICK_STATE, RT_TICK_STATE_WORDS)
+
+    def test_enabled_comparator_write_keeps_the_slice(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('rt-tick-keeps-slice.bin')
+        build_rt_tick_write_keeps_slice().write(firmware)
+
+        # Wall-clock RR without icount: the handoff under test only runs
+        # there.  The long kick period makes a donated quantum (12500
+        # ticks) unmistakable against an undonated write window.
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=off,debug-leds=off')
+        self.vm.add_args(
+            '-accel',
+            f'tcg,thread=single,rr-kick-period-ns='
+            f'{RT_TICK_RR_KICK_PERIOD_NS}',
+            '-smp', '2', '-bios', firmware)
+        self.vm.launch()
+
+        state = self.wait_for_rt_tick_state()
+        self.assertEqual(state[RT_TICK_DONE // 8], 1, state)
+
+        # With the interrupt disabled the write is the mailbox the PROM
+        # arbitration polls, and the scheduling assist must donate the
+        # slice: most windows span the peer's quantum.
+        self.assertLessEqual(state[RT_TICK_MAILBOX_KEPT // 8],
+                             RT_TICK_ITERATIONS // 4, state)
+
+        # With the interrupt enabled the same write is the kernel tick's
+        # deadline, and the writer must keep its slice: most windows
+        # stay within its own few instructions.  Host preemption can
+        # widen a few windows, so majority rather than all.
+        self.assertGreaterEqual(state[RT_TICK_DEADLINE_KEPT // 8],
+                                RT_TICK_ITERATIONS - 4, state)
 
     def test_pending_read_schedules_local_peer(self):
         self.set_machine('origin200')
