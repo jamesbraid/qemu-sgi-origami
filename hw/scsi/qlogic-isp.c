@@ -306,8 +306,10 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_CMD_SET_ACTIVE_NEGATION    0x0035
 #define ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP   0x0036
 #define ISP_MBOX_CMD_SET_PCI_CONTROL        0x0037
+#define ISP_MBOX_CMD_GET_TARGET_PARAMETERS  0x0028
 #define ISP_MBOX_CMD_SET_TARGET_PARAMETERS  0x0038
 #define ISP_MBOX_CMD_SET_DEVICE_QUEUE       0x0039
+#define ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS 0x003a
 #define ISP_MBOX_CMD_SET_SYSTEM_PARAMETER   0x0045
 #define ISP_MBOX_CMD_SET_FIRMWARE_FEATURES  0x004a
 #define ISP_MBOX_CMD_SET_DATA_OVERRUN_RECOVERY 0x005a
@@ -997,6 +999,20 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
+     * Read back a target's negotiated transfer parameters (the target is in
+     * mailbox 1). Linux's qla1280 issues it once per enumerated target. This
+     * model negotiates nothing, so it reports every target asynchronous and
+     * narrow with no options -- mailbox 2 the parameter flags, mailbox 3 the
+     * period and offset, both zero -- the true state of a bus it does not
+     * negotiate, and what set-target-parameters (0x38) would have written.
+     */
+    case ISP_MBOX_CMD_GET_TARGET_PARAMETERS:
+        s->mailbox[2] = 0;
+        s->mailbox[3] = 0;
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
      * The "config setters" the datasheet's own bring-up section names in
      * order: firmware features, clock rate, retry count, async data setup,
      * active negation, tag age limit and selection timeout for the adapter
@@ -1025,6 +1041,15 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     case ISP_MBOX_CMD_SET_INITIATOR_ID:
     case ISP_MBOX_CMD_SET_TARGET_PARAMETERS:
     case ISP_MBOX_CMD_SET_DEVICE_QUEUE:
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+
+    /*
+     * IRIX programs the SCSI bus-reset delay during adapter init. Like the
+     * setters above it configures timing this model does not track, so the
+     * only contract is that it completes.
+     */
+    case ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 

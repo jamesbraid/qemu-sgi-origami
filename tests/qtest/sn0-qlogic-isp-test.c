@@ -175,6 +175,8 @@
 #define ISP_MBOX_CMD_READ_RAM_WORD  0x0005
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
+#define ISP_MBOX_CMD_GET_TARGET_PARAMETERS  0x0028
+#define ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS 0x003a
 #define ISP_MBOX_COMPLETE           0x4000
 #define ISP_MBOX_TEST_FAILED        0x4003
 
@@ -997,6 +999,53 @@ static void test_pci_status_reset_value(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * GET_TARGET_PARAMETERS (0x28) returns a target's negotiated transfer
+ * parameters. The model negotiates nothing, so it answers async/narrow --
+ * mailbox 2 and 3 zero -- and completes, rather than the invalid-command
+ * answer that made Linux qla1280 log a mailbox failure after each target it
+ * enumerated.
+ */
+static void test_mbox_get_target_parameters(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_device0_window_at_its_bar(qts);
+
+    isp_writew(qts, ISP_MAILBOX(1), 1 << 8);    /* target 1 */
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_GET_TARGET_PARAMETERS);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(3)), ==, 0);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
+ * SET_RESET_DELAY_PARAMS (0x3a) completes rather than answering invalid. IRIX
+ * issues it during adapter init on the path to its bus scan; the invalid
+ * answer left it logging a mailbox error there.
+ */
+static void test_mbox_set_reset_delay_params(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_device0_window_at_its_bar(qts);
+
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1023,6 +1072,10 @@ int main(int argc, char **argv)
                         NULL, test_ram_dma_through_the_direct_window);
     qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
                         NULL, test_verify_checksum_answers_both_mailboxes);
+    qtest_add_data_func("sn0/qlogic-isp/mbox-get-target-parameters", NULL,
+                        test_mbox_get_target_parameters);
+    qtest_add_data_func("sn0/qlogic-isp/mbox-set-reset-delay-params", NULL,
+                        test_mbox_set_reset_delay_params);
 
     return g_test_run();
 }
