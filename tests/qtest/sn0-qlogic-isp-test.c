@@ -184,6 +184,7 @@
 #define ISP_QUEUE_ENTRY_SIZE        64
 #define ISP_ENTRY_OFF_TYPE          0
 #define ISP_ENTRY_OFF_COUNT         1
+#define ISP_ENTRY_TYPE_REQUEST      0x01
 #define ISP_ENTRY_TYPE_STATUS       0x03
 #define ISP_A64_ENTRY_TYPE_COMMAND  0x09
 #define ISP_REQ_OFF_HANDLE          4
@@ -803,6 +804,28 @@ static void build_a64_command(uint8_t *entry, uint32_t handle, uint16_t device,
     normalise_words(entry, ISP_QUEUE_ENTRY_SIZE);
 }
 
+/*
+ * The 32-bit-addressing command entry (type 0x01), built the same way as the
+ * A64 sibling above. The header fields the missing-target path reads -- handle,
+ * device, cdb -- sit at the same offsets in both formats, so only the entry
+ * type byte differs. This exists for the 32-bit missing-target check; the
+ * data-carrying tests use the A64 format the IP27 guests actually issue.
+ */
+static void build_command(uint8_t *entry, uint32_t handle, uint16_t device,
+                          uint8_t op, uint8_t op_byte1)
+{
+    memset(entry, 0, ISP_QUEUE_ENTRY_SIZE);
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_ENTRY_TYPE_REQUEST;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, device);
+    put16le(entry + ISP_REQ_OFF_CDBLEN, 6);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, 0);
+    entry[ISP_REQ_OFF_CDB + 0] = op;
+    entry[ISP_REQ_OFF_CDB + 1] = op_byte1;
+    normalise_words(entry, ISP_QUEUE_ENTRY_SIZE);
+}
+
 static void test_a64_ring_send_diagnostic(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
@@ -898,6 +921,69 @@ static void test_a64_ring_missing_target(const void *data)
      */
     /* device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY. */
     build_a64_command(entry, probe_handle, 0x0500, 0x00, 0x00);
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qtest_memread(qts, RESP_PHYS, status, sizeof(status));
+    normalise_words(status, sizeof(status));
+
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, probe_handle);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+
+    /* Reached the bus, selected nothing. */
+    state_flags = get16le(status + ISP_STATUS_OFF_STATE_FLAGS);
+    g_assert_cmphex(state_flags & ISP_STATE_FLAG_GOT_BUS, ==,
+                    ISP_STATE_FLAG_GOT_BUS);
+    g_assert_cmphex(state_flags & ISP_STATE_FLAG_GOT_TARGET, ==, 0);
+
+    /* The bit IRIX needs to accept the empty slot instead of faulting. */
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==,
+                    ISP_STATUS_FLAG_TIMEOUT);
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * The same missing-target completion, driven through the 32-bit command entry
+ * (type 0x01) instead of the A64 one. The model answers no-device from two
+ * separate request handlers, one per entry format, and each has its own
+ * post-status call site; the A64 test above covers one, this covers the other.
+ * The ring is the same A64-based ring -- the entry type, not the ring, selects
+ * the handler, and the missing-target path returns before any segment is read,
+ * so the 32-bit-versus-A64 segment format never comes into play here.
+ */
+static void test_ring_missing_target(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -drive id=d0,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=0,drive=d0");
+    const uint32_t probe_handle = 0x0e0e7a20;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t state_flags;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /* device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY. */
+    build_command(entry, probe_handle, 0x0500, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
@@ -1150,6 +1236,8 @@ int main(int argc, char **argv)
                         test_a64_ring_send_diagnostic);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-missing-target", NULL,
                         test_a64_ring_missing_target);
+    qtest_add_data_func("sn0/qlogic-isp/ring-missing-target", NULL,
+                        test_ring_missing_target);
     qtest_add_data_func("sn0/qlogic-isp/ram-dma-through-the-direct-window",
                         NULL, test_ram_dma_through_the_direct_window);
     qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
