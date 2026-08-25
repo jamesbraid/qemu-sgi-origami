@@ -294,8 +294,8 @@ static void test_console_descriptor(const void *data)
     g_assert_cmphex(qtest_readw(qts, console + 0x18), ==, CONSOLE_BAUD);
     g_assert_cmphex(qtest_readb(qts, console + 0x22), ==, CONSOLE_WIDGET);
 
-    /* One device behind the bridge, or a guest walks past the console. */
-    g_assert_cmphex(qtest_readb(qts, console + 0x23), ==, 1);
+    /* The console controller's PCI device number, not a device count. */
+    g_assert_cmphex(qtest_readb(qts, console + 0x23), ==, IOC3_DEVICE);
 
     qtest_quit(qts);
 }
