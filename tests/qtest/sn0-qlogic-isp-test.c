@@ -194,6 +194,13 @@
 #define ISP_A64_REQ_OFF_SEGS        40
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
+#define ISP_STATUS_OFF_COMPLETION   10
+#define ISP_STATUS_OFF_STATE_FLAGS  12
+#define ISP_STATUS_OFF_STATUS_FLAGS 14
+#define ISP_IOCB_INCOMPLETE         0x0001
+#define ISP_STATE_FLAG_GOT_BUS      0x0100
+#define ISP_STATE_FLAG_GOT_TARGET   0x0200
+#define ISP_STATUS_FLAG_TIMEOUT     0x0040
 #define ISP_REG_REQUEST_QUEUE       (ISP_REG_MAILBOX_BASE + 0x08)
 #define ISP_REG_RESPONSE_QUEUE      (ISP_REG_MAILBOX_BASE + 0x0a)
 
@@ -781,14 +788,14 @@ static void test_a64_ring_data_out(const void *data)
  * crosstalk -> Bridge -> PCI -> scsi-disk path fx takes, and asserts the SCSI
  * status the adapter posts back is GOOD.
  */
-static void build_a64_command(uint8_t *entry, uint32_t handle, uint8_t op,
-                              uint8_t op_byte1)
+static void build_a64_command(uint8_t *entry, uint32_t handle, uint16_t device,
+                              uint8_t op, uint8_t op_byte1)
 {
     memset(entry, 0, ISP_QUEUE_ENTRY_SIZE);
     entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
     entry[ISP_ENTRY_OFF_COUNT] = 1;
     put32le(entry + ISP_REQ_OFF_HANDLE, handle);
-    put16le(entry + ISP_REQ_OFF_DEVICE, 0x0100);    /* target 1, lun 0 */
+    put16le(entry + ISP_REQ_OFF_DEVICE, device);
     put16le(entry + ISP_REQ_OFF_CDBLEN, 6);
     put16le(entry + ISP_REQ_OFF_SEGCOUNT, 0);
     entry[ISP_REQ_OFF_CDB + 0] = op;
@@ -821,13 +828,14 @@ static void test_a64_ring_send_diagnostic(const void *data)
                        RING_IOVA);
 
     /*
-     * The drive raises a power-on UNIT ATTENTION on its first command, so send
-     * a TEST UNIT READY to absorb it, then the SEND DIAGNOSTIC self-test whose
-     * status we check. Both entries go in one doorbell.
+     * The drive at target 1, lun 0 (device 0x0100) raises a power-on UNIT
+     * ATTENTION on its first command, so send a TEST UNIT READY to absorb it,
+     * then the SEND DIAGNOSTIC self-test whose status we check. Both entries
+     * go in one doorbell.
      */
-    build_a64_command(entry, 0x5d1a0000, 0x00, 0x00);   /* TEST UNIT READY */
+    build_a64_command(entry, 0x5d1a0000, 0x0100, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
-    build_a64_command(entry, diag_handle, 0x1d, 0x04);  /* SEND DIAGNOSTIC */
+    build_a64_command(entry, diag_handle, 0x0100, 0x1d, 0x04);
     qtest_memwrite(qts, RING_PHYS + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
 
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 2);
@@ -840,6 +848,78 @@ static void test_a64_ring_send_diagnostic(const void *data)
     g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, diag_handle);
     /* GOOD, not CHECK CONDITION. */
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * A command for a target with no device completes as a benign empty slot.
+ *
+ * IRIX walks the ISP1040 bus at boot and probes every target. On the empty
+ * ones the adapter reaches the bus but selects nothing, and the completion it
+ * posts must say exactly that in both flag words: GOT_BUS set and GOT_TARGET
+ * clear in state_flags, and the selection-timeout bit in status_flags. IRIX
+ * faults the probe unless status_flags carries that bit, so a model that
+ * leaves offset 14 at the zero a freshly cleared ring slot holds turns every
+ * empty target into a fatal error and the install never starts. This drives
+ * one command at an unpopulated target and checks all three fields. The
+ * status_flags bit is the one the Linux, OpenBSD and NetBSD drivers never
+ * read and this model used not to write.
+ */
+static void test_a64_ring_missing_target(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -drive id=d0,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=0,drive=d0");
+    const uint32_t probe_handle = 0x0e0e7a01;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t state_flags;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /*
+     * The one drive sits at target 1, so target 5 is an empty slot on a live
+     * bus -- the case IRIX meets on most of the targets it probes.
+     */
+    /* device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY. */
+    build_a64_command(entry, probe_handle, 0x0500, 0x00, 0x00);
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qtest_memread(qts, RESP_PHYS, status, sizeof(status));
+    normalise_words(status, sizeof(status));
+
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, probe_handle);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+
+    /* Reached the bus, selected nothing. */
+    state_flags = get16le(status + ISP_STATUS_OFF_STATE_FLAGS);
+    g_assert_cmphex(state_flags & ISP_STATE_FLAG_GOT_BUS, ==,
+                    ISP_STATE_FLAG_GOT_BUS);
+    g_assert_cmphex(state_flags & ISP_STATE_FLAG_GOT_TARGET, ==, 0);
+
+    /* The bit IRIX needs to accept the empty slot instead of faulting. */
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==,
+                    ISP_STATUS_FLAG_TIMEOUT);
 
     qtest_quit(qts);
 }
@@ -1068,6 +1148,8 @@ int main(int argc, char **argv)
                         test_a64_ring_data_out);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-send-diagnostic", NULL,
                         test_a64_ring_send_diagnostic);
+    qtest_add_data_func("sn0/qlogic-isp/a64-ring-missing-target", NULL,
+                        test_a64_ring_missing_target);
     qtest_add_data_func("sn0/qlogic-isp/ram-dma-through-the-direct-window",
                         NULL, test_ram_dma_through_the_direct_window);
     qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
