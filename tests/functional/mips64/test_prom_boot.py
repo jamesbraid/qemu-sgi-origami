@@ -23,7 +23,8 @@ which this test framework's own QEMUMachine already redirects to the log
 file test.log_file() names (see _post_shutdown/_pre_launch in
 python/qemu/machine/machine.py: stdout=stderr=that file). So the codes are
 scraped from the VM's captured log after launch, the same file
-test_origin200_matrix.py already reads for its own (different) oracle.
+test_origin200_matrix.py already reads for its own (different) pass
+condition.
 
 codes_seen() and mark_reached() below are the two pure functions this file
 factors the scrape-and-verdict logic into, so test_prom_boot_verdict.py can
@@ -108,8 +109,8 @@ def codes_seen(trace_text):
     kind-filtered, so this port keeps that contract rather than narrowing
     it. (Contrast lib_matrix.first_progress_code, which deliberately keeps
     only kind == 'progress' lines for its own, different, single-shot "did
-    the boot get anywhere at all" oracle -- a different question this
-    function does not answer.)
+    the boot get anywhere at all" pass condition -- a different question
+    this function does not answer.)
 
     Reuses lib_matrix's own _PROGRESS_CODE_RE for the line shape rather
     than re-deriving it, so a change to the trace event's printf format
@@ -178,7 +179,7 @@ if QemuSystemTest is not None:
                        cpus=1, nodes=1, mem='64M', accel='wallclock',
                        firmware='prom', speed='thorough',
                        timeout=BOOT_TIMEOUT_SECONDS, attempts=1,
-                       min_passes=1, expect='pass', xfail_oracle='',
+                       min_passes=1, expect='pass', xfail_mark='',
                        xfail_signature='')
 
             vm = self.get_vm(name='prom_boot')

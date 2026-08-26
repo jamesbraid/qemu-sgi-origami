@@ -10,16 +10,19 @@ import pytest
 
 from lib_matrix import (AttemptResult, Cell, FIRMWARE_REL_PATH, MatrixError,
                          first_progress_code, machine_props, parse_matrix,
-                         prom_args, qemu_args, resolve_prom, verdict)
+                         pass_condition_met, prom_args, qemu_args,
+                         resolve_prom, verdict)
 
 # test_prom_boot.py lives one directory down (tests/functional/mips64/), not
 # on sys.path by default here -- inserted so test_firmware_rel_path_matches_
 # test_prom_boot below can import its FIRMWARE_REL directly, the same way
 # test_prom_boot.py itself inserts tests/functional to reach lib_matrix.
-# FIRMWARE_REL is defined outside test_prom_boot's qemu_test-guarded block,
-# so this import needs no build.
+# Also brings in MARK, for the pass-condition tests further down: it and
+# FIRMWARE_REL both sit outside test_prom_boot's qemu_test-guarded block, so
+# this import needs no build.
 sys.path.insert(0, str(Path(__file__).parent / 'mips64'))
 from test_prom_boot import FIRMWARE_REL as PROM_BOOT_FIRMWARE_REL  # noqa: E402
+from test_prom_boot import MARK  # noqa: E402
 
 
 STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
@@ -27,7 +30,7 @@ STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
 # The field order parse_matrix() expects, matching the Cell dataclass.
 FIELDS = ('id', 'guest', 'scenario', 'cpus', 'nodes', 'mem', 'accel',
           'firmware', 'speed', 'timeout', 'attempts', 'min_passes',
-          'expect', 'xfail_oracle', 'xfail_signature')
+          'expect', 'xfail_mark', 'xfail_signature')
 
 # A known-good row, as field/value pairs, so each test can override just
 # the field it cares about rather than restating all fifteen.
@@ -45,7 +48,7 @@ BASE_ROW = {
     'attempts': '1',
     'min_passes': '1',
     'expect': 'pass',
-    'xfail_oracle': '',
+    'xfail_mark': '',
     'xfail_signature': '',
 }
 
@@ -143,7 +146,7 @@ def test_rejects_bad_firmware(tmp_path):
 def test_rejects_xfail_without_signature(tmp_path):
     manifest = write_manifest(
         tmp_path,
-        make_row(expect='xfail', xfail_oracle='firmware',
+        make_row(expect='xfail', xfail_mark='firmware',
                  xfail_signature=''),
     )
 
@@ -176,7 +179,7 @@ BASE_CELL = Cell(
     attempts=1,
     min_passes=1,
     expect='pass',
-    xfail_oracle='',
+    xfail_mark='',
     xfail_signature='',
 )
 
@@ -288,20 +291,20 @@ def test_prom_args_without_firmware():
     assert prom_args(None) == []
 
 
-# Tests for the oracle/retry/expected-failure verdict
+# Tests for the pass-condition/retry/expected-failure verdict
 
 PASS_CELL = make_cell(expect='pass', attempts=3, min_passes=2)
 
 XFAIL_CELL = make_cell(expect='xfail', attempts=1, min_passes=1,
-                        xfail_oracle='firmware',
+                        xfail_mark='firmware',
                         xfail_signature='reset_vector_trap')
 
 
 def test_pass_meets_threshold():
     attempts = [
-        AttemptResult(reached_oracle=True),
-        AttemptResult(reached_oracle=True),
-        AttemptResult(reached_oracle=False),
+        AttemptResult(reached_pass=True),
+        AttemptResult(reached_pass=True),
+        AttemptResult(reached_pass=False),
     ]
 
     assert verdict(PASS_CELL, attempts) == 'pass'
@@ -309,9 +312,9 @@ def test_pass_meets_threshold():
 
 def test_fail_below_threshold():
     attempts = [
-        AttemptResult(reached_oracle=True),
-        AttemptResult(reached_oracle=False),
-        AttemptResult(reached_oracle=False),
+        AttemptResult(reached_pass=True),
+        AttemptResult(reached_pass=False),
+        AttemptResult(reached_pass=False),
     ]
 
     assert verdict(PASS_CELL, attempts) == 'fail'
@@ -319,10 +322,10 @@ def test_fail_below_threshold():
 
 def test_infra_error_is_error_not_pass():
     attempts = [
-        AttemptResult(reached_oracle=True),
-        AttemptResult(reached_oracle=False,
+        AttemptResult(reached_pass=True),
+        AttemptResult(reached_pass=False,
                        infra_error='missing asset: origin200-prom.bin'),
-        AttemptResult(reached_oracle=True),
+        AttemptResult(reached_pass=True),
     ]
 
     assert verdict(PASS_CELL, attempts) == 'error'
@@ -330,7 +333,7 @@ def test_infra_error_is_error_not_pass():
 
 def test_xfail_matching_signature():
     attempts = [
-        AttemptResult(reached_oracle=False,
+        AttemptResult(reached_pass=False,
                        signature='reset_vector_trap'),
     ]
 
@@ -339,7 +342,7 @@ def test_xfail_matching_signature():
 
 def test_xfail_wrong_signature_is_fail():
     attempts = [
-        AttemptResult(reached_oracle=False,
+        AttemptResult(reached_pass=False,
                        signature='unexpected_nmi'),
     ]
 
@@ -347,7 +350,7 @@ def test_xfail_wrong_signature_is_fail():
 
 
 def test_xfail_that_passes_is_xpass():
-    attempts = [AttemptResult(reached_oracle=True)]
+    attempts = [AttemptResult(reached_pass=True)]
 
     assert verdict(XFAIL_CELL, attempts) == 'xpass'
 
@@ -355,13 +358,13 @@ def test_xfail_that_passes_is_xpass():
 def test_infra_error_empty_string_still_counts_as_set():
     # infra_error is SET (not None), even though '' is falsy — must
     # not be skipped by a truthiness check.
-    attempts = [AttemptResult(reached_oracle=True, infra_error='')]
+    attempts = [AttemptResult(reached_pass=True, infra_error='')]
 
     assert verdict(PASS_CELL, attempts) == 'error'
 
 
 def test_infra_error_on_xfail_cell_is_error():
-    attempts = [AttemptResult(reached_oracle=False,
+    attempts = [AttemptResult(reached_pass=False,
                                infra_error='qemu crashed')]
 
     assert verdict(XFAIL_CELL, attempts) == 'error'
@@ -373,29 +376,29 @@ def test_verdict_raises_on_no_attempts():
 
 
 def test_xfail_multi_attempt_mismatched_signatures_is_fail():
-    # Two attempts both miss the oracle, but with different failure
-    # signatures — only one of them matches xfail_signature, so the
-    # cell did not fail the one specific way it's allowed to.
+    # Two attempts both miss their pass condition, but with different
+    # failure signatures — only one of them matches xfail_signature, so
+    # the cell did not fail the one specific way it's allowed to.
     attempts = [
-        AttemptResult(reached_oracle=False, signature='reset_vector_trap'),
-        AttemptResult(reached_oracle=False, signature='unexpected_nmi'),
+        AttemptResult(reached_pass=False, signature='reset_vector_trap'),
+        AttemptResult(reached_pass=False, signature='unexpected_nmi'),
     ]
 
     assert verdict(XFAIL_CELL, attempts) == 'fail'
 
 
 def test_xfail_multi_attempt_matching_signatures_is_xfail():
-    # Two attempts both miss the oracle with the same expected
+    # Two attempts both miss their pass condition with the same expected
     # signature — every failing attempt agrees, so the cell is xfail.
     attempts = [
-        AttemptResult(reached_oracle=False, signature='reset_vector_trap'),
-        AttemptResult(reached_oracle=False, signature='reset_vector_trap'),
+        AttemptResult(reached_pass=False, signature='reset_vector_trap'),
+        AttemptResult(reached_pass=False, signature='reset_vector_trap'),
     ]
 
     assert verdict(XFAIL_CELL, attempts) == 'xfail'
 
 
-# Tests for the firmware progress-code oracle
+# Tests for the firmware progress-code pass conditions
 
 def test_first_progress_code_found():
     text = ('some preceding boot noise\n'
@@ -425,3 +428,62 @@ def test_first_progress_code_skips_failure_to_find_progress():
             'sgi_hub_led CPU 0: 0x03 (progress: something)\n')
 
     assert first_progress_code(text) == '0x03'
+
+
+# Tests for the firmware-boot pass condition (the progress mark)
+
+def _trace_line(code, kind='progress', cpu=0, meaning='test fixture'):
+    """One sgi_hub_led trace line, in the exact shape QEMU emits it --
+    matches test_prom_boot_verdict.py's own fixture helper."""
+    return f'sgi_hub_led CPU {cpu}: {code} ({kind}: {meaning})'
+
+
+def test_pass_condition_met_full_mark_passes():
+    text = '\n'.join(_trace_line(c) for c in sorted(MARK))
+
+    assert pass_condition_met('full_boot', text) is True
+
+
+def test_pass_condition_met_partial_mark_fails():
+    # Some codes seen, not the whole mark -- a wedge that stops after an
+    # early code must not satisfy a real firmware-boot cell's pass
+    # condition. This is the strengthening this task adds: the old
+    # first-progress-code check would have scored this a pass.
+    partial = sorted(MARK)[:len(MARK) // 2]
+    text = '\n'.join(_trace_line(c) for c in partial)
+
+    assert pass_condition_met('full_boot', text) is False
+
+
+def test_pass_condition_met_empty_log_fails():
+    assert pass_condition_met('full_boot', '') is False
+
+
+def test_pass_condition_met_extra_codes_beyond_mark_still_pass():
+    # Subset, not equality -- a boot that goes further than the recorded
+    # mark is not a regression. Mirrors test_prom_boot's own
+    # mark_reached() contract.
+    text = '\n'.join(_trace_line(c) for c in sorted(MARK)) + '\n' + \
+        _trace_line('0xfe')
+
+    assert pass_condition_met('full_boot', text) is True
+
+
+def test_pass_condition_met_smoke_passes_on_first_code():
+    # The smoke scenario keeps its original, weaker behaviour: any single
+    # progress code is enough, not the whole mark.
+    text = _trace_line(sorted(MARK)[0])
+
+    assert pass_condition_met('smoke', text) is True
+
+
+def test_pass_condition_met_smoke_fails_with_no_code():
+    assert pass_condition_met('smoke', '') is False
+
+
+def test_pass_condition_met_smoke_ignores_failure_kind():
+    # Matches first_progress_code()'s own kind filter: a FAILURE line
+    # must not score as a smoke pass.
+    text = _trace_line('0x81', kind='FAILURE')
+
+    assert pass_condition_met('smoke', text) is False
