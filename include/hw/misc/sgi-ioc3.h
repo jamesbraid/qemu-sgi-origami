@@ -330,6 +330,29 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SDMA_RX_DATA_OK    0x80
 
 /*
+ * The 16550 shadow register: a read-only mirror of the port's own status and
+ * modem lines, so software driving the DMA rings never has to reach the
+ * byte-wide window. The low byte mirrors the 16550 line-status register one for
+ * one -- data-ready, the error latches, transmit-holding-empty and
+ * transmit-shift-empty -- while the modem levels and the driven outputs sit
+ * higher up. The DMA-side console driver reads carrier-detect and
+ * clear-to-send from here rather than from the byte-wide modem-status register,
+ * so a shadow that did not mirror them would report the line dead. These are
+ * the shadow's own bit positions, distinct from the receive-entry status byte
+ * above, which carries clear-to-send and carrier at different bits.
+ */
+#define SGI_IOC3_SHADOW_LSR_MASK    0x000000ffu
+#define SGI_IOC3_SHADOW_DELTA_CTS   (1u << 16)
+#define SGI_IOC3_SHADOW_DELTA_CD    (1u << 19)
+#define SGI_IOC3_SHADOW_CTS         (1u << 20)
+#define SGI_IOC3_SHADOW_CD          (1u << 23)
+#define SGI_IOC3_SHADOW_DTR         (1u << 24)
+#define SGI_IOC3_SHADOW_RTS         (1u << 25)
+#define SGI_IOC3_SHADOW_OUT1        (1u << 26)
+#define SGI_IOC3_SHADOW_OUT2        (1u << 27)
+#define SGI_IOC3_SHADOW_LOOPBACK    (1u << 28)
+
+/*
  * The alias pages, one per port, each exposing that port's seven registers and
  * nothing else so a privileged process can map them into user space without
  * the rest of the chip. They are additional views of the same state rather

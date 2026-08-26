@@ -109,6 +109,22 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define SDMA_RX_TIMER   0x14
 #define SDMA_SHADOW     0x18
 
+/*
+ * The 16550 shadow register's fields: the port's own status and modem lines,
+ * mirrored so software driving the DMA rings never has to touch the byte-wide
+ * window. Data-ready and transmit-holding-empty come from the line status
+ * register, the clear-to-send and carrier-detect levels from the modem status
+ * register, and the driven data-terminal-ready and request-to-send from modem
+ * control.
+ */
+#define SHADOW_DR       (1u << 0)
+#define SHADOW_THRE     (1u << 5)
+#define SHADOW_TSRE     (1u << 6)
+#define SHADOW_CTS      (1u << 20)
+#define SHADOW_CD       (1u << 23)
+#define SHADOW_DTR      (1u << 24)
+#define SHADOW_RTS      (1u << 25)
+
 static uint64_t sdma(unsigned int port, unsigned int reg)
 {
     return (port ? SDMA_PORT_B : SDMA_PORT_A) + reg;
@@ -427,12 +443,67 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
     sn0_ioc3_attach(qts);
 
     for (port = 0; port < 2; port++) {
+        uint32_t shadow;
+
         qtest_writel(qts, sdma_alias(port, SDMA_TX_CONSUME), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_TX_CONSUME)), ==, 0);
         qtest_writel(qts, sdma_alias(port, SDMA_RX_PRODUCE), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)), ==, 0);
+
+        /*
+         * The shadow is read-only too, but it is not a stored zero: it mirrors
+         * the port's live status and modem lines, so a write must leave what it
+         * reads untouched rather than land in it.
+         */
+        shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         qtest_writel(qts, sdma_alias(port, SDMA_SHADOW), 0xffffffff);
-        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, shadow);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The 16550 shadow register is a read-only mirror of the port's own status and
+ * modem lines, and the DMA-side console driver reads carrier-detect and
+ * clear-to-send from it rather than from the byte-wide modem-status register.
+ * The port comes up with carrier and clear-to-send asserted and the
+ * transmitter empty, so a shadow that read zero tells that driver the line is
+ * dead -- which is what latched a carrier-down at console open and hung the
+ * console. A boot cannot catch this: the firmware's own DMA diagnostic runs in
+ * loopback and never reads carrier, so a shadow of zero passes it. Only a
+ * driver reading the shadow sees the difference, which is why it is asserted
+ * here.
+ */
+static void test_the_shadow_mirrors_the_port(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint32_t shadow;
+    unsigned int port;
+
+    sn0_ioc3_attach(qts);
+
+    for (port = 0; port < 2; port++) {
+        /*
+         * Carrier and clear-to-send present, transmitter empty, nothing
+         * received -- the port's reset modem and line status, which each
+         * port reports for itself rather than sharing one register.
+         */
+        shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
+        g_assert_cmphex(shadow & SHADOW_CD, ==, SHADOW_CD);
+        g_assert_cmphex(shadow & SHADOW_CTS, ==, SHADOW_CTS);
+        g_assert_cmphex(shadow & SHADOW_THRE, ==, SHADOW_THRE);
+        g_assert_cmphex(shadow & SHADOW_DR, ==, 0);
+
+        /*
+         * The driven modem-control levels appear in the shadow too: assert
+         * data-terminal-ready and request-to-send by hand through the
+         * byte-wide window and read them back on the DMA side.
+         */
+        qtest_writeb(qts, serial_port(port) + REG_MCR, MCR_DTR | MCR_RTS);
+        shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
+        g_assert_cmphex(shadow & SHADOW_DTR, ==, SHADOW_DTR);
+        g_assert_cmphex(shadow & SHADOW_RTS, ==, SHADOW_RTS);
     }
 
     qtest_quit(qts);
@@ -967,6 +1038,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/alias-refuses-hardware-registers",
                         NULL,
                         test_the_alias_refuses_the_registers_hardware_owns);
+    qtest_add_data_func("sn0/ioc3-serial/shadow-mirrors-the-port", NULL,
+                        test_the_shadow_mirrors_the_port);
     qtest_add_data_func("sn0/ioc3-serial/transmit-entry-sends-four", NULL,
                         test_a_transmit_entry_sends_its_four_characters);
     qtest_add_data_func("sn0/ioc3-serial/completed-transmit-raises-sources",
