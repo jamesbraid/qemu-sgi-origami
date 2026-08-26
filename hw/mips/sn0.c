@@ -884,7 +884,7 @@ static void sn0_flash_command(SN0NodeState *node, hwaddr addr, uint64_t val,
     case SN0_FLASH_PROGRAM:
         p = memory_region_get_ram_ptr(&node->flash);
         p[offset] &= byte;
-        memory_region_set_dirty(&node->flash, offset, 1);
+        memory_region_flush_rom_device(&node->flash, offset, 1);
         sn0_flash_read_mode(node);
         break;
     case SN0_FLASH_ERASE_UNLOCK1:
@@ -900,8 +900,8 @@ static void sn0_flash_command(SN0NodeState *node, hwaddr addr, uint64_t val,
             offset &= ~(SN0_FLASH_SECTOR_SIZE - 1);
             p = memory_region_get_ram_ptr(&node->flash);
             memset(p + offset, 0xff, SN0_FLASH_SECTOR_SIZE);
-            memory_region_set_dirty(&node->flash, offset,
-                                    SN0_FLASH_SECTOR_SIZE);
+            memory_region_flush_rom_device(&node->flash, offset,
+                                           SN0_FLASH_SECTOR_SIZE);
         }
         sn0_flash_read_mode(node);
         break;
