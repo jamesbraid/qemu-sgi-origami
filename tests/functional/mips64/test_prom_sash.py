@@ -8,31 +8,32 @@
 """
 Ports tools/sash-gate's proven 1-CPU, single-node contract, in the PROJECT
 checkout, into this fork's own functional-test framework, the same way
-test_prom_boot.py ports tools/boot-gate and test_diag.py ports
-tools/diag-gate. sash-gate boots the real IP27 PROM, netboots sash64 over
-QEMU's own SLIRP usermode networking (no external TFTP server), and drives
-`hinv`/`printenv` at the standalone shell to require the guest report the
-expected one-CPU hardware inventory. Its 1-CPU, single-node mode is the
-only mode this port carries: sash-gate's own --cpus 2/4 modes build
-sash-smp-gate's two-node topology, which has never completed a four-CPU
-boot to sash (an open defect) -- this port's brief scopes it out, so no
-code here serves those modes. tools/sash-gate itself stays in place; this
-is additive.
+test_prom_boot.py ports tools/boot-gate and test_prom_diagnostics.py
+ports tools/diag-gate. sash-gate boots the real IP27 PROM, netboots
+sash64 over QEMU's own SLIRP usermode networking (no external TFTP
+server), and drives `hinv`/`printenv` at the standalone shell to require
+the guest report the expected one-CPU hardware inventory. Its 1-CPU,
+single-node mode is the only mode this port carries: sash-gate's own
+--cpus 2/4 modes build sash-smp-gate's two-node topology, which has never
+completed a four-CPU boot to sash (an open defect) -- this port's brief
+scopes it out, so no code here serves those modes. tools/sash-gate itself
+stays in place; this is additive.
 
 missing_assertions() and ASSERTIONS below are a byte-for-byte port of
 tools/sashlib.py's own ASSERTIONS tuple and missing_assertions(log, cpus),
 fixed at cpus=1 -- the only population this test drives. This is the same
-port test_diag.py's missing_sash_assertions already made (diag-gate calls
-sash_gate.missing_assertions(log, cpus=1) as the last stage of its own
-evaluate_run), reproduced here independently so this file carries its own
-copy rather than importing test_diag.py. artifact_identity_problems() and
-RELEASES are the same kind of port of tools/sashlib.py's
-artifact_identity_problems()/RELEASES: the two SHA-256 comparisons a real
-run makes against the release-matched PROM and sash64. Both the 6.5-base
-and 6.5.30 entries are reproduced, not just the one PromSash.test_prom_sash
-boots by default, so sash-gate's own --release choice stays represented
-here and is exercised by test_prom_sash_verdict.py -- see RELEASE below
-for which one this test's real boot drives.
+port test_prom_diagnostics.py's missing_sash_assertions already made
+(diag-gate calls sash_gate.missing_assertions(log, cpus=1) as the last
+stage of its own evaluate_run), reproduced here independently so this
+file carries its own copy rather than importing test_prom_diagnostics.py.
+artifact_identity_problems() and RELEASES are the same kind of port of
+tools/sashlib.py's artifact_identity_problems()/RELEASES: the two
+SHA-256 comparisons a real run makes against the release-matched PROM
+and sash64. Both the 6.5-base and 6.5.30 entries are reproduced, not
+just the one PromSash.test_prom_sash boots by default, so sash-gate's
+own --release choice stays represented here and is exercised by
+test_prom_sash_verdict.py -- see RELEASE below for which one this test's
+real boot drives.
 
 Every name in this module is reimplemented inline from what
 `git -C <project checkout> show fj/main:tools/sash-gate` and
@@ -45,17 +46,17 @@ checkout), without booting anything -- see that file's docstring.
 
 The QEMU argv this file builds (sash_extra_args) is tools/sashlib.py's own
 qemu_command(cpus=1, skip_prom_diags=False) -- diag-gate calls that exact
-function to build the argv test_diag.py's diag_extra_args ports, so the
-two functions are the same shape by construction (the
+function to build the argv test_prom_diagnostics.py's diag_extra_args
+ports, so the two functions are the same shape by construction (the
 "-M origin200,synthesized-firmware=off,debug-leds=off" machine string, the
 "-nic user,...,tftp=...,bootfile=sash64" SLIRP usermode netboot line, and
 the ELSC AUX chardev on serial line 2 that podlib.serial_args wires, so a
 guest that relocates its whole session onto the AUX port (console=d) is
 captured rather than lost to a dark port). The dynamic-vs-static libslirp
---slirp-dir injection sash-gate's CLI carries is NOT ported: test_diag.py
-already established it is dead code on this fork, which vendors libslirp
-as a static meson subproject (subprojects/libslirp.wrap) -- the captured
-confirmation is
+--slirp-dir injection sash-gate's CLI carries is NOT ported:
+test_prom_diagnostics.py already established it is dead code on this
+fork, which vendors libslirp as a static meson subproject
+(subprojects/libslirp.wrap) -- the captured confirmation is
 docs/boot-logs/firmware.sash-netboot-vendored-slirp.2026-08-24T07:04+00:00,
 a real sash-gate PASS run recording that its built emulator needed none of
 that plumbing.
@@ -201,9 +202,10 @@ def verdict(log, reached=True, cpus=1):
     missing_assertions(log, args.cpus) and fails on anything missing, and
     separately fails if its console driver's own --until match never
     fires (a run that timed out before proving sash64 actually loaded).
-    Unlike test_diag.py's evaluate_run, there is no RSLT ledger to judge
-    here -- sash-gate drives exactly one PROM pass and makes exactly this
-    one check, so this port makes exactly that one check too.
+    Unlike test_prom_diagnostics.py's evaluate_run, there is no RSLT
+    ledger to judge here -- sash-gate drives exactly one PROM pass and
+    makes exactly this one check, so this port makes exactly that one
+    check too.
 
     Returns {"verdict": "PASS"|"FAIL", "missing": [...], "problems": [...]}.
     """
@@ -232,15 +234,15 @@ def verdict(log, reached=True, cpus=1):
 # ---------------------------------------------------------------------------
 
 # The release this test's real boot drives by default -- matching
-# test_prom_boot.py's and test_diag.py's own default (sash-gate's CLI
-# default is also 6.5-base). RELEASES above carries 6.5.30 too so the
-# verdict logic and its unit tests keep sash-gate's --release choice
-# represented even though this one QemuSystemTest method drives one
-# release at a time.
+# test_prom_boot.py's and test_prom_diagnostics.py's own default
+# (sash-gate's CLI default is also 6.5-base). RELEASES above carries
+# 6.5.30 too so the verdict logic and its unit tests keep sash-gate's
+# --release choice represented even though this one QemuSystemTest
+# method drives one release at a time.
 RELEASE = "6.5-base"
 
 # Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
-# test_diag.py's FIRMWARE_REL/TFTP_REL and tools/sashlib.py's
+# test_prom_diagnostics.py's FIRMWARE_REL/TFTP_REL and tools/sashlib.py's
 # RELEASES["6.5-base"] in the project checkout: ORIGAMI_ASSETS names a
 # CHECKOUT, not assets/ itself.
 FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
@@ -252,7 +254,7 @@ TFTP_REL = os.path.join('assets', 'boot', RELEASE)
 # identity bookkeeping. This test drives only the boot-and-netboot leg, so
 # a smaller budget is kept, a little under the meson timeout registered
 # for this test in mips64/meson.build (900s) -- the same margin
-# test_prom_boot.py and test_diag.py keep against their own meson
+# test_prom_boot.py and test_prom_diagnostics.py keep against their own meson
 # timeouts.
 BOOT_TIMEOUT_SECONDS = 840
 
@@ -412,7 +414,7 @@ if QemuSystemTest is not None:
         """Boots the real IP27 PROM firmware, netboots sash64 over SLIRP
         usermode networking, and requires verdict() to be PASS. See this
         module's docstring for the full contract; this class only wires
-        it to a real boot, the same division test_diag.py and
+        it to a real boot, the same division test_prom_diagnostics.py and
         test_prom_boot.py keep between their pure logic and their own
         QemuSystemTest classes.
         """
@@ -475,7 +477,8 @@ if QemuSystemTest is not None:
                 # A VM that crashed or exited on its own has already left;
                 # a graceful shutdown() against an already-dead process
                 # still raises AbnormalShutdown even though qemu is in
-                # fact gone. Matches test_diag.py's Diag.test_diag and
+                # fact gone. Matches test_prom_diagnostics.py's
+                # PromDiagnostics.test_prom_diagnostics and
                 # test_prom_boot.py's PromBoot.test_prom_boot.
                 vm.shutdown(hard=vm.exitcode() is not None)
             ended = _utc_now()

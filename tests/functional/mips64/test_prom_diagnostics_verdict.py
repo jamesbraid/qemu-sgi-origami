@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 #
-# Equivalence test: test_diag's verdict logic implements diag-gate's own
-# two-pass factory-sequence and expected-failure contract, without booting
-# anything
+# Equivalence test: test_prom_diagnostics's verdict logic implements
+# diag-gate's own two-pass factory-sequence and expected-failure contract,
+# without booting anything
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
 A plain unittest -- no QEMU, no qemu_test import, runnable with just
-`uv run --with pytest pytest tests/functional/mips64/test_diag_verdict.py
--v`. It exercises evaluate_run() and the functions it is built from
+`uv run --with pytest pytest
+tests/functional/mips64/test_prom_diagnostics_verdict.py -v`. It exercises
+evaluate_run() and the functions it is built from
 against real captured console transcripts (docs/boot-logs/ in the project
 checkout) plus the ported expected-failure ledger, and one clearly-labeled
 synthetic transcript for the scenarios no single archived capture covers.
@@ -86,7 +87,7 @@ file and what, if anything, was changed):
 
 import unittest
 
-from test_diag import (
+from test_prom_diagnostics import (
     diag_extra_args,
     evaluate_run,
     EXPECTED_FAILURES,

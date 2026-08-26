@@ -13,7 +13,7 @@ test_mips64_timeouts = {
   # several-budgets-in-sequence shape.
   'origin200_matrix' : 2500,
   'prom_boot' : 700,
-  'diag' : 1800,
+  'prom_diagnostics' : 1800,
   # A single netboot pass, smaller than the two-pass factory-diagnostics
   # check's 1800s: BOOT_TIMEOUT_SECONDS in test_prom_sash.py keeps a 60s
   # margin under this.
@@ -43,7 +43,7 @@ tests_mips64_system_thorough = [
   'malta',
   'tuxrun',
   'prom_boot',
-  'diag',
+  'prom_diagnostics',
   'prom_sash',
   'openbsd_login',
   'linux_kernel',
