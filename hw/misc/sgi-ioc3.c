@@ -684,6 +684,14 @@ static const MemoryRegionOps sgi_ioc3_kbc_ops = {
 #define UART_LSR_FE     0x08
 #define UART_LSR_BI     0x10
 
+#define UART_MCR_DTR    0x01
+#define UART_MCR_RTS    0x02
+#define UART_MCR_OUT1   0x04
+#define UART_MCR_OUT2   0x08
+#define UART_MCR_LOOP   0x10
+
+#define UART_MSR_DCTS   0x01
+#define UART_MSR_DDCD   0x08
 #define UART_MSR_CTS    0x10
 #define UART_MSR_DCD    0x80
 
@@ -1092,16 +1100,93 @@ static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
 }
 
 /*
- * One of a port's seven registers, read. Six of them read back the state they
+ * The 16550 shadow register: a read-only mirror of the port's own status and
+ * modem lines, assembled fresh on each read from the underlying UART rather
+ * than stored. It is read directly from the register file's own fields rather
+ * than through its byte-wide read ops on purpose -- a byte-wide modem-status or
+ * line-status read clears the delta and error latches, and this mirror is a
+ * second, passive view of the same lines and must not.
+ *
+ * The DMA-side console driver reads carrier-detect and clear-to-send from here
+ * rather than from the byte-wide window, so a shadow left at zero reports the
+ * line dead: the driver caches a carrier-down at console open and the console
+ * hangs. A boot never caught it, because the firmware's own DMA diagnostic runs
+ * the ports in loopback and never reads carrier -- so the register test is the
+ * only instrument that holds this.
+ */
+static uint32_t sgi_ioc3_sdma_shadow(SGIIOC3State *s, unsigned int port)
+{
+    SerialState *serial = &s->serial[port];
+    uint8_t lsr = serial->lsr;
+    uint8_t mcr = serial->mcr;
+    uint8_t msr;
+    uint32_t shadow;
+
+    /*
+     * In loopback the 16550 wires its own modem-control outputs back to its
+     * status inputs, so the levels the shadow reports are derived from the
+     * control register -- the same derivation the byte-wide modem-status read
+     * performs. Out of loopback the stored status is the live line state; on
+     * this machine the ports are socket-backed and carry no modem lines to
+     * poll, so the reset value -- carrier and clear-to-send asserted -- stands.
+     */
+    if (mcr & UART_MCR_LOOP) {
+        msr = ((mcr & 0x0c) << 4) | ((mcr & 0x02) << 3) | ((mcr & 0x01) << 5);
+    } else {
+        msr = serial->msr;
+    }
+
+    /* The low byte mirrors the line-status register one for one. */
+    shadow = lsr & SGI_IOC3_SHADOW_LSR_MASK;
+
+    if (msr & UART_MSR_DCTS) {
+        shadow |= SGI_IOC3_SHADOW_DELTA_CTS;
+    }
+    if (msr & UART_MSR_DDCD) {
+        shadow |= SGI_IOC3_SHADOW_DELTA_CD;
+    }
+    if (msr & UART_MSR_CTS) {
+        shadow |= SGI_IOC3_SHADOW_CTS;
+    }
+    if (msr & UART_MSR_DCD) {
+        shadow |= SGI_IOC3_SHADOW_CD;
+    }
+    if (mcr & UART_MCR_DTR) {
+        shadow |= SGI_IOC3_SHADOW_DTR;
+    }
+    if (mcr & UART_MCR_RTS) {
+        shadow |= SGI_IOC3_SHADOW_RTS;
+    }
+    if (mcr & UART_MCR_OUT1) {
+        shadow |= SGI_IOC3_SHADOW_OUT1;
+    }
+    if (mcr & UART_MCR_OUT2) {
+        shadow |= SGI_IOC3_SHADOW_OUT2;
+    }
+    if (mcr & UART_MCR_LOOP) {
+        shadow |= SGI_IOC3_SHADOW_LOOPBACK;
+    }
+    return shadow;
+}
+
+/*
+ * One of a port's seven registers, read. Five of them read back the state they
  * hold; the control register additionally answers two things hardware owns --
  * the transmit timer running, which nothing in this model starts, and the
  * pause having taken effect, which it always has, since this engine has no
- * transfer in flight to finish first.
+ * transfer in flight to finish first -- and the shadow is not stored at all but
+ * mirrored from the port above.
  */
 static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
                                         hwaddr offset)
 {
-    uint32_t val = *sgi_ioc3_sdma_port_reg(s, port, offset);
+    uint32_t val;
+
+    if (offset == SGI_IOC3_SDMA_SHADOW) {
+        return sgi_ioc3_sdma_shadow(s, port);
+    }
+
+    val = *sgi_ioc3_sdma_port_reg(s, port, offset);
 
     if (offset == SGI_IOC3_SDMA_CONTROL && (val & SGI_IOC3_SDMA_PAUSE)) {
         val |= SGI_IOC3_SDMA_PAUSED;

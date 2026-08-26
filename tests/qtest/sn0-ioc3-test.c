@@ -699,6 +699,7 @@ static void test_the_serial_dma_ports_are_distinct(const void *data)
 static void test_the_serial_dma_shadow_is_read_only(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint32_t shadow_a, shadow_b;
 
     sn0_ioc3_attach(qts);
 
@@ -706,13 +707,17 @@ static void test_the_serial_dma_shadow_is_read_only(const void *data)
      * The 16550 shadow is hardware's own mirror of live UART lines, not
      * software's to set. OpenBSD writes zero to both ports' shadows on
      * every boot while putting the ports into pass-through mode, and the
-     * real chip discards that the same way this model does: the write
-     * leaves no mark.
+     * real chip discards that the same way this model does: the write leaves
+     * no mark. It is a mirror rather than a stored zero, though -- the port
+     * comes up with carrier and clear-to-send asserted -- so the test is that
+     * the write leaves what the shadow reads unchanged, not that it reads zero.
      */
+    shadow_a = qtest_readl(qts, SDMA_A_SHADOW);
     qtest_writel(qts, SDMA_A_SHADOW, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, SDMA_A_SHADOW), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_SHADOW), ==, shadow_a);
+    shadow_b = qtest_readl(qts, SDMA_B_SHADOW);
     qtest_writel(qts, SDMA_B_SHADOW, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, SDMA_B_SHADOW), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, SDMA_B_SHADOW), ==, shadow_b);
 
     qtest_quit(qts);
 }
