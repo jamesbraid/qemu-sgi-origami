@@ -199,7 +199,7 @@ static void test_upper_half_is_not_the_register(const void *data)
 
 static void test_the_revision_is_settable(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,widget0-revision=4");
+    QTestState *qts = qtest_init("-M origin200,widget0-revision=3");
 
     /*
      * The revision is a candidate value — asserted from a captured boot of this
@@ -211,7 +211,7 @@ static void test_the_revision_is_settable(const void *data)
      */
     uint32_t id = qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA);
 
-    g_assert_cmpuint(ID_REVISION(id), ==, 4);
+    g_assert_cmpuint(ID_REVISION(id), ==, 3);
 
     /* And the rest of the identity is unmoved: one value changed, not two. */
     g_assert_cmphex(ID_PART(id), ==, BRIDGE_PART);

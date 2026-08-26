@@ -1231,8 +1231,8 @@ static void test_status_field_access(const void *data)
     status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
     g_assert_cmphex(status & NI_NODE_MASK, ==, NI_NODE_MASK);
 
-    /* What the hardware reports about itself is not writable. */
-    g_assert_cmphex(status & NI_IDENTITY, ==, 2 << 4);
+    /* The selected revision is fixed and is not writable. */
+    g_assert_cmphex(status & NI_IDENTITY, ==, 3 << 4);
 
     qtest_quit(qts);
 }

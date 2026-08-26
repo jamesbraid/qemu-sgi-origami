@@ -27,13 +27,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_VENDOR_ID      0x10A9
 #define SGI_IOC3_DEVICE_ID      0x0003
 /*
- * The reset value of the combined revision-and-class register is
- * 0xFF000000: class 0xFF ("does not fit any defined class"), sub-class 0x00,
- * revision 0x00. SGI's own diagnostic checks exactly this value on a fresh
- * chip and treats the low nibble as unwritable.
+ * The selected Origin 200 IOC3 reports class 0xFF ("does not fit any defined
+ * class"), sub-class 0x00, and PCI revision 0x01.  A diagnostic table for an
+ * earlier revision-0 part records 0xFF000000; that is not this machine's
+ * fitted identity.
  */
 #define SGI_IOC3_CLASS_ID       0xFF00
-#define SGI_IOC3_REVISION       0x00
+#define SGI_IOC3_REVISION       0x01
 /* The Origin 200's IP29 System Board, the only board this machine models. */
 #define SGI_IOC3_SUBSYSTEM_ID   0xC303
 

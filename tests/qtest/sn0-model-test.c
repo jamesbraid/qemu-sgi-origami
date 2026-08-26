@@ -25,12 +25,15 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
 
 #include "sn0-model.h"
+
+#include <elf.h>
 
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785U
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffffU
@@ -40,6 +43,7 @@
 #define SN0_NODE_STRIDE         0x100000000ULL
 #define SN0_HUB_NODE_WINDOW     0x01800000ULL
 #define SN0_NI_STATUS           0x00600000ULL
+#define SN0_IO_WIDGET_ID        0x00400000ULL
 #define SN0_NI_LINK_UP          (1ULL << 29)
 #define SN0_NI_NODE_SHIFT       8
 #define SN0_PI_CPU_PRESENT_A    0x000040
@@ -90,6 +94,7 @@
 #define SN0_IOC3_ID             0x000310a9
 
 #define SN0_PCI_COMMAND         0x04
+#define SN0_PCI_REVISION_ID     0x08
 #define SN0_PCI_COMMAND_IO      0x0001
 #define SN0_PCI_COMMAND_MEMORY  0x0002
 #define SN0_PCI_COMMAND_MASTER  0x0004
@@ -99,6 +104,7 @@
 #define SN0_PCI_SCSI1_MEM       0x08400000U
 #define SN0_PCI_IOC3_MEM        0x08600000U
 #define SN0_TEST_IOC3_MEM       0x10000000U
+#define SN0_CPU_ID_ADDR         0x00030000U
 
 #define SN0_DEV_ERROR_LOCK      (1u << 28)
 #define SN0_DEV_PAGE_CROSS      (1u << 27)
@@ -129,6 +135,108 @@ static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
     g_assert_nonnull(name);
     g_assert_cmpstr(name, ==, expected);
     qobject_unref(response);
+}
+
+static char *write_prid_guest(void)
+{
+    static const uint32_t code[] = {
+        0x40087800,             /* mfc0 t0, PRId */
+        0x3c099600,             /* lui t1, 0x9600 */
+        0x0009483c,             /* dsll32 t1, t1, 0 */
+        0x3c0a0003,             /* lui t2, 0x0003 */
+        0x012a4825,             /* or t1, t1, t2 */
+        0xad280000,             /* sw t0, 0(t1) */
+        0x1000ffff,             /* b . */
+        0x00000000,             /* nop */
+    };
+    uint8_t image[0x1000 + sizeof(code)] = { 0 };
+    const uint64_t entry = 0x8000000000020000ULL;
+    GError *err = NULL;
+    char *path = NULL;
+    int fd;
+    size_t i;
+
+    fd = g_file_open_tmp("sn0-prid-guest-XXXXXX", &path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(fd, >=, 0);
+
+    image[0] = ELFMAG0;
+    image[1] = ELFMAG1;
+    image[2] = ELFMAG2;
+    image[3] = ELFMAG3;
+    image[EI_CLASS] = ELFCLASS64;
+    image[EI_DATA] = ELFDATA2MSB;
+    image[EI_VERSION] = EV_CURRENT;
+    stw_be_p(image + 16, ET_EXEC);
+    stw_be_p(image + 18, EM_MIPS);
+    stl_be_p(image + 20, EV_CURRENT);
+    stq_be_p(image + 24, entry);
+    stq_be_p(image + 32, 64);
+    stw_be_p(image + 52, 64);
+    stw_be_p(image + 54, 56);
+    stw_be_p(image + 56, 1);
+
+    stl_be_p(image + 64, PT_LOAD);
+    stl_be_p(image + 68, PF_R | PF_X);
+    stq_be_p(image + 72, 0x1000);
+    stq_be_p(image + 80, entry);
+    stq_be_p(image + 88, entry);
+    stq_be_p(image + 96, sizeof(code));
+    stq_be_p(image + 104, sizeof(code));
+    stq_be_p(image + 112, 0x1000);
+
+    for (i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
+    }
+
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
+                    (ssize_t)sizeof(image));
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_selected_cpu_identity(const void *data)
+{
+    g_autofree char *kernel = write_prid_guest();
+    QTestState *qts;
+    uint32_t prid = 0;
+
+    qts = qtest_initf("-M origin200,synthesized-firmware=off "
+                      "-accel tcg -smp 1 -kernel %s", kernel);
+
+    g_test_timer_start();
+    while (prid == 0 && g_test_timer_elapsed() < 1) {
+        prid = qtest_readl(qts, SN0_CPU_ID_ADDR);
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    qtest_quit(qts);
+    g_unlink(kernel);
+}
+
+static void test_selected_device_identity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t ni = qtest_readq(qts, SN0_HUB_LOCAL + SN0_NI_STATUS);
+    uint64_t hub_widget = qtest_readq(qts,
+                                      SN0_HUB_LOCAL + SN0_IO_WIDGET_ID);
+    uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(0) + 4);
+
+    g_assert_cmpuint((ni >> 4) & 0xf, ==, SN0_MODEL_HUB_NI_REVISION);
+    g_assert_cmpuint((hub_widget >> 28) & 0xf, ==,
+                     SN0_MODEL_HUB_WIDGET_REVISION);
+    g_assert_cmpuint(bridge >> 28, ==, SN0_MODEL_BRIDGE_REVISION);
+    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(0, SN0_IOC3_DEVICE) +
+                                      SN0_PCI_REVISION_ID) & 0xff, ==,
+                     SN0_MODEL_IOC3_PCI_REVISION);
+    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(0, SN0_SCSI_DEVICE0) +
+                                      SN0_PCI_REVISION_ID) & 0xff, ==,
+                     SN0_MODEL_ISP1040_PCI_REVISION);
+    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(0, SN0_SCSI_DEVICE1) +
+                                      SN0_PCI_REVISION_ID) & 0xff, ==,
+                     SN0_MODEL_ISP1040_PCI_REVISION);
+    qtest_quit(qts);
 }
 
 /*
@@ -960,6 +1068,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/model/config-graph", NULL, test_config_graph);
+    qtest_add_data_func("sn0/model/selected-device-identity", NULL,
+                        test_selected_device_identity);
+    qtest_add_data_func("sn0/model/selected-cpu-identity", NULL,
+                        test_selected_cpu_identity);
     qtest_add_data_func("sn0/model/graph-whole-region", NULL,
                         test_graph_whole_region);
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);

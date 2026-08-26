@@ -215,7 +215,7 @@
  * the same branch by luck while printing a line no capture would match.
  */
 #define SN0_WIDGET0              0
-#define SN0_WIDGET0_REVISION     3
+#define SN0_WIDGET0_REVISION     4
 /* The identification field is four bits wide. */
 #define SN0_WIDGET0_REVISION_MAX 0xf
 
@@ -469,6 +469,11 @@
 #define SN0_COMP_SCSI           11
 #define SN0_COMP_MODULE_SERIAL  26
 #define SN0_COMP_ENABLED        1
+#define SN0_COMP_REV_UNKNOWN    0xff
+#define SN0_COMP_REV_HUB        3
+#define SN0_COMP_REV_BRIDGE     4
+#define SN0_COMP_REV_SCSI       5
+#define SN0_COMP_REV_IOC3       1
 
 /*
  * A component record's physical identifier, at offset 0x18: distinct from

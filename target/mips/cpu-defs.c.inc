@@ -594,7 +594,7 @@ const mips_def_t mips_defs[] =
          * for compatibility.
          */
         .name = "R10000",
-        .CP0_PRid = 0x00000900,
+        .CP0_PRid = 0x00000926,
         .CP0_Config0 = (3 << CP0C0_R10K_IC) | (3 << CP0C0_R10K_DC) |
                        (3 << CP0C0_R10K_SC) | (1 << CP0C0_R10K_SS) |
                        (1 << CP0C0_R10K_SB) | (3 << CP0C0_R10K_EC) |

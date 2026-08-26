@@ -174,7 +174,7 @@ static const uint32_t device_reset[8] = {
  * The machine states one silicon revision for this chip and both registers that
  * report an identity are derived from it, so the test names it once too.
  */
-#define BRIDGE_REVISION         3
+#define BRIDGE_REVISION         4
 
 #define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
 
@@ -393,7 +393,7 @@ static void test_identity(const void *data)
 static void test_identity_follows_the_machines_revision(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on,"
-                                 "widget0-revision=4");
+                                 "widget0-revision=3");
 
     /*
      * The revision is a candidate value the machine makes settable, and this
@@ -403,7 +403,7 @@ static void test_identity_follows_the_machines_revision(const void *data)
      * different revisions for a chip it names once.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
-                    bridge_identity(4));
+                    bridge_identity(3));
 
     qtest_quit(qts);
 }
