@@ -505,7 +505,12 @@ static bool mips_timer_ip7_needed(void *opaque)
 }
 
 static const VMStateDescription mips_vmstate_timer_ip7 = {
-    .name = "cpu/timer-ip7",
+    /*
+     * Not "cpu/timer-ip7": the subsection loader nests by name prefix, so
+     * a sibling extending "cpu/timer" is taken for a child of that section
+     * and fails the whole load being looked up there.
+     */
+    .name = "cpu/r10k-timer-ip7",
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = mips_timer_ip7_needed,
