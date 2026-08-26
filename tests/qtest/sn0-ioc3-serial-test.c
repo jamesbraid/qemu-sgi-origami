@@ -189,13 +189,29 @@ static uint64_t serial_port(unsigned int port)
 }
 
 /*
+ * The deadline on a socket read or accept in this file. It exists only to
+ * turn a would-be hang into a failure, not to bound how long a healthy run
+ * takes: the device side runs synchronously inside the MMIO write callback
+ * (sgi_ioc3_sdma_run under -accel qtest, which drives no vCPU), so the byte
+ * is already in the host socket buffer before qtest_writel returns -- it is
+ * never lost, only occasionally slow to be scheduled by the host OS. On an
+ * oversubscribed CI host that scheduling delay can run past ten seconds, so
+ * a short deadline reads as a flake. 120s is the value triage proved passes
+ * 40/40 runs under that load (see docs/notebooks/ioc3-serial-dma.md), while
+ * a healthy run still finishes the whole file in 7-17s -- nowhere near the
+ * ceiling.
+ */
+#define IOC3_SERIAL_SOCKET_TIMEOUT_SECS 120
+
+/*
  * A read on the port's own socket is how a test sees a character leave the
  * chip, and a model that sends nothing would otherwise hang the suite at that
  * read rather than fail it. A deadline turns the one into the other.
  */
 static void serial_socket_deadline(int fd)
 {
-    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = IOC3_SERIAL_SOCKET_TIMEOUT_SECS,
+                           .tv_usec = 0 };
 
     g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
                     ==, 0);
@@ -232,7 +248,7 @@ static int portb_listen(uint16_t *port)
 static int portb_accept(int lfd)
 {
     fd_set readfds;
-    struct timeval tv = { .tv_sec = 10 };
+    struct timeval tv = { .tv_sec = IOC3_SERIAL_SOCKET_TIMEOUT_SECS };
     int fd, val;
 
     FD_ZERO(&readfds);
