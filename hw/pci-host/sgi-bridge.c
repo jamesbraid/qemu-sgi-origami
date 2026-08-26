@@ -2360,7 +2360,17 @@ static void sgi_bridge_set_irq(void *opaque, int pin, int level)
      * flood the Hub with writes.
      */
     if (level && !was) {
-        sgi_bridge_send_interrupt(s, pin, true);
+        /*
+         * The rising edge delivers only while this pin is enabled. A pin left
+         * routed with its enable bit clear is one whose interrupt has been torn
+         * down without unprogramming the destination, and a device still
+         * asserting behind it must not go on setting the Hub's pending bit. The
+         * falling-edge clear below is gated by the mode bit alone, not by
+         * enable, so a pin disabled while asserted can still be cleared.
+         */
+        if (s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] & (1u << pin)) {
+            sgi_bridge_send_interrupt(s, pin, true);
+        }
     } else if (!level && was) {
         /*
          * The falling edge sends a clear only if the guest asked for it, which
