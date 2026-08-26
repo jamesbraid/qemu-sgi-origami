@@ -2879,8 +2879,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * chardev behind its AUX serial port -- serial_hd(SN0_ELSC_CHARDEV), so it
      * does not contend with the two IOC3 rear ports on serial_hd(0) and (1) or
      * the synthesized-firmware console shortcut, which shares the IOC3's own
-     * serial_hd(0). This is the port a console=d guest relocates onto, so a
-     * rig that means to see that session has to drive this index.
+     * serial_hd(0). The firmware redirects its console to this port after a
+     * failed power-on diagnostic; the IRIX console (console=d) is IOC3 serial A
+     * on serial_hd(0), not this one. A rig that means to capture that
+     * diagnostic stream has to drive this index.
      */
     {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);

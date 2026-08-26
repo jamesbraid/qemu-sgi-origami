@@ -37,9 +37,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
  *
  * The three shipped rear-panel connectors come first: index 0 and 1 are the
  * base I/O controller's ports A and B (port A is also the synthesized
- * firmware's console), and index 2 is the system controller's AUX port -- the
- * one a console=d guest relocates its session onto. Index 3 is the bring-up
- * port, which no shipped machine has and which is off unless asked for, so the
+ * firmware's console), and index 2 is the system controller's AUX port --
+ * where the firmware redirects its console after a failed power-on diagnostic
+ * (the IRIX console, console=d, is index 0, not this port). Index 3 is the
+ * bring-up port, which no shipped machine has and which is off unless asked
+ * for, so the
  * optional part carries the highest index and the numbering of the shipped
  * ports does not move when the option is used.
  */
