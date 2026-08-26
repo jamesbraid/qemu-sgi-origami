@@ -595,7 +595,7 @@ ERST
 
 SRST
   ``info elsc``
-    Show the SGI Origin 200 entry-level system controller's console-input
+    Show the SGI Origin 200 module system controller (MSC)'s console-input
     queue and the arbitration signal it presents for the console processor.
 ERST
 
