@@ -63,8 +63,12 @@ struct SGIBridgeDMATestState {
 
     MemoryRegion mmio;
 
-    /* Where on the PCI side to write, how much, and what. */
-    uint32_t address;
+    /*
+     * Where on the PCI side to write, how much, and what. The address is 64 bits
+     * so a test can issue a 64-bit address cycle and exercise the Bridge's
+     * 64-bit direct decode; a 32-bit register file cannot reach those addresses.
+     */
+    uint64_t address;
     uint32_t length;
     uint32_t seed;
 
@@ -72,9 +76,10 @@ struct SGIBridgeDMATestState {
      * Where a copy reads from. A copy is how this device tests the read
      * direction: exposing its own buffer through a register window would put
      * the programmed-access correction in the path and the comparison would
-     * then be measuring two transforms at once.
+     * then be measuring two transforms at once. Also 64 bits, so a copy can read
+     * from a 64-bit source address as well as write to a 64-bit destination.
      */
-    uint32_t source;
+    uint64_t source;
 
     /* The level this device is holding its interrupt pin at. */
     uint32_t interrupt;
@@ -106,6 +111,13 @@ struct SGIBridgeDMATestState {
  */
 #define REG_INTERRUPT   0x10
 #define REG_SOURCE      0x14
+/*
+ * The high 32 bits of the destination and source addresses. Each address is set
+ * with two 32-bit writes — the low register, then the high register — because
+ * the register window is reached with 32-bit accesses.
+ */
+#define REG_ADDRESS_HI  0x18
+#define REG_SOURCE_HI   0x1c
 #define REG_WINDOW      0x20   /* size of the register block */
 
 /* What a write to REG_GO asks for. */
@@ -175,13 +187,17 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
 
     switch (addr) {
     case REG_ADDRESS:
-        return s->address;
+        return (uint32_t)s->address;
+    case REG_ADDRESS_HI:
+        return s->address >> 32;
     case REG_LENGTH:
         return s->length;
     case REG_SEED:
         return s->seed;
     case REG_SOURCE:
-        return s->source;
+        return (uint32_t)s->source;
+    case REG_SOURCE_HI:
+        return s->source >> 32;
     case REG_INTERRUPT:
         return s->interrupt;
     default:
@@ -196,7 +212,10 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
 
     switch (addr) {
     case REG_ADDRESS:
-        s->address = val;
+        s->address = deposit64(s->address, 0, 32, val);
+        break;
+    case REG_ADDRESS_HI:
+        s->address = deposit64(s->address, 32, 32, val);
         break;
     case REG_LENGTH:
         s->length = val;
@@ -212,7 +231,10 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
         }
         break;
     case REG_SOURCE:
-        s->source = (uint32_t)val;
+        s->source = deposit64(s->source, 0, 32, val);
+        break;
+    case REG_SOURCE_HI:
+        s->source = deposit64(s->source, 32, 32, val);
         break;
     case REG_INTERRUPT:
         s->interrupt = val ? 1 : 0;
@@ -272,11 +294,11 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIBridgeDMATestState),
-        VMSTATE_UINT32(address, SGIBridgeDMATestState),
+        VMSTATE_UINT64(address, SGIBridgeDMATestState),
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
