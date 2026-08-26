@@ -3399,6 +3399,42 @@ static void test_the_transceiver_reports_a_usable_link(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_link_settles_when_polled(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Linux's phylib leaves autonegotiation enabled from reset and never
+     * rewrites the control register; it just polls status waiting for the PHY
+     * to negotiate on its own. So the link has to come up without a write.
+     *
+     * The first status read finds it still settling -- no link, no completed
+     * autonegotiation, and the partner and expansion registers reading zero --
+     * which is the bench state the reset-value diagnostic depends on. That read
+     * arms the settle; a driver that keeps polling sees the link once it
+     * elapses.
+     */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 1) & 0x0024, ==, 0x0000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 5), ==, 0x0000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 6) & 0x0001, ==, 0x0000);
+
+    /* Wait past the settle, as a polling driver does. */
+    qtest_clock_step(qts, 2500 * 1000000LL);
+
+    /*
+     * Now the link is up: status reports link and completed autonegotiation,
+     * and the partner and expansion registers answer, all without a control
+     * register write having happened.
+     */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 1) & 0x0024, ==, 0x0024);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 6) & 0x0001, ==, 0x0001);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 5) & 0x0100, ==, 0x0100);
+
+    qtest_quit(qts);
+}
+
 static void test_the_transceiver_configuration_register(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -3540,6 +3576,8 @@ int main(int argc, char **argv)
                         test_the_transceiver_reset_is_self_clearing);
     qtest_add_data_func("sn0/ioc3/phy-reports-a-usable-link", NULL,
                         test_the_transceiver_reports_a_usable_link);
+    qtest_add_data_func("sn0/ioc3/phy-link-settles-when-polled", NULL,
+                        test_the_link_settles_when_polled);
     qtest_add_data_func("sn0/ioc3/phy-configuration-register", NULL,
                         test_the_transceiver_configuration_register);
     qtest_add_data_func("sn0/ioc3/phy-reset-values", NULL,

@@ -17,14 +17,16 @@
  * generic one, and widens the contract by two registers belonging to this part
  * alone.
  *
- * The link comes up when a guest asks for it, not before. Out of reset this
- * is a board with no cable -- link down, autonegotiation incomplete -- which
- * is the state SGI's power-on diagnostic reads and checks against the part's
- * documented reset values. When a guest writes the control register to bring
- * the interface into use, the model stands in as a cooperative far end and the
- * link comes up at once: there is no real cable to negotiate against, and both
- * drivers poll for completion with generous timeouts. See dp83840_reset() and
- * dp83840_write().
+ * The link takes a moment to come up, the way real autonegotiation does. Out
+ * of reset this is a board still negotiating -- link down, autonegotiation
+ * incomplete -- which is the state SGI's power-on diagnostic reads and checks
+ * against the part's documented reset values. The link then comes up on its
+ * own a short settle after the interface first reads link status, so a driver
+ * that leaves autonegotiation enabled and only polls (Linux's phylib) gets its
+ * carrier without writing anything; a driver that forces the link up with a
+ * control-register write (the PROM's network boot, OpenBSD) gets it at once.
+ * The settle is modelled on QEMU's e1000, which times autonegotiation the same
+ * way. See dp83840_reset(), dp83840_status_read() and dp83840_write().
  */
 
 #include "qemu/osdep.h"
@@ -58,10 +60,11 @@
  * is that answer. What a model must not do is latch the bit and then fail to
  * clear it, because the second read would report a link that is not there.
  *
- * The link bit and the completion bit come up clear and go together: until a
- * guest has driven the control register to bring the interface up, this is a
- * board on a bench with no cable, reporting no link and no completed
- * autonegotiation -- which is what SGI's power-on diagnostic reads and expects.
+ * The link bit and the completion bit come up clear and go together: neither
+ * is real until autonegotiation has settled. A single reset-value probe sees
+ * them clear -- the bench state SGI's power-on diagnostic expects -- while a
+ * driver that polls sees them set once the settle elapses. See
+ * dp83840_status_read() for how the settle is armed.
  */
 static uint16_t dp83840_status(DP83840State *s)
 {
@@ -76,6 +79,36 @@ static uint16_t dp83840_status(DP83840State *s)
     return status;
 }
 
+/* The settle elapsed: autonegotiation has completed and the link is up. */
+static void dp83840_settle_done(void *opaque)
+{
+    DP83840State *s = opaque;
+
+    s->autoneg_done = true;
+}
+
+/*
+ * Read the status register, arming the autonegotiation settle the first time
+ * the interface looks at link status. A real part negotiates on its own once
+ * autonegotiation is enabled -- which it is at reset -- and this models that
+ * as a delay started when a guest first reads status. The read itself still
+ * returns the not-yet-linked state; a caller that reads once (the diagnostic)
+ * sees the link settling, and one that polls (a driver) sees it come up when
+ * the delay elapses. A guest that forces the link up with a control-register
+ * write does not go through here -- see dp83840_write().
+ */
+static uint16_t dp83840_status_read(DP83840State *s)
+{
+    if (!s->settle_armed && !s->autoneg_done &&
+        (s->control & DP83840_CTRL_AUTONEG)) {
+        s->settle_armed = true;
+        timer_mod(s->settle_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  DP83840_AUTONEG_SETTLE_NS);
+    }
+    return dp83840_status(s);
+}
+
 uint16_t dp83840_read(DP83840State *s, int reg)
 {
     switch (reg) {
@@ -83,7 +116,7 @@ uint16_t dp83840_read(DP83840State *s, int reg)
         return s->control;
 
     case DP83840_STATUS:
-        return dp83840_status(s);
+        return dp83840_status_read(s);
 
     case DP83840_IDENTITY_HIGH:
         return DP83840_IDENTITY_HIGH_VALUE;
@@ -170,14 +203,26 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
 
         /*
          * Any other write to this register is a guest configuring the interface
-         * to carry traffic -- enabling or restarting autonegotiation, or
-         * forcing a speed and duplex. That is what brings the link up. There is
-         * no cable to negotiate against, so we stand in as a cooperative far
-         * end and the negotiation always succeeds; the completion is immediate
-         * because nothing here takes time and both drivers poll for it with
-         * generous timeouts. Isolating the part takes it back off the link.
+         * to carry traffic -- restarting autonegotiation, or forcing a speed and
+         * duplex. That brings the link up at once: there is no cable to
+         * negotiate against, so we stand in as a cooperative far end and the
+         * negotiation succeeds immediately. This is the path the PROM's network
+         * boot and OpenBSD take. Isolating the part takes it back off the link,
+         * and leaves the settle free to re-arm on the next status read.
+         *
+         * Linux's phylib does not reach here: it leaves autonegotiation enabled
+         * from reset and polls status without rewriting the control register, so
+         * its link comes up through the settle armed in dp83840_status_read().
          */
-        s->autoneg_done = !(val & DP83840_CTRL_ISOLATE);
+        if (val & DP83840_CTRL_ISOLATE) {
+            s->autoneg_done = false;
+            s->settle_armed = false;
+            timer_del(s->settle_timer);
+        } else {
+            s->autoneg_done = true;
+            s->settle_armed = true;
+            timer_del(s->settle_timer);
+        }
 
         s->control = val & ~(DP83840_CTRL_RESET | DP83840_CTRL_RESTART);
         return;
@@ -250,16 +295,16 @@ void dp83840_reset(DP83840State *s)
      * can do, and its registers hold the values its own specification gives.
      *
      * The link is not one of those values. Real silicon comes up with the link
-     * down and autonegotiation incomplete, and stays that way until a link is
-     * actually established -- on a bench with no cable, that never happens.
-     * SGI's power-on diagnostic reads the status, link-partner and expansion
-     * registers early, as pure reads before it has written the control register
-     * at all, and expects exactly that bench state: no link, no completed
-     * autonegotiation, no partner. A model that came up with the link already
-     * live answered those reads wrong, which is what the diagnostic's three
-     * reset-value warnings were reporting. The link comes up instead when a
-     * guest writes the control register to bring the interface into use -- see
-     * dp83840_write(). See docs/datasheets/dp83840.md.
+     * down and autonegotiation incomplete, then negotiates on its own and
+     * brings the link up a short time later. SGI's power-on diagnostic reads the
+     * status, link-partner and expansion registers early, as pure reads before
+     * it has driven the part, and expects that not-yet-settled state: no link,
+     * no completed autonegotiation, no partner. A model that came up with the
+     * link already live answered those reads wrong, which is what the
+     * diagnostic's three reset-value warnings reported. So the link stays down
+     * out of reset and comes up a settle after the interface first reads status
+     * -- see dp83840_status_read() -- or at once if a guest forces it up with a
+     * control-register write -- see dp83840_write(). See docs/datasheets/dp83840.md.
      */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
@@ -267,6 +312,10 @@ void dp83840_reset(DP83840State *s)
     s->loopback_bypass = DP83840_LBREMR_RESET_VALUE;
     s->tenbt_config = DP83840_10BT_RESET_VALUE;
     s->autoneg_done = false;
+    s->settle_armed = false;
+    if (s->settle_timer) {
+        timer_del(s->settle_timer);
+    }
 }
 
 static void dp83840_reset_hold(Object *obj, ResetType type)
@@ -274,10 +323,17 @@ static void dp83840_reset_hold(Object *obj, ResetType type)
     dp83840_reset(DP83840(obj));
 }
 
+static void dp83840_realize(DeviceState *dev, Error **errp)
+{
+    DP83840State *s = DP83840(dev);
+
+    s->settle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, dp83840_settle_done, s);
+}
+
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(control, DP83840State),
         VMSTATE_UINT16(advertise, DP83840State),
@@ -285,6 +341,8 @@ static const VMStateDescription vmstate_dp83840 = {
         VMSTATE_UINT16(loopback_bypass, DP83840State),
         VMSTATE_UINT16(tenbt_config, DP83840State),
         VMSTATE_BOOL(autoneg_done, DP83840State),
+        VMSTATE_BOOL(settle_armed, DP83840State),
+        VMSTATE_TIMER_PTR(settle_timer, DP83840State),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -295,6 +353,7 @@ static void dp83840_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "DP83840 10/100 ethernet transceiver";
+    dc->realize = dp83840_realize;
     dc->vmsd = &vmstate_dp83840;
     rc->phases.hold = dp83840_reset_hold;
 }
