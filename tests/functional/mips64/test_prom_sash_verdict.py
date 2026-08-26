@@ -624,7 +624,10 @@ class SashExtraArgsTest(unittest.TestCase):
         self.assertEqual(args[args.index("-bios") + 1], "/tmp/prom.bin")
         nic = args[args.index("-nic") + 1]
         self.assertIn("tftp=/tmp/tftp", nic)
-        self.assertIn("bootfile=sash64", nic)
+        # bootfile= names the path-structured NETBOOT_PATH, not a flat
+        # "sash64" -- this is the whole point of this port (see
+        # NETBOOT_PATH's own comment in test_prom_sash.py).
+        self.assertIn(f"bootfile={NETBOOT_PATH}", nic)
         self.assertIn("dhcpstart=192.0.2.15", nic)
         # -serial none (IOC3 port B, unused) then -serial chardev:elsc
         # (the ELSC AUX port) -- set_console() already emits line 0
