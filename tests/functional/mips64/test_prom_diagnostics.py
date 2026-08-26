@@ -45,7 +45,10 @@ skip_prom_diags=False -- read directly from tools/sash-gate in the project
 checkout (the "-M origin200,synthesized-firmware=off,debug-leds=off" machine
 string, the "-nic user,...,tftp=...,bootfile=sash64" SLIRP usermode netboot
 line, and the ELSC AUX chardev on serial line 2 that podlib.serial_args
-wires so a console=d guest is not lost to a dark port). tools/netinst-rig,
+wires so the firmware's power-on-diagnostic console output -- which the
+PROM re-opens on the system controller after a failed diagnostic -- is not
+lost to a dark port; console=d selects IOC3 serial A on line 0, the
+primary console, not this port). tools/netinst-rig,
 named in this port's brief as a second reference, turns out to drive a real
 irix-netinst server over bridged tap networking, not SLIRP at all -- a
 different tool for a different (real-server) netboot path -- so it is not
@@ -491,8 +494,11 @@ def diag_extra_args(prom, tftp, elsc_log, capture):
     line 1 (IOC3 port B, unused) so the "-serial chardev:elsc" that
     follows lands on line 2, the ELSC AUX port -- the same
     podlib.serial_args(ioc3_a=..., elsc=...) numbering sash_gate.
-    qemu_command itself uses, so a guest that relocates its session onto
-    the AUX port (console=d) is captured rather than lost to a dark port.
+    qemu_command itself uses. console=d selects IOC3 serial A on line 0,
+    captured by set_console() above; the ELSC AUX on line 2 carries the
+    firmware's power-on-diagnostic console output, which the PROM re-opens
+    on the system controller after a failed diagnostic, captured here
+    rather than lost to a dark port.
     """
     return [
         '-cpu', 'R10000',
