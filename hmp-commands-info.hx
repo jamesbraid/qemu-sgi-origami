@@ -586,6 +586,20 @@ SRST
 ERST
 
     {
+        .name       = "elsc",
+        .args_type  = "",
+        .params     = "",
+        .help       = "show SGI ELSC console-input queue and arbitration signal",
+        .arch_bitmask = QEMU_ARCH_MIPS,
+    },
+
+SRST
+  ``info elsc``
+    Show the SGI Origin 200 entry-level system controller's console-input
+    queue and the arbitration signal it presents for the console processor.
+ERST
+
+    {
         .name       = "trace-events",
         .args_type  = "name:s?",
         .params     = "[name]",
