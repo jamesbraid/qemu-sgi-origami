@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 #
 # Sash netboot inventory check: boot the real IP27 PROM, netboot sash64
-# over SLIRP usermode networking, and require the standalone shell's
-# one-CPU hardware inventory
+# BY PATH over SLIRP usermode networking, and require the standalone
+# shell's one-CPU hardware inventory
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -52,17 +52,21 @@ must stand on its own. test_prom_sash_verdict.py proves this port against
 real captured console transcripts (docs/boot-logs/ in the project
 checkout), without booting anything -- see that file's docstring.
 
-The QEMU argv this file builds (sash_extra_args) is tools/sashlib.py's own
-qemu_command(cpus=1, skip_prom_diags=False) -- diag-gate calls that exact
-function to build the argv test_prom_diagnostics.py's diag_extra_args
-ports, so the two functions are the same shape by construction (the
-"-M origin200,synthesized-firmware=off,debug-leds=off" machine string, the
-"-nic user,...,tftp=...,bootfile=sash64" SLIRP usermode netboot line, and
+The QEMU argv this file builds (sash_extra_args) is close to tools/
+sashlib.py's own qemu_command(cpus=1, skip_prom_diags=False) -- diag-gate
+calls that exact function to build the argv test_prom_diagnostics.py's
+diag_extra_args ports, so the two functions share the same shape (the
+"-M origin200,synthesized-firmware=off,debug-leds=off" machine string and
 the ELSC AUX chardev on serial line 2 that podlib.serial_args wires, so
 the firmware's power-on-diagnostic console output -- which the PROM
 re-opens on the system controller after a failed diagnostic -- is captured
 rather than lost to a dark port; console=d selects IOC3 serial A on line
-0, the primary console, not this port). The dynamic-vs-static libslirp
+0, the primary console, not this port), with one deliberate departure:
+the SLIRP usermode netboot line reads "-nic user,...,tftp=...,
+bootfile=boot/sash64", not sash-gate's own flat "bootfile=sash64" -- see
+NETBOOT_PATH's own comment for why, and PromSash._stage_netboot_tftp()
+for how `tftp=` ends up pointing at a directory that actually has
+`boot/sash64` under it. The dynamic-vs-static libslirp
 --slirp-dir injection sash-gate's CLI carries is NOT ported:
 test_prom_diagnostics.py already established it is dead code on this
 fork, which vendors libslirp as a static meson subproject
@@ -77,6 +81,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -260,7 +265,9 @@ def verdict(log, reached=True, cpus=1):
 # monitor to sash64, and provenance. Not covered by
 # test_prom_sash_verdict.py -- see this module's own docstring for why --
 # so nothing below this line needs to be pure or independently testable
-# the way the verdict logic above does.
+# the way the verdict logic above does. (sash_extra_args() is the one
+# exception: it builds a plain argv list with no I/O of its own, so
+# test_prom_sash_verdict.py's SashExtraArgsTest exercises it directly.)
 # ---------------------------------------------------------------------------
 
 # The release this test's real boot drives by default -- matching
@@ -293,11 +300,16 @@ BOOT_TIMEOUT_SECONDS = 840
 # has been received since the last match. These five steps drive the PROM
 # from the System Maintenance Menu through the command monitor to an
 # interactive sash prompt, matching tools/sash-gate's own console_driver
-# --expect list exactly (cpus=1, the only population this port drives).
+# --expect list (cpus=1, the only population this port drives) with one
+# departure: the boot command names NETBOOT_PATH
+# (`boot -f bootp()/boot/sash64`), not sash-gate's own flat
+# `boot -f bootp()/sash64` -- this test's whole point is proving the PROM
+# fetches the path-structured file it was asked for (see
+# NETBOOT_PATH_ASSERTION's own comment).
 DRIVER_STEPS = (
     (r"Option\?", "5\n"),
     (r">>", "unsetenv netaddr\n"),
-    (r">>", "boot -f bootp()/sash64\n"),
+    (r">>", f"boot -f bootp()/{NETBOOT_PATH}\n"),
     (r"sash:", "hinv\n"),
     (r"sash:", "printenv\n"),
 )
@@ -313,7 +325,12 @@ def sash_extra_args(prom, tftp, elsc_log, capture):
     (not skipped) power-on diagnostics and SLIRP usermode networking
     serving sash64 with no external TFTP server. Ported from
     tools/sashlib.py's qemu_command(cpus=1, skip_prom_diags=False) -- see
-    this module's docstring for exactly which call sash-gate makes.
+    this module's docstring for exactly which call sash-gate makes -- with
+    one departure: `bootfile=` names NETBOOT_PATH (`boot/sash64`), not
+    sash-gate's own flat `bootfile=sash64`. `tftp` must therefore be a
+    directory that actually has a `boot/sash64` under it (PromSash stages
+    one; see its own comment), not sash-gate's flat assets/boot/<release>
+    tree directly.
 
     set_console() already emits "-serial chardev:console" for serial line
     0 (IOC3 port A, the primary console); the "-serial none" here fills
@@ -336,7 +353,7 @@ def sash_extra_args(prom, tftp, elsc_log, capture):
         '-serial', 'none',
         '-serial', 'chardev:elsc',
         '-nic', ('user,id=net0,net=192.0.2.0/24,host=192.0.2.2,'
-                 f'dhcpstart=192.0.2.15,tftp={tftp},bootfile=sash64'),
+                 f'dhcpstart=192.0.2.15,tftp={tftp},bootfile={NETBOOT_PATH}'),
         '-object', f'filter-dump,id=netcap,netdev=net0,file={capture}',
     ]
 
@@ -455,7 +472,12 @@ if QemuSystemTest is not None:
         def _release_paths(self):
             """The real PROM image and sash64 boot tree under
             ORIGAMI_ASSETS, or None if either is missing -- the runner may
-            not have assets provisioned yet (see this method's caller)."""
+            not have assets provisioned yet (see this method's caller).
+            `tftp` here is sash-gate's own FLAT assets/boot/<release>
+            layout (sash64 alongside sashARCS, unix.IP27, ...), shared,
+            read-only project state this test must not restructure -- see
+            _stage_netboot_tftp() for the PATH-STRUCTURED copy this test's
+            real boot actually serves."""
             assets_root = os.environ.get('ORIGAMI_ASSETS')
             if not assets_root:
                 return None
@@ -465,6 +487,23 @@ if QemuSystemTest is not None:
             if not (os.path.isfile(prom) and os.path.isfile(sash)):
                 return None
             return prom, tftp
+
+        def _stage_netboot_tftp(self, sash):
+            """A fresh tftp root, under this test's own scratch directory,
+            with the real (already digest-checked) sash64 copied in at
+            NETBOOT_PATH -- e.g. <root>/boot/sash64. This is what proves
+            the netboot is PATH-STRUCTURED: SLIRP's tftp= serves whatever
+            bootfile= names relative to this root, so a flat "bootfile=
+            sash64" and this test's own "bootfile=boot/sash64" (see
+            sash_extra_args) are indistinguishable to the PROM unless the
+            file is actually laid out under the requested subdirectory.
+            Returns the staged root's path.
+            """
+            root = self.scratch_file('netboot-tftp')
+            staged_sash = os.path.join(root, *NETBOOT_PATH.split('/'))
+            os.makedirs(os.path.dirname(staged_sash), exist_ok=True)
+            shutil.copyfile(sash, staged_sash)
+            return root
 
         def test_prom_sash(self):
             paths = self._release_paths()
@@ -491,6 +530,8 @@ if QemuSystemTest is not None:
                     f'release {RELEASE} asset identity problems: ' +
                     '; '.join(identity_problems))
 
+            netboot_tftp = self._stage_netboot_tftp(sash)
+
             vm = self.get_vm(name='prom_sash')
             vm.set_machine(
                 'origin200,synthesized-firmware=off,debug-leds=off')
@@ -498,7 +539,8 @@ if QemuSystemTest is not None:
             elsc_log = self.log_file('elsc-aux.log')
             capture = self.log_file('wire.pcap')
             vm.add_args('-accel', 'tcg,thread=single',
-                       *sash_extra_args(prom, tftp, elsc_log, capture))
+                       *sash_extra_args(prom, netboot_tftp, elsc_log,
+                                         capture))
 
             started = _utc_now()
             vm.launch()
@@ -549,7 +591,7 @@ if QemuSystemTest is not None:
                             'origin200,synthesized-firmware=off,'
                             'debug-leds=off'),
                         'args': sash_extra_args(
-                            prom, tftp, elsc_log, capture),
+                            prom, netboot_tftp, elsc_log, capture),
                     },
                     'identity': {
                         'fork': _fork_git_identity(_FORK_ROOT),
