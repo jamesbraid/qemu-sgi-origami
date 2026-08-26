@@ -8,6 +8,7 @@
 #define HW_NET_DP83840_H
 
 #include "hw/core/sysbus.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #define TYPE_DP83840 "dp83840"
@@ -130,6 +131,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83840_LBREMR_LB_MASK       0x0300
 #define DP83840_LBREMR_10BT_LOOPBACK 0x0800
 
+/*
+ * How long autonegotiation takes to settle once the interface starts looking
+ * for a link. QEMU's e1000 models the same delay with a virtual-clock timer;
+ * the DP83840's own datasheet gives roughly 1.5-2.3 seconds against a capable
+ * partner, and two seconds is used here. Any value a polling driver's generous
+ * timeout tolerates would serve it, but the choice also has to clear the
+ * firmware diagnostic's reset-value sweep: that reads status, then the
+ * link-partner and expansion registers about a tenth of a second of virtual
+ * time later (measured), and all three must find the link still settling. Two
+ * seconds leaves that a wide margin even when host load stretches the sweep.
+ */
+#define DP83840_AUTONEG_SETTLE_NS (2 * NANOSECONDS_PER_SECOND)
+
 struct DP83840State {
     SysBusDevice parent_obj;
 
@@ -156,12 +170,28 @@ struct DP83840State {
     /*
      * Whether a link has come up. False out of reset -- a cable-less board on
      * a bench, which is exactly what SGI's power-on diagnostic reads before it
-     * has written this part -- and true once a guest configures the control
-     * register to bring the interface up. See dp83840_write() and
-     * dp83840_reset(). Gates the link and completion bits in the status word
-     * and whether the partner and expansion registers answer non-zero.
+     * has driven this part -- and gated on it are the link and completion bits
+     * in the status word and whether the partner and expansion registers answer
+     * non-zero. It goes true a settling delay after the interface first reads
+     * link status, or at once if a guest writes the control register to force
+     * the link up. See dp83840_read(), dp83840_write() and dp83840_reset().
      */
     bool autoneg_done;
+
+    /*
+     * The autonegotiation settling clock and whether it has been started since
+     * reset. A real part negotiates on its own once autonegotiation is enabled,
+     * which it is at reset; this models that as a delay armed the first time
+     * the interface reads link status. Arming on the read rather than at reset
+     * is deliberate: our wall-clock device timing reaches SGI's power-on
+     * diagnostic tens of seconds of virtual time in, so a reset-armed timer
+     * would already have fired and the diagnostic's single reset-value probe
+     * would see a live link. Armed on the read, that one probe sees the link
+     * still settling -- the bench state it expects -- while a driver that polls
+     * waits the delay out and gets its carrier.
+     */
+    QEMUTimer *settle_timer;
+    bool settle_armed;
 };
 
 void dp83840_reset(DP83840State *s);
