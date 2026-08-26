@@ -34,6 +34,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 
 /*
  * Firmware requires the response to begin "ok" but does not interpret the
@@ -120,6 +121,10 @@ static void elsc_handle_get(SGIElscState *s)
 
     memmove(s->rx_queue, &s->rx_queue[n], s->rx_queue_len - n);
     s->rx_queue_len -= n;
+    trace_sgi_elsc_get(before, s->rx_queue_len, n);
+    if (n) {
+        trace_sgi_elsc_rx_dequeue(n, s->rx_queue_len);
+    }
     if (s->diagnostic && n) {
         device_diagnostic_record(s->diagnostic, "elsc", "console-dequeue",
                                  before, n, 1, true, before,
@@ -157,6 +162,7 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
     if (n > 86) {
         n = 86;   /* "at most 86 characters per transaction" */
     }
+    trace_sgi_elsc_acp(n, text[4]);
     /*
      * A console=d guest relocates its whole session onto this port. If the rig
      * gave the ELSC no character device, the flush below discards the bytes
@@ -520,8 +526,13 @@ static void elsc_arb_step(void *opaque)
      * hardcoded to it, and a second processor's own input path is not
      * modelled, so every other code always presents signal1.
      */
-    elsc_broadcast(s, elsc_signal_byte(s->arb_code,
-                   s->arb_code == 0 && s->rx_queue_len > 0));
+    {
+        bool signal2 = s->arb_code == 0 && s->rx_queue_len > 0;
+        uint8_t signal = elsc_signal_byte(s->arb_code, signal2);
+
+        trace_sgi_elsc_arb_step(s->arb_code, signal, signal2);
+        elsc_broadcast(s, signal);
+    }
     s->arb_present = false;
     s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
     timer_mod(s->arb_timer, now + ELSC_ARB_HOLD_US);
@@ -559,6 +570,7 @@ static void elsc_receive(void *opaque, const uint8_t *buf, int size)
             uint32_t before = s->rx_queue_len;
 
             s->rx_queue[s->rx_queue_len++] = c;
+            trace_sgi_elsc_rx_enqueue(c, s->rx_queue_len);
             if (diagnostic) {
                 if (!before) {
                     device_diagnostic_record(
