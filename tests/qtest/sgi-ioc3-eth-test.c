@@ -55,6 +55,7 @@
 #define ENET_TX_PRODUCE   (IOC3_BAR_ADDR + 0x134)
 #define ENET_MII_DATA_R   (IOC3_BAR_ADDR + 0x14c)
 
+#define MCR_PROMISC       (1u << 1)
 #define MCR_RXOFF_SHIFT   3
 #define MCR_RXOFF(halfwords) ((uint32_t)(halfwords) << MCR_RXOFF_SHIFT)
 #define MCR_TX_DMA_EN     (1u << 13)
@@ -245,6 +246,15 @@ static void pci_cfg_writel(QTestState *qts, uint8_t slot, uint8_t offset,
  * and master, and leave the engine in the state a driver leaves it in. Shared
  * by both attachments below, because which backend is on the other side must
  * be the only thing that differs between them.
+ *
+ * Promiscuous, unlike a real driver: this file's own address-filter
+ * consideration is out of its scope (docs/datasheets/ioc3.md's register
+ * table covers the filter contract, and tests/qtest/sn0-ioc3-test.c is
+ * where it is exercised). Several tests here address a frame with an
+ * arbitrary byte pattern to probe gather and DMA-boundary mechanics rather
+ * than a station address at all, so without this bit the filter this device
+ * now applies would drop them for a reason that has nothing to do with what
+ * they test.
  */
 static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
                           unsigned int buffers)
@@ -266,7 +276,7 @@ static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
      */
     g_assert_cmphex(ioc3_readl(qts, ENET_MII_DATA_R), ==, 0xffff);
 
-    ioc3_writel(qts, ENET_MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN |
+    ioc3_writel(qts, ENET_MAC_CONTROL, MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_RX_RING_HI, 0);
     ioc3_writel(qts, ENET_RX_RING_LO, ring & 0xfffff000u);

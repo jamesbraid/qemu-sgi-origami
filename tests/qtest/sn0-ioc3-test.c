@@ -813,7 +813,12 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define TX_RING_LO        (IOC3_BASE + 0x12c)
 #define TX_CONSUME        (IOC3_BASE + 0x130)
 #define TX_PRODUCE        (IOC3_BASE + 0x134)
+#define MAC_ADDR_HI       (IOC3_BASE + 0x138)
+#define MAC_ADDR_LO       (IOC3_BASE + 0x13c)
+#define HASH_HI           (IOC3_BASE + 0x140)
+#define HASH_LO           (IOC3_BASE + 0x144)
 
+#define MCR_PROMISC       (1u << 1)
 #define MCR_PAD_EN        (1u << 2)
 #define MCR_TX_DMA_EN     (1u << 13)
 #define MCR_TX_EN         (1u << 14)
@@ -2588,7 +2593,16 @@ static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
     net_socket_set_recv_timeout(sv[0], 10);
     qts = sn0_ioc3_attach_with_netdev(sv[1]);
 
-    qtest_writel(qts, MAC_CONTROL, MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    /*
+     * These frames test the checksum-offload partial, not address
+     * filtering, and their destination is an arbitrary wire address
+     * unrelated to any station address -- promiscuous mode keeps the
+     * filter introduced alongside this suite out of their way, the same
+     * choice sgi-ioc3-eth-test.c's shared bring-up makes for its own
+     * out-of-scope frames.
+     */
+    qtest_writel(qts, MAC_CONTROL,
+                MCR_PROMISC | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
     qtest_writel(qts, RX_RING_HI, 0);
     qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
     qtest_writel(qts, ring + 0, 0);
@@ -2652,6 +2666,280 @@ static void test_the_ethernet_receive_refuses_a_corrupt_checksum(const void *dat
     frame[14 + 20 + 20 + 2] ^= 0xff;
 
     g_assert_cmphex(rxcsum_deliver(frame, size), !=, 0xffff);
+}
+
+/*
+ * Address filtering: the model's receive path must compare an incoming
+ * frame's destination against the guest-programmed station address (the MAC
+ * address registers, loaded from EMAR), the broadcast address, the
+ * promiscuous bit in the MAC control register, and the multicast hash
+ * filter (the hash registers, loaded from EHAR) -- not, as the model did
+ * before this change, accept every frame the backend hands it regardless of
+ * address. Real hardware never gives an unaddressed frame to the driver at
+ * all.
+ *
+ * The tests below share one station address, 00:11:22:33:44:55, programmed
+ * the way __ioc3_set_mac_address() in the public Linux driver writes it
+ * (drivers/net/ethernet/sgi/ioc3-eth.c): the low register holds the first
+ * four octets, byte 0 in its low byte; the high register's low sixteen bits
+ * hold the last two.
+ */
+#define FILTER_STATION_HI 0x00005544u
+#define FILTER_STATION_LO 0x33221100u
+
+static void sn0_ioc3_filter_setup(QTestState *qts, uint32_t ring,
+                                  uint32_t rxbuf, uint32_t mcr_extra)
+{
+    qtest_writel(qts, MAC_ADDR_HI, FILTER_STATION_HI);
+    qtest_writel(qts, MAC_ADDR_LO, FILTER_STATION_LO);
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_PRODUCE, 8);
+    qtest_writel(qts, MAC_CONTROL,
+                mcr_extra | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+}
+
+/* Waited for rather than checked once: delivery happens inside the main
+ * loop noticing the socket is readable, not synchronously with the send
+ * that triggers it.
+ */
+static void sn0_ioc3_wait_for_consume(QTestState *qts)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) != 0) {
+            break;
+        }
+        g_usleep(10000);
+    }
+}
+
+/*
+ * A frame addressed to the station address the guest programmed lands in
+ * the ring -- the ordinary case a filter must not break.
+ */
+static void test_address_filter_accepts_station_address(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x10000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x14000;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    sn0_ioc3_wait_for_consume(qts);
+
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+    g_assert_cmphex(qtest_readl(qts, rxbuf + 0) & 0x80000000u, ==, 0x80000000u);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A frame addressed to a different unicast address is not the guest's, and
+ * a real receiver never places it in a buffer.
+ *
+ * This is the fail-first assertion the task calls for: against the model
+ * before this change -- which delivered every frame the backend handed it,
+ * regardless of address -- RX_CONSUME advances here exactly as it does in
+ * the station-address test above, and this assertion fails.
+ */
+static void test_address_filter_drops_foreign_unicast(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x56,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x18000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x1c000;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+    /*
+     * An accepted frame is delivered inside the main loop, not synchronously
+     * with the send above, so a single look could pass before delivery
+     * would have happened at all. The ring index staying put through the
+     * wait is the assertion.
+     */
+    for (attempt = 0; attempt < 20; attempt++) {
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, rxbuf + 0), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A broadcast frame is delivered regardless of the station address -- the
+ * filter's broadcast clause must not regress once station-address filtering
+ * exists alongside it.
+ */
+static void test_the_address_filter_accepts_broadcast(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x20000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x24000;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    sn0_ioc3_wait_for_consume(qts);
+
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The promiscuous bit overrides the filter entirely: the same foreign
+ * unicast address the filter drops above is delivered once it is set.
+ */
+static void test_promiscuous_accepts_a_foreign_unicast_address(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x56,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x06, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x28000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x2c000;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, MCR_PROMISC);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    sn0_ioc3_wait_for_consume(qts);
+
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The multicast hash filter's two halves, checked against the public Linux
+ * driver's own ioc3_hash() rather than against this model's implementation
+ * of it: 01:00:5e:00:00:01 (an ordinary IPv4 multicast address) hashes to
+ * index 31, the top bit of the low hash register; 33:33:00:00:00:01 (an
+ * ordinary IPv6 multicast address) hashes to index 62, bit 30 of the high
+ * one. Exercising one index in each register is what proves both halves are
+ * wired to the filter rather than only the one a single address happens to
+ * land in.
+ */
+static void test_multicast_hash_accepts_a_set_bit_in_the_low_register(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x01,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x30000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x34000;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
+    qtest_writel(qts, HASH_LO, 1u << 31);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    sn0_ioc3_wait_for_consume(qts);
+
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_multicast_hash_accepts_a_set_bit_in_the_high_register(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0x33, 0x33, 0x00, 0x00, 0x00, 0x01,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x86, 0xdd, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x38000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x3c000;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
+    qtest_writel(qts, HASH_HI, 1u << 30);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    sn0_ioc3_wait_for_consume(qts);
+
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The same multicast address as the low-register test above, but with the
+ * hash filter left clear: nothing selects its bit, so it is dropped just as
+ * a foreign unicast address is.
+ */
+static void test_multicast_hash_drops_an_unset_bit(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[16] = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x01,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00, 0xf0, 0x0d };
+    uint32_t ring = RAM_SCRATCH + 0x40000;
+    uint32_t rxbuf = RAM_SCRATCH + 0x44000;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+    for (attempt = 0; attempt < 20; attempt++) {
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
 }
 
 /*
@@ -3163,6 +3451,18 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     unsigned int i;
 
     qts = sn0_ioc3_attach_with_user_net();
+
+    /*
+     * User-mode networking's ARP reply is addressed to the sender of the
+     * request -- 52:54:00:12:34:56 above -- not to the wire's broadcast
+     * address, so the address filter needs the station address programmed
+     * to that value to let it through. A real driver always does this before
+     * enabling receive; this test skips every other part of bring-up, but
+     * not this one, because without it the reply this test exists to catch
+     * is exactly what the filter now drops.
+     */
+    qtest_writel(qts, MAC_ADDR_HI, 0x00005634);
+    qtest_writel(qts, MAC_ADDR_LO, 0x12005452);
 
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
@@ -4259,6 +4559,23 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/ethernet-receive-refuses-a-corrupt-checksum",
                         NULL,
                         test_the_ethernet_receive_refuses_a_corrupt_checksum);
+    qtest_add_data_func("sn0/ioc3/address-filter-accepts-station-address",
+                        NULL,
+                        test_address_filter_accepts_station_address);
+    qtest_add_data_func("sn0/ioc3/address-filter-drops-foreign-unicast", NULL,
+                        test_address_filter_drops_foreign_unicast);
+    qtest_add_data_func("sn0/ioc3/address-filter-accepts-broadcast", NULL,
+                        test_the_address_filter_accepts_broadcast);
+    qtest_add_data_func("sn0/ioc3/promiscuous-accepts-foreign-unicast", NULL,
+                        test_promiscuous_accepts_a_foreign_unicast_address);
+    qtest_add_data_func(
+        "sn0/ioc3/multicast-hash-accepts-set-bit-low-register", NULL,
+        test_multicast_hash_accepts_a_set_bit_in_the_low_register);
+    qtest_add_data_func(
+        "sn0/ioc3/multicast-hash-accepts-set-bit-high-register", NULL,
+        test_multicast_hash_accepts_a_set_bit_in_the_high_register);
+    qtest_add_data_func("sn0/ioc3/multicast-hash-drops-unset-bit", NULL,
+                        test_multicast_hash_drops_an_unset_bit);
     qtest_add_data_func("sn0/ioc3/ethernet-armed-timer-raises-its-source",
                         NULL,
                         test_an_armed_receive_timer_raises_its_own_source);

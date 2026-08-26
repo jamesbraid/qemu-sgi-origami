@@ -185,6 +185,94 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool looped);
 
+/*
+ * The multicast hash-filter bit a destination address selects, replicating
+ * the public Linux driver's ioc3_hash() (drivers/net/ethernet/sgi/ioc3-eth.c):
+ * the low six bits of the standard reflected Ethernet CRC over the address,
+ * with those six bits themselves bit-reversed. net_crc32_le computes the
+ * same reflected, uninverted CRC-32 the kernel's own ether_crc_le() macro
+ * names -- both seed 0xffffffff and never complement the result, since
+ * nothing here needs a wire-format CRC, only a value both ends compute the
+ * same way. Reproducing anything less than the driver's own bit-reversal
+ * would select a different bit than the one it set.
+ */
+static unsigned int sgi_ioc3_eth_mcast_hash(const uint8_t *addr)
+{
+    uint32_t crc = net_crc32_le(addr, 6) & 0x3f;
+    unsigned int index = 0;
+    int bit;
+
+    for (bit = 6; --bit >= 0; ) {
+        index <<= 1;
+        index |= crc & 0x1;
+        crc >>= 1;
+    }
+    return index;
+}
+
+/*
+ * Whether a frame off the wire should reach the ring at all. Real hardware
+ * filters by destination address before a frame is ever written to buffer
+ * RAM; a model that skips this step is effectively always promiscuous.
+ *
+ * The station address compared against comes from the guest-programmed MAC
+ * address registers, never the backend NIC's own address -- see
+ * sgi_ioc3_eth_realize's comment on why the backend's address has no
+ * relation to what the guest's driver believes its own address is.
+ * Filtering against the backend's address would drop every frame a guest
+ * ever addressed to itself.
+ */
+static bool sgi_ioc3_eth_rx_filter(SGIIOC3EthState *s, const uint8_t *buf,
+                                   size_t size)
+{
+    static const uint8_t broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint32_t mcr = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL);
+    uint32_t addr_hi, addr_lo, hash_hi, hash_lo;
+    uint8_t station[6];
+    unsigned int index;
+
+    if (mcr & SGI_IOC3_ENET_MCR_PROMISC) {
+        return true;
+    }
+
+    if (size < 6) {
+        return false;
+    }
+
+    /*
+     * The station address registers hold the six bytes the way the driver
+     * writes them -- see docs/datasheets/ioc3.md's ethernet register table
+     * and drivers/net/ethernet/sgi/ioc3-eth.c's __ioc3_set_mac_address():
+     * the low register carries the first four octets, byte 0 in its low
+     * byte, and the high register's low sixteen bits carry the last two.
+     */
+    addr_hi = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_ADDR_HI);
+    addr_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_ADDR_LO);
+    station[0] = addr_lo;
+    station[1] = addr_lo >> 8;
+    station[2] = addr_lo >> 16;
+    station[3] = addr_lo >> 24;
+    station[4] = addr_hi;
+    station[5] = addr_hi >> 8;
+    if (memcmp(buf, station, 6) == 0) {
+        return true;
+    }
+
+    if (memcmp(buf, broadcast, 6) == 0) {
+        return true;
+    }
+
+    if (!(buf[0] & 1)) {
+        /* Unicast, and it matched neither the station address nor all-ones. */
+        return false;
+    }
+
+    hash_hi = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_HASH_HI);
+    hash_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_HASH_LO);
+    index = sgi_ioc3_eth_mcast_hash(buf);
+    return ((index < 32 ? hash_lo : hash_hi) >> (index & 31)) & 1;
+}
+
 static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
                                     size_t size)
 {
@@ -196,6 +284,20 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
             sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
             sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME));
         return 0;
+    }
+
+    if (!sgi_ioc3_eth_rx_filter(s, buf, size)) {
+        /*
+         * Address filtering, not flow control: nothing about this frame
+         * changes on a retry, so a real receiver simply never places it in
+         * a buffer. Reporting it consumed -- rather than 0, which asks the
+         * net queue to hold and redeliver the same packet once this device
+         * can receive again -- is what matters here: a 0 return would leave
+         * a frame no future retry can ever pass wedged at the head of the
+         * queue, blocking everything sent after it.
+         */
+        trace_sgi_ioc3_eth_rx_filtered((uint32_t)size);
+        return size;
     }
 
     return sgi_ioc3_eth_deliver(s, buf, size, false);
