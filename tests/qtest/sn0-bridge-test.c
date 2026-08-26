@@ -1124,6 +1124,36 @@ static void test_translation_entries_reset_clear(const void *data)
 #define DMA_REG_LENGTH          0x04
 #define DMA_REG_SEED            0x08
 #define DMA_REG_GO              0x0c
+#define DMA_REG_SOURCE          0x14
+#define DMA_REG_ADDRESS_HI      0x18   /* high 32 bits of the destination */
+#define DMA_REG_SOURCE_HI       0x1c   /* high 32 bits of the copy source */
+
+/*
+ * The two-node machine, and the 64-bit DMA that only reaches its second node
+ * when the direct window decodes 64-bit addresses. A DMA from the base I/O
+ * bridge (node 0) to node 1's RAM issues a 64-bit address cycle: bits 63:60 are
+ * the target widget, bits 47:0 the crosstalk address, and bit 32 of that is the
+ * NASID. The 32-bit direct path keeps only bits 0-30, dropping bit 32, so a
+ * node-1 target collapses into node 0's RAM. Node 1's RAM lives at NASID<<32.
+ */
+#define MACHINE_TWO_NODE \
+    "-M origin200,io-bridge=on -m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
+
+#define NODE1_PCI_ADDR          0xa000000100bc4000ULL /* widget 0xa, xtalk 0x100bc4000 */
+#define NODE1_SYS_ADDR          0x100bc4000ULL        /* node 1 RAM: NASID 1 << 32 + off */
+#define NODE0_TRUNCATED_ADDR    0x00bc4000ULL         /* where dropping bit 32 lands it */
+#define DMA64_SEED              0x51
+#define DMA64_LEN               16
+
+/* The read direction: a copy's 64-bit source in node 1, its destination in node 0. */
+#define COPY_SRC_PCI            0xa000000100c00000ULL /* widget 0xa, xtalk 0x100c00000 */
+#define COPY_SRC_SYS            0x100c00000ULL        /* node 1 RAM holding the source */
+#define COPY_DST_ADDR           0x00300000u           /* a node-0 local destination */
 
 /* Where the transfer source's own registers are put in PCI memory space. */
 #define DMA_CARD_MMIO           CARD_MMIO(DMA_SLOT)
@@ -1831,6 +1861,93 @@ static void test_dma_local_space_is_never_swapped(const void *data)
 
         qtest_quit(qts);
     }
+}
+
+/*
+ * The 64-bit direct decode, the assertion this change exists for. A DMA from
+ * node 0's bridge to a node-1 address above 4 GiB must land in node 1's RAM.
+ * Bit 32 of the crosstalk address is the NASID; the 32-bit direct path keeps
+ * only bits 0-30 and drops it, collapsing a node-1 target into node 0's RAM.
+ * For a write that is silent corruption of another node's memory, so this
+ * asserts both that node 1 received the bytes and that node 0's low RAM — where
+ * the dropped bit would have put them — is untouched.
+ */
+static void test_dma_direct_window_reaches_the_second_node(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_TWO_NODE
+                                 " -device sgi-bridge-dma-test,addr=6,bus=pci");
+    uint8_t seen[DMA64_LEN], node0[DMA64_LEN];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+
+    /* Offset zero and the 512 MB step cleared, so the address decodes to itself. */
+    qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
+
+    /* Program the 64-bit destination: the low half, then the high half. */
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                 (uint32_t)NODE1_PCI_ADDR);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI,
+                 NODE1_PCI_ADDR >> 32);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, DMA64_LEN);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, DMA64_SEED);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
+
+    /* It reached node 1's RAM at the full address, not truncated into node 0. */
+    qtest_memread(qts, NODE1_SYS_ADDR, seen, sizeof(seen));
+    for (i = 0; i < DMA64_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
+    }
+
+    /* Node 0's low RAM, where dropping bit 32 would have landed it, is clean. */
+    qtest_memread(qts, NODE0_TRUNCATED_ADDR, node0, sizeof(node0));
+    for (i = 0; i < DMA64_LEN; i++) {
+        g_assert_cmpuint(node0[i], ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The read direction of the same decode. A copy reads its source through the
+ * bridge, so a 64-bit source above 4 GiB must be fetched from node 1's RAM, not
+ * truncated into node 0's. Seed node 1's RAM, copy from that 64-bit source to a
+ * node-0 local destination, and the destination holds node 1's bytes only if
+ * the read reached node 1.
+ */
+static void test_dma_direct_window_reads_the_second_node(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_TWO_NODE
+                                 " -device sgi-bridge-dma-test,addr=6,bus=pci");
+    uint8_t pattern[DMA64_LEN], seen[DMA64_LEN];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
+
+    /* Seed node 1's RAM at the 64-bit source; a truncated read would miss it. */
+    for (i = 0; i < DMA64_LEN; i++) {
+        pattern[i] = (uint8_t)(DMA64_SEED + i);
+    }
+    qtest_memwrite(qts, COPY_SRC_SYS, pattern, sizeof(pattern));
+
+    /* Copy from the 64-bit node-1 source to a node-0 local destination. */
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE, (uint32_t)COPY_SRC_PCI);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI, COPY_SRC_PCI >> 32);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, COPY_DST_ADDR);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI, 0);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, DMA64_LEN);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);   /* GO_COPY */
+
+    /* The destination holds node 1's bytes, proving the read reached node 1. */
+    qtest_memread(qts, COPY_DST_ADDR, seen, sizeof(seen));
+    for (i = 0; i < DMA64_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
+    }
+
+    qtest_quit(qts);
 }
 
 /* The interrupt registers, and the fields these tests drive. */
@@ -3057,6 +3174,10 @@ int main(int argc, char **argv)
                         NULL, test_dma_the_two_swap_bits_are_independent);
     qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
                         test_dma_local_space_is_never_swapped);
+    qtest_add_data_func("sn0/bridge/dma-direct-window-reaches-the-second-node",
+                        NULL, test_dma_direct_window_reaches_the_second_node);
+    qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",
+                        NULL, test_dma_direct_window_reads_the_second_node);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
