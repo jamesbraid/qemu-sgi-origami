@@ -408,7 +408,7 @@ def _drive_install(sock, log_path, timeout):
 
             if (window and now - last_byte_time > FALLBACK_QUIET and
                     window != fallback_fired_for and
-                    re.search(r"[?:\])]\s*$", window)):
+                    re.search(r"\]\s*$", window)):
                 sock.sendall(b"\n")
                 last_send = now
                 fallback_fired_for = window
