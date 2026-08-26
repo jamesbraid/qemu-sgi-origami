@@ -195,7 +195,7 @@ static char *write_prid_guest(void)
     return path;
 }
 
-static void test_selected_cpu_identity(const void *data)
+static void test_baseline_cpu_identity(const void *data)
 {
     g_autofree char *kernel = write_prid_guest();
     QTestState *qts;
@@ -215,7 +215,7 @@ static void test_selected_cpu_identity(const void *data)
     g_unlink(kernel);
 }
 
-static void test_selected_device_identity(const void *data)
+static void test_baseline_device_identity(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t ni = qtest_readq(qts, SN0_HUB_LOCAL + SN0_NI_STATUS);
@@ -1068,10 +1068,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/model/config-graph", NULL, test_config_graph);
-    qtest_add_data_func("sn0/model/selected-device-identity", NULL,
-                        test_selected_device_identity);
-    qtest_add_data_func("sn0/model/selected-cpu-identity", NULL,
-                        test_selected_cpu_identity);
+    qtest_add_data_func("sn0/model/baseline-device-identity", NULL,
+                        test_baseline_device_identity);
+    qtest_add_data_func("sn0/model/baseline-cpu-identity", NULL,
+                        test_baseline_cpu_identity);
     qtest_add_data_func("sn0/model/graph-whole-region", NULL,
                         test_graph_whole_region);
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);

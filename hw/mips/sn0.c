@@ -2025,7 +2025,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
 
 /*
  * The configuration graph: a header carrying the console descriptor inline,
- * then the three boards a single-node Origin 200 has.
+ * then the three board records a single-node Origin 200 emits.
  *
  * The board list follows what a real machine of this generation emits rather
  * than what would be tidiest. Its midplane board carries no crossbar component
@@ -2147,7 +2147,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     console[0x22] = SN0_CONSOLE_WIDGET;
     console[0x23] = SN0_IOC3_DEVICE;            /* controller's PCI device */
 
-    /* Board 0: the node board, with its processors, Hub and memory banks. */
+    /* Board 0: the processor-node record, with CPUs, Hub, and memory banks. */
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
               SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, cpu_count + 2,
               cpu_count + 2, node_state->nasid);
@@ -2218,8 +2218,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     }
 
     /*
-     * Board 1: the midplane, carrying a module serial number and nothing else,
-     * which is what a real Origin 200 emits.
+     * Board 1: the midplane record, carrying a module serial number and
+     * nothing else, which is what a real Origin 200 emits.
      *
      * Real firmware populates that one component and declares a count of
      * zero — deliberately, not by omission. OpenBSD's enumeration loop runs
@@ -2239,8 +2239,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                   SN0_COMP_REV_UNKNOWN, 0, 0);
 
     /*
-     * Board 2: the base-I/O board, and the end of the list. Nothing on the path
-     * to the console switch reads it; it is here because the graph has to
+     * Board 2: the base-I/O record, and the end of the list. Nothing on the
+     * path to the console switch reads it; it is here because the graph has to
      * describe the machine that was actually built, and because the moment a
      * console works this is what a guest walks looking for one.
      *
@@ -3642,14 +3642,13 @@ static void sn0_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "bridge", &s->io_bridge[0],
                             TYPE_SGI_BRIDGE);
     /*
-     * The silicon revision of the I/O bridge fitted to this machine. It is a
-     * candidate value rather than a fact about the machine type — two real
-     * Origin 200s report different revisions — so the command line can set it
-     * and two runs can differ in it and in nothing else.
+     * The silicon revision of the I/O bridge installed in this configuration.
+     * Real Origin 200 systems report more than one revision, so the command
+     * line can select a different captured configuration.
      *
      * It reaches widget 0 as well as widget 8 without being written twice,
      * because those are one chip and this is the one place the machine says
-     * which chip it fitted.
+     * which chip revision is installed.
      */
     qdev_prop_set_uint32(DEVICE(&s->io_bridge[0]), "revision",
                          s->widget0_revision);
@@ -4186,9 +4185,9 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "controller reports their active-low wire value to firmware.");
 
     /*
-     * The representative machine reports revision 4. Keep the property
-     * settable so another captured specimen can be measured without changing
-     * the Bridge device's general default or introducing a machine profile.
+     * The documented baseline reports revision 4. Keep the property settable
+     * so another captured configuration can be measured without changing the
+     * Bridge device's general default or introducing a machine profile.
      */
     object_class_property_add(oc, "widget0-revision", "uint32",
                               sn0_get_widget0_revision,
