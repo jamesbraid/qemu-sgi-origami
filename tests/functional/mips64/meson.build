@@ -40,6 +40,11 @@ test_mips64_timeouts = {
   # their own fixed per-step timeout on top of the login budget (ported
   # from tools/net-transfer-diag) rather than sharing it.
   'openbsd_net_transfer' : 1400,
+  # A full unattended OpenBSD/sgi 6.9 install (test_openbsd_install.py) is
+  # 20-30 minutes; INSTALL_TIMEOUT_SECONDS there keeps a 60s margin under
+  # this, the same margin every other test in this directory keeps
+  # against its own meson timeout.
+  'openbsd_install' : 2400,
 }
 
 tests_mips64_system_quick = [
@@ -58,4 +63,5 @@ tests_mips64_system_thorough = [
   'openbsd_login',
   'linux_kernel',
   'openbsd_net_transfer',
+  'openbsd_install',
 ]
