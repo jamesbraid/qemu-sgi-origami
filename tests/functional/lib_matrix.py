@@ -9,16 +9,34 @@ parse_matrix() turns a manifest into Cell records; machine_props() and
 qemu_args() turn a Cell into the -M value and the rest of the QEMU
 command line; resolve_prom() and prom_args() supply the real PROM
 image a firmware=prom cell's -M string demands (a firmware=synth cell
-needs neither); verdict() turns a cell and its recorded AttemptResults
-into a pass/fail/xfail/xpass/error outcome. Later stages of this
-subsystem (the generic test body and the meson projection) build on
-all four.
+needs neither); pass_condition_met() decides whether a captured boot
+log satisfies a cell's pass condition (the firmware progress mark for
+a real boot, a first progress code for the asset-free smoke scenario);
+verdict() turns a cell and its recorded AttemptResults into a
+pass/fail/xfail/xpass/error outcome. Later stages of this subsystem
+(the generic test body and the meson projection) build on all of
+these.
 """
 
 import os
 import re
+import sys
 from dataclasses import dataclass, fields
 from pathlib import Path
+
+# test_prom_boot.py lives one directory down (tests/functional/mips64/), not
+# on sys.path by default here -- inserted the same way test_lib_matrix.py
+# does, so pass_condition_met() below can reach MARK, codes_seen() and
+# mark_reached(). The insertion itself is harmless at module load (it does
+# not import anything yet); the import stays deferred to pass_condition_met's
+# own body rather than happening here, because test_prom_boot.py already
+# does `from lib_matrix import Cell, machine_props, qemu_args,
+# _PROGRESS_CODE_RE` -- an eager import back from here would be a load-time
+# cycle, breaking whichever of the two modules a caller (e.g.
+# test_prom_boot_verdict.py, which imports test_prom_boot directly) happens
+# to load first. By call time both modules have always finished loading.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'mips64'))
 
 
 class MatrixError(Exception):
@@ -40,7 +58,7 @@ class Cell:
     attempts: int
     min_passes: int
     expect: str
-    xfail_oracle: str
+    xfail_mark: str
     xfail_signature: str
 
 
@@ -119,11 +137,11 @@ def _validate(path, lineno, cell):
     if cell.expect not in _VALID_EXPECTS:
         raise MatrixError(
             f'{path}:{lineno}: unknown expect {cell.expect!r}')
-    if cell.expect == 'xfail' and not (cell.xfail_oracle and
+    if cell.expect == 'xfail' and not (cell.xfail_mark and
                                         cell.xfail_signature):
         raise MatrixError(
             f'{path}:{lineno}: xfail cell {cell.id!r} needs both '
-            'xfail_oracle and xfail_signature')
+            'xfail_mark and xfail_signature')
 
 
 # The two accelerator regimes a cell's accel field may select between:
@@ -227,17 +245,17 @@ def prom_args(firmware_path):
 
 @dataclass
 class AttemptResult:
-    """The outcome of one boot attempt against a cell's oracle.
+    """The outcome of one boot attempt against a cell's pass condition.
 
-    reached_oracle is True when the attempt observed its expected
+    reached_pass is True when the attempt observed its expected
     success signal (a progress code, exit marker, or console pattern,
-    depending on the cell's oracle). signature is the failure
+    depending on the cell's pass condition). signature is the failure
     signature recorded when it did not, for matching against an xfail
     cell's xfail_signature. infra_error is set instead of either when
     the attempt could not run to a real verdict at all — a missing
     asset, a QEMU crash, a timeout with no signature captured.
     """
-    reached_oracle: bool
+    reached_pass: bool
     signature: str | None = None
     infra_error: str | None = None
 
@@ -250,11 +268,12 @@ def verdict(cell, attempts):
     An infra_error on any attempt always wins: it is never absorbed
     into a pass or an xfail, because it means the attempt never
     produced a real answer about the guest. Otherwise a 'pass' cell
-    passes once at least min_passes attempts reached the oracle, and
-    an 'xfail' cell passes (as 'xfail') only when every attempt that
-    missed the oracle failed with exactly the recorded xfail_signature
-    — reaching the oracle at all is an 'xpass', and missing it with a
-    different signature is a real 'fail'.
+    passes once at least min_passes attempts reached their pass
+    condition, and an 'xfail' cell passes (as 'xfail') only when every
+    attempt that missed its pass condition failed with exactly the
+    recorded xfail_signature — reaching the pass condition at all is
+    an 'xpass', and missing it with a different signature is a real
+    'fail'.
     """
     if not attempts:
         raise MatrixError(
@@ -267,14 +286,14 @@ def verdict(cell, attempts):
         return 'error'
 
     if cell.expect == 'pass':
-        reached = sum(1 for attempt in attempts if attempt.reached_oracle)
+        reached = sum(1 for attempt in attempts if attempt.reached_pass)
         return 'pass' if reached >= cell.min_passes else 'fail'
 
     # cell.expect == 'xfail'
-    if all(attempt.reached_oracle for attempt in attempts):
+    if all(attempt.reached_pass for attempt in attempts):
         return 'xpass'
     signatures = {attempt.signature for attempt in attempts
-                  if not attempt.reached_oracle}
+                  if not attempt.reached_pass}
     if signatures == {cell.xfail_signature}:
         return 'xfail'
     return 'fail'
@@ -301,6 +320,43 @@ def first_progress_code(text):
         if kind == 'progress':
             return code
     return None
+
+
+def pass_condition_met(scenario, log_text):
+    """Whether log_text (a captured boot log) satisfies scenario's pass
+    condition. Pure text-in, bool-out -- unit-testable without a boot.
+
+    The 'smoke' scenario is the asset-free harness self-test: it keeps
+    the weaker signal it always has, any progress code appearing at all
+    (first_progress_code() above) -- it exists to prove the harness
+    end-to-end against a machine that has no firmware image to run and
+    so has no code path that could ever write a progress indicator. The
+    framework glue additionally accepts a QMP-confirmed running VM with
+    no code at all, which needs a live VM and so stays the caller's job,
+    not this function's.
+
+    Every other scenario is a real firmware boot, and passes only when
+    the recorded firmware-boot progress mark (test_prom_boot.MARK) is a
+    SUBSET of the codes seen in log_text -- test_prom_boot's own
+    mark_reached(codes_seen(log_text), MARK). A boot that wedges after
+    an early code never reaches the mark and so never satisfies this;
+    the timeout path stays the caller's job too.
+
+    test_prom_boot is imported here, at call time rather than at this
+    module's own load time, to avoid a load-time import cycle: that
+    module already does `from lib_matrix import Cell, machine_props,
+    qemu_args, _PROGRESS_CODE_RE`, so importing it back at the top of
+    this file would try to load whichever of the two a caller happens to
+    reach first (e.g. test_prom_boot_verdict.py, which imports
+    test_prom_boot directly) while it is still mid-import. By the time
+    anything actually calls this function, both modules have always
+    finished loading.
+    """
+    if scenario == 'smoke':
+        return first_progress_code(log_text) is not None
+    from test_prom_boot import MARK, codes_seen, mark_reached
+    reached, _missing = mark_reached(codes_seen(log_text), MARK)
+    return reached
 
 
 def _split_mem(mem, nodes):

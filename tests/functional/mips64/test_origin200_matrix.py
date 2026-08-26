@@ -6,8 +6,9 @@
 """
 One test_<id> method per row of origin200-matrix, attached to OriginMatrix
 at class-definition time by parse_matrix(). All per-cell configuration,
-command-line construction, oracle scoring, retry and expected-failure logic
-lives in lib_matrix; this file only wires it to a real boot.
+command-line construction, pass-condition scoring, retry and
+expected-failure logic lives in lib_matrix; this file only wires it to a
+real boot.
 """
 
 import os
@@ -16,14 +17,15 @@ import time
 from qemu_test import QemuSystemTest
 
 from lib_matrix import (AttemptResult, FIRMWARE_REL_PATH, first_progress_code,
-                        machine_props, parse_matrix, prom_args, qemu_args,
-                        resolve_prom, verdict)
+                        machine_props, parse_matrix, pass_condition_met,
+                        prom_args, qemu_args, resolve_prom, verdict)
 
 
 MATRIX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'origin200-matrix')
 
-# How often to re-check the oracle while an attempt's boot is in flight.
+# How often to re-check the pass condition while an attempt's boot is in
+# flight.
 POLL_INTERVAL_SECONDS = 0.05
 
 
@@ -61,12 +63,12 @@ def _boot_one_attempt(test, cell, attempt_index):
     except Exception as exc:  # pylint: disable=broad-except
         # Any failure to launch at all -- missing asset, a crash before
         # QMP came up, and so on -- is infrastructure, never a quiet
-        # reached_oracle=False: verdict() must never absorb it into an
+        # reached_pass=False: verdict() must never absorb it into an
         # ordinary fail or (worse) an xfail match.
-        return AttemptResult(reached_oracle=False, infra_error=str(exc))
+        return AttemptResult(reached_pass=False, infra_error=str(exc))
 
     log_path = test.log_file(f'{name}.log')
-    result = _wait_for_oracle(test, vm, cell, log_path)
+    result = _wait_for_pass(test, vm, cell, log_path)
     # A VM that crashed mid-boot has already exited on its own. A
     # graceful shutdown() against an already-dead process still raises
     # AbnormalShutdown even though qemu is in fact gone -- uncaught,
@@ -77,34 +79,39 @@ def _boot_one_attempt(test, cell, attempt_index):
     return result
 
 
-def _wait_for_oracle(test, vm, cell, log_path):
-    """Poll for cell's oracle for up to cell.timeout seconds.
+def _wait_for_pass(test, vm, cell, log_path):
+    """Poll for cell's pass condition for up to cell.timeout seconds.
 
-    The firmware progress-code oracle (first_progress_code over the
-    QEMU process's own captured log, where the sgi_hub_led trace event
-    lands) applies to every cell. The 'smoke' scenario additionally
-    accepts the VM simply being confirmed alive and QMP-running with
-    no code at all: it exists to prove the harness end-to-end --
-    enumerate, boot, oracle, verdict -- against a machine that has no
-    firmware image to run and so has no code path that could ever
-    write a progress indicator. A real firmware or IRIX cell's
-    scenario is never 'smoke', so this fallback never weakens their
-    oracle.
+    lib_matrix.pass_condition_met() decides from the log text alone: for
+    the 'smoke' scenario, any progress code at all (first_progress_code,
+    over the QEMU process's own captured log, where the sgi_hub_led
+    trace event lands); for every other scenario -- a real firmware
+    boot -- only the full recorded firmware-boot progress mark. The
+    'smoke' scenario additionally accepts the VM simply being confirmed
+    alive and QMP-running with no code at all, checked here rather than
+    in that pure helper since it needs a live VM: it exists to prove the
+    harness end-to-end -- enumerate, boot, pass condition, verdict --
+    against a machine that has no firmware image to run and so has no
+    code path that could ever write a progress indicator. A real
+    firmware or IRIX cell's scenario is never 'smoke', so this fallback
+    never weakens their pass condition -- a boot that wedges after an
+    early code does not reach the mark, and times out instead.
     """
     deadline = time.monotonic() + cell.timeout
     while time.monotonic() < deadline:
         exitcode = vm.exitcode()
         if exitcode is not None:
             return AttemptResult(
-                reached_oracle=False,
+                reached_pass=False,
                 infra_error=f'qemu exited early with code {exitcode}')
 
         if os.path.exists(log_path):
             with open(log_path, encoding='utf-8', errors='replace') as fobj:
-                code = first_progress_code(fobj.read())
-            if code is not None:
-                return AttemptResult(reached_oracle=True,
-                                     signature=f'progress:{code}')
+                log_text = fobj.read()
+            if pass_condition_met(cell.scenario, log_text):
+                signature = (f'progress:{first_progress_code(log_text)}'
+                            if cell.scenario == 'smoke' else 'progress-mark')
+                return AttemptResult(reached_pass=True, signature=signature)
 
         if cell.scenario == 'smoke':
             try:
@@ -112,12 +119,12 @@ def _wait_for_oracle(test, vm, cell, log_path):
             except Exception:  # pylint: disable=broad-except
                 status = None
             if status is not None and status.get('running'):
-                return AttemptResult(reached_oracle=True,
+                return AttemptResult(reached_pass=True,
                                      signature='qmp-running')
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
-    return AttemptResult(reached_oracle=False, signature='timeout')
+    return AttemptResult(reached_pass=False, signature='timeout')
 
 
 def _make(cell):
@@ -138,13 +145,14 @@ def _make(cell):
             return
         if outcome == 'xpass':
             self.fail(f'{cell.id}: expected xfail ({cell.xfail_signature!r}) '
-                      f'but every attempt reached the oracle: {attempts}')
+                      f'but every attempt reached its pass condition: '
+                      f'{attempts}')
         if outcome == 'error':
             errors = [a.infra_error for a in attempts
                      if a.infra_error is not None]
             self.fail(f'{cell.id}: infrastructure error: {errors}')
         # outcome == 'fail'
-        self.fail(f'{cell.id}: did not reach its oracle '
+        self.fail(f'{cell.id}: did not reach its pass condition '
                   f'({cell.min_passes} of {cell.attempts} required): '
                   f'{attempts}')
 
