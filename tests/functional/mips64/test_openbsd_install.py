@@ -146,11 +146,14 @@ MEMORY_MIB = 128
 TARGET_DISK_SIZE = '2G'   # matches the golden's own sd0: 2048MB
 SETS_DISK_SIZE = '512m'   # matches tools/openbsd-install's own default
 
-# A full install is 20-30 minutes (this module's own docstring); kept a
-# 60s margin under the 2400s meson timeout registered for this test
-# (mips64/meson.build), the same margin every other test in this
+# A full install is 20-30 minutes under a quiet host (this module's own
+# docstring), but a real run on a contended host was still doing
+# genuine work (confirmed via /proc/<pid>/io, not a hang) in the final
+# kernel-relink step past 40 minutes. 90 minutes gives that headroom;
+# kept a 60s margin under the 5400s meson timeout registered for this
+# test (mips64/meson.build), the same margin every other test in this
 # directory keeps against its own meson timeout.
-INSTALL_TIMEOUT_SECONDS = 2340
+INSTALL_TIMEOUT_SECONDS = 5340
 
 
 # ---------------------------------------------------------------------------
