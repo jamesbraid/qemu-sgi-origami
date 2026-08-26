@@ -862,6 +862,8 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define TXD_DATA_VALID    (1u << 16)
 #define TXD_BUF1_VALID    (1u << 17)
 #define TXD_BUF2_VALID    (1u << 18)
+#define TXD_DOCHECKSUM    (1u << 19)
+#define TXD_CHKOFF_SHIFT  20
 #define TXD_BUF1_LEN_SHIFT 8
 #define TXD_BUF2_LEN_SHIFT 20
 
@@ -1723,6 +1725,263 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
     g_assert_cmpint(got, ==, sizeof(expect));
     g_assert_cmpmem(received, got, expect, sizeof(expect));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A ones-complement Internet checksum (RFC 1071), hand rolled here rather
+ * than borrowed from the model under test -- the assertion below is that the
+ * engine's answer matches an independently computed one, not that two copies
+ * of the same code agree with each other.
+ */
+static uint32_t inet_sum_add(uint32_t sum, const uint8_t *data, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)data[i] << 8) | data[i + 1];
+    }
+    if (len & 1) {
+        sum += (uint32_t)data[len - 1] << 8;
+    }
+    return sum;
+}
+
+static uint16_t inet_sum_fold(uint32_t sum)
+{
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+/*
+ * The TCP/UDP checksum over a pseudo header (source and destination address,
+ * zero, protocol, and segment length) followed by the segment itself with
+ * its own checksum field zeroed -- RFC 793 and RFC 768 define the transport
+ * checksum this way, and it is what the driver's own pseudo-header partial
+ * and the engine's finished sum both have to agree on. csum_off is the
+ * two-byte checksum field's offset within the segment; the caller's own
+ * buffer is left untouched, so this can run against a segment that still
+ * carries a deliberately wrong checksum for the test to overwrite.
+ */
+static uint16_t inet_transport_checksum(uint8_t proto,
+                                        const uint8_t src_ip[4],
+                                        const uint8_t dst_ip[4],
+                                        const uint8_t *segment,
+                                        size_t seg_len, size_t csum_off)
+{
+    uint8_t pseudo[12];
+    uint8_t zeroed[64];
+    uint32_t sum;
+
+    g_assert_cmpuint(seg_len, <=, sizeof(zeroed));
+    memcpy(zeroed, segment, seg_len);
+    zeroed[csum_off] = 0;
+    zeroed[csum_off + 1] = 0;
+
+    memcpy(pseudo, src_ip, 4);
+    memcpy(pseudo + 4, dst_ip, 4);
+    pseudo[8] = 0;
+    pseudo[9] = proto;
+    pseudo[10] = (uint8_t)(seg_len >> 8);
+    pseudo[11] = (uint8_t)seg_len;
+
+    sum = inet_sum_add(0, pseudo, sizeof(pseudo));
+    sum = inet_sum_add(sum, zeroed, seg_len);
+    return inet_sum_fold(sum);
+}
+
+/*
+ * A descriptor that asks the engine to insert the transmit checksum must
+ * leave with a correct UDP checksum, not the driver's pre-loaded pseudo-
+ * header partial -- "Inserting a transmit checksum" in the datasheet's
+ * transmit-descriptor section. The frame below carries a deliberately wrong
+ * checksum field so the assertion fails if the engine leaves it alone.
+ */
+static void test_the_ethernet_transmit_inserts_udp_checksum(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    static const uint8_t src_ip[4] = { 10, 0, 2, 15 };
+    static const uint8_t dst_ip[4] = { 10, 0, 2, 3 };
+    uint8_t frame[46] = {
+        /* Ethernet header: destination, source, ethertype IPv4. */
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        0x08, 0x00,
+        /* IPv4 header: version/IHL, DSCP, total length 32, id 0,
+         * flags/frag 0, ttl 64, protocol UDP, header checksum 0 (the
+         * driver's own, untouched by this engine), source 10.0.2.15,
+         * destination 10.0.2.3. */
+        0x45, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
+        64, 17, 0x00, 0x00, 10, 0, 2, 15, 10, 0, 2, 3,
+        /* UDP header: source port 1024, destination port 53 (DNS), length
+         * 12, and a checksum that is deliberately wrong. */
+        0x04, 0x00, 0x00, 0x35, 0x00, 0x0c, 0xde, 0xad,
+        /* Payload. */
+        'p', 'i', 'n', 'g',
+    };
+    uint8_t received[128];
+    uint16_t correct_csum;
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+    const unsigned int udp_off = 34;
+    const unsigned int udp_len = 12;
+    const unsigned int csoff = udp_off + 6;
+
+    correct_csum = inet_transport_checksum(17, src_ip, dst_ip,
+                                           frame + udp_off, udp_len, 6);
+    /*
+     * Guard the test's own premise: if the payload happened to checksum to
+     * the same value the field already (wrongly) holds, a model that never
+     * touches the field would pass by accident.
+     */
+    g_assert_cmphex(correct_csum, !=, 0xdead);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID |
+                TXD_DOCHECKSUM | (csoff << TXD_CHKOFF_SHIFT));
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(frame));
+
+    /* Everything but the two checksum bytes must be untouched. */
+    g_assert_cmpmem(received, csoff, frame, csoff);
+    g_assert_cmpmem(received + csoff + 2, got - csoff - 2,
+                    frame + csoff + 2, sizeof(frame) - csoff - 2);
+
+    g_assert_cmphex(received[csoff], ==, (uint8_t)(correct_csum >> 8));
+    g_assert_cmphex(received[csoff + 1], ==, (uint8_t)correct_csum);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* The TCP case, alongside UDP's -- both are ETXD_DOCHECKSUM's transport. */
+static void test_the_ethernet_transmit_inserts_tcp_checksum(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    static const uint8_t src_ip[4] = { 10, 0, 2, 15 };
+    static const uint8_t dst_ip[4] = { 10, 0, 2, 3 };
+    uint8_t frame[54] = {
+        /* Ethernet header: destination, source, ethertype IPv4. */
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        0x08, 0x00,
+        /* IPv4 header: version/IHL, DSCP, total length 40, id 0,
+         * flags/frag 0, ttl 64, protocol TCP, header checksum 0 (the
+         * driver's own, untouched by this engine), source 10.0.2.15,
+         * destination 10.0.2.3. */
+        0x45, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00,
+        64, 6, 0x00, 0x00, 10, 0, 2, 15, 10, 0, 2, 3,
+        /* TCP header, no options: source port 4096, destination port 80,
+         * sequence number 1, no ack, data offset 5 with SYN set, window
+         * 8192, a deliberately wrong checksum, no urgent pointer. */
+        0x10, 0x00, 0x00, 0x50,
+        0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+        0x50, 0x02, 0x20, 0x00,
+        0xbe, 0xef, 0x00, 0x00,
+    };
+    uint8_t received[128];
+    uint16_t correct_csum;
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+    const unsigned int tcp_off = 34;
+    const unsigned int tcp_len = 20;
+    const unsigned int csoff = tcp_off + 16;
+
+    correct_csum = inet_transport_checksum(6, src_ip, dst_ip,
+                                           frame + tcp_off, tcp_len, 16);
+    g_assert_cmphex(correct_csum, !=, 0xbeef);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID |
+                TXD_DOCHECKSUM | (csoff << TXD_CHKOFF_SHIFT));
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(frame));
+
+    g_assert_cmpmem(received, csoff, frame, csoff);
+    g_assert_cmpmem(received + csoff + 2, got - csoff - 2,
+                    frame + csoff + 2, sizeof(frame) - csoff - 2);
+
+    g_assert_cmphex(received[csoff], ==, (uint8_t)(correct_csum >> 8));
+    g_assert_cmphex(received[csoff + 1], ==, (uint8_t)correct_csum);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Without the insert-checksum bit the engine must not touch a checksum it
+ * was not asked to fix -- the frame reaches the backend byte for byte, wrong
+ * UDP checksum included. This is what tells the positive tests above apart
+ * from a model that recomputes every outgoing frame's checksum regardless of
+ * the bit.
+ */
+static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[46] = {
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        0x08, 0x00,
+        0x45, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
+        64, 17, 0x00, 0x00, 10, 0, 2, 15, 10, 0, 2, 3,
+        0x04, 0x00, 0x00, 0x35, 0x00, 0x0c, 0xde, 0xad,
+        'p', 'i', 'n', 'g',
+    };
+    uint8_t received[128];
+    size_t got;
+    uint32_t desc = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
+    /* No TXD_DOCHECKSUM this time. */
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(frame));
+    g_assert_cmpmem(received, got, frame, sizeof(frame));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -3624,6 +3883,14 @@ int main(int argc, char **argv)
                         test_the_ethernet_transmit_honours_total_byte_count);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-inserts-udp-checksum",
+                        NULL, test_the_ethernet_transmit_inserts_udp_checksum);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-inserts-tcp-checksum",
+                        NULL, test_the_ethernet_transmit_inserts_tcp_checksum);
+    qtest_add_data_func(
+        "sn0/ioc3/ethernet-transmit-leaves-checksum-alone-when-not-asked",
+        NULL,
+        test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
                         test_the_ethernet_receive_delivers_a_frame);
     qtest_add_data_func("sn0/ioc3/ethernet-armed-timer-raises-its-source",

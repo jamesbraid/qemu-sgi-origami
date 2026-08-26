@@ -18,6 +18,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
+#include "net/checksum.h"
 #include "system/dma.h"
 #include "trace.h"
 
@@ -519,6 +520,20 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 
         len = sgi_ioc3_eth_tx_gather(s, cmd, bufcnt, buf1, buf2, inline_data);
         len = MIN(len, cmd & SGI_IOC3_ENET_TXD_BYTECNT_MASK);
+
+        /*
+         * The descriptor can ask the engine to finish the frame's transport
+         * checksum: the driver pre-loads the pseudo-header partial and the
+         * hardware sums the whole frame and writes the fold at the descriptor's
+         * offset. Compute the finished TCP or UDP checksum directly -- the IP
+         * header checksum is the driver's own, so only the transport sum is
+         * inserted. Ignoring the bit ships the driver's partial value, and the
+         * far end (slirp, under user-mode networking) drops the frame.
+         */
+        if (cmd & SGI_IOC3_ENET_TXD_DOCHECKSUM) {
+            net_checksum_calculate(s->frame, len, CSUM_TCP | CSUM_UDP);
+        }
+
         if (len > 0) {
             if (loopback) {
                 /*
