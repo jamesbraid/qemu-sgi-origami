@@ -10,6 +10,12 @@ test_mips64_timeouts = {
   # check's 1800s: BOOT_TIMEOUT_SECONDS in test_prom_sash.py keeps a 60s
   # margin under this.
   'prom_sash' : 900,
+  # The installed OpenBSD 6.9 disk's own boot to an authenticated root
+  # login: a spike run took about 9 minutes under a contended host;
+  # BOOT_TIMEOUT_SECONDS in test_openbsd_login.py keeps a 60s margin
+  # under this, the same margin test_prom_sash.py keeps against its own
+  # meson timeout.
+  'openbsd_login' : 900,
   # Two test methods (one and two CPUs) run one after another in this one
   # script, each budgeted up to BOOT_TIMEOUT_SECONDS=90s in
   # test_linux_kernel.py before declaring FAIL; 240s covers both running
@@ -31,5 +37,6 @@ tests_mips64_system_thorough = [
   'prom_boot',
   'diag',
   'prom_sash',
+  'openbsd_login',
   'linux_kernel',
 ]
