@@ -178,6 +178,7 @@ typedef struct SN0NodeState {
     MemoryRegion flash;
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
+    MemoryRegion flash_hub_fast;
     SN0FlashState flash_state;
     MemoryRegion hub_regs_node_view;
     MemoryRegion arcs_trap;
@@ -3095,6 +3096,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node,
         g_strdup_printf("sn0.node%u.flash.hub", node_index);
     g_autofree char *rboot_name =
         g_strdup_printf("sn0.node%u.flash.rboot", node_index);
+    g_autofree char *hub_fast_name =
+        g_strdup_printf("sn0.node%u.flash.hub.fast", node_index);
     g_autofree char *ecc_absent_name =
         g_strdup_printf("sn0.node%u.backdoor.ecc.absent", node_index);
     g_autofree char *ecc_name =
@@ -3123,6 +3126,18 @@ static void sn0_node_map_boot_storage(SN0NodeState *node,
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node_base + SN0_FLASH_HUB,
                                 &node->flash_hub_view);
+
+    /*
+     * The PROM fetches its relocated code through the flash base in Hub space,
+     * not the reset view. An I/O region cannot back translated code, so overlay
+     * a direct romd alias of the chip there; the mirror underneath still serves
+     * the repeated decode and the byte-wide command port.
+     */
+    memory_region_init_alias(&node->flash_hub_fast, OBJECT(node),
+                             hub_fast_name, &node->flash, 0, SN0_FLASH_SIZE);
+    memory_region_add_subregion_overlap(
+        system, SN0_SPACE_HUB + node_base + SN0_FLASH_LOCAL,
+        &node->flash_hub_fast, 1);
 
     memory_region_init_io(&node->flash_rboot_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, rboot_name,
