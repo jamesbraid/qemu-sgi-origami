@@ -10,13 +10,15 @@ A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `uv run --with pytest pytest
 tests/functional/mips64/test_prom_sash_verdict.py -v`. It exercises
 missing_assertions(), artifact_identity_problems(), and verdict() -- the
-three functions test_prom_sash.py ports from tools/sashlib.py -- against
-real captured console transcripts (docs/boot-logs/ in the project
-checkout).
+three functions test_prom_sash.py ports from tools/sashlib.py, plus the
+one check missing_assertions() folds in beyond that port
+(NETBOOT_PATH_ASSERTION: the PROM's fetch line must name the
+path-structured `boot/sash64` this test serves, not merely fetch
+something) -- against real captured console transcripts (docs/boot-logs/
+in the project checkout, or this task's own captures where noted below).
 
-Fixture provenance (both fixtures are real captured guest-console text,
-byte-exact including the original CR/LF sequences; neither is
-synthesized):
+Fixture provenance (every fixture is real captured guest-console text,
+byte-exact including the original CR/LF sequences; none is synthesized):
 
   REAL_SASH_PASS_TRANSCRIPT
       docs/boot-logs/firmware.sash-netboot-vendored-slirp.2026-08-24T07:04+00:00,
@@ -25,9 +27,16 @@ synthesized):
       PASS, captured to record the first boot after the slirp
       compatibility series moved from an environment-supplied library to
       a static meson subproject. Its captured console (everything from
-      that file's own separator line onward) is copied verbatim -- the
-      fixture that proves missing_assertions() and verdict() accept a
-      real all-inventory-present PASS run.
+      that file's own separator line onward) is copied verbatim. sash-gate
+      itself serves a FLAT bootfile (`bootp()/sash64`, no subdirectory),
+      so this transcript's own "Obtaining sash64 from server" line never
+      names the path-structured `boot/sash64` this fork's own real boot
+      now serves -- this fixture now does double duty: it still proves
+      missing_assertions() and verdict() accept a real all-hardware-
+      inventory-present run, AND it is this module's real "a flat name
+      was used so the path assertion is absent" FAIL fixture (see task
+      C's brief) -- a real capture, not a hand-edited one, of exactly the
+      condition the new by-path check exists to catch.
 
   REAL_NEVER_REACHED_SASH_TRANSCRIPT
       docs/boot-logs/firmware.boot.2026-08-23T01:19-07:00, also named in
@@ -42,15 +51,34 @@ synthesized):
       and Diagnostics Summary -- the point a run whose budget expired
       during early boot would stop at. Nothing here is invented: this is
       verbatim text from a real capture, truncated, not assembled or
-      edited. Every one of the ten ASSERTIONS/cpu/memory strings
+      edited. Every one of the eleven ASSERTIONS/cpu/memory/path strings
       missing_assertions() checks was confirmed absent from this exact
       slice by direct search of the file, not by inspection, before it
       was adopted as the "never reached sash" fixture. The cut had to
       land before the PROM's own diagnostics-summary block, not merely
-      before the sash session: that block prints two of the ten strings
-      verbatim ("No. of CPUs enabled     = 1" and "No. of CPUs disabled
-      = 0"), so a cut anywhere after it would leave this fixture missing
-      only eight of the ten assertions instead of all ten.
+      before the sash session: that block prints two of the eleven
+      strings verbatim ("No. of CPUs enabled     = 1" and "No. of CPUs
+      disabled    = 0"), so a cut anywhere after it would leave this
+      fixture missing only nine of the eleven assertions instead of all
+      eleven.
+
+  REAL_SASH_BYPATH_PASS_TRANSCRIPT
+      Not a docs/boot-logs/ file: docs/boot-logs/ has no by-path capture
+      yet (this check is new -- see NETBOOT_PATH_ASSERTION's own
+      comment), so this fixture is a real capture this task made instead,
+      of the same kind: the actual, freshly built `qemu-system-mips64`
+      from this branch, booted against the real, digest-checked 6.5-base
+      PROM and sash64 (RELEASES["6.5-base"] above), with a SLIRP tftp
+      root serving sash64 under a staged `boot/` subdirectory and
+      `bootfile=boot/sash64` -- the exact shape PromSash.test_prom_sash
+      now drives (see test_prom_sash.py's own real-boot section) -- driven
+      through the same five-step console sequence this module's own
+      DRIVER_STEPS equivalent uses, but with `boot -f bootp()/boot/sash64`
+      in place of sash-gate's flat command. Captured and copied in whole,
+      not edited: this is the fixture that proves missing_assertions()
+      and verdict() accept a real run where the fetched path was the one
+      requested (its own "Obtaining boot/sash64 from server" line is the
+      positive case NETBOOT_PATH_ASSERTION exists to require).
 """
 
 import hashlib
@@ -60,6 +88,8 @@ import unittest
 
 from test_prom_sash import (
     ASSERTIONS,
+    NETBOOT_PATH,
+    NETBOOT_PATH_ASSERTION,
     RELEASES,
     artifact_identity_problems,
     missing_assertions,
@@ -123,7 +153,7 @@ Checking hardware inventory ...............
 DIAG RESULTS:
          NO DIAGS WERE RUN!
 **** End System Configuration and Diagnostics Summary ****
-
+
 
 System Maintenance Menu
 
@@ -224,18 +254,158 @@ Checking hardware inventory ...............
 """
 
 
-# sash-gate's own missing_assertions(log, cpus=1) assertion names, in the
-# exact order test_prom_sash.py's ported function builds them: the three
-# cpu/memory lines it rebuilds from `cpus`, then every ASSERTIONS entry
+REAL_SASH_BYPATH_PASS_TRANSCRIPT = """\
+IP27 PROM SGI Version 6.11  built 03:19:48 PM Apr 29, 1998
+using BaseIO nic
+Testing/Initializing memory ...............		DONE
+Copying PROM code to memory ...............		DONE
+Discovering local IO ......................		DONE
+update_klcfg_cpuinfo: Couldn't find my structure.
+Discovering CrayLink connectivity .........		
+Local hub CrayLink is down.
+*** Local network link down
+DONE
+Found 1 objects (1 hubs, 0 routers) in 2831 usec
+Waiting for peers to complete discovery....		DONE
+No other nodes present; becoming global master
+Global master is /hw/module/0/slot/MotherBoard
+Testing/Initializing all memory ...........		DONE
+Checking partitioning information .........		DONE
+No other nodes present; becoming partition master
+Loading BASEIO prom .......................		DONE
+
+BASEIO PROM Monitor SGI Version 6.11  built 03:18:44 PM Apr 29, 1998 (BE64)
+1 CPUs on 1 nodes found.
+***************************************************************
+*  Some module(s) did not have module id(s). New module id(s) *
+*               assigned by default. Resetting system.        *
+* You can assign moduleids using the module command at the POD*
+***************************************************************
+Resetting the system...
+
+
+IP27 PROM SGI Version 6.11  built 03:19:48 PM Apr 29, 1998
+using BaseIO nic
+Testing/Initializing memory ...............		DONE
+Copying PROM code to memory ...............		DONE
+Discovering local IO ......................		DONE
+update_klcfg_cpuinfo: Couldn't find my structure.
+Discovering CrayLink connectivity .........		
+Local hub CrayLink is down.
+*** Local network link down
+DONE
+Found 1 objects (1 hubs, 0 routers) in 2599 usec
+Waiting for peers to complete discovery....		DONE
+No other nodes present; becoming global master
+Global master is /hw/module/1/slot/MotherBoard
+Testing/Initializing all memory ...........		DONE
+Checking partitioning information .........		DONE
+No other nodes present; becoming partition master
+Loading BASEIO prom .......................		DONE
+
+BASEIO PROM Monitor SGI Version 6.11  built 03:18:44 PM Apr 29, 1998 (BE64)
+1 CPUs on 1 nodes found.
+
+NVRAM checksum is incorrect: reinitializing.
+Installing PROM Device drivers ............             
+
+Walking SCSI Adapter 0 (/hw/module/1/slot/MotherBoard), (pci id 0)
+1- 2- 3- 4- 5- 6- 7- 8- 9- 10- 11- 12- 13- 14- 15- = 0 device(s)
+
+Walking SCSI Adapter 1 (/hw/module/1/slot/MotherBoard), (pci id 1)
+1- 2- 3- 4- 5- 6- 7- 8- 9- 10- 11- 12- 13- 14- 15- = 0 device(s)
+Initializing PROM Device drivers ..........             DONE
+Checking hardware inventory ...............              
+WARNING: hardware inventory is invalid.  Reinitializing...
+Updated new configuration. Wrote 2 records.
+
+**** System Configuration and Diagnostics Summary ****
+CONFIG:
+         No. of NODEs enabled    = 1
+         No. of NODEs disabled   = 0
+         No. of CPUs enabled     = 1
+         No. of CPUs disabled    = 0
+         Mem enabled             = 64 MB
+         Mem disabled            = 0 MB
+         No. of RTRs enabled     = 0
+         No. of RTRs disabled    = 0
+
+DIAG RESULTS:
+         ALL DIAGS PASSED!
+**** End System Configuration and Diagnostics Summary ****
+
+
+System Maintenance Menu
+
+1) Start System
+2) Install System Software
+3) Run Diagnostics
+4) Recover System
+5) Enter Command Monitor
+
+Option? 5
+Command Monitor.  Type "exit" to return to the menu.
+>> unsetenv netaddr
+>> boot -f bootp()/boot/sash64
+Setting $netaddr to 192.0.2.15 (from server )
+Obtaining boot/sash64 from server 
+      896   |/-\|/-\|/-\|/-\|+115812Setting $netaddr to 192.0.2.15 (from server )
+   |/-\|/-+16653   |+3832      |/-\Setting $netaddr to 192.0.2.15 (from server )
+   |/-\|/-\|      |/-\      |/- entry: 0xa8000000012a7e2c
+Standalone Shell SGI Version 6.5 ARCS   Apr 30, 1998 (64 Bit)
+sash: hinv
+System  SGI-IP27
+1 180 MHz IP27 Processors
+Main memory size: 64 Mbytes
+Integral SCSI controller 0
+Integral SCSI controller 1
+Integral Fast Ethernet
+IOC3 serial port
+sash: printenv
+AutoLoad=No
+dbgtty=/dev/tty/ioc30
+root=dks0d1s0
+nonstop=0
+rbaud=19200
+SystemPartition=dksc(0,1,8)
+OSLoadPartition=dksc(0,1,0)
+OSLoader=sash
+OSLoadFilename=unix
+TimeZone=PST8PDT
+console=d
+gConsoleIn=default
+gConsoleOut=default
+diskless=0
+scsihostid=00
+ProbeAllScsi=n
+RestorePartEnv=y
+dbaud=9600
+volume=80
+sgilogo=y
+ConsoleOut=/dev/tty/ioc30
+ConsoleIn=/dev/tty/ioc30
+cpufreq=180
+oldConsolePath=/hw/module/1/slot/MotherBoard
+ConsolePath=/hw/module/1/slot/MotherBoard
+kernname=bootp()/boot/sash64
+netaddr=192.0.2.15
+dlserver=192.0.2.2"""
+
+
+# test_prom_sash.py's own missing_assertions(log, cpus=1), in the exact
+# order the ported function builds them: the three cpu/memory lines it
+# rebuilds from `cpus`, then NETBOOT_PATH_ASSERTION (new to this port,
+# not part of sashlib.py's own contract), then every ASSERTIONS entry
 # except the fixed "64 MiB inventory" (superseded by the rebuilt memory
 # line just before it). Pinning this order and content here means a
-# silent edit to either the ported function or ASSERTIONS is caught by
-# this test, not only by a real boot's pass/fail.
+# silent edit to either the ported function, NETBOOT_PATH_ASSERTION, or
+# ASSERTIONS is caught by this test, not only by a real boot's pass/fail.
 EXPECTED_ASSERTION_NAMES = (
     "1 CPU inventory",
     "1 CPUs enabled",
     "no CPUs disabled",
     "64 MiB inventory",
+    "path-structured netboot fetch",
     "IP27 system inventory",
     "IOC3 Ethernet inventory",
     "IOC3 serial inventory",
@@ -260,20 +430,51 @@ class AssertionsTest(unittest.TestCase):
              "download server address"])
 
 
+class NetbootPathAssertionTest(unittest.TestCase):
+    """NETBOOT_PATH_ASSERTION is new to this port (see this module's and
+    test_prom_sash.py's own docstrings) -- pin its shape directly, the
+    same way AssertionsTest pins the sashlib.py-ported ASSERTIONS."""
+
+    def test_netboot_path_is_the_generic_boot_subdirectory(self):
+        # A generic subpath, not a vendor IRIX release path -- required by
+        # this port's brief.
+        self.assertEqual(NETBOOT_PATH, "boot/sash64")
+
+    def test_assertion_evidence_names_the_fetch_line(self):
+        self.assertEqual(
+            NETBOOT_PATH_ASSERTION,
+            ("path-structured netboot fetch",
+             "Obtaining boot/sash64 from server"))
+
+
 class MissingAssertionsTest(unittest.TestCase):
 
-    def test_real_pass_transcript_has_every_assertion(self):
-        self.assertEqual(missing_assertions(REAL_SASH_PASS_TRANSCRIPT), [])
+    def test_real_bypath_pass_transcript_has_every_assertion(self):
+        self.assertEqual(
+            missing_assertions(REAL_SASH_BYPATH_PASS_TRANSCRIPT), [])
 
-    def test_a_run_that_never_reached_sash_is_missing_all_ten_in_order(self):
+    def test_a_flat_bootfile_transcript_is_missing_only_the_path_check(self):
+        # REAL_SASH_PASS_TRANSCRIPT is a real sash-gate run over
+        # sash-gate's own FLAT bootfile (`bootp()/sash64`, no
+        # subdirectory) -- every hardware-inventory line is present, but
+        # its own "Obtaining sash64 from server" line never names
+        # NETBOOT_PATH, so this is the real "flat name was used" FAIL
+        # fixture this port's brief calls for.
+        self.assertEqual(
+            missing_assertions(REAL_SASH_PASS_TRANSCRIPT),
+            ["path-structured netboot fetch"])
+
+    def test_a_run_that_never_reached_sash_is_missing_all_eleven_in_order(self):
         self.assertEqual(
             missing_assertions(REAL_NEVER_REACHED_SASH_TRANSCRIPT),
             list(EXPECTED_ASSERTION_NAMES))
 
     def test_a_single_missing_line_is_named_precisely(self):
         # A byte-exact deletion of one real assertion's evidence from the
-        # real pass transcript -- not a rewrite or a synthesized line.
-        without_ethernet = REAL_SASH_PASS_TRANSCRIPT.replace(
+        # real by-path pass transcript -- not a rewrite or a synthesized
+        # line. Deleted from the by-path fixture rather than the flat one
+        # so exactly one assertion is missing, not two.
+        without_ethernet = REAL_SASH_BYPATH_PASS_TRANSCRIPT.replace(
             "Integral Fast Ethernet", "")
         self.assertNotIn("Integral Fast Ethernet", without_ethernet)
         self.assertEqual(
@@ -285,9 +486,9 @@ class MissingAssertionsTest(unittest.TestCase):
         # contract (see test_prom_sash.py's docstring) -- --cpus 2/4 must
         # not be silently mischecked as if they were 1.
         with self.assertRaises(NotImplementedError):
-            missing_assertions(REAL_SASH_PASS_TRANSCRIPT, cpus=2)
+            missing_assertions(REAL_SASH_BYPATH_PASS_TRANSCRIPT, cpus=2)
         with self.assertRaises(NotImplementedError):
-            missing_assertions(REAL_SASH_PASS_TRANSCRIPT, cpus=4)
+            missing_assertions(REAL_SASH_BYPATH_PASS_TRANSCRIPT, cpus=4)
 
 
 class ArtifactIdentityProblemsTest(unittest.TestCase):
@@ -374,26 +575,37 @@ class ArtifactIdentityProblemsTest(unittest.TestCase):
 
 class VerdictTest(unittest.TestCase):
 
-    def test_real_pass_transcript_reached_is_pass(self):
-        report = verdict(REAL_SASH_PASS_TRANSCRIPT, reached=True)
+    def test_real_bypath_pass_transcript_reached_is_pass(self):
+        report = verdict(REAL_SASH_BYPATH_PASS_TRANSCRIPT, reached=True)
         self.assertEqual(report["verdict"], "PASS", report["problems"])
         self.assertEqual(report["missing"], [])
         self.assertEqual(report["problems"], [])
 
-    def test_never_reached_sash_transcript_is_fail_with_all_ten_named(self):
+    def test_flat_bootfile_transcript_reached_is_fail_missing_only_path(self):
+        # PASS requires the path-structured file to have been obtained,
+        # not merely a netboot to have happened -- a real, full-inventory
+        # run over sash-gate's own flat bootfile is FAIL, on exactly this
+        # one problem.
+        report = verdict(REAL_SASH_PASS_TRANSCRIPT, reached=True)
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertEqual(report["missing"], ["path-structured netboot fetch"])
+        self.assertEqual(
+            report["problems"], ["missing path-structured netboot fetch"])
+
+    def test_never_reached_sash_transcript_is_fail_with_all_eleven_named(self):
         report = verdict(REAL_NEVER_REACHED_SASH_TRANSCRIPT, reached=False)
         self.assertEqual(report["verdict"], "FAIL")
-        self.assertEqual(len(report["missing"]), 10)
+        self.assertEqual(len(report["missing"]), 11)
         self.assertTrue(
             any("did not reach the download-server" in p
                 for p in report["problems"]))
 
     def test_full_inventory_but_driver_never_confirmed_is_still_fail(self):
-        # A transcript with every inventory line present is still FAIL if
-        # the console driver's own --until match never fired -- the
-        # driver's confirmation is a separate, required check, not
-        # implied by the inventory text alone.
-        report = verdict(REAL_SASH_PASS_TRANSCRIPT, reached=False)
+        # A transcript with every inventory line AND the by-path fetch
+        # line present is still FAIL if the console driver's own --until
+        # match never fired -- the driver's confirmation is a separate,
+        # required check, not implied by the inventory/path text alone.
+        report = verdict(REAL_SASH_BYPATH_PASS_TRANSCRIPT, reached=False)
         self.assertEqual(report["verdict"], "FAIL")
         self.assertEqual(report["missing"], [])
         self.assertEqual(

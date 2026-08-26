@@ -26,6 +26,14 @@ port test_prom_diagnostics.py's missing_sash_assertions already made
 (diag-gate calls sash_gate.missing_assertions(log, cpus=1) as the last
 stage of its own evaluate_run), reproduced here independently so this
 file carries its own copy rather than importing test_prom_diagnostics.py.
+missing_assertions() folds in one check beyond that port:
+NETBOOT_PATH_ASSERTION, which requires the PROM's own "Obtaining ..."
+fetch line name NETBOOT_PATH exactly -- proof the netboot fetch was for
+the path-structured file this test serves (`boot/sash64`, a generic
+subdirectory, not a vendor IRIX release path), not merely a netboot of
+some name. sash-gate's own flat "bootfile=sash64" config never had a
+path to assert, so this one check is new to this port, not a port of
+sashlib.py's own logic; see NETBOOT_PATH's own comment for why.
 artifact_identity_problems() and RELEASES are the same kind of port of
 tools/sashlib.py's artifact_identity_problems()/RELEASES: the two
 SHA-256 comparisons a real run makes against the release-matched PROM
@@ -108,9 +116,28 @@ ASSERTIONS = (
     ("download server address", "dlserver=192.0.2.2"),
 )
 
+# The generic, non-vendor path this test's real boot serves sash64 under
+# and requests by name -- see this module's docstring for why "boot/
+# sash64" and not a flat name or a vendor IRIX release path. This is a
+# DEPARTURE from tools/sashlib.py's own ASSERTIONS above (which stay a
+# byte-for-byte port): sash-gate's own config serves a flat
+# "bootfile=sash64", so it never had a path to assert. Checking this line
+# is what turns this test from "sash netbooted" into "sash netbooted
+# BY THE PATH THIS TEST SERVED IT UNDER" -- the guard a plain flat-name
+# check cannot tell apart from a PROM that silently ignored the requested
+# path and fetched something else with the same content.
+NETBOOT_PATH = "boot/sash64"
+NETBOOT_PATH_ASSERTION = (
+    "path-structured netboot fetch",
+    f"Obtaining {NETBOOT_PATH} from server",
+)
+
 
 def missing_assertions(log, cpus=1):
-    """Which of sash's post-netboot hardware-inventory lines never appeared.
+    """Which of sash's post-netboot hardware-inventory lines never appeared,
+    PLUS whether the PROM's own fetch line named the path-structured file
+    this test serves (NETBOOT_PATH_ASSERTION -- new to this port, not part
+    of the sashlib.py port below).
 
     Ports tools/sashlib.py's own missing_assertions(log, cpus): for the
     given population, the two CPU-count lines and the memory-size line are
@@ -136,6 +163,7 @@ def missing_assertions(log, cpus=1):
         (f"{cpus} CPUs enabled", f"No. of CPUs enabled     = {cpus}"),
         ("no CPUs disabled", "No. of CPUs disabled    = 0"),
         (f"{memory} MiB inventory", f"Main memory size: {memory} Mbytes"),
+        NETBOOT_PATH_ASSERTION,
         *(
             assertion
             for assertion in ASSERTIONS
