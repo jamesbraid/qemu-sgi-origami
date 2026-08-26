@@ -308,14 +308,16 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
 
         /*
          * Address bit 0 of an Index operation is the way indicator and is
-         * never checked. Bit 1 of an Index operation, and both low bits of
-         * a Hit operation or the Cache Barrier, generate an Address Error
-         * if set. That is the whole of the check: a CacheOp names no access
-         * size, so beyond these bits there is no alignment to enforce, and
-         * the privilege address errors come out of translation below.
+         * never checked; its bit 1 generates an Address Error if set. A
+         * Hit operation's low bits are don't-care — the operation
+         * tag-searches both ways, so no way or word applies — and take no
+         * alignment error at all: the manual limits CacheOp address errors
+         * to privilege-type, and a shipped kernel's secondary flush sets
+         * bit 0 as a vestigial way-select it expects ignored. The
+         * privilege address errors come out of translation below.
          */
-        if (addr & ((cache_operation == 0b100 || cache_operation == 0b101)
-                    ? 3 : 2)) {
+        if ((addr & 2) &&
+            cache_operation != 0b100 && cache_operation != 0b101) {
             if (!(env->hflags & MIPS_HFLAG_DM)) {
                 env->CP0_BadVAddr = addr;
             }
