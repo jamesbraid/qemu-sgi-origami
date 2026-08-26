@@ -6,38 +6,41 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Ports tools/diag-gate's check, in the PROJECT checkout, into this fork's own
-functional-test framework, the same way test_prom_boot.py ports
-tools/boot-gate. diag-gate drives one QEMU invocation through the whole
-factory sequence: the cold first pass has no module id, so the firmware
-assigns one and warm-resets itself (same process, no new invocation); the
-second pass accepts that assigned id, runs the normal power-on diagnostics,
-prints the System Configuration and Diagnostics Summary, reaches the System
-Maintenance Menu, and is then driven through the command monitor to netboot
-sash64 over QEMU's own SLIRP usermode networking (no external TFTP server).
-Every `RSLT <name> PASS/FAIL` line on both passes is parsed and judged
-against an explicit expected-failure ledger, ported below from
-tools/diag-gate-expected-failures in the project checkout: an unexpected
-FAIL fails the run, and an expected failure that stops happening is
-reported as stale rather than silently accepted.
+Ports the check that used to live in tools/diag-gate, in the PROJECT
+checkout, into this fork's own functional-test framework, the same way
+test_prom_boot.py ports tools/boot-gate. diag-gate (since retired --
+superseded by this functional test) drove one QEMU invocation through the
+whole factory sequence: the cold first pass has no module id, so the
+firmware assigns one and warm-resets itself (same process, no new
+invocation); the second pass accepts that assigned id, runs the normal
+power-on diagnostics, prints the System Configuration and Diagnostics
+Summary, reaches the System Maintenance Menu, and is then driven through
+the command monitor to netboot sash64 over QEMU's own SLIRP usermode
+networking (no external TFTP server). Every `RSLT <name> PASS/FAIL` line on
+both passes is parsed and judged against an explicit expected-failure
+ledger, ported below from diag-gate's own expected-failures list (the file
+that shipped beside it in the project checkout before retirement): an
+unexpected FAIL fails the run, and an expected failure that stops happening
+is reported as stale rather than silently accepted.
 
 evaluate_run() and the pure functions it calls (split_passes,
 parse_rslt_lines, parse_summary, module_ids, extract_identities,
 parse_expected_failures, _judge_failures) are a direct, close-to-verbatim
 port of diag-gate's own functions of the same names. missing_sash_assertions
 below is the same port of tools/sash-gate's ASSERTIONS/missing_assertions
-that diag-gate itself calls (via sash_gate) as the last stage of its own
+that diag-gate itself called (via sash_gate) as the last stage of its own
 evaluate_run -- reimplemented here, fixed at cpus=1 (the only population
-diag-gate ever drives), because this fork test must not import origami's
-tools/ (no sashlib). test_diag_verdict.py proves this port against real
-captured transcripts and the ported ledger, without booting anything -- see
-that file's docstring. Both are free of any qemu_test import on purpose:
-importing qemu_test requires MESON_BUILD_ROOT and packages meson's own
-PYTHONPATH wires in, neither of which a plain `pytest test_diag_verdict.py`
-run has -- see the guarded import below.
+diag-gate ever drove), because this fork test must not import origami's
+tools/ (no sashlib). test_prom_diagnostics_verdict.py proves this port
+against real captured transcripts and the ported ledger, without booting
+anything -- see that file's docstring. Both are free of any qemu_test
+import on purpose: importing qemu_test requires MESON_BUILD_ROOT and
+packages meson's own PYTHONPATH wires in, neither of which a plain
+`pytest test_prom_diagnostics_verdict.py` run has -- see the guarded import
+below.
 
-The QEMU argv this file builds (diag_extra_args) is diag-gate's own
-gate_qemu_command, which is tools/sash-gate's qemu_command with cpus=1,
+The QEMU argv this file builds (diag_extra_args) was diag-gate's own
+gate_qemu_command, which was tools/sash-gate's qemu_command with cpus=1,
 skip_prom_diags=False -- read directly from tools/sash-gate in the project
 checkout (the "-M origin200,synthesized-firmware=off,debug-leds=off" machine
 string, the "-nic user,...,tftp=...,bootfile=sash64" SLIRP usermode netboot
@@ -47,7 +50,7 @@ named in this port's brief as a second reference, turns out to drive a real
 irix-netinst server over bridged tap networking, not SLIRP at all -- a
 different tool for a different (real-server) netboot path -- so it is not
 the source this file's argv was built from; sash_gate.qemu_command is, and
-diag-gate calls that function directly. A captured confirmation that this
+diag-gate called that function directly. A captured confirmation that this
 fork's own build now needs none of sash_gate's --slirp-dir/LD_LIBRARY_PATH
 plumbing is docs/boot-logs/firmware.sash-netboot-vendored-slirp -- this
 fork's meson build vendors libslirp as a static subproject
@@ -65,17 +68,18 @@ import subprocess
 import sys
 import time
 
-# This file's own directory, so a plain `pytest test_diag_verdict.py` run
-# (which imports straight from this module) finds it the same way
-# test_prom_boot_verdict.py finds test_prom_boot.py.
+# This file's own directory, so a plain `pytest
+# test_prom_diagnostics_verdict.py` run (which imports straight from this
+# module) finds it the same way test_prom_boot_verdict.py finds
+# test_prom_boot.py.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # qemu_test is only importable inside meson's own test environment (see
 # test_prom_boot.py's docstring for the exact reason). Guarded so that
-# every pure function below -- the whole surface test_diag_verdict.py
-# exercises -- stays importable without it; Diag itself is simply not
-# defined in that case, which is fine because nothing outside meson ever
-# tries to run the real boot.
+# every pure function below -- the whole surface
+# test_prom_diagnostics_verdict.py exercises -- stays importable without
+# it; PromDiagnostics itself is simply not defined in that case, which is
+# fine because nothing outside meson ever tries to run the real boot.
 try:
     from qemu_test import QemuSystemTest
 except (ImportError, RuntimeError):
@@ -138,7 +142,7 @@ ENV_VALUE_RES = {
 }
 
 # tools/sash-gate's ASSERTIONS, project checkout, fixed at cpus=1 -- the
-# only population diag-gate drives. diag-gate's own evaluate_run() calls
+# only population diag-gate drove. diag-gate's own evaluate_run() called
 # sash_gate.missing_assertions(log, cpus=1) as its last check; this is that
 # same check, reimplemented so this file never imports tools/.
 _SASH_ASSERTIONS = (
@@ -432,10 +436,10 @@ EXPECTED_FAILURES = parse_expected_failures(EXPECTED_FAILURES_TEXT)
 
 # ---------------------------------------------------------------------------
 # The real boot: QEMU argv, the interactive drive through the factory
-# sequence to sash64, and provenance. Not covered by test_diag_verdict.py --
-# see this module's own docstring for why -- so nothing below this line
-# needs to be pure or independently testable the way the verdict logic
-# above does.
+# sequence to sash64, and provenance. Not covered by
+# test_prom_diagnostics_verdict.py -- see this module's own docstring for
+# why -- so nothing below this line needs to be pure or independently
+# testable the way the verdict logic above does.
 # ---------------------------------------------------------------------------
 
 # Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
@@ -446,10 +450,11 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5-base',
                             'ip27prom.payload.bin')
 TFTP_REL = os.path.join('assets', 'boot', '6.5-base')
 
-# diag-gate's own default (tools/diag-gate, DEFAULT_TIMEOUT_SECONDS) covers
-# both passes and the sash leg in one budget. Kept a little under the
-# meson timeout registered for this test in mips64/meson.build, the same
-# margin test_prom_boot.py keeps against its own 700s meson timeout.
+# diag-gate's own default (tools/diag-gate's DEFAULT_TIMEOUT_SECONDS,
+# before that tool's retirement) covered both passes and the sash leg in
+# one budget. Kept a little under the meson timeout registered for this
+# test in mips64/meson.build, the same margin test_prom_boot.py keeps
+# against its own 700s meson timeout.
 BOOT_TIMEOUT_SECONDS = 1740
 
 # tools/serial-console's own console driver, ported: each (pattern,
@@ -457,7 +462,7 @@ BOOT_TIMEOUT_SECONDS = 1740
 # what has been received since the last match. The five steps drive the
 # PROM from the System Maintenance Menu through the command monitor to an
 # interactive sash prompt, matching diag-gate's own console_driver exactly
-# (tools/diag-gate, gate's --expect list).
+# (tools/diag-gate's --expect list, before that tool's retirement).
 DRIVER_STEPS = (
     (r"Option\?", "5\n"),
     (r">>", "unsetenv netaddr\n"),
@@ -465,8 +470,9 @@ DRIVER_STEPS = (
     (r"sash:", "hinv\n"),
     (r"sash:", "printenv\n"),
 )
-# diag-gate's own --until: printenv's own dlserver line, the run's proof
-# that sash64 actually loaded and ran rather than merely being requested.
+# diag-gate's own --until was: printenv's own dlserver line, the run's
+# proof that sash64 actually loaded and ran rather than merely being
+# requested.
 DRIVER_UNTIL_RE = re.compile(rb"dlserver=192\.0\.2\.2")
 _TAIL_MAX = 8192
 
@@ -478,7 +484,7 @@ def diag_extra_args(prom, tftp, elsc_log, capture):
     serving sash64 with no external TFTP server. Ported from
     tools/sash-gate's qemu_command(cpus=1, skip_prom_diags=False) in the
     project checkout -- see this module's own docstring for exactly which
-    call diag-gate makes and why netinst-rig is not this argv's source.
+    call diag-gate made and why netinst-rig is not this argv's source.
 
     set_console() already emits "-serial chardev:console" for serial line
     0 (IOC3 port A, the primary console); the "-serial none" here fills
@@ -599,12 +605,13 @@ def _fork_git_identity(tree):
 
 if QemuSystemTest is not None:
 
-    # This file's own repo root: tests/functional/mips64/test_diag.py is
-    # three directories below it.
+    # This file's own repo root:
+    # tests/functional/mips64/test_prom_diagnostics.py is three directories
+    # below it.
     _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
 
-    class Diag(QemuSystemTest):
+    class PromDiagnostics(QemuSystemTest):
         """Boots the real IP27 PROM firmware through diag-gate's two-pass
         factory sequence to an interactive sash prompt and requires
         evaluate_run's verdict to be PASS. See this module's docstring for
@@ -627,7 +634,7 @@ if QemuSystemTest is not None:
                 return None
             return prom, tftp
 
-        def test_diag(self):
+        def test_prom_diagnostics(self):
             paths = self._release_paths()
             if paths is None:
                 self.skipTest(
@@ -639,7 +646,7 @@ if QemuSystemTest is not None:
                     'test')
             prom, tftp = paths
 
-            vm = self.get_vm(name='diag')
+            vm = self.get_vm(name='prom_diagnostics')
             vm.set_machine(
                 'origin200,synthesized-firmware=off,debug-leds=off')
             vm.set_console()
