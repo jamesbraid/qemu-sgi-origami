@@ -1884,7 +1884,8 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
  */
 static void sn0_component(uint8_t *graph, unsigned int index,
                           unsigned int virtual_id, uint8_t type,
-                          uint8_t physical_id, uint8_t widget)
+                          uint8_t revision, uint8_t physical_id,
+                          uint8_t widget)
 {
     uint8_t *c = graph + (SN0_GRAPH_COMPONENTS - SN0_CONFIG_GRAPH) +
                  index * SN0_GRAPH_COMP_STRIDE;
@@ -1893,6 +1894,7 @@ static void sn0_component(uint8_t *graph, unsigned int index,
     c[0x01] = 1;                                /* record version */
     /* Not optional: a component without this is skipped by every consumer. */
     c[0x02] = SN0_COMP_ENABLED;
+    c[0x03] = revision;
     c[SN0_COMP_PHYSICAL_ID] = physical_id;
     c[0x20] = widget;
     stl_be_p(c + 0x1c, virtual_id);
@@ -2156,11 +2158,12 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
      */
     for (i = 0; i < cpu_count; i++) {
         sn0_component(graph, i, node_index * SN0_CPUS_PER_NODE + i,
-                      SN0_COMP_PROCESSOR, i, 0);
+                      SN0_COMP_PROCESSOR, SN0_COMP_REV_UNKNOWN, i, 0);
     }
     sn0_component(graph, hub_component, 0, SN0_COMP_HUB,
-                  node_state->nasid, 0);
-    sn0_component(graph, memory_component, 0, SN0_COMP_MEMORY, 0, 0);
+                  SN0_COMP_REV_HUB, node_state->nasid, 0);
+    sn0_component(graph, memory_component, 0, SN0_COMP_MEMORY,
+                  SN0_COMP_REV_UNKNOWN, 0, 0);
 
     /*
      * The processor's own fields, which are the only source a guest has for its
@@ -2171,10 +2174,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
      */
     for (i = 0; i < cpu_count; i++) {
         cpu = sn0_component_at(graph, i);
-        stw_be_p(cpu + 0x38, 0x0900);           /* identification, low half */
+        stw_be_p(cpu + 0x38, 0x0926);           /* identification, low half */
         /*
-         * The floating-point unit is on the same die and carries the same
-         * implementation and revision as its processor.
+         * The floating-point unit is on the same die but reports revision zero.
          */
         stw_be_p(cpu + 0x3a, 0x0900);
         stw_be_p(cpu + 0x3c, 180);              /* clock in megahertz */
@@ -2233,7 +2235,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
               SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE,
               midplane_component, 1, 0, node_state->nasid);
-    sn0_component(graph, midplane_component, 0, SN0_COMP_MODULE_SERIAL, 0, 0);
+    sn0_component(graph, midplane_component, 0, SN0_COMP_MODULE_SERIAL,
+                  SN0_COMP_REV_UNKNOWN, 0, 0);
 
     /*
      * Board 2: the base-I/O board, and the end of the list. Nothing on the path
@@ -2266,13 +2269,14 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
               base_io_component, 4, 4, node_state->nasid);
     sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
-                  SN0_CONSOLE_WIDGET, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_BRIDGE, SN0_CONSOLE_WIDGET,
+                  SN0_CONSOLE_WIDGET);
     sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
-                  SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_SCSI, SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET);
     sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
-                  SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_SCSI, SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET);
     sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
-                  SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_IOC3, SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET);
 
     {
         g_autofree char *name =
@@ -4182,13 +4186,9 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "controller reports their active-low wire value to firmware.");
 
     /*
-     * The first of the candidate values. A captured boot of this configuration
-     * announces revision 3 and that is the default, but another Origin 200's
-     * firmware announces 4 — a machine we do not model and whose sources we do
-     * not hold, so 3 is this machine's answer rather than the family's.
-     * Settable
-     * so that the difference can be run rather than argued about, without the
-     * two runs also differing in the emulator.
+     * The representative machine reports revision 4. Keep the property
+     * settable so another captured specimen can be measured without changing
+     * the Bridge device's general default or introducing a machine profile.
      */
     object_class_property_add(oc, "widget0-revision", "uint32",
                               sn0_get_widget0_revision,
