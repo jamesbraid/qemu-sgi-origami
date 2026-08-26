@@ -39,7 +39,7 @@ typedef struct {
 /* The memory size the fields below describe. */
 #define SN0_MODEL_RAM_MB 64
 
-/* Selected hardware identity and board-record namespaces. */
+/* Installed hardware identity and board-record namespaces. */
 #define SN0_MODEL_CPU_PRID 0x926
 #define SN0_MODEL_FPU_PRID 0x900
 #define SN0_MODEL_HUB_NI_REVISION 0x3
