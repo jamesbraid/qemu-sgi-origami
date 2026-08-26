@@ -366,7 +366,7 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
 }
 
 /*
- * A write that leaves Count and Compare equal, on the R10000. The manual
+ * A write that leaves Count at or past Compare, on the R10000. The manual
  * (14.8) makes the comparison continuous - "Whenever their values equal,
  * the interrupt bit IP[7] in the Cause register is set" - so equality
  * standing at the moment of the write raises the interrupt at once. The
@@ -375,11 +375,18 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
  * zero-interval clamp correctly defers the next one a full wrap - which is
  * also the deadline both write paths have already programmed for the match
  * after this one.
+ *
+ * The window treats a Compare write up to half the counter space behind
+ * Count as the match it just missed. That corner needs a stall between
+ * adjacent instructions longer than the arming distance - unreachable on
+ * silicon, routine on a loaded host - and deferring it costs the guest a
+ * full counter wrap of its clock. Count writes keep strict equality.
  */
 static bool cpu_mips_write_matches(CPUMIPSState *env, uint32_t count,
-                                   uint32_t compare)
+                                   uint32_t compare, uint32_t window)
 {
-    if (!(env->insn_flags & INSN_R10K) || count != compare) {
+    if (!(env->insn_flags & INSN_R10K) ||
+        (uint32_t)(count - compare) > window) {
         return false;
     }
     if (env->insn_flags & ISA_MIPS_R2) {
@@ -407,7 +414,7 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         /* Update timer timer */
         cpu_mips_timer_update(env);
-        if (cpu_mips_write_matches(env, count, env->CP0_Compare)) {
+        if (cpu_mips_write_matches(env, count, env->CP0_Compare, 0)) {
             cpu_mips_update_ip7(env);
         }
     }
@@ -423,7 +430,7 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
     if (!(env->CP0_Cause & (1 << CP0Ca_DC))) {
         /* Read Count before the update below moves the deadline. */
         matched = cpu_mips_write_matches(env, cpu_mips_get_count_val(env),
-                                         value);
+                                         value, UINT32_MAX >> 1);
         cpu_mips_timer_update(env);
     }
     if (matched) {
