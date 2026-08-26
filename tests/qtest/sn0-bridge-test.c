@@ -1842,6 +1842,19 @@ static void test_dma_local_space_is_never_swapped(const void *data)
 
 #define DMA_REG_INTERRUPT       0x10
 
+/*
+ * Where a delivered interrupt lands. The Bridge turns a pin edge into a
+ * crosstalk write to the destination Hub's interrupt-modify register; the Hub
+ * sets or clears the named bit in its pending bank. The delivery tests program
+ * a pin to route to node 0 with a number in the guest range, then read the
+ * pending bank back through the Hub's local window — the same window the Hub's
+ * own tests read pending through.
+ */
+#define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
+#define PI_INT_PEND0            0x98
+#define INT_TEST_HOST_NODE      0
+#define INT_TEST_HOST_NUMBER    42
+
 
 /*
  * The pin the tests drive. A slot's first interrupt pin goes to the chip pin of
@@ -2697,6 +2710,90 @@ static void test_the_status_register_follows_the_level(const void *data)
     qtest_quit(qts);
 }
 
+/* Route the test pin at node 0 with a number in the guest range. */
+static void bridge_route_pin(QTestState *qts)
+{
+    qtest_writel(qts, REG(BRIDGE_INT_HOST(INT_TEST_SLOT)),
+                 (INT_TEST_HOST_NODE << 8) | INT_TEST_HOST_NUMBER);
+}
+
+static bool hub_pends_the_test_number(QTestState *qts)
+{
+    uint64_t pend = qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0);
+
+    return (pend & (1ULL << INT_TEST_HOST_NUMBER)) != 0;
+}
+
+/*
+ * The whole path end to end: a pin's rising edge, with the pin routed and
+ * enabled, becomes a crosstalk write that sets the number's bit in the
+ * destination Hub's pending bank. The register tests stop at the Bridge and the
+ * Hub tests start at its interrupt-modify register; nothing joined the two.
+ */
+static void test_an_enabled_pin_edge_reaches_the_hub(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_route_pin(qts);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+
+    /* Nothing has fired yet. */
+    g_assert_false(hub_pends_the_test_number(qts));
+
+    bridge_drive_pin(qts, 1);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * The enable bit gates delivery. A pin that is routed but whose enable bit is
+ * clear sends no packet, however hard the device asserts. This is the state
+ * Linux leaves a pin in when it disables it — it clears the enable bit and
+ * leaves the host-address register programmed — so a still-asserting device
+ * must not keep setting the Hub's pending bit behind the guest's back.
+ */
+static void test_a_disabled_pin_edge_sends_no_packet(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_route_pin(qts);
+    /* INT_ENABLE deliberately left at its reset value of zero. */
+
+    bridge_drive_pin(qts, 1);
+    g_assert_false(hub_pends_the_test_number(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * With the mode bit set the falling edge sends a clearing packet, so the guest
+ * need not clear the Hub bit in its own handler. Without this the Hub's pending
+ * bit never clears and the processor re-enters the handler forever.
+ */
+static void test_a_falling_edge_clears_the_hub_pending_bit(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_route_pin(qts);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+    qtest_writel(qts, REG(BRIDGE_INT_MODE), 1u << INT_TEST_SLOT);
+
+    bridge_drive_pin(qts, 1);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    bridge_drive_pin(qts, 0);
+    g_assert_false(hub_pends_the_test_number(qts));
+
+    qtest_quit(qts);
+}
+
 static void test_the_enable_register_has_no_bit_31(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
@@ -2902,6 +2999,12 @@ int main(int argc, char **argv)
                         test_the_interrupt_pins_fold);
     qtest_add_data_func("sn0/bridge/status-follows-the-level", NULL,
                         test_the_status_register_follows_the_level);
+    qtest_add_data_func("sn0/bridge/enabled-pin-edge-reaches-the-hub", NULL,
+                        test_an_enabled_pin_edge_reaches_the_hub);
+    qtest_add_data_func("sn0/bridge/disabled-pin-edge-sends-no-packet", NULL,
+                        test_a_disabled_pin_edge_sends_no_packet);
+    qtest_add_data_func("sn0/bridge/falling-edge-clears-hub-pending", NULL,
+                        test_a_falling_edge_clears_the_hub_pending_bit);
     qtest_add_data_func("sn0/bridge/enable-has-no-bit-31", NULL,
                         test_the_enable_register_has_no_bit_31);
     qtest_add_data_func("sn0/bridge/mode-and-device-keep-writes", NULL,
