@@ -3,7 +3,15 @@
 test_mips64_timeouts = {
   'malta' : 240,
   'mttcg_cause' : 60,
-  'origin200_matrix' : 180,
+  # One test_<id> method per origin200-matrix row runs one after another in
+  # this one script (test_origin200_matrix.py), each budgeted up to its own
+  # cell.timeout before declaring FAIL: the asset-free smoke cell (120s)
+  # plus the three real firmware-boot cells this budget was raised for
+  # (700s each -- 4-CPU, two-node, mttcg), worst case all four running out
+  # their own budget in sequence, plus VM launch/shutdown overhead. Matches
+  # linux_kernel's own reasoning below for the same one-script,
+  # several-budgets-in-sequence shape.
+  'origin200_matrix' : 2500,
   'prom_boot' : 700,
   'diag' : 1800,
   # A single netboot pass, smaller than the two-pass factory-diagnostics
