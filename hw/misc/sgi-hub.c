@@ -2871,7 +2871,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->i2c), 0), 1);
 
     /*
-     * The entry-level system controller: a real board on the same I2C bus,
+     * The module system controller (MSC): a real board on the same I2C bus,
      * not something the Hub reaches through a window, so an ordinary
      * addressed slave on the chip's own bus is nearly the whole of the
      * wiring. It also needs to know how many processors' arbitration
