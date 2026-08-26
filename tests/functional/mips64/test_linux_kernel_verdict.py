@@ -13,22 +13,26 @@ A plain unittest -- no QEMU, no qemu_test import, runnable with just
 test_linux_kernel.py calls against a captured console transcript, over
 fixture transcripts that stand in for a captured guest console log.
 
-missing_assertions(log, cpus) is a close port of tools/linux-usercheck's
+missing_assertions(log, cpus) is a verbatim port of tools/linux-usercheck's
 own function of the same name (project checkout), for the one- and
 two-CPU cases only -- the four-CPU case is explicitly out of scope for
 this test (see test_linux_kernel.py's own docstring: a known,
 pre-existing stop_machine livelock at that population, unrelated to
-this fork's own work).
-
-One deliberate departure from the ported original: linux-usercheck's own
-missing_assertions() only checks for a "Discovered N cpus on 1 nodes"
-line at cpus == 2 (there is no analogous check at cpus == 1 in that
-function, just "init handoff" and "userspace exit status"). This port
-adds that discovery-line check at ONE cpu too, per this port's own task
-brief, which states the one-CPU contract as exit code AND discovery
-line together. This is not an invented marker: a real one-CPU capture
-in the project checkout already prints exactly this line -- see
-REAL_ONE_CPU_PASS_TRANSCRIPT's own provenance comment below.
+this fork's own work). At one CPU it checks exactly two markers, in the
+source's own order: "init handoff" and "userspace exit status". It does
+NOT check a "Discovered N cpus on 1 nodes" line at one CPU -- an earlier
+version of this port added that check there, on the mistaken belief that
+this port's own task brief required it; the brief's prose was wrong
+(unobserved, and never checked against the source), and the real
+tools/linux-usercheck only ever checks that discovery line at two CPUs.
+Settled by reading the source directly rather than by guessing or by
+booting anything: a real one-CPU capture happening to print that line
+(REAL_ONE_CPU_PASS_TRANSCRIPT below genuinely does) says nothing about
+whether every real one-CPU boot must -- only the shipped tool's own
+contract says what is required, and it does not require this. At two
+CPUs, this port keeps linux-usercheck's own five markers unchanged:
+"two-CPU discovery", "secondary CPU execution", "two-CPU scheduler
+bring-up", "init handoff", "userspace exit status".
 
 The exact-match property the brief calls out -- a fatal signal must not
 masquerade as a chosen exit -- falls out of the marker text itself
@@ -60,14 +64,13 @@ import unittest
 
 def missing_assertions(log, cpus):
     """Which of the one- or two-CPU userspace-self-check markers never
-    appeared in log, ported from tools/linux-usercheck's own function of
-    the same name (project checkout) -- see this module's own docstring
-    for the one departure (a discovery-line check added at one CPU) and
-    why the exit-status marker alone already rejects a fatal-signal
-    death. An empty return means every required marker was found, i.e.
-    PASS; cpus == 4 is out of scope (see this module's docstring) and
-    raises rather than silently answering a question this port does not
-    cover.
+    appeared in log, ported verbatim from tools/linux-usercheck's own
+    function of the same name (project checkout) -- see this module's
+    own docstring for why the exit-status marker alone already rejects a
+    fatal-signal death. An empty return means every required marker was
+    found, i.e. PASS; cpus == 4 is out of scope (see this module's
+    docstring) and raises rather than silently answering a question this
+    port does not cover.
     """
     if cpus not in (1, 2):
         raise ValueError(
@@ -76,16 +79,16 @@ def missing_assertions(log, cpus):
             'for this test, see this module\'s own docstring')
 
     exit_status = 'exitcode=0x00002b00' if cpus == 2 else 'exitcode=0x00002a00'
-    checks = [('cpu discovery', f'Discovered {cpus} cpus on 1 nodes')]
-    if cpus == 2:
-        checks += [
-            ('secondary CPU execution', 'CPU1 revision is:'),
-            ('two-CPU scheduler bring-up', 'smp: Brought up 1 node, 2 CPUs'),
-        ]
-    checks += [
+    checks = [
         ('init handoff', 'Run /init as init process'),
         ('userspace exit status', exit_status),
     ]
+    if cpus == 2:
+        checks = [
+            ('two-CPU discovery', 'Discovered 2 cpus on 1 nodes'),
+            ('secondary CPU execution', 'CPU1 revision is:'),
+            ('two-CPU scheduler bring-up', 'smp: Brought up 1 node, 2 CPUs'),
+        ] + checks
     return [description for description, marker in checks if marker not in log]
 
 
@@ -788,9 +791,19 @@ class MissingAssertionsTest(unittest.TestCase):
 
     def test_empty_transcript_fails_missing_everything(self):
         missing = missing_assertions('', 1)
-        self.assertEqual(
-            missing,
-            ['cpu discovery', 'init handoff', 'userspace exit status'])
+        self.assertEqual(missing, ['init handoff', 'userspace exit status'])
+
+    def test_one_cpu_boot_never_has_to_show_a_discovery_line(self):
+        # The real one-CPU capture happens to print "Discovered 1 cpus on
+        # 1 nodes" (it's genuinely in REAL_ONE_CPU_PASS_TRANSCRIPT), but
+        # missing_assertions must not require it at one CPU -- matching
+        # tools/linux-usercheck's own contract, which never checks a
+        # discovery line at cpus == 1. Strip that one line out and the
+        # verdict must still be PASS.
+        without_discovery = REAL_ONE_CPU_PASS_TRANSCRIPT.replace(
+            'Discovered 1 cpus on 1 nodes\r\n', '')
+        self.assertNotIn('Discovered 1 cpus on 1 nodes', without_discovery)
+        self.assertEqual(missing_assertions(without_discovery, 1), [])
 
     def test_one_cpu_pass_does_not_satisfy_two_cpu_checks(self):
         # Cross-check: the real one-CPU transcript, judged as a two-CPU
@@ -798,7 +811,7 @@ class MissingAssertionsTest(unittest.TestCase):
         # those checks are not vacuously true, and that the exit-status
         # marker really is CPU-count-specific too (0x2a00 != 0x2b00).
         missing = missing_assertions(REAL_ONE_CPU_PASS_TRANSCRIPT, 2)
-        self.assertIn('cpu discovery', missing)
+        self.assertIn('two-CPU discovery', missing)
         self.assertIn('secondary CPU execution', missing)
         self.assertIn('two-CPU scheduler bring-up', missing)
         self.assertIn('userspace exit status', missing)

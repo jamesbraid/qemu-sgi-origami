@@ -30,9 +30,8 @@ four-CPU cell that asserts success would be asserting past a known
 condition, which this port's own task brief says explicitly not to do.
 
 missing_assertions() (test_linux_kernel_verdict.py, imported below) is a
-close port of linux-usercheck's own function of the same name, for the
-one- and two-CPU cases only, with one deliberate addition documented in
-that module's own docstring.
+verbatim port of linux-usercheck's own function of the same name, for
+the one- and two-CPU cases only.
 
 The QEMU argv this file builds (cpu_qemu_args) replicates
 tools/linux_topology.py's own topology_args()/accelerator_args() for the
