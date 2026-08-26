@@ -2911,6 +2911,26 @@ static void test_a_falling_edge_clears_the_hub_pending_bit(const void *data)
     qtest_quit(qts);
 }
 
+static void test_a_disabled_falling_edge_sends_no_clear(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_route_pin(qts);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+    qtest_writel(qts, REG(BRIDGE_INT_MODE), 1u << INT_TEST_SLOT);
+
+    bridge_drive_pin(qts, 1);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0);
+    bridge_drive_pin(qts, 0);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    qtest_quit(qts);
+}
+
 static void test_the_enable_register_has_no_bit_31(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
@@ -3122,6 +3142,8 @@ int main(int argc, char **argv)
                         test_a_disabled_pin_edge_sends_no_packet);
     qtest_add_data_func("sn0/bridge/falling-edge-clears-hub-pending", NULL,
                         test_a_falling_edge_clears_the_hub_pending_bit);
+    qtest_add_data_func("sn0/bridge/disabled-falling-edge-sends-no-clear", NULL,
+                        test_a_disabled_falling_edge_sends_no_clear);
     qtest_add_data_func("sn0/bridge/enable-has-no-bit-31", NULL,
                         test_the_enable_register_has_no_bit_31);
     qtest_add_data_func("sn0/bridge/mode-and-device-keep-writes", NULL,
