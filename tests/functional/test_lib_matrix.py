@@ -2,14 +2,15 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from lib_matrix import (AttemptResult, Cell, MatrixError,
+from lib_matrix import (AttemptResult, Cell, FIRMWARE_REL_PATH, MatrixError,
                          first_progress_code, machine_props, parse_matrix,
-                         qemu_args, verdict)
+                         prom_args, qemu_args, resolve_prom, verdict)
 
 
 STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
@@ -231,6 +232,50 @@ def test_two_node_numa():
 def test_cpus_not_divisible_by_nodes_rejected():
     with pytest.raises(MatrixError):
         qemu_args(make_cell(cpus=3, nodes=2, mem='128M'))
+
+
+# Tests for the real-PROM path resolver and its QEMU args
+
+def test_resolve_prom_present(tmp_path):
+    firmware_dir = tmp_path / 'assets' / 'firmware' / '6.5-base'
+    firmware_dir.mkdir(parents=True)
+    firmware_path = firmware_dir / 'ip27prom.payload.bin'
+    firmware_path.write_bytes(b'')
+
+    assert resolve_prom(str(tmp_path)) == str(firmware_path)
+
+
+def test_resolve_prom_absent(tmp_path):
+    # tmp_path has no assets/firmware/6.5-base/ip27prom.payload.bin at
+    # all -- the runner may not have it provisioned yet.
+    assert resolve_prom(str(tmp_path)) is None
+
+
+def test_resolve_prom_no_assets_root():
+    assert resolve_prom(None) is None
+    assert resolve_prom('') is None
+
+
+def test_firmware_rel_path_matches_test_prom_boot():
+    # test_prom_boot.py's own FIRMWARE_REL names the identical image;
+    # kept as one path so a change to either can't silently drift.
+    assert FIRMWARE_REL_PATH == os.path.join(
+        'assets', 'firmware', '6.5-base', 'ip27prom.payload.bin')
+
+
+def test_prom_args_with_resolved_firmware():
+    assert prom_args('/some/checkout/assets/firmware/6.5-base/'
+                     'ip27prom.payload.bin') == [
+        '-bios', '/some/checkout/assets/firmware/6.5-base/'
+                 'ip27prom.payload.bin',
+        '-d', 'trace:sgi_hub_led',
+    ]
+
+
+def test_prom_args_without_firmware():
+    # A firmware=synth cell never resolves an image, so the caller
+    # passes None straight through -- must contribute no args at all.
+    assert prom_args(None) == []
 
 
 # Tests for the oracle/retry/expected-failure verdict

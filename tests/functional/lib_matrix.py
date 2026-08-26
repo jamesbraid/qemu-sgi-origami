@@ -7,15 +7,18 @@ comments and blank lines are ignored, and each row's pipe-separated
 fields follow the exact order of the Cell dataclass below.
 parse_matrix() turns a manifest into Cell records; machine_props() and
 qemu_args() turn a Cell into the -M value and the rest of the QEMU
-command line; verdict() turns a cell and its recorded AttemptResults
+command line; resolve_prom() and prom_args() supply the real PROM
+image a firmware=prom cell's -M string demands (a firmware=synth cell
+needs neither); verdict() turns a cell and its recorded AttemptResults
 into a pass/fail/xfail/xpass/error outcome. Later stages of this
 subsystem (the generic test body and the meson projection) build on
-all three.
+all four.
 """
 
+import os
+import re
 from dataclasses import dataclass, fields
 from pathlib import Path
-import re
 
 
 class MatrixError(Exception):
@@ -177,6 +180,46 @@ def qemu_args(cell):
                  f'node,nodeid={node},memdev=ram{node},cpus={lo}-{hi}']
 
     return args
+
+
+# Where ORIGAMI_ASSETS resolves the real PROM image for a firmware=prom
+# cell, matching test_prom_boot.py's own FIRMWARE_REL exactly -- both name
+# the same image, so the path is kept here rather than re-derived twice.
+FIRMWARE_REL_PATH = os.path.join('assets', 'firmware', '6.5-base',
+                                 'ip27prom.payload.bin')
+
+
+def resolve_prom(assets_root):
+    """The real PROM image's path under assets_root, or None.
+
+    None when assets_root is falsy (ORIGAMI_ASSETS unset) or the image
+    is not there -- the runner may not have it provisioned yet. Purely
+    a path check: callers resolve ORIGAMI_ASSETS from the environment
+    themselves and hand the result in, matching test_prom_boot.py's own
+    _firmware_path(). The caller decides what an unresolved image means
+    for the cell (test_origin200_matrix.py skips it); this function only
+    answers whether the image is there.
+    """
+    if not assets_root:
+        return None
+    path = os.path.join(assets_root, FIRMWARE_REL_PATH)
+    return path if os.path.isfile(path) else None
+
+
+def prom_args(firmware_path):
+    """The -bios/-d args a firmware=prom cell needs to run the real PROM.
+
+    Given a resolved path, returns ['-bios', firmware_path,
+    '-d', 'trace:sgi_hub_led'] -- both parts matter: -bios hands the
+    machine the real firmware, and the trace event is what emits the
+    progress codes first_progress_code() reads. Given a falsy path
+    (None, for a firmware=synth cell that never resolves one), returns
+    [] -- callers can call this unconditionally rather than guarding it
+    with an if. Matches test_prom_boot.py's own vm.add_args() call.
+    """
+    if not firmware_path:
+        return []
+    return ['-bios', firmware_path, '-d', 'trace:sgi_hub_led']
 
 
 @dataclass

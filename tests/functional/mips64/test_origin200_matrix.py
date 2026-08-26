@@ -15,8 +15,9 @@ import time
 
 from qemu_test import QemuSystemTest
 
-from lib_matrix import (AttemptResult, first_progress_code, machine_props,
-                        parse_matrix, qemu_args, verdict)
+from lib_matrix import (AttemptResult, FIRMWARE_REL_PATH, first_progress_code,
+                        machine_props, parse_matrix, prom_args, qemu_args,
+                        resolve_prom, verdict)
 
 
 MATRIX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -37,6 +38,23 @@ def _boot_one_attempt(test, cell, attempt_index):
     vm = test.get_vm(name=name)
     vm.set_machine(machine_props(cell))
     vm.add_args(*qemu_args(cell))
+
+    if cell.firmware == 'prom':
+        # machine_props() already set synthesized-firmware=off for this
+        # cell -- it wants the real PROM. Resolve it the same way
+        # test_prom_boot.py does (ORIGAMI_ASSETS names a checkout, not
+        # the assets/ directory itself) and skip if it is not
+        # provisioned, rather than launching a machine with no
+        # firmware at all. firmware=synth cells never take this branch:
+        # no -bios, no trace, no skip.
+        firmware_path = resolve_prom(os.environ.get('ORIGAMI_ASSETS'))
+        if firmware_path is None:
+            test.skipTest(
+                'ORIGAMI_ASSETS is not set, or has no firmware at '
+                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL_PATH} -- point it at a '
+                'checkout with the real PROM image extracted '
+                '(tools/extract-irix prom) to run this test')
+        vm.add_args(*prom_args(firmware_path))
 
     try:
         vm.launch()
