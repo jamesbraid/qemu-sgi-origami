@@ -66,15 +66,46 @@ def write_manifest(tmp_path, *lines):
 
 def test_parses_the_smoke_cell():
     cells = parse_matrix(STARTER_MANIFEST)
+    by_id = {cell.id: cell for cell in cells}
 
-    assert len(cells) == 1
-    cell = cells[0]
+    cell = by_id['firmware_smoke']
     assert isinstance(cell, Cell)
-    assert cell.id == 'firmware_smoke'
     assert cell.cpus == 1
     assert cell.speed == 'quick'
     assert cell.timeout == 120
     assert cell.expect == 'pass'
+
+
+def test_parses_the_config_cells():
+    # The three real firmware-boot cells this task adds: 4-CPU single
+    # node, two-node, and mttcg -- each expect=pass (never xfail: a
+    # config that does not boot must fail red) and firmware=prom (needs
+    # the provisioned PROM, so it skips rather than xfails when absent).
+    cells = parse_matrix(STARTER_MANIFEST)
+    by_id = {cell.id: cell for cell in cells}
+
+    assert len(cells) == 4
+
+    four_cpu = by_id['prom_full_boot_4cpu']
+    assert (four_cpu.scenario, four_cpu.cpus, four_cpu.nodes,
+            four_cpu.accel) == ('full_boot', 4, 1, 'wallclock')
+
+    two_node = by_id['prom_full_boot_2node']
+    assert (two_node.scenario, two_node.cpus, two_node.nodes,
+            two_node.accel) == ('full_boot', 4, 2, 'wallclock')
+
+    mttcg = by_id['prom_full_boot_mttcg']
+    assert (mttcg.scenario, mttcg.cpus, mttcg.nodes,
+            mttcg.accel) == ('full_boot', 2, 1, 'mttcg')
+
+    for cell in (four_cpu, two_node, mttcg):
+        assert cell.guest == 'prom'
+        assert cell.firmware == 'prom'
+        assert cell.speed == 'thorough'
+        assert cell.timeout == 700
+        assert cell.expect == 'pass'
+        assert cell.xfail_mark == ''
+        assert cell.xfail_signature == ''
 
 
 def test_ignores_comments_and_blanks(tmp_path):
