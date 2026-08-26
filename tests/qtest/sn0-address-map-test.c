@@ -30,6 +30,8 @@
 #define FLASH_RESET     (NODE0 + 0x1fc00000)
 #define FLASH_HUB       (SPACE_HUB + NODE0 + 0x10000000)
 #define FLASH_REMOTE    (SPACE_HUB + NODE0 + 0x30000000)
+/* The flash base in Hub space -- where the real PROM fetches relocated code. */
+#define FLASH_HUB_LOCAL (SPACE_HUB + NODE0 + 0x1fc00000)
 
 /* AMD 29F080 command addresses and the blank first PROM-log sector. */
 #define FLASH_UNLOCK1       0x5555
@@ -257,6 +259,35 @@ static void test_boot_windows_mirror_the_flash(const void *data)
     g_assert_cmphex(mirrored, ==, direct);
     mirrored = qtest_readq(qts, FLASH_REMOTE + 0x10000000 - 8);
     g_assert_cmphex(mirrored, ==, direct);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The real PROM relocates and runs its own code through the flash's base in
+ * Hub space (0x1fc00000 with the Hub window above it), not through the reset
+ * view. Fetching instructions from an I/O region translates one instruction
+ * per block and never caches them, so that copy step crawls. This base must
+ * therefore be a direct (romd) view of the chip. Read the type off the
+ * machine's own flat view rather than assuming it: before the fast view exists
+ * the whole window is one I/O range and no flat line starts at this base.
+ */
+static void test_flash_hub_local_is_fast(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    const char *hit = strstr(mtree, "000001001fc00000-");
+    const char *line_end;
+    g_autofree char *line = NULL;
+
+    g_assert_nonnull(hit);
+    line_end = strchr(hit, '\n');
+    line = g_strndup(hit, line_end ? (size_t)(line_end - hit) : strlen(hit));
+    g_assert_nonnull(strstr(line, "romd"));
+
+    /* The fast view still has to read the chip's real bytes at this base. */
+    g_assert_cmphex(qtest_readq(qts, FLASH_HUB_LOCAL + CONFIG_OFFSET +
+                               FIELD_MAGIC), ==, CONFIG_MAGIC);
 
     qtest_quit(qts);
 }
@@ -935,6 +966,8 @@ int main(int argc, char **argv)
                         test_flash_three_views);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,
                         test_boot_windows_mirror_the_flash);
+    qtest_add_data_func("sn0/address-map/flash-hub-local-is-fast", NULL,
+                        test_flash_hub_local_is_fast);
     qtest_add_data_func("sn0/address-map/entry-points", NULL,
                         test_entry_points);
     qtest_add_data_func("sn0/address-map/flash-rejects-bare-writes", NULL,
