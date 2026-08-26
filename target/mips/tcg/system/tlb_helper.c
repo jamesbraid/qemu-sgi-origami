@@ -379,11 +379,18 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
          * only clears it on a processor whose Config4 grants the feature.
          * Once stuck, the fill helper reads it back as "write an invalid
          * entry" and every later TLB write is silently thrown away. Present
-         * an invalidated entry as all zeroes instead.
+         * an invalidated entry's EntryHi and EntryLo as zeroes instead.
+         *
+         * The PageMask register keeps the entry's own stale mask: a
+         * read-back loads PageMask like any other read, and a guest that
+         * sets PageMask once and relies on read-backs restoring the one
+         * size it ever writes would otherwise inherit a 4 Kbyte mask for
+         * its next TLB write.
          */
         env->CP0_EntryHi = (env->insn_flags & INSN_R10K)
                            ? 0 : 1 << CP0EnHi_EHINV;
-        env->CP0_PageMask = 0;
+        env->CP0_PageMask = (env->insn_flags & INSN_R10K)
+                            ? tlb->PageMask : 0;
         env->CP0_EntryLo0 = 0;
         env->CP0_EntryLo1 = 0;
     } else {
