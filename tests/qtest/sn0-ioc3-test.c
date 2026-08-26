@@ -814,6 +814,7 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define TX_CONSUME        (IOC3_BASE + 0x130)
 #define TX_PRODUCE        (IOC3_BASE + 0x134)
 
+#define MCR_PAD_EN        (1u << 2)
 #define MCR_TX_DMA_EN     (1u << 13)
 #define MCR_TX_EN         (1u << 14)
 #define MCR_RX_DMA_EN     (1u << 15)
@@ -1971,6 +1972,99 @@ static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
 
     /* No TXD_DOCHECKSUM this time. */
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(frame));
+    g_assert_cmpmem(received, got, frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A descriptor sent while the MAC control register's pad-enable bit is set
+ * must leave with a frame at least sixty bytes long, before the frame check
+ * sequence -- "Padding a short frame" in the datasheet's transmit-descriptor
+ * section. IRIX's kernel and its netboot PROM both rely on this and never
+ * pad in software, so a model that ignores the bit ships an ARP request or a
+ * bare acknowledgement at its true short length. The pad bytes must be zero
+ * and the assembled bytes must survive unchanged.
+ */
+static void test_the_ethernet_transmit_pads_short_frame(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[42];
+    uint8_t expect[60];
+    uint8_t received[128];
+    size_t got;
+    unsigned int i;
+    uint32_t desc = RAM_SCRATCH;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+    memcpy(expect, frame, sizeof(frame));
+    memset(expect + sizeof(frame), 0, sizeof(expect) - sizeof(frame));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN | MCR_PAD_EN);
+
+    qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, TX_RING_HI, 0);
+    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_PRODUCE, 128);
+
+    got = net_socket_recv_frame(sv[0], received, sizeof(received));
+    g_assert_cmpint(got, ==, sizeof(expect));
+    g_assert_cmpmem(received, got, expect, sizeof(expect));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * With the pad-enable bit clear the engine must leave a short frame at its
+ * assembled length. The two drivers that pad in their own transmit path and
+ * leave the bit inert are what make this the case that catches a model
+ * padding unconditionally -- one that always extended to sixty bytes would
+ * pass the case above and only this one would show it.
+ */
+static void test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[42];
+    uint8_t received[128];
+    size_t got;
+    unsigned int i;
+    uint32_t desc = RAM_SCRATCH;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    /* Pad-enable clear this time. */
+    qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
+
     qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID);
     qtest_writel(qts, desc + 4, sizeof(frame));
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
@@ -3891,6 +3985,12 @@ int main(int argc, char **argv)
         "sn0/ioc3/ethernet-transmit-leaves-checksum-alone-when-not-asked",
         NULL,
         test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked);
+    qtest_add_data_func("sn0/ioc3/ethernet-transmit-pads-short-frame", NULL,
+                        test_the_ethernet_transmit_pads_short_frame);
+    qtest_add_data_func(
+        "sn0/ioc3/ethernet-transmit-leaves-short-frame-alone-when-pad-disabled",
+        NULL,
+        test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
                         test_the_ethernet_receive_delivers_a_frame);
     qtest_add_data_func("sn0/ioc3/ethernet-armed-timer-raises-its-source",

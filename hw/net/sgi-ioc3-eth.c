@@ -534,6 +534,25 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
             net_checksum_calculate(s->frame, len, CSUM_TCP | CSUM_UDP);
         }
 
+        /*
+         * The engine pads any frame it assembles below the 802.3 sixty-byte
+         * minimum (before the frame check sequence) when the MAC control
+         * register's pad-enable bit is set -- "Padding a short frame" in the
+         * datasheet. Two of the three guest drivers pad in their own transmit
+         * path and leave the bit inert; the one that doesn't -- IRIX, in both
+         * its kernel and its netboot PROM -- relies on the engine to do it,
+         * so an unimplemented pad ships an ARP request or a bare
+         * acknowledgement at its true short length. This has to apply before
+         * both the loopback and wire paths below, since the engine pads
+         * regardless of where the frame is going. s->frame is far larger
+         * than sixty bytes, so the pad always fits.
+         */
+        if ((sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL) &
+             SGI_IOC3_ENET_MCR_PAD_EN) && len < 60) {
+            memset(s->frame + len, 0, 60 - len);
+            len = 60;
+        }
+
         if (len > 0) {
             if (loopback) {
                 /*
