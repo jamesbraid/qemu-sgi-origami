@@ -41,10 +41,14 @@ test_mips64_timeouts = {
   # from tools/net-transfer-diag) rather than sharing it.
   'openbsd_net_transfer' : 1400,
   # A full unattended OpenBSD/sgi 6.9 install (test_openbsd_install.py) is
-  # 20-30 minutes; INSTALL_TIMEOUT_SECONDS there keeps a 60s margin under
-  # this, the same margin every other test in this directory keeps
-  # against its own meson timeout.
-  'openbsd_install' : 2400,
+  # 20-30 minutes under a quiet host, but a real run on a contended host
+  # was still doing genuine work (confirmed via /proc/<pid>/io, not a
+  # hang) in the final kernel-relink step past the 40-minute mark this
+  # entry previously carried. 90 minutes gives that headroom;
+  # INSTALL_TIMEOUT_SECONDS there keeps a 60s margin under this, the
+  # same margin every other test in this directory keeps against its
+  # own meson timeout.
+  'openbsd_install' : 5400,
 }
 
 tests_mips64_system_quick = [
