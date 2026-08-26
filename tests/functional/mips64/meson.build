@@ -31,6 +31,14 @@ test_mips64_timeouts = {
   # rather than the usual single-BOOT_TIMEOUT-plus-a-bit margin this
   # fork's single-test-method files keep.
   'linux_kernel' : 240,
+  # The same boot as openbsd_login, with a network back end fitted, plus
+  # a DHCP lease and three transfer legs on top of it. LOGIN_BUDGET_SECONDS
+  # in test_openbsd_net_transfer.py keeps the same 840s login budget
+  # openbsd_login proved sufficient; the margin above that here is wider
+  # than the other tests' usual 60s, because the three legs each carry
+  # their own fixed per-step timeout on top of the login budget (ported
+  # from tools/net-transfer-diag) rather than sharing it.
+  'openbsd_net_transfer' : 1400,
 }
 
 tests_mips64_system_quick = [
@@ -47,4 +55,5 @@ tests_mips64_system_thorough = [
   'prom_sash',
   'openbsd_login',
   'linux_kernel',
+  'openbsd_net_transfer',
 ]
