@@ -58,7 +58,7 @@
 /*
  * Where each processor spools error records -- and, on a single-processor
  * machine, where the firmware parks a marker across its own two-pass reset,
- * because processor B's copy belongs to a processor that is not fitted.
+ * because processor B's copy belongs to an unpopulated processor socket.
  * Bits 31:3; the low three bits of a written value do not survive.
  */
 #define PI_ERR_SPOOL_A       0x000418
@@ -365,8 +365,8 @@ static void assert_dual_node_master_slave_sense(QTestState *qts)
 }
 
 /*
- * Each plain Origin 200 processor module has its XIO jumper fitted. The
- * console-bearing node 0 has the module-controller switch in its master
+ * Each Origin 200 logic carrier's system board has its XIO jumper installed.
+ * The console-bearing node 0 has the module-controller switch in its master
  * position; node 1 has it in the slave position. If either identity is wrong,
  * firmware takes a different platform path. These inputs are physical straps,
  * so a machine reset must not change their readings.
@@ -922,7 +922,7 @@ static void test_cpu_enable_registers_store_what_is_written(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /* The fitted boot processor is enabled; the empty socket is not. */
+    /* The installed boot processor is enabled; the empty socket is not. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
 
@@ -932,7 +932,7 @@ static void test_cpu_enable_registers_store_what_is_written(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
 
     /*
-     * Processor B is not fitted on an Origin 200, so clearing its enable bit
+     * Processor B is not installed on an Origin 200, so clearing its enable bit
      * -- which is exactly what the firmware's halt routine does as its last
      * act -- reaches for a CPU that qemu_get_cpu() returns NULL for. This is
      * the realistic case, not an edge one, and it must not crash the model.
