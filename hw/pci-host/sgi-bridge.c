@@ -268,6 +268,9 @@
 #define INT_ENABLE_WRITABLE     0x7fffffffu
 /* Seven group bits, each clearing one group of error conditions at once. */
 #define INT_RESET_GROUPS        0x7fu
+/* Bit 3 is the request-dispatch group's strobe. The invalid-address error is
+ * in that group, so it alone clears it; a strobe for any other group does not. */
+#define INT_RESET_REQ_DSP_GRP   (1u << 3)
 /* One bit per pin: send a clearing packet when that pin falls. */
 #define INT_MODE_WRITABLE       0xffu
 /* Three bits per pin naming the device that owns it, eight pins. */
@@ -1902,12 +1905,14 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
          * A strobe. Most ask this model to release something it never held, so
          * accepting the write and doing nothing is the whole of the behaviour.
          * The one with an effect is the reset-interrupt-status register: a one
-         * in a group bit clears that group's latched errors, and the only one
-         * this model latches is the invalid-address bit.
+         * in a group bit clears that group's latched errors. The only error this
+         * model latches is the invalid-address bit, which is in the
+         * request-dispatch group, so only that group's strobe clears it — a
+         * strobe for any other group leaves it set.
          */
         if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_INT_RESET &&
-            ((uint32_t)val & INT_RESET_GROUPS)) {
-            s->int_error = 0;
+            ((uint32_t)val & INT_RESET_REQ_DSP_GRP)) {
+            s->int_error &= ~INT_INVALID_ADDR;
         }
         return;
     case SGI_BRIDGE_RW:

@@ -44,6 +44,8 @@
 #define BRIDGE_INT_DEST_LO  0x038        /* interrupt destination, lower */
 #define INT_INVALID_ADDR    (1u << 24)   /* "address invalid for this widget" */
 #define INT_RESET_ALL       0x7fu        /* clears every error group */
+#define INT_RESET_PCI_GRP   (1u << 0)    /* clears only the PCI group */
+#define INT_RESET_REQ_DSP_GRP (1u << 3)  /* clears the invalid-address bit's group */
 
 /* The local Hub's interrupt registers, where the error interrupt is delivered. */
 #define HUB_LOCAL           (SPACE_XTALK + 0x01000000)
@@ -192,6 +194,34 @@ static void test_invalid_address_latches_status(const void *data)
     qtest_quit(qts);
 }
 
+static void test_reset_strobe_clears_only_its_own_group(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    /*
+     * Each group strobe clears only its own group's errors. The invalid-address
+     * bit is in the request-dispatch group, so a strobe for another group must
+     * leave it latched; only its own group's strobe clears it. The guests write
+     * all seven groups at once, so a strobe that cleared more than it names
+     * would pass unnoticed until a guest cleared a single group.
+     */
+    qtest_writel(qts, BRIDGE_BASE + UNDEFINED_REG, 0xdeadbeefu);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)) & INT_INVALID_ADDR,
+                    ==, INT_INVALID_ADDR);
+
+    /* A strobe for the PCI group says nothing about this error. */
+    qtest_writel(qts, REG(BRIDGE_INT_RESET), INT_RESET_PCI_GRP);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)) & INT_INVALID_ADDR,
+                    ==, INT_INVALID_ADDR);
+
+    /* Its own group's strobe clears it. */
+    qtest_writel(qts, REG(BRIDGE_INT_RESET), INT_RESET_REQ_DSP_GRP);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)) & INT_INVALID_ADDR,
+                    ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_invalid_address_raises_host_interrupt(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -228,6 +258,8 @@ int main(int argc, char **argv)
                         NULL, test_ssram_and_undefined_slot_post);
     qtest_add_data_func("sn0/bridge/invalid-address-latches-status",
                         NULL, test_invalid_address_latches_status);
+    qtest_add_data_func("sn0/bridge/reset-strobe-clears-only-its-group",
+                        NULL, test_reset_strobe_clears_only_its_own_group);
     qtest_add_data_func("sn0/bridge/invalid-address-raises-host-interrupt",
                         NULL, test_invalid_address_raises_host_interrupt);
 
