@@ -356,6 +356,15 @@
 #define BRIDGE_DIRECT_512MB     (512 * MiB)
 
 /*
+ * A 64-bit DMA cycle: any address at or above 1 << 32. Bits 47:0 are the
+ * crosstalk address, bits 63:60 the target widget; the offset registers are
+ * bypassed, so the NASID at crosstalk bit 32 survives.
+ */
+#define BRIDGE_PCI_64BIT        (1ULL << 32)
+#define BRIDGE_XTALK_PASS       MAKE_64BIT_MASK(0, 48)
+#define BRIDGE_DIRECT64_WIDGET_SHIFT 60
+
+/*
  * PCI type 0 configuration space. Eight devices 4 KB apart, each holding eight
  * functions 256 bytes apart, which is how both guests compute the address:
  * Linux indexes a device array and then a function array, and OpenBSD adds the
@@ -2543,16 +2552,12 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
          * Where the access lands is the only lever this interface offers, so
          * it is the one the byte-lane permutation rides in on.
          *
-         * THIS CALL TAKES THE RAW PCI ADDRESS AND MUST KEEP DOING SO. Which
-         * window an address falls in is what selects between the two swap
-         * bits, and the windows are defined on the address the device issued.
-         * This model does not yet decode 64-bit direct addresses properly;
-         * whoever fixes that will be normalising addresses somewhere around
-         * here, and if this call ends up below that normalisation a 64-bit
-         * address can land under the direct-window boundary. Then Linux --
-         * which sets the direct bit and leaves the page-mapped one clear --
-         * gets its buffers judged by the wrong bit and silently byte-flipped,
-         * in a commit about address decoding, months from now.
+         * The swap bit is selected by which window the address falls in, and
+         * the windows are defined on the raw PCI address the device issued --
+         * a 64-bit cycle included, which is judged by the direct-window bit.
+         * So this decision is taken on the raw address, and must stay ahead of
+         * the 64-bit decode below: rewrite the address first and a wide access
+         * is measured against the wrong window and byte-swapped.
          */
         .target_as = sgi_bridge_dma_needs_correction(s, dma->slot, addr) ?
                      &s->lane_swap_as : &address_space_memory,
@@ -2572,6 +2577,26 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
          * at that address on this side rather than being carried across.
          */
         entry.translated_addr = addr & ~page_mask;
+        entry.perm = IOMMU_RW;
+        return entry;
+    }
+
+    if (addr >= BRIDGE_PCI_64BIT) {
+        /*
+         * Ordered ahead of the 31-bit direct path below, which would keep only
+         * bits 0-30 and drop the NASID at bit 32 — collapsing a transfer bound
+         * for another node's memory into node zero's.
+         */
+        unsigned int widget = (addr >> BRIDGE_DIRECT64_WIDGET_SHIFT) & 0xf;
+
+        if (widget == 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bridge: 64-bit DMA names widget 0, which the "
+                          "crossbar cannot answer\n");
+        }
+        entry.translated_addr =
+            sgi_bridge_compose_xtalk(s, widget, addr & BRIDGE_XTALK_PASS) &
+            ~page_mask;
         entry.perm = IOMMU_RW;
         return entry;
     }
