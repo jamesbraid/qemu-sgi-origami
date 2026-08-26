@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +11,15 @@ import pytest
 from lib_matrix import (AttemptResult, Cell, FIRMWARE_REL_PATH, MatrixError,
                          first_progress_code, machine_props, parse_matrix,
                          prom_args, qemu_args, resolve_prom, verdict)
+
+# test_prom_boot.py lives one directory down (tests/functional/mips64/), not
+# on sys.path by default here -- inserted so test_firmware_rel_path_matches_
+# test_prom_boot below can import its FIRMWARE_REL directly, the same way
+# test_prom_boot.py itself inserts tests/functional to reach lib_matrix.
+# FIRMWARE_REL is defined outside test_prom_boot's qemu_test-guarded block,
+# so this import needs no build.
+sys.path.insert(0, str(Path(__file__).parent / 'mips64'))
+from test_prom_boot import FIRMWARE_REL as PROM_BOOT_FIRMWARE_REL  # noqa: E402
 
 
 STARTER_MANIFEST = Path(__file__).parent / 'mips64' / 'origin200-matrix'
@@ -257,10 +266,11 @@ def test_resolve_prom_no_assets_root():
 
 
 def test_firmware_rel_path_matches_test_prom_boot():
-    # test_prom_boot.py's own FIRMWARE_REL names the identical image;
-    # kept as one path so a change to either can't silently drift.
-    assert FIRMWARE_REL_PATH == os.path.join(
-        'assets', 'firmware', '6.5-base', 'ip27prom.payload.bin')
+    # A real cross-file check against test_prom_boot.py's own FIRMWARE_REL
+    # (imported above), not a second hardcoded copy of the literal -- a
+    # copy would pass even if one of the two files' paths drifted from
+    # the other, which is exactly the drift this test exists to catch.
+    assert FIRMWARE_REL_PATH == PROM_BOOT_FIRMWARE_REL
 
 
 def test_prom_args_with_resolved_firmware():
