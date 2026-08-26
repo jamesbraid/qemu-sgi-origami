@@ -8973,6 +8973,11 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
         break;
     case OPC_WAIT:
         opn = "wait";
+        /* The R10000's COP0 instruction set has no WAIT. */
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_reserved_instruction(ctx);
+            break;
+        }
         check_insn(ctx, ISA_MIPS3 | ISA_MIPS_R1);
         if ((ctx->insn_flags & ISA_MIPS_R6) &&
             (ctx->hflags & MIPS_HFLAG_BMASK)) {
