@@ -325,6 +325,34 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
            ((wire_len << SGI_IOC3_ENET_RXH_BYTECNT_SHIFT) &
             SGI_IOC3_ENET_RXH_BYTECNT_MASK);
 
+    /*
+     * The receive checksum-offload partial in word0's low half. Real IOC3 sums
+     * the whole received packet -- MAC header through the trailing FCS -- as a
+     * 16-bit one's complement and leaves the folded sum here; Linux's
+     * ioc3_tcpudp_checksum() finishes the transport checksum from it and trusts
+     * the packet only when its reconstruction folds to 0xffff. A wrong non-zero
+     * value that happened to fold there would have the guest trust a corrupt
+     * packet unchecked, so this is exactly that sum and nothing approximate.
+     *
+     * The backend delivers no FCS, so the four phantom bytes the byte count
+     * accounts for are written as zero below and summed as zero here: the
+     * driver reads and subtracts those same four bytes, so the reconstruction
+     * is self-consistent whatever they hold, and zero adds nothing to the sum.
+     * net_checksum_add() pairs bytes big-endian from the frame start and pads a
+     * trailing odd byte into the high lane -- the same 16-bit grid the driver
+     * inverts -- so the folded result is the partial it expects for either
+     * parity. Short-circuit loopback appends no FCS and carries a zero status
+     * word, so Linux never runs the checksum on it; leave the field zero there.
+     */
+    if (!short_circuit) {
+        uint32_t sum = net_checksum_add(size, (uint8_t *)buf);
+
+        while (sum >> 16) {
+            sum = (sum & 0xffffu) + (sum >> 16);
+        }
+        word0 |= sum & 0xffffu;
+    }
+
     lenlo = wire_len & 0x7u;
     lenhi = (wire_len >> 3) & 0x3ffu;
     word1 = SGI_IOC3_ENET_RXE_GOODPKT |
@@ -347,6 +375,17 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                MEMTXATTRS_UNSPECIFIED);
     dma_memory_write(s->dma_as, buf_addr + offset, buf, size,
                      MEMTXATTRS_UNSPECIFIED);
+    if (!short_circuit) {
+        /*
+         * The four phantom FCS bytes the byte count above accounts for. Real
+         * hardware DMAs the frame's trailing FCS into the buffer; the backend
+         * strips it, so write a defined zero the receive checksum summed as
+         * zero and the driver subtracts back out. skb_put() trims them off the
+         * frame the stack sees, so their value never leaves the driver.
+         */
+        stl_be_dma(s->dma_as, buf_addr + offset + size, 0,
+                   MEMTXATTRS_UNSPECIFIED);
+    }
 
     consume = (consume + (1u << SGI_IOC3_ENET_RX_RING_SHIFT)) &
              SGI_IOC3_ENET_RX_INDEX_MASK;

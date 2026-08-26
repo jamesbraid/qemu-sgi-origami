@@ -2398,6 +2398,263 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
 }
 
 /*
+ * The receive checksum-offload partial that word0's low half carries. Real
+ * IOC3 sums the whole received packet -- MAC header through the trailing FCS --
+ * as a 16-bit one's complement and drops the folded sum there; Linux's
+ * ioc3_tcpudp_checksum() finishes the transport checksum from that partial and
+ * marks the packet verified only when its reconstruction folds to 0xffff. A
+ * wrong non-zero partial that happened to fold there would have the guest trust
+ * a corrupt packet unchecked, so these tests replicate the driver's own
+ * arithmetic and require exactly 0xffff for a good frame and never 0xffff for a
+ * corrupt one. They read back the four bytes the model leaves where the FCS
+ * would sit as well as the frame, so the reconstruction runs on precisely what
+ * the driver would read.
+ */
+static uint16_t rxcsum_fold(uint32_t sum)
+{
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return sum;
+}
+
+static uint32_t rxcsum_be16(const uint8_t *p)
+{
+    return (p[0] << 8) | p[1];
+}
+
+/* One's-complement 16-bit sum over a byte range, trailing odd byte padded high
+ * -- the ordinary Internet checksum accumulator, not yet complemented. */
+static uint16_t rxcsum_ones(const uint8_t *data, size_t len)
+{
+    uint32_t sum = 0;
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += (data[i] << 8) | data[i + 1];
+    }
+    if (i < len) {
+        sum += data[i] << 8;
+    }
+    return rxcsum_fold(sum);
+}
+
+/* The value an IPv4 header checksum field carries. */
+static uint16_t rxcsum_ip(const uint8_t *iphdr, size_t ihl)
+{
+    return ~rxcsum_ones(iphdr, ihl) & 0xffff;
+}
+
+/* The value a TCP or UDP checksum field carries: the transport segment summed
+ * under its IPv4 pseudo-header, with the checksum field itself zero. */
+static uint16_t rxcsum_transport(const uint8_t *saddr, const uint8_t *daddr,
+                                 uint8_t proto, const uint8_t *seg,
+                                 size_t seglen)
+{
+    uint32_t sum = rxcsum_be16(saddr) + rxcsum_be16(saddr + 2)
+                 + rxcsum_be16(daddr) + rxcsum_be16(daddr + 2)
+                 + proto + seglen
+                 + rxcsum_ones(seg, seglen);
+    return ~rxcsum_fold(sum) & 0xffff;
+}
+
+/*
+ * A replica of Linux's ioc3_tcpudp_checksum() arithmetic, from the public
+ * driver drivers/net/ethernet/sgi/ioc3-eth.c. `eh` is the ethernet header as
+ * the driver sees it, `len` the frame length without the FCS (the byte count
+ * minus four), `hwsum` the partial from word0's low half. Returns the folded
+ * value the driver compares against 0xffff. Big-endian words are read
+ * explicitly because the driver runs on a big-endian CPU and the test host may
+ * not, so a native 16-bit load would sum the wrong bytes.
+ */
+static uint32_t rxcsum_driver(const uint8_t *eh, int len, uint32_t hwsum)
+{
+    const uint8_t *ih = eh + 14;                 /* ETH_HLEN */
+    int ihl = (ih[0] & 0x0f) << 2;
+    const uint8_t *cp = eh + len;                /* where the driver reads CRC */
+    uint32_t csum, ehsum;
+
+    csum = hwsum
+         + (rxcsum_be16(ih + 2) - ihl)           /* tot_len - IP header length */
+         + ih[9]                                 /* htons(proto), big-endian */
+         + rxcsum_be16(ih + 12) + rxcsum_be16(ih + 14)   /* source address */
+         + rxcsum_be16(ih + 16) + rxcsum_be16(ih + 18);  /* dest address */
+
+    ehsum = rxcsum_be16(eh) + rxcsum_be16(eh + 2) + rxcsum_be16(eh + 4)
+          + rxcsum_be16(eh + 6) + rxcsum_be16(eh + 8) + rxcsum_be16(eh + 10)
+          + rxcsum_be16(eh + 12);
+    ehsum = (ehsum & 0xffff) + (ehsum >> 16);
+    ehsum = (ehsum & 0xffff) + (ehsum >> 16);
+    csum += 0xffff ^ ehsum;                      /* subtract the MAC header */
+
+    if (len & 1) {
+        csum += 0xffff ^ (uint16_t)((cp[1] << 8) | cp[0]);
+        csum += 0xffff ^ (uint16_t)((cp[3] << 8) | cp[2]);
+    } else {
+        csum += 0xffff ^ (uint16_t)((cp[0] << 8) | cp[1]);
+        csum += 0xffff ^ (uint16_t)((cp[2] << 8) | cp[3]);
+    }
+
+    csum = (csum & 0xffff) + (csum >> 16);
+    csum = (csum & 0xffff) + (csum >> 16);
+    return csum;
+}
+
+/*
+ * Build a well-formed IPv4 frame -- TCP when proto is 6, UDP when 17 -- with a
+ * correct IP header checksum and a correct transport checksum, into `out`.
+ * Returns the frame length. A good frame built this way is exactly what the
+ * offload has to verify; corrupting a byte after the fact is what it has to
+ * refuse.
+ */
+static size_t rxcsum_build_frame(uint8_t *out, uint8_t proto,
+                                 const uint8_t *payload, size_t payload_len)
+{
+    static const uint8_t dst[6] = { 0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc };
+    static const uint8_t src[6] = { 0x52, 0x54, 0x00, 0x11, 0x22, 0x33 };
+    static const uint8_t sip[4] = { 192, 168, 0, 2 };
+    static const uint8_t dip[4] = { 192, 168, 0, 1 };
+    size_t l4hdr = (proto == 6) ? 20 : 8;
+    size_t seglen = l4hdr + payload_len;
+    size_t iptot = 20 + seglen;
+    uint8_t *eh = out;
+    uint8_t *ih = out + 14;
+    uint8_t *seg = ih + 20;
+    uint16_t c;
+
+    memset(out, 0, 14 + iptot);
+    memcpy(eh, dst, 6);
+    memcpy(eh + 6, src, 6);
+    eh[12] = 0x08;                               /* ethertype IPv4 */
+    eh[13] = 0x00;
+
+    ih[0] = 0x45;                                /* version 4, header 5 words */
+    ih[2] = iptot >> 8;
+    ih[3] = iptot & 0xff;
+    ih[8] = 64;                                  /* time to live */
+    ih[9] = proto;
+    memcpy(ih + 12, sip, 4);
+    memcpy(ih + 16, dip, 4);
+    c = rxcsum_ip(ih, 20);
+    ih[10] = c >> 8;
+    ih[11] = c & 0xff;
+
+    if (proto == 6) {                            /* TCP */
+        seg[0] = 0xc0;                           /* source port */
+        seg[2] = 0x00;                           /* dest port 80 */
+        seg[3] = 0x50;
+        seg[12] = 0x50;                          /* data offset 5 words */
+        seg[13] = 0x10;                          /* ACK */
+        seg[14] = 0x20;                          /* window */
+    } else {                                     /* UDP */
+        seg[0] = 0xc0;                           /* source port */
+        seg[2] = 0x00;                           /* dest port 53 */
+        seg[3] = 0x35;
+        seg[4] = seglen >> 8;                    /* UDP length */
+        seg[5] = seglen & 0xff;
+    }
+    memcpy(seg + l4hdr, payload, payload_len);
+
+    c = rxcsum_transport(sip, dip, proto, seg, seglen);
+    if (proto == 6) {
+        seg[16] = c >> 8;                        /* TCP checksum */
+        seg[17] = c & 0xff;
+    } else {
+        seg[6] = c >> 8;                         /* UDP checksum */
+        seg[7] = c & 0xff;
+    }
+    return 14 + iptot;
+}
+
+/*
+ * Deliver one frame through the receive path and return the value Linux's
+ * checksum reconstruction would fold to, computed from word0's partial and the
+ * bytes the model left in the buffer -- the frame and the four FCS bytes after
+ * it. Asserts only the framing it depends on (valid, byte count) so a failure
+ * points at the checksum rather than the delivery.
+ */
+static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
+{
+    int sv[2];
+    QTestState *qts;
+    uint32_t ring = RAM_SCRATCH;
+    uint32_t rxbuf = RAM_SCRATCH + 0x4000;
+    uint8_t back[128];
+    uint32_t word0, hwsum, csum;
+    int len, attempt;
+
+    g_assert_cmpuint(size + 4, <=, sizeof(back));
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, RX_PRODUCE, 8);
+
+    net_socket_send_frame(sv[0], frame, size);
+
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) != 0) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    word0 = qtest_readl(qts, rxbuf + 0);
+    g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);    /* valid */
+    len = (int)((word0 >> 16) & 0x7ff) - 4;
+    g_assert_cmpint(len, ==, (int)size);
+    hwsum = word0 & 0xffffu;
+
+    /* The frame and the four FCS bytes the byte count above accounts for. */
+    qtest_memread(qts, rxbuf + 66, back, size + 4);
+    csum = rxcsum_driver(back, len, hwsum);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    return csum;
+}
+
+static void test_the_ethernet_receive_verifies_a_tcp_checksum(const void *data)
+{
+    /* Nine payload bytes make the frame odd, exercising the driver's odd-CRC
+     * branch and the hardware sum's high-padded final byte. */
+    static const uint8_t payload[9] = "checksum!";
+    uint8_t frame[128];
+    size_t size = rxcsum_build_frame(frame, 6, payload, sizeof(payload));
+
+    g_assert_cmphex(rxcsum_deliver(frame, size), ==, 0xffff);
+}
+
+static void test_the_ethernet_receive_verifies_a_udp_checksum(const void *data)
+{
+    static const uint8_t payload[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    uint8_t frame[128];
+    size_t size = rxcsum_build_frame(frame, 17, payload, sizeof(payload));
+
+    g_assert_cmphex(rxcsum_deliver(frame, size), ==, 0xffff);
+}
+
+static void test_the_ethernet_receive_refuses_a_corrupt_checksum(const void *data)
+{
+    static const uint8_t payload[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    uint8_t frame[128];
+    size_t size = rxcsum_build_frame(frame, 6, payload, sizeof(payload));
+
+    /* Corrupt a transport payload byte after the checksums were computed: the
+     * stored checksum no longer matches, and the reconstruction must not fold
+     * to 0xffff -- a corrupt packet is never wrongly reported verified. */
+    frame[14 + 20 + 20 + 2] ^= 0xff;
+
+    g_assert_cmphex(rxcsum_deliver(frame, size), !=, 0xffff);
+}
+
+/*
  * Which source a delivered frame raises, and what has to be true for each.
  * Three runs of one arrangement -- four buffers supplied, one frame sent --
  * differing only in the receive timer's arming and the watermark in the
@@ -3993,6 +4250,15 @@ int main(int argc, char **argv)
         test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off);
     qtest_add_data_func("sn0/ioc3/ethernet-receive-delivers-a-frame", NULL,
                         test_the_ethernet_receive_delivers_a_frame);
+    qtest_add_data_func("sn0/ioc3/ethernet-receive-verifies-a-tcp-checksum",
+                        NULL,
+                        test_the_ethernet_receive_verifies_a_tcp_checksum);
+    qtest_add_data_func("sn0/ioc3/ethernet-receive-verifies-a-udp-checksum",
+                        NULL,
+                        test_the_ethernet_receive_verifies_a_udp_checksum);
+    qtest_add_data_func("sn0/ioc3/ethernet-receive-refuses-a-corrupt-checksum",
+                        NULL,
+                        test_the_ethernet_receive_refuses_a_corrupt_checksum);
     qtest_add_data_func("sn0/ioc3/ethernet-armed-timer-raises-its-source",
                         NULL,
                         test_an_armed_receive_timer_raises_its_own_source);
