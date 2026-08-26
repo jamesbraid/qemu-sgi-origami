@@ -1,5 +1,5 @@
 /*
- * SGI Origin 200 entry-level system controller (ELSC)
+ * SGI Origin 200 module system controller (MSC)
  *
  * Copyright (c) 2026 Origami contributors
  *
