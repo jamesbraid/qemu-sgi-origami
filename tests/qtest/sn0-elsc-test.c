@@ -879,6 +879,61 @@ static void test_boot_acceptance_sequence(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "info elsc" from the monitor dumps the console-input queue and the
+ * arbitration signal the controller presents for the console processor. With
+ * nothing typed the queue is empty and code 0 presents signal1 -- the value
+ * that withholds "get" from the driver -- so the dump has to name that state
+ * rather than claim input is waiting.
+ */
+static void test_info_elsc_dump_empty(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    g_autofree char *out = qtest_hmp(qts, "info elsc");
+
+    g_assert_nonnull(strstr(out, "rx queue: 0 byte(s)"));
+    g_assert_nonnull(strstr(out, "signal1"));
+    g_assert_nonnull(strstr(out, "console input idle"));
+
+    qtest_quit(qts);
+}
+
+/*
+ * Once input is typed on the AUX line the same dump must show the queued bytes
+ * and report code 0 presenting signal2, the value that tells the driver a
+ * "get" will find something. Driving the arbitration wait to signal2 first
+ * makes the byte's arrival at the receive path deterministic, exactly as
+ * firmware waits before it polls.
+ */
+static void test_info_elsc_dump_shows_queued_input(const void *data)
+{
+    uint16_t port;
+    int lfd = aux_listen(&port);
+    g_autofree char *args = g_strdup_printf(
+        "-M origin200 " ELSC_AUX_LEADING_SERIALS
+        "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:aux", port);
+    QTestState *qts = qtest_init(args);
+    int fd = aux_accept(lfd);
+    g_autofree char *out = NULL;
+
+    aux_write(fd, "hello");
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    out = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(out, "rx queue: 5 byte(s)"));
+    g_assert_nonnull(strstr(out, "hello"));
+    g_assert_nonnull(strstr(out, "signal2"));
+    g_assert_nonnull(strstr(out, "console input waiting"));
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -913,6 +968,10 @@ int main(int argc, char **argv)
                         test_supervisor_gating);
     qtest_add_data_func("sn0/elsc/boot-acceptance-sequence", NULL,
                         test_boot_acceptance_sequence);
+    qtest_add_data_func("sn0/elsc/info-elsc-dump-empty", NULL,
+                        test_info_elsc_dump_empty);
+    qtest_add_data_func("sn0/elsc/info-elsc-dump-shows-queued-input", NULL,
+                        test_info_elsc_dump_shows_queued_input);
 
     ret = g_test_run();
 

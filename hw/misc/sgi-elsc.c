@@ -34,6 +34,9 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
+#include "monitor/monitor.h"
+#include "qapi/error.h"
+#include "qapi/type-helpers.h"
 #include "trace.h"
 
 /*
@@ -680,3 +683,75 @@ static const TypeInfo sgi_elsc_types[] = {
 };
 
 DEFINE_TYPES(sgi_elsc_types)
+
+/*
+ * "info elsc" from the monitor: dump each controller's console-input queue and
+ * the arbitration signal it presents for the console processor. The device
+ * already records these transitions through device_diagnostic_record(), but
+ * that only reaches an attached sink; this exposes the same state live to a
+ * debugger on the monitor socket, with no sink and no trace backend. Filled in
+ * at type-init into the hmp-commands-info.hx "elsc" entry.
+ */
+static void elsc_format_state(SGIElscState *s, GString *buf)
+{
+    bool console_input = s->rx_queue_len > 0;
+    uint8_t console_signal = elsc_signal_byte(0, console_input);
+    g_autofree char *path = object_get_canonical_path(OBJECT(s));
+    uint32_t preview = MIN(s->rx_queue_len, 64);
+    uint32_t i;
+
+    g_string_append_printf(buf, "%s\n", path ? path : TYPE_SGI_ELSC);
+    g_string_append_printf(buf,
+                           "  rx queue: %u byte(s) waiting for \"get\"\n",
+                           s->rx_queue_len);
+    if (preview) {
+        g_string_append(buf, "    input: \"");
+        for (i = 0; i < preview; i++) {
+            uint8_t c = s->rx_queue[i];
+
+            if (c >= 0x20 && c < 0x7f) {
+                g_string_append_c(buf, c);
+            } else {
+                g_string_append_printf(buf, "\\x%02x", c);
+            }
+        }
+        g_string_append(buf, preview < s->rx_queue_len ? "\"...\n" : "\"\n");
+    }
+    g_string_append_printf(buf,
+                           "  arbitration rotation: code %u of %u, %s\n",
+                           s->arb_code, ELSC_SIGNAL_CODE_COUNT,
+                           s->arb_present ? "holding signal" : "showing gap");
+    g_string_append_printf(buf,
+                           "  console signal (code 0): 0x%02x = signal%d"
+                           " (console input %s)\n",
+                           console_signal, console_input ? 2 : 1,
+                           console_input ? "waiting" : "idle");
+}
+
+static int elsc_info_iter(Object *obj, void *opaque)
+{
+    SGIElscState *s = (SGIElscState *)object_dynamic_cast(obj, TYPE_SGI_ELSC);
+
+    if (s) {
+        elsc_format_state(s, opaque);
+    }
+    return 0;
+}
+
+static HumanReadableText *elsc_info(Error **errp)
+{
+    g_autoptr(GString) buf = g_string_new("");
+
+    object_child_foreach_recursive(object_get_root(), elsc_info_iter, buf);
+    if (buf->len == 0) {
+        g_string_append(buf, "no sgi-elsc controller present\n");
+    }
+    return human_readable_text_from_str(buf);
+}
+
+static void elsc_hmp_register(void)
+{
+    monitor_register_hmp_info_hrt("elsc", elsc_info);
+}
+
+type_init(elsc_hmp_register);
