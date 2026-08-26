@@ -168,43 +168,54 @@ static void cpu_mips_update_ip7(CPUMIPSState *env)
 }
 
 /*
- * Program the deadline for the next IP[7] edge a live counter will
- * produce on its own: bit 31 rising as the count crosses the top half,
- * or falling as it wraps back to zero. Nothing to wait for unless the
- * counter is counting with its interrupt enable on.
+ * Settle IP[7] and the deadline together, from one reading of the clock.
+ * The level and the next edge must come from the same counter value: read
+ * twice, a stall between the reads can straddle bit 31 rising, and the
+ * deadline then waits for the far edge of a match whose level was never
+ * raised. Edges wait only on a counter that is counting with its
+ * interrupt enable on: bit 31 rising as the count crosses the top half,
+ * falling as it wraps back to zero.
  */
-static void mips_r10k_perf_deadline(CPUMIPSState *env)
+static void mips_r10k_perf_update(CPUMIPSState *env)
 {
     MIPSCPU *cpu = env_archcpu(env);
+    unsigned irq = extract32(env->CP0_IntCtl, CP0IntCtl_IPTI, 3);
+    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint32_t cycles = (uint32_t)clock_ns_to_ticks(cpu->clock, now_ns);
     uint64_t next_ns = UINT64_MAX;
+    bool level = env->cp0_timer_ip7;
     unsigned ctr;
 
-    if (!env->r10k_perf_timer) {
-        return;
-    }
     for (ctr = 0; ctr < 2; ctr++) {
-        uint32_t v;
-        uint64_t wait, ns;
+        bool counting = mips_r10k_perf_counting(env, ctr);
+        uint32_t v = env->CP0_Performance[ctr * 2 + 1];
+        uint64_t wait;
 
-        if (!(env->CP0_Performance[ctr * 2] & CP0PC_IE) ||
-            !mips_r10k_perf_counting(env, ctr)) {
+        if (counting) {
+            v += cycles;
+        }
+        if (!(env->CP0_Performance[ctr * 2] & CP0PC_IE)) {
             continue;
         }
-        v = cpu_mips_get_r10k_perf(env, ctr * 2 + 1);
         if (v & 0x80000000u) {
+            level = true;
             wait = (1ULL << 32) - v;
         } else {
             wait = 0x80000000u - v;
         }
-        ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-             clock_ticks_to_ns(cpu->clock, wait);
-        next_ns = MIN(next_ns, ns);
+        if (counting) {
+            next_ns = MIN(next_ns,
+                          now_ns + clock_ticks_to_ns(cpu->clock, wait));
+        }
     }
-    if (next_ns == UINT64_MAX) {
-        timer_del(env->r10k_perf_timer);
-    } else {
-        timer_mod(env->r10k_perf_timer, next_ns);
+    if (env->r10k_perf_timer) {
+        if (next_ns == UINT64_MAX) {
+            timer_del(env->r10k_perf_timer);
+        } else {
+            timer_mod(env->r10k_perf_timer, next_ns);
+        }
     }
+    qemu_set_irq(env->irq[irq], level);
 }
 
 void cpu_mips_store_r10k_perf(CPUMIPSState *env, uint32_t val, unsigned sel)
@@ -235,8 +246,7 @@ void cpu_mips_store_r10k_perf(CPUMIPSState *env, uint32_t val, unsigned sel)
                 mips_r10k_perf_cycles(env);
         }
     }
-    cpu_mips_update_ip7(env);
-    mips_r10k_perf_deadline(env);
+    mips_r10k_perf_update(env);
 }
 
 /*
@@ -277,16 +287,14 @@ void cpu_mips_r10k_perf_thaw(CPUMIPSState *env)
                 mips_r10k_perf_cycles(env);
         }
     }
-    cpu_mips_update_ip7(env);
-    mips_r10k_perf_deadline(env);
+    mips_r10k_perf_update(env);
 }
 
 static void mips_r10k_perf_cb(void *opaque)
 {
     CPUMIPSState *env = opaque;
 
-    cpu_mips_update_ip7(env);
-    mips_r10k_perf_deadline(env);
+    mips_r10k_perf_update(env);
 }
 
 /*
@@ -299,8 +307,7 @@ void cpu_mips_r10k_perf_post_load(CPUMIPSState *env)
     if (!(env->insn_flags & INSN_R10K)) {
         return;
     }
-    cpu_mips_update_ip7(env);
-    mips_r10k_perf_deadline(env);
+    mips_r10k_perf_update(env);
 }
 
 static void cpu_mips_timer_update(CPUMIPSState *env)
