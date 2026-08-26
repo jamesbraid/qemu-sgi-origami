@@ -1,5 +1,5 @@
 /*
- * SGI Origin 200 entry-level system controller (ELSC)
+ * SGI Origin 200 module system controller (MSC)
  *
  * Copyright (c) 2026 Origami contributors
  *
@@ -668,7 +668,7 @@ static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
 
-    dc->desc = "SGI Origin 200 entry-level system controller";
+    dc->desc = "SGI Origin 200 module system controller (MSC)";
     dc->realize = elsc_realize;
     dc->vmsd = &vmstate_sgi_elsc;
     device_class_set_props(dc, sgi_elsc_properties);
