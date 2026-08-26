@@ -195,10 +195,13 @@ def resolve_prom(assets_root):
     None when assets_root is falsy (ORIGAMI_ASSETS unset) or the image
     is not there -- the runner may not have it provisioned yet. Purely
     a path check: callers resolve ORIGAMI_ASSETS from the environment
-    themselves and hand the result in, matching test_prom_boot.py's own
-    _firmware_path(). The caller decides what an unresolved image means
-    for the cell (test_origin200_matrix.py skips it); this function only
-    answers whether the image is there.
+    themselves and hand the result in, rather than this function reading
+    the environment directly -- the file-existence logic is identical to
+    test_prom_boot.py's own _firmware_path(), which reads ORIGAMI_ASSETS
+    itself since it has no separate caller to hand it one. The caller
+    decides what an unresolved image means for the cell
+    (test_origin200_matrix.py skips it); this function only answers
+    whether the image is there.
     """
     if not assets_root:
         return None
