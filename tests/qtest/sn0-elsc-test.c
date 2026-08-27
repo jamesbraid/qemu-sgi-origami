@@ -576,10 +576,20 @@ static int aux_listen(uint16_t *port)
     return lfd;
 }
 
+/*
+ * How long the accept below waits for QEMU to connect out to the AUX port. A
+ * heavily loaded CI runner -- the register suite sharing the host with several
+ * other jobs -- can take many seconds to get QEMU that far, and the former 10s
+ * bound timed the accept out under that load and aborted the test. Match the
+ * sibling sn0-ioc3-serial-test's own widened socket budget rather than pick a
+ * fresh number.
+ */
+#define AUX_SOCKET_TIMEOUT_SECS 120
+
 static int aux_accept(int lfd)
 {
     fd_set readfds;
-    struct timeval tv = { .tv_sec = 10 };
+    struct timeval tv = { .tv_sec = AUX_SOCKET_TIMEOUT_SECS };
     int fd, val;
 
     FD_ZERO(&readfds);
