@@ -105,6 +105,7 @@
 #define SN0_PCI_IOC3_MEM        0x08600000U
 #define SN0_TEST_IOC3_MEM       0x10000000U
 #define SN0_CPU_ID_ADDR         0x00030000U
+#define SN0_FPU_ID_ADDR         0x00030004U
 
 #define SN0_DEV_ERROR_LOCK      (1u << 28)
 #define SN0_DEV_PAGE_CROSS      (1u << 27)
@@ -146,6 +147,14 @@ static char *write_prid_guest(void)
         0x3c0a0003,             /* lui t2, 0x0003 */
         0x012a4825,             /* or t1, t1, t2 */
         0xad280000,             /* sw t0, 0(t1) */
+        0x400a6000,             /* mfc0 t2, Status */
+        0x3c0b2000,             /* lui t3, 0x2000 -- Status.CU1 */
+        0x014b5025,             /* or t2, t2, t3 */
+        0x408a6000,             /* mtc0 t2, Status */
+        0x00000000,             /* nop */
+        0x00000000,             /* nop */
+        0x44480000,             /* cfc1 t0, FIR */
+        0xad280004,             /* sw t0, 4(t1) */
         0x1000ffff,             /* b . */
         0x00000000,             /* nop */
     };
@@ -200,6 +209,7 @@ static void test_baseline_cpu_identity(const void *data)
     g_autofree char *kernel = write_prid_guest();
     QTestState *qts;
     uint32_t prid = 0;
+    uint32_t fpu_prid;
 
     qts = qtest_initf("-M origin200,synthesized-firmware=off "
                       "-accel tcg -smp 1 -kernel %s", kernel);
@@ -211,6 +221,8 @@ static void test_baseline_cpu_identity(const void *data)
     }
 
     g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    fpu_prid = qtest_readl(qts, SN0_FPU_ID_ADDR);
+    g_assert_cmphex(fpu_prid, ==, SN0_MODEL_FPU_PRID);
     qtest_quit(qts);
     g_unlink(kernel);
 }
