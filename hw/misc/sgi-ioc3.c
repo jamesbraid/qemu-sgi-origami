@@ -499,13 +499,15 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
         /*
-         * Writing a one acknowledges a latched source. The pass-through bits
-         * are not latched and ignore the write — clearing a still-asserted
-         * level would drop an interrupt this model would never raise again,
-         * and a guest's handler writes back everything it serviced, including
-         * the serial bits, on every interrupt.
+         * Writing a one acknowledges a latched source. The pass-through and
+         * receive high-water bits are not latched and ignore the write —
+         * clearing a still-asserted level would drop an interrupt this model
+         * would never raise again, and a guest's handler writes back
+         * everything it serviced, including the serial bits, on every
+         * interrupt.
          */
-        s->int_status &= ~(val & ~SGI_IOC3_INT_PASSTHROUGH);
+        s->int_status &= ~(val & ~(SGI_IOC3_INT_PASSTHROUGH |
+                                   SGI_IOC3_INT_RX_HIGH_WATER_LEVEL));
         sgi_ioc3_update_irq(s);
         break;
     case SGI_IOC3_INT_ENABLE_SET:
@@ -792,6 +794,19 @@ static void sgi_ioc3_raise_serial_source(SGIIOC3State *s, unsigned int port,
     sgi_ioc3_update_irq(s);
 }
 
+/*
+ * A level source, set or cleared to match a condition rather than latched
+ * until acknowledged. The receive high-water mark is driven this way.
+ */
+static void sgi_ioc3_set_serial_source(SGIIOC3State *s, unsigned int port,
+                                       unsigned int source, bool level)
+{
+    uint32_t bit = SGI_IOC3_SERIAL_SOURCE(port, source);
+
+    s->int_status = (s->int_status & ~bit) | (level ? bit : 0);
+    sgi_ioc3_update_irq(s);
+}
+
 /* Whether the port's engine may move anything at all right now. */
 static bool sgi_ioc3_sdma_running(SGIIOC3State *s, unsigned int port)
 {
@@ -893,6 +908,39 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
 }
 
 /*
+ * The receive high-water source is a level, not a latch. It follows whether
+ * the characters waiting for software have reached the mark right now, and it
+ * falls the moment software consumes back below the mark -- with no
+ * acknowledgement, which is why it is recomputed wherever the waiting count
+ * moves rather than raised once and left. A latched raise storms a guest that
+ * reads the level and never writes the acknowledgement: exactly what IRIX's
+ * ring console does, its service loop hammering the register while a source it
+ * cannot clear stays set.
+ *
+ * The mark is in characters, not entries -- the firmware's diagnostic programs
+ * 511 against 1 KB rings of 128 four-character entries, a value a per-entry
+ * count could never reach and a per-character count reads as one short of
+ * full, which is what a mark set out of the way should look like. Waiting is
+ * counted as published entries times four to match; that over-counts a short
+ * tail, but the marks a guest actually programs fall where it cannot be told.
+ */
+static void sgi_ioc3_sdma_update_high_water(SGIIOC3State *s, unsigned int port)
+{
+    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_PRODUCE);
+    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_CONSUME);
+    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+    uint32_t high_water = sgi_ioc3_sdma_control(s, port) &
+                          SGI_IOC3_SDMA_HIGH_WATER;
+    uint32_t waiting = ((*produce - *consume) & mask) /
+                       SGI_IOC3_SDMA_ENTRY_SIZE * SGI_IOC3_SDMA_ENTRY_CHARS;
+
+    sgi_ioc3_set_serial_source(s, port, SGI_IOC3_INT_RX_HIGH_WATER,
+                               high_water && waiting >= high_water);
+}
+
+/*
  * The end of a burst. A real engine keeps a short group in its packer until
  * either a fourth character arrives or the receive timer runs out of idle
  * time; this model posts the short group now, at the moment the engine has
@@ -904,14 +952,10 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
  * source -- so a guest prompted by interrupts, which is every driver
  * observed, sees the timing the datasheet describes.
  *
- * Then the two sources a delivery prompts a driver with. The receive timer is
- * armed through bit 31 of the consume index; the threshold is a different
- * thing, a supply warning that fires once the characters waiting for software
- * reach the mark the control register sets. The mark is in characters rather
- * than entries -- the firmware's diagnostic programs 511 against 1 KB rings,
- * which hold 128 entries of four characters, so a mark counted in entries
- * could never be reached and a mark counted in characters is one short of
- * full, which is what a mark set out of the way looks like.
+ * A delivery also winds the receive timer, armed through bit 31 of the consume
+ * index, restarting its idle countdown. The high-water level is recomputed on
+ * every pass, delivery or not: a run that only advanced the consume index has
+ * to be able to drop it.
  */
 static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
 {
@@ -920,12 +964,12 @@ static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
     uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
                                                SGI_IOC3_SDMA_RX_CONSUME);
     uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-    uint32_t control = sgi_ioc3_sdma_control(s, port);
-    uint32_t waiting;
 
     if (s->sdma_packed[port]) {
         sgi_ioc3_sdma_post(s, port, produce, consume, mask);
     }
+
+    sgi_ioc3_sdma_update_high_water(s, port);
 
     if (!s->sdma_delivered[port]) {
         return;
@@ -934,13 +978,6 @@ static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
 
     if (*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) {
         sgi_ioc3_sdma_rx_timer_start(s, port);
-    }
-
-    waiting = ((*produce - *consume) & mask) / SGI_IOC3_SDMA_ENTRY_SIZE *
-              SGI_IOC3_SDMA_ENTRY_CHARS;
-    if ((control & SGI_IOC3_SDMA_HIGH_WATER) &&
-        waiting >= (control & SGI_IOC3_SDMA_HIGH_WATER)) {
-        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_HIGH_WATER);
     }
 }
 

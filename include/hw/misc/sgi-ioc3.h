@@ -463,6 +463,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_INT_PASSTHROUGH (SGI_IOC3_INT_SERIAL_A | SGI_IOC3_INT_SERIAL_B)
 
 /*
+ * The two ports' receive high-water bits are levels for the same reason: each
+ * follows whether its receive ring holds the mark's worth of characters right
+ * now, so a write cannot clear one and what quiets it is software consuming
+ * back below the mark. IRIX's ring console never acknowledges it and depends on
+ * exactly that.
+ */
+#define SGI_IOC3_INT_RX_HIGH_WATER_LEVEL \
+    (SGI_IOC3_SERIAL_SOURCE(0, SGI_IOC3_INT_RX_HIGH_WATER) | \
+     SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_RX_HIGH_WATER))
+
+/*
  * What one alias page's handlers are given: the chip, and which port's seven
  * registers that page exposes. The receive timers' callbacks are handed the
  * same pair for the same reason -- neither can tell which port reached it
