@@ -1285,6 +1285,60 @@ static void test_crossing_the_high_water_mark_raises_its_source(
 }
 
 /*
+ * The high-water source is a level, not a latch: once the waiting count falls
+ * back below the mark it clears itself, with no acknowledgement from software.
+ * IRIX's DMA-ring console depends on this -- it never writes a one to the
+ * source, and its service loop reads the status register until the level
+ * drops. A latched raise only software could clear leaves that loop spinning
+ * on a bit that never falls, the storm the live boot showed once delivery
+ * reached the ring. Crossing the mark and then consuming back below it must
+ * return the source to clear on its own.
+ */
+static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent[8] = { 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h' };
+    uint8_t got[8], status[8];
+    uint32_t produce;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL),
+                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
+
+    /*
+     * Eight characters are at least two entries, so the waiting count reaches
+     * the mark of eight and the source raises.
+     */
+    g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
+    collect_rx_chars(qts, 0, sizeof(sent), got, status);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
+                    ==, SOURCE(0, SRC_RX_HIGH_WATER));
+
+    /*
+     * Consume every published entry but one. However the host chunked the
+     * characters into entries, one entry left is four waiting or fewer --
+     * below the mark -- so the level falls, and no acknowledgement is written
+     * to make it fall.
+     */
+    produce = qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8;
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), produce - 8);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * A full receive ring is flow control, not data loss. The engine stops
  * writing when the next entry it would fill is the one software has not
  * consumed yet, raises the ring-full source, and holds what it cannot place
@@ -1499,6 +1553,9 @@ int main(int argc, char **argv)
                         test_the_receive_timer_raises_on_expiry);
     qtest_add_data_func("sn0/ioc3-serial/high-water-mark-raises", NULL,
                         test_crossing_the_high_water_mark_raises_its_source);
+    qtest_add_data_func("sn0/ioc3-serial/high-water-mark-drops-when-consumed",
+                        NULL,
+                        test_consuming_below_the_high_water_mark_drops_it);
     qtest_add_data_func("sn0/ioc3-serial/full-ring-holds-characters", NULL,
                         test_a_full_ring_holds_characters);
     qtest_add_data_func("sn0/ioc3-serial/pass-through-still-receives", NULL,
