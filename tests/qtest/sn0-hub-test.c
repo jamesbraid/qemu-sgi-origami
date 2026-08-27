@@ -64,6 +64,20 @@
 #define PI_ERR_SPOOL_A       0x000418
 #define PI_ERR_SPOOL_B       0x000420
 #define PI_ERR_SPOOL_MASK    0xfffffff8ULL
+#define PI_ERR_PENDING       0x000400
+#define PI_ERR_MASK_A        0x000408
+#define PI_ERR_MASK_B        0x000410
+#define PI_ERR_SPOOL_SIZE    0x000428
+#define PI_ERR_STATUS0_A     0x000430
+#define PI_ERR_STATUS0_CLR_A 0x000438
+#define PI_ERR_STATUS1_A     0x000440
+#define PI_ERR_STATUS1_CLR_A 0x000448
+#define PI_ERR_STATUS0_B     0x000450
+#define PI_ERR_STATUS0_CLR_B 0x000458
+#define PI_ERR_STATUS1_B     0x000460
+#define PI_ERR_STATUS1_CLR_B 0x000468
+#define PI_ERR_MASK          0x01ffffffULL
+#define PI_ERR_SPOOL_SIZE_MASK 0xfULL
 #define PI_RT_COUNT         0x030100
 #define PI_RT_COMPARE_A     0x000108
 #define PI_RT_PENDING_A     0x000120
@@ -914,6 +928,47 @@ static void test_the_error_spool_registers_hold_a_masked_value(
     qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_B, 0xdeadbee0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
                     0xdeadbee0ULL);
+
+    qtest_quit(qts);
+}
+
+static void test_pi_error_register_shell(const void *data)
+{
+    static const uint64_t status[] = {
+        PI_ERR_STATUS0_A, PI_ERR_STATUS0_CLR_A,
+        PI_ERR_STATUS1_A, PI_ERR_STATUS1_CLR_A,
+        PI_ERR_STATUS0_B, PI_ERR_STATUS0_CLR_B,
+        PI_ERR_STATUS1_B, PI_ERR_STATUS1_CLR_B,
+    };
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int i;
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_PENDING), ==, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_PENDING, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_PENDING), ==, 0);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_MASK_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_MASK_B), ==, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_MASK_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_MASK_B, 0x0123456ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_MASK_A), ==,
+                    PI_ERR_MASK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_MASK_B), ==,
+                    0x0123456ULL);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_SIZE), ==, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_SIZE, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_SIZE), ==,
+                    PI_ERR_SPOOL_SIZE_MASK);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_MASK_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_MASK_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_SIZE), ==, 0);
+
+    for (i = 0; i < ARRAY_SIZE(status); i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + status[i]), ==, 0);
+    }
 
     qtest_quit(qts);
 }
@@ -2836,6 +2891,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);
     qtest_add_data_func("sn0/hub/md-dimm-init", NULL, test_md_dimm_init);
     qtest_add_data_func("sn0/hub/pi-rt-local-ctrl", NULL, test_pi_rt_local_ctrl);
+    qtest_add_data_func("sn0/hub/pi-error-register-shell", NULL,
+                        test_pi_error_register_shell);
     qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
                         test_io_icrb_c_family);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,

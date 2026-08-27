@@ -270,6 +270,8 @@ struct SGIHubState {
      * was chosen.
      */
     uint64_t pi_err_spool[SGI_HUB_PROCESSORS];
+    uint32_t pi_err_mask[SGI_HUB_PROCESSORS];
+    uint8_t pi_err_spool_size;
 
     uint64_t md_onewire;
 
