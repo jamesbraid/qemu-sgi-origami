@@ -5,47 +5,49 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Ports tools/linux-usercheck's one- and two-CPU checks, in the PROJECT
-checkout, into this fork's own functional-test framework, the same way
-test_prom_boot.py ports tools/boot-gate and test_diag.py ports
+Ports tools/linux-usercheck's one-, two-, and four-CPU checks, in the
+PROJECT checkout, into this fork's own functional-test framework, the same
+way test_prom_boot.py ports tools/boot-gate and test_diag.py ports
 tools/diag-gate. linux-usercheck boots the mainline Linux/IP27 kernel
 (assets/linux-ip27/vmlinux, built by tools/linux-userspace with an
 embedded freestanding userspace stub) directly via -kernel -- no PROM,
 no disk, no terminal device for the guest -- and requires the console
 transcript to contain Linux's own "Attempted to kill init!
 exitcode=0x0000NN00" panic line with the exact byte the embedded init
-chose: 42 << 8 = 0x2a00 at one CPU, or 43 << 8 = 0x2b00 at two CPUs,
-reached only after two affinity-pinned workers finish stressing both
-CPUs. See test_linux_kernel_verdict.py's own docstring for why a plain
+chose: 42 << 8 = 0x2a00 at one CPU; 43 << 8 = 0x2b00 at two CPUs, after
+two affinity-pinned workers stress both CPUs; or 44 << 8 = 0x2c00 at four
+CPUs across two nodes, after a node-0 process moves and verifies a page on
+node 1. See test_linux_kernel_verdict.py's own docstring for why a plain
 literal-string match against the full 8-hex value already rejects a
 fatal-signal death (the low byte would carry a signal number instead)
 without needing any extra logic -- and for its fatal-signal fixture,
 which proves it.
 
-The four-CPU case is explicitly OUT of scope here: on current trunk the
-four-CPU cell does not pass yet, and it unlocks in two stages. A
-boot-phase bug -- under this cell's own thread=single -icount regime
-(shift=2, the four-CPU-only icount value) the four-CPU/two-node boot froze
-before any console, ahead of SMP bring-up -- and then a userspace-phase
-bug -- the stub's cross-node page-move check falls back to the one-CPU
-exit sentinel, mode-independent (it reproduces under -icount too, so not
-an accelerator artifact). Both bugs, their current status, and the fixes
-in flight are tracked in docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md
-(project checkout). An earlier stop_machine livelock at the Hub-RT
-clocksource switch, which once kept this case out, was fixed by fork pull
-request 135 and is verified clear on trunk -- no longer the blocker.
-Asserting a four-CPU success before both stages land would assert past a
-live bug, which this port's own task brief says explicitly not to do.
+The four-CPU case is IN scope. It boots the same kernel with two 64 MiB
+nodes (-numa node0 cpus 0-1 / node1 cpus 2-3, -smp
+4,sockets=2,cores=2,threads=1) under the same deterministic thread=single
+-icount regime the one- and two-CPU cells use -- shift=2 here, the
+four-CPU-only icount value -- and requires linux-usercheck's own eleven
+four-CPU markers: both nodes' CPUs executing, both nodes' memory, both
+crosstalk endpoints, and the 0x2c00 remote-memory exit sentinel. Two
+blockers once kept it out and are both resolved: a thread=single -icount
+pre-console hang, fixed by the fork's icount-translator revert (fork pull
+request 178); and a userspace-sentinel shortfall that proved to be a stale
+checked-in kernel predating the stub's four-CPU exit path, not a
+guest-model bug. An earlier stop_machine livelock at the Hub-RT
+clocksource switch was fixed by fork pull request 135. The finding is
+docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md (project checkout).
 
 missing_assertions() (test_linux_kernel_verdict.py, imported below) is a
 verbatim port of linux-usercheck's own function of the same name, for
-the one- and two-CPU cases only.
+the one-, two-, and four-CPU cases.
 
 The QEMU argv this file builds (cpu_qemu_args) replicates
 tools/linux_topology.py's own topology_args()/accelerator_args() for the
-one- and two-CPU cells (project checkout): -smp only at two CPUs, and
-FIXED instruction counting (-accel tcg,thread=single -icount
-shift=3,align=off,sleep=off) at both -- deterministic machine-model
+one-, two-, and four-CPU cells (project checkout): -smp only above one
+CPU, the two memory-backends and NUMA nodes at four CPUs, and FIXED
+instruction counting (-accel tcg,thread=single -icount) at all -- shift=3
+at one and two CPUs, shift=2 at four -- deterministic machine-model
 correctness, not a host-speed gate, per that module's own comment.
 KERNEL_REL and the rest of the launch (-cpu R10000, -m, -kernel,
 -no-reboot) replicate tools/linux-run's own invocation. Neither module
@@ -96,35 +98,48 @@ except (ImportError, RuntimeError):
 # CHECKOUT, not assets/ itself.
 KERNEL_REL = os.path.join('assets', 'linux-ip27', 'vmlinux')
 
-# tools/linux_topology.py's own default_timeout(cpus): "90" for one and
-# two CPUs (project checkout) -- the budget linux-usercheck itself uses
-# by default. This is the per-boot FAILURE-detection budget, not typical
-# run time: a passing boot reaches its markers in a few seconds. The
-# meson timeout registered for this test (mips64/meson.build) covers
-# BOTH test methods below run one after another, so it carries a larger
+# Per-boot FAILURE-detection budgets, not typical run time. At one and two
+# CPUs tools/linux_topology.py's own default_timeout is 90s (project
+# checkout) and a passing boot reaches its markers in a few seconds. The
+# four-CPU/two-node boot under fixed instruction counting is far slower --
+# every CPU's instructions serialize into one deterministic stream -- so
+# it takes a much larger budget; 700s matches the per-4-CPU-leg figure
+# origin200-matrix uses for the same topology, and linux_topology's own
+# default_timeout(4) of 480s proved too tight for it on a debug build.
+# The meson timeout registered for this test (mips64/meson.build) covers
+# ALL three methods below run one after another, so it carries a larger
 # margin than the usual single-BOOT_TIMEOUT-plus-a-bit this fork's other
-# functional tests keep, to stay safe even if both boots independently
-# run out their own budgets.
+# functional tests keep, to stay safe even if every boot runs out its
+# budget.
 BOOT_TIMEOUT_SECONDS = 90
+FOUR_CPU_BOOT_TIMEOUT_SECONDS = 700
 POLL_INTERVAL_SECONDS = 0.5
 
 
 def cpu_qemu_args(cpus):
     """The QEMU args tools/linux_topology.py's topology_args() and
-    accelerator_args() build for a one- or two-CPU cell (project
-    checkout), ported directly: -smp only at two CPUs, and -accel
-    tcg,thread=single with fixed instruction counting (icount
-    shift=3,align=off,sleep=off) at both -- this is linux_topology's own
-    non-four-CPU icount shift, not the four-CPU one (shift=2), since
-    four CPUs is out of scope here (see this module's own docstring).
+    accelerator_args() build for a one-, two-, or four-CPU cell (project
+    checkout), ported directly: -smp only above one CPU; two 64 MiB
+    memory-backends and the two NUMA nodes at four CPUs (node 0 gets
+    CPUs 0-1, node 1 gets CPUs 2-3); and -accel tcg,thread=single with
+    fixed instruction counting at every count -- linux_topology's own
+    icount shift=3 at one and two CPUs, shift=2 at four (its four-CPU-only
+    value).
     """
-    if cpus not in (1, 2):
-        raise ValueError('cpu_qemu_args: cpus must be 1 or 2')
+    if cpus not in (1, 2, 4):
+        raise ValueError('cpu_qemu_args: cpus must be 1, 2, or 4')
     args = []
     if cpus == 2:
         args += ['-smp', '2']
-    args += ['-accel', 'tcg,thread=single',
-             '-icount', 'shift=3,align=off,sleep=off']
+    elif cpus == 4:
+        args += ['-object', 'memory-backend-ram,id=ram0,size=64M',
+                 '-object', 'memory-backend-ram,id=ram1,size=64M',
+                 '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
+                 '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
+                 '-smp', '4,sockets=2,cores=2,threads=1']
+    icount = ('shift=2,align=off,sleep=on' if cpus == 4
+              else 'shift=3,align=off,sleep=off')
+    args += ['-accel', 'tcg,thread=single', '-icount', icount]
     return args
 
 
@@ -132,7 +147,7 @@ if QemuSystemTest is not None:
 
     class LinuxKernel(QemuSystemTest):
         """Boots the mainline Linux/IP27 kernel's embedded userspace at
-        one or two CPUs and requires missing_assertions() to return
+        one, two, or four CPUs and requires missing_assertions() to return
         empty. See this module's docstring for the full contract; this
         class only wires it to a real boot, the same division
         test_prom_boot.py keeps between its pure logic and PromBoot.
@@ -166,7 +181,9 @@ if QemuSystemTest is not None:
             vm.launch()
 
             log_path = self.log_file(f'{name}.log')
-            deadline = time.monotonic() + BOOT_TIMEOUT_SECONDS
+            timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4
+                       else BOOT_TIMEOUT_SECONDS)
+            deadline = time.monotonic() + timeout
             transcript = ''
             sock = vm.console_socket
             sock.settimeout(POLL_INTERVAL_SECONDS)
@@ -215,6 +232,16 @@ if QemuSystemTest is not None:
             self.assertEqual(
                 missing, [],
                 'linux-usercheck two-CPU contract: missing ' +
+                ', '.join(missing) +
+                f' (full transcript: {self.log_file(f"{name}.log")})')
+
+        def test_four_cpu(self):
+            name = 'linux_kernel_4cpu'
+            transcript = self._boot_and_capture(cpus=4, mem_mib=128, name=name)
+            missing = missing_assertions(transcript, 4)
+            self.assertEqual(
+                missing, [],
+                'linux-usercheck four-CPU contract: missing ' +
                 ', '.join(missing) +
                 f' (full transcript: {self.log_file(f"{name}.log")})')
 

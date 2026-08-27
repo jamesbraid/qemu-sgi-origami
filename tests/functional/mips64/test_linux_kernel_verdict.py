@@ -14,10 +14,8 @@ test_linux_kernel.py calls against a captured console transcript, over
 fixture transcripts that stand in for a captured guest console log.
 
 missing_assertions(log, cpus) is a verbatim port of tools/linux-usercheck's
-own function of the same name (project checkout), for the one- and
-two-CPU cases only -- the four-CPU case is explicitly out of scope for
-this test (see test_linux_kernel.py's own docstring for the two four-CPU
-bugs, and the two-stage unlock, that keep it out). At one CPU it checks exactly two markers, in the
+own function of the same name (project checkout), for the one-, two-, and
+four-CPU cases. At one CPU it checks exactly two markers, in the
 source's own order: "init handoff" and "userspace exit status". It does
 NOT check a "Discovered N cpus on 1 nodes" line at one CPU -- an earlier
 version of this port added that check there, on the mistaken belief that
@@ -31,7 +29,21 @@ whether every real one-CPU boot must -- only the shipped tool's own
 contract says what is required, and it does not require this. At two
 CPUs, this port keeps linux-usercheck's own five markers unchanged:
 "two-CPU discovery", "secondary CPU execution", "two-CPU scheduler
-bring-up", "init handoff", "userspace exit status".
+bring-up", "init handoff", "userspace exit status". At four CPUs, this
+port keeps linux-usercheck's own eleven markers unchanged, in the
+source's order: "four-CPU discovery", each of the three secondary/remote
+CPUs executing ("CPU1/CPU2/CPU3 revision is:"), "four-CPU scheduler
+bring-up", both nodes' memory ranges, both crosstalk endpoints
+("xtalk:n0/8" and "xtalk:n1/8"), "init handoff", and the four-CPU
+remote-memory exit sentinel (0x2c00 = 44 << 8) -- a node-0 process that
+moved and verified one page on node 1.
+
+The four-CPU case was once held out here, on the reasoning that two live
+bugs kept the four-CPU cell red. Both are gone: one was a thread=single
+-icount pre-console hang, fixed by the fork's icount-translator revert;
+the other was a stale checked-in kernel that predated the stub's four-CPU
+exit path, not a guest-model bug. The finding is
+docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md (project checkout).
 
 The exact-match property the brief calls out -- a fatal signal must not
 masquerade as a chosen exit -- falls out of the marker text itself
@@ -62,20 +74,34 @@ import unittest
 
 
 def missing_assertions(log, cpus):
-    """Which of the one- or two-CPU userspace-self-check markers never
-    appeared in log, ported verbatim from tools/linux-usercheck's own
-    function of the same name (project checkout) -- see this module's
+    """Which of the one-, two-, or four-CPU userspace-self-check markers
+    never appeared in log, ported verbatim from tools/linux-usercheck's
+    own function of the same name (project checkout) -- see this module's
     own docstring for why the exit-status marker alone already rejects a
     fatal-signal death. An empty return means every required marker was
-    found, i.e. PASS; cpus == 4 is out of scope (see this module's
-    docstring) and raises rather than silently answering a question this
-    port does not cover.
+    found, i.e. PASS; any other CPU count raises rather than silently
+    answering a question this port does not cover.
     """
-    if cpus not in (1, 2):
-        raise ValueError(
-            'missing_assertions: cpus must be 1 or 2 -- the four-CPU case '
-            'is out of scope (two four-CPU bugs, two-stage unlock), see '
-            'this module\'s own docstring')
+    if cpus not in (1, 2, 4):
+        raise ValueError('missing_assertions: cpus must be 1, 2, or 4')
+
+    if cpus == 4:
+        checks = [
+            ('four-CPU discovery', 'Discovered 4 cpus on 2 nodes'),
+            ('node-zero secondary CPU execution', 'CPU1 revision is:'),
+            ('node-one primary CPU execution', 'CPU2 revision is:'),
+            ('node-one secondary CPU execution', 'CPU3 revision is:'),
+            ('four-CPU scheduler bring-up', 'smp: Brought up 2 nodes, 4 CPUs'),
+            ('node-zero memory',
+             'node   0: [mem 0x0000000000000000-0x0000000003ffffff]'),
+            ('node-one memory',
+             'node   1: [mem 0x0000000100000000-0x0000000103ffffff]'),
+            ('node-zero crosstalk endpoint', 'xtalk:n0/8 bridge widget'),
+            ('node-one crosstalk endpoint', 'xtalk:n1/8 bridge widget'),
+            ('init handoff', 'Run /init as init process'),
+            ('node-one remote-memory userspace proof', 'exitcode=0x00002c00'),
+        ]
+        return [description for description, marker in checks if marker not in log]
 
     exit_status = 'exitcode=0x00002b00' if cpus == 2 else 'exitcode=0x00002a00'
     checks = [
@@ -762,6 +788,174 @@ This architecture does not have kernel memory protection.\r
 """
 
 
+# REAL: the console section (below the header) of the committed
+# four-CPU capture docs/boot-logs/linux.boot.2026-08-20T23:24:55-07:00
+# (project checkout) -- the same real four-CPU capture the two-CPU
+# fixture above borrows its secondary-CPU bring-up block from. A
+# genuine 4-CPU/two-node boot to the 0x2c00 remote-memory exit, kept
+# byte for byte (CRLF and all). Its accelerator was thread=multi, but
+# every marker missing_assertions checks at four CPUs is a boot-phase
+# kernel line or the init exit, identical under the cell's own
+# thread=single -icount.
+REAL_FOUR_CPU_PASS_TRANSCRIPT = """\
+Linux version 7.2.0-rc7 (origami@35d6c85703c7) (mips64-linux-gnuabi64-gcc \
+(Debian 14.2.0-13) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Sun \
+Aug 16 17:29:54 UTC 2026\r
+Discovered 4 cpus on 2 nodes\r
+************** Topology ********************\r
+    00 01 \r
+00  10 11 \r
+01  11 10 \r
+printk: legacy bootconsole [early0] enabled\r
+CPU0 revision is: 00000900 (R10000)\r
+FPU revision is: 00000900\r
+IP27: Running on node 0.\r
+Node 0 has a primary CPU, CPU is running.\r
+Node 0 has a secondary CPU, CPU is running.\r
+Machine is in M mode.\r
+Initrd not found or empty - disabling initrd\r
+REPLICATION: ON nasid 0, ktext from nasid 0, kdata from nasid 0\r
+REPLICATION: ON nasid 1, ktext from nasid 0, kdata from nasid 0\r
+Primary instruction cache 32kB, VIPT, 2-way, linesize 64 bytes.\r
+Primary data cache 32kB, 2-way, VIPT, no aliases, linesize 32 bytes\r
+Unified secondary cache 1024kB 2-way, linesize 128 bytes.\r
+Zone ranges:\r
+  Normal   [mem 0x0000000000000000-0x0000000103ffffff]\r
+Movable zone start for each node\r
+Early memory node ranges\r
+  node   0: [mem 0x0000000000000000-0x0000000003ffffff]\r
+  node   1: [mem 0x0000000100000000-0x0000000103ffffff]\r
+Initmem setup node 0 [mem 0x0000000000000000-0x0000000003ffffff]\r
+Initmem setup node 1 [mem 0x0000000100000000-0x0000000103ffffff]\r
+On node 1, zone Normal: 49152 pages in unavailable ranges\r
+On node 1, zone Normal: 49152 pages in unavailable ranges\r
+percpu: Embedded 19 pages/cpu s37536 r8192 d32096 u77824\r
+CPU 0 clock is 180MHz.\r
+printk: log buffer data + meta data: 32768 + 114688 = 147456 bytes\r
+Fallback order for Node 0: 0 1 \r
+Fallback order for Node 1: 1 0 \r
+Built 2 zonelists, mobility grouping on.  Total pages: 32768\r
+Policy zone: Normal\r
+mem auto-init: stack:all(zero), heap alloc:off, heap free:off\r
+SLUB: HWalign=128, Order=0-3, MinObjects=0, CPUs=4, Nodes=2\r
+rcu: Hierarchical RCU implementation.\r
+rcu: 	RCU event tracing is enabled.\r
+rcu: 	RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=4.\r
+rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.\r
+rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=4\r
+NR_IRQS: 256\r
+rcu: srcu_init: Setting srcu_struct sizes based on contention.\r
+clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: \
+1911260446275000 ns\r
+clocksource: HUB-RT: mask: 0xfffffffffffff max_cycles: 0x127350b88, \
+max_idle_ns: 1763180808480 ns\r
+sched_clock: 52 bits at 1250kHz, resolution 800ns, wraps every \
+4398046510800ns\r
+Calibrating delay loop... 649.21 BogoMIPS (lpj=324608)\r
+pid_max: default: 32768 minimum: 301\r
+Dentry cache hash table entries: 16384 (order: 5, 131072 bytes, vmalloc)\r
+Inode-cache hash table entries: 8192 (order: 4, 65536 bytes, vmalloc)\r
+Mount-cache hash table entries: 512 (order: 0, 4096 bytes, vmalloc)\r
+Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, vmalloc)\r
+VFS: Finished mounting rootfs on nullfs\r
+rcu: Hierarchical SRCU implementation.\r
+rcu: 	Max phase no-delay instances is 400.\r
+Timer migration: 2 hierarchy levels; 8 children per group; 1 crossnode level\r
+smp: Bringing up secondary CPUs ...\r
+Primary instruction cache 32kB, VIPT, 2-way, linesize 64 bytes.\r
+Primary data cache 32kB, 2-way, VIPT, no aliases, linesize 32 bytes\r
+Unified secondary cache 1024kB 2-way, linesize 128 bytes.\r
+CPU 1 clock is 180MHz.\r
+CPU1 revision is: 00000900 (R10000)\r
+FPU revision is: 00000900\r
+Primary instruction cache 32kB, VIPT, 2-way, linesize 64 bytes.\r
+Primary data cache 32kB, 2-way, VIPT, no aliases, linesize 32 bytes\r
+Unified secondary cache 1024kB 2-way, linesize 128 bytes.\r
+CPU 2 clock is 180MHz.\r
+CPU2 revision is: 00000900 (R10000)\r
+FPU revision is: 00000900\r
+Primary instruction cache 32kB, VIPT, 2-way, linesize 64 bytes.\r
+Primary data cache 32kB, 2-way, VIPT, no aliases, linesize 32 bytes\r
+Unified secondary cache 1024kB 2-way, linesize 128 bytes.\r
+CPU 3 clock is 180MHz.\r
+CPU3 revision is: 00000900 (R10000)\r
+FPU revision is: 00000900\r
+smp: Brought up 2 nodes, 4 CPUs\r
+Memory: 108820K/131072K available (9069K kernel code, 471K rwdata, 1968K \
+rodata, 396K init, 188K bss, 19920K reserved, 0K cma-reserved)\r
+posixtimers hash table entries: 2048 (order: 3, 32768 bytes, vmalloc)\r
+futex hash table entries: 512 (65536 bytes on 2 NUMA nodes, total 128 KiB, \
+linear).\r
+NET: Registered PF_NETLINK/PF_ROUTE protocol family\r
+thermal_sys: Registered thermal governor 'step_wise'\r
+xtalk:n0/8 bridge widget\r
+xtalk:n1/8 bridge widget\r
+raid6: using intx1 recovery algorithm\r
+raid6: int64x1  gen()  1190 MB/s\r
+raid6: int64x2  gen()  1252 MB/s\r
+raid6: int64x4  gen()  1376 MB/s\r
+raid6: int64x8  gen()   615 MB/s\r
+raid6: using algorithm int64x4 gen() 1376 MB/s\r
+raid6: .... xor() 281 MB/s, rmw enabled\r
+SCSI subsystem initialized\r
+pps_core: LinuxPPS API ver. 1 registered\r
+pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti \
+<giometti@linux.it>\r
+PTP clock support registered\r
+clocksource: Switched to clocksource HUB-RT\r
+NET: Registered PF_INET protocol family\r
+IP idents hash table entries: 2048 (order: 2, 16384 bytes, vmalloc)\r
+tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, \
+vmalloc)\r
+Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, vmalloc)\r
+TCP established hash table entries: 1024 (order: 1, 8192 bytes, vmalloc)\r
+TCP bind hash table entries: 1024 (order: 3, 32768 bytes, vmalloc)\r
+TCP: Hash tables configured (established 1024 bind 1024)\r
+UDP hash table entries: 256 (order: 2, 16384 bytes, vmalloc)\r
+NET: Registered PF_UNIX/PF_LOCAL protocol family\r
+RPC: Registered named UNIX socket transport module.\r
+RPC: Registered udp transport module.\r
+RPC: Registered tcp transport module.\r
+RPC: Registered tcp-with-tls transport module.\r
+RPC: Registered tcp NFSv4.1 backchannel transport module.\r
+PCI: CLS 0 bytes, default 128\r
+Initialise system trusted keyrings\r
+workingset: timestamp_bits=56 (anon: 51) max_order=15 bucket_order=0 (anon: \
+0)\r
+Key type asymmetric registered\r
+Asymmetric key parser 'x509' registered\r
+Block layer SCSI generic (bsg) driver version 0.4 loaded (major 251)\r
+io scheduler mq-deadline registered\r
+io scheduler kyber registered\r
+xor: measuring software checksum speed\r
+   32regs_prefetch :   745 MB/sec\r
+   32regs          :   987 MB/sec\r
+   8regs_prefetch  :  1217 MB/sec\r
+   8regs           :  1681 MB/sec\r
+xor: using function: 8regs (1681 MB/sec)\r
+Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled\r
+loop: module loaded\r
+st: Version 20160209, fixed bufsize 32768, s/g segs 256\r
+NET: Registered PF_INET6 protocol family\r
+Segment Routing with IPv6\r
+In-situ OAM (IOAM) with IPv6\r
+NET: Registered PF_PACKET protocol family\r
+PFKEY is deprecated and scheduled to be removed in 2027, please contact the \
+netdev mailing list\r
+NET: Registered PF_KEY protocol family\r
+Loading compiled-in X.509 certificates\r
+Demotion targets for Node 0: null\r
+Demotion targets for Node 1: null\r
+Warning: unable to open an initial console.\r
+Freeing unused kernel image (initmem) memory: 396K\r
+This architecture does not have kernel memory protection.\r
+Run /init as init process\r
+Kernel panic - not syncing: Attempted to kill init! exitcode=0x00002c00\r
+---[ end Kernel panic - not syncing: Attempted to kill init! \
+exitcode=0x00002c00 ]---\r
+"""
+
+
 class MissingAssertionsTest(unittest.TestCase):
 
     def test_real_one_cpu_pass_transcript_passes(self):
@@ -822,8 +1016,9 @@ class MissingAssertionsTest(unittest.TestCase):
         self.assertIn('userspace exit status', missing)
 
     def test_rejects_unsupported_cpu_count(self):
-        with self.assertRaises(ValueError):
-            missing_assertions(REAL_ONE_CPU_PASS_TRANSCRIPT, 4)
+        for bad in (0, 3, 8):
+            with self.assertRaises(ValueError):
+                missing_assertions(REAL_ONE_CPU_PASS_TRANSCRIPT, bad)
 
     def test_a_near_miss_exit_code_does_not_satisfy(self):
         # A value that shares every digit with the wanted one, just not
@@ -834,6 +1029,39 @@ class MissingAssertionsTest(unittest.TestCase):
             'exitcode=0x00002a00', 'exitcode=0x0000002a')
         self.assertNotIn('exitcode=0x00002a00', near_miss)
         missing = missing_assertions(near_miss, 1)
+        self.assertIn('userspace exit status', missing)
+
+    def test_real_four_cpu_pass_transcript_passes(self):
+        self.assertEqual(
+            missing_assertions(REAL_FOUR_CPU_PASS_TRANSCRIPT, 4), [])
+
+    def test_four_cpu_requires_the_remote_memory_exit_sentinel(self):
+        # The whole point of the four-CPU cell is the remote-memory proof:
+        # a boot that brings up all four CPUs but exits with the one-CPU
+        # sentinel (the stale-asset symptom) must fail on that one marker.
+        short = REAL_FOUR_CPU_PASS_TRANSCRIPT.replace(
+            'exitcode=0x00002c00', 'exitcode=0x00002a00')
+        self.assertNotIn('exitcode=0x00002c00', short)
+        missing = missing_assertions(short, 4)
+        self.assertEqual(missing, ['node-one remote-memory userspace proof'])
+
+    def test_one_cpu_pass_does_not_satisfy_four_cpu_checks(self):
+        # A one-CPU boot judged as a four-CPU run must fail on the
+        # node-one-specific markers -- proves those checks are not
+        # vacuously true.
+        missing = missing_assertions(REAL_ONE_CPU_PASS_TRANSCRIPT, 4)
+        self.assertIn('four-CPU discovery', missing)
+        self.assertIn('node-one primary CPU execution', missing)
+        self.assertIn('node-one secondary CPU execution', missing)
+        self.assertIn('four-CPU scheduler bring-up', missing)
+        self.assertIn('node-one memory', missing)
+        self.assertIn('node-one crosstalk endpoint', missing)
+        self.assertIn('node-one remote-memory userspace proof', missing)
+
+    def test_four_cpu_pass_does_not_satisfy_one_cpu_exit_status(self):
+        # The reverse: the four-CPU exit (0x2c00) must not satisfy the
+        # one-CPU check (0x2a00).
+        missing = missing_assertions(REAL_FOUR_CPU_PASS_TRANSCRIPT, 1)
         self.assertIn('userspace exit status', missing)
 
 
