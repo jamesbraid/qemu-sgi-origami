@@ -401,7 +401,7 @@ dlserver=192.0.2.2
 
 class ParseExpectedFailuresTest(unittest.TestCase):
 
-    def test_ported_ledger_parses_to_the_four_named_diagnostics(self):
+    def test_ported_ledger_parses_to_the_empty_acceptance_list(self):
         # The module-level EXPECTED_FAILURES is exactly
         # parse_expected_failures(EXPECTED_FAILURES_TEXT) -- this pins
         # the result so a silent edit to either is caught here.
@@ -545,6 +545,20 @@ class EvaluateRunTest(unittest.TestCase):
         self.assertEqual(report["failures"]["unexpected"], [])
         self.assertEqual(report["failures"]["stale"], [])
         self.assertEqual(report["sash_missing"], [])
+
+    def test_a_summary_without_the_positive_verdict_is_not_a_pass(self):
+        # The synthetic clean transcript minus the firmware's own ALL DIAGS
+        # PASSED line: no RSLT failure anywhere, empty ledger, and yet the
+        # summary never judged the diagnostics -- the hole an absent line
+        # would otherwise slip through.
+        line = "         ALL DIAGS PASSED.\n"
+        self.assertEqual(SYNTHETIC_ALL_PASS_TRANSCRIPT.count(line), 1)
+        clipped = SYNTHETIC_ALL_PASS_TRANSCRIPT.replace(line, "")
+        report = evaluate_run(clipped, ())
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertIn(
+            "pass 2 summary does not report ALL DIAGS PASSED although no "
+            "RSLT failure was observed", report["problems"])
 
     def test_expected_failure_present_is_accepted(self):
         # Real pass 1 (which genuinely FAILs serial_dma) combined with

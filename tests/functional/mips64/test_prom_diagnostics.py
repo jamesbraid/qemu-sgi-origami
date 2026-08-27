@@ -108,6 +108,7 @@ WARM_RESET_MARKER = "Resetting the system..."
 MENU_MARKER = "System Maintenance Menu"
 SUMMARY_START = "**** System Configuration and Diagnostics Summary ****"
 SUMMARY_END = "**** End System Configuration and Diagnostics Summary ****"
+ALL_PASSED_MARKER = "ALL DIAGS PASSED"
 NVRAM_WARNINGS = (
     "NVRAM checksum is incorrect",
     "hardware inventory is invalid",
@@ -228,6 +229,10 @@ def parse_summary(text):
         if reason and results:
             results[-1]["reason"] = reason.group(1)
     summary["diag_results"] = results
+    # The firmware's own positive verdict. Its absence with no RSLT failure
+    # observed would mean the summary never judged the diagnostics at all,
+    # which an empty ledger must not read as a pass.
+    summary["all_passed"] = ALL_PASSED_MARKER in block
     return summary
 
 
@@ -367,6 +372,12 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
                     f"summary {key} = {summary[key]} rather than "
                     f"{expected_value}"
                 )
+        if not summary["all_passed"] and not any(
+                report["failures"]["observed"].values()):
+            problems.append(
+                "pass 2 summary does not report ALL DIAGS PASSED although "
+                "no RSLT failure was observed"
+            )
 
     report["module_id"] = {
         "before": ids1[0] if len(ids1) == 1 else None,
@@ -430,7 +441,7 @@ EXPECTED_FAILURES_TEXT = """\
 # fixes had each landed without retiring their lines -- so all four are
 # retired here per the rule above, and the list is empty: the
 # full-acceptance contract is now what this test asserts. The capture
-# that measured it is docs/boot-logs/firmware.diag-gate-all-clear.* in
+# that measured it is docs/boot-logs/firmware.diagnostics-all-clear.* in
 # the project checkout.
 """
 
