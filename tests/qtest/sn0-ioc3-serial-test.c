@@ -1497,6 +1497,55 @@ static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A channel reset stops the receive timer as it clears the indices. The
+ * consume index it zeroes is the timer's arming, so a timer left running
+ * would count out and raise a source for a ring the reset just emptied. Wind
+ * the timer with a delivery, reset the channel, and the timer is gone: its
+ * count reads zero and stepping the clock past the old deadline raises
+ * nothing. This is the reset half of the receive timer's lifetime that the
+ * Resettable hold phase owns, alongside the indices the other reset test
+ * covers.
+ */
+static void test_a_channel_reset_stops_the_receive_timer(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'z';
+    uint8_t got, status;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    /* A delivery winds the timer, so it is running with a count. */
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, 0x140);
+
+    /* The channel reset zeroes the indices, which disarms and stops it. */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE | CTRL_RESET);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, 0);
+
+    /* And it never expires: stepping past the old deadline raises nothing. */
+    qtest_clock_step(qts, (0x140 + 1) * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1562,6 +1611,9 @@ int main(int argc, char **argv)
                         test_pass_through_receives_while_the_rings_stay_off);
     qtest_add_data_func("sn0/ioc3-serial/receive-drain-reads-back-clear", NULL,
                         test_the_receive_drain_acts_and_reads_back_clear);
+    qtest_add_data_func("sn0/ioc3-serial/channel-reset-stops-receive-timer",
+                        NULL,
+                        test_a_channel_reset_stops_the_receive_timer);
 
     return g_test_run();
 }
