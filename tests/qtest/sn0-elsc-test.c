@@ -599,6 +599,37 @@ static void aux_write(int fd, const char *text)
     g_assert_cmpint(write(fd, text, len), ==, (ssize_t)len);
 }
 
+/*
+ * Wait until bytes just written to the AUX socket have actually reached the
+ * model's receive queue, before any arbitration signal is scored against that
+ * queue. The write crosses the host loopback and is handed to the receive path
+ * on QEMU's main loop in host time -- the chardev's connect completion and read
+ * handler have to run first -- while the arbitration scoring below runs in
+ * virtual time. Under load the bytes can still be in flight when the first
+ * console-processor cycle is scored, so that cycle legitimately presents
+ * signal1 for a still-empty queue, and the scoring reads signal1 where signal2
+ * was expected: the load-sensitive 0xe0-for-0xe8 abort this test hit on busy
+ * CI runners. The monitor dump reports queue depth directly, independent of the
+ * rotation phase, so poll it until the expected depth is present; the signal2
+ * scoring that follows then races nothing. Bounded like the arbitration waits,
+ * so a model that never queues the input fails rather than spins.
+ */
+static void aux_wait_for_queued(QTestState *qts, unsigned len)
+{
+    g_autofree char *needle = g_strdup_printf("rx queue: %u byte(s)", len);
+    int i;
+
+    for (i = 0; i < ARB_MAX_STEPS; i++) {
+        g_autofree char *out = qtest_hmp(qts, "info elsc");
+
+        if (strstr(out, needle)) {
+            return;
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+    g_assert_not_reached();
+}
+
 static void test_get_returns_queued_console_input(const void *data)
 {
     uint16_t port;
@@ -617,7 +648,9 @@ static void test_get_returns_queued_console_input(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
     /* Wait for the rotation to notice the queue and present signal2 --
      * proof the arbitration byte really does depend on queue state, not
-     * just that "get" happens to answer correctly when asked. */
+     * just that "get" happens to answer correctly when asked. The queued
+     * bytes have to have arrived first, or the scoring races their delivery. */
+    aux_wait_for_queued(qts, 5);
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
 
@@ -661,6 +694,9 @@ static void test_escape_byte_is_not_queued(const void *data)
     aux_write(fd, "AB\x14zzz\rCD");
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    /* "AB" and "CD" survive; the escaped "\x14zzz\r" is dropped, so four
+     * bytes end up queued. Wait for all four before scoring the signal. */
+    aux_wait_for_queued(qts, 4);
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
 
@@ -920,6 +956,7 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
     aux_write(fd, "hello");
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    aux_wait_for_queued(qts, 5);
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
 
