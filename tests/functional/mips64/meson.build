@@ -53,6 +53,12 @@ test_mips64_timeouts = {
   # single-BOOT_TIMEOUT-plus-a-bit margin this fork's single-test-method
   # files keep.
   'linux_kernel' : 1000,
+  # test_linux_multiuser.py boots the networked Gentoo disk to a multiuser
+  # login and probes the ssh service. BOOT_TIMEOUT_SECONDS=1200 there (the
+  # verified milestone boot reached a networked login in 754-845s); 1320
+  # keeps a margin over that plus the post-login sshd settle and the banner
+  # probe, the same shape the other tests keep over their own budgets.
+  'linux_multiuser' : 1320,
   # The same boot as openbsd_login, with a network back end fitted, plus
   # a DHCP lease and three transfer legs on top of it. LOGIN_BUDGET_SECONDS
   # in test_openbsd_net_transfer.py keeps the same 840s login budget
@@ -91,6 +97,7 @@ tests_mips64_system_thorough = [
   'irix_miniroot',
   'openbsd_login',
   'linux_kernel',
+  'linux_multiuser',
   'openbsd_net_transfer',
   'openbsd_install',
 ]
