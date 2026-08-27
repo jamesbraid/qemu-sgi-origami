@@ -422,16 +422,16 @@ EXPECTED_FAILURES_TEXT = """\
 # that lands must remove its line in the same change. The final acceptance
 # run takes no list at all: an empty list is the full-acceptance contract.
 #
-# Measured by the archived red-baseline run of tools/diag-gate (see
-# docs/library/one-cpu-normal-diagnostics-gate.md and the boot archive):
-# one CPU, 64 MiB, PROM release 6.5-base, normal diagnostics. Each entry
-# names the diagnostic as its RSLT line prints it; the observed diag_rc
-# is a comment because return codes move with partial fixes.
-
-serial_dma      # uartA/uartB DMA timeout, both passes, diag_rc 63
-enet_ssram      # IOC3 SSRAM parity test, pass 2, diag_rc 102
-scsi_ram        # SCSI mailbox test, pass 2 twice (QL init retry), diag_rc 127
-scsi_dma        # SCSI DMA test, pass 2 twice (QL init retry), diag_rc 69
+# The red baseline (one CPU, 64 MiB, PROM release 6.5-base, normal
+# diagnostics; docs/library/one-cpu-normal-diagnostics-gate.md and the
+# boot archive) listed serial_dma, enet_ssram, scsi_ram and scsi_dma. A
+# run of this test on the 2026-08-27 trunk observed no failure in either
+# pass -- the serial-DMA engines, the IOC3 ethernet series and the qlogic
+# fixes had each landed without retiring their lines -- so all four are
+# retired here per the rule above, and the list is empty: the
+# full-acceptance contract is now what this test asserts. The capture
+# that measured it is docs/boot-logs/firmware.diag-gate-all-clear.* in
+# the project checkout.
 """
 
 EXPECTED_FAILURES = parse_expected_failures(EXPECTED_FAILURES_TEXT)
