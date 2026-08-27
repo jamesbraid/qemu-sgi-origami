@@ -215,10 +215,9 @@ static uint16_t sgi_ioc3_onewire_crc16(uint16_t crc, const uint8_t *data,
  * than hand-derived -- see the datasheet section named above for which
  * parts of this are required and which are a modelling choice.
  */
-static uint64_t sgi_ioc3_onewire_rom_id(void)
+static uint64_t sgi_ioc3_onewire_rom_id(uint64_t serial)
 {
     uint8_t rom[7];
-    uint64_t serial = SGI_IOC3_ONEWIRE_SERIAL;
     unsigned int i;
     uint8_t crc;
 
@@ -359,7 +358,7 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
          */
         unsigned int step = s->onewire_bit % 3;
         unsigned int index = s->onewire_bit / 3;
-        bool bit = (sgi_ioc3_onewire_rom_id() >> index) & 1;
+        bool bit = (sgi_ioc3_onewire_rom_id(s->onewire_serial) >> index) & 1;
 
         if (step == 0) {
             level = bit;
@@ -384,8 +383,9 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
         if (++s->onewire_bit == 64) {
             s->onewire_bit = 0;
             s->onewire_command = 0;
-            s->onewire_phase = (s->onewire_match == sgi_ioc3_onewire_rom_id()) ?
-                               SGI_IOC3_ONEWIRE_FUNCTION : SGI_IOC3_ONEWIRE_IDLE;
+            s->onewire_phase =
+                (s->onewire_match == sgi_ioc3_onewire_rom_id(s->onewire_serial))
+                ? SGI_IOC3_ONEWIRE_FUNCTION : SGI_IOC3_ONEWIRE_IDLE;
         }
     } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_FUNCTION) {
         /* The function asked of the selected part, a bit at a time. */
@@ -1456,6 +1456,15 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
 
+    /* The serial is only the low forty-eight bits of the ROM identity; a
+     * value that does not fit would be silently truncated into the part the
+     * guest reads, so refuse it here the way the Bridge refuses its own. */
+    if (s->onewire_serial & ~SGI_IOC3_ONEWIRE_SERIAL_MASK) {
+        error_setg(errp, "onewire-serial 0x%" PRIx64
+                   " does not fit in 48 bits", s->onewire_serial);
+        return;
+    }
+
     /*
      * The chip's own PCI interrupt pin belongs to the ethernet block. That
      * block is a child device now (hw/net/sgi-ioc3-eth.c) with a GPIO output
@@ -1748,6 +1757,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
 static const Property sgi_ioc3_properties[] = {
     DEFINE_PROP_CHR("chardev-a", SGIIOC3State, serial[0].chr),
     DEFINE_PROP_CHR("chardev-b", SGIIOC3State, serial[1].chr),
+    DEFINE_PROP_UINT64("onewire-serial", SGIIOC3State, onewire_serial,
+                       SGI_IOC3_ONEWIRE_SERIAL),
 };
 
 static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)

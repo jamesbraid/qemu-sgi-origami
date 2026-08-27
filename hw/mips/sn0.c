@@ -3361,6 +3361,19 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
     }
 
     /*
+     * Each base I/O board's controller carries its own laser-programmed
+     * one-wire serial, the same as its bridge does. Consecutive only by
+     * choice: node 0 keeps the value this machine reported before it grew a
+     * second chassis, and node 1 gets the next one so the firmware -- and a
+     * guest's one-wire bus -- cannot merge two physical nodes that fall back
+     * to their base I/O identities. Without a distinct value per node the
+     * two controllers answer alike, and a guest that registers both fails
+     * the second as a duplicate.
+     */
+    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
+                         SGI_IOC3_ONEWIRE_SERIAL + node_index);
+
+    /*
      * Each controller claims its host network backend itself, so the board
      * only adjusts the automatic address before that claim: QEMU supplies the
      * unique suffix, while an on-board IOC3 needs SGI's OUI because the PROM

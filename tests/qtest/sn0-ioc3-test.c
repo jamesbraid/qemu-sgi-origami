@@ -987,11 +987,20 @@ static const uint8_t onewire_test_mac[6] = { 0x52, 0x54, 0x00, 0x11, 0x22, 0x33 
 /* One bus slot, returning the level sampled -- the same helper shape
  * sn0-bridge-test.c's nic_slot() uses for the Bridge's identical engine.
  */
+static bool onewire_slot_node(QTestState *qts, uint64_t node,
+                              unsigned int pulse, unsigned int sample)
+{
+    uint64_t control = node + MICROLAN_CONTROL;
+
+    qtest_writel(qts, control, (pulse << 10) | (sample << 2));
+    return qtest_readl(qts, control) & MICROLAN_LEVEL;
+}
+
+/* The same slot on node zero, the only node every other test here builds. */
 static bool onewire_slot(QTestState *qts, unsigned int pulse,
                          unsigned int sample)
 {
-    qtest_writel(qts, MICROLAN_CONTROL, (pulse << 10) | (sample << 2));
-    return qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL;
+    return onewire_slot_node(qts, 0, pulse, sample);
 }
 
 /* The widths OpenBSD's and Linux's one-wire masters both use, per the
@@ -4185,6 +4194,90 @@ static void test_the_storage_survives_a_system_reset(const void *data)
 }
 
 /*
+ * Drive a Search ROM on the given node's part and read its sixty-four-bit
+ * identity out of it -- the same exchange
+ * test_a_search_finds_the_ethernet_address_part performs at node zero, but
+ * aimed at whichever node's MicroLAN engine the caller names, so a two-node
+ * machine's two boards can be read one after the other.
+ */
+static uint64_t onewire_search_rom_node(QTestState *qts, uint64_t node)
+{
+    uint64_t rom = 0;
+    unsigned int i;
+
+    g_assert_false(onewire_slot_node(qts, node, 520, 65)); /* reset: present */
+
+    for (i = 0; i < 8; i++) {                              /* Search ROM 0xf0 */
+        bool one = (0xf0u >> i) & 1;
+
+        onewire_slot_node(qts, node, one ? 6 : 80, one ? 13 : 30);
+    }
+    for (i = 0; i < 64; i++) {
+        bool bit = onewire_slot_node(qts, node, 6, 13);
+        bool complement = onewire_slot_node(qts, node, 6, 13);
+
+        g_assert_cmpint(complement, ==, !bit);
+        if (bit) {
+            rom |= 1ULL << i;
+        }
+        onewire_slot_node(qts, node, bit ? 6 : 80, bit ? 13 : 30);
+    }
+    return rom;
+}
+
+/*
+ * Two nodes, two base I/O boards, two one-wire identity parts. The firmware
+ * falls back to a board's laser-programmed serial when the Hub's own part
+ * cannot be read, so two boards answering with the same serial let it merge
+ * two physical nodes into one. That is what a real dual-chassis machine's
+ * Linux saw: both w1 masters registered the same slave, the second
+ * registration failed with EEXIST, and it retried with a backtrace every ten
+ * seconds. The two parts must report distinct identities -- each still a
+ * well-formed family-0x91 part whose serial carries the required 0x5e7
+ * prefix and whose CRC-8 over the seven bytes closes to zero.
+ */
+static void test_each_node_has_its_own_onewire_identity(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,io-bridge=on -m 128 "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0, node1;
+    uint8_t bytes[8];
+    unsigned int i;
+
+    sn0_ioc3_attach_node(qts, 0);
+    sn0_ioc3_attach_node(qts, NODE_STRIDE);
+
+    node0 = onewire_search_rom_node(qts, 0);
+    node1 = onewire_search_rom_node(qts, NODE_STRIDE);
+
+    /* Each is a well-formed part before they are compared: right family, the
+     * required serial prefix, and a ROM CRC that closes over all eight bytes.
+     */
+    g_assert_cmphex(node0 & 0xff, ==, 0x91);            /* family */
+    g_assert_cmphex(node1 & 0xff, ==, 0x91);
+    g_assert_cmphex((node0 >> 44) & 0xfff, ==, 0x5e7);  /* serial prefix */
+    g_assert_cmphex((node1 >> 44) & 0xfff, ==, 0x5e7);
+    for (i = 0; i < 8; i++) {
+        bytes[i] = (node0 >> (8 * i)) & 0xff;
+    }
+    g_assert_cmphex(onewire_crc8(0, bytes, 8), ==, 0);
+    for (i = 0; i < 8; i++) {
+        bytes[i] = (node1 >> (8 * i)) & 0xff;
+    }
+    g_assert_cmphex(onewire_crc8(0, bytes, 8), ==, 0);
+
+    /* The point of the test: the two boards are not the same board. */
+    g_assert_cmphex(node0, !=, node1);
+
+    qtest_quit(qts);
+}
+
+/*
  * Each node's base I/O board carries its own timekeeper, so the two-node
  * machine has two of these storages and they must not alias: the firmware
  * initializes per-module records through one node's window, and a model
@@ -4657,6 +4750,8 @@ int main(int argc, char **argv)
                         test_one_wire_slot_preserves_the_timing_written);
     qtest_add_data_func("sn0/ioc3/one-wire-search-finds-the-part", NULL,
                         test_a_search_finds_the_ethernet_address_part);
+    qtest_add_data_func("sn0/ioc3/one-wire-each-node-distinct-identity", NULL,
+                        test_each_node_has_its_own_onewire_identity);
     qtest_add_data_func("sn0/ioc3/one-wire-wrong-match-rom-unselects", NULL,
                         test_a_wrong_match_rom_leaves_the_part_unselected);
     qtest_add_data_func("sn0/ioc3/one-wire-read-memory", NULL,
