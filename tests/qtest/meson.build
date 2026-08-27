@@ -29,6 +29,11 @@ slow_qtests = {
   # deadline, or meson's 60s default kills the test before its own deadline can
   # fire, resurfacing the same flake as a timeout kill instead.
   'sn0-ioc3-serial-test': 120,
+  # sn0-elsc-test's AUX socket-accept deadline was likewise widened to 120s
+  # (see tests/qtest/sn0-elsc-test.c). Match its whole-test budget to that
+  # deadline, or meson's 60s default kills the binary before the accept can
+  # complete under load, resurfacing the same flake as a timeout kill.
+  'sn0-elsc-test': 120,
 }
 
 qtests_generic = [
