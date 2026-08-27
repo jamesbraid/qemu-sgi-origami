@@ -22,12 +22,20 @@ fatal-signal death (the low byte would carry a signal number instead)
 without needing any extra logic -- and for its fatal-signal fixture,
 which proves it.
 
-The four-CPU case is explicitly OUT of scope here: tools/linux-usercheck's
-own docstring records a known, pre-existing stop_machine livelock at
-that population under wall-clock time, unrelated to this fork's own
-work (docs/reviews/mttcg-flip-evidence.md, project checkout). Adding a
-four-CPU cell that asserts success would be asserting past a known
-condition, which this port's own task brief says explicitly not to do.
+The four-CPU case is explicitly OUT of scope here: on current trunk the
+four-CPU cell does not pass yet, and it unlocks in two stages. A
+boot-phase bug -- under this cell's own thread=single -icount regime
+(shift=2, the four-CPU-only icount value) the four-CPU/two-node boot froze
+before any console, ahead of SMP bring-up -- and then a userspace-phase
+bug -- the stub's cross-node page-move check falls back to the one-CPU
+exit sentinel, mode-independent (it reproduces under -icount too, so not
+an accelerator artifact). Both bugs, their current status, and the fixes
+in flight are tracked in docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md
+(project checkout). An earlier stop_machine livelock at the Hub-RT
+clocksource switch, which once kept this case out, was fixed by fork pull
+request 135 and is verified clear on trunk -- no longer the blocker.
+Asserting a four-CPU success before both stages land would assert past a
+live bug, which this port's own task brief says explicitly not to do.
 
 missing_assertions() (test_linux_kernel_verdict.py, imported below) is a
 verbatim port of linux-usercheck's own function of the same name, for
