@@ -1155,6 +1155,16 @@ static void test_translation_entries_reset_clear(const void *data)
 #define COPY_SRC_SYS            0x100c00000ULL        /* node 1 RAM holding the source */
 #define COPY_DST_ADDR           0x00300000u           /* a node-0 local destination */
 
+/*
+ * A node-0 64-bit cycle whose low crosstalk offset would collide with the direct
+ * window's 512 MB step if the offset registers were consulted. A device that
+ * addresses by crosstalk leaves the direct window at reset (the step active) and
+ * issues a 64-bit address; the 64-bit path must ignore the step, where the 31-bit
+ * direct path would add it and miss the target.
+ */
+#define DMA64_NODE0_PCI         0xa000000000fbc000ULL /* widget 0xa, xtalk 0xfbc000, NASID 0 */
+#define DMA64_NODE0_SYS         0x00fbc000ULL         /* node 0 guest-phys, where it must land */
+
 /* Where the transfer source's own registers are put in PCI memory space. */
 #define DMA_CARD_MMIO           CARD_MMIO(DMA_SLOT)
 
@@ -1943,6 +1953,42 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
 
     /* The destination holds node 1's bytes, proving the read reached node 1. */
     qtest_memread(qts, COPY_DST_ADDR, seen, sizeof(seen));
+    for (i = 0; i < DMA64_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A 64-bit cycle must ignore the direct-window offset registers, even the 512 MB
+ * step that resets active. A device addressing by crosstalk leaves the direct
+ * window alone and issues a 64-bit address; the 31-bit direct path would add the
+ * step and send a low offset half a gigabyte away, into unbacked memory that
+ * reads back empty. This leaves DIRECT_MAP at reset and asserts the transfer
+ * lands at the bare crosstalk offset, not offset by the step.
+ */
+static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_TWO_NODE
+                                 " -device sgi-bridge-dma-test,addr=6,bus=pci");
+    uint8_t seen[DMA64_LEN];
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    /* DIRECT_MAP left at its reset value: the 512 MB step is active. */
+
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                 (uint32_t)DMA64_NODE0_PCI);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI,
+                 DMA64_NODE0_PCI >> 32);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, DMA64_LEN);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, DMA64_SEED);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
+
+    /* It landed at the bare crosstalk offset, not 512 MB above it. */
+    qtest_memread(qts, DMA64_NODE0_SYS, seen, sizeof(seen));
     for (i = 0; i < DMA64_LEN; i++) {
         g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
     }
@@ -3200,6 +3246,8 @@ int main(int argc, char **argv)
                         NULL, test_dma_direct_window_reaches_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",
                         NULL, test_dma_direct_window_reads_the_second_node);
+    qtest_add_data_func("sn0/bridge/dma-direct-window-64bit-ignores-the-offset-step",
+                        NULL, test_dma_direct_window_64bit_ignores_the_offset_step);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
