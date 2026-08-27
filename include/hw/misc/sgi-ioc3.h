@@ -146,6 +146,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_ONEWIRE_FAMILY  0x91
 #define SGI_IOC3_ONEWIRE_SERIAL  0x5e7000000001ULL
 
+/* The serial is the low forty-eight bits of the ROM identity; a value that
+ * does not fit is rejected at realize the same way the Bridge's is. */
+#define SGI_IOC3_ONEWIRE_SERIAL_MASK 0xffffffffffffULL
+
 #define SGI_IOC3_ONEWIRE_PAGE_SIZE   32
 #define SGI_IOC3_ONEWIRE_STATUS_SIZE 4
 #define SGI_IOC3_ONEWIRE_ANSWER_SIZE (1 + SGI_IOC3_ONEWIRE_PAGE_SIZE + 1)
@@ -489,6 +493,16 @@ struct SGIIOC3State {
     uint32_t microlan_control;
     uint32_t pin_control;
     uint32_t pin_data;
+
+    /*
+     * The board identity this part reports: the low forty-eight bits of the
+     * one-wire ROM. A property so the machine can give each node's base I/O
+     * board its own laser-programmed serial -- the same identity the Bridge
+     * carries and for the same reason, that the firmware must not merge two
+     * physical nodes whose parts happen to answer alike. Configuration, not
+     * migrated state, so it is not in the VMState below.
+     */
+    uint64_t onewire_serial;
 
     /*
      * The one-wire transaction state machine sitting behind the MicroLAN
