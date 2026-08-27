@@ -27,13 +27,17 @@
 #include "internal.h"
 
 /* MIPS R4K timer */
-static uint32_t cpu_mips_get_count_val(CPUMIPSState *env)
+static uint32_t cpu_mips_count_at(CPUMIPSState *env, int64_t now_ns)
 {
     MIPSCPU *cpu = env_archcpu(env);
-    int64_t now_ns;
-    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
     return env->CP0_Count +
             (uint32_t)clock_ns_to_ticks(cpu->count_clock, now_ns);
+}
+
+static uint32_t cpu_mips_get_count_val(CPUMIPSState *env)
+{
+    return cpu_mips_count_at(env, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 /*
@@ -310,14 +314,18 @@ void cpu_mips_r10k_perf_post_load(CPUMIPSState *env)
     mips_r10k_perf_update(env);
 }
 
-static void cpu_mips_timer_update(CPUMIPSState *env)
+/*
+ * Deadline and count must come from the same clock sample. Two separate
+ * reads leave a window in which the counter crosses a just-written
+ * Compare: classified as armed, then armed a full wrap out.
+ */
+static void cpu_mips_timer_update(CPUMIPSState *env, int64_t now_ns)
 {
     MIPSCPU *cpu = env_archcpu(env);
-    uint64_t now_ns, next_ns;
+    uint64_t next_ns;
     uint32_t wait;
 
-    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    wait = env->CP0_Compare - cpu_mips_get_count_val(env);
+    wait = env->CP0_Compare - cpu_mips_count_at(env, now_ns);
     /* Clamp interval to overflow if virtual time had not progressed */
     if (!wait) {
         wait = UINT32_MAX;
@@ -327,9 +335,9 @@ static void cpu_mips_timer_update(CPUMIPSState *env)
 }
 
 /* Expire the timer.  */
-static void cpu_mips_timer_expire(CPUMIPSState *env)
+static void cpu_mips_timer_expire(CPUMIPSState *env, int64_t now_ns)
 {
-    cpu_mips_timer_update(env);
+    cpu_mips_timer_update(env, now_ns);
     if (env->insn_flags & ISA_MIPS_R2) {
         cp0_cause_update(env, 0, 1 << CP0Ca_TI);
     }
@@ -365,7 +373,7 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
          */
         now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         if (timer_pending(env->timer) && timer_expired(env->timer, now_ns)) {
-            cpu_mips_timer_expire(env);
+            cpu_mips_timer_expire(env, now_ns);
         }
     }
 
@@ -416,11 +424,13 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
     if (env->CP0_Cause & (1 << CP0Ca_DC) || !env->timer) {
         env->CP0_Count = count;
     } else {
+        int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
         /* Store new count register */
         env->CP0_Count = count - (uint32_t)clock_ns_to_ticks(cpu->count_clock,
-                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+                                                             now_ns);
         /* Update timer timer */
-        cpu_mips_timer_update(env);
+        cpu_mips_timer_update(env, now_ns);
         if (cpu_mips_write_matches(env, count, env->CP0_Compare, 0)) {
             cpu_mips_update_ip7(env);
         }
@@ -435,10 +445,13 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
 
     env->CP0_Compare = value;
     if (!(env->CP0_Cause & (1 << CP0Ca_DC))) {
-        /* Read Count before the update below moves the deadline. */
-        matched = cpu_mips_write_matches(env, cpu_mips_get_count_val(env),
+        int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+        /* Classify and arm against one instant, or a stall between the
+         * two reads turns an imminent match into a full-wrap deferral. */
+        matched = cpu_mips_write_matches(env, cpu_mips_count_at(env, now_ns),
                                          value, UINT32_MAX >> 1);
-        cpu_mips_timer_update(env);
+        cpu_mips_timer_update(env, now_ns);
     }
     if (matched) {
         /* The write's own reset of IP[7] loses to the standing match. */
@@ -475,7 +488,7 @@ static void mips_timer_cb(void *opaque)
         return;
     }
 
-    cpu_mips_timer_expire(env);
+    cpu_mips_timer_expire(env, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 void cpu_mips_clock_init(MIPSCPU *cpu)
