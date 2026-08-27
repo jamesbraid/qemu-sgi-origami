@@ -272,6 +272,7 @@ struct SGIHubState {
     uint64_t pi_err_spool[SGI_HUB_PROCESSORS];
     uint32_t pi_err_mask[SGI_HUB_PROCESSORS];
     uint8_t pi_err_spool_size;
+    uint64_t pi_err_status0[SGI_HUB_PROCESSORS];
 
     uint64_t md_onewire;
 
@@ -300,5 +301,6 @@ struct SGIHubState {
 };
 
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
+void sgi_hub_latch_prom_pi_error(SGIHubState *s);
 
 #endif /* HW_MISC_SGI_HUB_H */
