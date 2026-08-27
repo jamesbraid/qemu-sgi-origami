@@ -175,13 +175,38 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 /* The two 16550 files, and the registers these tests reach in them. */
 #define SERIAL_A        (IOC3_BASE + 0x020178)
 #define SERIAL_B        (IOC3_BASE + 0x020170)
+#define REG_RBR         0
+#define REG_IER         1
 #define REG_FCR         2
 #define REG_LCR         3
 #define REG_MCR         4
+#define REG_LSR         5
+
+#define IER_RDI         0x01
+#define LSR_DR          0x01
 
 #define MCR_DTR         0x01
 #define MCR_RTS         0x02
 #define MCR_LOOPBACK    0x10
+
+/* The receive consume index's top bit arms the port's receive timer. */
+#define CONSUME_ARM_TIMER (1u << 31)
+
+/* One tick of the receive timer's 16 kHz clock, in nanoseconds. */
+#define RX_TIMER_TICK_NS 62500LL
+
+/* The receive status byte's four line-error flags together. */
+#define RX_ERRORS       (RX_OVERRUN | RX_PARITY | RX_FRAMING | RX_BREAK)
+
+/*
+ * The SuperIO enable mask IRIX 6.5.30's miniroot console runs with once it
+ * has switched onto the rings, read live off the stalled machine: port A
+ * receive high-water (bit 2), port A receive timer (bit 3) and the keyboard
+ * (bit 22) -- and, pointedly, not bit 6, the port's 16550 pass-through. A
+ * guest in this mode hears about input through the ring sources or not at
+ * all.
+ */
+#define IRIX_RING_ENABLE_MASK 0x0040000c
 
 static uint64_t serial_port(unsigned int port)
 {
@@ -311,6 +336,60 @@ static void set_loopback(QTestState *qts, unsigned int port)
 {
     qtest_writeb(qts, serial_port(port) + REG_MCR,
                  MCR_LOOPBACK | MCR_DTR | MCR_RTS);
+}
+
+/*
+ * Collect the first n characters the receive engine has delivered to a
+ * port's ring, waiting for them to arrive. A character injected into the
+ * guest's chardev crosses a host socket and the main loop before the engine
+ * sees it, so arrival is asynchronous and how the bytes group into chunks --
+ * and therefore into ring entries -- is the host's choice, not the test's.
+ * What is deterministic is the characters themselves, in order, each under a
+ * status byte with the data-valid flag: this walks the entries the produce
+ * index has published and picks out exactly that, so an assertion built on
+ * it cannot flake on TCP segmentation.
+ */
+static void collect_rx_chars(QTestState *qts, unsigned int port,
+                             unsigned int n, uint8_t *data, uint8_t *status)
+{
+    unsigned int got = 0;
+
+    g_test_timer_start();
+    while (got < n) {
+        uint32_t produce = qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)) &
+                           0xff8;
+        uint32_t offset;
+
+        got = 0;
+        for (offset = 0; offset < produce && got < n; offset += 8) {
+            uint8_t entry[8];
+            unsigned int i;
+
+            qtest_memread(qts, RING_RX(port) + offset, entry, sizeof(entry));
+            for (i = 0; i < 4 && got < n; i++) {
+                if (entry[4 + i] & RX_DATA_VALID) {
+                    data[got] = entry[i];
+                    status[got] = entry[4 + i];
+                    got++;
+                }
+            }
+        }
+
+        if (got < n) {
+            g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+            g_usleep(1000);
+        }
+    }
+}
+
+/* Wait for a SuperIO interrupt source to appear in the status register. */
+static void wait_for_source(QTestState *qts, uint32_t bit)
+{
+    g_test_timer_start();
+    while ((qtest_readl(qts, INT_STATUS) & bit) != bit) {
+        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+        g_usleep(1000);
+    }
 }
 
 /*
@@ -1036,6 +1115,281 @@ static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A guest that receives through the rings alone. IRIX 6.5.30's miniroot
+ * console runs this way once it raises the line rate: ring DMA on, the
+ * receive timer armed, the SuperIO enable mask carrying only the ring
+ * receive sources, and the 16550's own interrupt-enable register never
+ * written -- so the port's interrupt line, the engine's old only prompt,
+ * never rises. A character arriving from the chardev must still be packed
+ * into the receive ring and advance the produce index, or the console is
+ * deaf for the whole interactive install. This is the register state the
+ * live probe read off the stalled machine, replayed as a test.
+ */
+static void test_a_ring_only_guest_receives_arriving_characters(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent[4] = { 'i', 'r', 'i', 'x' };
+    uint8_t got[4], status[4];
+    unsigned int i;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, INT_ENABLE_SET, IRIX_RING_ENABLE_MASK);
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    /*
+     * The control value the miniroot programs: ring DMA enabled, quadruple
+     * speed, a receive high-water mark of four characters.
+     */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), 0x10100004);
+
+    g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
+    collect_rx_chars(qts, 0, sizeof(sent), got, status);
+
+    for (i = 0; i < sizeof(sent); i++) {
+        g_assert_cmphex(got[i], ==, sent[i]);
+        g_assert_cmphex(status[i] & RX_ERRORS, ==, 0);
+        g_assert_cmphex(status[i] & RX_MODEM_VALID, ==, RX_MODEM_VALID);
+    }
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, >=, 8);
+
+    /*
+     * The pass-through source stayed out of it: the 16550's own interrupt
+     * enables were never written, so its line never rose, and the bit that
+     * follows it stays clear. Delivery came through the engine alone.
+     */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_PASSTHROUGH),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * The receive timer: armed through bit 31 of the consume index, wound to its
+ * reload by a delivery, counting receive idleness at 16 kHz, and raising its
+ * source on expiry -- not on the delivery itself. Under the qtest
+ * accelerator the virtual clock moves only when the test steps it, so the
+ * gap between "character delivered" and "interrupt raised" is observable
+ * here in a way no boot can pin down: the source must still be clear after
+ * delivery, the count field must read the full reload, and stepping the
+ * clock past the deadline must raise the source and run the count out.
+ */
+static void test_the_receive_timer_raises_on_expiry(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'y';
+    uint8_t got, status;
+    uint32_t val;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    g_assert_cmphex(got, ==, sent);
+
+    /* Delivered, but the idle time has not passed: no interrupt yet. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+
+    /* The count field reads the ticks left; none have elapsed yet. */
+    val = qtest_readl(qts, sdma(0, SDMA_RX_TIMER));
+    g_assert_cmphex(val & 0xfff, ==, 0x140);
+    g_assert_cmphex((val >> 16) & 0xfff, ==, 0x140);
+
+    qtest_clock_step(qts, 0x140 * RX_TIMER_TICK_NS + RX_TIMER_TICK_NS);
+
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, 0);
+
+    /* Latched: acknowledging the source clears it. */
+    qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_RX_TIMER));
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * The receive high-water mark: a supply warning that fires once the
+ * characters waiting for software reach the mark the control register sets.
+ * It is separate from the timer source -- the timer stays unarmed here, so
+ * anything that appears came from the mark -- and the model counts waiting
+ * characters as published entries times four, so the mark is set two entries
+ * deep and crossed with the fifth character.
+ */
+static void test_crossing_the_high_water_mark_raises_its_source(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t first = 'a';
+    const uint8_t rest[4] = { 'b', 'c', 'd', 'e' };
+    uint8_t got[5], status[5];
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL),
+                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
+
+    /* One character is one entry: four waiting, below a mark of eight. */
+    g_assert_cmpint(write(sock, &first, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, got, status);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
+                    ==, 0);
+
+    /* Four more push the waiting count to the mark or past it. */
+    g_assert_cmpint(write(sock, rest, sizeof(rest)), ==, (int)sizeof(rest));
+    collect_rx_chars(qts, 0, 5, got, status);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
+                    ==, SOURCE(0, SRC_RX_HIGH_WATER));
+
+    /* The timer was never armed, so its source never joined in. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * A full receive ring is flow control, not data loss. The engine stops
+ * writing when the next entry it would fill is the one software has not
+ * consumed yet, raises the ring-full source, and holds what it cannot place
+ * -- in its packer and behind that in the port's FIFO, whose fullness is
+ * what finally stops the chardev. Nothing is overwritten and nothing is
+ * dropped: when software advances the consume index, every held character
+ * arrives in order. The consume index starts two entries in, which shrinks
+ * the ring's capacity to one entry and makes the full condition cheap to
+ * reach.
+ */
+static void test_a_full_ring_holds_characters(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent[12] = "flowcontrol!";
+    const uint8_t sentinel[8] = { 0xee, 0xee, 0xee, 0xee,
+                                  0xee, 0xee, 0xee, 0xee };
+    uint8_t landed[8];
+    uint8_t got[12], status[12];
+    unsigned int i;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 16);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    /* The entry the engine must refuse to fill, marked so a write shows. */
+    qtest_memwrite(qts, RING_RX(0) + 8, sentinel, sizeof(sentinel));
+
+    g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
+    wait_for_source(qts, SOURCE(0, SRC_RX_RING_FULL));
+
+    /* One entry fit; the next would collide with the consume index. */
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    qtest_memread(qts, RING_RX(0) + 8, landed, sizeof(landed));
+    g_assert_cmpint(memcmp(landed, sentinel, sizeof(sentinel)), ==, 0);
+
+    /*
+     * Software makes room, and everything held arrives in order. The room
+     * is granted in entries and how the characters group into entries is
+     * the host's chunking, worst case one character each -- eleven may
+     * still be in flight -- so the consume index moves fourteen entries
+     * ahead rather than the two a four-per-entry packing would need.
+     */
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 128);
+    collect_rx_chars(qts, 0, sizeof(sent), got, status);
+    for (i = 0; i < sizeof(sent); i++) {
+        g_assert_cmphex(got[i], ==, sent[i]);
+        g_assert_cmphex(status[i] & RX_ERRORS, ==, 0);
+    }
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * Pass-through mode still works with the engine present: with ring DMA off
+ * and the 16550's own receive interrupt enabled -- OpenBSD's arrangement --
+ * an arriving character stays in the port's FIFO for the byte-wide window,
+ * raises the pass-through source, and never touches the receive ring. The
+ * engine running on every port event must not steal characters a guest
+ * means to read itself.
+ */
+static void test_pass_through_receives_while_the_rings_stay_off(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'p';
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    qtest_writeb(qts, serial_port(0) + REG_IER, IER_RDI);
+
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+
+    g_test_timer_start();
+    while (!(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_DR)) {
+        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+        g_usleep(1000);
+    }
+
+    /* The level source follows the port, and the byte is the guest's. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_PASSTHROUGH),
+                    ==, SOURCE(0, SRC_PASSTHROUGH));
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_RBR), ==, sent);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_PASSTHROUGH),
+                    ==, 0);
+
+    /* The engine, disabled, took nothing. */
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1085,6 +1439,17 @@ int main(int argc, char **argv)
                         test_the_walk_wraps_at_the_end_of_the_ring);
     qtest_add_data_func("sn0/ioc3-serial/source-follows-the-enable-mask", NULL,
                         test_a_serial_dma_source_follows_the_enable_mask);
+    qtest_add_data_func("sn0/ioc3-serial/ring-only-guest-receives", NULL,
+                        test_a_ring_only_guest_receives_arriving_characters);
+    qtest_add_data_func("sn0/ioc3-serial/receive-timer-counts-and-raises",
+                        NULL,
+                        test_the_receive_timer_raises_on_expiry);
+    qtest_add_data_func("sn0/ioc3-serial/high-water-mark-raises", NULL,
+                        test_crossing_the_high_water_mark_raises_its_source);
+    qtest_add_data_func("sn0/ioc3-serial/full-ring-holds-characters", NULL,
+                        test_a_full_ring_holds_characters);
+    qtest_add_data_func("sn0/ioc3-serial/pass-through-still-receives", NULL,
+                        test_pass_through_receives_while_the_rings_stay_off);
 
     return g_test_run();
 }

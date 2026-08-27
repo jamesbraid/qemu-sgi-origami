@@ -24,6 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/misc/sgi-ioc3.h"
@@ -114,20 +115,19 @@ static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
     sgi_ioc3_update_irq(s);
 
     /*
-     * The port asserting is also the one moment this model can see that a
-     * character has arrived from outside, so it is where the engine gets to
-     * move it. That covers a guest whose own serial driver has the 16550's
-     * receive interrupt enabled; one that disables the 16550 entirely and
-     * receives through the rings alone would leave characters in the port's
-     * FIFO until something else reached the engine, and no guest on this
-     * machine's path does that -- the firmware's diagnostic runs both ports
-     * in loopback, where every character is delivered inside the write that
-     * sent it. An IRIX guest driving the rings is what would settle whether
-     * the gap is worth a poll of its own.
+     * The register file recomputes its line on every receive-path event,
+     * whatever the 16550's own interrupt enables say -- a character arriving
+     * from the chardev ends here with level 0 when every source is masked.
+     * That call is the engine's only sight of an arrival, so the engine runs
+     * on every level rather than on assertion alone: a guest that disables
+     * the 16550 entirely and receives through the rings alone -- which is
+     * exactly what IRIX 6.5.30's DMA-ring console does once it raises the
+     * line rate -- would otherwise leave every character it is waiting for
+     * in the port's FIFO, and the console is deaf for the whole install.
+     * With ring DMA off the run is a no-op and the FIFO keeps its
+     * characters for the guest's own byte-wide reads.
      */
-    if (level) {
-        sgi_ioc3_sdma_run(s, port);
-    }
+    sgi_ioc3_sdma_run(s, port);
 }
 
 /*
@@ -802,16 +802,11 @@ static bool sgi_ioc3_sdma_running(SGIIOC3State *s, unsigned int port)
 }
 
 /*
- * Take whatever the port's receiver is holding and pack it into the receive
- * ring, four characters to an entry, with each character's own status byte
- * beside it.
- */
-/*
  * Put the packer's contents into the receive ring as one entry and start it
  * again. Slots the engine did not fill carry neither validity flag, so an
  * entry written short says so rather than leaving stale characters behind it.
  */
-static void sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
+static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
                                uint32_t *produce, uint32_t *consume,
                                uint32_t mask)
 {
@@ -820,14 +815,16 @@ static void sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
 
     /*
      * The ring is full when the next entry the engine would fill is the one
-     * software has not consumed yet. Characters are dropped rather than
-     * written over an entry a driver has not read, and the source says so.
+     * software has not consumed yet. The entry is refused rather than
+     * written over one a driver has not read, and the source says so; the
+     * characters stay where they are -- in the packer, and behind it the
+     * port's FIFO, whose fullness is what finally stops the chardev feeding
+     * more -- until software advances the consume index and the engine runs
+     * again.
      */
     if (next == (*consume & mask)) {
-        s->sdma_packed[port] = 0;
-        memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
         sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_RING_FULL);
-        return;
+        return false;
     }
 
     dma_memory_write(s->dma_as, ring + (*produce & mask),
@@ -837,18 +834,75 @@ static void sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
     s->sdma_packed[port] = 0;
     memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
     s->sdma_delivered[port] = true;
+    return true;
+}
+
+/*
+ * Start, or push out, the port's receive timer: the programmed reload in
+ * ticks of the 16 kHz clock, counted from now. It is called on each burst
+ * that delivers characters, so the deadline is always reload ticks after the
+ * latest delivery -- the timer expires after that much receive idleness,
+ * which is the datasheet's account of the reload. A reload of zero expires
+ * at once; the datasheet offers no other reading of it.
+ */
+static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port)
+{
+    uint32_t reload = *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_TIMER)
+                      & SGI_IOC3_SDMA_TIMER_RELOAD;
+
+    timer_mod(s->sdma_rx_timer[port],
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              (int64_t)reload * SGI_IOC3_SDMA_TIMER_TICK_NS);
+}
+
+/*
+ * The receive timer ran out: the line has been idle for the guest's chosen
+ * reload since the last delivery. The interrupt only means something while
+ * characters are waiting -- a ring the guest has already drained expires
+ * into silence rather than prompting a driver with nothing to read. The
+ * timer is not restarted here; the next delivery, or the guest re-arming
+ * through the consume index, is what winds it again.
+ */
+static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
+{
+    SGIIOC3SerialAlias *handle = opaque;
+    SGIIOC3State *s = handle->chip;
+    unsigned int port = handle->port;
+    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_PRODUCE);
+    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
+                                               SGI_IOC3_SDMA_RX_CONSUME);
+    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+
+    /*
+     * A partial entry still in the packer here means the ring was full when
+     * it last tried to go to memory; expiry is another moment software may
+     * have made room by. The delivery notice for it is the interrupt raised
+     * below, so the end-of-burst flag it sets is not left for a later flush
+     * to answer a second time.
+     */
+    if (s->sdma_packed[port] &&
+        sgi_ioc3_sdma_post(s, port, produce, consume, mask)) {
+        s->sdma_delivered[port] = false;
+    }
+
+    if ((*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) &&
+        ((*produce ^ *consume) & mask)) {
+        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_TIMER);
+    }
 }
 
 /*
  * The end of a burst. A real engine keeps a short group in its packer until
  * either a fourth character arrives or the receive timer runs out of idle
- * time, and this model has no clock of its own to run that timer against --
- * so what stands in for the timer expiring is the moment the engine has
+ * time; this model posts the short group now, at the moment the engine has
  * nothing left to do, which is the same event the timer exists to detect.
- * That substitution is this model's, not the hardware's: a guest that armed
- * the timer expecting a short group to sit until it expired gets it
- * immediately instead. Nothing on this machine's path can tell the two apart,
- * and the project's ioc3-serial-dma notebook names what would.
+ * That substitution is this model's, not the hardware's: a guest polling the
+ * produce index would see a short entry earlier than real silicon would show
+ * one. The interrupt is not hurried the same way -- delivery winds the
+ * port's receive timer below, and the timer's own expiry is what raises the
+ * source -- so a guest prompted by interrupts, which is every driver
+ * observed, sees the timing the datasheet describes.
  *
  * Then the two sources a delivery prompts a driver with. The receive timer is
  * armed through bit 31 of the consume index; the threshold is a different
@@ -879,7 +933,7 @@ static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
     s->sdma_delivered[port] = false;
 
     if (*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) {
-        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_TIMER);
+        sgi_ioc3_sdma_rx_timer_start(s, port);
     }
 
     waiting = ((*produce - *consume) & mask) / SGI_IOC3_SDMA_ENTRY_SIZE *
@@ -900,10 +954,25 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
     SerialState *serial = &s->serial[port];
 
     while (sgi_ioc3_sdma_running(s, port)) {
-        uint8_t lsr = serial_io_ops.read(serial, UART_LSR, 1);
+        uint8_t lsr;
         uint8_t msr;
         uint8_t status;
 
+        /*
+         * A full packer goes to memory before another character can be
+         * taken. A refusal means the receive ring is full, and the drain
+         * stops here rather than dropping anything: the characters keep,
+         * first in the packer and behind it in the port's sixteen-byte
+         * FIFO, whose fullness is what stops the chardev feeding more.
+         * Software advancing the consume index runs the engine again and
+         * the drain picks up where it stopped.
+         */
+        if (s->sdma_packed[port] == SGI_IOC3_SDMA_ENTRY_CHARS &&
+            !sgi_ioc3_sdma_post(s, port, produce, consume, mask)) {
+            break;
+        }
+
+        lsr = serial_io_ops.read(serial, UART_LSR, 1);
         if (!(lsr & UART_LSR_DR)) {
             break;
         }
@@ -949,15 +1018,14 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
 
         /*
          * An entry goes to memory once four characters have been packed into
-         * it, and not before. That is what the packer is: the produce index
-         * reports how many bytes it is holding precisely because a driver
-         * would otherwise see an entry per character, and the count is the
-         * difference between an engine that packs and one that flushes as it
-         * goes.
+         * it, and not before -- the post at the top of the next pass, or the
+         * end-of-burst flush, is what writes it. That is what the packer is:
+         * the produce index reports how many bytes it is holding precisely
+         * because a driver would otherwise see an entry per character, and
+         * the count is the difference between an engine that packs and one
+         * that flushes as it goes.
          */
-        if (++s->sdma_packed[port] == SGI_IOC3_SDMA_ENTRY_CHARS) {
-            sgi_ioc3_sdma_post(s, port, produce, consume, mask);
-        }
+        ++s->sdma_packed[port];
     }
 }
 
@@ -1097,6 +1165,9 @@ static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
     s->sdma_packed[port] = 0;
     memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
     s->sdma_delivered[port] = false;
+
+    /* Zeroing the consume index disarmed the receive timer, so it stops. */
+    timer_del(s->sdma_rx_timer[port]);
 }
 
 /*
@@ -1202,6 +1273,22 @@ static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
         val |= (uint32_t)s->sdma_packed[port] << SGI_IOC3_SDMA_HELD_SHIFT;
     }
 
+    /*
+     * The receive timer's count field reads back the ticks left before it
+     * expires while it is running. What an idle timer's count reads is not
+     * something any source states; zero is this model's choice, and it is
+     * also what the register held before the timer existed here at all.
+     */
+    if (offset == SGI_IOC3_SDMA_RX_TIMER &&
+        timer_pending(s->sdma_rx_timer[port])) {
+        int64_t left = timer_expire_time_ns(s->sdma_rx_timer[port]) -
+                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        uint32_t ticks = MIN(MAX(left, 0) / SGI_IOC3_SDMA_TIMER_TICK_NS,
+                             SGI_IOC3_SDMA_TIMER_RELOAD);
+
+        val |= ticks << SGI_IOC3_SDMA_TIMER_COUNT_SHIFT;
+    }
+
     return val;
 }
 
@@ -1224,6 +1311,10 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         if (val & SGI_IOC3_SDMA_RESET) {
             sgi_ioc3_sdma_reset_port(s, port);
         }
+        /* A disabled engine delivers nothing for the timer to announce. */
+        if (!(val & SGI_IOC3_SDMA_ENABLE)) {
+            timer_del(s->sdma_rx_timer[port]);
+        }
         /*
          * Enabling is a start, not only a setting. The diagnostic hands the
          * transmit ring over before it programs the ring base and before it
@@ -1238,11 +1329,30 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         sgi_ioc3_sdma_run(s, port);
         return;
 
-    case SGI_IOC3_SDMA_RX_CONSUME:
-        *sgi_ioc3_sdma_port_reg(s, port, offset) =
-            val & (mask | SGI_IOC3_SDMA_ARM_RX_TIMER);
+    case SGI_IOC3_SDMA_RX_CONSUME: {
+        uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port, offset);
+        uint32_t *produce;
+
+        *consume = val & (mask | SGI_IOC3_SDMA_ARM_RX_TIMER);
         sgi_ioc3_sdma_run(s, port);
+
+        /*
+         * Bit 31 is the receive timer's arming, so this write is also the
+         * timer's own register write. Disarming stops it. Re-arming with
+         * characters still waiting winds it again, so a driver that
+         * consumed only part of the ring is prompted once more for the
+         * rest -- a choice rather than a finding: no source says what the
+         * hardware does with a re-arm over a non-empty ring, and prompting
+         * again is the reading a driver can only be helped by.
+         */
+        produce = sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_PRODUCE);
+        if (!(*consume & SGI_IOC3_SDMA_ARM_RX_TIMER)) {
+            timer_del(s->sdma_rx_timer[port]);
+        } else if ((*produce ^ *consume) & mask) {
+            sgi_ioc3_sdma_rx_timer_start(s, port);
+        }
         return;
+    }
 
     case SGI_IOC3_SDMA_RX_TIMER:
         *sgi_ioc3_sdma_port_reg(s, port, offset) =
@@ -1588,6 +1698,16 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                               SGI_IOC3_SDMA_ALIAS_SIZE);
         memory_region_add_subregion(&s->bar, sgi_ioc3_sdma_alias_base[i],
                                     &s->sdma_alias[i]);
+
+        /*
+         * The port's receive timer, handed the same chip-and-port pair the
+         * alias page's handlers already travel with. It counts guest time:
+         * the reload is a length of receive idleness on the guest's line,
+         * which stops with the machine and migrates with it.
+         */
+        s->sdma_rx_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                           sgi_ioc3_sdma_rx_timer_expired,
+                                           &s->sdma_alias_port[i]);
     }
 
     /*
@@ -1635,6 +1755,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
 {
     SGIIOC3State *s = SGI_IOC3(obj);
+    unsigned int i;
 
     /*
      * Nothing enabled and nothing pending. The enable mask resetting to zero is
@@ -1654,9 +1775,16 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
 
     /*
      * The serial DMA block resets to zero throughout, indices included, which
-     * is what puts both engines back at the start of their rings.
+     * is what puts both engines back at the start of their rings -- and a
+     * zeroed consume index is a disarmed receive timer, so both timers stop.
      */
     memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
+    for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
+        timer_del(s->sdma_rx_timer[i]);
+        s->sdma_packed[i] = 0;
+        memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
+        s->sdma_delivered[i] = false;
+    }
 
     /* Both PS/2 ports come up with their lines released and nothing sent. */
     s->kbc_control = 0;
@@ -1730,8 +1858,8 @@ static void sgi_ioc3_init(Object *obj)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 11,
-    .minimum_version_id = 11,
+    .version_id = 12,
+    .minimum_version_id = 12,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
@@ -1748,6 +1876,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                                 SGI_IOC3_SDMA_ENTRY_SIZE, 11),
         VMSTATE_UINT8_ARRAY_V(sdma_packed, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS, 11),
+        VMSTATE_TIMER_PTR_ARRAY(sdma_rx_timer, SGIIOC3State,
+                                SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32(kbc_control, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
         VMSTATE_END_OF_LIST()
