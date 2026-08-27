@@ -478,6 +478,8 @@
 #define PI_ERR_MASK             0x01ffffffU
 #define PI_ERR_SPOOL_MASK       0xfffffff8ULL
 #define PI_ERR_SPOOL_SIZE_MASK  0xf
+#define PI_ERR_STATUS0_VALID    (1ULL << 63)
+#define PI_ERR_STATUS0_ADDRESS  (0x480041ULL << 25)
 
 #define HUB_PI_CPU_ENABLE_A     0x000050
 #define HUB_PI_CPU_ENABLE_B     0x000058
@@ -1731,8 +1733,22 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
     }
     if (addr >= HUB_PI_ERR_STATUS_BASE && addr <= HUB_PI_ERR_STATUS_LAST &&
         (addr - HUB_PI_ERR_STATUS_BASE) % HUB_PI_ERR_STATUS_STRIDE == 0) {
-        /* No reviewed event supplies a nonzero report on this model. */
-        return 0;
+        switch (addr) {
+        case HUB_PI_ERR_STATUS_BASE:
+            return s->pi_err_status0[0];
+        case HUB_PI_ERR_STATUS_BASE + 0x08:
+            value = s->pi_err_status0[0];
+            s->pi_err_status0[0] = 0;
+            return value;
+        case HUB_PI_ERR_STATUS_BASE + 0x20:
+            return s->pi_err_status0[1];
+        case HUB_PI_ERR_STATUS_BASE + 0x28:
+            value = s->pi_err_status0[1];
+            s->pi_err_status0[1] = 0;
+            return value;
+        default:
+            return 0;
+        }
     }
 
     switch (addr) {
@@ -2436,6 +2452,16 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
     case HUB_PI_ERR_SPOOL_SIZE:
         s->pi_err_spool_size = val & PI_ERR_SPOOL_SIZE_MASK;
         break;
+    case HUB_PI_ERR_STATUS_BASE + 0x08:
+        if (size == 8 && val == 0) {
+            s->pi_err_status0[0] = 0;
+        }
+        break;
+    case HUB_PI_ERR_STATUS_BASE + 0x28:
+        if (size == 8 && val == 0) {
+            s->pi_err_status0[1] = 0;
+        }
+        break;
     case HUB_PI_CPU_ENABLE_A:
         sgi_hub_set_cpu_enable(s, 0, val);
         break;
@@ -2718,6 +2744,19 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                              before, after);
 }
 
+void sgi_hub_latch_prom_pi_error(SGIHubState *s)
+{
+    unsigned int slice;
+
+    if (!current_cpu || current_cpu->cpu_index < s->cpu_base ||
+        current_cpu->cpu_index >= s->cpu_base + s->cpus) {
+        return;
+    }
+    slice = current_cpu->cpu_index - s->cpu_base;
+    s->pi_err_status0[slice] = PI_ERR_STATUS0_VALID |
+                               PI_ERR_STATUS0_ADDRESS;
+}
+
 static const MemoryRegionOps sgi_hub_ops = {
     .read = sgi_hub_read,
     .write = sgi_hub_write,
@@ -2761,6 +2800,7 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
     memset(s->pi_err_mask, 0, sizeof(s->pi_err_mask));
     s->pi_err_spool_size = 0;
+    memset(s->pi_err_status0, 0, sizeof(s->pi_err_status0));
     s->ni_status = NI_STATUS_RESET |
                    (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
@@ -3016,7 +3056,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 18,
+    .version_id = 19,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3061,6 +3101,8 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT32_ARRAY_V(pi_err_mask, SGIHubState,
                               SGI_HUB_PROCESSORS, 18),
         VMSTATE_UINT8_V(pi_err_spool_size, SGIHubState, 18),
+        VMSTATE_UINT64_ARRAY_V(pi_err_status0, SGIHubState,
+                              SGI_HUB_PROCESSORS, 19),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         /*
          * The block transfer engines. The registers are the whole of an

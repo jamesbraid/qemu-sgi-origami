@@ -21,6 +21,7 @@ slow_qtests = {
   # headroom and they time out under CI load. Give them the 120s slow budget.
   'sn0-ioc3-test': 120,
   'sn0-hub-test': 120,
+  'sn0-pi-error-test': 120,
   'sn0-bridge-test': 120,
   # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
   # deadline was separately widened to 120s to tolerate CI scheduling delay (see
@@ -208,6 +209,7 @@ qtests_mips64 = \
                                                    'sn0-ioc3-serial-test',
                                                    'sn0-qlogic-isp-test',
                                                    'sn0-hub-test',
+                                                   'sn0-pi-error-test',
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
                                                    'sn0-widget0-test',

@@ -189,23 +189,18 @@ static void test_new_widgets_are_one_bridge(const void *data)
 }
 
 /*
- * A guest fragment that issues the exact storm access — an eight-byte load of
- * the device-1 window at offset 0x400208 — through two net-new widgets, 2 and
- * 0xa, and writes a completion marker to RAM only if both loads returned. If
- * the decode does not reach the widget, or the window refuses the doubleword,
+ * A guest fragment that issues an eight-byte load of the device-1 window at
+ * offset 0x400208 through net-new widget 0xa, and writes a completion marker
+ * to RAM only if the load returned. If the decode does not reach the widget,
+ * or the window refuses the doubleword,
  * the load raises a bus error, the marker never lands, and the test times out.
  * The addresses are built in registers because they do not fit an immediate:
- * 0x9200000002400208 and 0x920000000a400208 are uncached (0x92) widget windows.
+ * 0x920000000a400208 is an uncached (0x92) widget window. Widget 2 at this
+ * offset is the PROM's deliberate PI error probe and is tested separately.
  */
 static char *write_doubleword_load_guest(void)
 {
     static const uint32_t code[] = {
-        0x3c089200,             /* lui    t0, 0x9200                        */
-        0x0008403c,             /* dsll32 t0, t0, 0   -> 0x9200_0000_...    */
-        0x3c090240,             /* lui    t1, 0x0240                        */
-        0x35290208,             /* ori    t1, t1, 0x0208 -> 0x0240_0208     */
-        0x01094025,             /* or     t0, t0, t1  -> widget 2 + 0x400208 */
-        0xdd0a0000,             /* ld     t2, 0(t0)   -- 8-byte load, w2     */
         0x3c089200,             /* lui    t0, 0x9200                        */
         0x0008403c,             /* dsll32 t0, t0, 0                         */
         0x3c090a40,             /* lui    t1, 0x0a40                        */
@@ -218,7 +213,7 @@ static char *write_doubleword_load_guest(void)
         0x01094025,             /* or     t0, t0, t1  -> phys 0x30000        */
         0x3c095a17,             /* lui    t1, 0x5a17                        */
         0x3529c0de,             /* ori    t1, t1, 0xc0de -> 0x5a17c0de       */
-        0xad090000,             /* sw     t1, 0(t0)   -- both loads returned */
+        0xad090000,             /* sw     t1, 0(t0)   -- load returned       */
         0x1000ffff,             /* b      .                                 */
         0x00000000,             /* nop                                      */
     };
@@ -267,32 +262,31 @@ static char *write_doubleword_load_guest(void)
     return path;
 }
 
-static void test_the_storm_doubleword_load_completes(const void *data)
+static void test_other_widget_doubleword_load_completes(const void *data)
 {
     g_autofree char *kernel = write_doubleword_load_guest();
     QTestState *qts;
     uint32_t marker = 0;
 
     /*
-     * The load-bearing check, and it must run a real instruction. The storm is
-     * an eight-byte load, and its two dimensions were separate defects: the
-     * decode has to reach widget 2 (the widen) and the device window has to
-     * accept a doubleword (valid.max_access_size = 8). A qtest wide read cannot
-     * test the second — qtest_readq goes through address_space_read, which
+     * This width check must run a real instruction. The decode has to reach
+     * widget 0xa and the device window has to accept a doubleword. A qtest
+     * wide read cannot test the second — qtest_readq goes through
+     * address_space_read, which
      * chunks a wide read into four-byte accesses and so passes even at
      * valid.max = 4, the same chunking sn0-widget0-test.c documents. Only a
      * single ld issues the one eight-byte dispatch that faults when either
      * dimension is missing, so the load has to come from an executing
-     * processor. The marker lands only if the doubleword loads at widgets 2 and
-     * 0xa both returned; a bus error on either leaves it absent and this times
-     * out. The 32-bit identity reads above are breadth, not this — they are the
+     * processor. The marker lands only if the doubleword load at widget 0xa
+     * returned; a bus error leaves it absent and this times out. The 32-bit
+     * identity reads above are breadth, not this — they are the
      * weaker property the first draft of this test mistook for the check.
      *
      * Both dimensions were watched go red. Removing the access-width fix (the
      * device windows back at a four-byte cap) makes this fragment time out —
      * the doubleword bus-errors and the marker never lands. Removing the widen
-     * (widgets 2 and 0xa unmapped) makes the identity check above fail first,
-     * at widget 2 reading zero; either way the storm load has no device to
+     * (widget 0xa unmapped) makes the identity check above fail first,
+     * at widget 2 reading zero; either way the wide load has no device to
      * reach. Neither fix alone leaves this green.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
@@ -388,8 +382,8 @@ int main(int argc, char **argv)
                         NULL, test_bridge_answers_at_every_widget);
     qtest_add_data_func("sn0/widget-decode/new-widgets-are-one-bridge",
                         NULL, test_new_widgets_are_one_bridge);
-    qtest_add_data_func("sn0/widget-decode/storm-doubleword-load-completes",
-                        NULL, test_the_storm_doubleword_load_completes);
+    qtest_add_data_func("sn0/widget-decode/other-widget-doubleword-completes",
+                        NULL, test_other_widget_doubleword_load_completes);
     qtest_add_data_func("sn0/widget-decode/doubleword-split-order",
                         NULL, test_doubleword_split_order);
     qtest_add_data_func("sn0/widget-decode/widget-1-stays-the-hub",

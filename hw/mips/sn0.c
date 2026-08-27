@@ -191,6 +191,8 @@ typedef struct SN0NodeState {
     SN0BackdoorState backdoor_dir_state;
 
     MemoryRegion xtalk;
+    MemoryRegion prom_pi_probe;
+    SGIBridgeState *prom_pi_probe_bridge;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
     MemoryRegion mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
     MemoryRegion hub_local_mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
@@ -3345,6 +3347,51 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node,
         &node->hub_regs_node_view);
 }
 
+#define SN0_PROM_PI_PROBE_WIDGET 2
+#define SN0_PROM_PI_PROBE_OFFSET 0x400208
+#define SN0_PROM_PI_PROBE_WINDOW_OFFSET 0x208
+
+/* Preserve the CPU's byte order across the nested Bridge dispatch. */
+#define SN0_PROM_PI_PROBE_MEMOP(size) (size_memop(size) | MO_BE)
+
+static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    SN0NodeState *node = opaque;
+
+    if (addr == 0 && size == 8) {
+        *data = 0;
+        sgi_hub_latch_prom_pi_error(&node->hub);
+        return MEMTX_ERROR;
+    }
+    return memory_region_dispatch_read(
+        &node->prom_pi_probe_bridge->device_window_mem[1],
+        SN0_PROM_PI_PROBE_WINDOW_OFFSET + addr, data,
+        SN0_PROM_PI_PROBE_MEMOP(size), attrs);
+}
+
+static MemTxResult sn0_prom_pi_probe_write(void *opaque, hwaddr addr,
+                                           uint64_t data, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    SN0NodeState *node = opaque;
+    return memory_region_dispatch_write(
+        &node->prom_pi_probe_bridge->device_window_mem[1],
+        SN0_PROM_PI_PROBE_WINDOW_OFFSET + addr, data,
+        SN0_PROM_PI_PROBE_MEMOP(size), attrs);
+}
+
+static const MemoryRegionOps sn0_prom_pi_probe_ops = {
+    .read_with_attrs = sn0_prom_pi_probe_read,
+    .write_with_attrs = sn0_prom_pi_probe_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
 static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 {
     PCIDevice *ioc3;
@@ -3469,6 +3516,19 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
                                         SN0_XTALK_BASE(widget),
                                         &s->widget_alias[node_index][widget]);
         }
+
+        memory_region_init_io(&s->nodes[node_index].prom_pi_probe,
+                              OBJECT(&s->nodes[node_index]),
+                              &sn0_prom_pi_probe_ops,
+                              &s->nodes[node_index],
+                              "sn0.prom-pi-probe", 8);
+        s->nodes[node_index].prom_pi_probe_bridge =
+            &s->io_bridge[node_index];
+        memory_region_add_subregion_overlap(
+            &s->nodes[node_index].xtalk,
+            SN0_XTALK_BASE(SN0_PROM_PI_PROBE_WIDGET) +
+            SN0_PROM_PI_PROBE_OFFSET,
+            &s->nodes[node_index].prom_pi_probe, 1);
 
         /*
          * The two SCSI adapters the base I/O board carries, at the first two
