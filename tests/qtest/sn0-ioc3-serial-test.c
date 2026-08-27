@@ -147,6 +147,7 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 
 /* The port control register's fields. */
 #define CTRL_HIGH_WATER(n) ((n) & 0x1ffu)
+#define CTRL_RX_DRAIN   (1u << 27)
 #define CTRL_DMA_ENABLE (1u << 28)
 #define CTRL_PAUSE      (1u << 29)
 #define CTRL_PAUSED     (1u << 30)
@@ -1390,6 +1391,58 @@ static void test_pass_through_receives_while_the_rings_stay_off(
     qtest_quit(qts);
 }
 
+/*
+ * The receive drain, control bit 27, is a command rather than a setting: it
+ * moves whatever the port is holding into the receive ring, and it reads
+ * back clear once that has happened. IRIX's DMA-ring console writes enable
+ * plus drain while reconfiguring the port and then polls the control
+ * register until the drain bit clears -- against a model that stored the
+ * bit it burned a million polls, tore the console down and retried forever,
+ * and the boot never returned. The read-back is the load-bearing half of
+ * the contract; the delivery half is that a character already waiting in
+ * the port when the drain is written ends up in the ring.
+ */
+static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'd';
+    uint8_t got, status;
+    uint32_t control;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+
+    /* A character arrives while ring DMA is still off: it waits in the port. */
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    g_test_timer_start();
+    while (!(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_DR)) {
+        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==, 0);
+
+    /* The reconfiguration write: enable plus drain, in one store. */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL),
+                 CTRL_DMA_ENABLE | CTRL_RX_DRAIN);
+    control = qtest_readl(qts, sdma(0, SDMA_CONTROL));
+    g_assert_cmphex(control & CTRL_RX_DRAIN, ==, 0);
+    g_assert_cmphex(control & CTRL_DMA_ENABLE, ==, CTRL_DMA_ENABLE);
+
+    /* And the waiting character was drained into the ring. */
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    g_assert_cmphex(got, ==, sent);
+    g_assert_cmphex(status & RX_DATA_VALID, ==, RX_DATA_VALID);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1450,6 +1503,8 @@ int main(int argc, char **argv)
                         test_a_full_ring_holds_characters);
     qtest_add_data_func("sn0/ioc3-serial/pass-through-still-receives", NULL,
                         test_pass_through_receives_while_the_rings_stay_off);
+    qtest_add_data_func("sn0/ioc3-serial/receive-drain-reads-back-clear", NULL,
+                        test_the_receive_drain_acts_and_reads_back_clear);
 
     return g_test_run();
 }

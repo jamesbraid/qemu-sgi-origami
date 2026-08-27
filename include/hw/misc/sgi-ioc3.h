@@ -278,12 +278,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 #define SGI_IOC3_SDMA_RESET         (1u << 31)
 
 /*
- * Three of the control register's bits are not settings the guest stores. Two
+ * Four of the control register's bits are not settings the guest stores. Two
  * are hardware's own read-backs -- the transmit timer running, and the pause
- * having taken effect -- and the third is a command that acts and is gone.
+ * having taken effect -- and two are commands that act and are gone: the
+ * channel reset, and the receive drain, which IRIX's DMA-ring console polls
+ * to read back clear once the drain has completed.
  */
 #define SGI_IOC3_SDMA_CTRL_UNSTORED (SGI_IOC3_SDMA_TX_TIMER_RUN | \
                                      SGI_IOC3_SDMA_PAUSED | \
+                                     SGI_IOC3_SDMA_RX_TO_MEMORY | \
                                      SGI_IOC3_SDMA_RESET)
 
 /*

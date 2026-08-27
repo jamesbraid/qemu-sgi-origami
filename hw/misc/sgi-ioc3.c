@@ -1316,6 +1316,18 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
             timer_del(s->sdma_rx_timer[port]);
         }
         /*
+         * The receive drain, bit 27, is a command like the reset above
+         * rather than a setting: the run below moves whatever the port and
+         * the packer hold into the receive ring, which is the drain, and
+         * the bit is not stored, so it reads back clear once that has
+         * happened -- here, immediately. IRIX's DMA-ring console writes it
+         * while reconfiguring the port and polls the register until it
+         * clears; against a model that stored the bit it burned a million
+         * reads and then tore the port down and retried, forever. A drain
+         * a full ring prevents still reads back clear -- nothing states
+         * what the hardware does there, and a bit stuck set is the reading
+         * no driver survives.
+         *
          * Enabling is a start, not only a setting. The diagnostic hands the
          * transmit ring over before it programs the ring base and before it
          * enables the engine at all, so an engine that walked only when
