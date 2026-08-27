@@ -301,6 +301,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 /* The receive timer: a twelve-bit reload, and the count read back above it. */
 #define SGI_IOC3_SDMA_TIMER_RELOAD  0xfffu
 #define SGI_IOC3_SDMA_TIMER_COUNT   0x0fff0000u
+#define SGI_IOC3_SDMA_TIMER_COUNT_SHIFT 16
+
+/* One tick of the receive timer's 16 kHz clock, in nanoseconds. */
+#define SGI_IOC3_SDMA_TIMER_TICK_NS 62500
 
 /*
  * A ring entry is eight bytes carrying four characters: four data bytes, then
@@ -457,7 +461,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 
 /*
  * What one alias page's handlers are given: the chip, and which port's seven
- * registers that page exposes.
+ * registers that page exposes. The receive timers' callbacks are handed the
+ * same pair for the same reason -- neither can tell which port reached it
+ * from anything but its opaque.
  */
 typedef struct SGIIOC3SerialAlias {
     SGIIOC3State *chip;
@@ -535,11 +541,10 @@ struct SGIIOC3State {
     SGIIOC3EthState eth;
 
     /*
-     * The serial DMA block, held the same way and for the same reason: nearly
-     * every register is storage, and the few that are not are the ones a
-     * driver cannot place because hardware owns them. No ring is walked and no
-     * character moves through here -- the ports themselves are driven through
-     * their 16550 windows, which is where both guests actually send bytes.
+     * The serial DMA block's register file. Nearly every register is
+     * storage, and the few that are not are the ones a driver cannot place
+     * because hardware owns them: the engines advance the two hardware-owned
+     * indices in here as they walk their rings.
      */
     MemoryRegion sdma;
     uint32_t sdma_reg[SGI_IOC3_SDMA_REGS];
@@ -584,6 +589,15 @@ struct SGIIOC3State {
      * idle port from one that has just filled the ring.
      */
     bool sdma_delivered[SGI_IOC3_SERIAL_PORTS];
+
+    /*
+     * Each port's receive timer: armed through bit 31 of the receive consume
+     * index, counting receive idleness at 16 kHz from the reload the guest
+     * programmed, and raising the receive-timer source on expiry while
+     * characters are waiting. The deadline lives in the timer itself and
+     * migrates with it; the count a guest reads back is derived from it.
+     */
+    QEMUTimer *sdma_rx_timer[SGI_IOC3_SERIAL_PORTS];
 
     /*
      * Where the serial engines read and write their rings. It is the chip's

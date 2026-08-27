@@ -157,6 +157,35 @@
                                   IOC3_WINDOW_OFFSET + IOC3_SERIAL_A + \
                                   IOC3_SCRATCH)
 
+/*
+ * The IOC3's serial DMA engine on node 0: the SuperIO interrupt status
+ * register, the shared ring base, port A's engine registers, and the
+ * byte-wide 16550 registers the setup drives -- this file's own copy, like
+ * the rest of its constants. The ring block sits in guest RAM; with 4 KB
+ * rings the port A receive ring is the block's second page.
+ */
+#define IOC3_REG(offset)         (BRIDGE_BASE_FOR_NODE(0) + \
+                                  IOC3_WINDOW_OFFSET + (offset))
+#define IOC3_INT_STATUS          IOC3_REG(0x01c)
+#define IOC3_SDMA_RING_HI        IOC3_REG(0x0b0)
+#define IOC3_SDMA_RING_LO        IOC3_REG(0x0b4)
+#define IOC3_SDMA_A_CONTROL      IOC3_REG(0x0b8)
+#define IOC3_SDMA_A_TX_PRODUCE   IOC3_REG(0x0bc)
+#define IOC3_SDMA_A_RX_PRODUCE   IOC3_REG(0x0c4)
+#define IOC3_SDMA_A_RX_CONSUME   IOC3_REG(0x0c8)
+#define IOC3_SDMA_A_RX_TIMER     IOC3_REG(0x0cc)
+#define IOC3_SERIAL_A_FCR        IOC3_REG(IOC3_SERIAL_A + 2)
+#define IOC3_SERIAL_A_LCR        IOC3_REG(IOC3_SERIAL_A + 3)
+#define IOC3_SERIAL_A_MCR        IOC3_REG(IOC3_SERIAL_A + 4)
+#define IOC3_SRC_A_RX_TIMER      (1u << 3)
+#define IOC3_SDMA_ENABLE         (1u << 28)
+#define IOC3_CONSUME_ARM_TIMER   (1u << 31)
+#define IOC3_RING_4K             (1u << 0)
+#define IOC3_RING_RAM            0x00100000u
+#define IOC3_RX_RING_RAM         (IOC3_RING_RAM + 0x1000)
+#define IOC3_RX_TIMER_TICK_NS    62500LL
+#define PCI_COMMAND_MASTER       0x0004
+
 #define DUAL_CHASSIS_TOPOLOGY \
     "-m 128M " \
     "-object memory-backend-ram,id=ram0,size=64M " \
@@ -289,6 +318,89 @@ static void test_dual_base_io_survives_migration(const void *data)
 
     g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(0)), ==, 0x5a);
     g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(1)), ==, 0xa5);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+/*
+ * The serial DMA receive path's live state: a ring the engine has produced
+ * into, and a receive timer wound and counting. The indices and the ring's
+ * contents migrate as plain fields and guest RAM, but the timer's deadline
+ * lives in a QEMUTimer -- state that only crosses if the timer is in the
+ * migration stream -- and a wound timer lost in transit is an interrupt
+ * that never fires: the guest's console driver waits forever for a prompt
+ * about characters already sitting in its ring. So the far side must show
+ * the same count still pending, and stepping its clock past the deadline
+ * must raise the receive-timer source there.
+ */
+static void test_a_wound_receive_timer_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    static const uint8_t entry[8] = {
+        'm', 'i', 'g', 'r', 0x40, 0x40, 0x40, 0x40,
+    };
+    uint8_t landed[8];
+    unsigned int i;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_WITH_BRIDGE);
+    attach_node_ioc3(from, 0);
+    /* Ring DMA is bus-mastering, which the register tests never need. */
+    qtest_writel(from, CFG0_FOR_NODE(0, IOC3_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+
+    /*
+     * Eight data bits, the FIFO on, and loopback, so the entry the transmit
+     * engine sends arrives at the same port's receiver and lands in the
+     * receive ring -- a delivery with no chardev in it. The receive timer is
+     * armed and a reload programmed, so that delivery winds it.
+     */
+    qtest_writeb(from, IOC3_SERIAL_A_LCR, 0x03);
+    qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
+    qtest_writeb(from, IOC3_SERIAL_A_MCR, 0x13);
+    qtest_writel(from, IOC3_SDMA_RING_HI, 0);
+    qtest_writel(from, IOC3_SDMA_RING_LO, IOC3_RING_RAM | IOC3_RING_4K);
+    qtest_writel(from, IOC3_SDMA_A_RX_TIMER, 0x123);
+    qtest_writel(from, IOC3_SDMA_A_RX_CONSUME, IOC3_CONSUME_ARM_TIMER);
+    qtest_writel(from, IOC3_SDMA_A_CONTROL, IOC3_SDMA_ENABLE);
+    qtest_memwrite(from, IOC3_RING_RAM, entry, sizeof(entry));
+    qtest_writel(from, IOC3_SDMA_A_TX_PRODUCE, 8);
+
+    /* Delivered and wound, and the idle time has not passed yet. */
+    g_assert_cmphex(qtest_readl(from, IOC3_SDMA_A_RX_PRODUCE) & 0xff8, ==, 8);
+    g_assert_cmphex((qtest_readl(from, IOC3_SDMA_A_RX_TIMER) >> 16) & 0xfff,
+                    ==, 0x123);
+    g_assert_cmphex(qtest_readl(from, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
+                    ==, 0);
+
+    dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    /* The ring, the index, and the still-counting timer all crossed. */
+    qtest_memread(to, IOC3_RX_RING_RAM, landed, sizeof(landed));
+    for (i = 0; i < 4; i++) {
+        g_assert_cmphex(landed[i], ==, entry[i]);
+        g_assert_cmphex(landed[4 + i] & 0x80, ==, 0x80);
+    }
+    g_assert_cmphex(qtest_readl(to, IOC3_SDMA_A_RX_PRODUCE) & 0xff8, ==, 8);
+    g_assert_cmphex((qtest_readl(to, IOC3_SDMA_A_RX_TIMER) >> 16) & 0xfff,
+                    ==, 0x123);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
+                    ==, 0);
+
+    /* And it still expires: the deadline crossed, not just the count. */
+    qtest_clock_step(to, (0x123 + 1) * IOC3_RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
+                    ==, IOC3_SRC_A_RX_TIMER);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -753,6 +865,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/migration/device-window-survives-migration",
                         NULL, test_a_device_window_survives_migration);
+    qtest_add_data_func("sn0/migration/wound-receive-timer-survives",
+                        NULL, test_a_wound_receive_timer_survives_migration);
     qtest_add_data_func("sn0/migration/dual-base-io-survives-migration",
                         NULL, test_dual_base_io_survives_migration);
     qtest_add_data_func("sn0/migration/network-routes-survive-migration",
