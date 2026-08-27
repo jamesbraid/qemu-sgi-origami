@@ -15659,24 +15659,6 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
     if (is_slot) {
         gen_branch(ctx, insn_bytes);
     }
-    /*
-     * A translation block should not end between a branch and its delay
-     * slot: the pending branch state does not reliably survive to the
-     * next lookup, and the branch is silently dropped.  When a
-     * count-limited block's last permitted instruction is a branch,
-     * extend the budget by one so the slot joins it, matching what
-     * CF_SINGLE_STEP already arranges in mips_tr_init_disas_context().
-     * Blocks whose first page is MMIO are exempt: the translator core
-     * caps those at a single instruction and asserts that cap on the
-     * next fetch, so they cannot be extended here.  The cross-block
-     * resume defect therefore still applies to a branch executed
-     * directly from MMIO-backed code.
-     */
-    if ((ctx->hflags & MIPS_HFLAG_BMASK) && !is_slot &&
-        tb_page_addr0(ctx->base.tb) != -1 &&
-        ctx->base.num_insns >= ctx->base.max_insns) {
-        ctx->base.max_insns = ctx->base.num_insns + 1;
-    }
     if (ctx->base.is_jmp == DISAS_SEMIHOST) {
         generate_exception_err(ctx, EXCP_SEMIHOST, insn_bytes);
     }
