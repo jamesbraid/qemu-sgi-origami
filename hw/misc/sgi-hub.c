@@ -466,9 +466,18 @@
  * machine that register belongs to a processor which is not fitted, which is
  * presumably the point.
  */
+#define HUB_PI_ERR_PENDING      0x000400
+#define HUB_PI_ERR_MASK_A       0x000408
+#define HUB_PI_ERR_MASK_B       0x000410
 #define HUB_PI_ERR_SPOOL_A      0x000418
 #define HUB_PI_ERR_SPOOL_B      0x000420
+#define HUB_PI_ERR_SPOOL_SIZE   0x000428
+#define HUB_PI_ERR_STATUS_BASE  0x000430
+#define HUB_PI_ERR_STATUS_LAST  0x000468
+#define HUB_PI_ERR_STATUS_STRIDE 8
+#define PI_ERR_MASK             0x01ffffffU
 #define PI_ERR_SPOOL_MASK       0xfffffff8ULL
+#define PI_ERR_SPOOL_SIZE_MASK  0xf
 
 #define HUB_PI_CPU_ENABLE_A     0x000050
 #define HUB_PI_CPU_ENABLE_B     0x000058
@@ -1720,6 +1729,11 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
          */
         return 0;
     }
+    if (addr >= HUB_PI_ERR_STATUS_BASE && addr <= HUB_PI_ERR_STATUS_LAST &&
+        (addr - HUB_PI_ERR_STATUS_BASE) % HUB_PI_ERR_STATUS_STRIDE == 0) {
+        /* No reviewed event supplies a nonzero report on this model. */
+        return 0;
+    }
 
     switch (addr) {
     case HUB_PI_RT_COUNT:
@@ -1748,6 +1762,14 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
         return s->pi_err_spool[0];
     case HUB_PI_ERR_SPOOL_B:
         return s->pi_err_spool[1];
+    case HUB_PI_ERR_PENDING:
+        return 0;
+    case HUB_PI_ERR_MASK_A:
+        return s->pi_err_mask[0];
+    case HUB_PI_ERR_MASK_B:
+        return s->pi_err_mask[1];
+    case HUB_PI_ERR_SPOOL_SIZE:
+        return s->pi_err_spool_size;
     case HUB_PI_CPU_ENABLE_A:
         return s->pi_cpu_enable[0];
     case HUB_PI_CPU_ENABLE_B:
@@ -2126,6 +2148,18 @@ static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
     case HUB_PI_ERR_SPOOL_B:
         *value = s->pi_err_spool[1];
         return true;
+    case HUB_PI_ERR_PENDING:
+        *value = 0;
+        return true;
+    case HUB_PI_ERR_MASK_A:
+        *value = s->pi_err_mask[0];
+        return true;
+    case HUB_PI_ERR_MASK_B:
+        *value = s->pi_err_mask[1];
+        return true;
+    case HUB_PI_ERR_SPOOL_SIZE:
+        *value = s->pi_err_spool_size;
+        return true;
     case HUB_PI_CPU_ENABLE_A:
         *value = s->pi_cpu_enable[0];
         return true;
@@ -2389,6 +2423,18 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         break;
     case HUB_PI_ERR_SPOOL_B:
         s->pi_err_spool[1] = val & PI_ERR_SPOOL_MASK;
+        break;
+    case HUB_PI_ERR_PENDING:
+        /* Write-one-to-clear has no effect while no error source can set it. */
+        break;
+    case HUB_PI_ERR_MASK_A:
+        s->pi_err_mask[0] = val & PI_ERR_MASK;
+        break;
+    case HUB_PI_ERR_MASK_B:
+        s->pi_err_mask[1] = val & PI_ERR_MASK;
+        break;
+    case HUB_PI_ERR_SPOOL_SIZE:
+        s->pi_err_spool_size = val & PI_ERR_SPOOL_SIZE_MASK;
         break;
     case HUB_PI_CPU_ENABLE_A:
         sgi_hub_set_cpu_enable(s, 0, val);
@@ -2713,6 +2759,8 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     memset(s->pi_int_pend_seen_valid, 0, sizeof(s->pi_int_pend_seen_valid));
     s->pi_int_pend1_primary_credit = false;
     memset(s->pi_int_mask, 0, sizeof(s->pi_int_mask));
+    memset(s->pi_err_mask, 0, sizeof(s->pi_err_mask));
+    s->pi_err_spool_size = 0;
     s->ni_status = NI_STATUS_RESET |
                    (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
@@ -2968,7 +3016,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 17,
+    .version_id = 18,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3010,6 +3058,9 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(md_onewire, SGIHubState, 11),
         VMSTATE_TIMER_PTR_V(md_onewire_timer, SGIHubState, 12),
         VMSTATE_UINT64_ARRAY_V(pi_err_spool, SGIHubState, 2, 13),
+        VMSTATE_UINT32_ARRAY_V(pi_err_mask, SGIHubState,
+                              SGI_HUB_PROCESSORS, 18),
+        VMSTATE_UINT8_V(pi_err_spool_size, SGIHubState, 18),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         /*
          * The block transfer engines. The registers are the whole of an
