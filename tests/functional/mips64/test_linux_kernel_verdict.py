@@ -16,9 +16,8 @@ fixture transcripts that stand in for a captured guest console log.
 missing_assertions(log, cpus) is a verbatim port of tools/linux-usercheck's
 own function of the same name (project checkout), for the one- and
 two-CPU cases only -- the four-CPU case is explicitly out of scope for
-this test (see test_linux_kernel.py's own docstring: a known,
-pre-existing stop_machine livelock at that population, unrelated to
-this fork's own work). At one CPU it checks exactly two markers, in the
+this test (see test_linux_kernel.py's own docstring for the two four-CPU
+bugs, and the two-stage unlock, that keep it out). At one CPU it checks exactly two markers, in the
 source's own order: "init handoff" and "userspace exit status". It does
 NOT check a "Discovered N cpus on 1 nodes" line at one CPU -- an earlier
 version of this port added that check there, on the mistaken belief that
@@ -74,9 +73,9 @@ def missing_assertions(log, cpus):
     """
     if cpus not in (1, 2):
         raise ValueError(
-            'missing_assertions: cpus must be 1 or 2 -- four-CPU '
-            'wall-clock boot is a known-failure sentinel out of scope '
-            'for this test, see this module\'s own docstring')
+            'missing_assertions: cpus must be 1 or 2 -- the four-CPU case '
+            'is out of scope (two four-CPU bugs, two-stage unlock), see '
+            'this module\'s own docstring')
 
     exit_status = 'exitcode=0x00002b00' if cpus == 2 else 'exitcode=0x00002a00'
     checks = [
