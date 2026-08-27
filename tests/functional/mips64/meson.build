@@ -28,6 +28,15 @@ test_mips64_timeouts = {
   # (announced as five minutes, about two emulated); BOOT_TIMEOUT_SECONDS in
   # test_prom_mdk.py keeps the usual 60s margin under this.
   'prom_mdk' : 1200,
+  # The full memory.mdk battery in one boot: eight tests, the two long
+  # ones near twenty minutes each under a heavily contended host;
+  # BOOT_TIMEOUT_SECONDS in test_prom_mdk_memory.py keeps the usual 60s
+  # margin under this.
+  'prom_mdk_memory' : 2500,
+  # A thousand self-checking instgen passes on two CPUs took about forty
+  # minutes under a heavily contended host; BOOT_TIMEOUT_SECONDS in
+  # test_prom_mdk_instgen.py keeps the usual 60s margin under this.
+  'prom_mdk_instgen' : 3600,
   # The installed OpenBSD 6.9 disk's own boot to an authenticated root
   # login: a spike run took about 9 minutes under a contended host;
   # BOOT_TIMEOUT_SECONDS in test_openbsd_login.py keeps a 60s margin
@@ -77,6 +86,8 @@ tests_mips64_system_thorough = [
   'prom_diagnostics',
   'prom_sash',
   'prom_mdk',
+  'prom_mdk_memory',
+  'prom_mdk_instgen',
   'irix_miniroot',
   'openbsd_login',
   'linux_kernel',

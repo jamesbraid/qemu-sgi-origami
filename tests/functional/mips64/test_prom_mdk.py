@@ -123,6 +123,11 @@ PROM_SHA256 = (
 CPU_MDK_SHA256 = (
     "8a72e5578436b076bae72f6243940a523364ea961604d6070de7f40b408d5d89"
 )
+# The memory package, recorded by the same extraction; test_prom_mdk_memory
+# boots it through this module's shared plumbing.
+MEMORY_MDK_SHA256 = (
+    "ee12d271bd84f2b3991724d40a211b9d9f511e1a355b58eee71c123c5b3f90bf"
+)
 
 
 def _file_sha256(path):
@@ -133,17 +138,25 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
-def artifact_identity_problems(prom_path, mdk_path):
-    """Which of the PROM/cpu.mdk SHA-256 digests mismatch -- the same
+def payload_identity_problems(prom_path, payload_path, payload_sha256,
+                              payload_label):
+    """Which of the PROM/payload SHA-256 digests mismatch -- the same
     refusal test_prom_sash.py makes, so a stale or wrong asset is caught
-    before spending a boot on it."""
+    before spending a boot on it. The MDK test files share this with
+    their own package digest and label."""
     problems = []
     if _file_sha256(prom_path) != PROM_SHA256:
         problems.append("PROM SHA-256 does not match the recorded release")
-    if _file_sha256(mdk_path) != CPU_MDK_SHA256:
+    if _file_sha256(payload_path) != payload_sha256:
         problems.append(
-            "cpu.mdk SHA-256 does not match the recorded extraction")
+            f"{payload_label} SHA-256 does not match the recorded "
+            "extraction")
     return problems
+
+
+def artifact_identity_problems(prom_path, mdk_path):
+    return payload_identity_problems(prom_path, mdk_path, CPU_MDK_SHA256,
+                                     "cpu.mdk")
 
 
 def verdict(log, reached=True):
@@ -196,7 +209,8 @@ DRIVER_UNTIL_RE = re.compile(rb"Pcache test run is complete")
 _TAIL_MAX = 8192
 
 
-def mdk_extra_args(prom, tftp, elsc_log, capture):
+def mdk_extra_args(prom, tftp, elsc_log, capture,
+                   netboot_path=NETBOOT_PATH):
     """The QEMU args beyond set_machine()/set_console(), matching
     test_prom_sash.py's sash_extra_args line for line: one CPU, 64 MB,
     normal power-on diagnostics, the ELSC AUX chardev on serial line 2,
@@ -212,19 +226,31 @@ def mdk_extra_args(prom, tftp, elsc_log, capture):
         '-serial', 'none',
         '-serial', 'chardev:elsc',
         '-nic', ('user,id=net0,net=192.0.2.0/24,host=192.0.2.2,'
-                 f'dhcpstart=192.0.2.15,tftp={tftp},bootfile={NETBOOT_PATH}'),
+                 f'dhcpstart=192.0.2.15,tftp={tftp},'
+                 f'bootfile={netboot_path}'),
         '-object', f'filter-dump,id=netcap,netdev=net0,file={capture}',
     ]
 
 
-def _drive_console(sock, log_path, timeout):
-    """test_prom_sash.py's console driver, unchanged: each (pattern,
-    response) fires once on a tail match; every byte lands in log_path;
-    returns (transcript, reached)."""
+def _drive_console(sock, log_path, timeout, steps=None, until=None,
+                   reached_when=None):
+    """test_prom_sash.py's console driver, with the steps and the
+    end-of-run condition injectable so the memory and instgen tests can
+    reuse it: each (pattern, response) fires once on a tail match; every
+    byte lands in log_path; returns (transcript, reached). `until` is a
+    byte regex matched against the tail; `reached_when` is a predicate
+    over the whole accumulated transcript, for runs whose completion
+    line is not unique (the memory suite ends every test with the same
+    words, so only a count over the whole run can name the last one).
+    """
+    if steps is None:
+        steps = DRIVER_STEPS
+    if until is None and reached_when is None:
+        until = DRIVER_UNTIL_RE
     rules = [
         {"re": re.compile(pattern.encode()), "response": response.encode(),
          "fired": False}
-        for pattern, response in DRIVER_STEPS
+        for pattern, response in steps
     ]
     sock.settimeout(1.0)
     deadline = time.monotonic() + timeout
@@ -250,7 +276,10 @@ def _drive_console(sock, log_path, timeout):
                     sock.sendall(rule["response"])
                     rule["fired"] = True
                     tail = b""
-            if DRIVER_UNTIL_RE.search(tail):
+            if until is not None and until.search(tail):
+                reached = True
+                break
+            if reached_when is not None and reached_when(bytes(transcript)):
                 reached = True
                 break
     return transcript.decode("utf-8", errors="replace"), reached
