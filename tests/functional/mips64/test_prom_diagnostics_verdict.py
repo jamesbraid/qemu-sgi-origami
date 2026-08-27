@@ -405,9 +405,10 @@ class ParseExpectedFailuresTest(unittest.TestCase):
         # The module-level EXPECTED_FAILURES is exactly
         # parse_expected_failures(EXPECTED_FAILURES_TEXT) -- this pins
         # the result so a silent edit to either is caught here.
-        self.assertEqual(
-            EXPECTED_FAILURES,
-            ["serial_dma", "enet_ssram", "scsi_ram", "scsi_dma"])
+        # Empty since the 2026-08-27 run retired the last four entries:
+        # the full-acceptance contract, pinned so a silent re-addition
+        # is caught here.
+        self.assertEqual(EXPECTED_FAILURES, [])
         self.assertEqual(
             parse_expected_failures(EXPECTED_FAILURES_TEXT),
             EXPECTED_FAILURES)
@@ -501,13 +502,21 @@ class TwoPassInvariantsTest(unittest.TestCase):
 
 class EvaluateRunTest(unittest.TestCase):
 
-    def test_real_two_pass_transcript_matches_the_ledger_exactly(self):
-        # unexpected == [] and stale == [] together prove the shipped
-        # ledger is neither missing a real failure nor stale against this
-        # real run. The verdict is still FAIL, correctly: this capture's
-        # own budget expired at the maintenance-menu prompt, so it never
-        # drove to sash and the sash-inventory check is the only failure.
-        report = evaluate_run(REAL_TWO_PASS_TRANSCRIPT, EXPECTED_FAILURES)
+    # The red-baseline ledger as it stood before the 2026-08-27 run
+    # retired every line: the real two-pass transcript below was
+    # captured against exactly these four failures.
+    RED_BASELINE_LEDGER = ("serial_dma", "enet_ssram", "scsi_ram",
+                           "scsi_dma")
+
+    def test_real_two_pass_transcript_matches_the_red_baseline_exactly(self):
+        # unexpected == [] and stale == [] together prove the parser and
+        # evaluate_run agree on a real red run against the ledger that
+        # described it. The verdict is still FAIL, correctly: this
+        # capture's own budget expired at the maintenance-menu prompt, so
+        # it never drove to sash and the sash-inventory check is the only
+        # failure.
+        report = evaluate_run(REAL_TWO_PASS_TRANSCRIPT,
+                              self.RED_BASELINE_LEDGER)
         self.assertEqual(report["failures"]["unexpected"], [])
         self.assertEqual(report["failures"]["stale"], [])
         self.assertEqual(report["verdict"], "FAIL")
@@ -516,6 +525,16 @@ class EvaluateRunTest(unittest.TestCase):
             all("did not occur" not in p and "unexpected" not in p
                 for p in report["problems"]),
             report["problems"])
+
+    def test_the_old_red_run_is_a_regression_against_the_shipped_ledger(self):
+        # The shipped ledger is empty now, so the same real red run reads
+        # as four unexpected failures and nothing stale -- which is what
+        # a reappearance of any of them must look like.
+        report = evaluate_run(REAL_TWO_PASS_TRANSCRIPT, EXPECTED_FAILURES)
+        self.assertEqual(sorted(report["failures"]["unexpected"]),
+                         sorted(self.RED_BASELINE_LEDGER))
+        self.assertEqual(report["failures"]["stale"], [])
+        self.assertEqual(report["verdict"], "FAIL")
 
     def test_all_pass_transcript_with_empty_ledger_passes(self):
         # diag-gate's own full-acceptance contract: an empty
