@@ -1546,6 +1546,133 @@ static void test_a_channel_reset_stops_the_receive_timer(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * An entry the engine filled short says so: the slots it did not fill carry
+ * neither validity flag. The packer is zeroed after every post, so a short
+ * entry cannot inherit the previous entry's flags. A model that stamped the
+ * data-valid flag on all four slots regardless would pass every other test
+ * whenever the host delivered a write unsplit, so this pins it deterministically
+ * with loopback, which cannot chunk: a full entry first, then a single
+ * character, and the single-character entry's three empty slots read clean.
+ */
+static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    const uint8_t full[4] = { 'f', 'u', 'l', 'l' };
+    const uint8_t full_ctrl[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    const uint8_t one[4] = { 'x', 0, 0, 0 };
+    const uint8_t one_ctrl[4] = { TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY };
+    uint8_t landed[8];
+    unsigned int i;
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+
+    /* A full four-character entry, so the packer has held four valid slots. */
+    write_transmit_entry(qts, RING_TX(0), 0, full, full_ctrl);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+
+    /* Then a single character. Its entry is the ring's second. */
+    write_transmit_entry(qts, RING_TX(0), 8, one, one_ctrl);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 16);
+
+    qtest_memread(qts, RING_RX(0) + 8, landed, sizeof(landed));
+    g_assert_cmphex(landed[0], ==, 'x');
+    g_assert_cmphex(landed[4] & RX_DATA_VALID, ==, RX_DATA_VALID);
+    for (i = 1; i < 4; i++) {
+        g_assert_cmphex(landed[4 + i] & (RX_DATA_VALID | RX_MODEM_VALID), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * Set up a receive ring with room for a single entry: the consume index two
+ * entries in, so the engine posts one entry and then the ring is full. Six
+ * characters delivered in loopback fill and post that one entry and leave two
+ * held in the packer, which the produce index reports in its held-count field,
+ * bits 26:24.
+ */
+static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
+{
+    const uint8_t four[4] = { 'a', 'b', 'c', 'd' };
+    const uint8_t four_ctrl[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    const uint8_t two[4] = { 'e', 'f', 0, 0 };
+    const uint8_t two_ctrl[4] = { TX_CHARACTER, TX_CHARACTER, TX_EMPTY, TX_EMPTY };
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), consume);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    write_transmit_entry(qts, RING_TX(0), 0, four, four_ctrl);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    write_transmit_entry(qts, RING_TX(0), 8, two, two_ctrl);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7,
+                    ==, 2);
+}
+
+/*
+ * The channel reset clears the held packer along with the indices. The run the
+ * reset write performs would otherwise flush a packer the reset left behind
+ * into the ring -- a stranded entry the guest never sent -- so the whole
+ * produce index, held count and pointer both, must read zero afterwards.
+ */
+static void test_a_channel_reset_clears_the_held_packer(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    hold_two_in_the_packer(qts, 16);
+
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE | CTRL_RESET);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The Resettable hold phase clears the same held packer, and stops the receive
+ * timer, on a whole-machine reset. Arm and wind the timer through the same
+ * delivery, reset the machine, and the held count and the timer's count both
+ * read zero on the far side -- a hold phase that zeroed only the register block
+ * would leave two characters and a running timer behind.
+ */
+static void test_a_system_reset_clears_the_held_packer_and_the_timer(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    hold_two_in_the_packer(qts, 16 | CONSUME_ARM_TIMER);
+
+    /* The posted entry wound the armed timer, so it is counting. */
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, 0x140);
+
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7,
+                    ==, 0);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1614,6 +1741,15 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/channel-reset-stops-receive-timer",
                         NULL,
                         test_a_channel_reset_stops_the_receive_timer);
+    qtest_add_data_func("sn0/ioc3-serial/unfilled-slot-has-no-validity-flag",
+                        NULL,
+                        test_an_unfilled_slot_carries_no_validity_flag);
+    qtest_add_data_func("sn0/ioc3-serial/channel-reset-clears-held-packer",
+                        NULL,
+                        test_a_channel_reset_clears_the_held_packer);
+    qtest_add_data_func("sn0/ioc3-serial/system-reset-clears-held-packer",
+                        NULL,
+                        test_a_system_reset_clears_the_held_packer_and_the_timer);
 
     return g_test_run();
 }
