@@ -34,13 +34,16 @@ test_mips64_timeouts = {
   # under this, the same margin test_prom_sash.py keeps against its own
   # meson timeout.
   'openbsd_login' : 900,
-  # Two test methods (one and two CPUs) run one after another in this one
-  # script, each budgeted up to BOOT_TIMEOUT_SECONDS=90s in
-  # test_linux_kernel.py before declaring FAIL; 240s covers both running
-  # out their own budget in sequence plus VM launch/shutdown overhead,
-  # rather than the usual single-BOOT_TIMEOUT-plus-a-bit margin this
-  # fork's single-test-method files keep.
-  'linux_kernel' : 240,
+  # Three test methods (one, two, and four CPUs) run one after another in
+  # this one script. The one- and two-CPU boots are each budgeted up to
+  # BOOT_TIMEOUT_SECONDS=90s in test_linux_kernel.py before declaring FAIL;
+  # the four-CPU/two-node boot up to FOUR_CPU_BOOT_TIMEOUT_SECONDS=700s
+  # (fixed instruction counting serializes all four CPUs, so it is far
+  # slower). 1000s covers all three running out their own budget in
+  # sequence plus VM launch/shutdown overhead, rather than the usual
+  # single-BOOT_TIMEOUT-plus-a-bit margin this fork's single-test-method
+  # files keep.
+  'linux_kernel' : 1000,
   # The same boot as openbsd_login, with a network back end fitted, plus
   # a DHCP lease and three transfer legs on top of it. LOGIN_BUDGET_SECONDS
   # in test_openbsd_net_transfer.py keeps the same 840s login budget
