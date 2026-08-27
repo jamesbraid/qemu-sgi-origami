@@ -2562,6 +2562,8 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     unsigned int index;
     hwaddr offset;
 
+    trace_sgi_bridge_dma_xlate(addr, dma->slot, flag);
+
     if (addr < BRIDGE_PCI_TRANSLATED) {
         /*
          * Local. Not translated to crosstalk at all, so it reaches whatever is
@@ -2589,6 +2591,7 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
             sgi_bridge_compose_xtalk(s, widget, addr & BRIDGE_XTALK_PASS) &
             ~page_mask;
         entry.perm = IOMMU_RW;
+        trace_sgi_bridge_dma_xlate_64(addr, entry.translated_addr, widget);
         return entry;
     }
 
