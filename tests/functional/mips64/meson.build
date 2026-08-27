@@ -24,6 +24,10 @@ test_mips64_timeouts = {
   # BOOT_TIMEOUT_SECONDS in test_irix_miniroot.py keeps a 60s margin under
   # this, the same margin test_prom_sash.py keeps against its own timeout.
   'irix_miniroot' : 900,
+  # A single netboot pass plus the kernel's own primary-data-cache test
+  # (announced as five minutes, about two emulated); BOOT_TIMEOUT_SECONDS in
+  # test_prom_mdk.py keeps the usual 60s margin under this.
+  'prom_mdk' : 1200,
   # The installed OpenBSD 6.9 disk's own boot to an authenticated root
   # login: a spike run took about 9 minutes under a contended host;
   # BOOT_TIMEOUT_SECONDS in test_openbsd_login.py keeps a 60s margin
@@ -69,6 +73,7 @@ tests_mips64_system_thorough = [
   'prom_copy_speed',
   'prom_diagnostics',
   'prom_sash',
+  'prom_mdk',
   'irix_miniroot',
   'openbsd_login',
   'linux_kernel',
