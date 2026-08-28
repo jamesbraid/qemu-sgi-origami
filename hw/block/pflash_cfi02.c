@@ -419,6 +419,17 @@ static void pflash_update(PFlashCFI02 *pfl, int offset, int size)
 {
     int offset_end;
     int ret;
+
+    /*
+     * The program and erase paths mutate the ROM device's backing store
+     * behind the memory core's back: flush the range so cached translations
+     * over it are dropped and the pages are dirtied for live migration.
+     * Neither happens on its own -- a guest executing from the flash would
+     * keep running the old code, and a migration round that already sent
+     * these pages would never resend them.
+     */
+    memory_region_flush_rom_device(&pfl->orig_mem, offset, size);
+
     if (pfl->blk) {
         offset_end = offset + size;
         /* widen to sector boundaries */
