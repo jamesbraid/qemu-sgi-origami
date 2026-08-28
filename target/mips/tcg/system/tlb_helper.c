@@ -1744,7 +1744,7 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
         }
 #endif
         tlb_flush_range_by_mmuidx(cs, addr, (mask >> 1) + 1,
-                                  (1 << NB_MMU_MODES) - 1, TARGET_LONG_BITS);
+                                  MIPS_MMU_IDXMAP, TARGET_LONG_BITS);
     }
     if (tlb->V1) {
         addr = (tlb->VPN & ~mask) | ((mask >> 1) + 1);
@@ -1754,6 +1754,6 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
         }
 #endif
         tlb_flush_range_by_mmuidx(cs, addr, (mask >> 1) + 1,
-                                  (1 << NB_MMU_MODES) - 1, TARGET_LONG_BITS);
+                                  MIPS_MMU_IDXMAP, TARGET_LONG_BITS);
     }
 }

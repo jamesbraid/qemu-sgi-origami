@@ -1497,8 +1497,18 @@ uint32_t cpu_rddsp(uint32_t mask_num, CPUMIPSState *env);
  * hflags layout.
  */
 #define MMU_KERNEL_IDX 0
+#define MMU_SUPERVISOR_IDX 1
 #define MMU_USER_IDX 2
 #define MMU_ERL_IDX 3
+
+/*
+ * Every index a MIPS translation can be installed under: the three the
+ * KSU field selects, plus the one an error-level reference uses. Nothing
+ * this target fills reaches any other index, so a flush naming these
+ * reaches every entry the target owns.
+ */
+#define MIPS_MMU_IDXMAP (BIT(MMU_KERNEL_IDX) | BIT(MMU_SUPERVISOR_IDX) | \
+                         BIT(MMU_USER_IDX) | BIT(MMU_ERL_IDX))
 
 static inline int hflags_mmu_index(uint32_t hflags)
 {
