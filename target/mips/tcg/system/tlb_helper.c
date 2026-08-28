@@ -681,10 +681,25 @@ void mmu_init(CPUMIPSState *env, const mips_def_t *def)
     }
 }
 
+/*
+ * Flush qemu's TLB, unless nothing has reached it since the last flush.
+ * The skip spares more than the flush: an empty flush still empties the
+ * jump cache, and a guest that rewrites EntryHi around every TLB read
+ * pays that wipe twice per read.
+ */
+void cpu_mips_qemu_tlb_flush(CPUMIPSState *env)
+{
+    if (env->tlb->qemu_clean) {
+        return;
+    }
+    tlb_flush(env_cpu(env));
+    env->tlb->qemu_clean = true;
+}
+
 void cpu_mips_tlb_flush(CPUMIPSState *env)
 {
     /* Flush qemu's TLB and discard all shadowed entries.  */
-    tlb_flush(env_cpu(env));
+    cpu_mips_qemu_tlb_flush(env);
     env->tlb->tlb_in_use = env->tlb->nb_tlb;
 }
 
@@ -1109,6 +1124,8 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     hwaddr physical;
     int prot;
     int ret = TLBRET_BADADDR;
+
+    env->tlb->qemu_clean = false;
 
     /* data access */
     /* XXX: put correct access by using cpu_restore_state() correctly */
