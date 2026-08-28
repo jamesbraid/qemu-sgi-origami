@@ -923,10 +923,9 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
 
     uint64_t uniform_len = (uint64_t)pfl->uniform_nb_blocs *
                            pfl->uniform_sector_len;
-    if (nb_regions == 0) {
+    bool uniform = nb_regions == 0;
+    if (uniform) {
         nb_regions = 1;
-        pfl->nb_blocs[0] = pfl->uniform_nb_blocs;
-        pfl->sector_len[0] = pfl->uniform_sector_len;
         chip_len = uniform_len;
         total_sectors = pfl->uniform_nb_blocs;
     } else if (uniform_len != 0 && uniform_len != chip_len) {
@@ -938,12 +937,15 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
 
     /*
      * The sector count sizes the erase bitmap and is carried in a signed
-     * 32-bit field; the chip length is carried in a 32-bit field. Reject a
-     * geometry whose products wrap rather than realizing a device with a
-     * bogus bitmap or a truncated length.
+     * 32-bit field, and the program and erase paths carry offset and size
+     * as int through pflash_update(), so the chip length must fit a signed
+     * int too -- a parallel NOR chip past 2 GiB is fictional hardware.
+     * Reject a geometry outside those ranges rather than realizing a device
+     * with a bogus bitmap, a truncated length, or an update span that goes
+     * negative on chip erase.
      */
     if (total_sectors == 0 || total_sectors > INT32_MAX ||
-        chip_len == 0 || chip_len > UINT32_MAX) {
+        chip_len == 0 || chip_len > INT32_MAX) {
         error_setg(errp, "unsupported configuration: flash geometry "
                    "(%" PRIu64 " sectors, %" PRIu64 " bytes) out of range",
                    total_sectors, chip_len);
@@ -951,6 +953,16 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
     }
     pfl->total_sectors = total_sectors;
     pfl->chip_len = chip_len;
+    /*
+     * Populate the region arrays from the uniform properties only once the
+     * geometry is accepted: realize is documented re-entrant after failure,
+     * and a stale copy here would read as an explicit region configuration
+     * on the retry.
+     */
+    if (uniform) {
+        pfl->nb_blocs[0] = pfl->uniform_nb_blocs;
+        pfl->sector_len[0] = pfl->uniform_sector_len;
+    }
 
     memory_region_init_rom_device(&pfl->orig_mem, OBJECT(pfl),
                                   pfl->width == 1 ? &pflash_cfi02_ops_x8
