@@ -175,7 +175,9 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
      */
     {
         g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", node_index);
-        BlockBackend *nvram_blk = blk_by_name(nvram_id);
+        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, node_index);
+        BlockBackend *nvram_blk = nvram_dinfo ? blk_by_legacy_dinfo(nvram_dinfo)
+                                              : blk_by_name(nvram_id);
 
         if (nvram_blk) {
             qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", nvram_blk);
