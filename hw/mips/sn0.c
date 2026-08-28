@@ -715,27 +715,32 @@ void sn0_mode_bits_reset(void *opaque)
                        (smc->processor_mode_bits & SN0_PROCESSOR_MODE_MASK);
 }
 
-static void sn0_machine_ready(Notifier *notifier, void *data)
+/*
+ * The machine's own reset, after every device's. The order below is the
+ * contract the old registration list happened to give: the firmware window
+ * write and the processor mode-bits write must land after the Hub's and the
+ * CPUs' own resets, and the PCI reassignment after the devices cleared
+ * their registers.
+ */
+static void sn0_machine_reset(MachineState *machine, ResetType type)
 {
-    SN0MachineState *s = SN0_MACHINE(qdev_get_machine());
+    SN0MachineState *s = SN0_MACHINE(machine);
     CPUState *cs;
 
+    qemu_devices_reset(type);
+
     if (s->synthesized_firmware) {
-        qemu_register_reset(sn0_firmware_reset, s);
+        sn0_firmware_reset(s);
     }
     CPU_FOREACH(cs) {
-        qemu_register_reset(sn0_cpu_reset, cs);
-        qemu_register_reset(sn0_mode_bits_reset, cs);
+        sn0_cpu_reset(cs);
+        sn0_mode_bits_reset(cs);
     }
     if (s->synthesized_firmware) {
-        qemu_register_reset(sn0_assign_pci_resources, s);
+        sn0_assign_pci_resources(s);
     }
-    sn0_diagnostic_register_reset(s);
+    sn0_diagnostic_machine_reset(s);
 }
-
-static Notifier sn0_machine_ready_notifier = {
-    .notify = sn0_machine_ready,
-};
 
 /*
  * Make the firmware's boot-progress indicator visible without the operator
@@ -1496,8 +1501,6 @@ static void sn0_init(MachineState *machine)
     }
 
     sn0_firmware_init(machine);
-
-    qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
 }
 
 static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
@@ -1708,6 +1711,8 @@ static void sn0_instance_finalize(Object *obj)
 static void sn0_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+
+    mc->reset = sn0_machine_reset;
 
     mc->init = sn0_init;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
