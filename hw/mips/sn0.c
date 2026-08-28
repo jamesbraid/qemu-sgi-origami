@@ -160,6 +160,8 @@ typedef struct SN0PromDataState {
     hwaddr node_base;
     MemoryRegion data;
     MemoryRegion filter;
+    bool present;           /* the filter was installed (real PROM boot) */
+    bool leaving_private;   /* the overlay has been (or is being) disabled */
 } SN0PromDataState;
 
 typedef struct SN0NodeState {
@@ -722,12 +724,69 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
              pc < SN0_PROM_COPY_PADDR + SN0_FLASH_SIZE));
 }
 
+/*
+ * The cache-only phase keeps only the PROM's stack and locals in this window;
+ * the PROM's own code runs from flash, never from here.  So a processor
+ * *executing* from inside the window can only be the operating system, which
+ * means the private phase is over and the per-access routing is no longer
+ * needed -- from here on the window is just the shared DRAM underneath it.
+ *
+ * Recognise that by translating the program counter through the MMU -- the
+ * kernel runs its text through a TLB-mapped segment (IRIX links this window's
+ * driver code near 0xc0000000001026a8), not only the unmapped windows -- and
+ * comparing the physical address against the window.  It is one-way: the PROM
+ * cannot execute from here, so this can only ever turn the overlay off once the
+ * window is genuinely running operating-system code, never during the phase.
+ */
+static bool sn0_promdata_executing_here(SN0PromDataState *s)
+{
+    TranslateForDebugResult r;
+
+    if (!cpu_translate_for_debug(CPU(s->cpu), s->cpu->env.active_tc.PC, &r)) {
+        return false;
+    }
+
+    return r.physaddr >= SN0_PROMDATA_PADDR &&
+           r.physaddr < SN0_PROMDATA_PADDR + SN0_PROMDATA_SIZE;
+}
+
+/*
+ * Runs once, at a quiescent point with every vCPU drained, the first time the
+ * window executes operating-system code.  Disabling the priority-2 overlay
+ * exposes the shared-DRAM alias beneath it, so the window becomes plain RAM
+ * that backs cached translations at full speed instead of retranslating one
+ * instruction per block.  A machine reset re-enables it for the next boot's
+ * cache-only phase (sn0_promdata_reset).
+ */
+static void sn0_promdata_leave_private(CPUState *cs, run_on_cpu_data data)
+{
+    SN0PromDataState *s = data.host_ptr;
+
+    BQL_LOCK_GUARD();
+    /*
+     * A machine reset between scheduling this and running it clears the flag
+     * and re-enables the overlay for a fresh cache-only phase; if that has
+     * happened, leave the overlay in place rather than disabling it back out
+     * from under the new boot.
+     */
+    if (s->leaving_private) {
+        memory_region_set_enabled(&s->filter, false);
+    }
+}
+
 static MemTxResult sn0_promdata_read(void *opaque, hwaddr addr, uint64_t *val,
                                      unsigned size, MemTxAttrs attrs)
 {
     SN0PromDataState *s = opaque;
     uint8_t bytes[8];
     MemTxResult result;
+
+    if (!s->leaving_private && current_cpu == CPU(s->cpu) &&
+        sn0_promdata_executing_here(s)) {
+        s->leaving_private = true;
+        async_safe_run_on_cpu(CPU(s->cpu), sn0_promdata_leave_private,
+                              RUN_ON_CPU_HOST_PTR(s));
+    }
 
     if (sn0_promdata_is_private(s, attrs)) {
         *val = ldn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size);
@@ -777,6 +836,14 @@ static void sn0_promdata_reset(void *opaque)
 
     memset(memory_region_get_ram_ptr(&s->data), 0, SN0_PROMDATA_SIZE);
     memory_region_set_dirty(&s->data, 0, SN0_PROMDATA_SIZE);
+
+    /*
+     * A reboot re-enters the PROM's cache-only phase, so restore the overlay
+     * that a previous boot disabled once its operating system began executing
+     * from the window.
+     */
+    s->leaving_private = false;
+    memory_region_set_enabled(&s->filter, true);
 }
 
 static uint64_t sn0_flash_load(SN0NodeState *node, hwaddr addr, unsigned size)
@@ -858,6 +925,57 @@ static const VMStateDescription vmstate_sn0_backdoor = {
     }
 };
 
+static bool sn0_promdata_needed(void *opaque)
+{
+    SN0NodeState *node = opaque;
+
+    return node->promdata[0].present;
+}
+
+static int sn0_promdata_post_load(void *opaque, int version_id)
+{
+    SN0NodeState *node = opaque;
+    unsigned int slice;
+
+    /*
+     * The stream carries how far each processor's cache-only phase had got.
+     * Reapply that to the overlay the destination built enabled, so a boot
+     * that had already switched the window to plain RAM does not revert to the
+     * slow per-instruction path.
+     */
+    for (slice = 0; slice < SN0_CPUS_PER_NODE; slice++) {
+        SN0PromDataState *s = &node->promdata[slice];
+
+        if (s->present) {
+            memory_region_set_enabled(&s->filter, !s->leaving_private);
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sn0_promdata_slice = {
+    .name = "sn0-flash/promdata-slice",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(leaving_private, SN0PromDataState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sn0_promdata = {
+    .name = "sn0-flash/promdata",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sn0_promdata_needed,
+    .post_load = sn0_promdata_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(promdata, SN0NodeState, SN0_CPUS_PER_NODE, 1,
+                             vmstate_sn0_promdata_slice, SN0PromDataState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
     .version_id = 2,
@@ -870,6 +988,10 @@ static const VMStateDescription vmstate_sn0_flash = {
         VMSTATE_STRUCT(backdoor_dir_state, SN0NodeState, 2,
                        vmstate_sn0_backdoor, SN0BackdoorState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sn0_promdata,
+        NULL
     }
 };
 
@@ -3000,14 +3122,19 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
          * loaded kernel control.  In that mode the filter would be pure
          * forwarding -- except that an I/O region cannot back translated
          * code, so kernel text linked into this 32 KiB window would execute
-         * one instruction per translation block.  Map the window as the
-         * plain RAM it forwards to instead, and keep the filter for real
-         * PROM boots, whose private phase genuinely needs it.
+         * one instruction per translation block.  For a directly loaded kernel
+         * there is no cache-only phase, so map the window as the plain RAM it
+         * forwards to.  For a real PROM boot the filter is genuinely needed
+         * during that phase, so keep it -- but it disables itself once the
+         * operating system first executes from the window
+         * (sn0_promdata_leave_private), after which the window is the plain
+         * shared RAM underneath and backs cached translations at full speed.
          */
         if (!(SN0_MACHINE(machine)->synthesized_firmware &&
               machine->kernel_filename)) {
             node->promdata[slice].cpu = node->cpu[slice];
             node->promdata[slice].node_base = node_base;
+            node->promdata[slice].present = true;
             memory_region_init_ram(&node->promdata[slice].data, OBJECT(node),
                                    promdata_name, SN0_PROMDATA_SIZE,
                                    &error_fatal);
