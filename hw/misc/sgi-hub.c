@@ -738,100 +738,11 @@
                                  NI_STATUS_REGION_SIZE | \
                                  NI_STATUS_NODE_MASK)
 
-/*
- * These registers carry the boot rendezvous between processors and Hubs.
- * Keep their trace separate from the generic MMIO trace so a diagnostic run
- * does not have to record every device access in the machine. cpu_base stays
- * unique while real firmware changes the live NASID from its zero reset value.
- *
- * A trace records the transaction the guest issued -- its own address,
- * value and size, never the aligned doubleword the 32-bit decode composes
- * -- so membership is tested on the access's aligned register: either half
- * of a rendezvous register is that register.
- */
-static bool sgi_hub_protocol_write_register(hwaddr addr)
-{
-    switch (addr) {
-    case HUB_PI_RT_COUNT:
-    case HUB_PI_RT_PENDING_A:
-    case HUB_PI_RT_PENDING_B:
-    case HUB_PI_RT_ENABLE_A:
-    case HUB_PI_RT_ENABLE_B:
-    case HUB_PI_CPU_ENABLE_A:
-    case HUB_PI_CPU_ENABLE_B:
-    case HUB_PI_INT_MODIFY:
-    case HUB_PI_RT_COMPARE_A:
-    case HUB_PI_RT_COMPARE_B:
-    case HUB_NI_STATUS:
-    case HUB_NI_SCRATCH_0:
-    case HUB_NI_SCRATCH_1:
-    case HUB_NI_VECTOR:
-    case HUB_NI_VECTOR_DATA:
-    case HUB_NI_VECTOR_CLEAR:
-        return true;
-    default:
-        return false;
-    }
-}
-
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s)
 {
     return (s->ni_status & NI_STATUS_NODE_MASK) >> NI_STATUS_NODE_SHIFT;
 }
 
-static void sgi_hub_trace_protocol_write(SGIHubState *s, hwaddr addr,
-                                         uint64_t value, unsigned int size)
-{
-    CPUState *cpu;
-
-    if (!sgi_hub_protocol_write_register(addr & ~(hwaddr)7)) {
-        return;
-    }
-
-    cpu = current_cpu;
-    trace_sgi_hub_protocol_write(
-        cpu ? cpu->cpu_index : -1, s->cpu_base,
-        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
-        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-}
-
-static bool sgi_hub_protocol_read_register(hwaddr addr)
-{
-    switch (addr) {
-    case HUB_PI_RT_COMPARE_A:
-    case HUB_PI_RT_COMPARE_B:
-    case HUB_PI_RT_PENDING_A:
-    case HUB_PI_RT_PENDING_B:
-    case HUB_PI_INT_PEND0:
-    case HUB_PI_INT_PEND1:
-    case HUB_NI_SCRATCH_0:
-    case HUB_NI_SCRATCH_1:
-    case HUB_NI_VECTOR_STATUS:
-    case HUB_NI_VECTOR_READ_DATA:
-    case HUB_NI_VECTOR_CLEAR:
-        return true;
-    default:
-        return false;
-    }
-}
-
-static void sgi_hub_trace_protocol_read(SGIHubState *s, hwaddr addr,
-                                        uint64_t value, unsigned int size)
-{
-    CPUState *cpu;
-
-    if (!sgi_hub_protocol_read_register(addr & ~(hwaddr)7)) {
-        return;
-    }
-
-    cpu = current_cpu;
-    trace_sgi_hub_protocol_read(
-        cpu ? cpu->cpu_index : -1, s->cpu_base,
-        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
-        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-}
 
 /*
  * The interrupt-modify register: seven bits naming an interrupt number and one
@@ -848,6 +759,155 @@ static void sgi_hub_trace_protocol_read(SGIHubState *s, hwaddr addr,
 /* The cached-alias size is a four-bit code, and resets to the largest. */
 #define PI_CALIAS_SIZE_MASK     0xf
 #define PI_CALIAS_SIZE_RESET    15
+
+/*
+ * One descriptor per decoded register, and one table of them below,
+ * walked by every consumer that used to keep its own enumeration of the
+ * register map: the read and write decoders, the diagnostic shadow, the
+ * remote vector-PIO target decode, and the two protocol-trace allowlists.
+ * The register families that are ranges rather than single doublewords --
+ * the translation table, the transfer engines, the route tables, the
+ * request-buffer and error clusters -- keep their range predicates and sit
+ * in front of the table walk in each consumer.
+ *
+ * How an access resolves:
+ *
+ * - The stored value ("peek", side-effect-free): the peek hook when set,
+ *   else the backing field named by field/width. Feeds the diagnostic
+ *   shadow (HUB_REG_DIAG), the vector-PIO read (HUB_REG_VECTOR), the
+ *   32-bit write merge, and the 32-bit read of a read-to-clear register
+ *   (HUB_REG_READ_CLEARS).
+ * - A guest read: the read hook when set, else the stored value, else the
+ *   unimplemented-register log.
+ * - A pure store: the store hook when set, else -- under HUB_REG_STORE --
+ *   the backing field takes val & wmask. Feeds the vector-PIO write.
+ * - A guest write: the write hook when set, else the pure store, else the
+ *   unimplemented-register log. Write hooks carry the side effects a
+ *   remote vector write must not have, which is why store and write are
+ *   separate hooks.
+ */
+enum {
+    HUB_REG_STORE       = 1 << 0, /* a plain write stores val & wmask */
+    HUB_REG_DIAG        = 1 << 1, /* the diagnostic shadow reads it */
+    HUB_REG_VECTOR      = 1 << 2, /* a remote vector PIO reaches it */
+    HUB_REG_TRACE_READ  = 1 << 3, /* in the protocol-read trace set */
+    HUB_REG_TRACE_WRITE = 1 << 4, /* in the protocol-write trace set */
+    HUB_REG_READ_CLEARS = 1 << 5, /* a full-width read has side effects */
+};
+
+typedef struct SGIHubRegDef {
+    hwaddr offset;
+    unsigned arg;               /* which of an A/B pair or bank the hooks get */
+    unsigned flags;
+    size_t field;               /* backing state, when width is nonzero */
+    unsigned width;             /* sizeof that state: 1, 4 or 8; 0 = none */
+    uint64_t wmask;             /* what a HUB_REG_STORE write keeps */
+    uint64_t (*read)(SGIHubState *s, hwaddr addr, unsigned arg);
+    uint64_t (*peek)(SGIHubState *s, unsigned arg);
+    void (*store)(SGIHubState *s, unsigned arg, uint64_t val);
+    void (*write)(SGIHubState *s, hwaddr addr, unsigned arg, uint64_t val,
+                  unsigned size);
+} SGIHubRegDef;
+
+static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr);
+
+static uint64_t sgi_hub_reg_peek(SGIHubState *s, const SGIHubRegDef *reg)
+{
+    const void *p = (const char *)s + reg->field;
+
+    if (reg->peek) {
+        return reg->peek(s, reg->arg);
+    }
+    switch (reg->width) {
+    case 1:
+        return *(const uint8_t *)p;
+    case 4:
+        return *(const uint32_t *)p;
+    default:
+        return *(const uint64_t *)p;
+    }
+}
+
+static bool sgi_hub_reg_peekable(const SGIHubRegDef *reg)
+{
+    return reg->peek || reg->width;
+}
+
+static bool sgi_hub_reg_storable(const SGIHubRegDef *reg)
+{
+    return reg->store || ((reg->flags & HUB_REG_STORE) && reg->width);
+}
+
+static void sgi_hub_reg_store(SGIHubState *s, const SGIHubRegDef *reg,
+                              uint64_t val)
+{
+    void *p = (char *)s + reg->field;
+
+    if (reg->store) {
+        reg->store(s, reg->arg, val);
+        return;
+    }
+    val &= reg->wmask;
+    switch (reg->width) {
+    case 1:
+        *(uint8_t *)p = val;
+        break;
+    case 4:
+        *(uint32_t *)p = val;
+        break;
+    default:
+        *(uint64_t *)p = val;
+        break;
+    }
+}
+
+/*
+ * The rendezvous registers' protocol traces, kept separate from the
+ * generic MMIO trace so a diagnostic run does not have to record every
+ * device access in the machine; the table's trace flags name the
+ * members. cpu_base stays unique while real firmware changes the live
+ * NASID from its zero reset value.
+ *
+ * A trace records the transaction the guest issued -- its own address,
+ * value and size, never the aligned doubleword the 32-bit decode
+ * composes -- so membership is tested on the access's aligned register:
+ * either half of a rendezvous register is that register.
+ */
+static void sgi_hub_trace_protocol_write(SGIHubState *s, hwaddr addr,
+                                         uint64_t value, unsigned int size)
+{
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(addr & ~(hwaddr)7);
+    CPUState *cpu;
+
+    if (!reg || !(reg->flags & HUB_REG_TRACE_WRITE)) {
+        return;
+    }
+
+    cpu = current_cpu;
+    trace_sgi_hub_protocol_write(
+        cpu ? cpu->cpu_index : -1, s->cpu_base,
+        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+static void sgi_hub_trace_protocol_read(SGIHubState *s, hwaddr addr,
+                                        uint64_t value, unsigned int size)
+{
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(addr & ~(hwaddr)7);
+    CPUState *cpu;
+
+    if (!reg || !(reg->flags & HUB_REG_TRACE_READ)) {
+        return;
+    }
+
+    cpu = current_cpu;
+    trace_sgi_hub_protocol_read(
+        cpu ? cpu->cpu_index : -1, s->cpu_base,
+        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
 
 /*
  * Which translation entry an address is, if it is one. Entries are eight
@@ -1082,12 +1142,13 @@ static void sgi_hub_update_irq(SGIHubState *s)
  * memory write, and the same idiom is what MIPS's own power controller uses to
  * stop a processor from a register write.
  */
-static void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int index,
-                                   uint64_t val)
+static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
 {
-    CPUState *cs = qemu_get_cpu(s->cpu_base + index);
+    CPUState *cs = qemu_get_cpu(s->cpu_base + arg);
 
-    s->pi_cpu_enable[index] = val & 1;
+    s->pi_cpu_enable[arg] = val & 1;
 
     if (!(val & 1) && cs) {
         cpu_interrupt(cs, CPU_INTERRUPT_HALT);
@@ -1563,9 +1624,10 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
     return muldiv64(delta, PI_RT_HZ, NANOSECONDS_PER_SECOND) & PI_RT_MASK;
 }
 
-static uint64_t sgi_hub_rt_compare_read(SGIHubState *s, unsigned int i)
+static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
+                                        unsigned arg)
 {
-    CPUState *owner = qemu_get_cpu(s->cpu_base + i);
+    CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
 
     /*
      * Firmware polls the peer's progress through these registers with an
@@ -1573,7 +1635,7 @@ static uint64_t sgi_hub_rt_compare_read(SGIHubState *s, unsigned int i)
      * value before the reader consumes that entire loop in one slice.
      */
     sgi_hub_yield_to_peer(owner);
-    return s->pi_rt_compare[i];
+    return s->pi_rt_compare[arg];
 }
 
 /* Move the origin so the counter reads what was written, and keep running. */
@@ -1739,49 +1801,41 @@ static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
                                        uint64_t *value)
 {
     uint8_t *route = sgi_hub_route_entry(target, addr);
+    const SGIHubRegDef *reg;
 
     if (route) {
         *value = *route;
         return true;
     }
-    switch (addr) {
-    case HUB_NI_STATUS:
-        *value = target->ni_status;
+    reg = sgi_hub_reg_lookup(addr);
+    if (reg && (reg->flags & HUB_REG_VECTOR)) {
+        *value = sgi_hub_reg_peek(target, reg);
         return true;
-    case HUB_NI_SCRATCH_0:
-        *value = target->ni_scratch[0];
-        return true;
-    case HUB_NI_SCRATCH_1:
-        *value = target->ni_scratch[1];
-        return true;
-    default:
-        return false;
     }
+    return false;
 }
 
 static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
                                         uint64_t value)
 {
     uint8_t *route = sgi_hub_route_entry(target, addr);
+    const SGIHubRegDef *reg;
 
     if (route) {
         *route = value & NI_ROUTE_MASK;
         return true;
     }
-    switch (addr) {
-    case HUB_NI_STATUS:
-        target->ni_status = (target->ni_status & ~NI_STATUS_WRITABLE) |
-                            (value & NI_STATUS_WRITABLE);
+    /*
+     * The pure store, never the write hook: a remote vector write lands
+     * the value without the local-store side effects (the scratch
+     * registers' scheduling kick serves a local writer, not this path).
+     */
+    reg = sgi_hub_reg_lookup(addr);
+    if (reg && (reg->flags & HUB_REG_VECTOR)) {
+        sgi_hub_reg_store(target, reg, value);
         return true;
-    case HUB_NI_SCRATCH_0:
-        target->ni_scratch[0] = value;
-        return true;
-    case HUB_NI_SCRATCH_1:
-        target->ni_scratch[1] = value;
-        return true;
-    default:
-        return false;
     }
+    return false;
 }
 
 /*
@@ -1874,225 +1928,6 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
             s->ni_vector_status, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
-}
-
-static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
-                                      unsigned size)
-{
-    SGIHubState *s = opaque;
-    uint64_t value;
-    uint8_t *route;
-    unsigned int n;
-    hwaddr reg;
-
-    if (sgi_hub_bwin_entry(addr, &n)) {
-        return s->io_bwin[n];
-    }
-    if (sgi_hub_bte_entry(addr, &n, &reg)) {
-        return sgi_hub_bte_read(s, n, reg);
-    }
-    route = sgi_hub_route_entry(s, addr);
-    if (route) {
-        return *route;
-    }
-    if (sgi_hub_icrb_c_entry(addr)) {
-        /*
-         * No slot has ever tracked a real incoming crosstalk transaction, so
-         * every field a real slot's C register would hold is honestly zero.
-         */
-        return 0;
-    }
-    if (sgi_hub_md_error_entry(addr)) {
-        /*
-         * This model never raises a memory, directory, protocol or
-         * miscellaneous error, so every field any of these eight registers
-         * would hold is honestly zero -- which is also what mtest_basic
-         * requires before it will run at all.
-         */
-        return 0;
-    }
-    if (addr >= HUB_PI_ERR_STATUS_BASE && addr <= HUB_PI_ERR_STATUS_LAST &&
-        (addr - HUB_PI_ERR_STATUS_BASE) % HUB_PI_ERR_STATUS_STRIDE == 0) {
-        switch (addr) {
-        case HUB_PI_ERR_STATUS_BASE:
-            return s->pi_err_status0[0];
-        case HUB_PI_ERR_STATUS_BASE + 0x08:
-            value = s->pi_err_status0[0];
-            s->pi_err_status0[0] = 0;
-            return value;
-        case HUB_PI_ERR_STATUS_BASE + 0x20:
-            return s->pi_err_status0[1];
-        case HUB_PI_ERR_STATUS_BASE + 0x28:
-            value = s->pi_err_status0[1];
-            s->pi_err_status0[1] = 0;
-            return value;
-        default:
-            return 0;
-        }
-    }
-
-    switch (addr) {
-    case HUB_PI_RT_COUNT:
-        value = sgi_hub_rt_count(s);
-        goto trace_rt_count_read;
-    case HUB_PI_RT_COMPARE_A:
-        return sgi_hub_rt_compare_read(s, 0);
-    case HUB_PI_RT_COMPARE_B:
-        return sgi_hub_rt_compare_read(s, 1);
-    case HUB_PI_RT_PENDING_A:
-        return s->pi_rt_pending[0];
-    case HUB_PI_RT_PENDING_B:
-        return s->pi_rt_pending[1];
-    case HUB_PI_RT_ENABLE_A:  return s->pi_rt_enable[0];
-    case HUB_PI_RT_ENABLE_B:  return s->pi_rt_enable[1];
-    case HUB_PI_RT_LOCAL_CTRL: return s->pi_rt_local_ctrl;
-    case HUB_PI_CPU_PRESENT_A:
-        return s->cpus >= 1;
-    case HUB_PI_CPU_PRESENT_B:
-        return s->cpus >= 2;
-    case HUB_PI_ERR_SPOOL_A:
-        return s->pi_err_spool[0];
-    case HUB_PI_ERR_SPOOL_B:
-        return s->pi_err_spool[1];
-    case HUB_PI_ERR_PENDING:
-        return 0;
-    case HUB_PI_ERR_MASK_A:
-        return s->pi_err_mask[0];
-    case HUB_PI_ERR_MASK_B:
-        return s->pi_err_mask[1];
-    case HUB_PI_ERR_SPOOL_SIZE:
-        return s->pi_err_spool_size;
-    case HUB_PI_TIMEDOUT_BUF_A:
-    case HUB_PI_TIMEDOUT_BUF_B:
-        /* No processor-interface request buffer times out on this model. */
-        return 0;
-    case HUB_PI_CPU_ENABLE_A:
-        return s->pi_cpu_enable[0];
-    case HUB_PI_CPU_ENABLE_B:
-        return s->pi_cpu_enable[1];
-    case HUB_PI_REGION_PRESENT:
-        return s->pi_region_present;
-    case HUB_PI_PROCESSOR_NUMBER:
-        /*
-         * Sound under MTTCG: MMIO is dispatched on the reading vCPU's own
-         * thread and current_cpu is thread-local, so each reader gets its
-         * own answer and can never be misattributed to another vCPU's read
-         * racing it. The !current_cpu case covers a main-loop or qtest
-         * reader, which has no processor of its own to name.
-         */
-        if (current_cpu && current_cpu->cpu_index >= s->cpu_base &&
-            current_cpu->cpu_index < s->cpu_base + s->cpus) {
-            return current_cpu->cpu_index - s->cpu_base;
-        }
-        return 0;
-    case HUB_PI_CALIAS_SIZE:
-        return s->pi_calias_size;
-    case HUB_PI_INT_PEND0:
-        return sgi_hub_int_pending_read(s, 0);
-    case HUB_PI_INT_PEND1:
-        return sgi_hub_int_pend1_read(s);
-    case HUB_PI_INT_MASK0_A:
-        return s->pi_int_mask[0];
-    case HUB_PI_INT_MASK1_A:
-        return s->pi_int_mask[1];
-    case HUB_PI_INT_MASK0_B:
-        return s->pi_int_mask[2];
-    case HUB_PI_INT_MASK1_B:
-        return s->pi_int_mask[3];
-    case HUB_IO_WIDGET_ID:
-        return IO_WIDGET_ID_REVISION | IO_WIDGET_ID_PART |
-               ((uint64_t)s->manufacturer << IO_WIDGET_ID_MFG_SHIFT) |
-               IO_WIDGET_ID_ONE;
-    case HUB_IO_WIDGET_STATUS:
-        /*
-         * Nothing this model does sets an error, a retry count or an
-         * outstanding-request count: transfers complete instantly and the link
-         * never fails. Bit 4 reads zero because SGI's own table records it as
-         * undefined and assumed reserved, which is preserved rather than
-         * resolved.
-         */
-        return 0;
-    case HUB_IO_WIDGET_CONTROL:
-        return s->io_widget_control;
-    case HUB_IO_XTALK_TIMEOUT:
-        return s->io_xtalk_timeout;
-    case HUB_IO_XTALK_PRESCALE:
-        return s->io_xtalk_prescale;
-    case HUB_IO_SCRATCH_0:
-        return s->io_scratch[0];
-    case HUB_IO_SCRATCH_1:
-        return s->io_scratch[1];
-    case HUB_IO_LINK_STATUS:
-        return s->io_link_status;
-    case HUB_IO_PIO_DEALLOC:
-    case HUB_IO_CRB_DEALLOC:
-    case HUB_IO_IOQ_FIFO_DEPTH:
-    case HUB_IO_CRB_MGMT:
-    case HUB_IO_CRB_CONTROL:
-        /*
-         * Deallocation, queue depth, CRB management and CRB control. Nothing is
-         * ever in flight, queued or valid in this instant-completion model, so
-         * all read zero -- and for the two deallocation registers (0x388, 0x390)
-         * a clear read is required, since a guest polls them for a written
-         * pending bit to clear.
-         */
-        return 0;
-    case HUB_NI_STATUS:
-        return s->ni_status;
-    case HUB_NI_SCRATCH_0:
-        return s->ni_scratch[0];
-    case HUB_NI_SCRATCH_1:
-        return s->ni_scratch[1];
-    case HUB_NI_VECTOR:
-        return s->ni_vector;
-    case HUB_NI_VECTOR_DATA:
-        return s->ni_vector_data;
-    case HUB_NI_VECTOR_STATUS:
-        return s->ni_vector_status;
-    case HUB_NI_RETURN_VECTOR:
-        return s->ni_return_vector;
-    case HUB_NI_VECTOR_READ_DATA:
-        return s->ni_vector_read_data;
-    case HUB_NI_VECTOR_CLEAR:
-        s->ni_vector_status = 0;
-        return 0;
-    case HUB_MD_SLOT_ID_USTAT:
-        return MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
-               (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
-    case HUB_MD_CONFIG:
-        return s->md_config;
-    case HUB_MD_ONEWIRE:
-        return s->md_onewire;
-    case HUB_MD_PERF_CNT0:
-        return s->md_perf_cnt0;
-    case HUB_PI_INT_MODIFY:
-        /*
-         * Write-only: the register is an instruction rather than a value, and
-         * the state it modifies is read through the pending banks.
-         */
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-hub: read of the write-only interrupt-modify "
-                      "register\n");
-        return 0;
-    default:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: read of unimplemented register 0x%" HWADDR_PRIx
-                      "\n", addr);
-        return 0;
-    }
-
-trace_rt_count_read:
-    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_COUNT_READ)) {
-        CPUState *cpu = current_cpu;
-
-        trace_sgi_hub_rt_count_read(
-            cpu ? cpu->cpu_index : -1, s->cpu_base,
-            sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
-            value, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-    }
-    return value;
-
 }
 
 /*
@@ -2293,19 +2128,855 @@ static const char *sgi_hub_led_decode(uint8_t code, bool *is_failure)
     return NULL;
 }
 
+/*
+ * The per-register hooks the descriptor table below names. Everything a
+ * register does beyond plain masked storage lives in one of these; the
+ * comments that justified each behaviour in the old decoders travelled
+ * with the code.
+ */
+
+static uint64_t sgi_hub_read_processor_number(SGIHubState *s, hwaddr addr,
+                                              unsigned arg)
+{
+    /*
+     * Sound under MTTCG: MMIO is dispatched on the reading vCPU's own
+     * thread and current_cpu is thread-local, so each reader gets its
+     * own answer and can never be misattributed to another vCPU's read
+     * racing it. The !current_cpu case covers a main-loop or qtest
+     * reader, which has no processor of its own to name.
+     */
+    if (current_cpu && current_cpu->cpu_index >= s->cpu_base &&
+        current_cpu->cpu_index < s->cpu_base + s->cpus) {
+        return current_cpu->cpu_index - s->cpu_base;
+    }
+    return 0;
+}
+
+static void sgi_hub_write_processor_number(SGIHubState *s, hwaddr addr,
+                                           unsigned arg, uint64_t val,
+                                           unsigned size)
+{
+    /*
+     * Refused, and correctly so: real firmware's own headers document
+     * writing this register as a debug convention aimed at something
+     * watching the bus, not at the chip. The standalone firmware's Hub
+     * header offers a macro that stores a fixed pattern here annotated
+     * for a logic analyzer, and the firmware's own low-level header
+     * pairs a store here with a comment pointing the reader at
+     * register-transfer-level simulation logs to find it — this is a
+     * pre-silicon capture mechanism, not a register the guest expects
+     * to hold a value. IRIX's own PCI bridge and Hub I/O drivers use
+     * the same register the same way, storing marker and diagnostic
+     * values with nothing ever read back, because the register reports
+     * the processor number and cannot report anything else. A real
+     * guest doing this is following a documented vendor convention,
+     * not misbehaving, so this logs as unimplemented rather than as a
+     * guest error.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to the processor-"
+                  "number register 0x%" HWADDR_PRIx " (a logic-analyzer "
+                  "convention on real firmware, not modelled)\n",
+                  val, addr);
+}
+
+static uint64_t sgi_hub_read_cpu_present(SGIHubState *s, hwaddr addr,
+                                         unsigned arg)
+{
+    return s->cpus >= arg + 1;
+}
+
+static uint64_t sgi_hub_read_int_modify(SGIHubState *s, hwaddr addr,
+                                        unsigned arg)
+{
+    /*
+     * Write-only: the register is an instruction rather than a value, and
+     * the state it modifies is read through the pending banks.
+     */
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: read of the write-only interrupt-modify "
+                  "register\n");
+    return 0;
+}
+
+static void sgi_hub_write_int_modify(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
+{
+    sgi_hub_int_modify(s, val);
+}
+
+static uint64_t sgi_hub_read_int_pend(SGIHubState *s, hwaddr addr,
+                                      unsigned arg)
+{
+    if (arg == 1) {
+        return sgi_hub_int_pend1_read(s);
+    }
+    return sgi_hub_int_pending_read(s, arg);
+}
+
+static void sgi_hub_write_read_only(SGIHubState *s, hwaddr addr,
+                                    unsigned arg, uint64_t val,
+                                    unsigned size)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: write of 0x%" PRIx64 " to the read-only "
+                  "register 0x%" HWADDR_PRIx "\n", val, addr);
+}
+
+static void sgi_hub_write_int_mask(SGIHubState *s, hwaddr addr,
+                                   unsigned arg, uint64_t val,
+                                   unsigned size)
+{
+    s->pi_int_mask[arg] = val;
+    sgi_hub_update_irq(s);
+}
+
+static void sgi_hub_write_rt_count(SGIHubState *s, hwaddr addr,
+                                   unsigned arg, uint64_t val,
+                                   unsigned size)
+{
+    sgi_hub_rt_set(s, val);
+    /* Moving the counter moves every deadline standing against it. */
+    sgi_hub_rt_arm(s, 0, false);
+    sgi_hub_rt_arm(s, 1, false);
+}
+
+static uint64_t sgi_hub_peek_rt_count(SGIHubState *s, unsigned arg)
+{
+    return sgi_hub_rt_count(s);
+}
+
+static uint64_t sgi_hub_read_rt_count_reg(SGIHubState *s, hwaddr addr,
+                                          unsigned arg)
+{
+    uint64_t value = sgi_hub_rt_count(s);
+
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_COUNT_READ)) {
+        CPUState *cpu = current_cpu;
+
+        trace_sgi_hub_rt_count_read(
+            cpu ? cpu->cpu_index : -1, s->cpu_base,
+            sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+            value, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    return value;
+}
+
+static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
+{
+    CPUState *peer;
+
+    s->pi_rt_compare[arg] = val & PI_RT_MASK;
+    sgi_hub_rt_arm(s, arg, true);
+
+    /*
+     * The boot PROM uses these registers as progress mailboxes while the
+     * two local processors arbitrate. Its peer timeout is a tight MMIO
+     * read loop, short enough for one processor to exhaust before the
+     * other receives a slice. A real register write is immediately
+     * visible to the peer; end the writer's slice so host scheduling
+     * cannot turn the firmware's instruction-count timeout into a false
+     * dead-processor report. This changes no register or interrupt state.
+     *
+     * Only while the comparator is a mailbox, which the slice's own
+     * interrupt enable distinguishes: the arbitration polls with the
+     * interrupt disabled, while a guest that has enabled it is writing a
+     * deadline from its own tick path and re-arms on every tick. Under
+     * round-robin, yielding here ends the writer's slice between its
+     * compare write and its read-back of the count, so the wall-clock
+     * time the peer's slice consumes lands inside that window and every
+     * deadline the guest asks for has already passed when it checks —
+     * the Linux SMP boot livelocked at its clocksource switch on
+     * exactly that loop. The gate assumes a deadline writer enables the
+     * interrupt first, as Linux does; a guest that polled a deadline
+     * with the interrupt disabled would still donate its slice here and
+     * could meet the same livelock.
+     */
+    peer = qemu_get_cpu(s->cpu_base + (arg ^ 1));
+    if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
+        sgi_hub_yield_to_peer(peer);
+    }
+}
+
+static void sgi_hub_write_rt_pending(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
+{
+    /* The handler acknowledges by writing zero, which drops the line. */
+    s->pi_rt_pending[arg] = val & 1;
+    sgi_hub_update_irq(s);
+}
+
+static void sgi_hub_write_rt_enable(SGIHubState *s, hwaddr addr,
+                                    unsigned arg, uint64_t val,
+                                    unsigned size)
+{
+    s->pi_rt_enable[arg] = val & 1;
+    sgi_hub_update_irq(s);
+}
+
+static uint64_t sgi_hub_peek_zero(SGIHubState *s, unsigned arg)
+{
+    return 0;
+}
+
+static uint64_t sgi_hub_read_zero(SGIHubState *s, hwaddr addr, unsigned arg)
+{
+    return 0;
+}
+
+static void sgi_hub_write_err_pending(SGIHubState *s, hwaddr addr,
+                                      unsigned arg, uint64_t val,
+                                      unsigned size)
+{
+    /* Write-one-to-clear has no effect while no error source can set it. */
+}
+
+static uint64_t sgi_hub_read_err_status_clear(SGIHubState *s, hwaddr addr,
+                                              unsigned arg)
+{
+    uint64_t value = s->pi_err_status0[arg];
+
+    s->pi_err_status0[arg] = 0;
+    return value;
+}
+
+static void sgi_hub_write_err_status_clear(SGIHubState *s, hwaddr addr,
+                                           unsigned arg, uint64_t val,
+                                           unsigned size)
+{
+    /*
+     * The alias's documented use is the read-to-clear; the observed
+     * store that also clears is a full-width zero. What a 32-bit
+     * store does here is as unobserved as the 32-bit read, so the
+     * size test is the same conservative choice the read path makes:
+     * only a full-width access operates the latch. The value test
+     * keeps a nonzero store from clearing what its own bits assert.
+     */
+    if (size == 8 && val == 0) {
+        s->pi_err_status0[arg] = 0;
+    }
+}
+
+static void sgi_hub_write_timedout(SGIHubState *s, hwaddr addr,
+                                   unsigned arg, uint64_t val,
+                                   unsigned size)
+{
+    /*
+     * A guest clears a timed-out request buffer by writing it. This model
+     * times no buffer out, so the write has nothing to clear -- accepted,
+     * not guest misbehaviour.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to processor-interface "
+                  "timed-out-buffer register 0x%" HWADDR_PRIx
+                  " (no buffer timed out here for a write to clear)\n",
+                  val, addr);
+}
+
+static uint64_t sgi_hub_read_widget_id(SGIHubState *s, hwaddr addr,
+                                       unsigned arg)
+{
+    return IO_WIDGET_ID_REVISION | IO_WIDGET_ID_PART |
+           ((uint64_t)s->manufacturer << IO_WIDGET_ID_MFG_SHIFT) |
+           IO_WIDGET_ID_ONE;
+}
+
+static void sgi_hub_write_widget_id(SGIHubState *s, hwaddr addr,
+                                    unsigned arg, uint64_t val,
+                                    unsigned size)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: write of 0x%" PRIx64 " to the read-only widget "
+                  "register 0x%" HWADDR_PRIx "\n", val, addr);
+}
+
+static uint64_t sgi_hub_read_widget_status(SGIHubState *s, hwaddr addr,
+                                           unsigned arg)
+{
+    /*
+     * Nothing this model does sets an error, a retry count or an
+     * outstanding-request count: transfers complete instantly and the link
+     * never fails. Bit 4 reads zero because SGI's own table records it as
+     * undefined and assumed reserved, which is preserved rather than
+     * resolved.
+     */
+    return 0;
+}
+
+static void sgi_hub_write_widget_status(SGIHubState *s, hwaddr addr,
+                                        unsigned arg, uint64_t val,
+                                        unsigned size)
+{
+    /*
+     * Split from the identification register above, which a guest has no
+     * business writing at all. This one is status: the error flag, the
+     * retry count and the outstanding-request count are exactly the state
+     * firmware clears before it starts using the link, and the shipped
+     * PROM writes zero here once during power-on, on every boot. Refused
+     * because this model never sets any of those bits, so there is nothing
+     * for a clear to do and the register reads zero either way — but a
+     * clear at power-on is the register being used as designed, so it logs
+     * as unimplemented rather than as guest misbehaviour.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to the widget status "
+                  "register 0x%" HWADDR_PRIx " (firmware clears this at "
+                  "power-on; nothing here ever sets it)\n", val, addr);
+}
+
+static void sgi_hub_store_widget_control(SGIHubState *s, unsigned arg,
+                                         uint64_t val)
+{
+    s->io_widget_control = (s->io_widget_control &
+                            ~IO_WIDGET_CONTROL_WRITABLE) |
+                           (val & IO_WIDGET_CONTROL_WRITABLE);
+}
+
+static void sgi_hub_store_link_status(SGIHubState *s, unsigned arg,
+                                      uint64_t val)
+{
+    s->io_link_status = (s->io_link_status & ~IO_LINK_WRITABLE) |
+                        (val & IO_LINK_WRITABLE);
+}
+
+static void sgi_hub_write_error_clear(SGIHubState *s, hwaddr addr,
+                                      unsigned arg, uint64_t val,
+                                      unsigned size)
+{
+    unsigned int n;
+
+    /*
+     * Documented effect: writing a bit clears the corresponding error
+     * latch. The two block-transfer-engine bits now have a latch to
+     * clear -- a failed transfer sets the engine's error bit in its
+     * length/status register, no store to that register clears it, and
+     * this is the register the kernel writes to absolve an engine (once
+     * at every boot before first use, and during error recovery).
+     * Exactly which visible bits a clear touches is open in the
+     * datasheet; the one latched error this model has is the one it
+     * clears. Every other latch this register names still does not
+     * exist here -- the widget status register always answers zero
+     * because nothing ever raises those errors -- so the rest of the
+     * write is logged rather than acted on. Real firmware writes here
+     * as part of its normal error-handling path (measured, three
+     * writes per boot), not as a guest asking for unbuilt behaviour.
+     */
+    for (n = 0; n < SGI_HUB_BTES; n++) {
+        if (val & IO_ERROR_CLEAR_BTE(n)) {
+            s->bte_length[n] &= ~BTE_LENGTH_ERROR;
+        }
+    }
+    if (val & ~(IO_ERROR_CLEAR_BTE(0) | IO_ERROR_CLEAR_BTE(1))) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the error "
+                      "clear register 0x%" HWADDR_PRIx " (only the two "
+                      "block-transfer-engine latches exist here)\n",
+                      val, addr);
+    }
+}
+
+static uint64_t sgi_hub_read_ioq(SGIHubState *s, hwaddr addr, unsigned arg)
+{
+    /*
+     * Deallocation, queue depth, CRB management and CRB control. Nothing is
+     * ever in flight, queued or valid in this instant-completion model, so
+     * all read zero -- and for the two deallocation registers (0x388, 0x390)
+     * a clear read is required, since a guest polls them for a written
+     * pending bit to clear.
+     */
+    return 0;
+}
+
+static void sgi_hub_write_ioq(SGIHubState *s, hwaddr addr,
+                              unsigned arg, uint64_t val, unsigned size)
+{
+    /*
+     * A guest writes a pending bit here to free a PIO or CRB entry, or
+     * read-modify-writes CRB counts. This instant-completion model has no
+     * entry outstanding, so the operation completes at once and the pending
+     * bit reads clear -- the write is accepted, nothing to hold. The
+     * queue-depth register (0x398) has no write case: the one conditional
+     * write the datasheet describes (a rewrite only when the max-reply-
+     * pointer field exceeds 0x28) never fires here, as the register always
+     * reads back below that.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to I/O-queue register "
+                  "0x%" HWADDR_PRIx
+                  " (no outstanding entry to free; completes at once)\n",
+                  val, addr);
+}
+
+static uint64_t sgi_hub_read_slot_id(SGIHubState *s, hwaddr addr,
+                                     unsigned arg)
+{
+    return MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
+           (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
+}
+
+static void sgi_hub_write_dimm_init(SGIHubState *s, hwaddr addr,
+                                    unsigned arg, uint64_t val,
+                                    unsigned size)
+{
+    /*
+     * Write-only in both dual sources, and real hardware's DIMM mode
+     * setting has no functional signature on a machine whose transfers
+     * complete instantly. Real firmware writes here as its own per-DIMM
+     * programming sweep, not as a guest asking for unbuilt behaviour.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to the DIMM mode "
+                  "initialisation register 0x%" HWADDR_PRIx " (write-"
+                  "only; no functional signature on this model)\n",
+                  val, addr);
+}
+
+static void sgi_hub_write_onewire(SGIHubState *s, hwaddr addr,
+                                  unsigned arg, uint64_t val,
+                                  unsigned size)
+{
+    /*
+     * A write programs the timing and starts a bit slot.
+     *
+     * The two status bits are the device's to report, so the write cannot
+     * set them: starting a transaction clears completion, and it reads
+     * clear until the slot finishes. That is the property the contract
+     * rests on, and it holds whichever of the disputed reset values is
+     * right.
+     */
+    s->md_onewire = val & MD_ONEWIRE_WRITABLE;
+    timer_mod(s->md_onewire_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MD_ONEWIRE_SLOT_NS);
+}
+
+static void sgi_hub_write_indicator(SGIHubState *s, hwaddr addr,
+                                    unsigned arg, uint64_t val,
+                                    unsigned size)
+{
+    /*
+     * Write-only: the register carries no state for a guest to read
+     * back, on real hardware or here, so nothing is stored. Every
+     * write is traced unconditionally -- decoded when the value is
+     * one of real firmware's own progress or failure codes,
+     * flagged undecoded otherwise, never silent either way. A run
+     * with the trace event armed and no output means no write
+     * reached this register at all, not that one went unlogged.
+     */
+    uint8_t code = val & 0xff;
+    bool is_failure = false;
+    const char *meaning = sgi_hub_led_decode(code, &is_failure);
+
+    if (meaning) {
+        trace_sgi_hub_led(arg, code, is_failure ? "FAILURE" : "progress",
+                          meaning);
+    } else {
+        trace_sgi_hub_led(arg, code, "undecoded",
+                          "not one of real firmware's progress or "
+                          "failure codes -- may be a guest OS write "
+                          "or the firmware's character-wait flash");
+    }
+}
+
+static void sgi_hub_store_ni_status(SGIHubState *s, unsigned arg,
+                                    uint64_t val)
+{
+    /*
+     * Firmware assigns node numbers and chooses the region size through
+     * this register, so those fields are writable; the link state and the
+     * chip's identity are what the hardware reports and are not.
+     */
+    s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
+                   (val & NI_STATUS_WRITABLE);
+}
+
+static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
+{
+    /*
+     * The local-reset bit is tested on its own because the three things
+     * that write this register set different companions alongside it, and
+     * a model keyed to any one of their values would ignore the others.
+     *
+     * The other bits are accepted and dropped: they reset the inter-node
+     * link, which this machine does not have, and send a warm reset to a
+     * neighbour it does not have either.
+     *
+     * **Nothing was reset here before, and a guest could not tell.** The
+     * write landed in the local window, matched no register, and was
+     * logged as unimplemented — so firmware that resets itself and halts
+     * carried on into the code that runs *after* the reset, on a machine
+     * that had not been reset. It reaches the branch the firmware intends
+     * to reach, in the one state the firmware guarantees it is never in
+     * there.
+     */
+    if (val & NI_PORT_RESET_LOCAL) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+static void sgi_hub_write_ni_scratch(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
+{
+    s->ni_scratch[arg] = val;
+    sgi_hub_kick_remote_scratch_peer(s);
+}
+
+static void sgi_hub_write_vector_parms(SGIHubState *s, hwaddr addr,
+                                       unsigned arg, uint64_t val,
+                                       unsigned size)
+{
+    sgi_hub_vector_execute(s, val);
+}
+
+static void sgi_hub_write_vector_status(SGIHubState *s, hwaddr addr,
+                                        unsigned arg, uint64_t val,
+                                        unsigned size)
+{
+    if (val == 0) {
+        s->ni_vector_status = 0;
+    }
+}
+
+static uint64_t sgi_hub_read_vector_clear(SGIHubState *s, hwaddr addr,
+                                          unsigned arg)
+{
+    s->ni_vector_status = 0;
+    return 0;
+}
+
+static void sgi_hub_write_vector_clear(SGIHubState *s, hwaddr addr,
+                                       unsigned arg, uint64_t val,
+                                       unsigned size)
+{
+    s->ni_vector_status = 0;
+}
+
+/*
+ * The register map, one row per decoded doubleword, in address order.
+ * The trace flags carry the two protocol-trace allowlists: reads and
+ * writes of the boot-rendezvous registers trace separately from generic
+ * MMIO so a diagnostic run does not have to record every device access
+ * in the machine.
+ */
+static const SGIHubRegDef sgi_hub_registers[] = {
+    { .offset = HUB_PI_REGION_PRESENT,
+      .field = offsetof(SGIHubState, pi_region_present), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
+    { .offset = HUB_PI_PROCESSOR_NUMBER,
+      .read = sgi_hub_read_processor_number,
+      .write = sgi_hub_write_processor_number },
+    { .offset = HUB_PI_CALIAS_SIZE,
+      .field = offsetof(SGIHubState, pi_calias_size), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_CALIAS_SIZE_MASK },
+    { .offset = HUB_PI_CPU_PRESENT_A, .arg = 0,
+      .read = sgi_hub_read_cpu_present },
+    { .offset = HUB_PI_CPU_PRESENT_B, .arg = 1,
+      .read = sgi_hub_read_cpu_present },
+    { .offset = HUB_PI_CPU_ENABLE_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_cpu_enable[0]), .width = 1,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .write = sgi_hub_write_cpu_enable },
+    { .offset = HUB_PI_CPU_ENABLE_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_cpu_enable[1]), .width = 1,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .write = sgi_hub_write_cpu_enable },
+    { .offset = HUB_PI_INT_MODIFY,
+      .flags = HUB_REG_TRACE_WRITE,
+      .read = sgi_hub_read_int_modify, .write = sgi_hub_write_int_modify },
+    { .offset = HUB_PI_INT_PEND0, .arg = 0,
+      .flags = HUB_REG_TRACE_READ,
+      .read = sgi_hub_read_int_pend, .write = sgi_hub_write_read_only },
+    { .offset = HUB_PI_INT_PEND1, .arg = 1,
+      .flags = HUB_REG_TRACE_READ,
+      .read = sgi_hub_read_int_pend, .write = sgi_hub_write_read_only },
+    { .offset = HUB_PI_INT_MASK0_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_int_mask[0]), .width = 8,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+    { .offset = HUB_PI_INT_MASK1_A, .arg = 1,
+      .field = offsetof(SGIHubState, pi_int_mask[1]), .width = 8,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+    { .offset = HUB_PI_INT_MASK0_B, .arg = 2,
+      .field = offsetof(SGIHubState, pi_int_mask[2]), .width = 8,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+    { .offset = HUB_PI_INT_MASK1_B, .arg = 3,
+      .field = offsetof(SGIHubState, pi_int_mask[3]), .width = 8,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+    { .offset = HUB_PI_RT_COMPARE_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_rt_compare[0]), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
+      .read = sgi_hub_read_rt_compare, .write = sgi_hub_write_rt_compare },
+    { .offset = HUB_PI_RT_COMPARE_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_rt_compare[1]), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
+      .read = sgi_hub_read_rt_compare, .write = sgi_hub_write_rt_compare },
+    { .offset = HUB_PI_RT_PENDING_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_rt_pending[0]), .width = 1,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
+      .write = sgi_hub_write_rt_pending },
+    { .offset = HUB_PI_RT_PENDING_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_rt_pending[1]), .width = 1,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
+      .write = sgi_hub_write_rt_pending },
+    { .offset = HUB_PI_RT_ENABLE_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_rt_enable[0]), .width = 1,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .write = sgi_hub_write_rt_enable },
+    { .offset = HUB_PI_RT_ENABLE_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_rt_enable[1]), .width = 1,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .write = sgi_hub_write_rt_enable },
+    { .offset = HUB_PI_RT_LOCAL_CTRL,
+      .field = offsetof(SGIHubState, pi_rt_local_ctrl), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = PI_RT_LOCAL_CTRL_MASK },
+    { .offset = HUB_PI_ERR_PENDING,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_zero, .write = sgi_hub_write_err_pending },
+    { .offset = HUB_PI_ERR_MASK_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_err_mask[0]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_ERR_MASK },
+    { .offset = HUB_PI_ERR_MASK_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_err_mask[1]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_ERR_MASK },
+    { .offset = HUB_PI_ERR_SPOOL_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_err_spool[0]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_ERR_SPOOL_MASK },
+    { .offset = HUB_PI_ERR_SPOOL_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_err_spool[1]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_ERR_SPOOL_MASK },
+    { .offset = HUB_PI_ERR_SPOOL_SIZE,
+      .field = offsetof(SGIHubState, pi_err_spool_size), .width = 1,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = PI_ERR_SPOOL_SIZE_MASK },
+    /*
+     * The error-status registers and their read-to-clear aliases. Only
+     * the first doubleword of each processor's record is modelled; the
+     * second pair reads zero. The plain registers are readable and
+     * refuse writes; the aliases clear on a full-width access only, per
+     * the conservative choice the halving helpers state.
+     */
+    { .offset = HUB_PI_ERR_STATUS_BASE, .arg = 0,
+      .field = offsetof(SGIHubState, pi_err_status0[0]), .width = 8 },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x08, .arg = 0,
+      .field = offsetof(SGIHubState, pi_err_status0[0]), .width = 8,
+      .flags = HUB_REG_READ_CLEARS,
+      .read = sgi_hub_read_err_status_clear,
+      .write = sgi_hub_write_err_status_clear },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x10,
+      .read = sgi_hub_read_zero },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x18,
+      .read = sgi_hub_read_zero },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x20, .arg = 1,
+      .field = offsetof(SGIHubState, pi_err_status0[1]), .width = 8 },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x28, .arg = 1,
+      .field = offsetof(SGIHubState, pi_err_status0[1]), .width = 8,
+      .flags = HUB_REG_READ_CLEARS,
+      .read = sgi_hub_read_err_status_clear,
+      .write = sgi_hub_write_err_status_clear },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x30,
+      .read = sgi_hub_read_zero },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x38,
+      .read = sgi_hub_read_zero },
+    /* No processor-interface request buffer times out on this model. */
+    { .offset = HUB_PI_TIMEDOUT_BUF_A,
+      .read = sgi_hub_read_zero, .write = sgi_hub_write_timedout },
+    { .offset = HUB_PI_TIMEDOUT_BUF_B,
+      .read = sgi_hub_read_zero, .write = sgi_hub_write_timedout },
+    { .offset = HUB_PI_RT_COUNT,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .read = sgi_hub_read_rt_count_reg, .peek = sgi_hub_peek_rt_count,
+      .write = sgi_hub_write_rt_count },
+    { .offset = HUB_MD_CONFIG,
+      .field = offsetof(SGIHubState, md_config), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = MD_CONFIG_MASK },
+    { .offset = HUB_MD_MEM_DIMM_INIT, .write = sgi_hub_write_dimm_init },
+    { .offset = HUB_MD_DIR_DIMM_INIT, .write = sgi_hub_write_dimm_init },
+    { .offset = HUB_MD_ONEWIRE,
+      .field = offsetof(SGIHubState, md_onewire), .width = 8,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_onewire },
+    /*
+     * A real self-test resets the counter before a measurement pass;
+     * stored so the read that follows sees what was written, with no
+     * counting behaviour attached (see the definition above).
+     */
+    { .offset = HUB_MD_PERF_CNT0,
+      .field = offsetof(SGIHubState, md_perf_cnt0), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = MD_PERF_CNT_MASK },
+    { .offset = HUB_MD_SLOT_ID_USTAT, .read = sgi_hub_read_slot_id },
+    { .offset = HUB_MD_INDICATOR_0, .arg = 0,
+      .write = sgi_hub_write_indicator },
+    { .offset = HUB_MD_INDICATOR_1, .arg = 1,
+      .write = sgi_hub_write_indicator },
+    { .offset = HUB_MD_SN00_INDICATOR_0, .arg = 0,
+      .write = sgi_hub_write_indicator },
+    { .offset = HUB_MD_SN00_INDICATOR_1, .arg = 1,
+      .write = sgi_hub_write_indicator },
+    { .offset = HUB_IO_WIDGET_ID,
+      .read = sgi_hub_read_widget_id, .write = sgi_hub_write_widget_id },
+    { .offset = HUB_IO_WIDGET_STATUS,
+      .read = sgi_hub_read_widget_status,
+      .write = sgi_hub_write_widget_status },
+    { .offset = HUB_IO_WIDGET_CONTROL,
+      .field = offsetof(SGIHubState, io_widget_control), .width = 8,
+      .flags = HUB_REG_DIAG, .store = sgi_hub_store_widget_control },
+    { .offset = HUB_IO_LINK_STATUS,
+      .field = offsetof(SGIHubState, io_link_status), .width = 8,
+      .flags = HUB_REG_DIAG, .store = sgi_hub_store_link_status },
+    { .offset = HUB_IO_SCRATCH_0, .arg = 0,
+      .field = offsetof(SGIHubState, io_scratch[0]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
+    { .offset = HUB_IO_SCRATCH_1, .arg = 1,
+      .field = offsetof(SGIHubState, io_scratch[1]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
+    { .offset = HUB_IO_ERROR_CLEAR, .write = sgi_hub_write_error_clear },
+    { .offset = HUB_IO_PIO_DEALLOC,
+      .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
+    { .offset = HUB_IO_CRB_DEALLOC,
+      .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
+    /* The queue-depth register takes no write; see sgi_hub_write_ioq. */
+    { .offset = HUB_IO_IOQ_FIFO_DEPTH, .read = sgi_hub_read_ioq },
+    { .offset = HUB_IO_CRB_MGMT,
+      .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
+    { .offset = HUB_IO_CRB_CONTROL,
+      .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
+    { .offset = HUB_IO_XTALK_TIMEOUT,
+      .field = offsetof(SGIHubState, io_xtalk_timeout), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_XTALK_TIMEOUT_MASK },
+    { .offset = HUB_IO_XTALK_PRESCALE,
+      .field = offsetof(SGIHubState, io_xtalk_prescale), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = IO_XTALK_PRESCALE_MASK },
+    { .offset = HUB_NI_STATUS,
+      .field = offsetof(SGIHubState, ni_status), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_TRACE_WRITE,
+      .store = sgi_hub_store_ni_status },
+    { .offset = HUB_NI_PORT_RESET, .write = sgi_hub_write_port_reset },
+    { .offset = HUB_NI_SCRATCH_0, .arg = 0,
+      .field = offsetof(SGIHubState, ni_scratch[0]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR |
+               HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
+      .wmask = ~0ULL, .write = sgi_hub_write_ni_scratch },
+    { .offset = HUB_NI_SCRATCH_1, .arg = 1,
+      .field = offsetof(SGIHubState, ni_scratch[1]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR |
+               HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
+      .wmask = ~0ULL, .write = sgi_hub_write_ni_scratch },
+    { .offset = HUB_NI_VECTOR_PARMS, .write = sgi_hub_write_vector_parms },
+    { .offset = HUB_NI_VECTOR,
+      .field = offsetof(SGIHubState, ni_vector), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .wmask = ~0ULL },
+    { .offset = HUB_NI_VECTOR_DATA,
+      .field = offsetof(SGIHubState, ni_vector_data), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .wmask = ~0ULL },
+    { .offset = HUB_NI_VECTOR_STATUS,
+      .field = offsetof(SGIHubState, ni_vector_status), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ,
+      .write = sgi_hub_write_vector_status },
+    { .offset = HUB_NI_RETURN_VECTOR,
+      .field = offsetof(SGIHubState, ni_return_vector), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
+    { .offset = HUB_NI_VECTOR_READ_DATA,
+      .field = offsetof(SGIHubState, ni_vector_read_data), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_READ,
+      .wmask = ~0ULL },
+    /*
+     * The clear alias reads and writes as a clear of the vector status;
+     * its stored value -- what the diagnostic shadow and a 32-bit read
+     * see -- is the status register itself.
+     */
+    { .offset = HUB_NI_VECTOR_CLEAR,
+      .field = offsetof(SGIHubState, ni_vector_status), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE |
+               HUB_REG_READ_CLEARS,
+      .read = sgi_hub_read_vector_clear,
+      .write = sgi_hub_write_vector_clear },
+};
+
+static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
+{
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(sgi_hub_registers); i++) {
+        if (sgi_hub_registers[i].offset == addr) {
+            return &sgi_hub_registers[i];
+        }
+    }
+    return NULL;
+}
+
+static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
+                                      unsigned size)
+{
+    SGIHubState *s = opaque;
+    const SGIHubRegDef *reg;
+    uint8_t *route;
+    unsigned int n;
+    hwaddr bte_reg;
+
+    if (sgi_hub_bwin_entry(addr, &n)) {
+        return s->io_bwin[n];
+    }
+    if (sgi_hub_bte_entry(addr, &n, &bte_reg)) {
+        return sgi_hub_bte_read(s, n, bte_reg);
+    }
+    route = sgi_hub_route_entry(s, addr);
+    if (route) {
+        return *route;
+    }
+    if (sgi_hub_icrb_c_entry(addr)) {
+        /*
+         * No slot has ever tracked a real incoming crosstalk transaction, so
+         * every field a real slot's C register would hold is honestly zero.
+         */
+        return 0;
+    }
+    if (sgi_hub_md_error_entry(addr)) {
+        /*
+         * This model never raises a memory, directory, protocol or
+         * miscellaneous error, so every field any of these eight registers
+         * would hold is honestly zero -- which is also what mtest_basic
+         * requires before it will run at all.
+         */
+        return 0;
+    }
+
+    reg = sgi_hub_reg_lookup(addr);
+    if (!reg || (!reg->read && !sgi_hub_reg_peekable(reg))) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: read of unimplemented register 0x%" HWADDR_PRIx
+                      "\n", addr);
+        return 0;
+    }
+    if (reg->read) {
+        return reg->read(s, addr, reg->arg);
+    }
+    return sgi_hub_reg_peek(s, reg);
+}
+
+
 static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
                                      uint64_t write_value, uint64_t *value)
 {
+    const SGIHubRegDef *reg;
     uint8_t *route;
     unsigned int n;
-    hwaddr reg;
+    hwaddr bte_reg;
 
     if (sgi_hub_bwin_entry(addr, &n)) {
         *value = s->io_bwin[n];
         return true;
     }
-    if (sgi_hub_bte_entry(addr, &n, &reg)) {
-        *value = sgi_hub_bte_read(s, n, reg);
+    if (sgi_hub_bte_entry(addr, &n, &bte_reg)) {
+        *value = sgi_hub_bte_read(s, n, bte_reg);
         return true;
     }
     route = sgi_hub_route_entry(s, addr);
@@ -2313,140 +2984,34 @@ static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
         *value = *route;
         return true;
     }
-
-    switch (addr) {
-    case HUB_PI_RT_COUNT:
-        *value = sgi_hub_rt_count(s);
-        return true;
-    case HUB_PI_RT_COMPARE_A:
-        *value = s->pi_rt_compare[0];
-        return true;
-    case HUB_PI_RT_COMPARE_B:
-        *value = s->pi_rt_compare[1];
-        return true;
-    case HUB_PI_RT_PENDING_A:
-        *value = s->pi_rt_pending[0];
-        return true;
-    case HUB_PI_RT_PENDING_B:
-        *value = s->pi_rt_pending[1];
-        return true;
-    case HUB_PI_RT_ENABLE_A:
-        *value = s->pi_rt_enable[0];
-        return true;
-    case HUB_PI_RT_ENABLE_B:
-        *value = s->pi_rt_enable[1];
-        return true;
-    case HUB_PI_RT_LOCAL_CTRL:
-        *value = s->pi_rt_local_ctrl;
-        return true;
-    case HUB_PI_ERR_SPOOL_A:
-        *value = s->pi_err_spool[0];
-        return true;
-    case HUB_PI_ERR_SPOOL_B:
-        *value = s->pi_err_spool[1];
-        return true;
-    case HUB_PI_ERR_PENDING:
-        *value = 0;
-        return true;
-    case HUB_PI_ERR_MASK_A:
-        *value = s->pi_err_mask[0];
-        return true;
-    case HUB_PI_ERR_MASK_B:
-        *value = s->pi_err_mask[1];
-        return true;
-    case HUB_PI_ERR_SPOOL_SIZE:
-        *value = s->pi_err_spool_size;
-        return true;
-    case HUB_PI_CPU_ENABLE_A:
-        *value = s->pi_cpu_enable[0];
-        return true;
-    case HUB_PI_CPU_ENABLE_B:
-        *value = s->pi_cpu_enable[1];
-        return true;
-    case HUB_PI_INT_MODIFY:
+    /*
+     * The interrupt-modify register is an instruction rather than a
+     * value: what a diagnostic record wants beside it is the pending
+     * bank the instruction names, keyed on the written value, which no
+     * table row can answer for.
+     */
+    if (addr == HUB_PI_INT_MODIFY) {
         *value = s->pi_int_pend[
             (write_value & PI_INT_MODIFY_NUMBER) / SGI_HUB_BANK_BITS];
         return true;
-    case HUB_PI_REGION_PRESENT:
-        *value = s->pi_region_present;
-        return true;
-    case HUB_PI_CALIAS_SIZE:
-        *value = s->pi_calias_size;
-        return true;
-    case HUB_PI_INT_MASK0_A:
-        *value = s->pi_int_mask[0];
-        return true;
-    case HUB_PI_INT_MASK1_A:
-        *value = s->pi_int_mask[1];
-        return true;
-    case HUB_PI_INT_MASK0_B:
-        *value = s->pi_int_mask[2];
-        return true;
-    case HUB_PI_INT_MASK1_B:
-        *value = s->pi_int_mask[3];
-        return true;
-    case HUB_IO_WIDGET_CONTROL:
-        *value = s->io_widget_control;
-        return true;
-    case HUB_IO_XTALK_TIMEOUT:
-        *value = s->io_xtalk_timeout;
-        return true;
-    case HUB_IO_XTALK_PRESCALE:
-        *value = s->io_xtalk_prescale;
-        return true;
-    case HUB_IO_SCRATCH_0:
-        *value = s->io_scratch[0];
-        return true;
-    case HUB_IO_SCRATCH_1:
-        *value = s->io_scratch[1];
-        return true;
-    case HUB_IO_LINK_STATUS:
-        *value = s->io_link_status;
-        return true;
-    case HUB_MD_CONFIG:
-        *value = s->md_config;
-        return true;
-    case HUB_MD_ONEWIRE:
-        *value = s->md_onewire;
-        return true;
-    case HUB_MD_PERF_CNT0:
-        *value = s->md_perf_cnt0;
-        return true;
-    case HUB_NI_STATUS:
-        *value = s->ni_status;
-        return true;
-    case HUB_NI_SCRATCH_0:
-        *value = s->ni_scratch[0];
-        return true;
-    case HUB_NI_SCRATCH_1:
-        *value = s->ni_scratch[1];
-        return true;
-    case HUB_NI_VECTOR:
-        *value = s->ni_vector;
-        return true;
-    case HUB_NI_VECTOR_DATA:
-        *value = s->ni_vector_data;
-        return true;
-    case HUB_NI_VECTOR_STATUS:
-    case HUB_NI_VECTOR_CLEAR:
-        *value = s->ni_vector_status;
-        return true;
-    case HUB_NI_RETURN_VECTOR:
-        *value = s->ni_return_vector;
-        return true;
-    case HUB_NI_VECTOR_READ_DATA:
-        *value = s->ni_vector_read_data;
-        return true;
-    default:
-        return false;
     }
+
+    reg = sgi_hub_reg_lookup(addr);
+    if (reg && (reg->flags & HUB_REG_DIAG)) {
+        *value = sgi_hub_reg_peek(s, reg);
+        return true;
+    }
+    return false;
 }
 
 static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
                                           uint64_t *value)
 {
-    if (addr == HUB_NI_VECTOR_CLEAR) {
-        *value = s->ni_vector_status;
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(addr);
+
+    if (reg && (reg->flags & HUB_REG_DIAG) &&
+        (reg->flags & HUB_REG_READ_CLEARS)) {
+        *value = sgi_hub_reg_peek(s, reg);
         return true;
     }
     return false;
@@ -2472,21 +3037,13 @@ static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
 static uint64_t sgi_hub_read_half(SGIHubState *s, hwaddr addr, unsigned size)
 {
     hwaddr aligned = addr & ~(hwaddr)7;
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(aligned);
     uint64_t value;
 
-    switch (aligned) {
-    case HUB_PI_ERR_STATUS_BASE + 0x08:
-        value = s->pi_err_status0[0];
-        break;
-    case HUB_PI_ERR_STATUS_BASE + 0x28:
-        value = s->pi_err_status0[1];
-        break;
-    case HUB_NI_VECTOR_CLEAR:
-        value = s->ni_vector_status;
-        break;
-    default:
+    if (reg && (reg->flags & HUB_REG_READ_CLEARS)) {
+        value = sgi_hub_reg_peek(s, reg);
+    } else {
         value = sgi_hub_read_internal(s, aligned, size);
-        break;
     }
     return (addr & 4) ? (uint32_t)value : value >> 32;
 }
@@ -2543,9 +3100,10 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
                                    unsigned size)
 {
     SGIHubState *s = opaque;
+    const SGIHubRegDef *reg;
     uint8_t *route;
     unsigned int n;
-    hwaddr reg;
+    hwaddr bte_reg;
 
     if (sgi_hub_bwin_entry(addr, &n)) {
         /*
@@ -2558,8 +3116,8 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         sgi_hub_bwin_follow(s, n);
         return;
     }
-    if (sgi_hub_bte_entry(addr, &n, &reg)) {
-        sgi_hub_bte_write(s, n, reg, val);
+    if (sgi_hub_bte_entry(addr, &n, &bte_reg)) {
+        sgi_hub_bte_write(s, n, bte_reg, val);
         return;
     }
     route = sgi_hub_route_entry(s, addr);
@@ -2602,406 +3160,19 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
                       val, addr);
         return;
     }
-    if (addr == HUB_MD_MEM_DIMM_INIT || addr == HUB_MD_DIR_DIMM_INIT) {
-        /*
-         * Write-only in both dual sources, and real hardware's DIMM mode
-         * setting has no functional signature on a machine whose transfers
-         * complete instantly. Real firmware writes here as its own per-DIMM
-         * programming sweep, not as a guest asking for unbuilt behaviour.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to the DIMM mode "
-                      "initialisation register 0x%" HWADDR_PRIx " (write-"
-                      "only; no functional signature on this model)\n",
-                      val, addr);
+
+    reg = sgi_hub_reg_lookup(addr);
+    if (reg && reg->write) {
+        reg->write(s, addr, reg->arg, val, size);
         return;
     }
-
-    switch (addr) {
-    case HUB_PI_RT_COUNT:
-        sgi_hub_rt_set(s, val);
-        /* Moving the counter moves every deadline standing against it. */
-        sgi_hub_rt_arm(s, 0, false);
-        sgi_hub_rt_arm(s, 1, false);
-        break;
-    case HUB_PI_RT_COMPARE_A:
-    case HUB_PI_RT_COMPARE_B: {
-        unsigned int i = (addr == HUB_PI_RT_COMPARE_B);
-        CPUState *peer;
-
-        s->pi_rt_compare[i] = val & PI_RT_MASK;
-        sgi_hub_rt_arm(s, i, true);
-
-        /*
-         * The boot PROM uses these registers as progress mailboxes while the
-         * two local processors arbitrate. Its peer timeout is a tight MMIO
-         * read loop, short enough for one processor to exhaust before the
-         * other receives a slice. A real register write is immediately
-         * visible to the peer; end the writer's slice so host scheduling
-         * cannot turn the firmware's instruction-count timeout into a false
-         * dead-processor report. This changes no register or interrupt state.
-         *
-         * Only while the comparator is a mailbox, which the slice's own
-         * interrupt enable distinguishes: the arbitration polls with the
-         * interrupt disabled, while a guest that has enabled it is writing a
-         * deadline from its own tick path and re-arms on every tick. Under
-         * round-robin, yielding here ends the writer's slice between its
-         * compare write and its read-back of the count, so the wall-clock
-         * time the peer's slice consumes lands inside that window and every
-         * deadline the guest asks for has already passed when it checks —
-         * the Linux SMP boot livelocked at its clocksource switch on
-         * exactly that loop. The gate assumes a deadline writer enables the
-         * interrupt first, as Linux does; a guest that polled a deadline
-         * with the interrupt disabled would still donate its slice here and
-         * could meet the same livelock.
-         */
-        peer = qemu_get_cpu(s->cpu_base + (i ^ 1));
-        if (!s->pi_rt_enable[i] && (i ^ 1) < s->cpus) {
-            sgi_hub_yield_to_peer(peer);
-        }
-        break;
+    if (reg && sgi_hub_reg_storable(reg)) {
+        sgi_hub_reg_store(s, reg, val);
+        return;
     }
-    case HUB_PI_RT_PENDING_A:
-    case HUB_PI_RT_PENDING_B:
-        /* The handler acknowledges by writing zero, which drops the line. */
-        s->pi_rt_pending[addr == HUB_PI_RT_PENDING_B] = val & 1;
-        sgi_hub_update_irq(s);
-        break;
-    case HUB_PI_RT_ENABLE_A:
-    case HUB_PI_RT_ENABLE_B:
-        s->pi_rt_enable[addr == HUB_PI_RT_ENABLE_B] = val & 1;
-        sgi_hub_update_irq(s);
-        break;
-    case HUB_PI_RT_LOCAL_CTRL:
-        s->pi_rt_local_ctrl = val & PI_RT_LOCAL_CTRL_MASK;
-        break;
-    case HUB_PI_ERR_SPOOL_A:
-        s->pi_err_spool[0] = val & PI_ERR_SPOOL_MASK;
-        break;
-    case HUB_PI_ERR_SPOOL_B:
-        s->pi_err_spool[1] = val & PI_ERR_SPOOL_MASK;
-        break;
-    case HUB_PI_ERR_PENDING:
-        /* Write-one-to-clear has no effect while no error source can set it. */
-        break;
-    case HUB_PI_ERR_MASK_A:
-        s->pi_err_mask[0] = val & PI_ERR_MASK;
-        break;
-    case HUB_PI_ERR_MASK_B:
-        s->pi_err_mask[1] = val & PI_ERR_MASK;
-        break;
-    case HUB_PI_ERR_SPOOL_SIZE:
-        s->pi_err_spool_size = val & PI_ERR_SPOOL_SIZE_MASK;
-        break;
-    case HUB_PI_ERR_STATUS_BASE + 0x08:
-        /*
-         * The alias's documented use is the read-to-clear; the observed
-         * store that also clears is a full-width zero. What a 32-bit
-         * store does here is as unobserved as the 32-bit read, so the
-         * size test is the same conservative choice the read path makes:
-         * only a full-width access operates the latch. The value test
-         * keeps a nonzero store from clearing what its own bits assert.
-         */
-        if (size == 8 && val == 0) {
-            s->pi_err_status0[0] = 0;
-        }
-        break;
-    case HUB_PI_ERR_STATUS_BASE + 0x28:
-        if (size == 8 && val == 0) {
-            s->pi_err_status0[1] = 0;
-        }
-        break;
-    case HUB_PI_TIMEDOUT_BUF_A:
-    case HUB_PI_TIMEDOUT_BUF_B:
-        /*
-         * A guest clears a timed-out request buffer by writing it. This model
-         * times no buffer out, so the write has nothing to clear -- accepted,
-         * not guest misbehaviour.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to processor-interface "
-                      "timed-out-buffer register 0x%" HWADDR_PRIx
-                      " (no buffer timed out here for a write to clear)\n",
-                      val, addr);
-        break;
-    case HUB_PI_CPU_ENABLE_A:
-        sgi_hub_set_cpu_enable(s, 0, val);
-        break;
-    case HUB_PI_CPU_ENABLE_B:
-        sgi_hub_set_cpu_enable(s, 1, val);
-        break;
-    case HUB_PI_INT_MODIFY:
-        sgi_hub_int_modify(s, val);
-        break;
-    case HUB_PI_REGION_PRESENT:
-        s->pi_region_present = val;
-        break;
-    case HUB_PI_CALIAS_SIZE:
-        s->pi_calias_size = val & PI_CALIAS_SIZE_MASK;
-        break;
-    case HUB_PI_INT_MASK0_A:
-        s->pi_int_mask[0] = val;
-        sgi_hub_update_irq(s);
-        break;
-    case HUB_PI_INT_MASK1_A:
-        s->pi_int_mask[1] = val;
-        sgi_hub_update_irq(s);
-        break;
-    case HUB_PI_INT_MASK0_B:
-        s->pi_int_mask[2] = val;
-        sgi_hub_update_irq(s);
-        break;
-    case HUB_PI_INT_MASK1_B:
-        s->pi_int_mask[3] = val;
-        sgi_hub_update_irq(s);
-        break;
-    case HUB_IO_WIDGET_CONTROL:
-        s->io_widget_control = (s->io_widget_control &
-                                ~IO_WIDGET_CONTROL_WRITABLE) |
-                               (val & IO_WIDGET_CONTROL_WRITABLE);
-        break;
-    case HUB_IO_XTALK_TIMEOUT:
-        s->io_xtalk_timeout = val & IO_XTALK_TIMEOUT_MASK;
-        break;
-    case HUB_IO_XTALK_PRESCALE:
-        s->io_xtalk_prescale = val & IO_XTALK_PRESCALE_MASK;
-        break;
-    case HUB_IO_SCRATCH_0:
-        s->io_scratch[0] = val & IO_SCRATCH_MASK;
-        break;
-    case HUB_IO_SCRATCH_1:
-        s->io_scratch[1] = val & IO_SCRATCH_MASK;
-        break;
-    case HUB_MD_CONFIG:
-        s->md_config = val & MD_CONFIG_MASK;
-        break;
-    case HUB_MD_ONEWIRE:
-        /*
-         * A write programs the timing and starts a bit slot.
-         *
-         * The two status bits are the device's to report, so the write cannot
-         * set them: starting a transaction clears completion, and it reads
-         * clear until the slot finishes. That is the property the contract
-         * rests on, and it holds whichever of the disputed reset values is
-         * right.
-         */
-        s->md_onewire = val & MD_ONEWIRE_WRITABLE;
-        timer_mod(s->md_onewire_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MD_ONEWIRE_SLOT_NS);
-        break;
-    case HUB_MD_PERF_CNT0:
-        /*
-         * A real self-test resets the counter before a measurement pass;
-         * accepted and stored so the read that follows sees what was written,
-         * with no counting behaviour attached (see the definition above).
-         */
-        s->md_perf_cnt0 = val & MD_PERF_CNT_MASK;
-        break;
-    case HUB_IO_WIDGET_ID:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-hub: write of 0x%" PRIx64 " to the read-only widget "
-                      "register 0x%" HWADDR_PRIx "\n", val, addr);
-        break;
-    case HUB_IO_WIDGET_STATUS:
-        /*
-         * Split from the identification register above, which a guest has no
-         * business writing at all. This one is status: the error flag, the
-         * retry count and the outstanding-request count are exactly the state
-         * firmware clears before it starts using the link, and the shipped
-         * PROM writes zero here once during power-on, on every boot. Refused
-         * because this model never sets any of those bits, so there is nothing
-         * for a clear to do and the register reads zero either way — but a
-         * clear at power-on is the register being used as designed, so it logs
-         * as unimplemented rather than as guest misbehaviour.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to the widget status "
-                      "register 0x%" HWADDR_PRIx " (firmware clears this at "
-                      "power-on; nothing here ever sets it)\n", val, addr);
-        break;
-    case HUB_IO_LINK_STATUS:
-        s->io_link_status = (s->io_link_status & ~IO_LINK_WRITABLE) |
-                            (val & IO_LINK_WRITABLE);
-        break;
-    case HUB_IO_ERROR_CLEAR:
-        /*
-         * Documented effect: writing a bit clears the corresponding error
-         * latch. The two block-transfer-engine bits now have a latch to
-         * clear -- a failed transfer sets the engine's error bit in its
-         * length/status register, no store to that register clears it, and
-         * this is the register the kernel writes to absolve an engine (once
-         * at every boot before first use, and during error recovery).
-         * Exactly which visible bits a clear touches is open in the
-         * datasheet; the one latched error this model has is the one it
-         * clears. Every other latch this register names still does not
-         * exist here -- the widget status register always answers zero
-         * because nothing ever raises those errors -- so the rest of the
-         * write is logged rather than acted on. Real firmware writes here
-         * as part of its normal error-handling path (measured, three
-         * writes per boot), not as a guest asking for unbuilt behaviour.
-         */
-        for (n = 0; n < SGI_HUB_BTES; n++) {
-            if (val & IO_ERROR_CLEAR_BTE(n)) {
-                s->bte_length[n] &= ~BTE_LENGTH_ERROR;
-            }
-        }
-        if (val & ~(IO_ERROR_CLEAR_BTE(0) | IO_ERROR_CLEAR_BTE(1))) {
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-hub: write of 0x%" PRIx64 " to the error "
-                          "clear register 0x%" HWADDR_PRIx " (only the two "
-                          "block-transfer-engine latches exist here)\n",
-                          val, addr);
-        }
-        break;
-    case HUB_IO_PIO_DEALLOC:
-    case HUB_IO_CRB_DEALLOC:
-    case HUB_IO_CRB_MGMT:
-    case HUB_IO_CRB_CONTROL:
-        /*
-         * A guest writes a pending bit here to free a PIO or CRB entry, or
-         * read-modify-writes CRB counts. This instant-completion model has no
-         * entry outstanding, so the operation completes at once and the pending
-         * bit reads clear -- the write is accepted, nothing to hold. The
-         * queue-depth register (0x398) has no write case: the one conditional
-         * write the datasheet describes (a rewrite only when the max-reply-
-         * pointer field exceeds 0x28) never fires here, as the register always
-         * reads back below that.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to I/O-queue register "
-                      "0x%" HWADDR_PRIx
-                      " (no outstanding entry to free; completes at once)\n",
-                      val, addr);
-        break;
-    case HUB_NI_STATUS:
-        /*
-         * Firmware assigns node numbers and chooses the region size through
-         * this register, so those fields are writable; the link state and the
-         * chip's identity are what the hardware reports and are not.
-         */
-        s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
-                       (val & NI_STATUS_WRITABLE);
-        break;
-    case HUB_NI_SCRATCH_0:
-        s->ni_scratch[0] = val;
-        sgi_hub_kick_remote_scratch_peer(s);
-        break;
-    case HUB_NI_SCRATCH_1:
-        s->ni_scratch[1] = val;
-        sgi_hub_kick_remote_scratch_peer(s);
-        break;
-    case HUB_NI_VECTOR:
-        s->ni_vector = val;
-        break;
-    case HUB_NI_VECTOR_DATA:
-        s->ni_vector_data = val;
-        break;
-    case HUB_NI_VECTOR_STATUS:
-        if (val == 0) {
-            s->ni_vector_status = 0;
-        }
-        break;
-    case HUB_NI_RETURN_VECTOR:
-        s->ni_return_vector = val;
-        break;
-    case HUB_NI_VECTOR_READ_DATA:
-        s->ni_vector_read_data = val;
-        break;
-    case HUB_NI_VECTOR_CLEAR:
-        s->ni_vector_status = 0;
-        break;
-    case HUB_NI_VECTOR_PARMS:
-        sgi_hub_vector_execute(s, val);
-        break;
-    case HUB_NI_PORT_RESET:
-        /*
-         * The local-reset bit is tested on its own because the three things
-         * that write this register set different companions alongside it, and
-         * a model keyed to any one of their values would ignore the others.
-         *
-         * The other bits are accepted and dropped: they reset the inter-node
-         * link, which this machine does not have, and send a warm reset to a
-         * neighbour it does not have either.
-         *
-         * **Nothing was reset here before, and a guest could not tell.** The
-         * write landed in the local window, matched no register, and was
-         * logged as unimplemented — so firmware that resets itself and halts
-         * carried on into the code that runs *after* the reset, on a machine
-         * that had not been reset. It reaches the branch the firmware intends
-         * to reach, in the one state the firmware guarantees it is never in
-         * there.
-         */
-        if (val & NI_PORT_RESET_LOCAL) {
-            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-        }
-        break;
-    case HUB_PI_PROCESSOR_NUMBER:
-        /*
-         * Refused, and correctly so: real firmware's own headers document
-         * writing this register as a debug convention aimed at something
-         * watching the bus, not at the chip. The standalone firmware's Hub
-         * header offers a macro that stores a fixed pattern here annotated
-         * for a logic analyzer, and the firmware's own low-level header
-         * pairs a store here with a comment pointing the reader at
-         * register-transfer-level simulation logs to find it — this is a
-         * pre-silicon capture mechanism, not a register the guest expects
-         * to hold a value. IRIX's own PCI bridge and Hub I/O drivers use
-         * the same register the same way, storing marker and diagnostic
-         * values with nothing ever read back, because the register reports
-         * the processor number and cannot report anything else. A real
-         * guest doing this is following a documented vendor convention,
-         * not misbehaving, so this logs as unimplemented rather than as a
-         * guest error.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to the processor-"
-                      "number register 0x%" HWADDR_PRIx " (a logic-analyzer "
-                      "convention on real firmware, not modelled)\n",
-                      val, addr);
-        break;
-    case HUB_PI_INT_PEND0:
-    case HUB_PI_INT_PEND1:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-hub: write of 0x%" PRIx64 " to the read-only "
-                      "register 0x%" HWADDR_PRIx "\n", val, addr);
-        break;
-    case HUB_MD_INDICATOR_0:
-    case HUB_MD_INDICATOR_1:
-    case HUB_MD_SN00_INDICATOR_0:
-    case HUB_MD_SN00_INDICATOR_1:
-        {
-            /*
-             * Write-only: the register carries no state for a guest to read
-             * back, on real hardware or here, so nothing is stored. Every
-             * write is traced unconditionally -- decoded when the value is
-             * one of real firmware's own progress or failure codes,
-             * flagged undecoded otherwise, never silent either way. A run
-             * with the trace event armed and no output means no write
-             * reached this register at all, not that one went unlogged.
-             */
-            unsigned int cpu = (addr == HUB_MD_INDICATOR_1 ||
-                                addr == HUB_MD_SN00_INDICATOR_1);
-            uint8_t code = val & 0xff;
-            bool is_failure = false;
-            const char *meaning = sgi_hub_led_decode(code, &is_failure);
-
-            if (meaning) {
-                trace_sgi_hub_led(cpu, code, is_failure ? "FAILURE" : "progress",
-                                   meaning);
-            } else {
-                trace_sgi_hub_led(cpu, code, "undecoded",
-                                   "not one of real firmware's progress or "
-                                   "failure codes -- may be a guest OS write "
-                                   "or the firmware's character-wait flash");
-            }
-        }
-        break;
-    default:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: write of 0x%" PRIx64 " to unimplemented "
-                      "register 0x%" HWADDR_PRIx "\n", val, addr);
-        break;
-    }
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to unimplemented "
+                  "register 0x%" HWADDR_PRIx "\n", val, addr);
 }
 
 /*
