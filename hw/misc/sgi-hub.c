@@ -229,6 +229,15 @@
 #define IO_ERROR_CLEAR_BTE(engine)  (1ULL << (17 + (engine)))
 
 /*
+ * How many lines move per address-space call when an engine copies. 512
+ * KiB is the size of real firmware's power-on-diagnostic transfer, so
+ * the observed launch is one call each way, and the bounce buffer stays
+ * a bounded per-launch allocation -- the 8 MiB maximum transfer takes
+ * sixteen.
+ */
+#define BTE_COPY_CHUNK_LINES    4096
+
+/*
  * Memory and directory interface. Both guests we boot read memory size
  * through the synthesized configuration graph rather than this unit's
  * registers directly, which is why only these two exist here: real firmware's
@@ -1261,7 +1270,7 @@ static uint64_t sgi_hub_bte_address(unsigned int engine, const char *what,
  * programs; MMIO dispatch holds the BQL, which is what serialises the
  * peer-Hub interrupt delivery below just as it does the vector PIO's.
  *
- * The copy is line-at-a-time through the node-local memory view the
+ * The copy runs through the node-local memory view the
  * machine handed this Hub — the engines move node memory and nothing here
  * crosses the Bridge, so no IOMMU is involved, and a node-less address
  * names this node's memory exactly as it does for the node's processors.
@@ -1274,6 +1283,8 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
     uint64_t src = s->bte_source[engine];
     uint64_t dst = s->bte_dest[engine];
     uint64_t control = s->bte_control[engine];
+    g_autofree uint8_t *buf = NULL;
+    uint64_t chunk;
     uint64_t done;
 
     trace_sgi_hub_bte_launch(engine, control, src, dst, lines);
@@ -1300,10 +1311,27 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
                       "sgi-hub: BTE%u launched with a zero length\n", engine);
     }
 
-    for (done = 0; done < lines; done++) {
-        uint8_t line[BTE_LINE_SIZE];
-        MemTxResult result = MEMTX_OK;
-
+    /*
+     * The copy moves whole chunks through one bounce buffer rather than
+     * issuing 65,535 separate 128-byte address-space calls under the BQL.
+     * The register-visible contract of the line-at-a-time engine is
+     * unchanged: the transfer still completes inside the launching store,
+     * and a failure still latches the count of lines that never moved.
+     * When a chunk fails, it is retried line by line to find the first
+     * line that does not move -- over RAM, where every observed transfer
+     * runs, the retry is indistinguishable from the first attempt.
+     * Overlapping source and destination keep the line-at-a-time order:
+     * its forward propagation is not what one large copy through a
+     * buffer would leave behind.
+     */
+    chunk = BTE_COPY_CHUNK_LINES;
+    if (!(control & BTE_CONTROL_ZFILL) &&
+        src < dst + lines * BTE_LINE_SIZE &&
+        dst < src + lines * BTE_LINE_SIZE) {
+        chunk = 1;
+    }
+    if (lines) {
+        buf = g_malloc(MIN(chunk, lines) * BTE_LINE_SIZE);
         if (control & BTE_CONTROL_ZFILL) {
             /*
              * Whether the engine reads its source in zero-fill mode is
@@ -1312,20 +1340,33 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
              * page and replicating its first line are indistinguishable.
              * Not reading the source is the least-committal of the three.
              */
-            memset(line, 0, sizeof(line));
-        } else {
+            memset(buf, 0, MIN(chunk, lines) * BTE_LINE_SIZE);
+        }
+    }
+
+    done = 0;
+    while (done < lines) {
+        uint64_t run = MIN(lines - done, chunk);
+        MemTxResult result = MEMTX_OK;
+
+        if (!(control & BTE_CONTROL_ZFILL)) {
             result = address_space_read(&s->bte_as,
                                         src + done * BTE_LINE_SIZE,
-                                        MEMTXATTRS_UNSPECIFIED, line,
-                                        sizeof(line));
+                                        MEMTXATTRS_UNSPECIFIED, buf,
+                                        run * BTE_LINE_SIZE);
         }
         if (result == MEMTX_OK) {
             result = address_space_write(&s->bte_as,
                                          dst + done * BTE_LINE_SIZE,
-                                         MEMTXATTRS_UNSPECIFIED, line,
-                                         sizeof(line));
+                                         MEMTXATTRS_UNSPECIFIED, buf,
+                                         run * BTE_LINE_SIZE);
         }
         if (result != MEMTX_OK) {
+            if (run > 1) {
+                /* Find the first line that does not move. */
+                chunk = 1;
+                continue;
+            }
             /*
              * A failed transfer latches the error bit and wedges the
              * engine: busy stays set beside error — the datasheet's one
@@ -1352,6 +1393,7 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
                           engine);
             return;
         }
+        done += run;
     }
 
     /*
