@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * The R10000 family's system helpers: the CACHE instruction's diagnostic
- * operations over the cache arrays the CPU state carries, and the
- * physical watchpoint pair behind the WatchLo and WatchHi registers.
+ * operations over the cache arrays the CPU state carries, the physical
+ * watchpoint pair behind the WatchLo and WatchHi registers, and the
+ * coprocessor 0 registers only this family has.
  *
  * Everything here is reached only on a processor whose definition carries
  * INSN_R10K; the shared helpers dispatch before their own generic paths.
@@ -457,7 +458,7 @@ static int mips_r10k_watch_flags(CPUMIPSState *env)
  * the watched doubleword and no earlier fill planted it already.
  */
 void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
-                                 vaddr address, hwaddr physical)
+                          vaddr address, hwaddr physical)
 {
     uint64_t wpa = mips_r10k_watch_pa(env);
     int flags = mips_r10k_watch_flags(env);
@@ -583,4 +584,62 @@ bool mips_r10k_deliver_delayed_watch(CPUState *cs)
         cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
     }
     return false;
+}
+
+void helper_mtc0_r10k_diagnostic(CPUMIPSState *env, target_ulong arg1)
+{
+    /*
+     * Software writes the branch prediction algorithm, and the index,
+     * operation and state fields through which it reaches the branch
+     * prediction table. The rest of the register reports what the branch
+     * caches and the instruction TLB last did, and its gaps are reserved and
+     * read as zero.
+     *
+     * Every write also names a table operation, because the operation field
+     * has no idle value: 00 reads the indexed entry into the state field, 01
+     * writes the state field into the indexed entry, 10 and 11 set a whole
+     * line of eight entries to zeroes or ones. On hardware a read's result
+     * arrives only once the table port frees up, which is why the manual's
+     * read sequence parks in a jump before looking; here it is simply done.
+     */
+    uint32_t idx, line, i;
+
+    env->CP0_Diagnostic = arg1 & CP0DI_WRITABLE;
+
+    idx = extract64(env->CP0_Diagnostic, CP0DI_BPIdx, 9);
+    switch (extract64(env->CP0_Diagnostic, CP0DI_BPOp, 2)) {
+    case 0: /* table read */
+        env->CP0_Diagnostic = deposit64(env->CP0_Diagnostic, CP0DI_BPState, 2,
+                                        env->r10k_bpt[idx]);
+        break;
+    case 1: /* table write */
+        env->r10k_bpt[idx] = extract64(env->CP0_Diagnostic, CP0DI_BPState, 2);
+        break;
+    case 2: /* initialize a line to all zeroes (strongly not taken) */
+    case 3: /* initialize a line to all ones (strongly taken) */
+        line = idx & ~(R10K_BPT_LINE - 1);
+        for (i = 0; i < R10K_BPT_LINE; i++) {
+            env->r10k_bpt[line + i] =
+                (env->CP0_Diagnostic & (1 << CP0DI_BPOp)) ? 3 : 0;
+        }
+        break;
+    }
+}
+
+void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
+                                  uint32_t sel)
+{
+    /*
+     * Odd selectors are the 32-bit counters, even ones the control
+     * registers, which keep an event number, an interrupt enable, and one
+     * count enable per processor mode. The store also settles what the
+     * write means for IP[7] and for the counting machinery.
+     */
+    cpu_mips_store_r10k_perf(env, arg1, sel);
+}
+
+target_ulong helper_mfc0_r10k_performance(CPUMIPSState *env, uint32_t sel)
+{
+    /* A counter that is counting cycles is assembled from the clock. */
+    return (int32_t)cpu_mips_get_r10k_perf(env, sel);
 }

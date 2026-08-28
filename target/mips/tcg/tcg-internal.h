@@ -74,6 +74,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra);
 void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
                           vaddr address, hwaddr physical);
+void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written);
 bool mips_r10k_deliver_delayed_watch(CPUState *cs);
 
 void mips_semihosting(CPUMIPSState *env);

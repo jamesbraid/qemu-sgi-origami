@@ -6600,7 +6600,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_22:
         /* Implementation dependent; only the R10000 family has a register. */
         if (ctx->insn_flags & INSN_R10K) {
-            gen_helper_mtc0_diagnostic(tcg_env, arg);
+            gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
         }
         register_name = "Diagnostic";
         break;
@@ -8134,7 +8134,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_22:
         /* Implementation dependent; only the R10000 family has a register. */
         if (ctx->insn_flags & INSN_R10K) {
-            gen_helper_mtc0_diagnostic(tcg_env, arg);
+            gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
         }
         register_name = "Diagnostic";
         break;
