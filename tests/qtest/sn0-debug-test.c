@@ -689,10 +689,18 @@ static void test_hub_records_equal_and_timer_writes(void)
     const QListEntry *entry;
     unsigned int compare_writes = 0;
     bool saw_equal_before_after = false;
+    bool saw_low_half_compare = false;
     bool saw_rt_count = false;
 
     qtest_writel(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0x12345678);
     qtest_writel(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0x12345678);
+    /*
+     * A low-half write records the access as the guest issued it -- its
+     * own address, its 32-bit value, size 4 -- while the before/after
+     * sample is taken at the aligned doubleword the shadow recognizes:
+     * the record must show the low half replaced and the high half kept.
+     */
+    qtest_writel(qts, HUB_LOCAL + PI_RT_COMPARE_A + 4, 0x9abcdef0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0x3344);
     state = query_origin_state(qts);
     events = flight_events(state);
@@ -714,6 +722,16 @@ static void test_hub_records_equal_and_timer_writes(void)
                 qdict_get_uint(event, "after")) {
                 saw_equal_before_after = true;
             }
+        } else if (qdict_get_uint(event, "address") == PI_RT_COMPARE_A + 4 &&
+                   qdict_get_uint(event, "value") == 0x9abcdef0) {
+            saw_low_half_compare = true;
+            g_assert_cmpint(qdict_get_int(event, "size"), ==, 4);
+            g_assert(qdict_haskey(event, "before"));
+            g_assert(qdict_haskey(event, "after"));
+            g_assert_cmphex(qdict_get_uint(event, "before") >> 32, ==,
+                            qdict_get_uint(event, "after") >> 32);
+            g_assert_cmphex((uint32_t)qdict_get_uint(event, "after"), ==,
+                            0x9abcdef0);
         } else if (qdict_get_uint(event, "address") == PI_RT_COUNT &&
                    qdict_get_uint(event, "value") == 0x3344) {
             g_assert_cmpint(qdict_get_int(event, "size"), ==, 8);
@@ -723,6 +741,7 @@ static void test_hub_records_equal_and_timer_writes(void)
 
     g_assert_cmpuint(compare_writes, ==, 2);
     g_assert_true(saw_equal_before_after);
+    g_assert_true(saw_low_half_compare);
     g_assert_true(saw_rt_count);
     qobject_unref(state);
     qtest_quit(qts);
@@ -740,11 +759,21 @@ static void test_vector_launch_and_clear_are_replayable(void)
     unsigned int clear_reads = 0;
     unsigned int changed_clear_reads = 0;
     unsigned int unchanged_clear_reads = 0;
+    unsigned int half_clear_reads = 0;
+    uint64_t status;
 
     qtest_writeq(qts, node0 + NI_VECTOR, 0);
     qtest_writeq(qts, node0 + NI_VECTOR_DATA, 7 << NI_STATUS_NODE_SHIFT);
     qtest_writeq(qts, node0 + NI_VECTOR_PARMS, parms);
-    g_assert(qtest_readq(qts, node0 + NI_VECTOR_STATUS) & NI_VECTOR_VALID);
+    status = qtest_readq(qts, node0 + NI_VECTOR_STATUS);
+    g_assert(status & NI_VECTOR_VALID);
+    /*
+     * A 32-bit read of the clear alias records the access as issued --
+     * its own address, its half of the value, size 4 -- with the
+     * before/after sample taken at the aligned register the shadow
+     * recognizes, and the latch intact on both sides of it.
+     */
+    (void)qtest_readl(qts, node0 + NI_VECTOR_CLEAR + 4);
     (void)qtest_readq(qts, node0 + NI_VECTOR_CLEAR);
     (void)qtest_readq(qts, node0 + NI_VECTOR_CLEAR);
     (void)qtest_readq(qts, node0 + NI_VECTOR_CLEAR);
@@ -773,11 +802,23 @@ static void test_vector_launch_and_clear_are_replayable(void)
             } else {
                 changed_clear_reads++;
             }
+        } else if (!strcmp(qdict_get_str(event, "component"), "hub") &&
+                   !strcmp(qdict_get_str(event, "operation"), "mmio-read") &&
+                   qdict_get_uint(event, "address") == NI_VECTOR_CLEAR + 4) {
+            half_clear_reads++;
+            g_assert_cmpint(qdict_get_int(event, "size"), ==, 4);
+            g_assert_cmphex(qdict_get_uint(event, "value"), ==,
+                            (uint32_t)status);
+            g_assert(qdict_haskey(event, "before"));
+            g_assert(qdict_haskey(event, "after"));
+            g_assert_cmphex(qdict_get_uint(event, "before"), ==, status);
+            g_assert_cmphex(qdict_get_uint(event, "after"), ==, status);
         }
     }
     g_assert_cmpuint(clear_reads, ==, 2);
     g_assert_cmpuint(changed_clear_reads, ==, 1);
     g_assert_cmpuint(unchanged_clear_reads, ==, 1);
+    g_assert_cmpuint(half_clear_reads, ==, 1);
 
     qobject_unref(state);
     qtest_quit(qts);
