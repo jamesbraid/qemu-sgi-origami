@@ -1592,6 +1592,24 @@ class SN0SMPMachine(QemuSystemTest):
         self.log.info('state at %#x: %s', address, state)
         return state
 
+    # Deadline scoring for the tests below that used a fixed settle
+    # sleep: a loaded host only slows the guest down, so silence before
+    # the deadline is not failure.  read() polls the guest's state (xp
+    # works on a running VM) and done() recognises a terminal marker;
+    # fail only at expiry, with the last state read in the message.
+    def poll_state(self, read, done, timeout=30, interval=0.1):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = read()
+            if done(state):
+                return state
+            time.sleep(interval)
+
+        # Stop before the diagnostic read, the same order the other
+        # waits use, so the dump is one consistent snapshot.
+        self.vm.cmd('human-monitor-command', command_line='stop')
+        self.fail(f'guest state did not settle: {read()}')
+
     def wait_for_four_cpu_state(self, timeout=10):
         deadline = time.monotonic() + timeout
         state = []
@@ -1657,8 +1675,20 @@ class SN0SMPMachine(QemuSystemTest):
                          '-smp', '2', '-bios', firmware)
         self.vm.launch()
 
-        # A monitor request interrupts TCG, so let the race settle first.
+        # A monitor request interrupts TCG, so let the race settle
+        # first: an xp read is itself a scheduling kick that can run the
+        # starved CPU and decide the round-robin race under test from
+        # the outside.  Keep the old undisturbed window, then poll only
+        # reluctantly -- once a terminal marker (EARLY_EXIT, or both
+        # DONE words) is stored the verdict cannot change, and the slow
+        # interval keeps a poll unlikely to land inside a race that a
+        # loaded host is still resolving.
         time.sleep(0.75)
+        self.poll_state(
+            lambda: self.read_state(TEST_STATE, 6),
+            lambda s: s[STATE_EARLY_EXIT // 8] or
+            (s[STATE_DONE_A // 8] and s[STATE_DONE_B // 8]),
+            interval=1.0)
         state = self.read_test_state(6)
 
         self.assertEqual(state[STATE_EARLY_EXIT // 8], 0)
@@ -1676,7 +1706,13 @@ class SN0SMPMachine(QemuSystemTest):
                          '-smp', '2', '-bios', firmware)
         self.vm.launch()
 
-        time.sleep(0.75)
+        # DONE, CPU B's last store, orders after every asserted word
+        # except CPU A's own CACHED_A read-back, which only program
+        # order on A guarantees -- so wait for both.
+        self.poll_state(
+            lambda: self.read_state(TEST_STATE, 7),
+            lambda s: (s[PROMDATA_DONE // 8] == 1 and
+                       s[PROMDATA_CACHED_A // 8] != 0))
         state = self.read_test_state(7)
 
         self.assertEqual(state[PROMDATA_DONE // 8], 1)
@@ -1697,7 +1733,11 @@ class SN0SMPMachine(QemuSystemTest):
             '-smp', '2', '-bios', firmware)
         self.vm.launch()
 
-        time.sleep(0.75)
+        # DONE and TIMEOUT are CPU A's two terminal spins; wait for
+        # either and let the assertions name which one the guest took.
+        self.poll_state(
+            lambda: self.read_state(RR_KICK_STATE, 5),
+            lambda s: s[RR_KICK_DONE // 8] or s[RR_KICK_TIMEOUT // 8])
         state = self.read_state(RR_KICK_STATE, 5)
         self.assertEqual(state[RR_KICK_PEER_ARMED // 8], 1)
         self.assertEqual(state[RR_KICK_GO // 8], 1)
@@ -1816,7 +1856,11 @@ class SN0SMPMachine(QemuSystemTest):
                          '-m', '64M', '-smp', '2', '-bios', firmware)
         self.vm.launch()
 
-        time.sleep(0.75)
+        # The ver response prefix is the last state word slice B stores;
+        # wait for it, then stop for one consistent snapshot.
+        self.poll_state(
+            lambda: self.read_state(SLICE_B_STATE, SLICE_B_STATE_WORDS),
+            lambda s: s[SLICE_B_VER_PREFIX // 8] != 0)
         self.vm.cmd('human-monitor-command', command_line='stop')
         state = self.read_state(SLICE_B_STATE, SLICE_B_STATE_WORDS)
         self.assertEqual(state[SLICE_B_PROCESSOR_NUMBER // 8], 1, state)
@@ -1849,9 +1893,18 @@ class SN0SMPMachine(QemuSystemTest):
             '-bios', firmware)
         self.vm.launch()
 
-        # A monitor request interrupts TCG. Let the race settle, stop exactly
-        # once, and only then collect the independent per-node snapshots.
-        time.sleep(0.75)
+        # Node one raises interrupt 114 as the protocol's final
+        # device-side action, only after it has seen the coordinator's
+        # DONE; the coordinator's TIMEOUT marker is the only other
+        # terminal state.  Wait for either, stop exactly once, and only
+        # then collect the independent per-node snapshots.
+        hub1 = HUB_BY_NODE + HUB_NODE_STRIDE
+        self.poll_state(
+            lambda: [self.read_state(hub1 + HUB_PI_INT_PEND1, 1)[0],
+                     self.read_state(HUB_BY_NODE + HUB_NI_SCRATCH_1,
+                                     1)[0]],
+            lambda s: (s[0] & PEER_SCRATCH_PEND1 or
+                       s[1] == PEER_SCRATCH_TIMEOUT))
         self.vm.cmd('human-monitor-command', command_line='stop')
         hubs = []
         for node in range(2):
@@ -1896,7 +1949,13 @@ class SN0SMPMachine(QemuSystemTest):
             '-bios', firmware)
         self.vm.launch()
 
-        time.sleep(0.75)
+        # The coordinator stores its own DONE only after observing the
+        # peer's, and TIMEOUT is its only other terminal state, so node
+        # zero's second scratch word carries the verdict either way.
+        self.poll_state(
+            lambda: self.read_state(HUB_BY_NODE + HUB_NI_SCRATCH_1, 1),
+            lambda s: s[0] in (REMOTE_SCRATCH_DONE,
+                               REMOTE_SCRATCH_TIMEOUT))
         self.vm.cmd('human-monitor-command', command_line='stop')
         scratch = []
         for node in range(2):
