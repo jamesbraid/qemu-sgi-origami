@@ -32,6 +32,7 @@
 #include "qobject/qstring.h"
 
 #include "sn0-model.h"
+#include "sn0-model-dual-assert.h"
 
 #include <elf.h>
 
@@ -745,6 +746,7 @@ static void test_config_graph(const void *data)
                                   SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
     size_t i;
 
+    g_assert_cmpuint(SN0_MODEL_CONFIG_GRAPH_COUNT, ==, 1);
     for (i = 0; i < ARRAY_SIZE(sn0_model_graph); i++) {
         const SN0ModelField *f = &sn0_model_graph[i];
         uint64_t got = read_field(qts, f->offset, f->width);
@@ -866,9 +868,56 @@ static void test_graph_whole_region(const void *data)
     qtest_quit(qts);
 }
 
-/* Collect every "type" in the object graph under one path, recursively. */
-static void collect_types(QTestState *qts, const char *path, GHashTable *seen,
-                          int depth)
+static void increment_type_count(GHashTable *counts, const char *type)
+{
+    unsigned int count = GPOINTER_TO_UINT(g_hash_table_lookup(counts, type));
+
+    g_hash_table_replace(counts, g_strdup(type), GUINT_TO_POINTER(count + 1));
+}
+
+static bool sn0_model_profile_paths_match(const SN0ModelDevice *expected,
+                                          size_t expected_count,
+                                          GHashTable *actual)
+{
+    size_t i;
+
+    for (i = 0; i < expected_count; i++) {
+        const char *actual_type = g_hash_table_lookup(actual,
+                                                      expected[i].qom_path);
+
+        if (!actual_type ||
+            !g_str_equal(actual_type, expected[i].qom_type)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void test_profile_path_isolation(const void *data)
+{
+    static const SN0ModelDevice expected[] = {
+        {
+            "node1-hub", "Hub", "sgi-hub", "/machine/node1/hub",
+        },
+    };
+    g_autoptr(GHashTable) actual =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    g_hash_table_insert(actual, g_strdup("/machine/outside-hub"),
+                        g_strdup("sgi-hub"));
+    g_assert_false(sn0_model_profile_paths_match(
+        expected, ARRAY_SIZE(expected), actual));
+
+    g_hash_table_insert(actual, g_strdup("/machine/node1/hub"),
+                        g_strdup("sgi-hub"));
+    g_assert_true(sn0_model_profile_paths_match(
+        expected, ARRAY_SIZE(expected), actual));
+}
+
+/* Count every "type" in the object graph under one path, recursively. */
+static void collect_type_counts(QTestState *qts, const char *path,
+                                GHashTable *counts, GHashTable *paths,
+                                int depth)
 {
     QDict *response;
     QList *children;
@@ -913,28 +962,30 @@ static void collect_types(QTestState *qts, const char *path, GHashTable *seen,
         if (g_str_has_prefix(type, "child<")) {
             g_autofree char *bare = g_strndup(type + 6, strlen(type) - 7);
 
-            g_hash_table_add(seen, g_strdup(bare));
+            increment_type_count(counts, bare);
             sub = g_strdup_printf("%s/%s", path, name);
-            collect_types(qts, sub, seen, depth + 1);
+            g_hash_table_replace(paths, g_strdup(sub), g_strdup(bare));
+            collect_type_counts(qts, sub, counts, paths, depth + 1);
         }
     }
     qobject_unref(response);
 }
 
-/*
- * Every device the model says is built, found in the machine's own object
- * graph. This is the half of the contract the configuration graph cannot see:
- * the guest is told what the firmware says, and this is what the emulator
- * actually instantiated.
- */
-static void test_object_graph(const void *data)
+void sn0_model_assert_object_graph(QTestState *qts, const char *machine_type,
+                                   const SN0ModelDevice *expected_devices,
+                                   size_t expected_count)
 {
-    QTestState *qts = qtest_initf("-M %s -m %dM",
-                                  SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
-    GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                             g_free, NULL);
+    GHashTable *actual = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free, NULL);
+    GHashTable *actual_paths = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                     g_free, g_free);
+    GHashTable *expected = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                 g_free, NULL);
     QDict *response;
     const char *root;
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
     size_t i;
 
     /*
@@ -946,23 +997,64 @@ static void test_object_graph(const void *data)
                               " 'property': 'type' } }");
     g_assert_true(qdict_haskey(response, "return"));
     root = qdict_get_str(response, "return");
-    g_assert_cmpstr(root, ==, SN0_MODEL_MACHINE_TYPE);
+    g_assert_cmpstr(root, ==, machine_type);
     qobject_unref(response);
 
-    collect_types(qts, "/machine", seen, 0);
+    collect_type_counts(qts, "/machine", actual, actual_paths, 0);
+    for (i = 0; i < expected_count; i++) {
+        const SN0ModelDevice *device = &expected_devices[i];
+        const char *actual_type = g_hash_table_lookup(actual_paths,
+                                                      device->qom_path);
 
-    for (i = 0; i < ARRAY_SIZE(sn0_model_devices); i++) {
-        const SN0ModelDevice *d = &sn0_model_devices[i];
-
-        if (!g_hash_table_contains(seen, d->qom_type)) {
-            g_test_message("the model says this machine has %s as '%s', "
-                           "and the object graph has no such type",
-                           d->name, d->qom_type);
+        if (!actual_type || !g_str_equal(actual_type, device->qom_type)) {
+            g_test_message("the selected model profile requires component "
+                           "'%s' at QOM path '%s' with type '%s'; found %s",
+                           device->component, device->qom_path,
+                           device->qom_type,
+                           actual_type ? actual_type : "no object");
         }
-        g_assert_true(g_hash_table_contains(seen, d->qom_type));
+        g_assert_nonnull(actual_type);
+        g_assert_cmpstr(actual_type, ==, device->qom_type);
+    }
+    g_assert_true(sn0_model_profile_paths_match(expected_devices,
+                                                expected_count,
+                                                actual_paths));
+    for (i = 0; i < expected_count; i++) {
+        increment_type_count(expected, expected_devices[i].qom_type);
     }
 
-    g_hash_table_destroy(seen);
+    g_hash_table_iter_init(&iter, expected);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        const char *type = key;
+        unsigned int wanted = GPOINTER_TO_UINT(value);
+        unsigned int got = GPOINTER_TO_UINT(g_hash_table_lookup(actual, type));
+
+        if (got != wanted) {
+            g_test_message("the selected model profile requires %u instances "
+                           "of QOM type '%s', and the object graph has %u",
+                           wanted, type, got);
+        }
+        g_assert_cmpuint(got, ==, wanted);
+    }
+
+    g_hash_table_destroy(expected);
+    g_hash_table_destroy(actual_paths);
+    g_hash_table_destroy(actual);
+}
+
+/*
+ * Every device the model says is built, at the exact frequency selected by
+ * this machine profile. A matching type elsewhere in the object graph cannot
+ * stand in for an instance the selected profile failed to build.
+ */
+static void test_object_graph(const void *data)
+{
+    QTestState *qts = qtest_initf("-M %s -m %dM",
+                                  SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
+
+    sn0_model_assert_object_graph(qts, SN0_MODEL_MACHINE_TYPE,
+                                  sn0_model_devices,
+                                  ARRAY_SIZE(sn0_model_devices));
     qtest_quit(qts);
 }
 
@@ -1565,6 +1657,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/graph-whole-region", NULL,
                         test_graph_whole_region);
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
+    qtest_add_data_func("sn0/model/profile-path-isolation", NULL,
+                        test_profile_path_isolation);
+    qtest_add_data_func("sn0/model/dual-config-graphs", NULL,
+                        sn0_model_test_dual_config_graph);
+    qtest_add_data_func("sn0/model/dual-object-graph", NULL,
+                        sn0_model_test_dual_object_graph);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
