@@ -23,6 +23,10 @@
 #include "cpu.h"
 #include "qapi/error.h"
 #include "qapi/qapi-types-machine.h"
+#include "hw/core/boards.h"
+#include "hw/misc/sgi-hub.h"
+#include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci/pci.h"
 
 /*
  * M mode: the node number is address bits 39:32 and a node owns 4 GB. N mode,
@@ -734,6 +738,235 @@
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffff  /* bits 24:0, latched at reset */
 
+/*
+ * The SN0 family machine, shared by the family's translation units. One
+ * chassis is one node: two processor slots beside one Hub, and the family
+ * ceiling is the largest configuration any registered product reaches.
+ */
+#define SN0_CPUS_PER_NODE 2
+#define SN0_ORIGIN200_MAX_NODES 2
+#define SN0_UNCACHED_SPACES 4
+
+typedef struct SN0BackdoorState {
+    uint8_t *data;
+    uint32_t data_size;
+    uint64_t bank_offset[SN0_MEM_BANKS];
+    uint64_t bank_span[SN0_MEM_BANKS];
+    unsigned int populated_banks;
+} SN0BackdoorState;
+
+typedef enum SN0FlashState {
+    SN0_FLASH_READ,
+    SN0_FLASH_UNLOCK1,
+    SN0_FLASH_UNLOCK2,
+    SN0_FLASH_AUTOSELECT,
+    SN0_FLASH_PROGRAM,
+    SN0_FLASH_ERASE_UNLOCK1,
+    SN0_FLASH_ERASE_UNLOCK2,
+    SN0_FLASH_ERASE_SELECT,
+} SN0FlashState;
+
+typedef struct SN0PromDataState {
+    MIPSCPU *cpu;
+    hwaddr node_base;
+    MemoryRegion data;
+    MemoryRegion filter;
+    bool present;           /* the filter was installed (real PROM boot) */
+    bool leaving_private;   /* the overlay has been (or is being) disabled */
+} SN0PromDataState;
+
+typedef struct SN0NodeState {
+    DeviceState parent_obj;
+
+    uint32_t nasid;
+    Clock *cpuclk;
+    MIPSCPU *cpu[SN0_CPUS_PER_NODE];
+    MemoryRegion cpu_sysmem[SN0_CPUS_PER_NODE];
+    MemoryRegion sysmem_alias[SN0_CPUS_PER_NODE];
+    MemoryRegion local_space[SN0_CPUS_PER_NODE][SN0_UNCACHED_SPACES];
+    MemoryRegion hub_private[SN0_CPUS_PER_NODE][2];
+    SN0PromDataState promdata[SN0_CPUS_PER_NODE];
+    SGIHubState hub;
+
+    /*
+     * The Hub's own view of memory, for its block transfer engines: the
+     * global map underneath and this node's memory over the node-less
+     * addresses, the same shape as each processor's local view.
+     */
+    MemoryRegion hub_memory;
+    MemoryRegion hub_memory_system;
+    MemoryRegion hub_memory_local;
+
+    MemoryRegion flash;
+    MemoryRegion flash_hub_view;
+    MemoryRegion flash_rboot_view;
+    MemoryRegion flash_hub_fast;
+    SN0FlashState flash_state;
+    MemoryRegion hub_regs_node_view;
+    MemoryRegion arcs_trap;
+    MemoryRegion fw_text;
+    MemoryRegion backdoor_ecc;
+    MemoryRegion backdoor_ecc_absent;
+    MemoryRegion backdoor_dir;
+    MemoryRegion backdoor_dir_absent;
+    SN0BackdoorState backdoor_ecc_state;
+    SN0BackdoorState backdoor_dir_state;
+
+    MemoryRegion xtalk;
+    MemoryRegion prom_pi_probe;
+    SGIBridgeState *prom_pi_probe_bridge;
+    MemoryRegion small_window[SN0_XTALK_WIDGETS];
+    MemoryRegion mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
+    MemoryRegion hub_local_mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
+    uint16_t bank_mb[SN0_MEM_BANKS];
+    unsigned int populated_banks;
+
+    uint64_t mem_addr;
+    unsigned int mem_count;
+} SN0NodeState;
+
+#define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
+
+/*
+ * The flight recorder behind the diagnostic-recording option, implemented in
+ * sn0-diag.c. The event and read-cache records are private to that file; the
+ * machine holds only pointers, and the per-node sink context each Hub's
+ * recording callback receives.
+ */
+typedef struct SN0DiagnosticEvent SN0DiagnosticEvent;
+typedef struct SN0DiagnosticReadCacheEntry SN0DiagnosticReadCacheEntry;
+
+typedef struct SN0DiagnosticSinkContext {
+    void *machine;
+    uint32_t node;
+} SN0DiagnosticSinkContext;
+
+struct SN0MachineState {
+    MachineState parent_obj;
+
+    SN0NodeState nodes[SN0_ORIGIN200_MAX_NODES];
+    SGIBridgeState io_bridge[SN0_ORIGIN200_MAX_NODES];
+
+    /* Host diagnostics only; not guest-visible and not migrated. */
+    bool diagnostic_recording;
+    uint64_t diagnostic_query_sequence;
+    SN0DiagnosticEvent *diagnostic_events;
+    uint32_t diagnostic_event_head;
+    uint32_t diagnostic_event_count;
+    uint64_t diagnostic_event_next_sequence;
+    uint64_t diagnostic_event_dropped;
+    SN0DiagnosticReadCacheEntry *diagnostic_read_cache;
+    uint16_t diagnostic_read_cache_next[SN0_ORIGIN200_MAX_NODES];
+    DeviceDiagnosticSink diagnostic_sink[SN0_ORIGIN200_MAX_NODES];
+    SN0DiagnosticSinkContext diagnostic_sink_context[
+        SN0_ORIGIN200_MAX_NODES];
+
+    /*
+     * Widget 0, which on this machine is the I/O bridge seen a second time
+     * rather than a device of its own. Held here because a MemoryRegion has
+     * one parent, so the second view of the bridge's widget space has to be an
+     * alias with its own storage.
+     */
+    MemoryRegion widget0[SN0_ORIGIN200_MAX_NODES];
+
+    /*
+     * The same I/O bridge seen again at every other non-zero crosstalk widget.
+     * A real Origin 200 has no crossbar: the Hub's one link ends at the bridge,
+     * and with nothing to route by widget number every widget address the Hub
+     * emits reaches the same chip, so firmware may stamp a device pointer with
+     * any widget it picks and still reach the bridge. Each view needs its own
+     * alias because a MemoryRegion has one parent. Indexed by widget number;
+     * only the net-new ones (2 through 7 and 9 through 15) are used — widget 0
+     * has its own alias above, widget 1 is the Hub, and widget 8 is the
+     * bridge's own mapping.
+     */
+    MemoryRegion widget_alias[SN0_ORIGIN200_MAX_NODES][SN0_XTALK_WIDGETS];
+
+    /*
+     * Whether the I/O bridge is fitted. **On by default**, because a real
+     * Origin 200 always has one and every device on this machine hangs off
+     * it — both disk adapters, the base I/O controller with its serial ports,
+     * its ethernet and its keyboard controller, and the clock on its byte
+     * bus. Turning it off leaves a board that never existed.
+     *
+     * It was off by default once, and the reason is worth keeping because it
+     * says what would have to change to flip it back: the bridge was not
+     * merely absent from the default machine, it was worse than absent, since
+     * OpenBSD used to enumerate further with it fitted and then stop in its
+     * debugger. That is no longer the trade — measured rather than assumed,
+     * with the byte-bus clock modelled OpenBSD 7.9 GENERIC-IP27 reaches the
+     * same prompt either way and attaches twenty devices against eight, a
+     * strict superset with no bus error in the run.
+     *
+     * The option stays because that bring-up aid is still useful for
+     * isolating a fault to the fabric or to what sits behind it. **It does not
+     * gate widget 0**, which is aliased unconditionally: turning the option off
+     * must not stop widget 0 answering, or a bring-up aid becomes a machine
+     * OpenBSD panics on.
+     */
+    bool io_bridge_present;
+
+    /*
+     * Whether the junk-bus UART is fitted; see the class notes. Off by
+     * default, because a shipped Origin 200 has no such part and because
+     * real firmware treats it as the highest-priority console candidate —
+     * fitting it unasked would hide the two real candidates behind it.
+     */
+    bool junk_uart_present;
+
+    /*
+     * Whether the firmware's boot-progress indicator is shown; see the class
+     * notes. On by default, because it is the only thing this machine prints
+     * while the firmware is still deciding which console to talk to.
+     */
+    bool debug_leds;
+
+    /*
+     * Whether this machine presents firmware of its own; see the class notes.
+     */
+    bool synthesized_firmware;
+
+    /* Physical switch mask returned through each node's ELSC. */
+    uint8_t elsc_dip_switches;
+
+    /* Where the firmware's console output goes. */
+    Chardev *console;
+
+    /*
+     * The PCI devices on the I/O bridge's bus whose resources firmware
+     * assigns after reset (task #43): the base I/O controller and the two
+     * SCSI adapters. Kept here because reset is not realize — a device's own
+     * reset clears the state a realize-time assignment would have set, so
+     * the assignment has to run again every time the machine resets, and it
+     * needs these to still have somewhere to reach the devices from.
+     */
+    PCIDevice *pci_ioc3[SN0_ORIGIN200_MAX_NODES];
+    PCIDevice *pci_scsi[SN0_ORIGIN200_MAX_NODES][SN0_SCSI_ADAPTERS];
+
+    /*
+     * Candidate values: hardware facts this machine asserts without having
+     * observed them. They are settable so that two runs can differ in one value
+     * and nothing else — a candidate that takes a rebuild to change makes every
+     * comparison a comparison of two emulators as well as two values, and a
+     * difference then cannot be attributed to either.
+     *
+     * A value belongs here when it is derived rather than captured. Moving one
+     * in is how we say we are not sure; moving one out, to a constant, is how
+     * we
+     * say an observation settled it.
+     */
+    uint32_t widget0_revision;
+
+};
+
+typedef struct SN0MachineState SN0MachineState;
+
+DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
+                         TYPE_SN0_MACHINE)
+
+void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
+void sn0_diagnostic_register_reset(SN0MachineState *s);
+void sn0_diagnostic_finalize(SN0MachineState *s);
 SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp);
 
 #endif /* HW_MIPS_SN0_H */
