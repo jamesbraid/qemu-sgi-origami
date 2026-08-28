@@ -3789,7 +3789,7 @@ static void sn0_init(MachineState *machine)
      * widget 0 here is unconditional for the reason above, and widget 1 stays
      * the Hub.
      */
-    memory_region_init_alias(&s->widget0[0], NULL, "sn0.xtalk.widget0",
+    memory_region_init_alias(&s->widget0[0], OBJECT(s), "sn0.xtalk.widget0",
                              sysbus_mmio_get_region(
                                  SYS_BUS_DEVICE(&s->io_bridge[0]), 0),
                              0, SGI_BRIDGE_WIDGET_SIZE);
@@ -3815,7 +3815,7 @@ static void sn0_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(&s->io_bridge[1]), &error_fatal);
 
         memory_region_init_alias(
-            &s->widget0[1], NULL, "sn0.node1.xtalk.widget0",
+            &s->widget0[1], OBJECT(s), "sn0.node1.xtalk.widget0",
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[1]), 0),
             0, SGI_BRIDGE_WIDGET_SIZE);
         memory_region_add_subregion(&s->nodes[1].xtalk,
