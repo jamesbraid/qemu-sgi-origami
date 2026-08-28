@@ -24,8 +24,10 @@ typedef struct {
 } SN0ModelField;
 
 typedef struct {
+    const char *component;  /* resolved component instance identifier */
     const char *name;       /* canonical name from the component taxonomy */
     const char *qom_type;
+    const char *qom_path;   /* selected profile's object path */
 } SN0ModelDevice;
 
 typedef struct {
@@ -35,6 +37,16 @@ typedef struct {
     const char *field;
     const char *owner;
 } SN0ModelDivergence;
+
+typedef struct {
+    unsigned nasid;
+    uint64_t base;
+    uint64_t size;
+    uint64_t span;
+    const SN0ModelField *fields;
+    unsigned field_count;
+    const uint8_t *image;
+} SN0ModelConfigGraph;
 
 /* The memory size the fields below describe. */
 #define SN0_MODEL_RAM_MB 64
@@ -188,24 +200,59 @@ static const SN0ModelField sn0_model_graph[] = {
     { 0x000047a8, 8, 0x0ULL, "component.firmware_back" },
 };
 
-/* Devices the emulator must have built, by QOM type. */
+/* Devices the selected profile must build at these paths. */
 static const SN0ModelDevice sn0_model_devices[] = {
-    { "R10000", "R10000-mips64-cpu" },
-    { "Hub", "sgi-hub" },
-    { "Bridge", "sgi-bridge" },
-    { "IOC3", "sgi-ioc3" },
-    { "QLogic ISP1040", "qlogic-isp1040" },
-    { "QLogic ISP1040", "qlogic-isp1040" },
-    { "MK48T35-class Timekeeper", "m48t35" },
-    { "PCF8584", "pcf8584" },
-    { "ELSC", "sgi-elsc" },
+    {
+        "cpu0", "R10000",
+        "R10000-mips64-cpu", "/machine/node0/cpu0",
+    },
+    {
+        "hub", "Hub",
+        "sgi-hub", "/machine/node0/hub",
+    },
+    {
+        "bridge", "Bridge",
+        "sgi-bridge", "/machine/bridge",
+    },
+    {
+        "ioc3", "IOC3",
+        "sgi-ioc3", "/machine/node0-ioc3",
+    },
+    {
+        "ioc3-eth", "IOC3 ethernet",
+        "sgi-ioc3-eth", "/machine/node0-ioc3/eth",
+    },
+    {
+        "enet-phy", "DP83840A",
+        "dp83840", "/machine/node0-ioc3/eth/phy",
+    },
+    {
+        "isp1040", "QLogic ISP1040",
+        "qlogic-isp1040", "/machine/node0-isp0",
+    },
+    {
+        "isp1040-1", "QLogic ISP1040",
+        "qlogic-isp1040", "/machine/node0-isp1",
+    },
+    {
+        "rtc", "MK48T35-class Timekeeper",
+        "m48t35", "/machine/node0-ioc3/rtc",
+    },
+    {
+        "pcf8584", "PCF8584",
+        "pcf8584", "/machine/node0/hub/i2c",
+    },
+    {
+        "sgi-elsc", "ELSC",
+        "sgi-elsc", "/machine/node0/hub/elsc",
+    },
 };
 
 #define SN0_MODEL_GRAPH_BASE 0x4000
 #define SN0_MODEL_GRAPH_SPAN 0x7b0
 #define SN0_MODEL_GRAPH_SIZE 0xc000
 
-/* Every byte the model says the graph's populated span holds. */
+/* Every byte the model says this graph's populated span holds. */
 static const uint8_t sn0_model_graph_image[SN0_MODEL_GRAPH_SPAN] = {
     0x00, 0x00, 0x00, 0x00, 0xbe, 0xed, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x41, 0x00,
@@ -371,6 +418,19 @@ static const uint8_t sn0_model_graph_image[SN0_MODEL_GRAPH_SPAN] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+#define SN0_MODEL_CONFIG_GRAPH_COUNT 1
+static const SN0ModelConfigGraph sn0_model_config_graphs[] = {
+    {
+        0,
+        SN0_MODEL_GRAPH_BASE,
+        SN0_MODEL_GRAPH_SIZE,
+        SN0_MODEL_GRAPH_SPAN,
+        sn0_model_graph,
+        sizeof(sn0_model_graph) / sizeof(sn0_model_graph[0]),
+        sn0_model_graph_image,
+    },
 };
 
 /*

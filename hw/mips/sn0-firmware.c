@@ -748,7 +748,7 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
 static void sn0_component(uint8_t *graph, unsigned int index,
                           unsigned int virtual_id, uint8_t type,
                           uint8_t revision, uint8_t physical_id,
-                          uint8_t widget)
+                          uint8_t widget, unsigned int nasid)
 {
     uint8_t *c = graph + (SN0_GRAPH_COMPONENTS - SN0_CONFIG_GRAPH) +
                  index * SN0_GRAPH_COMP_STRIDE;
@@ -760,6 +760,7 @@ static void sn0_component(uint8_t *graph, unsigned int index,
     c[0x03] = revision;
     c[SN0_COMP_PHYSICAL_ID] = physical_id;
     c[0x20] = widget;
+    stw_be_p(c + 0x22, nasid);
     stl_be_p(c + 0x1c, virtual_id);
     /*
      * Padding in the reference declaration, but OpenBSD declares a bitfield
@@ -947,7 +948,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     stq_be_p(console + 0x10, widget | SN0_BRIDGE_DEVICE2);
     stw_be_p(console + 0x18, SN0_CONSOLE_BAUD);
     stl_be_p(console + 0x1c, 0);                /* console type */
-    stw_be_p(console + 0x20, 0);                /* node identifier */
+    stw_be_p(console + 0x20, node_state->nasid); /* node identifier */
     console[0x22] = SN0_CONSOLE_WIDGET;
     console[0x23] = SN0_IOC3_DEVICE;            /* controller's PCI device */
 
@@ -962,12 +963,14 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
      */
     for (i = 0; i < cpu_count; i++) {
         sn0_component(graph, i, node_index * SN0_CPUS_PER_NODE + i,
-                      SN0_COMP_PROCESSOR, SN0_COMP_REV_UNKNOWN, i, 0);
+                      SN0_COMP_PROCESSOR, SN0_COMP_REV_UNKNOWN, i, 0,
+                      node_state->nasid);
     }
     sn0_component(graph, hub_component, 0, SN0_COMP_HUB,
-                  SN0_COMP_REV_HUB, node_state->nasid, 0);
+                  SN0_COMP_REV_HUB, node_state->nasid, 0,
+                  node_state->nasid);
     sn0_component(graph, memory_component, 0, SN0_COMP_MEMORY,
-                  SN0_COMP_REV_UNKNOWN, 0, 0);
+                  SN0_COMP_REV_UNKNOWN, 0, 0, node_state->nasid);
 
     /*
      * The processor's own fields, which are the only source a guest has for its
@@ -1040,7 +1043,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
               SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE,
               midplane_component, 1, 0, node_state->nasid);
     sn0_component(graph, midplane_component, 0, SN0_COMP_MODULE_SERIAL,
-                  SN0_COMP_REV_UNKNOWN, 0, 0);
+                  SN0_COMP_REV_UNKNOWN, 0, 0, node_state->nasid);
 
     /*
      * Board 2: the base-I/O record, and the end of the list. Nothing on the
@@ -1074,13 +1077,16 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
               base_io_component, 4, 4, node_state->nasid);
     sn0_component(graph, base_io_component, 0, SN0_COMP_BRIDGE,
                   SN0_COMP_REV_BRIDGE, SN0_CONSOLE_WIDGET,
-                  SN0_CONSOLE_WIDGET);
+                  SN0_CONSOLE_WIDGET, node_state->nasid);
     sn0_component(graph, base_io_component + 1, 0, SN0_COMP_SCSI,
-                  SN0_COMP_REV_SCSI, SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_SCSI, SN0_SCSI_DEVICE0, SN0_CONSOLE_WIDGET,
+                  node_state->nasid);
     sn0_component(graph, base_io_component + 2, 1, SN0_COMP_SCSI,
-                  SN0_COMP_REV_SCSI, SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_SCSI, SN0_SCSI_DEVICE1, SN0_CONSOLE_WIDGET,
+                  node_state->nasid);
     sn0_component(graph, base_io_component + 3, 0, SN0_COMP_IO_CONTROLLER,
-                  SN0_COMP_REV_IOC3, SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET);
+                  SN0_COMP_REV_IOC3, SN0_IOC3_DEVICE, SN0_CONSOLE_WIDGET,
+                  node_state->nasid);
 
     {
         g_autofree char *name =

@@ -3123,6 +3123,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
 
+        object_property_add_child(OBJECT(s), "elsc", OBJECT(elsc));
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
         qdev_prop_set_uint8(DEVICE(elsc), "dip-switches",
                             s->elsc_dip_switches);
