@@ -1308,11 +1308,33 @@ static void sn0_init(MachineState *machine)
     uint64_t ram_offset = 0;
     unsigned int node_count, node_index;
 
-    node_count = machine->numa_state && machine->numa_state->num_nodes ?
-                 machine->numa_state->num_nodes : 1;
-    if (node_count > smc->max_nodes) {
+    /*
+     * One SMP socket is one chassis. -numa still owns the memory split and
+     * the processor assignment, and a -numa node count must agree with the
+     * socket count, which the per-count topology checks below enforce; with
+     * no -numa given, the sockets alone select the chassis count and memory
+     * splits evenly.
+     */
+    if (machine->numa_state &&
+        machine->numa_state->num_nodes > smc->max_nodes) {
         error_report("%s: at most %u NUMA nodes are supported",
                      MACHINE_GET_CLASS(machine)->name, smc->max_nodes);
+        exit(EXIT_FAILURE);
+    }
+    node_count = machine->numa_state && machine->numa_state->num_nodes ?
+                 machine->numa_state->num_nodes : machine->smp.sockets;
+    if (node_count > smc->max_nodes) {
+        error_report("%s: at most %u chassis are supported, and each -smp "
+                     "socket is one chassis",
+                     MACHINE_GET_CLASS(machine)->name, smc->max_nodes);
+        exit(EXIT_FAILURE);
+    }
+    if (node_count > 1 && !(machine->numa_state &&
+                            machine->numa_state->num_nodes) &&
+        machine->ram_size % node_count) {
+        error_report("%s: %u chassis split -m evenly; use -numa for an "
+                     "uneven fit", MACHINE_GET_CLASS(machine)->name,
+                     node_count);
         exit(EXIT_FAILURE);
     }
 
@@ -1320,14 +1342,16 @@ static void sn0_init(MachineState *machine)
         if (machine->smp.sockets != 1 ||
             machine->smp.cores > SN0_CPUS_PER_NODE ||
             machine->smp.threads != 1) {
-            error_report("origin200: one chassis requires one socket with at "
-                         "most two cores and one thread per core");
+            error_report("%s: one chassis requires one socket with at "
+                         "most two cores and one thread per core",
+                         MACHINE_GET_CLASS(machine)->name);
             exit(EXIT_FAILURE);
         }
     } else if (machine->smp.cpus != 4 || machine->smp.sockets != 2 ||
                machine->smp.cores != 2 || machine->smp.threads != 1) {
-        error_report("origin200: two chassis require four CPUs as two "
-                     "sockets with two cores and one thread each");
+        error_report("%s: two chassis require four CPUs as two "
+                     "sockets with two cores and one thread each",
+                     MACHINE_GET_CLASS(machine)->name);
         exit(EXIT_FAILURE);
     }
 
@@ -1339,8 +1363,9 @@ static void sn0_init(MachineState *machine)
 
             if (!cpu_slot->props.has_node_id ||
                 cpu_slot->props.node_id != expected) {
-                error_report("origin200: CPU %u must be assigned to NUMA "
-                             "node %u", node_index, expected);
+                error_report("%s: CPU %u must be assigned to NUMA "
+                             "node %u", MACHINE_GET_CLASS(machine)->name,
+                             node_index, expected);
                 exit(EXIT_FAILURE);
             }
         }
@@ -1356,18 +1381,32 @@ static void sn0_init(MachineState *machine)
         sn0_show_indicator_codes(&error_fatal);
     }
 
-    if (node_count == 2) {
-        object_initialize_child(OBJECT(machine), "node1", &s->nodes[1],
-                                TYPE_SN0_NODE);
+    s->num_nodes = node_count;
+    s->nodes = g_new0(SN0NodeState *, node_count);
+    s->io_bridge = g_new0(SGIBridgeState *, node_count);
+    s->widget0 = g_new0(MemoryRegion, node_count);
+    s->widget_alias = g_malloc0(sizeof(*s->widget_alias) * node_count);
+    s->pci_ioc3 = g_new0(PCIDevice *, node_count);
+    s->pci_scsi = g_malloc0(sizeof(*s->pci_scsi) * node_count);
+
+    for (node_index = 0; node_index < node_count; node_index++) {
+        g_autofree char *name = g_strdup_printf("node%u", node_index);
+        Object *node = object_new(TYPE_SN0_NODE);
+
+        object_property_add_child(OBJECT(machine), name, node);
+        object_unref(node);
+        s->nodes[node_index] = SN0_NODE(node);
     }
 
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk, smc->cpu_hz);
 
     for (node_index = 0; node_index < node_count; node_index++) {
-        SN0NodeState *node = &s->nodes[node_index];
-        uint64_t ram_size = node_count == 1 ? machine->ram_size :
-                            machine->numa_state->nodes[node_index].node_mem;
+        SN0NodeState *node = s->nodes[node_index];
+        uint64_t ram_size =
+            machine->numa_state && machine->numa_state->num_nodes ?
+            machine->numa_state->nodes[node_index].node_mem :
+            machine->ram_size / node_count;
         unsigned int cpu_base = node_index * SN0_CPUS_PER_NODE;
         unsigned int cpu_count = node_count == 1 ? machine->smp.cpus :
                                  SN0_CPUS_PER_NODE;
@@ -1422,7 +1461,7 @@ static void sn0_init(MachineState *machine)
         if (node_count == 2) {
             qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
             object_property_set_link(OBJECT(&node->hub), "network-peer",
-                                     OBJECT(&s->nodes[1 - node_index].hub),
+                                     OBJECT(&s->nodes[1 - node_index]->hub),
                                      &error_fatal);
         }
         qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
@@ -1635,7 +1674,6 @@ static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
 
-    object_initialize_child(obj, "node0", &s->nodes[0], TYPE_SN0_NODE);
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
     s->debug_leds = true;
@@ -1647,6 +1685,17 @@ static void sn0_instance_finalize(Object *obj)
     SN0MachineState *s = SN0_MACHINE(obj);
 
     sn0_diagnostic_finalize(s);
+    g_free(s->nodes);
+    g_free(s->io_bridge);
+    g_free(s->pci_ioc3);
+    g_free(s->pci_scsi);
+    /*
+     * The widget0 and widget_alias storage stays: those arrays hold
+     * MemoryRegions this machine owns as QOM children, and children are
+     * released after instance_finalize runs, so freeing their storage here
+     * would leave the release walking freed memory. Like every board's
+     * regions they live as long as the process.
+     */
 }
 
 static void sn0_machine_class_init(ObjectClass *oc, const void *data)
