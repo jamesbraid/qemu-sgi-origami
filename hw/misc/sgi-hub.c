@@ -3278,6 +3278,24 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         sgi_hub_bwin_follow(s, n);
     }
+    /*
+     * Re-driving the interrupt outputs here is normally forbidden: the order
+     * devices restore in is unfixed, so touching another device from a
+     * post_load hook makes the result depend on who loaded first --
+     * docs/devel/migration/main.rst names update_irq() as its example. This
+     * instance is sound because of what sits on the other end. Each output
+     * drives a dedicated MIPS cause-bit input (sn0.c wires them with
+     * sysbus_connect_irq straight to cpu->env.irq[...]), whose handler,
+     * cpu_mips_irq_request, is idempotent pure-level logic: it sets or
+     * clears one CP0_Cause IP bit and recomputes the interrupt summary,
+     * never edge-detects or counts. The Hub is the sole driver of those
+     * bits, the level it drives derives only from its own fields, all
+     * restored by the time this runs, and CP0_Cause itself migrates with
+     * the CPU -- so whichever of the CPU and the Hub loads first, the
+     * destination converges to the source's state. A consumer that
+     * edge-detects would not converge, which is why the same re-drive was
+     * rejected for the IOC3's line into the Bridge.
+     */
     sgi_hub_update_irq(s);
     return 0;
 }
