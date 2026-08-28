@@ -690,6 +690,49 @@ static void test_migration_in_autoselect(const void *opaque)
     unlink(state_path);
 }
 
+/*
+ * A system reset must return the chip to read-array (ROMD) mode. Data reads
+ * answer identically through the MMIO path, so the observable difference is
+ * the mapping mode itself: read it from the machine's own flat view rather
+ * than inferring it from data.
+ */
+static void test_reset_to_read_array(const void *opaque)
+{
+    const FlashConfig *config = opaque;
+    QTestState *qtest = qtest_initf(
+        "-M musicpal"
+        " -drive if=pflash,file=%s,format=raw,copy-on-read=on",
+        image_path);
+    FlashConfig explicit_config = expand_config_defaults(config);
+    explicit_config.qtest = qtest;
+    const FlashConfig *c = &explicit_config;
+
+    /* Leave ROMD mode by entering autoselect. */
+    unlock(c);
+    flash_cmd(c, UNLOCK0_ADDR, AUTOSELECT_CMD);
+    g_assert_cmphex(flash_query(c, FLASH_ADDR(0)), ==, replicate(c, 0xBF));
+
+    qtest_system_reset(qtest);
+
+    g_autofree char *mtree = qtest_hmp(qtest, "info mtree -f");
+    const char *hit = strstr(mtree, "musicpal.flash");
+    const char *line_start;
+    const char *line_end;
+    g_autofree char *line = NULL;
+
+    g_assert_nonnull(hit);
+    for (line_start = hit; line_start > mtree && line_start[-1] != '\n';
+         line_start--) {
+        continue;
+    }
+    line_end = strchr(line_start, '\n');
+    line = g_strndup(line_start, line_end ? (size_t)(line_end - line_start)
+                                          : strlen(line_start));
+    g_assert_nonnull(strstr(line, "romd"));
+
+    qtest_quit(qtest);
+}
+
 static void cleanup(void *opaque)
 {
     unlink(image_path);
@@ -761,6 +804,8 @@ int main(int argc, char **argv)
                         test_cfi_in_autoselect);
     qtest_add_data_func("pflash-cfi02/migration-in-autoselect",
                         &configuration[0], test_migration_in_autoselect);
+    qtest_add_data_func("pflash-cfi02/reset-to-read-array",
+                        &configuration[0], test_reset_to_read_array);
     int result = g_test_run();
     cleanup(NULL);
     return result;

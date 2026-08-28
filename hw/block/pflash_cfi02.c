@@ -958,7 +958,13 @@ static void pflash_cfi02_reset(DeviceState *dev)
 {
     PFlashCFI02 *pfl = PFLASH_CFI02(dev);
 
-    pflash_reset_state_machine(pfl);
+    /*
+     * A hardware reset returns the chip to read-array mode, not only to the
+     * first write cycle: without the ROMD switch a device left in autoselect
+     * or CFI mode keeps answering reads through the MMIO path until the lazy
+     * switch-back threshold, and code cannot be fetched from it.
+     */
+    pflash_mode_read_array(pfl);
 }
 
 static const Property pflash_cfi02_properties[] = {
