@@ -1688,7 +1688,6 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
     CPUState *cs = env_cpu(env);
     r4k_tlb_t *tlb;
     target_ulong addr;
-    target_ulong end;
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = env->CP0_MemoryMapID;
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
@@ -1727,11 +1726,8 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
             addr |= 0x3FFFFF0000000000ULL;
         }
 #endif
-        end = addr | (mask >> 1);
-        while (addr < end) {
-            tlb_flush_page(cs, addr);
-            addr += TARGET_PAGE_SIZE;
-        }
+        tlb_flush_range_by_mmuidx(cs, addr, (mask >> 1) + 1,
+                                  (1 << NB_MMU_MODES) - 1, TARGET_LONG_BITS);
     }
     if (tlb->V1) {
         addr = (tlb->VPN & ~mask) | ((mask >> 1) + 1);
@@ -1740,10 +1736,7 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
             addr |= 0x3FFFFF0000000000ULL;
         }
 #endif
-        end = addr | mask;
-        while (addr - 1 < end) {
-            tlb_flush_page(cs, addr);
-            addr += TARGET_PAGE_SIZE;
-        }
+        tlb_flush_range_by_mmuidx(cs, addr, (mask >> 1) + 1,
+                                  (1 << NB_MMU_MODES) - 1, TARGET_LONG_BITS);
     }
 }
