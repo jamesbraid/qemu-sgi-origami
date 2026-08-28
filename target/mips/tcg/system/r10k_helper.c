@@ -415,6 +415,69 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
 }
 
 /*
+ * The R10000 family never lets a TLB write create a multiple match: every
+ * other entry the new one overlaps - even in the wired area - is invalidated
+ * before the new entry is written, and the Status register's TS bit records
+ * that this happened. No exception is raised; software clears TS by writing
+ * a zero to it. The manual's Status register section describes this under
+ * the diagnostic status field, contrasting it with the R4400's TLB shutdown.
+ *
+ * Overlap means a single translation could match both entries: the virtual
+ * page numbers coincide under the wider of the two page masks, and the
+ * address space identifiers agree unless either entry is global. Invalidated
+ * entries are marked the way tlbinv marks them, which takes them out of
+ * every match; the valid bits stay untouched because a cleared valid bit
+ * still matches, it just faults instead of translating.
+ */
+void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
+{
+#if defined(TARGET_MIPS64)
+    target_ulong mask, VPN;
+    uint16_t ASID;
+    bool G, conflict = false;
+    int i;
+
+    if (!(env->insn_flags & INSN_R10K)) {
+        return;
+    }
+
+    /* 1k pages are not supported. */
+    mask = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);
+    VPN = env->CP0_EntryHi & (TARGET_PAGE_MASK << 1) & env->SEGMask;
+    ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    G = env->CP0_EntryLo0 & env->CP0_EntryLo1 & 1;
+
+    for (i = 0; i < env->tlb->nb_tlb; i++) {
+        r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
+        target_ulong both = mask | tlb->PageMask;
+
+        if (i == idx || tlb->EHINV) {
+            continue;
+        }
+        if ((tlb->VPN & ~both) != (VPN & ~both)) {
+            continue;
+        }
+        if (!G && !tlb->G && tlb->ASID != ASID) {
+            continue;
+        }
+        tlb->EHINV = 1;
+        conflict = true;
+    }
+
+    if (conflict) {
+        env->CP0_Status |= 1 << CP0St_TS;
+        /*
+         * An invalidated entry may live on as a shadow copy, and its pages
+         * may be in QEMU's own TLB: discard both, or a stale translation
+         * outlives the entry that carried it.
+         */
+        r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+        cpu_mips_tlb_flush(env);
+    }
+#endif
+}
+
+/*
  * The R10000 watch registers hold a doubleword's physical address, and a
  * load from it or a store to it must raise the Watch exception whichever
  * virtual window the access came through. QEMU's watchpoint machinery is

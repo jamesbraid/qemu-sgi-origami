@@ -52,6 +52,7 @@ void mmu_init(CPUMIPSState *env, const mips_def_t *def);
 uint32_t compute_pagemask(uint32_t val);
 
 void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra);
+void r4k_mips_tlb_flush_extra(CPUMIPSState *env, int first);
 uint32_t cpu_mips_get_random(CPUMIPSState *env);
 
 bool mips_io_recompile_replay_branch(CPUState *cs, const TranslationBlock *tb);
@@ -72,6 +73,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 /* r10k_helper.c */
 void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra);
+void r10k_invalidate_conflicts(CPUMIPSState *env, int idx);
 void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
                           vaddr address, hwaddr physical);
 void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written);
