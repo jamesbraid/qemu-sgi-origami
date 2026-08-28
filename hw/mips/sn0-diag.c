@@ -85,7 +85,7 @@ static bool sn0_diagnostic_read_repeated(SN0MachineState *s, uint32_t node,
     if (!s->diagnostic_read_cache) {
         s->diagnostic_read_cache = g_new0(
             SN0DiagnosticReadCacheEntry,
-            SN0_ORIGIN200_MAX_NODES * SN0_DIAGNOSTIC_READ_CACHE_COUNT);
+            s->num_nodes * SN0_DIAGNOSTIC_READ_CACHE_COUNT);
     }
     cache = &s->diagnostic_read_cache[
         node * SN0_DIAGNOSTIC_READ_CACHE_COUNT];
@@ -215,7 +215,7 @@ static void sn0_diagnostic_reset(void *opaque)
     s->diagnostic_event_count = 0;
     s->diagnostic_event_next_sequence = 0;
     s->diagnostic_event_dropped = 0;
-    for (unsigned int i = 0; i < SN0_ORIGIN200_MAX_NODES; i++) {
+    for (unsigned int i = 0; i < s->num_nodes; i++) {
         sn0_diagnostic_invalidate_reads(s, i);
     }
 }
@@ -249,11 +249,10 @@ SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp)
         QAPI_LIST_APPEND(cpu_tail, cpu);
     }
 
-    node_count = machine->numa_state && machine->numa_state->num_nodes ?
-                 machine->numa_state->num_nodes : 1;
+    node_count = s->num_nodes;
     hub_tail = &result->hubs;
     for (i = 0; i < node_count; i++) {
-        SGIHubState *hub = &s->nodes[i].hub;
+        SGIHubState *hub = &s->nodes[i]->hub;
         PCF8584State *pcf = &hub->i2c;
         SGIElscState *elsc = hub->elsc;
         SgiOriginHubState *info = g_new0(SgiOriginHubState, 1);
@@ -349,13 +348,19 @@ SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp)
  */
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index)
 {
+    if (!s->diagnostic_sink) {
+        s->diagnostic_sink = g_new0(DeviceDiagnosticSink, s->num_nodes);
+        s->diagnostic_sink_context = g_new0(SN0DiagnosticSinkContext,
+                                            s->num_nodes);
+        s->diagnostic_read_cache_next = g_new0(uint16_t, s->num_nodes);
+    }
     s->diagnostic_sink_context[node_index].machine = s;
     s->diagnostic_sink_context[node_index].node = node_index;
     s->diagnostic_sink[node_index].record = sn0_diagnostic_record;
     s->diagnostic_sink[node_index].opaque =
         &s->diagnostic_sink_context[node_index];
     if (s->diagnostic_recording) {
-        s->nodes[node_index].hub.diagnostic = &s->diagnostic_sink[node_index];
+        s->nodes[node_index]->hub.diagnostic = &s->diagnostic_sink[node_index];
     }
 }
 
@@ -368,4 +373,7 @@ void sn0_diagnostic_finalize(SN0MachineState *s)
 {
     g_free(s->diagnostic_events);
     g_free(s->diagnostic_read_cache);
+    g_free(s->diagnostic_read_cache_next);
+    g_free(s->diagnostic_sink);
+    g_free(s->diagnostic_sink_context);
 }

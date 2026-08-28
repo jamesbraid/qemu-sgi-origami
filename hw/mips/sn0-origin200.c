@@ -31,6 +31,9 @@
 /* IP29 has four banks, each made from one matched DIMM pair. */
 #define IP29_MEM_BANKS 4
 
+/* One chassis, or two coupled over CrayLink. */
+#define SN0_ORIGIN200_MAX_NODES 2
+
 /*
  * Find a deterministic IP29 DIMM population for QEMU's scalar -m value.
  * Physical banks support 64, 128, 256, or 512 MiB and bank zero must be
@@ -202,7 +205,7 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
     }
 
     pci_realize_and_unref(ioc3,
-                          PCI_HOST_BRIDGE(&s->io_bridge[node_index])->bus,
+                          PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
     s->pci_ioc3[node_index] = ioc3;
 
@@ -220,16 +223,16 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
      * window.
      */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
-                          qdev_get_gpio_in(DEVICE(&s->io_bridge[node_index]),
+                          qdev_get_gpio_in(DEVICE(s->io_bridge[node_index]),
                                            SN0_IOC3_SUPERIO_PIN));
 
     if (s->io_bridge_present) {
         MemoryRegion *bridge_face =
-            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io_bridge[node_index]), 0);
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(s->io_bridge[node_index]), 0);
         unsigned int widget;
 
         memory_region_add_subregion_overlap(
-            &s->nodes[node_index].xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
+            &s->nodes[node_index]->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
             bridge_face, -1);
 
         /*
@@ -257,23 +260,23 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
             memory_region_init_alias(&s->widget_alias[node_index][widget],
                                      OBJECT(s), name, bridge_face, 0,
                                      SGI_BRIDGE_WIDGET_SIZE);
-            memory_region_add_subregion(&s->nodes[node_index].xtalk,
+            memory_region_add_subregion(&s->nodes[node_index]->xtalk,
                                         SN0_XTALK_BASE(widget),
                                         &s->widget_alias[node_index][widget]);
         }
 
-        memory_region_init_io(&s->nodes[node_index].prom_pi_probe,
-                              OBJECT(&s->nodes[node_index]),
+        memory_region_init_io(&s->nodes[node_index]->prom_pi_probe,
+                              OBJECT(s->nodes[node_index]),
                               &sn0_prom_pi_probe_ops,
-                              &s->nodes[node_index],
+                              s->nodes[node_index],
                               "sn0.prom-pi-probe", 8);
-        s->nodes[node_index].prom_pi_probe_bridge =
-            &s->io_bridge[node_index];
+        s->nodes[node_index]->prom_pi_probe_bridge =
+            s->io_bridge[node_index];
         memory_region_add_subregion_overlap(
-            &s->nodes[node_index].xtalk,
+            &s->nodes[node_index]->xtalk,
             SN0_XTALK_BASE(SN0_PROM_PI_PROBE_WIDGET) +
             SN0_PROM_PI_PROBE_OFFSET,
-            &s->nodes[node_index].prom_pi_probe, 1);
+            &s->nodes[node_index]->prom_pi_probe, 1);
 
         /*
          * The two SCSI adapters the base I/O board carries, at the first two
@@ -295,7 +298,7 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
          */
         for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
             s->pci_scsi[node_index][slot] = pci_create_simple(
-                PCI_HOST_BRIDGE(&s->io_bridge[node_index])->bus,
+                PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                 PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
         }
     } else {
@@ -308,7 +311,7 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
                 "(an approved interim, see task #43)");
         }
         memory_region_add_subregion(
-            &s->nodes[node_index].xtalk,
+            &s->nodes[node_index]->xtalk,
             SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) + SN0_BRIDGE_DEVICE2,
             &SGI_IOC3(ioc3)->bar);
     }
@@ -372,14 +375,17 @@ static void origin200_create_bridge(SN0MachineState *s,
                                     unsigned int node_index)
 {
     MemoryRegion *system = get_system_memory();
-    SGIBridgeState *bridge = &s->io_bridge[node_index];
+    SGIBridgeState *bridge;
     g_autofree char *bridge_name = node_index == 0 ?
         g_strdup("bridge") : g_strdup_printf("bridge%u", node_index);
     g_autofree char *widget0_name = node_index == 0 ?
         g_strdup("sn0.xtalk.widget0") :
         g_strdup_printf("sn0.node%u.xtalk.widget0", node_index);
 
-    object_initialize_child(OBJECT(s), bridge_name, bridge, TYPE_SGI_BRIDGE);
+    bridge = SGI_BRIDGE(object_new(TYPE_SGI_BRIDGE));
+    object_property_add_child(OBJECT(s), bridge_name, OBJECT(bridge));
+    object_unref(OBJECT(bridge));
+    s->io_bridge[node_index] = bridge;
     /*
      * The silicon revision of the I/O bridge installed in this configuration.
      * Real Origin 200 systems report more than one revision, so the command
@@ -460,7 +466,7 @@ static void origin200_create_bridge(SN0MachineState *s,
     memory_region_init_alias(&s->widget0[node_index], OBJECT(s), widget0_name,
                              sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
                              0, SGI_BRIDGE_WIDGET_SIZE);
-    memory_region_add_subregion(&s->nodes[node_index].xtalk,
+    memory_region_add_subregion(&s->nodes[node_index]->xtalk,
                                 SN0_XTALK_BASE(SN0_WIDGET0),
                                 &s->widget0[node_index]);
 }

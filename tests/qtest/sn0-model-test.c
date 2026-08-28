@@ -1070,9 +1070,14 @@ static void test_reject_split_one_node_topology(const void *data)
     g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    /*
+     * Two sockets now ask for two chassis outright -- each socket is one
+     * chassis -- so the machine rejects this as an under-populated
+     * dual-chassis request rather than as a malformed one-chassis one.
+     */
     g_assert_nonnull(strstr(error_output,
-                           "one chassis requires one socket with at most "
-                           "two cores and one thread per core"));
+                           "two chassis require four CPUs as two "
+                           "sockets with two cores and one thread each"));
 }
 
 int main(int argc, char **argv)

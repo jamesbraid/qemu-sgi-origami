@@ -568,22 +568,22 @@ static uint64_t sn0_arcs_get_memory(SN0MachineState *s, CPUMIPSState *env)
         unsigned int i;
 
         /* Which one did we hand out last? */
-        for (i = 0; i < s->nodes[0].mem_count; i++) {
-            if (previous == s->nodes[0].mem_addr +
+        for (i = 0; i < s->nodes[0]->mem_count; i++) {
+            if (previous == s->nodes[0]->mem_addr +
                             i * sizeof(struct sn0_mem_descriptor)) {
                 next = i + 1;
                 break;
             }
         }
-        if (i == s->nodes[0].mem_count) {
+        if (i == s->nodes[0]->mem_count) {
             return 0;
         }
     }
 
-    if (next >= s->nodes[0].mem_count) {
+    if (next >= s->nodes[0]->mem_count) {
         return 0;                       /* the end of the list */
     }
-    return s->nodes[0].mem_addr + next * sizeof(struct sn0_mem_descriptor);
+    return s->nodes[0]->mem_addr + next * sizeof(struct sn0_mem_descriptor);
 }
 
 /*
@@ -624,9 +624,9 @@ static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
     CPUState *target;
     unsigned int i;
 
-    for (i = 0; i < SN0_ORIGIN200_MAX_NODES; i++) {
-        if (s->nodes[i].cpu[0] && s->nodes[i].nasid == nasid) {
-            node = &s->nodes[i];
+    for (i = 0; i < s->num_nodes; i++) {
+        if (s->nodes[i]->cpu[0] && s->nodes[i]->nasid == nasid) {
+            node = s->nodes[i];
             break;
         }
     }
@@ -960,7 +960,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
-    SN0NodeState *node_state = &s->nodes[node_index];
+    SN0NodeState *node_state = s->nodes[node_index];
     hwaddr node = SN0_NODE_BASE(node_state->nasid);
     uint8_t *graph = g_malloc0(SN0_CONFIG_GRAPH_SIZE);
     uint8_t *console = graph + SN0_GRAPH_CONSOLE_OFF;
@@ -1223,15 +1223,13 @@ static void sn0_build_structures(MachineState *machine,
                                  uint64_t kernel_page, uint64_t kernel_pages)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
-    SN0NodeState *node_state = &s->nodes[node_index];
+    SN0NodeState *node_state = s->nodes[node_index];
     hwaddr node = SN0_NODE_BASE(node_state->nasid);
     struct sn0_mem_descriptor mem[6];
     uint8_t param[0x60] = { };
     uint8_t dir[SN0_HW_DIR_ENTRIES * SN0_HW_DIR_ENTRY_SIZE] = { };
     uint8_t gda[SN0_GDA_SIZE] = { };
-    unsigned int node_count =
-        machine->numa_state && machine->numa_state->num_nodes ?
-        machine->numa_state->num_nodes : 1;
+    unsigned int node_count = s->num_nodes;
     unsigned int n = 0;
     int i;
 
@@ -1530,7 +1528,7 @@ static void sn0_assign_node_pci_resources(SN0MachineState *s,
                              SN0_PCI_IOC3_MEM, 4);
     pci_default_write_config(s->pci_ioc3[node_index], PCI_COMMAND,
                              PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, 2);
-    sgi_bridge_assign_window(&s->io_bridge[node_index], SN0_IOC3_DEVICE,
+    sgi_bridge_assign_window(s->io_bridge[node_index], SN0_IOC3_DEVICE,
                              SN0_PCI_IOC3_MEM,
                              true);
 
@@ -1547,7 +1545,7 @@ static void sn0_assign_node_pci_resources(SN0MachineState *s,
         pci_default_write_config(s->pci_scsi[node_index][slot], PCI_COMMAND,
                                  PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
                                  PCI_COMMAND_MASTER, 2);
-        sgi_bridge_assign_window(&s->io_bridge[node_index],
+        sgi_bridge_assign_window(s->io_bridge[node_index],
                                  SN0_SCSI_DEVICE0 + slot,
                                  mem_base, true);
     }
@@ -1556,17 +1554,13 @@ static void sn0_assign_node_pci_resources(SN0MachineState *s,
 void sn0_assign_pci_resources(void *opaque)
 {
     SN0MachineState *s = opaque;
-    MachineState *machine = MACHINE(s);
-    unsigned int node_count;
     unsigned int node_index;
 
     if (!s->io_bridge_present) {
         return;
     }
 
-    node_count = machine->numa_state && machine->numa_state->num_nodes ?
-                 machine->numa_state->num_nodes : 1;
-    for (node_index = 0; node_index < node_count; node_index++) {
+    for (node_index = 0; node_index < s->num_nodes; node_index++) {
         sn0_assign_node_pci_resources(s, node_index);
     }
 }
@@ -1642,7 +1636,7 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
                        SN0_ARCS_PRIVATE_ENTRIES, SN0_ARCS_ENTRIES,
                        SN0_ARCS_PRIVATE_BASE_OP);
         for (node_index = 0; node_index < node_count; node_index++) {
-            SN0NodeState *node_state = &s->nodes[node_index];
+            SN0NodeState *node_state = s->nodes[node_index];
             hwaddr node_base = SN0_NODE_BASE(node_state->nasid);
             g_autofree char *trap_name =
                 g_strdup_printf("sn0.node%u.arcs.trap", node_index);
@@ -1802,9 +1796,9 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
      * environment changes the PROM deliberately retains across that reset.
      */
     for (node_index = 0; node_index < node_count; node_index++) {
-        memcpy(memory_region_get_ram_ptr(&s->nodes[node_index].flash), flash,
+        memcpy(memory_region_get_ram_ptr(&s->nodes[node_index]->flash), flash,
                SN0_FLASH_SIZE);
-        memory_region_set_dirty(&s->nodes[node_index].flash, 0,
+        memory_region_set_dirty(&s->nodes[node_index]->flash, 0,
                                 SN0_FLASH_SIZE);
     }
     g_free(flash);
@@ -1815,7 +1809,7 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
      * it. Read-only, like the flash, because nothing should be writing here.
      */
     for (node_index = 0; node_index < node_count; node_index++) {
-        SN0NodeState *node_state = &s->nodes[node_index];
+        SN0NodeState *node_state = s->nodes[node_index];
         hwaddr node_base = SN0_NODE_BASE(node_state->nasid);
         g_autofree char *name =
             g_strdup_printf("sn0.node%u.firmware.text", node_index);

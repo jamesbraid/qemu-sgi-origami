@@ -752,7 +752,6 @@
  * ceiling is the largest configuration any registered product reaches.
  */
 #define SN0_CPUS_PER_NODE 2
-#define SN0_ORIGIN200_MAX_NODES 2
 #define SN0_UNCACHED_SPACES 4
 
 typedef struct SN0BackdoorState {
@@ -874,8 +873,15 @@ typedef struct SN0DiagnosticSinkContext {
 struct SN0MachineState {
     MachineState parent_obj;
 
-    SN0NodeState nodes[SN0_ORIGIN200_MAX_NODES];
-    SGIBridgeState io_bridge[SN0_ORIGIN200_MAX_NODES];
+    /*
+     * The installed chassis, sized by what the command line asked for and
+     * bounded by the product's ceiling. Each node is a QOM child named
+     * node0, node1, ... and each chassis's I/O bridge a child named bridge,
+     * bridge1, ...
+     */
+    unsigned int num_nodes;
+    SN0NodeState **nodes;
+    SGIBridgeState **io_bridge;
 
     /* The product reference clock every node's processors derive from. */
     Clock *cpu_refclk;
@@ -889,10 +895,9 @@ struct SN0MachineState {
     uint64_t diagnostic_event_next_sequence;
     uint64_t diagnostic_event_dropped;
     SN0DiagnosticReadCacheEntry *diagnostic_read_cache;
-    uint16_t diagnostic_read_cache_next[SN0_ORIGIN200_MAX_NODES];
-    DeviceDiagnosticSink diagnostic_sink[SN0_ORIGIN200_MAX_NODES];
-    SN0DiagnosticSinkContext diagnostic_sink_context[
-        SN0_ORIGIN200_MAX_NODES];
+    uint16_t *diagnostic_read_cache_next;
+    DeviceDiagnosticSink *diagnostic_sink;
+    SN0DiagnosticSinkContext *diagnostic_sink_context;
 
     /*
      * Widget 0, which on this machine is the I/O bridge seen a second time
@@ -900,7 +905,7 @@ struct SN0MachineState {
      * one parent, so the second view of the bridge's widget space has to be an
      * alias with its own storage.
      */
-    MemoryRegion widget0[SN0_ORIGIN200_MAX_NODES];
+    MemoryRegion *widget0;
 
     /*
      * The same I/O bridge seen again at every other non-zero crosstalk widget.
@@ -913,7 +918,7 @@ struct SN0MachineState {
      * has its own alias above, widget 1 is the Hub, and widget 8 is the
      * bridge's own mapping.
      */
-    MemoryRegion widget_alias[SN0_ORIGIN200_MAX_NODES][SN0_XTALK_WIDGETS];
+    MemoryRegion (*widget_alias)[SN0_XTALK_WIDGETS];
 
     /*
      * Whether the I/O bridge is fitted. **On by default**, because a real
@@ -973,8 +978,8 @@ struct SN0MachineState {
      * the assignment has to run again every time the machine resets, and it
      * needs these to still have somewhere to reach the devices from.
      */
-    PCIDevice *pci_ioc3[SN0_ORIGIN200_MAX_NODES];
-    PCIDevice *pci_scsi[SN0_ORIGIN200_MAX_NODES][SN0_SCSI_ADAPTERS];
+    PCIDevice **pci_ioc3;
+    PCIDevice *(*pci_scsi)[SN0_SCSI_ADAPTERS];
 
     /*
      * Candidate values: hardware facts this machine asserts without having
