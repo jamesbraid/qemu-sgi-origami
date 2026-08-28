@@ -67,6 +67,7 @@ if have_system
     'rocker',
     'misc-arm',
     'misc-i386',
+    'misc-mips',
     'tpm',
     'uefi',
   ]

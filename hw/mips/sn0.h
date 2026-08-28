@@ -27,7 +27,6 @@
 
 #include "cpu.h"
 #include "qapi/error.h"
-#include "qapi/qapi-types-machine.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -1086,6 +1085,5 @@ void sn0_mode_bits_reset(void *opaque);
 void sn0_firmware_init(MachineState *machine);
 void sn0_firmware_reset(void *opaque);
 void sn0_assign_pci_resources(void *opaque);
-SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp);
 
 #endif /* HW_MIPS_SN0_H */

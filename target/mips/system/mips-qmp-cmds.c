@@ -11,9 +11,7 @@
 #include "qapi/error.h"
 #include "qapi/qapi-commands-machine.h"
 #include "cpu.h"
-#include CONFIG_DEVICES
 #ifdef CONFIG_SGI_SN0
-#include "hw/mips/sn0.h"
 #endif
 
 CpuModelExpansionInfo *
@@ -50,23 +48,4 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
     g_slist_free(list);
 
     return cpu_list;
-}
-
-SgiOriginState *qmp_x_query_origin_state(bool has_event_limit,
-                                         uint32_t event_limit,
-                                         Error **errp)
-{
-#ifdef CONFIG_SGI_SN0
-    if (!has_event_limit) {
-        event_limit = 256;
-    }
-    if (event_limit > 4096) {
-        error_setg(errp, "event-limit must not exceed 4096");
-        return NULL;
-    }
-    return sn0_query_origin_state(event_limit, errp);
-#else
-    error_setg(errp, "SGI Origin state is not supported on this target");
-    return NULL;
-#endif
 }

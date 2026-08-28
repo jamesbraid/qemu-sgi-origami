@@ -8,7 +8,10 @@ mips_ss.add(when: 'CONFIG_MIPS_CPS', if_true: files('cps.c'))
 
 if 'CONFIG_TCG' in config_all_accel
 mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
-mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sn0.c', 'sn0-diag.c', 'sn0-firmware.c', 'sn0-origin200.c'))
+mips_ss.add(when: 'CONFIG_SGI_SN0',
+            if_true: files('sn0.c', 'sn0-diag.c', 'sn0-firmware.c',
+                           'sn0-origin200.c'),
+            if_false: files('sn0-qmp-stub.c'))
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
 endif
