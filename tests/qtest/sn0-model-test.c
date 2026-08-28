@@ -1076,8 +1076,47 @@ static void test_reject_split_one_node_topology(const void *data)
      * dual-chassis request rather than as a malformed one-chassis one.
      */
     g_assert_nonnull(strstr(error_output,
-                           "two chassis require four CPUs as two "
-                           "sockets with two cores and one thread each"));
+                           "2 chassis require 4 CPUs as 2 sockets with "
+                           "2 cores and one thread each"));
+}
+
+static void test_reject_three_cores_one_chassis(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-smp", "3,sockets=1,cores=3,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: one chassis requires one socket with "
+                        "at most two cores and one thread per core");
+}
+
+static void test_reject_three_sockets(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-smp", "3,sockets=3,cores=1,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: at most 2 chassis are supported, and "
+                        "each -smp socket is one chassis");
+}
+
+static void test_reject_uneven_no_numa_split(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "129M",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: 2 chassis split -m evenly into whole "
+                        "MiB; use -numa for an uneven fit");
 }
 
 int main(int argc, char **argv)
@@ -1114,6 +1153,12 @@ int main(int argc, char **argv)
                         test_explicit_one_node_numa);
     qtest_add_data_func("sn0/model/dual-chassis-numa", NULL,
                         test_dual_chassis_numa);
+    qtest_add_data_func("sn0/model/reject-three-cores-one-chassis", NULL,
+                        test_reject_three_cores_one_chassis);
+    qtest_add_data_func("sn0/model/reject-three-sockets", NULL,
+                        test_reject_three_sockets);
+    qtest_add_data_func("sn0/model/reject-uneven-no-numa-split", NULL,
+                        test_reject_uneven_no_numa_split);
     qtest_add_data_func("sn0/model/reject-three-numa-nodes", NULL,
                         test_reject_three_numa_nodes);
     qtest_add_data_func("sn0/model/reject-partial-cpu-numa-mapping", NULL,

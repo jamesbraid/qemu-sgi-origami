@@ -1305,36 +1305,31 @@ static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
+    unsigned int numa_nodes = machine->numa_state ?
+                              machine->numa_state->num_nodes : 0;
     uint64_t ram_offset = 0;
     unsigned int node_count, node_index;
+
+    /* A product class must say how memory fits and what I/O it carries. */
+    g_assert(smc->node_memory_layout && smc->populate_io);
 
     /*
      * One SMP socket is one chassis. -numa still owns the memory split and
      * the processor assignment, and a -numa node count must agree with the
-     * socket count, which the per-count topology checks below enforce; with
-     * no -numa given, the sockets alone select the chassis count and memory
-     * splits evenly.
+     * socket count, which the topology check below enforces; with no -numa
+     * given, the sockets alone select the chassis count and memory splits
+     * evenly.
      */
-    if (machine->numa_state &&
-        machine->numa_state->num_nodes > smc->max_nodes) {
+    if (numa_nodes > smc->max_nodes) {
         error_report("%s: at most %u NUMA nodes are supported",
-                     MACHINE_GET_CLASS(machine)->name, smc->max_nodes);
+                     mc->name, smc->max_nodes);
         exit(EXIT_FAILURE);
     }
-    node_count = machine->numa_state && machine->numa_state->num_nodes ?
-                 machine->numa_state->num_nodes : machine->smp.sockets;
+    node_count = numa_nodes ? numa_nodes : machine->smp.sockets;
     if (node_count > smc->max_nodes) {
         error_report("%s: at most %u chassis are supported, and each -smp "
-                     "socket is one chassis",
-                     MACHINE_GET_CLASS(machine)->name, smc->max_nodes);
-        exit(EXIT_FAILURE);
-    }
-    if (node_count > 1 && !(machine->numa_state &&
-                            machine->numa_state->num_nodes) &&
-        machine->ram_size % node_count) {
-        error_report("%s: %u chassis split -m evenly; use -numa for an "
-                     "uneven fit", MACHINE_GET_CLASS(machine)->name,
-                     node_count);
+                     "socket is one chassis", mc->name, smc->max_nodes);
         exit(EXIT_FAILURE);
     }
 
@@ -1343,20 +1338,34 @@ static void sn0_init(MachineState *machine)
             machine->smp.cores > SN0_CPUS_PER_NODE ||
             machine->smp.threads != 1) {
             error_report("%s: one chassis requires one socket with at "
-                         "most two cores and one thread per core",
-                         MACHINE_GET_CLASS(machine)->name);
+                         "most two cores and one thread per core", mc->name);
             exit(EXIT_FAILURE);
         }
-    } else if (machine->smp.cpus != 4 || machine->smp.sockets != 2 ||
-               machine->smp.cores != 2 || machine->smp.threads != 1) {
-        error_report("%s: two chassis require four CPUs as two "
-                     "sockets with two cores and one thread each",
-                     MACHINE_GET_CLASS(machine)->name);
+    } else if (machine->smp.cpus != node_count * SN0_CPUS_PER_NODE ||
+               machine->smp.sockets != node_count ||
+               machine->smp.cores != SN0_CPUS_PER_NODE ||
+               machine->smp.threads != 1) {
+        error_report("%s: %u chassis require %u CPUs as %u sockets with "
+                     "%u cores and one thread each", mc->name, node_count,
+                     node_count * SN0_CPUS_PER_NODE, node_count,
+                     SN0_CPUS_PER_NODE);
+        exit(EXIT_FAILURE);
+    }
+
+    /*
+     * Whole mebibytes per chassis, because the bank fit below is counted
+     * in them: a byte-even but mebibyte-odd total would otherwise reach
+     * the fit with a truncated size and fail with a misleading message.
+     */
+    if (node_count > 1 && !numa_nodes &&
+        machine->ram_size % ((uint64_t)node_count * MiB)) {
+        error_report("%s: %u chassis split -m evenly into whole MiB; use "
+                     "-numa for an uneven fit", mc->name, node_count);
         exit(EXIT_FAILURE);
     }
 
     sn0_possible_cpu_arch_ids(machine);
-    if (machine->numa_state && machine->numa_state->num_nodes) {
+    if (numa_nodes) {
         for (node_index = 0; node_index < machine->smp.cpus; node_index++) {
             CPUArchId *cpu_slot = &machine->possible_cpus->cpus[node_index];
             unsigned int expected = node_index / SN0_CPUS_PER_NODE;
@@ -1364,8 +1373,7 @@ static void sn0_init(MachineState *machine)
             if (!cpu_slot->props.has_node_id ||
                 cpu_slot->props.node_id != expected) {
                 error_report("%s: CPU %u must be assigned to NUMA "
-                             "node %u", MACHINE_GET_CLASS(machine)->name,
-                             node_index, expected);
+                             "node %u", mc->name, node_index, expected);
                 exit(EXIT_FAILURE);
             }
         }
@@ -1403,8 +1411,7 @@ static void sn0_init(MachineState *machine)
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
-        uint64_t ram_size =
-            machine->numa_state && machine->numa_state->num_nodes ?
+        uint64_t ram_size = numa_nodes ?
             machine->numa_state->nodes[node_index].node_mem :
             machine->ram_size / node_count;
         unsigned int cpu_base = node_index * SN0_CPUS_PER_NODE;
@@ -1419,8 +1426,7 @@ static void sn0_init(MachineState *machine)
             error_report("%s: node %u's %" PRIu64 " MiB cannot be "
                          "populated from IP29 memory banks without "
                          "overlapping firmware regions",
-                         MACHINE_GET_CLASS(machine)->name, node_index,
-                         ram_size / MiB);
+                         mc->name, node_index, ram_size / MiB);
             exit(EXIT_FAILURE);
         }
         banks_mb = qlist_new();
