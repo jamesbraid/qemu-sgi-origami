@@ -2161,8 +2161,8 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x08] = "unexpected extended TLB miss", /* 0x89 */
     [0x09] = "unexpected user TLB miss", /* 0x8a */
     [0x0a] = "unexpected kernel TLB miss", /* 0x8b */
-    [0x0b] = "the processor took an exception outside every "
-             "specifically-handled category", /* 0x8c */
+    [0x0b] = ("the processor took an exception outside every "
+              "specifically-handled category"), /* 0x8c */
     [0x0c] = "unimplemented-instruction exception", /* 0x8d */
     [0x0d] = "the processor signaled a cache parity or ECC fault", /* 0x8e */
     [0x0e] = "the operating system requested this code", /* 0x8f */
@@ -2173,8 +2173,8 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x13] = NULL, /* 0x94: reserved (a POD re-entry via NMI was requested) */
     [0x14] = "Hub UART initialization failed", /* 0x95 */
     [0x15] = "Hub cross-processor interrupt self-test failed", /* 0x96 */
-    [0x16] = "execution fell out of the firmware's main() routine, "
-             "which should never return", /* 0x97 */
+    [0x16] = ("execution fell out of the firmware's main() routine, "
+              "which should never return"), /* 0x97 */
     [0x17] = "this node has no memory of its own installed", /* 0x98 */
     [0x18] = "an I2C condition that should be impossible occurred", /* 0x99 */
     [0x19] = "this processor is disabled by an environment variable", /* 0x9a */
@@ -2196,10 +2196,10 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x29] = NULL, /* 0xaa: reserved (source marks this value avoid-use) */
     [0x2a] = "surveying the rest of the interconnect fabric did not succeed", /* 0xab */
     [0x2b] = "node-id calculation failed", /* 0xac */
-    [0x2c] = "computing the paths packets should take between nodes "
-             "did not succeed", /* 0xad */
-    [0x2d] = "sending the computed routing table out to the rest of "
-             "the machine did not succeed", /* 0xae */
+    [0x2c] = ("computing the paths packets should take between nodes "
+              "did not succeed"), /* 0xad */
+    [0x2d] = ("sending the computed routing table out to the rest of "
+              "the machine did not succeed"), /* 0xae */
     [0x2e] = "node-id distribution failed", /* 0xaf */
     [0x2f] = "boot master assigned no node id", /* 0xb0 */
     [0x30] = "module-id arbitration failed", /* 0xb1 */
