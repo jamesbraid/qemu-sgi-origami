@@ -749,6 +749,27 @@ static const MemoryRegionOps pflash_cfi02_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+/*
+ * A byte-wide chip decodes one byte per cycle; a wider bus access reaches it
+ * as a sequence of byte cycles through the bus adapter. Model that for x8
+ * devices by letting the memory core split wide accesses, so a multi-byte
+ * autoselect or CFI read gathers per byte -- the ID bytes, then the device's
+ * answer for each following address -- instead of widening one lookup across
+ * the whole bus word. Wider devices keep the single-cycle implementation
+ * above. The endianness deliberately matches the sibling ops: the memory
+ * core assembles the split bytes in the ops' declared order, and the
+ * gathered word must land in the same bus order a single-cycle access uses.
+ */
+static const MemoryRegionOps pflash_cfi02_ops_x8 = {
+    .read = pflash_read,
+    .write = pflash_write,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
 static void pflash_cfi02_fill_cfi_table(PFlashCFI02 *pfl, int nb_regions)
 {
     /* Hardcoded CFI table (mostly from SG29 Spansion flash) */
@@ -932,8 +953,9 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
     pfl->chip_len = chip_len;
 
     memory_region_init_rom_device(&pfl->orig_mem, OBJECT(pfl),
-                                  &pflash_cfi02_ops, pfl, pfl->name,
-                                  pfl->chip_len, errp);
+                                  pfl->width == 1 ? &pflash_cfi02_ops_x8
+                                                  : &pflash_cfi02_ops,
+                                  pfl, pfl->name, pfl->chip_len, errp);
     if (*errp) {
         return;
     }
