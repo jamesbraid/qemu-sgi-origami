@@ -69,13 +69,7 @@
 #define SN0_SASH_SCRATCH_GAP  (1 * MiB)
 #define SN0_SASH_STACK_SIZE   (64 * KiB)
 
-/* What the firmware configuration block says about this machine. */
-#define SN0_CPU_FREQ_HZ   180000000
-#define SN0_HUB_FREQ_HZ   90000000
-#define SN0_RTC_FREQ_HZ   1250000       /* an 800 ns tick */
-#define SN0_MACHINE_TYPE  1             /* 0 is Origin 2000, 1 is Origin 200 */
-#define SN0_FPROM_CYC     15
-#define SN0_FPROM_WR      4
+/* The configuration block's fixed geometry; its values come from the class. */
 #define SN0_CONFIG_SIZE   0x50
 #define SN0_CONFIG_FPROM_CYC_OFFSET 0x2c
 #define SN0_CONFIG_MACHINE_TYPE_OFFSET 0x30
@@ -372,7 +366,7 @@ static void sn0_build_sash_handoff(uint8_t *flash, uint8_t *fw,
                        entry);
 }
 
-static void sn0_build_flash(uint8_t *flash)
+static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash)
 {
     static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
     static const uint32_t branch_to_self = 0x1000ffff; /* b . */
@@ -397,15 +391,15 @@ static void sn0_build_flash(uint8_t *flash)
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
     stl_be_p(config + 0x04, SN0_PROCESSOR_MODE_BITS);
     stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
-    stq_be_p(config + 0x10, SN0_CPU_FREQ_HZ);
-    stq_be_p(config + 0x18, SN0_HUB_FREQ_HZ);
-    stq_be_p(config + 0x20, SN0_RTC_FREQ_HZ);
+    stq_be_p(config + 0x10, smc->cpu_hz);
+    stq_be_p(config + 0x18, smc->hub_hz);
+    stq_be_p(config + 0x20, smc->rtc_hz);
     stl_be_p(config + 0x28, 1);                    /* error correction on */
-    stl_be_p(config + 0x2c, SN0_FPROM_CYC);        /* flash read timing */
-    stl_be_p(config + 0x30, SN0_MACHINE_TYPE);
+    stl_be_p(config + 0x2c, smc->fprom_cyc);       /* flash read timing */
+    stl_be_p(config + 0x30, smc->fw_machine_type);
     stl_be_p(config + 0x34, 0);                    /* checksum adjustment */
     stl_be_p(config + 0x38, 0);                    /* flash program count */
-    stl_be_p(config + 0x3c, SN0_FPROM_WR);         /* flash write timing */
+    stl_be_p(config + 0x3c, smc->fprom_wr);        /* flash write timing */
     stl_be_p(config + 0x40, 6);                    /* firmware version */
     stl_be_p(config + 0x44, 11);                   /* firmware revision */
     stl_be_p(config + 0x48, 0);                    /* configuration flags */
@@ -439,15 +433,16 @@ static uint8_t sn0_config_byte_sum(const uint8_t *config)
  * SGI ships a generic release image with Origin 2000 defaults. Its flasher
  * copies the running node's configuration into the new image and adjusts one
  * byte so the replacement block has the same byte sum as the original. QEMU
- * has no preceding physical PROM to preserve, but the concrete machine type
- * supplies the same three values: SN00 identity and its two flash timings.
+ * has no preceding physical PROM to preserve, but the concrete machine class
+ * supplies the same three values: the machine-type word and the two flash
+ * timings.
  *
  * Preserve every other field supplied by the image, including clocks, CPU
  * mode, version, and flash count. Preserve the old block sum too, following
  * the flasher's observable contract. A diagnostic ROM without an IP27 config
  * signature remains byte-for-byte untouched.
  */
-static void sn0_configure_flash_for_origin200(uint8_t *flash)
+static void sn0_configure_flash(SN0MachineClass *smc, uint8_t *flash)
 {
     uint8_t *config = flash + SN0_CONFIG_OFFSET;
     uint8_t old_sum;
@@ -459,9 +454,9 @@ static void sn0_configure_flash_for_origin200(uint8_t *flash)
 
     old_sum = sn0_config_byte_sum(config);
     stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET, 0);
-    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, SN0_FPROM_CYC);
-    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET, SN0_MACHINE_TYPE);
-    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, SN0_FPROM_WR);
+    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, smc->fprom_cyc);
+    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET, smc->fw_machine_type);
+    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, smc->fprom_wr);
     new_sum = sn0_config_byte_sum(config);
     stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET,
              (uint8_t)(old_sum - new_sum));
@@ -964,6 +959,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
 static void sn0_build_graph(MachineState *machine, unsigned int node_index)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
     SN0NodeState *node_state = &s->nodes[node_index];
     hwaddr node = SN0_NODE_BASE(node_state->nasid);
     uint8_t *graph = g_malloc0(SN0_CONFIG_GRAPH_SIZE);
@@ -1107,9 +1103,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
          * The floating-point unit is on the same die but reports revision zero.
          */
         stw_be_p(cpu + 0x3a, 0x0900);
-        stw_be_p(cpu + 0x3c, 180);              /* clock in megahertz */
+        stw_be_p(cpu + 0x3c, smc->cpu_hz / 1000000); /* clock in MHz */
         stw_be_p(cpu + 0x3e, 1);                /* secondary cache, megabytes */
-        stw_be_p(cpu + 0x40, 90);               /* secondary cache clock */
+        stw_be_p(cpu + 0x40, smc->scache_clock_mhz);
     }
 
     hub = sn0_component_at(graph, hub_component);
@@ -1121,7 +1117,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
      * directory and fails to recognise it as a board.
      */
     stq_be_p(hub + 0x3c, SN0_PORT_UNCONNECTED);
-    stq_be_p(hub + 0x58, SN0_HUB_FREQ_HZ);      /* Hub clock in hertz */
+    stq_be_p(hub + 0x58, smc->hub_hz);          /* Hub clock in hertz */
 
     /*
      * The memory bank, in the eight-bank layout the addressing mode this
@@ -1584,6 +1580,7 @@ void sn0_assign_pci_resources(void *opaque)
 void sn0_firmware_init(MachineState *machine, unsigned int node_count)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
     MemoryRegion *system = get_system_memory();
     hwaddr node = SN0_NODE_BASE(0);
     uint8_t *flash, *fw;
@@ -1599,7 +1596,7 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
      * it, which is what a partly programmed flash looks like.
      */
     flash = g_malloc0(SN0_FLASH_SIZE);
-    sn0_build_flash(flash);
+    sn0_build_flash(smc, flash);
 
     if (machine->firmware) {
         char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
@@ -1612,7 +1609,7 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
         }
         g_free(path);
     }
-    sn0_configure_flash_for_origin200(flash);
+    sn0_configure_flash(smc, flash);
 
     /*
      * The firmware this machine presents, unless it was told to stand aside for

@@ -968,9 +968,55 @@ struct SN0MachineState {
 };
 
 typedef struct SN0MachineState SN0MachineState;
+typedef struct SN0MachineClass SN0MachineClass;
 
-DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
-                         TYPE_SN0_MACHINE)
+DECLARE_OBJ_CHECKERS(SN0MachineState, SN0MachineClass,
+                     SN0_MACHINE, TYPE_SN0_MACHINE)
+
+/*
+ * What tells one SN0 product from another. A concrete product's class_init
+ * fills these in and registers its machine type; the construction code the
+ * products share reads them from here rather than from per-product
+ * constants, the same shape PowerNV and Aspeed use for their families.
+ */
+struct SN0MachineClass {
+    /*< private >*/
+    MachineClass parent_class;
+
+    /*< public >*/
+    /* How many chassis the product couples over CrayLink. */
+    unsigned int max_nodes;
+
+    /*
+     * The product's clocks. The processor's own counter runs at half the
+     * processor clock, which is what the CPU model's counter divisor
+     * expresses, so cpu_hz is the input that counter is derived from. All
+     * three clocks are advertised through the flash configuration block,
+     * and the processor and secondary-cache clocks appear again in each
+     * configuration-graph processor record.
+     */
+    uint64_t cpu_hz;
+    uint64_t hub_hz;
+    uint64_t rtc_hz;
+    uint32_t scache_clock_mhz;
+
+    /*
+     * The product-specific words in the flash configuration block: the
+     * machine-type word (0 is Origin 2000, 1 is Origin 200) and the two
+     * flash timings SGI's own flasher carries per product.
+     */
+    uint32_t fw_machine_type;
+    uint32_t fprom_cyc;
+    uint32_t fprom_wr;
+
+    /*
+     * Fit a node's memory into the banks the product's board provides.
+     * False when the size cannot be expressed in that board's DIMMs.
+     */
+    bool (*node_memory_layout)(uint64_t ram_size,
+                               uint16_t bank_mb[SN0_MEM_BANKS],
+                               unsigned int *populated_banks);
+};
 
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
 void sn0_diagnostic_register_reset(SN0MachineState *s);

@@ -42,14 +42,6 @@
 #include "cpu.h"
 #include "sn0.h"
 
-/*
- * A stock Origin 200 runs its R10000 at 180 MHz and its Hub at 90 MHz. The
- * processor's own counter runs at half the processor clock, which is what the
- * CPU model's counter divisor expresses, so this is the input that counter is
- * derived from.
- */
-#define SN0_CPU_REFCLK_HZ (180 * 1000 * 1000)
-
 /* IP29 has four banks, each made from one matched DIMM pair. */
 #define IP29_MEM_BANKS 4
 
@@ -932,7 +924,7 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
     unsigned int slice, half, space;
 
     node->cpuclk = clock_new(OBJECT(node), "cpu-refclk");
-    clock_set_hz(node->cpuclk, SN0_CPU_REFCLK_HZ);
+    clock_set_hz(node->cpuclk, SN0_MACHINE_GET_CLASS(machine)->cpu_hz);
     for (slice = 0; slice < cpu_count; slice++) {
         unsigned int cpu_index = cpu_base + slice;
         g_autofree char *alias_name =
@@ -1114,8 +1106,8 @@ static uint64_t sn0_node_map_memory(MachineState *machine,
     hwaddr node_base = SN0_NODE_BASE(node->nasid);
     unsigned int bank, segment;
 
-    if (!sn0_ip29_memory_layout(ram_size, node->bank_mb,
-                                &node->populated_banks)) {
+    if (!SN0_MACHINE_GET_CLASS(machine)->node_memory_layout(
+            ram_size, node->bank_mb, &node->populated_banks)) {
         error_report("origin200: node %u's %" PRIu64 " MiB cannot be "
                      "populated from IP29 memory banks without overlapping "
                      "firmware regions", node_index, ram_size / MiB);
@@ -1650,14 +1642,16 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
     MemoryRegion *system = get_system_memory();
     uint64_t ram_offset = 0;
     unsigned int node_count, node_index;
 
     node_count = machine->numa_state && machine->numa_state->num_nodes ?
                  machine->numa_state->num_nodes : 1;
-    if (node_count > SN0_ORIGIN200_MAX_NODES) {
-        error_report("origin200: at most two NUMA nodes are supported");
+    if (node_count > smc->max_nodes) {
+        error_report("%s: at most %u NUMA nodes are supported",
+                     MACHINE_GET_CLASS(machine)->name, smc->max_nodes);
         exit(EXIT_FAILURE);
     }
 
@@ -2039,15 +2033,11 @@ static void sn0_instance_finalize(Object *obj)
     sn0_diagnostic_finalize(s);
 }
 
-static void origin200_class_init(ObjectClass *oc, const void *data)
+static void sn0_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
-    mc->desc = "SGI Origin 200 (IP27)";
     mc->init = sn0_init;
-    mc->max_cpus = SN0_CPUS_PER_NODE * SN0_ORIGIN200_MAX_NODES;
-    mc->default_ram_size = 64 * MiB;
-    mc->default_ram_id = "sn0.node0.ram";
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
     mc->possible_cpu_arch_ids = sn0_possible_cpu_arch_ids;
     mc->cpu_index_to_instance_props = sn0_cpu_index_to_props;
@@ -2127,34 +2117,55 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         "not only a printed line.");
 }
 
-static const TypeInfo origin200_type = {
-    .name = MACHINE_TYPE_NAME("origin200"),
-    .parent = TYPE_SN0_MACHINE,
-    .class_init = origin200_class_init,
-};
-
-static const TypeInfo sn0_machine_type = {
-    .name = TYPE_SN0_MACHINE,
-    .parent = TYPE_MACHINE,
-    .instance_init = sn0_instance_init,
-    .instance_finalize = sn0_instance_finalize,
-    .instance_size = sizeof(SN0MachineState),
-    .abstract = true,
-};
-
-static const TypeInfo sn0_node_type = {
-    .name = TYPE_SN0_NODE,
-    .parent = TYPE_DEVICE,
-    .instance_init = sn0_node_instance_init,
-    .instance_size = sizeof(SN0NodeState),
-    .class_init = sn0_node_class_init,
-};
-
-static void sn0_machine_types(void)
+static void origin200_class_init(ObjectClass *oc, const void *data)
 {
-    type_register_static(&sn0_node_type);
-    type_register_static(&sn0_machine_type);
-    type_register_static(&origin200_type);
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SN0MachineClass *smc = SN0_MACHINE_CLASS(oc);
+
+    mc->desc = "SGI Origin 200 (IP27)";
+    mc->default_ram_size = 64 * MiB;
+    mc->default_ram_id = "sn0.node0.ram";
+
+    /*
+     * One chassis or two coupled over CrayLink, two processor slots each. A
+     * stock Origin 200 runs its R10000 at 180 MHz and its Hub and secondary
+     * cache at 90 MHz.
+     */
+    smc->max_nodes = SN0_ORIGIN200_MAX_NODES;
+    mc->max_cpus = SN0_CPUS_PER_NODE * smc->max_nodes;
+    smc->cpu_hz = 180000000;
+    smc->hub_hz = 90000000;
+    smc->rtc_hz = 1250000;          /* an 800 ns tick */
+    smc->scache_clock_mhz = 90;
+    smc->fw_machine_type = 1;       /* 0 is Origin 2000, 1 is Origin 200 */
+    smc->fprom_cyc = 15;
+    smc->fprom_wr = 4;
+    smc->node_memory_layout = sn0_ip29_memory_layout;
 }
 
-type_init(sn0_machine_types)
+static const TypeInfo sn0_machine_types[] = {
+    {
+        .name              = MACHINE_TYPE_NAME("origin200"),
+        .parent            = TYPE_SN0_MACHINE,
+        .class_init        = origin200_class_init,
+    },
+    {
+        .name              = TYPE_SN0_MACHINE,
+        .parent            = TYPE_MACHINE,
+        .abstract          = true,
+        .instance_size     = sizeof(SN0MachineState),
+        .instance_init     = sn0_instance_init,
+        .instance_finalize = sn0_instance_finalize,
+        .class_size        = sizeof(SN0MachineClass),
+        .class_init        = sn0_machine_class_init,
+    },
+    {
+        .name              = TYPE_SN0_NODE,
+        .parent            = TYPE_DEVICE,
+        .instance_size     = sizeof(SN0NodeState),
+        .instance_init     = sn0_node_instance_init,
+        .class_init        = sn0_node_class_init,
+    },
+};
+
+DEFINE_TYPES(sn0_machine_types)
