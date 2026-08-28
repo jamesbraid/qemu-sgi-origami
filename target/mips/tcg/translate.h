@@ -134,6 +134,7 @@ enum {
     gen_helper_##name(tcg_env, arg1, arg2, tcg_constant_i32(arg3));\
     } while (0)
 
+void save_cpu_state(DisasContext *ctx, int do_save_pc);
 void generate_exception(DisasContext *ctx, int excp);
 void generate_exception_err(DisasContext *ctx, int excp, int err);
 void generate_exception_end(DisasContext *ctx, int excp);
@@ -152,6 +153,15 @@ void check_cp1_enabled(DisasContext *ctx);
 void check_cp1_64bitmode(DisasContext *ctx);
 void check_cp1_registers(DisasContext *ctx, int regs);
 void check_cop1x(DisasContext *ctx);
+
+/* r10k_translate.c */
+void check_mips4_enabled(DisasContext *ctx);
+void check_mips4_enabled_fp(DisasContext *ctx);
+void gen_fp_unimplemented(DisasContext *ctx);
+void gen_cop2_exception_r10k(DisasContext *ctx);
+bool r10k_cop1_fmt_defined(uint32_t opcode);
+void gen_movcf_s_r10k(DisasContext *ctx, int fs, int fd, int cc, int tf);
+void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft, bool on_zero);
 
 void gen_base_offset_addr(DisasContext *ctx, TCGv addr, int base, int offset);
 void gen_base_index_addr(DisasContext *ctx, TCGv addr, int base, int index);
