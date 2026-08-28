@@ -76,8 +76,15 @@ struct SGIHubState {
     DeviceDiagnosticSink *diagnostic;
 
     /*
-     * The PCF8584, mapped over this window's I2C addresses; embedded
-     * because the bus it masters belongs to this node alone.
+     * The real PCF8584 I2C-bus controller, mapped over this window's I2C
+     * data/control-status addresses at a higher priority than sgi_hub_ops
+     * answers directly -- see sgi_hub_realize(); the chip's behavioral
+     * contract is in the Origami project tree's controller datasheet
+     * (docs/datasheets/pcf8584-elsc.md there, not in this QEMU tree).
+     * Embedded rather than reached through
+     * the machine, because the bus it masters (the ELSC, the identity
+     * EEPROM) belongs to this node and nothing outside the Hub needs to
+     * name it.
      */
     PCF8584State i2c;
 

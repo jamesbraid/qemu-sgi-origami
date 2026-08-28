@@ -157,8 +157,11 @@
 
 /*
  * The two block transfer engines: cache-coherent memory-to-memory copy
- * engines in the Hub's I/O section, publicly named BTE0 and BTE1
- * (docs/datasheets/hub-bte.md). Software gives an engine a source, a
+ * engines in the Hub's I/O section, publicly named BTE0 and BTE1. The
+ * register-level contract this block implements, and the evidence behind
+ * each choice below, live in the Origami project tree's block-transfer
+ * datasheet (docs/datasheets/hub-bte.md there, not in this QEMU tree).
+ * Software gives an engine a source, a
  * destination and a length in 128-byte cache lines; the engine copies or
  * zero-fills that range and signals completion either as a pending
  * interrupt bit on a processor interface or as a status doubleword written
@@ -299,9 +302,10 @@
  * The memory configuration register: eight per-bank descriptors, a
  * reply-guarantee count, the directory-format and error-correction-ignore
  * bits, an arbitration bit, an I/O-protection enable, a memory-module select
- * and two timing-field pairs (docs/datasheets/hub-memory-directory.md has
- * the full field-by-field account, dual-sourced against SGI's own composite
- * reset-defaults constant). Modelled as plain masked storage -- nothing on
+ * and two timing-field pairs. The Origami project tree's memory/directory
+ * datasheet (docs/datasheets/hub-memory-directory.md there) carries the
+ * field-by-field account, dual-sourced against SGI's own composite
+ * reset-defaults constant. Modelled as plain masked storage -- nothing on
  * our boot path is known to depend on a write here changing what memory
  * this model presents, so there is no derived behaviour to add, only the
  * value a guest reads back. The reset value is the one fact that matters:
@@ -354,13 +358,14 @@
                                  MD_ONEWIRE_PHASE_LO | MD_ONEWIRE_PHASE_HI)
 
 /*
- * Both timing phases at the value our memory/directory datasheet records for
- * them. **The one-wire datasheet is the authority on this register's fields
- * and does not carry this constant**, while instructing a test to assert the
- * actual value rather than merely a non-zero one — so this is taken from the
- * other page and the discrepancy is reported rather than papered over. A
- * wrong constant here is a wrong value in a register no booting guest reads,
- * and it does not affect the poll either way.
+ * Both timing phases at the value the Origami project tree's
+ * memory/directory datasheet records for them. **The one-wire datasheet
+ * (docs/datasheets/hub-onewire.md there) is the authority on this
+ * register's fields and does not carry this constant**, while instructing
+ * a test to assert the actual value rather than merely a non-zero one — so
+ * this is taken from the other page and the discrepancy is reported rather
+ * than papered over. A wrong constant here is a wrong value in a register
+ * no booting guest reads, and it does not affect the poll either way.
  */
 /*
  * How long a bit slot takes before completion is reported. **Chosen, not
@@ -417,10 +422,12 @@
 
 /*
  * The PCF8584 I2C-bus controller chip real firmware drives heavily during
- * bring-up (docs/datasheets/hub-memory-directory.md has the register-level
- * detail; docs/datasheets/pcf8584-elsc.md has the chip's own behavioral
- * contract. It is a third-party chip with a public interface, not an SGI
- * one). This window used to answer as a fixed, always-idle controller —
+ * bring-up -- a third-party chip with a public interface, not an SGI one.
+ * The Origami project tree documents where the Hub places it in the
+ * memory/directory datasheet (docs/datasheets/hub-memory-directory.md
+ * there) and the chip's own behavioral contract in the controller
+ * datasheet (docs/datasheets/pcf8584-elsc.md there).
+ * This window used to answer as a fixed, always-idle controller —
  * enough to stop firmware from spinning through its full I2C timeout, but
  * not a real controller. It is now a real PCF8584 model (hw/i2c/pcf8584.c),
  * mapped over this window at higher priority than sgi_hub_ops answers below,
@@ -530,8 +537,10 @@
 #define PI_RT_MASK              (((uint64_t)1 << 52) - 1)
 
 /*
- * The counter's own clock control (docs/datasheets/hub-processor-interface.md
- * has the full field account). Bit 16 selects the Hub's internal clock over
+ * The counter's own clock control; the Origami project tree's
+ * processor-interface datasheet (docs/datasheets/hub-processor-interface.md
+ * there) carries the full field account and its sourcing.
+ * Bit 16 selects the Hub's internal clock over
  * the network-wide one and resets set; bits 7:1 hold a maximum count and bit
  * 0 enables the network clock, both writable; bit 15 and bits 14:8 observe
  * the network-wide clock and are read-only. This model has no network-wide
@@ -557,8 +566,10 @@
 
 /*
  * The I/O interface's deallocation, queue-depth and CRB management/control
- * registers a guest reads (docs/datasheets/hub-io-interface.md, "CRB and
- * I/O-queue management registers IRIX touches"). All read zero on this model:
+ * registers a guest reads -- the Origami project tree's I/O-interface
+ * datasheet (docs/datasheets/hub-io-interface.md there) names which, and
+ * which guest, in its section on CRB and I/O-queue management registers.
+ * All read zero on this model:
  * it completes every crosstalk transaction instantly, so no request is in
  * flight, no CRB is valid, and the outbound queue is empty.
  *
@@ -653,7 +664,12 @@
 #define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
 #define IO_BWIN_SLICE_SHIFT     29
 
-/* Network interface. */
+/*
+ * Network interface. The Origami project tree's network-interface
+ * datasheet (docs/datasheets/hub-network-interface.md there, not in this
+ * QEMU tree) carries the register accounts and the open questions the
+ * comments below lean on.
+ */
 #define HUB_NI_STATUS           0x600000  /* status, revision and identity */
 #define HUB_NI_SCRATCH_0        0x600100
 #define HUB_NI_SCRATCH_1        0x600108
@@ -2083,7 +2099,9 @@ trace_rt_count_read:
  * Real firmware's diagnostic progress codes, one per boot stage, from the
  * PROM's own progress-LED enumeration (stand/arcs/IP27prom/prom_leds.h,
  * IRIX 6.5.7) -- transcribed as facts in our own words, not the vendor's
- * identifiers or comments, per docs/datasheets/hub-memory-directory.md.
+ * identifiers or comments. The Origami project tree's memory/directory
+ * datasheet (docs/datasheets/hub-memory-directory.md there) records the
+ * enumeration and the sourcing rule it was transcribed under.
  * A NULL entry is a code the source itself marks reserved or unused.
  */
 static const char *const sgi_hub_led_progress[0x61] = {
@@ -2257,10 +2275,10 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
  * a diagnosed failure from ordinary boot progress; the return value is NULL
  * for anything the enumeration does not cover, which includes both the
  * reserved slots the source itself sets aside and the unrelated pattern the
- * firmware flashes while it waits for a character (0x80 XORed against a
- * per-device bit pattern, documented in
- * docs/datasheets/hub-memory-directory.md) -- so an undecoded value is not
- * automatically a fault, only an unenumerated one.
+ * firmware flashes while it waits for a character -- 0x80 XORed against a
+ * per-device bit pattern, per the Origami project tree's memory/directory
+ * datasheet (docs/datasheets/hub-memory-directory.md there) -- so an
+ * undecoded value is not automatically a fault, only an unenumerated one.
  */
 static const char *sgi_hub_led_decode(uint8_t code, bool *is_failure)
 {
