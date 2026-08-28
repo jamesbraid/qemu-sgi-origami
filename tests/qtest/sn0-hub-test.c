@@ -78,6 +78,8 @@
 #define PI_ERR_STATUS1_CLR_B 0x000468
 #define PI_ERR_MASK          0x01ffffffULL
 #define PI_ERR_SPOOL_SIZE_MASK 0xfULL
+#define PI_TIMEDOUT_BUF_A    0x000480
+#define PI_TIMEDOUT_BUF_B    0x000488
 #define PI_RT_COUNT         0x030100
 #define PI_RT_COMPARE_A     0x000108
 #define PI_RT_PENDING_A     0x000120
@@ -121,6 +123,11 @@
 #define IO_ICRB_C_LAST_OFF  (IO_ICRB_C_BASE + 7 * IO_ICRB_C_STRIDE) /* slot 14 */
 #define IO_LINK_STATUS      0x400128
 #define IO_ERROR_CLEAR      0x4001f8
+#define IO_PIO_DEALLOC      0x400388
+#define IO_CRB_DEALLOC      0x400390
+#define IO_IOQ_FIFO_DEPTH   0x400398
+#define IO_CRB_MGMT         0x4003a8
+#define IO_CRB_CONTROL      0x4003b0
 
 /*
  * The two block transfer engines: six 64-bit registers at the base of each
@@ -968,6 +975,62 @@ static void test_pi_error_register_shell(const void *data)
 
     for (i = 0; i < ARRAY_SIZE(status); i++) {
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + status[i]), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The two processor-interface timed-out-request-buffer registers (0x480,
+ * 0x488). This model completes every request instantly, so no buffer ever
+ * times out: both read zero, and a write -- how a guest clears a hung buffer --
+ * has nothing to clear and does not disturb the zero read-back.
+ */
+static void test_pi_timedout_buffers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    static const uint64_t regs[] = {
+        PI_TIMEDOUT_BUF_A, PI_TIMEDOUT_BUF_B,
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(regs); i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
+        qtest_writeq(qts, HUB_LOCAL + regs[i], ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The I/O interface's deallocation, queue-depth, CRB-management and CRB-control
+ * registers a guest reads (0x388, 0x390, 0x398, 0x3a8, 0x3b0). This model
+ * completes every crosstalk transaction instantly, so nothing is ever in
+ * flight, queued or valid and all read zero. For the two deallocation registers
+ * (PIO-table 0x388, CRB 0x390) the clear read is the load-bearing contract: a
+ * guest frees an entry by writing a pending bit and polls until it clears, so
+ * writing all ones and reading zero proves the pending bit is never echoed --
+ * which is what stops the guest's deallocation spin-loops hanging. The other
+ * three read zero for their own reasons (a queue-depth workaround, a valid-CRB
+ * bitmap, and write-only control), which the same all-ones-write/zero-read
+ * check covers. The arbitration register at 0x3a0 is not decoded (no guest
+ * reads it); the per-widget response buffers below reset a credit field to one,
+ * not zero, and are out of range here.
+ */
+static void test_io_queue_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    static const uint64_t regs[] = {
+        IO_PIO_DEALLOC, IO_CRB_DEALLOC, IO_IOQ_FIFO_DEPTH,
+        IO_CRB_MGMT, IO_CRB_CONTROL,
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(regs); i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
+        qtest_writeq(qts, HUB_LOCAL + regs[i], ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
     }
 
     qtest_quit(qts);
@@ -2893,6 +2956,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/pi-rt-local-ctrl", NULL, test_pi_rt_local_ctrl);
     qtest_add_data_func("sn0/hub/pi-error-register-shell", NULL,
                         test_pi_error_register_shell);
+    qtest_add_data_func("sn0/hub/pi-timedout-buffers", NULL,
+                        test_pi_timedout_buffers);
+    qtest_add_data_func("sn0/hub/io-queue-registers", NULL,
+                        test_io_queue_registers);
     qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
                         test_io_icrb_c_family);
     qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,

@@ -481,6 +481,15 @@
 #define PI_ERR_STATUS0_VALID    (1ULL << 63)
 #define PI_ERR_STATUS0_ADDRESS  (0x480041ULL << 25)
 
+/*
+ * Timed-out-request-buffer registers. A processor-interface request that never
+ * completes is logged into one of these, and a guest reads them to find a hung
+ * buffer and writes to clear it. This model completes every request instantly,
+ * so no buffer ever times out and both read zero.
+ */
+#define HUB_PI_TIMEDOUT_BUF_A   0x000480
+#define HUB_PI_TIMEDOUT_BUF_B   0x000488
+
 #define HUB_PI_CPU_ENABLE_A     0x000050
 #define HUB_PI_CPU_ENABLE_B     0x000058
 
@@ -535,6 +544,34 @@
  */
 #define HUB_IO_LINK_STATUS      0x400128
 #define HUB_IO_ERROR_CLEAR      0x4001f8
+
+/*
+ * The I/O interface's deallocation, queue-depth and CRB management/control
+ * registers a guest reads (docs/datasheets/hub-io-interface.md, "CRB and
+ * I/O-queue management registers IRIX touches"). All read zero on this model:
+ * it completes every crosstalk transaction instantly, so no request is in
+ * flight, no CRB is valid, and the outbound queue is empty.
+ *
+ * For the two deallocation registers (PIO-table 0x388, CRB 0x390) the clear
+ * read is load-bearing, not tidy: a guest frees an entry by writing a pending
+ * bit and then polls the register until the bit clears, so a model that echoed
+ * the write would spin it forever. The pending bit must always read clear.
+ *
+ * The other three read zero for their own reasons: queue depth (0x398) is read
+ * unconditionally at every boot by a CRB-timeout workaround wanting a small
+ * value; CRB management (0x3a8) is a valid-CRB bitmap where zero means none
+ * outstanding; CRB control (0x3b0) is only written, not polled -- its follow-up
+ * spin-wait reads a different offset entirely.
+ *
+ * The arbitration register at 0x3a0 is not decoded -- no guest path reads it.
+ * The per-widget response buffers below (0x198 onward) are excluded too: their
+ * first field is a credit count that resets to one, not zero.
+ */
+#define HUB_IO_PIO_DEALLOC      0x400388
+#define HUB_IO_CRB_DEALLOC      0x400390
+#define HUB_IO_IOQ_FIFO_DEPTH   0x400398
+#define HUB_IO_CRB_MGMT         0x4003a8
+#define HUB_IO_CRB_CONTROL      0x4003b0
 
 /*
  * The link state is two bits with a counter-intuitive encoding: zero means the
@@ -1786,6 +1823,10 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
         return s->pi_err_mask[1];
     case HUB_PI_ERR_SPOOL_SIZE:
         return s->pi_err_spool_size;
+    case HUB_PI_TIMEDOUT_BUF_A:
+    case HUB_PI_TIMEDOUT_BUF_B:
+        /* No processor-interface request buffer times out on this model. */
+        return 0;
     case HUB_PI_CPU_ENABLE_A:
         return s->pi_cpu_enable[0];
     case HUB_PI_CPU_ENABLE_B:
@@ -1846,6 +1887,19 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
         return s->io_scratch[1];
     case HUB_IO_LINK_STATUS:
         return s->io_link_status;
+    case HUB_IO_PIO_DEALLOC:
+    case HUB_IO_CRB_DEALLOC:
+    case HUB_IO_IOQ_FIFO_DEPTH:
+    case HUB_IO_CRB_MGMT:
+    case HUB_IO_CRB_CONTROL:
+        /*
+         * Deallocation, queue depth, CRB management and CRB control. Nothing is
+         * ever in flight, queued or valid in this instant-completion model, so
+         * all read zero -- and for the two deallocation registers (0x388, 0x390)
+         * a clear read is required, since a guest polls them for a written
+         * pending bit to clear.
+         */
+        return 0;
     case HUB_NI_STATUS:
         return s->ni_status;
     case HUB_NI_SCRATCH_0:
@@ -2462,6 +2516,19 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
             s->pi_err_status0[1] = 0;
         }
         break;
+    case HUB_PI_TIMEDOUT_BUF_A:
+    case HUB_PI_TIMEDOUT_BUF_B:
+        /*
+         * A guest clears a timed-out request buffer by writing it. This model
+         * times no buffer out, so the write has nothing to clear -- accepted,
+         * not guest misbehaviour.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to processor-interface "
+                      "timed-out-buffer register 0x%" HWADDR_PRIx
+                      " (no buffer timed out here for a write to clear)\n",
+                      val, addr);
+        break;
     case HUB_PI_CPU_ENABLE_A:
         sgi_hub_set_cpu_enable(s, 0, val);
         break;
@@ -2590,6 +2657,26 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
                           "block-transfer-engine latches exist here)\n",
                           val, addr);
         }
+        break;
+    case HUB_IO_PIO_DEALLOC:
+    case HUB_IO_CRB_DEALLOC:
+    case HUB_IO_CRB_MGMT:
+    case HUB_IO_CRB_CONTROL:
+        /*
+         * A guest writes a pending bit here to free a PIO or CRB entry, or
+         * read-modify-writes CRB counts. This instant-completion model has no
+         * entry outstanding, so the operation completes at once and the pending
+         * bit reads clear -- the write is accepted, nothing to hold. The
+         * queue-depth register (0x398) has no write case: the one conditional
+         * write the datasheet describes (a rewrite only when the max-reply-
+         * pointer field exceeds 0x28) never fires here, as the register always
+         * reads back below that.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to I/O-queue register "
+                      "0x%" HWADDR_PRIx
+                      " (no outstanding entry to free; completes at once)\n",
+                      val, addr);
         break;
     case HUB_NI_STATUS:
         /*
