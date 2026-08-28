@@ -1,16 +1,22 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * The R10000 family's system helpers: the CACHE instruction's diagnostic
- * operations over the cache arrays the CPU state carries.
+ * operations over the cache arrays the CPU state carries, and the
+ * physical watchpoint pair behind the WatchLo and WatchHi registers.
  *
  * Everything here is reached only on a processor whose definition carries
  * INSN_R10K; the shared helpers dispatch before their own generic paths.
  */
 
 #include "qemu/osdep.h"
+#include "qemu/main-loop.h"
 #include "cpu.h"
 #include "internal.h"
+#include "exec/cputlb.h"
 #include "exec/helper-proto.h"
+#include "exec/target_page.h"
+#include "exec/watchpoint.h"
+#include "accel/tcg/cpu-loop.h"
 #include "../tcg-internal.h"
 
 /*
@@ -405,4 +411,176 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             }
         }
     }
+}
+
+/*
+ * The R10000 watch registers hold a doubleword's physical address, and a
+ * load from it or a store to it must raise the Watch exception whichever
+ * virtual window the access came through. QEMU's watchpoint machinery is
+ * virtual, so the two are bridged where every translation goes by: when a
+ * fill maps a page containing the watched doubleword, a CPU watchpoint is
+ * planted at the doubleword's address inside that virtual page, which
+ * forces the page's accesses onto the slow path and hands overlapping ones
+ * to mips_debug_check_watchpoint() below. Arming flushes the QEMU TLB, so
+ * pages already resident are re-discovered through this path too.
+ *
+ * A planted watchpoint can outlive its mapping — the guest may point the
+ * virtual page somewhere else. It is not chased at remap time; instead the
+ * hit check re-translates, and a hit whose page no longer holds the
+ * watched doubleword is dismissed. The stale entry costs slow-path
+ * execution on that page until the next write to a watch register sweeps
+ * it away.
+ */
+static uint64_t mips_r10k_watch_pa(CPUMIPSState *env)
+{
+    return ((env->CP0_WatchHi[0] & 0xff) << 32) |
+           (env->CP0_WatchLo[0] & CP0WL_R10K_MASK);
+}
+
+static int mips_r10k_watch_flags(CPUMIPSState *env)
+{
+    uint32_t lo = env->CP0_WatchLo[0];
+    int flags = BP_CPU | BP_STOP_BEFORE_ACCESS;
+
+    if (lo & CP0WL_R10K_R) {
+        flags |= BP_MEM_READ;
+    }
+    if (lo & CP0WL_R10K_W) {
+        flags |= BP_MEM_WRITE;
+    }
+    return flags;
+}
+
+/*
+ * Called by mips_cpu_tlb_fill() for every translation that succeeds while
+ * a watch enable is set: plant the watchpoint if this physical page holds
+ * the watched doubleword and no earlier fill planted it already.
+ */
+void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
+                                 vaddr address, hwaddr physical)
+{
+    uint64_t wpa = mips_r10k_watch_pa(env);
+    int flags = mips_r10k_watch_flags(env);
+    CPUWatchpoint *wp;
+    vaddr wva;
+
+    if ((physical & TARGET_PAGE_MASK) != (wpa & TARGET_PAGE_MASK)) {
+        return;
+    }
+    wva = (address & TARGET_PAGE_MASK) | (wpa & ~TARGET_PAGE_MASK);
+    QTAILQ_FOREACH(wp, &cs->watchpoints, entry) {
+        if (wp->vaddr == wva && wp->len == 8 &&
+            (wp->flags & ~BP_WATCHPOINT_HIT) == flags) {
+            return;
+        }
+    }
+    cpu_watchpoint_insert(cs, wva, 8, flags, NULL);
+}
+
+/*
+ * A watch register was just written, or reset ran: nothing planted before
+ * this moment can be trusted, and a WatchLo write also empties the latch
+ * of a postponed exception — the manual's own way to clear one.
+ */
+void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written)
+{
+    CPUState *cs = env_cpu(env);
+
+    BQL_LOCK_GUARD();
+
+    cpu_watchpoint_remove_all(cs, BP_CPU);
+    if (watchlo_written) {
+        env->CP0_R10K_DelayedWatch = 0;
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
+    }
+    if (env->CP0_WatchLo[0] & (CP0WL_R10K_R | CP0WL_R10K_W)) {
+        tlb_flush(cs);
+    }
+}
+
+/*
+ * The slow path found an access overlapping a planted watchpoint: decide
+ * whether the architectural watch fires. The mapping is re-checked because
+ * the plant can be stale, and the enables are re-checked against the kind
+ * of access that hit. With EXL or ERL set the exception is postponed: the
+ * manual has the referencing instruction execute and the exception wait,
+ * so the latch is set and the access is waved through.
+ */
+bool mips_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
+{
+    CPUMIPSState *env = cpu_env(cs);
+    uint32_t lo = env->CP0_WatchLo[0];
+    int hit = (wp->flags >> BP_HIT_SHIFT) & BP_MEM_ACCESS;
+    hwaddr phys;
+
+    if (!(env->insn_flags & INSN_R10K)) {
+        return false;
+    }
+    if (!(((hit & BP_MEM_READ) && (lo & CP0WL_R10K_R)) ||
+          ((hit & BP_MEM_WRITE) && (lo & CP0WL_R10K_W)))) {
+        return false;
+    }
+    phys = mips_cpu_get_phys_addr_debug(cs, wp->vaddr);
+    if (phys == -1 || phys != mips_r10k_watch_pa(env)) {
+        return false;
+    }
+    if (env->CP0_Status & ((1 << CP0St_EXL) | (1 << CP0St_ERL))) {
+        BQL_LOCK_GUARD();
+
+        env->CP0_R10K_DelayedWatch = 1;
+        cpu_interrupt(cs, CPU_INTERRUPT_DWATCH);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * A watchpoint that mips_debug_check_watchpoint() confirmed stopped the
+ * access before it ran: turn the debug exception into the guest's Watch
+ * exception. The vCPU state was already rewound to the referencing
+ * instruction, so EPC comes out pointing at it. A watchpoint somebody
+ * armed through the gdb stub carries no BP_CPU and falls through to the
+ * debugger exactly as before.
+ */
+void mips_debug_excp_handler(CPUState *cs)
+{
+    CPUWatchpoint *wp = cs->watchpoint_hit;
+
+    if (wp && (wp->flags & BP_CPU)) {
+        cs->watchpoint_hit = NULL;
+        cs->exception_index = EXCP_DWATCH;
+        cpu_env(cs)->error_code = 0;
+        cpu_loop_exit(cs);
+    }
+}
+
+/*
+ * A postponed Watch exception drains at the first block boundary with
+ * both EXL and ERL clear — the ERET or Status write that cleared them
+ * ended its block, so EPC comes out holding the next unexecuted
+ * instruction, which is where the manual wants it. The request bit
+ * stays up while the latch is full, so mips_cpu_exec_interrupt()
+ * revisits this until then; the bit comes down here on delivery, or in
+ * mips_r10k_watch_changed() when an MTC0 to WatchLo empties the latch,
+ * and Watch is maskable only by EXL and ERL, so unlike the hardware
+ * interrupt lines there is no masked window to idle through. Returns
+ * true when the exception was delivered.
+ */
+bool mips_r10k_deliver_delayed_watch(CPUState *cs)
+{
+    CPUMIPSState *env = cpu_env(cs);
+
+    if (env->CP0_R10K_DelayedWatch &&
+        !(env->CP0_Status & ((1 << CP0St_EXL) | (1 << CP0St_ERL)))) {
+        env->CP0_R10K_DelayedWatch = 0;
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
+        cs->exception_index = EXCP_DWATCH;
+        env->error_code = 0;
+        mips_cpu_do_interrupt(cs);
+        return true;
+    }
+    if (!env->CP0_R10K_DelayedWatch) {
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
+    }
+    return false;
 }

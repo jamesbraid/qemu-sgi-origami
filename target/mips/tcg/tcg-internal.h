@@ -72,6 +72,9 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 /* r10k_helper.c */
 void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra);
+void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
+                          vaddr address, hwaddr physical);
+bool mips_r10k_deliver_delayed_watch(CPUState *cs);
 
 void mips_semihosting(CPUMIPSState *env);
 
