@@ -9,6 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 /*
  * To test the pflash_cfi02 device, we run QEMU with the sh4 r2d machine with
@@ -613,6 +614,82 @@ static void test_cfi_in_autoselect(const void *opaque)
     qtest_quit(qtest);
 }
 
+/*
+ * Migrating the machine must preserve the flash's command state, not only its
+ * contents: a device in autoselect mode on the source must still answer ID
+ * queries on the destination, and a reset command must return it to array
+ * reads. Migrate to a file and load it into a fresh instance, so the two
+ * ends never hold the backing image open at the same time.
+ */
+static void test_migration_in_autoselect(const void *opaque)
+{
+    const FlashConfig *config = opaque;
+    g_autofree char *state_path = NULL;
+    GError *err = NULL;
+    int fd = g_file_open_tmp("pflash-cfi02-migrate-XXXXXX", &state_path, &err);
+    g_assert_no_error(err);
+    close(fd);
+
+    QTestState *from = qtest_initf(
+        "-M musicpal"
+        " -drive if=pflash,file=%s,format=raw,copy-on-read=on",
+        image_path);
+    FlashConfig explicit_config = expand_config_defaults(config);
+    explicit_config.qtest = from;
+    const FlashConfig *c = &explicit_config;
+
+    uint64_t array_word = flash_read(c, 0);
+    unlock(c);
+    flash_cmd(c, UNLOCK0_ADDR, AUTOSELECT_CMD);
+    g_assert_cmphex(flash_query(c, FLASH_ADDR(0)), ==, replicate(c, 0xBF));
+
+    g_autofree char *uri = g_strdup_printf("file:%s", state_path);
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(
+            from, "{ 'execute': 'query-migrate' }");
+        const char *status = qdict_get_str(ret, "status");
+        bool completed = g_str_equal(status, "completed");
+
+        g_assert_false(g_str_equal(status, "failed"));
+        qobject_unref(ret);
+        if (completed) {
+            break;
+        }
+        g_usleep(10 * 1000);
+    }
+    qtest_quit(from);
+
+    QTestState *to = qtest_initf(
+        "-M musicpal"
+        " -drive if=pflash,file=%s,format=raw,copy-on-read=on"
+        " -incoming file:%s",
+        image_path, state_path);
+    explicit_config.qtest = to;
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(
+            to, "{ 'execute': 'query-status' }");
+        bool running = qdict_get_bool(ret, "running");
+
+        qobject_unref(ret);
+        if (running) {
+            break;
+        }
+        g_usleep(10 * 1000);
+    }
+
+    /* Still in autoselect: the command state crossed, not just the bits. */
+    g_assert_cmphex(flash_query(c, FLASH_ADDR(0)), ==, replicate(c, 0xBF));
+
+    /* And the state machine still works: reset returns to array reads. */
+    reset(c);
+    g_assert_cmphex(flash_read(c, 0), ==, array_word);
+
+    qtest_quit(to);
+    unlink(state_path);
+}
+
 static void cleanup(void *opaque)
 {
     unlink(image_path);
@@ -682,6 +759,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("pflash-cfi02/cfi-in-autoselect", &configuration[0],
                         test_cfi_in_autoselect);
+    qtest_add_data_func("pflash-cfi02/migration-in-autoselect",
+                        &configuration[0], test_migration_in_autoselect);
     int result = g_test_run();
     cleanup(NULL);
     return result;
