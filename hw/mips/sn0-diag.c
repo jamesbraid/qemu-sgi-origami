@@ -14,6 +14,8 @@
 #include "hw/core/boards.h"
 #include "hw/core/cpu.h"
 #include "system/reset.h"
+#include "qapi/error.h"
+#include "qapi/qapi-commands-misc-mips.h"
 #include "sn0.h"
 
 #define SN0_DIAGNOSTIC_EVENT_COUNT 4096
@@ -220,7 +222,8 @@ static void sn0_diagnostic_reset(void *opaque)
     }
 }
 
-SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp)
+static SgiOriginState *sn0_query_origin_state(uint32_t event_limit,
+                                              Error **errp)
 {
     BQL_LOCK_GUARD();
     MachineState *machine = MACHINE(qdev_get_machine());
@@ -380,4 +383,18 @@ void sn0_diagnostic_finalize(SN0MachineState *s)
      * pointer into them, the same release-after-finalize hazard that keeps
      * the machine's widget alias storage allocated.
      */
+}
+
+SgiOriginState *qmp_x_query_origin_state(bool has_event_limit,
+                                         uint32_t event_limit,
+                                         Error **errp)
+{
+    if (!has_event_limit) {
+        event_limit = 256;
+    }
+    if (event_limit > 4096) {
+        error_setg(errp, "event-limit must not exceed 4096");
+        return NULL;
+    }
+    return sn0_query_origin_state(event_limit, errp);
 }

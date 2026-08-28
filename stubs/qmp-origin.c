@@ -2,7 +2,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qapi/qapi-commands-machine.h"
+#include "qapi/qapi-commands-misc-mips.h"
 
 SgiOriginState *qmp_x_query_origin_state(bool has_event_limit,
                                          uint32_t event_limit,
