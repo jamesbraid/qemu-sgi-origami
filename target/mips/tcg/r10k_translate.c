@@ -3,6 +3,13 @@
  * R10000-family translation routines: the translation-time checks and
  * TCG generation where the R10000 family differs from the shared MIPS
  * decoder.
+ *
+ * Unlike the other vendor translate units this one has no decodetree
+ * file: the R10000 defines no encodings of its own, it only refuses
+ * encodings the shared decoder accepts, so everything here is a check
+ * or a variant that decoder calls behind an INSN_R10K test. Those call
+ * sites carry no TARGET_MIPS64 guard, so this file builds for every
+ * MIPS target even though only mips64 can create an R10000.
  */
 
 #include "qemu/osdep.h"

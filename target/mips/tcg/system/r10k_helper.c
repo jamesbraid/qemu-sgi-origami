@@ -5,8 +5,15 @@
  * watchpoint pair behind the WatchLo and WatchHi registers, and the
  * coprocessor 0 registers only this family has.
  *
- * Everything here is reached only on a processor whose definition carries
- * INSN_R10K; the shared helpers dispatch before their own generic paths.
+ * Apart from the debug hooks, which the target registers for every MIPS
+ * CPU and which reject other processors themselves, everything here is
+ * reached only on a processor whose definition carries INSN_R10K; the
+ * shared helpers dispatch before their own generic paths.
+ *
+ * Built for every MIPS system target, not only mips64: the shared
+ * translator emits calls to these helpers without a TARGET_MIPS64 guard,
+ * so the symbols must link everywhere, as octeon_crypto.c's do — unlike
+ * lcsr_helper.c, whose call sites are 64-bit-only.
  */
 
 #include "qemu/osdep.h"
