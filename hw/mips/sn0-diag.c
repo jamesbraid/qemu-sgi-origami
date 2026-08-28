@@ -367,9 +367,9 @@ void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index)
     }
 }
 
-void sn0_diagnostic_register_reset(SN0MachineState *s)
+void sn0_diagnostic_machine_reset(SN0MachineState *s)
 {
-    qemu_register_reset(sn0_diagnostic_reset, s);
+    sn0_diagnostic_reset(s);
 }
 
 void sn0_diagnostic_finalize(SN0MachineState *s)
