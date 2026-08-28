@@ -1022,7 +1022,7 @@ static void test_reject_three_numa_nodes(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "origin200: at most two NUMA nodes are supported");
+                        "origin200: at most 2 NUMA nodes are supported");
 }
 
 static void test_reject_partial_cpu_numa_mapping(const void *data)
