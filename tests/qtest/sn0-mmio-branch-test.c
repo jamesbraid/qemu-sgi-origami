@@ -79,7 +79,7 @@
 #define EPC_OFF             0x30
 #define ITER_OFF            0x38
 #define IRQ_OFF             0x40
-#define DEX_OFF             0x48
+#define CACHE_AS_RAM_OFF             0x48
 #define PROBE_OFF           0x50
 #define PROBE2_OFF          0x58
 
@@ -169,14 +169,14 @@
 
 /*
  * The promdata filter answers from a private copy, rather than forwarding
- * to RAM, when FPR 0 carries the PROM's boot-status DEX bit, the accessing
+ * to RAM, when FPR 0 carries the PROM's cache-as-RAM boot-status bit, the accessing
  * PC is inside the boot flash or the RAM PROM copy, and the access is a
  * cached one -- an uncached reference goes to the memory system on real
  * hardware, past the cache-resident data the filter stands in for, so it
  * always sees the RAM underneath.  The bit is 1 << 1 in the register's
  * 64-bit view.
  */
-#define PROM_BSR_DEX        0x2
+#define PROM_BOOT_STATUS_CACHE_AS_RAM        0x2
 
 /*
  * The 64-bit physical segment at cache-coherency attribute 5, coherent
@@ -222,7 +222,7 @@ typedef struct {
     bool loop;                  /* iterate, with the timer interrupt armed */
     bool racing;                /* more than one processor runs the program */
     bool xkphys;                /* reach the snippet through XKPHYS */
-    bool dex;                   /* arm the filter's private-copy condition */
+    bool cache_as_ram;                   /* arm the filter's private-copy condition */
     const char *smp;            /* -smp, which is what gates CF_PARALLEL */
     const char *accel;          /* the accelerator and its thread mode */
     const char *extra;          /* anything else the configuration needs */
@@ -586,7 +586,7 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_ori(&buf, R_T5, R_ZERO, 1);
     }
 
-    if (tc->dex) {
+    if (tc->cache_as_ram) {
         /*
          * Set the bit that arms the filter's private copy, from code that
          * is already inside the boot flash -- this ROM runs at physical
@@ -601,20 +601,20 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_lui(&buf, R_T7, STATUS_FPU_ON_HI);
         emit_or(&buf, R_T1, R_T1, R_T7);
         emit_mtc0(&buf, R_T1, CP0_STATUS);
-        emit_ori(&buf, R_T7, R_ZERO, PROM_BSR_DEX);
+        emit_ori(&buf, R_T7, R_ZERO, PROM_BOOT_STATUS_CACHE_AS_RAM);
         emit_dmtc1(&buf, R_T7, 0);
         /*
          * Read it back and publish it.  A dmtc1 that the processor ignored
          * would leave every assertion below passing for the wrong reason.
          */
         emit_dmfc1(&buf, R_T7, 0);
-        emit_sd(&buf, R_T7, R_T0, DEX_OFF);
+        emit_sd(&buf, R_T7, R_T0, CACHE_AS_RAM_OFF);
         /*
          * Then read the window as data, from here, still inside the flash,
          * through both of the unmapped kernel segments.  The kseg1 read is
          * uncached, so it carries the uncached attribute and the filter
          * forwards it to the RAM underneath, which holds the snippet's
-         * first instruction.  The kseg0 read is cached, so with the DEX bit
+         * first instruction.  The kseg0 read is cached, so with the cache-as-RAM bit
          * armed and this PC inside the flash it must come back zero: the
          * private copy is zeroed at reset, and only the cached read from a
          * PROM PC sees it.  The zero here and a working fetch below are the
@@ -689,13 +689,13 @@ static void report_state(QTestState *qts)
                    " fell 0x%" PRIx64 " target 0x%" PRIx64
                    " trap 0x%" PRIx64 " cause 0x%" PRIx64 " epc 0x%" PRIx64
                    " iterations %" PRIu64 " interrupts %" PRIu64
-                   " dex 0x%" PRIx64 " probe 0x%" PRIx64
+                   " cache_as_ram 0x%" PRIx64 " probe 0x%" PRIx64
                    " probe2 0x%" PRIx64,
                    state_word(qts, ALIVE_OFF), state_word(qts, ENTERED_OFF),
                    state_word(qts, FELL_OFF), state_word(qts, TARGET_OFF),
                    state_word(qts, TRAP_OFF), state_word(qts, CAUSE_OFF),
                    state_word(qts, EPC_OFF), state_word(qts, ITER_OFF),
-                   state_word(qts, IRQ_OFF), state_word(qts, DEX_OFF),
+                   state_word(qts, IRQ_OFF), state_word(qts, CACHE_AS_RAM_OFF),
                    state_word(qts, PROBE_OFF), state_word(qts, PROBE2_OFF));
 }
 
@@ -810,7 +810,7 @@ static void run_case(const void *data)
 
     g_assert_cmphex(state_word(qts, ALIVE_OFF), ==, MARK_ALIVE);
 
-    if (tc->dex) {
+    if (tc->cache_as_ram) {
         /*
          * All three checks before reading anything into the case: the bit
          * is really set; with it set the filter really does answer a
@@ -821,7 +821,7 @@ static void run_case(const void *data)
          * asking the question it claims to.
          */
         report_state(qts);
-        g_assert_cmphex(state_word(qts, DEX_OFF), ==, PROM_BSR_DEX);
+        g_assert_cmphex(state_word(qts, CACHE_AS_RAM_OFF), ==, PROM_BOOT_STATUS_CACHE_AS_RAM);
         g_assert_cmphex(state_word(qts, PROBE2_OFF), ==, 0);
         g_assert_cmphex(state_word(qts, PROBE_OFF), ==,
                         OPC_ORI | (R_T2 << 16) | MARK_ENTERED);
@@ -829,7 +829,7 @@ static void run_case(const void *data)
 
     /*
      * Reached only by fetching the window's first instruction.  Under an
-     * armed DEX bit this is also the answer to whether the filter sees the
+     * armed cache-as-RAM bit this is also the answer to whether the filter sees the
      * fetch's own PC or the jumping code's: the latter would have handed
      * back the zeroed private copy, and a zero word is a nop, so the marker
      * would still be whatever the ROM left in the register.
@@ -977,8 +977,8 @@ static const TestCase cases[] = {
          * -- a nop -- and the "entered" marker would never be published.
          * It passing is the measurement that the PC is not stale.
          */
-        .name = "mmio-branch/mmio/jr-dex-armed",
-        .kind = BRANCH_JR, .mmio = true, .dex = true,
+        .name = "mmio-branch/mmio/jr-cache-as-ram-armed",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
     }, {

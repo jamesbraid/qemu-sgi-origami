@@ -112,7 +112,15 @@
 #define SN0_PROMDATA_PADDR  0x100000
 #define SN0_PROMDATA_SIZE   (32 * KiB)
 #define SN0_PROM_COPY_PADDR 0x01a00000
-#define SN0_PROM_BSR_DEX    (1U << 1)
+/*
+ * Not a hardware register: the IP27 PROM's own software convention of keeping
+ * a word of boot-status flags in floating-point register 0 during early boot.
+ * Neither Linux nor OpenBSD references it -- their kernels run only after the
+ * convention has ended.  Bit 1, set while the cache-as-RAM phase is live, is
+ * the only bit this model knows; the word's remaining bits are unmapped here
+ * and belong to the firmware-structures datasheet.
+ */
+#define SN0_PROM_BOOT_STATUS_CACHE_AS_RAM    (1U << 1)
 
 /*
  * A component's port descriptor: a sixteen-bit node identifier, an eight-bit
@@ -701,13 +709,13 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
     /*
      * Before memory is initialized, the IP27 PROM marks this 32 KiB range
      * dirty-exclusive in each R10000's primary data cache and uses it for its
-     * C stack and local data. FPR 0 is the PROM's boot-status register; DEX
+     * C stack and local data. A cache-as-RAM flag in FPR 0's boot-status word
      * records that cache-only phase. Restrict the convention to code running
      * from either the boot PROM or the RAM copy to which it transfers before
      * installing the final mapped alias. Later software can then use FPR 0
      * and physical memory at 1 MiB normally.
      */
-    return (env->active_fpu.fpr[0].d & SN0_PROM_BSR_DEX) &&
+    return (env->active_fpu.fpr[0].d & SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
            ((pc >= SN0_FLASH_LOCAL &&
              pc < SN0_FLASH_LOCAL + SN0_FLASH_SIZE) ||
             (pc >= SN0_PROM_COPY_PADDR &&
@@ -2987,7 +2995,7 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
 
         /*
          * The cache-only private phase the filter models exists only under
-         * the real PROM: it is entered when the PROM marks FPR 0's DEX bit,
+         * the real PROM: it is entered when the PROM sets FPR 0's cache-as-RAM boot-status bit,
          * which synthesized firmware never does before handing a directly
          * loaded kernel control.  In that mode the filter would be pure
          * forwarding -- except that an I/O region cannot back translated
