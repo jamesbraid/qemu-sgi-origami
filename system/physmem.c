@@ -3150,8 +3150,13 @@ void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
      * but the ROM device use case is the only one where this operation is
      * necessary.  Other memory regions should use the
      * address_space_read/write() APIs.
+     *
+     * The device need not be in ROMD mode right now: a flash chip's program
+     * and erase commands mutate the backing store precisely while the device
+     * answers in MMIO mode, and the translations and dirty state that need
+     * flushing are the ones from its time in ROMD mode.
      */
-    assert(memory_region_is_romd(mr));
+    assert(mr->rom_device);
 
     invalidate_and_set_dirty(mr, addr, size);
 }
