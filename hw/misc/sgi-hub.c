@@ -718,6 +718,11 @@
  * Keep their trace separate from the generic MMIO trace so a diagnostic run
  * does not have to record every device access in the machine. cpu_base stays
  * unique while real firmware changes the live NASID from its zero reset value.
+ *
+ * A trace records the transaction the guest issued -- its own address,
+ * value and size, never the aligned doubleword the 32-bit decode composes
+ * -- so membership is tested on the access's aligned register: either half
+ * of a rendezvous register is that register.
  */
 static bool sgi_hub_protocol_write_register(hwaddr addr)
 {
@@ -754,12 +759,49 @@ static void sgi_hub_trace_protocol_write(SGIHubState *s, hwaddr addr,
 {
     CPUState *cpu;
 
-    if (!sgi_hub_protocol_write_register(addr)) {
+    if (!sgi_hub_protocol_write_register(addr & ~(hwaddr)7)) {
         return;
     }
 
     cpu = current_cpu;
     trace_sgi_hub_protocol_write(
+        cpu ? cpu->cpu_index : -1, s->cpu_base,
+        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+static bool sgi_hub_protocol_read_register(hwaddr addr)
+{
+    switch (addr) {
+    case HUB_PI_RT_COMPARE_A:
+    case HUB_PI_RT_COMPARE_B:
+    case HUB_PI_RT_PENDING_A:
+    case HUB_PI_RT_PENDING_B:
+    case HUB_PI_INT_PEND0:
+    case HUB_PI_INT_PEND1:
+    case HUB_NI_SCRATCH_0:
+    case HUB_NI_SCRATCH_1:
+    case HUB_NI_VECTOR_STATUS:
+    case HUB_NI_VECTOR_READ_DATA:
+    case HUB_NI_VECTOR_CLEAR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void sgi_hub_trace_protocol_read(SGIHubState *s, hwaddr addr,
+                                        uint64_t value, unsigned int size)
+{
+    CPUState *cpu;
+
+    if (!sgi_hub_protocol_read_register(addr & ~(hwaddr)7)) {
+        return;
+    }
+
+    cpu = current_cpu;
+    trace_sgi_hub_protocol_read(
         cpu ? cpu->cpu_index : -1, s->cpu_base,
         sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
         addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
@@ -783,9 +825,10 @@ static void sgi_hub_trace_protocol_write(SGIHubState *s, hwaddr addr,
 #define PI_CALIAS_SIZE_RESET    15
 
 /*
- * Which translation entry an address is, if it is one. Entries are eight bytes
- * apart and only the aligned address is the register, so a narrower access part
- * way into one is not treated as the entry.
+ * Which translation entry an address is, if it is one. Entries are eight
+ * bytes apart and the aligned address is the register — a 32-bit access is
+ * aligned to its doubleword before any decode runs, so the stride check
+ * here only keeps an access between two entries from matching either.
  */
 static bool sgi_hub_bwin_entry(hwaddr addr, unsigned int *n)
 {
@@ -1835,17 +1878,13 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
         value = sgi_hub_rt_count(s);
         goto trace_rt_count_read;
     case HUB_PI_RT_COMPARE_A:
-        value = sgi_hub_rt_compare_read(s, 0);
-        goto trace_protocol_read;
+        return sgi_hub_rt_compare_read(s, 0);
     case HUB_PI_RT_COMPARE_B:
-        value = sgi_hub_rt_compare_read(s, 1);
-        goto trace_protocol_read;
+        return sgi_hub_rt_compare_read(s, 1);
     case HUB_PI_RT_PENDING_A:
-        value = s->pi_rt_pending[0];
-        goto trace_protocol_read;
+        return s->pi_rt_pending[0];
     case HUB_PI_RT_PENDING_B:
-        value = s->pi_rt_pending[1];
-        goto trace_protocol_read;
+        return s->pi_rt_pending[1];
     case HUB_PI_RT_ENABLE_A:  return s->pi_rt_enable[0];
     case HUB_PI_RT_ENABLE_B:  return s->pi_rt_enable[1];
     case HUB_PI_RT_LOCAL_CTRL: return s->pi_rt_local_ctrl;
@@ -1891,11 +1930,9 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
     case HUB_PI_CALIAS_SIZE:
         return s->pi_calias_size;
     case HUB_PI_INT_PEND0:
-        value = sgi_hub_int_pending_read(s, 0);
-        goto trace_protocol_read;
+        return sgi_hub_int_pending_read(s, 0);
     case HUB_PI_INT_PEND1:
-        value = sgi_hub_int_pend1_read(s);
-        goto trace_protocol_read;
+        return sgi_hub_int_pend1_read(s);
     case HUB_PI_INT_MASK0_A:
         return s->pi_int_mask[0];
     case HUB_PI_INT_MASK1_A:
@@ -1945,27 +1982,22 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
     case HUB_NI_STATUS:
         return s->ni_status;
     case HUB_NI_SCRATCH_0:
-        value = s->ni_scratch[0];
-        goto trace_protocol_read;
+        return s->ni_scratch[0];
     case HUB_NI_SCRATCH_1:
-        value = s->ni_scratch[1];
-        goto trace_protocol_read;
+        return s->ni_scratch[1];
     case HUB_NI_VECTOR:
         return s->ni_vector;
     case HUB_NI_VECTOR_DATA:
         return s->ni_vector_data;
     case HUB_NI_VECTOR_STATUS:
-        value = s->ni_vector_status;
-        goto trace_protocol_read;
+        return s->ni_vector_status;
     case HUB_NI_RETURN_VECTOR:
         return s->ni_return_vector;
     case HUB_NI_VECTOR_READ_DATA:
-        value = s->ni_vector_read_data;
-        goto trace_protocol_read;
+        return s->ni_vector_read_data;
     case HUB_NI_VECTOR_CLEAR:
         s->ni_vector_status = 0;
-        value = 0;
-        goto trace_protocol_read;
+        return 0;
     case HUB_MD_SLOT_ID_USTAT:
         return MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
                (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
@@ -2003,17 +2035,6 @@ trace_rt_count_read:
     }
     return value;
 
-trace_protocol_read:
-    if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_READ)) {
-        CPUState *cpu = current_cpu;
-
-        trace_sgi_hub_protocol_read(
-            cpu ? cpu->cpu_index : -1, s->cpu_base,
-            sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
-            addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-    }
-    return value;
 }
 
 /*
@@ -2371,6 +2392,64 @@ static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
     return false;
 }
 
+/*
+ * The registers are 64-bit doublewords on a big-endian bus, so a 32-bit
+ * access names half of the aligned doubleword: offset 0 carries bits 63:32
+ * and offset 4 bits 31:0. The memory core could compose that itself from
+ * impl.max_access_size = 8, but its composition of a 32-bit write is a
+ * read-modify-write cycle, and the read half of that cycle would fire the
+ * read-to-clear side effects below on a store that reads nothing on real
+ * hardware. So impl passes 32-bit accesses through unchanged and the two
+ * halving helpers here compose them against stored state instead.
+ *
+ * What a 32-bit read of a read-to-clear register does on real hardware is
+ * unobserved -- no guest we hold issues one -- so the three such registers
+ * take a conservative choice rather than a transcribed fact: only a
+ * full-width read clears, and a half read returns its half with the latch
+ * intact. A half read that cleared would destroy the other half's content
+ * before the guest could fetch it.
+ */
+static uint64_t sgi_hub_read_half(SGIHubState *s, hwaddr addr, unsigned size)
+{
+    hwaddr aligned = addr & ~(hwaddr)7;
+    uint64_t value;
+
+    switch (aligned) {
+    case HUB_PI_ERR_STATUS_BASE + 0x08:
+        value = s->pi_err_status0[0];
+        break;
+    case HUB_PI_ERR_STATUS_BASE + 0x28:
+        value = s->pi_err_status0[1];
+        break;
+    case HUB_NI_VECTOR_CLEAR:
+        value = s->ni_vector_status;
+        break;
+    default:
+        value = sgi_hub_read_internal(s, aligned, size);
+        break;
+    }
+    return (addr & 4) ? (uint32_t)value : value >> 32;
+}
+
+static uint64_t sgi_hub_read_sized(SGIHubState *s, hwaddr addr, unsigned size)
+{
+    uint64_t value;
+
+    if (size == 4) {
+        value = sgi_hub_read_half(s, addr, size);
+    } else {
+        value = sgi_hub_read_internal(s, addr, size);
+    }
+    /*
+     * Traced here, above the halving, so the record carries the access
+     * the guest issued rather than the doubleword the decode composed.
+     */
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_READ)) {
+        sgi_hub_trace_protocol_read(s, addr, value, size);
+    }
+    return value;
+}
+
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
@@ -2380,13 +2459,19 @@ static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
     bool has_before_after;
 
     if (likely(!s->diagnostic)) {
-        return sgi_hub_read_internal(opaque, addr, size);
+        return sgi_hub_read_sized(s, addr, size);
     }
 
-    has_before_after = sgi_hub_diagnostic_read_value(s, addr, &before);
-    value = sgi_hub_read_internal(opaque, addr, size);
+    /*
+     * The event records the access as the guest issued it; the shadow is
+     * probed at the aligned doubleword, the only address it recognizes,
+     * so a 32-bit access still gets its register's before/after sample.
+     */
+    has_before_after =
+        sgi_hub_diagnostic_read_value(s, addr & ~(hwaddr)7, &before);
+    value = sgi_hub_read_sized(s, addr, size);
     if (has_before_after &&
-        !sgi_hub_diagnostic_read_value(s, addr, &after)) {
+        !sgi_hub_diagnostic_read_value(s, addr & ~(hwaddr)7, &after)) {
         has_before_after = false;
     }
     device_diagnostic_record(s->diagnostic, "hub", "mmio-read", addr,
@@ -2401,10 +2486,6 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
     uint8_t *route;
     unsigned int n;
     hwaddr reg;
-
-    if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_WRITE)) {
-        sgi_hub_trace_protocol_write(s, addr, val, size);
-    }
 
     if (sgi_hub_bwin_entry(addr, &n)) {
         /*
@@ -2553,6 +2634,14 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         s->pi_err_spool_size = val & PI_ERR_SPOOL_SIZE_MASK;
         break;
     case HUB_PI_ERR_STATUS_BASE + 0x08:
+        /*
+         * The alias's documented use is the read-to-clear; the observed
+         * store that also clears is a full-width zero. What a 32-bit
+         * store does here is as unobserved as the 32-bit read, so the
+         * size test is the same conservative choice the read path makes:
+         * only a full-width access operates the latch. The value test
+         * keeps a nonzero store from clearing what its own bits assert.
+         */
         if (size == 8 && val == 0) {
             s->pi_err_status0[0] = 0;
         }
@@ -2855,6 +2944,59 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
     }
 }
 
+/*
+ * A 32-bit write replaces its big-endian half of the aligned doubleword.
+ * The unwritten half comes from the diagnostic shadow, which reads stored
+ * state without firing read side effects -- exactly what a bus-level
+ * read-modify-write must not do to the read-to-clear registers -- and for
+ * the live counter it reads the count the merge would race on real
+ * hardware too. The interrupt-modify register is excluded: it is an
+ * instruction rather than a value, and the shadow answers for it with the
+ * pending bank it names, which is not this register's content. For it, and
+ * for every register that stores nothing, the unwritten half contributes
+ * zero.
+ *
+ * The merged doubleword then takes the ordinary write path, so a half
+ * write triggers whatever a full write of the merged value triggers. The
+ * guest's own access size rides along for the two clear aliases, whose
+ * handlers accept only a full-width store.
+ */
+static void sgi_hub_write_half(SGIHubState *s, hwaddr addr, uint64_t val,
+                               unsigned size)
+{
+    hwaddr aligned = addr & ~(hwaddr)7;
+    uint64_t merged = 0;
+
+    if (aligned == HUB_PI_INT_MODIFY ||
+        !sgi_hub_diagnostic_value(s, aligned, 0, &merged)) {
+        merged = 0;
+    }
+    if (addr & 4) {
+        merged = (merged & ~(uint64_t)UINT32_MAX) | (uint32_t)val;
+    } else {
+        merged = (merged & UINT32_MAX) | (val << 32);
+    }
+    sgi_hub_write_internal(s, aligned, merged, size);
+}
+
+static void sgi_hub_write_sized(SGIHubState *s, hwaddr addr, uint64_t val,
+                                unsigned size)
+{
+    /*
+     * Traced here, above the halving, so the record carries the store
+     * the guest issued rather than the merged doubleword -- and before
+     * any decode runs, so the traced NASID is the pre-write one.
+     */
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_WRITE)) {
+        sgi_hub_trace_protocol_write(s, addr, val, size);
+    }
+    if (size == 4) {
+        sgi_hub_write_half(s, addr, val, size);
+        return;
+    }
+    sgi_hub_write_internal(s, addr, val, size);
+}
+
 static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                           unsigned size)
 {
@@ -2865,13 +3007,19 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     bool has_after;
 
     if (likely(!s->diagnostic)) {
-        sgi_hub_write_internal(opaque, addr, val, size);
+        sgi_hub_write_sized(s, addr, val, size);
         return;
     }
 
-    has_before = sgi_hub_diagnostic_value(s, addr, val, &before);
-    sgi_hub_write_internal(opaque, addr, val, size);
-    has_after = sgi_hub_diagnostic_value(s, addr, val, &after);
+    /*
+     * As on the read side: the event keeps the guest's address, value
+     * and size, and the aligned doubleword is what the shadow samples.
+     */
+    has_before = sgi_hub_diagnostic_value(s, addr & ~(hwaddr)7, val,
+                                          &before);
+    sgi_hub_write_sized(s, addr, val, size);
+    has_after = sgi_hub_diagnostic_value(s, addr & ~(hwaddr)7, val,
+                                         &after);
     device_diagnostic_record(s->diagnostic, "hub", "mmio-write", addr,
                              val, size, has_before && has_after,
                              before, after);

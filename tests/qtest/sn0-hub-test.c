@@ -1422,6 +1422,62 @@ static void test_status_field_access(const void *data)
 }
 
 /*
+ * The registers are 64-bit doublewords on a big-endian bus, so a 32-bit
+ * access names half of the aligned doubleword: offset 0 is bits 63:32 and
+ * offset 4 is bits 31:0. A model that handed a 32-bit read the low half at
+ * offset 0 — and answered nothing at offset 4 at all — would satisfy every
+ * 64-bit test here while giving a guest doing 32-bit MMIO the wrong half of
+ * every register, including the mode fields in the network-interface status
+ * register that the file's own opening comment calls unrecoverable.
+ */
+static void test_a_32_bit_access_selects_the_big_endian_half(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
+
+    /*
+     * The status register resets nonzero (the region-size bit and the
+     * revision), all of it in the low word: the high word must read zero
+     * and the low word the value, not the other way around.
+     */
+    g_assert_cmphex(status, !=, 0);
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + NI_STATUS), ==,
+                    status >> 32);
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + NI_STATUS + 4), ==,
+                    (uint32_t)status);
+
+    /* A register with reset bits in both halves separates them sharply. */
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + MD_CONFIG), ==,
+                    MD_CONFIG_RESET >> 32);
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + MD_CONFIG + 4), ==,
+                    (uint32_t)MD_CONFIG_RESET);
+
+    /* A 32-bit write replaces its own half and leaves the other alone. */
+    qtest_writeq(qts, HUB_LOCAL + NI_SCRATCH_0, 0x1111222233334444ULL);
+    qtest_writel(qts, HUB_LOCAL + NI_SCRATCH_0, 0xaaaabbbb);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_0), ==,
+                    0xaaaabbbb33334444ULL);
+    qtest_writel(qts, HUB_LOCAL + NI_SCRATCH_0 + 4, 0xccccdddd);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_0), ==,
+                    0xaaaabbbbccccddddULL);
+
+    /*
+     * A half write still passes through the register's own field mask: the
+     * error-spool address keeps bits 31:3 only, so a low-half write stores
+     * its masked value and a high-half write has no bits to land in.
+     */
+    qtest_writel(qts, HUB_LOCAL + PI_ERR_SPOOL_A + 4, 0xdeadbeef);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_A), ==,
+                    0xdeadbee8);
+    qtest_writel(qts, HUB_LOCAL + PI_ERR_SPOOL_A, 0xffffffff);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_A), ==,
+                    0xdeadbee8);
+
+    qtest_quit(qts);
+}
+
+
+/*
  * The local-reset bit is a machine reset regardless of which companion bit
  * rides with it -- Linux and real firmware's own early self-reset both send
  * 0x81 (warm plus local), OpenBSD sends 0x03 (link plus local) and arms the
@@ -2235,6 +2291,44 @@ static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
     qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA, 0x0123456789abcdefULL);
     status = vector_operation(qts, HUB_LOCAL, NI_SCRATCH_1, PIOTYPE_WRITE);
     g_assert_cmphex(status, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * What a 32-bit read of a read-to-clear register does on real hardware is
+ * unobserved — no guest we hold issues one — so the model's choice is the
+ * conservative one: only a full-width read clears, and a half read returns
+ * its half with the latch intact. This test pins the choice, not silicon.
+ */
+static void test_a_32_bit_vector_clear_read_leaves_the_status(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t status;
+
+    status = vector_operation(qts, node0, NI_SCRATCH_0, PIOTYPE_READ);
+    g_assert_cmphex(status & NVS_VALID, ==, NVS_VALID);
+
+    /* Each half read returns its half and clears nothing. */
+    g_assert_cmphex(qtest_readl(qts, node0 + NI_VECTOR_CLEAR), ==,
+                    status >> 32);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_STATUS), ==, status);
+    g_assert_cmphex(qtest_readl(qts, node0 + NI_VECTOR_CLEAR + 4), ==,
+                    (uint32_t)status);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_STATUS), ==, status);
+
+    /* The full-width read is the clear. */
+    qtest_readq(qts, node0 + NI_VECTOR_CLEAR);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_STATUS) & NVS_VALID,
+                    ==, 0);
 
     qtest_quit(qts);
 }
@@ -3054,6 +3148,12 @@ int main(int argc, char **argv)
                         test_every_chardev_claim_is_distinct);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,
                         test_status_field_access);
+    qtest_add_data_func("sn0/hub/32-bit-access-selects-the-big-endian-half",
+                        NULL,
+                        test_a_32_bit_access_selects_the_big_endian_half);
+    qtest_add_data_func("sn0/hub/32-bit-vector-clear-read-leaves-the-status",
+                        NULL,
+                        test_a_32_bit_vector_clear_read_leaves_the_status);
     qtest_add_data_func("sn0/hub/local-port-reset-resets-the-machine", NULL,
                         test_a_local_port_reset_resets_the_machine);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);

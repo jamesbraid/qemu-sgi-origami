@@ -304,6 +304,21 @@ static void test_prom_probe_latches_the_issuing_slice(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
                     PI_STATUS_EXPECTED);
 
+    /*
+     * What a 32-bit access to a read-to-clear register does on real
+     * hardware is unobserved, so the model's conservative choice is
+     * pinned here: a half read returns its big-endian half of the
+     * doubleword with the latch intact, and only a full-width access —
+     * the read, or the observed zero store — clears it. A nonzero store
+     * of either width clears nothing.
+     */
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_B), ==,
+                    PI_STATUS_EXPECTED >> 32);
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_B + 4),
+                    ==, (uint32_t)PI_STATUS_EXPECTED);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
+                    PI_STATUS_EXPECTED);
+
     qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_B, 1);
     qtest_writel(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_B, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
