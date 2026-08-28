@@ -1636,6 +1636,55 @@ static void test_big_window_naming_an_absent_widget(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A window reaching no widget declares an eight-byte valid.max_access_size
+ * but leaves impl unset, which QEMU defaults to impl.max_access_size = 4 --
+ * so an eight-byte guest access here was landing as two chunked four-byte
+ * ones rather than the single access the register claims to support.
+ *
+ * sgi_hub_bwin_empty_read() answers zero either way, so nothing a read's
+ * return value can distinguish tells the two apart. What does differ is the
+ * log line it writes on every call, which names the access size: one
+ * eight-byte access produces one line naming eight bytes, while two chunked
+ * four-byte halves produce two lines naming four bytes and no line naming
+ * eight. That is what this asserts, the same way test_md_indicator_shown_by_
+ * default above reads a decoded line back through -D rather than a register.
+ */
+static void test_big_window_empty_access_is_not_chunked(const void *data)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn0-hub-bwin-empty-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *found = NULL;
+    QTestState *qts;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200,io-bridge=on -d unimp -D %s", log);
+
+    /*
+     * Window 5, aimed at the console widget's I/O space rather than an
+     * absent widget: this board's crosstalk face has no real gap between
+     * widgets (io-bridge=on aliases the Bridge's own face across most of
+     * them, the same way test_big_window_naming_an_absent_widget's own
+     * widget-3 case does above), so naming an unpopulated widget number
+     * does not reliably land here. The space this machine does not model
+     * does, the same way the second half of that test reaches nothing
+     * through window 3.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(5),
+                 IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_OTHER_SPACE);
+    qtest_readq(qts, BIG_WINDOW(5));
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "read of 8 bytes"));
+    g_assert_null(strstr(found, "read of 4 bytes"));
+
+    g_assert_cmpint(g_unlink(log), ==, 0);
+}
+
 static void test_interrupt_modify_sets_and_clears(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -2929,6 +2978,8 @@ int main(int argc, char **argv)
                         test_a_big_window_may_name_widget_zero);
     qtest_add_data_func("sn0/hub/big-window-absent-widget", NULL,
                         test_big_window_naming_an_absent_widget);
+    qtest_add_data_func("sn0/hub/big-window-empty-access-not-chunked", NULL,
+                        test_big_window_empty_access_is_not_chunked);
     qtest_add_data_func("sn0/hub/identifies-itself", NULL,
                         test_the_hub_identifies_itself_on_the_crossbar);
     qtest_add_data_func("sn0/hub/widget-control-reset", NULL,

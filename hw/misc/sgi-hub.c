@@ -958,6 +958,8 @@ static const MemoryRegionOps sgi_hub_bwin_empty_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
 };
 
 /*
