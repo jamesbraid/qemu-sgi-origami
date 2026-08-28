@@ -32,6 +32,7 @@ mips_ss.add(files(
   'nanomips_translate.c',
   'octeon_crypto.c',
   'op_helper.c',
+  'r10k_translate.c',
   'rel6_translate.c',
   'translate.c',
   'translate_addr_const.c',
