@@ -859,6 +859,49 @@ static void test_enabled_recorder_remains_wired_after_migration(
     qtest_quit(from);
 }
 
+/* Node 0's ECC and directory back-door windows in Hub-special space. */
+#define BACKDOOR_ECC_HUB        (SPACE_HUB + 0x80000000ULL)
+#define BACKDOOR_DIR_HUB        (SPACE_HUB + 0xc0000000ULL)
+
+/*
+ * The ECC and directory back-door storage is a plain heap buffer behind the
+ * Hub's populated-bank ops, not a RAM MemoryRegion, so the memory core does
+ * not migrate it the way it migrates guest RAM -- the node's vmstate has to
+ * carry it. Write an entry to each window, migrate, and confirm it survives.
+ * Only the low sixteen bits of an eight-byte-aligned entry are real storage
+ * on this machine's directory format, so that is the part checked. Before the
+ * buffer joined the node vmstate this read back the destination's
+ * realize-time zero fill instead.
+ */
+static void test_backdoor_storage_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    qtest_writeq(from, BACKDOOR_ECC_HUB, 0x000000000000cafeULL);
+    qtest_writeq(from, BACKDOOR_DIR_HUB, 0x000000000000babeULL);
+    g_assert_cmphex(qtest_readq(from, BACKDOOR_ECC_HUB) & 0xffff, ==, 0xcafe);
+    g_assert_cmphex(qtest_readq(from, BACKDOOR_DIR_HUB) & 0xffff, ==, 0xbabe);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    g_assert_cmphex(qtest_readq(to, BACKDOOR_ECC_HUB) & 0xffff, ==, 0xcafe);
+    g_assert_cmphex(qtest_readq(to, BACKDOOR_DIR_HUB) & 0xffff, ==, 0xbabe);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -885,6 +928,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/migration/enabled-recorder-remains-wired",
                         NULL,
                         test_enabled_recorder_remains_wired_after_migration);
+    qtest_add_data_func("sn0/migration/backdoor-storage-survives-migration",
+                        NULL, test_backdoor_storage_survives_migration);
 
     return g_test_run();
 }
