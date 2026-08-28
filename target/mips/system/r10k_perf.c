@@ -3,6 +3,10 @@
  * The R10000 family's performance counters: the counting model, their
  * share of the IP[7] interrupt line, and the deadline timer that delivers
  * a counter's overflow interrupt.
+ *
+ * Built for every MIPS system target, not only mips64: cp0.c and the
+ * shared helpers call in without a TARGET_MIPS64 guard, so the symbols
+ * must link everywhere even though only mips64 can create an R10000.
  */
 
 #include "qemu/osdep.h"
