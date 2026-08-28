@@ -867,13 +867,13 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
     }
 
     int nb_regions;
-    pfl->chip_len = 0;
-    pfl->total_sectors = 0;
+    uint64_t total_sectors = 0;
+    uint64_t chip_len = 0;
     for (nb_regions = 0; nb_regions < PFLASH_MAX_ERASE_REGIONS; ++nb_regions) {
         if (pfl->nb_blocs[nb_regions] == 0) {
             break;
         }
-        pfl->total_sectors += pfl->nb_blocs[nb_regions];
+        total_sectors += pfl->nb_blocs[nb_regions];
         uint64_t sector_len_per_device = pfl->sector_len[nb_regions];
 
         /*
@@ -889,15 +889,15 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
                        nb_regions, sector_len_per_device);
             return;
         }
-        if (pfl->chip_len & (sector_len_per_device - 1)) {
+        if (chip_len & (sector_len_per_device - 1)) {
             error_setg(errp, "unsupported configuration: "
                        "flash region %d not correctly aligned.",
                        nb_regions);
             return;
         }
 
-        pfl->chip_len += (uint64_t)pfl->sector_len[nb_regions] *
-                          pfl->nb_blocs[nb_regions];
+        chip_len += (uint64_t)pfl->sector_len[nb_regions] *
+                    pfl->nb_blocs[nb_regions];
     }
 
     uint64_t uniform_len = (uint64_t)pfl->uniform_nb_blocs *
@@ -906,14 +906,30 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
         nb_regions = 1;
         pfl->nb_blocs[0] = pfl->uniform_nb_blocs;
         pfl->sector_len[0] = pfl->uniform_sector_len;
-        pfl->chip_len = uniform_len;
-        pfl->total_sectors = pfl->uniform_nb_blocs;
-    } else if (uniform_len != 0 && uniform_len != pfl->chip_len) {
+        chip_len = uniform_len;
+        total_sectors = pfl->uniform_nb_blocs;
+    } else if (uniform_len != 0 && uniform_len != chip_len) {
         error_setg(errp, "\"num-blocks\"*\"sector-length\" "
                    "different from \"num-blocks0\"*\'sector-length0\" + ... + "
                    "\"num-blocks3\"*\"sector-length3\"");
         return;
     }
+
+    /*
+     * The sector count sizes the erase bitmap and is carried in a signed
+     * 32-bit field; the chip length is carried in a 32-bit field. Reject a
+     * geometry whose products wrap rather than realizing a device with a
+     * bogus bitmap or a truncated length.
+     */
+    if (total_sectors == 0 || total_sectors > INT32_MAX ||
+        chip_len == 0 || chip_len > UINT32_MAX) {
+        error_setg(errp, "unsupported configuration: flash geometry "
+                   "(%" PRIu64 " sectors, %" PRIu64 " bytes) out of range",
+                   total_sectors, chip_len);
+        return;
+    }
+    pfl->total_sectors = total_sectors;
+    pfl->chip_len = chip_len;
 
     memory_region_init_rom_device(&pfl->orig_mem, OBJECT(pfl),
                                   &pflash_cfi02_ops, pfl, pfl->name,
