@@ -1016,6 +1016,13 @@ struct SN0MachineClass {
     bool (*node_memory_layout)(uint64_t ram_size,
                                uint16_t bank_mb[SN0_MEM_BANKS],
                                unsigned int *populated_banks);
+
+    /*
+     * Build the product's I/O topology on one node, after the node's Hub and
+     * crosstalk container exist: the I/O bridge or crossbar, the devices on
+     * it, and the widget decode the product's wiring implies.
+     */
+    void (*populate_io)(SN0MachineState *s, unsigned int node_index);
 };
 
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
