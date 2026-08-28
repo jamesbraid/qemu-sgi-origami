@@ -1496,6 +1496,7 @@ F: include/hw/net/dp83840.h
 F: include/hw/net/sgi-ioc3-eth.h
 F: include/hw/pci-host/sgi-bridge.h
 F: include/hw/rtc/m48t35.h
+F: include/hw/scsi/qlogic-isp.h
 F: qapi/misc-mips.json
 F: tests/functional/mips64/
 F: tests/qtest/mips64-*.c

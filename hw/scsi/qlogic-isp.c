@@ -49,6 +49,7 @@
 #include "qemu/queue.h"
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
+#include "hw/scsi/qlogic-isp.h"
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
 #include "migration/vmstate.h"
@@ -2413,6 +2414,13 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
     scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev),
                  &qlogic_isp_scsi_info);
+}
+
+void qlogic_isp_handle_legacy_cmdline(DeviceState *dev)
+{
+    QLogicISPState *s = QLOGIC_ISP1040(dev);
+
+    scsi_bus_legacy_handle_cmdline(&s->bus);
 }
 
 /*

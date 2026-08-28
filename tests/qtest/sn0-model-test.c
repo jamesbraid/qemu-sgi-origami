@@ -398,6 +398,53 @@ static void test_a_64_bit_kernel_entry_is_left_alone(const void *data)
     g_unlink(elf32);
 }
 
+/*
+ * A disk named onto the second adapter. Both adapters on a base I/O board
+ * are ordinary SCSI buses, numbered in the order the machine creates them,
+ * so -drive if=scsi,bus=1 names the second one -- and a machine that offers
+ * its command-line drives to the first adapter alone leaves that drive
+ * attached to nothing, which ends startup with "machine type does not
+ * support if=scsi,bus=1". Asking for the block device's owner afterwards is
+ * what distinguishes a machine that took the drive from one that merely
+ * started.
+ */
+static void test_a_drive_on_the_second_adapter(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 "
+                                 "-drive if=scsi,bus=1,file=null-co://,"
+                                 "format=raw");
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
+    QList *blocks;
+    const QListEntry *entry;
+    bool found = false;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    blocks = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(blocks); entry; entry = qlist_next(entry)) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+        QDict *inserted = qdict_haskey(block, "inserted") ?
+                          qdict_get_qdict(block, "inserted") : NULL;
+        const char *file = inserted ? qdict_get_try_str(inserted, "file")
+                                    : NULL;
+
+        /*
+         * This drive rather than any other backing the machine carries: the
+         * file is what names it, and an owner on it is the whole assertion.
+         * Only the adapter numbered one can have claimed a bus=1 drive, so
+         * an owner at all says it landed where it was addressed.
+         */
+        if (file && g_str_equal(file, "null-co://")) {
+            g_assert_false(found);
+            found = true;
+            g_assert_nonnull(qdict_get_try_str(block, "qdev"));
+        }
+    }
+
+    g_assert_true(found);
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
 static void test_baseline_cpu_identity(const void *data)
 {
     g_autofree char *kernel = write_prid_guest();
@@ -1336,6 +1383,47 @@ static void test_reject_a_truncated_ecoff_kernel(const void *data)
     }
 }
 
+/*
+ * A default drive belongs on the first SCSI adapter. It used to be
+ * accepted and attached to nothing: the drive existed, no device claimed
+ * it, and a guest booting from "the first disk" found an empty bus.
+ */
+static void test_default_drive_reaches_the_first_scsi_adapter(const void *data)
+{
+    g_autofree char *img = NULL;
+    GError *err = NULL;
+    int fd = g_file_open_tmp("sn0-hda-XXXXXX", &img, &err);
+    QTestState *qts;
+    QDict *response;
+    QList *blocks;
+    const QListEntry *entry;
+    bool attached = false;
+
+    g_assert_no_error(err);
+    g_assert_cmpint(ftruncate(fd, 1 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    qts = qtest_initf("-M origin200,io-bridge=on "
+                      "-drive file=%s,format=raw,index=0", img);
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    blocks = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(blocks); entry; entry = qlist_next(entry)) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *qdev = qdict_get_try_str(block, "qdev");
+
+        if (qdev && qdev[0] != '\0') {
+            attached = true;
+        }
+    }
+    g_assert_true(attached);
+    qobject_unref(response);
+
+    qtest_quit(qts);
+    g_unlink(img);
+}
+
 static void test_reject_a_device_beyond_the_bridge_slots(const void *data)
 {
     const char *args[] = {
@@ -1509,10 +1597,14 @@ int main(int argc, char **argv)
                         test_a_32_bit_kernel_entry_is_sign_extended);
     qtest_add_data_func("sn0/model/64-bit-kernel-entry-left-alone", NULL,
                         test_a_64_bit_kernel_entry_is_left_alone);
+    qtest_add_data_func("sn0/model/drive-on-the-second-adapter", NULL,
+                        test_a_drive_on_the_second_adapter);
     qtest_add_data_func("sn0/model/ecoff-kernel-boots", NULL,
                         test_an_ecoff_kernel_boots);
     qtest_add_data_func("sn0/model/reject-truncated-ecoff-kernel", NULL,
                         test_reject_a_truncated_ecoff_kernel);
+    qtest_add_data_func("sn0/model/default-drive-reaches-first-adapter", NULL,
+                        test_default_drive_reaches_the_first_scsi_adapter);
     qtest_add_data_func("sn0/model/reject-device-beyond-bridge-slots", NULL,
                         test_reject_a_device_beyond_the_bridge_slots);
     qtest_add_data_func("sn0/model/reject-three-numa-nodes", NULL,
