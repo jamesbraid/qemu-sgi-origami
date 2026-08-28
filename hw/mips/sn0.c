@@ -130,6 +130,7 @@
 
 typedef struct SN0BackdoorState {
     uint8_t *data;
+    uint32_t data_size;
     uint64_t bank_offset[SN0_MEM_BANKS];
     uint64_t bank_span[SN0_MEM_BANKS];
     unsigned int populated_banks;
@@ -828,13 +829,38 @@ static int sn0_flash_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/*
+ * The ECC and directory back-door storage is a raw buffer behind the
+ * populated-bank ops, not a RAM MemoryRegion, so the memory core does not
+ * migrate it the way it does guest RAM; the node's descriptor carries it as a
+ * sub-section. Both migration ends derive data_size from the same memory
+ * configuration at realize and allocate the buffer before any state loads, so
+ * only the contents have to cross. A node with no populated banks would leave
+ * data NULL and data_size zero, but that machine is unreachable today:
+ * sn0_ip29_memory_layout() rejects a zero-size node and construction exits, so
+ * every node that boots populates at least one bank.
+ */
+static const VMStateDescription vmstate_sn0_backdoor = {
+    .name = "sn0-backdoor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_VBUFFER_UINT32(data, SN0BackdoorState, 0, NULL, data_size),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = sn0_flash_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(flash_state, SN0NodeState),
+        VMSTATE_STRUCT(backdoor_ecc_state, SN0NodeState, 2,
+                       vmstate_sn0_backdoor, SN0BackdoorState),
+        VMSTATE_STRUCT(backdoor_dir_state, SN0NodeState, 2,
+                       vmstate_sn0_backdoor, SN0BackdoorState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1049,11 +1075,10 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
  * diagnostic backing across these two windows.
  *
  * The compact buffer is used instead of memory_region_init_ram because both
- * the address folding and the width mask have to happen on every access. It
- * has machine lifetime, like the flash and the other back-door pieces above,
- * and does not currently migrate: this content is diagnostic scratch a guest
- * never relies on surviving a snapshot, so the gap is recorded here rather
- * than closed.
+ * the address folding and the width mask have to happen on every access. A
+ * raw buffer is not migrated for free the way a RAM region is, so the node's
+ * descriptor carries it as a sub-section (vmstate_sn0_backdoor): a guest write
+ * here survives savevm/loadvm and a live migration.
  */
 static uint8_t *sn0_backdoor_byte(SN0BackdoorState *s, hwaddr addr)
 {
@@ -1126,6 +1151,7 @@ static void sn0_backdoor_configure(SN0BackdoorState *s,
         total += s->bank_span[bank];
     }
     s->data = g_malloc0(total);
+    s->data_size = total;
 }
 
 /*
