@@ -738,6 +738,14 @@
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffff  /* bits 24:0, latched at reset */
 
+/* AMD 29F080 command addresses and geometry. */
+#define SN0_FLASH_CMD_ADDR1   0x5555
+#define SN0_FLASH_CMD_ADDR2   0x2aaa
+#define SN0_FLASH_SECTOR_SIZE (64 * KiB)
+#define SN0_PROMLOG_SECTOR    14
+#define SN0_PROMLOG_MAGIC     0x504c4f47
+#define SN0_PROMLOG_VERSION   1
+
 /*
  * The SN0 family machine, shared by the family's translation units. One
  * chassis is one node: two processor slots beside one Hub, and the family
@@ -967,6 +975,23 @@ DECLARE_INSTANCE_CHECKER(SN0MachineState, SN0_MACHINE,
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
 void sn0_diagnostic_register_reset(SN0MachineState *s);
 void sn0_diagnostic_finalize(SN0MachineState *s);
+
+/*
+ * The board-driven processor mode bits, reapplied on every processor reset
+ * (sn0.c). The synthesized firmware's launch path applies them too when it
+ * restarts a parked processor.
+ */
+void sn0_mode_bits_reset(void *opaque);
+
+/*
+ * The synthesized firmware and direct kernel boot, implemented in
+ * sn0-firmware.c. The two reset handlers redo what real firmware redoes on
+ * every reset: the widget-0 window redirection and the PCI resource
+ * assignment.
+ */
+void sn0_firmware_init(MachineState *machine, unsigned int node_count);
+void sn0_firmware_reset(void *opaque);
+void sn0_assign_pci_resources(void *opaque);
 SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp);
 
 #endif /* HW_MIPS_SN0_H */
