@@ -2171,6 +2171,31 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
 }
 
 /*
+ * A single-chassis machine has nothing on its network port, so no device
+ * exists to render a verdict on a vector launch. The model latches
+ * nothing: the valid bit stays clear and the requester's own poll times
+ * out. That is the datasheet's no-response proposal for its open no-peer
+ * question -- unobserved on silicon, supported by the receiver-rendered
+ * error types, the valid bit's zero reset, and the absence of the status
+ * line an error latch feeds from every real-hardware transcript held.
+ */
+static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t status;
+
+    status = vector_operation(qts, HUB_LOCAL, NI_SCRATCH_0, PIOTYPE_READ);
+    g_assert_cmphex(status & NVS_VALID, ==, 0);
+
+    /* Nothing latched at all, not merely a status with valid clear. */
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA, 0x0123456789abcdefULL);
+    status = vector_operation(qts, HUB_LOCAL, NI_SCRATCH_1, PIOTYPE_WRITE);
+    g_assert_cmphex(status, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * Firmware owns the route tables after reset. A stale route from the previous
  * boot can send its first discovery packet to a port the new boot has not
  * configured, so exercise a later machine reset rather than relying on the
@@ -3018,6 +3043,8 @@ int main(int argc, char **argv)
                         test_network_scratch_registers);
     qtest_add_data_func("sn0/hub/vector-pio-direct-peer", NULL,
                         test_vector_pio_reaches_the_direct_peer);
+    qtest_add_data_func("sn0/hub/vector-launch-no-fabric-stays-silent", NULL,
+                        test_vector_launch_with_no_fabric_stays_silent);
     qtest_add_data_func("sn0/hub/network-routes-reset-to-zero", NULL,
                         test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,

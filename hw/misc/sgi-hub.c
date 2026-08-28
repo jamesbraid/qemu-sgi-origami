@@ -1710,7 +1710,21 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
      */
     assert(bql_locked());
 
-    if (s->network_peer && s->ni_vector == 0) {
+    /*
+     * No fabric: nothing sits on the network port, so no device exists to
+     * render a verdict on the launch. Latch nothing and let the requester's
+     * own poll time out -- the datasheet's no-response proposal for its
+     * open no-peer question; what the silicon latches here is unobserved.
+     * Latching an error would invent a fabric answer no chip sent.
+     */
+    if (!s->network_peer) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: vector launch (parms 0x%" PRIx64
+                      ") with no fabric to answer\n", parms);
+        return;
+    }
+
+    if (s->ni_vector == 0) {
         switch (type) {
         case NI_VECTOR_READ:
             success = sgi_hub_vector_target_read(s->network_peer, target_addr,
@@ -1739,9 +1753,8 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
         }
     }
 
-    source = s->network_peer ?
-        (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
-        NI_STATUS_NODE_SHIFT : 0;
+    source = (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
+        NI_STATUS_NODE_SHIFT;
 
     if (!success) {
         response_type = NI_VECTOR_ADDRESS_ERROR;
@@ -1755,8 +1768,7 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
 
         trace_sgi_hub_vector_complete(
             cpu ? cpu->cpu_index : -1, sgi_hub_programmed_nasid(s),
-            s->network_peer ?
-                (int)sgi_hub_programmed_nasid(s->network_peer) : -1,
+            (int)sgi_hub_programmed_nasid(s->network_peer),
             cpu ? cpu->cc->get_pc(cpu) : 0, parms, s->ni_vector_data, value,
             s->ni_vector_status, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
