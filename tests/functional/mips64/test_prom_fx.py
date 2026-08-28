@@ -11,9 +11,12 @@ program the install rig already netboots to label a disk. Its exercise
 menu is a SCSI diagnostic in its own right: a sequential write-compare
 pass writes a pattern through the qlogic controller and reads it back,
 which nothing else in the nightly does before an operating system is
-installed. This test drives that pass over 100,000 blocks (50 MB) of a
-scratch disk at controller 0 target 1 and holds fx to its own error
-ledger: TOTAL ERR BLOCKS r0(0 hard) w0(0 hard).
+installed, and a butterfly pass reads single blocks alternating from
+both ends of the range, the seek pattern the sequential pass never
+makes. This test drives both over 100,000 blocks (50 MB) of a scratch
+disk at controller 0 target 1 -- the write-compare first, then the
+butterfly read -- and holds fx to its own error ledger after each:
+TOTAL ERR BLOCKS r0(0 hard) w0(0 hard), twice.
 
 Extended mode ("Do you require extended mode with all options
 available?") is answered yes, because only extended mode offers the
@@ -21,12 +24,13 @@ write modifiers; safe mode's exercises are read-only. fx confirms before
 writing ("about to destroy data on disk ... ok?"), which the driver
 answers yes, on a disk this test created seconds earlier.
 
-Deliberately NOT driven: the butterfly exercise. On this machine it
-waits forever on a completion flag its first I/O never sets (the same
-disk's sequential and random exercises complete), which is a wall in the
-model's SCSI path recorded in the project checkout's firmware-diags
-notebook and routed to that path's owner; a test for it belongs with
-the fix.
+Every fx prompt is answered by a fixed step; a stray "?" at any of
+them makes fx print help and re-prompt, which shifts every later answer
+one prompt short and leaves fx waiting for input at the last one. That
+is exactly what happened in the first by-hand butterfly session, and it
+read as a wedge in the SCSI path until the polled address was decoded
+(the console UART's line-status register, a getchar loop); the project
+checkout's firmware-diags notebook records it.
 
 Everything structural -- PROM digest refusal, path-structured netboot
 staging, the one-shot-per-step console driver, provenance records --
@@ -76,8 +80,12 @@ ASSERTIONS = (
     ("write-compare scan started",
      f"sequential pass 1: scanning [0, {NBLOCKS}] ({NBLOCKS} blocks)"),
     ("scan completed", "100%"),
-    ("zero error blocks", "TOTAL ERR BLOCKS r0(0 hard) w0(0 hard)"),
+    ("butterfly scan started",
+     f"butterfly pass 1: scanning [0, {NBLOCKS}] ({NBLOCKS} blocks)"),
 )
+
+ZERO_LEDGER = "TOTAL ERR BLOCKS r0(0 hard) w0(0 hard)"
+LEDGERS_EXPECTED = 2
 
 # fx's own error ledger (the zero-error line above) is the authority for
 # miscompares and hard errors; the word "miscompare" itself appears in
@@ -91,7 +99,13 @@ FAILURE_MARKERS = (
 
 
 def missing_assertions(log):
-    return [name for name, evidence in ASSERTIONS if evidence not in log]
+    missing = [name for name, evidence in ASSERTIONS if evidence not in log]
+    ledgers = log.count(ZERO_LEDGER)
+    if ledgers != LEDGERS_EXPECTED:
+        missing.append(
+            f"zero-error ledger after each exercise ({ledgers} of "
+            f"{LEDGERS_EXPECTED})")
+    return missing
 
 
 def failure_markers_present(log):
@@ -110,8 +124,9 @@ def verdict(log, reached=True):
         problems.append(f"failure output present: {marker!r}")
     if not reached:
         problems.append(
-            "console driver did not reach fx's error ledger before "
-            "timeout -- the run never proved the exercise finished")
+            "console driver did not see fx's error ledger after both "
+            "exercises before timeout -- the run never proved they "
+            "finished")
     return {
         "verdict": "PASS" if not problems else "FAIL",
         "problems": problems,
@@ -119,8 +134,8 @@ def verdict(log, reached=True):
 
 
 # Boot to the menu is minutes under a contended host; fx loads in
-# seconds and the 100,000-block write-compare took 19s. 840 keeps the
-# usual 60s margin under the 900s meson timeout.
+# seconds, the 100,000-block write-compare took 19s and the butterfly
+# read 4s. 840 keeps the usual 60s margin under the 900s meson timeout.
 BOOT_TIMEOUT_SECONDS = 840
 
 # Each step fires once, in order, on the first tail match after the
@@ -142,8 +157,20 @@ DRIVER_STEPS = (
     (r"nscans =", "\n"),
     (r"ok\?", "yes\n"),
     (r"fx/exercise>", "e\n"),
+    (r"fx/exercise>", "b\n"),
+    (r"modifier =", "\n"),
+    (r"starting block# =", "\n"),
+    (r"nblocks =", f"{NBLOCKS}\n"),
+    (r"nscans =", "\n"),
+    (r"fx/exercise>", "e\n"),
 )
-DRIVER_UNTIL_RE = re.compile(rb"TOTAL ERR BLOCKS r\d+\(\d+ hard\) w\d+\(\d+ hard\)")
+LEDGER_RE = re.compile(rb"TOTAL ERR BLOCKS r\d+\(\d+ hard\) w\d+\(\d+ hard\)")
+
+
+def reached_both_ledgers(transcript):
+    """The driver's end condition: fx printed its error ledger once
+    after each exercise."""
+    return len(LEDGER_RE.findall(transcript)) >= LEDGERS_EXPECTED
 
 
 def fx_extra_args(prom, tftp, elsc_log, capture, disk):
@@ -233,7 +260,7 @@ if QemuSystemTest is not None:
             try:
                 transcript, reached = _drive_console(
                     vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                    steps=DRIVER_STEPS, until=DRIVER_UNTIL_RE)
+                    steps=DRIVER_STEPS, reached_when=reached_both_ledgers)
             finally:
                 vm.shutdown(hard=vm.exitcode() is not None)
             ended = _utc_now()
