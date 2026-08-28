@@ -23,6 +23,9 @@
 #include "system/block-backend.h"
 #include "system/address-spaces.h"
 #include "sn0.h"
+#include "hw/scsi/scsi.h"
+#include "hw/scsi/qlogic-isp.h"
+#include "system/blockdev.h"
 
 #define SN0_BRIDGE_ONEWIRE_SERIAL_BASE 0x060504030201ULL
 
@@ -275,6 +278,19 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
             s->pci_scsi[node_index][slot] = pci_create_simple(
                 PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                 PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
+
+            /*
+             * The command line's own disks, offered to every adapter rather
+             * than only the first. A bus number is how -drive if=scsi,bus=N
+             * names an adapter, and a bus that is never offered its drives
+             * leaves them attached to nothing, which ends startup with
+             * "machine type does not support if=scsi" for a bus this machine
+             * does have. Buses are numbered in creation order, so node 0's
+             * first adapter is bus 0 and takes -hda and the other if=default
+             * disks, which is what the comment above promises.
+             */
+            qlogic_isp_handle_legacy_cmdline(
+                DEVICE(s->pci_scsi[node_index][slot]));
         }
     } else {
         if (node_index == 0) {
@@ -460,6 +476,15 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->desc = "SGI Origin 200 (IP27)";
     mc->default_ram_size = 64 * MiB;
     mc->default_ram_id = "sn0.node0.ram";
+    /* -hda and if=default drives belong on the first SCSI adapter. */
+    mc->block_default_type = IF_SCSI;
+    mc->default_nic = "sgi-ioc3-eth";
+    /*
+     * Explicitly not supported: node memory comes from memdev-backed
+     * -numa nodes, whose backends size the banks; a bare mem= has no
+     * backend to map.
+     */
+    mc->numa_mem_supported = false;
 
     /*
      * One chassis or two coupled over CrayLink, two processor slots each. A
