@@ -88,7 +88,8 @@ bool cpu_mips_r10k_perf_mode_sensitive(CPUMIPSState *env)
 {
     unsigned ctr;
 
-    if (!(env->insn_flags & INSN_R10K)) {
+    /* No deadline timer, no counters: cpu_mips_r10k_perf_clock_init(). */
+    if (!env->r10k_perf_timer) {
         return false;
     }
     for (ctr = 0; ctr < 2; ctr++) {
@@ -220,7 +221,7 @@ void cpu_mips_r10k_perf_freeze(CPUMIPSState *env)
 {
     unsigned ctr;
 
-    if (!(env->insn_flags & INSN_R10K)) {
+    if (!env->r10k_perf_timer) {
         return;
     }
     for (ctr = 0; ctr < 2; ctr++) {
@@ -236,7 +237,7 @@ void cpu_mips_r10k_perf_thaw(CPUMIPSState *env)
 {
     unsigned ctr;
 
-    if (!(env->insn_flags & INSN_R10K)) {
+    if (!env->r10k_perf_timer) {
         return;
     }
     for (ctr = 0; ctr < 2; ctr++) {
@@ -263,7 +264,7 @@ static void mips_r10k_perf_cb(void *opaque)
  */
 void cpu_mips_r10k_perf_post_load(CPUMIPSState *env)
 {
-    if (!(env->insn_flags & INSN_R10K)) {
+    if (!env->r10k_perf_timer) {
         return;
     }
     mips_r10k_perf_update(env);
