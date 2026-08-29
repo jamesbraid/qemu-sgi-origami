@@ -32,6 +32,7 @@
 
 #define I2C_PCF_PIN  0x80
 #define I2C_PCF_LRB  0x08
+#define I2C_PCF_AAS  0x04
 #define I2C_PCF_BB  0x01
 
 static void test_register_selection_matrix(const void *data)
@@ -97,6 +98,87 @@ static void test_own_address_round_trip(const void *data)
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x0a);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x0a);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The programmed own address must make the chip answer as a slave, not
+ * just read back: a transfer directed at it is acknowledged and the
+ * status register reports AAS. The only master on this machine is the
+ * chip itself, so this drives the chip's own master side at its own
+ * slave address -- a loopback a real bus permits and QEMU's core
+ * matches the same way as any other directed transfer.
+ */
+static void test_programmed_own_address_answers_as_slave(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* Program S0' = 0x2a, an address nothing else on this bus answers. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x2a);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x2a);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    /* Control: a neighbouring unprogrammed address still finds nobody. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x2b << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, I2C_PCF_LRB);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+
+    /* The programmed address is acknowledged and reports AAS. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x2a << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_AAS,
+                    ==, I2C_PCF_AAS);
+
+    /* The PIN written with the stop clears the addressed-as-slave state. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_AAS,
+                    ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A byte sent after a refused start goes out on a wire nobody
+ * acknowledged: the chip must keep reporting NAK rather than launder
+ * the failure into an ACK. QEMU's i2c_send() over the bus's empty
+ * matched-device list reports success -- the loop body never runs and
+ * the accumulated return value stays zero -- so the model has to
+ * remember the refusal instead of asking the core again.
+ */
+static void test_send_after_refused_start_stays_nacked(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    /* Start to an address nothing answers. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x2b << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, I2C_PCF_LRB);
+
+    /* The transaction is open at the chip level: the bus reads busy. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_BB,
+                    ==, 0);
+
+    /* A data byte into the void must stay NAKed. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x99);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, I2C_PCF_LRB);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_BB,
+                    ==, I2C_PCF_BB);
 
     qtest_quit(qts);
 }
@@ -264,6 +346,10 @@ int main(int argc, char **argv)
                         test_register_selection_matrix);
     qtest_add_data_func("sn0/i2c/own-address-round-trip", NULL,
                         test_own_address_round_trip);
+    qtest_add_data_func("sn0/i2c/programmed-own-address-answers-as-slave",
+                        NULL, test_programmed_own_address_answers_as_slave);
+    qtest_add_data_func("sn0/i2c/send-after-refused-start-stays-nacked",
+                        NULL, test_send_after_refused_start_stays_nacked);
     qtest_add_data_func("sn0/i2c/clock-control-independent-fields", NULL,
                         test_clock_control_independent_fields);
     qtest_add_data_func("sn0/i2c/init-sequence-leaves-eso-and-address", NULL,

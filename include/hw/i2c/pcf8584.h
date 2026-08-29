@@ -37,13 +37,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 #define PCF8584_CTL_ACK     0x01    /* acknowledge received bytes */
 
 /* Status register, read side. Shares the address with the control register. */
-#define I2C_PCF_PIN     0x80    /* pending interrupt NOT: set means busy */
-#define I2C_PCF_STS     0x20    /* stop detected, slave receive mode */
-#define I2C_PCF_BER     0x10    /* bus error */
-#define I2C_PCF_LRB     0x08    /* last received acknowledge bit */
-#define I2C_PCF_AAS     0x04    /* addressed as slave */
-#define I2C_PCF_LAB     0x02    /* lost arbitration */
-#define I2C_PCF_BB      0x01    /* bus not busy */
+#define PCF8584_STS_PIN     0x80    /* pending interrupt NOT: set means busy */
+#define PCF8584_STS_STS     0x20    /* stop detected, slave receive mode */
+#define PCF8584_STS_BER     0x10    /* bus error */
+#define PCF8584_STS_LRB     0x08    /* last received acknowledge bit */
+#define PCF8584_STS_AAS     0x04    /* addressed as slave */
+#define PCF8584_STS_LAB     0x02    /* lost arbitration */
+#define PCF8584_STS_BB      0x01    /* bus not busy */
 
 struct PCF8584State {
     SysBusDevice parent_obj;
@@ -68,11 +68,12 @@ struct PCF8584State {
     uint8_t status;             /* S1 read side */
 
     /*
-     * A transfer is in progress between a start condition and a stop. The
-     * chip cannot see the difference between a first start and a repeated
-     * one from the register writes alone, so this is what distinguishes them:
-     * the firmware writes the address before the control register for a first
-     * start, and after it for a repeated start.
+     * The I2C core accepted the start: a slave matched, and the open core
+     * transfer must be ended. The chip-level state -- a transaction is
+     * open between a start condition and a stop, acknowledged or not --
+     * is the BB status bit, and it is what tells a first start from a
+     * repeated one: the firmware writes the address before the control
+     * register for a first start, and after it for a repeated start.
      */
     bool transfer;
     bool recv;                  /* current direction is slave-to-master */

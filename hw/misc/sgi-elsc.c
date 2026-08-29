@@ -413,13 +413,6 @@ static uint8_t elsc_recv(I2CSlave *i2c)
 }
 
 /*
- * QEMU's own reserved broadcast/general-call address, matching
- * hw/i2c/core.c's private I2C_BROADCAST -- not exported by the public
- * header, so restated here rather than reached into the core for.
- */
-#define ELSC_I2C_BROADCAST 0x00
-
-/*
  * The signal pair a processor watches for is derived, not fixed: 0x70 * 2
  * plus twice the node's own slot index plus a live read of the Hub's
  * processor-number register, and signal2 computed as signal1 + 8. The
@@ -466,7 +459,7 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = true;
     }
-    if (i2c_start_transfer(s->bus, ELSC_I2C_BROADCAST, false)) {
+    if (i2c_start_transfer(s->bus, I2C_BROADCAST, false)) {
         if (diagnostic) {
             s->diagnostic_arbitration_broadcast = false;
         }
