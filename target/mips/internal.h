@@ -26,7 +26,9 @@ enum mips_mmu_types {
     MMU_TYPE_DVF        = 4,    /* Dual VTLB and FTLB */
     MMU_TYPE_R3000,
     MMU_TYPE_R6000,
-    MMU_TYPE_R8000
+    MMU_TYPE_R8000,
+    /* Standard TLB, plus the R10000's own TLB writes and reads */
+    MMU_TYPE_R10000
 };
 
 struct mips_def_t {
