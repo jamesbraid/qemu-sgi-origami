@@ -3,6 +3,8 @@
  * M48T35-class Timekeeper: 32 KB of battery-backed byte-wide storage with a
  * real-time clock in its top eight bytes.
  *
+ * Copyright (c) 2026 Origami contributors
+ *
  * The Origin 200 hangs one of these off its I/O controller's byte bus, where a
  * guest reads it once during boot to set the system clock. Everything below
  * the clock is ordinary storage, and that is not a detail: SGI's own driver
@@ -16,8 +18,10 @@
  * would mean threading a fourth model through both of its switch statements --
  * an edit to a shared upstream file, in a fork that is rebased onto master
  * indefinitely. It also carries an alarm block, a watchdog and an interrupt
- * output that this part does not have. See docs/datasheets/timekeeper.md for
- * the comparison and the sources behind every value here.
+ * output that this part does not have. The timekeeper datasheet in the
+ * Origami project tree (docs/datasheets/timekeeper.md there, not in this
+ * QEMU tree) carries the comparison and the sources behind every value
+ * here.
  */
 
 #include "qemu/osdep.h"
@@ -28,9 +32,11 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
+#include "system/block-backend.h"
 #include "system/rtc.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
+#include "trace.h"
 
 /*
  * The time a read of the clock should report: the frozen instant if software
@@ -231,9 +237,12 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
 static uint64_t m48t35_read(void *opaque, hwaddr addr, unsigned size)
 {
     M48T35State *s = opaque;
+    uint64_t value;
 
     if (addr > M48T35_CONTROL) {
-        return m48t35_read_clock(s, addr);
+        value = m48t35_read_clock(s, addr);
+        trace_m48t35_clock_read(addr, value);
+        return value;
     }
 
     /*
@@ -242,13 +251,25 @@ static uint64_t m48t35_read(void *opaque, hwaddr addr, unsigned size)
      * identifies -- treating it as cells is what lets a guest that writes there
      * read back what it wrote, and nothing we run does either.
      */
-    return s->cell[addr];
+    value = s->cell[addr];
+    if (addr >= M48T35_CLOCK_FIRST) {
+        trace_m48t35_clock_read(addr, value);
+    } else {
+        trace_m48t35_nvram_read(addr, value);
+    }
+    return value;
 }
 
 static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
                          unsigned size)
 {
     M48T35State *s = opaque;
+
+    if (addr >= M48T35_CLOCK_FIRST) {
+        trace_m48t35_clock_write(addr, val);
+    } else {
+        trace_m48t35_nvram_write(addr, val);
+    }
 
     if (addr == M48T35_CONTROL) {
         m48t35_write_control(s, val);
@@ -313,6 +334,8 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
 {
     M48T35State *s = M48T35(dev);
 
+    s->cell = g_malloc0(M48T35_SIZE);
+
     /*
      * The drive is optional, and the check is exact rather than a minimum:
      * a file of any other length is not this part's content, not a partial
@@ -351,12 +374,25 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 
+static void m48t35_unrealize(DeviceState *dev)
+{
+    M48T35State *s = M48T35(dev);
+
+    g_free(s->cell);
+    s->cell = NULL;
+}
+
+/*
+ * The cell buffer moved from an embedded array to a pointer, and the
+ * migration stream did not move with it: a uint8 array and a buffer
+ * serialise to the same raw bytes, so version 1 streams load unchanged.
+ */
 static const VMStateDescription vmstate_m48t35 = {
     .name = "m48t35",
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT8_ARRAY(cell, M48T35State, M48T35_SIZE),
+        VMSTATE_BUFFER_POINTER_UNSAFE(cell, M48T35State, 0, M48T35_SIZE),
         VMSTATE_INT64(time_offset, M48T35State),
         VMSTATE_BOOL(frozen, M48T35State),
         VMSTATE_INT64(frozen_epoch, M48T35State),
@@ -382,6 +418,7 @@ static void m48t35_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "M48T35-class Timekeeper NVRAM and real-time clock";
     dc->realize = m48t35_realize;
+    dc->unrealize = m48t35_unrealize;
     dc->vmsd = &vmstate_m48t35;
     device_class_set_props(dc, m48t35_properties);
     rc->phases.hold = m48t35_reset_hold;

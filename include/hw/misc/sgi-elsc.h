@@ -25,8 +25,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
  * Every command and response shares one frame: a length byte, that many
  * bytes of ASCII text, and a checksum byte, the whole packet summing to
  * zero modulo 256. The firmware's own packet buffers are 96 bytes and a
- * length byte above 94 reads past them, so a model must never emit one --
- * see docs/datasheets/pcf8584-elsc.md.
+ * length byte above 94 reads past them, so a model must never emit one.
+ * The controller-and-ELSC datasheet in the Origami project tree
+ * (docs/datasheets/pcf8584-elsc.md there, not in this QEMU tree) carries
+ * the sources.
  */
 #define SGI_ELSC_MAX_TEXT   94
 #define SGI_ELSC_MAX_FRAME  (SGI_ELSC_MAX_TEXT + 2)
@@ -80,12 +82,12 @@ struct SGIElscState {
      */
     uint32_t num_cpus;
     uint8_t dip_switches;
-    uint32_t arb_code;    /* which of the eight processor codes this cycle presents */
+    uint32_t arb_code;    /* which of the eight codes this cycle presents */
     bool arb_present;    /* false: showing the gap; true: holding the signal */
 
     /*
      * The AUX serial port: a real RS-232 connector, cabled with only
-     * transmit, receive and ground (docs/datasheets/pcf8584-elsc.md), and
+     * transmit, receive and ground (per the project-tree datasheet), and
      * multiplexed with the checksummed command channel above by one rule
      * on the input side -- a byte sequence beginning 0x14 is a controller
      * command and is never queued; everything else is. Console selection
@@ -98,8 +100,10 @@ struct SGIElscState {
     uint32_t rx_queue_len;
     bool in_escape;   /* discarding a controller command typed on the line */
 
-    /* Supervisor mode gates the destructive commands (page 124 of the
-     * Origin 200 Owner's Guide); "pas" sets it, factory default "none". */
+    /*
+     * Supervisor mode gates the destructive commands (page 124 of the
+     * Origin 200 Owner's Guide); "pas" sets it, factory default "none".
+     */
     bool supervisor;
 
     /*

@@ -306,6 +306,10 @@ config QCOM_QDSP6SS_CLK
 
 config SGI_HUB
     bool
+    select AT24C
+    select PCF8584
+    select SERIAL
+    select SGI_ELSC
 
 config SGI_ELSC
     bool

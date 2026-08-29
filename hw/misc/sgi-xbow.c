@@ -2,6 +2,8 @@
 /*
  * SGI Crossbow — the crosstalk crossbar, as far as a guest has to see it.
  *
+ * Copyright (c) 2026 Origami contributors
+ *
  * The chip is an eight-port switch that routes crosstalk packets by the widget
  * number they name, and its own registers answer as widget 0. It translates
  * nothing and reorders nothing, so on a machine with one node board and one I/O
@@ -12,12 +14,12 @@
  * this is from the answer. That is the whole of what this model owes them
  * today: widget 0 has to answer its identification register, and answer with
  * the right identity. An Origin 200 does not report a crossbar there — it
- * reports the identity of the I/O bridge — and a guest reading a crossbar's own
- * part number instead takes a different probe path, consults the configuration
- * graph differently, and prints different things. So the identity is a property
- * the machine sets rather than a constant here, and this file stays the
- * Crossbow's, which is where the rest of the switch goes when a machine that
- * has one needs it.
+ * reports the identity of the I/O bridge — and a guest reading a crossbar's
+ * own part number instead takes a different probe path, consults the
+ * configuration graph differently, and prints different things. So the
+ * identity is a property the machine sets rather than a constant here, and
+ * this file stays the Crossbow's, which is where the rest of the switch goes
+ * when a machine that has one needs it.
  *
  * Everything not implemented raises a bus error rather than answering zero. A
  * register file that answers plausibly for registers nobody wrote is how a
@@ -60,13 +62,13 @@ static uint32_t sgi_xbow_identification(SGIXbowState *s)
  * guest asking for one of those is asking a real question we have not answered,
  * so it is told rather than served a zero.
  *
- * The upper half of a register's eight-byte slot is not on this list, and that
- * is deliberate rather than an omission. It holds no register — the data is in
- * the low half — so a model returning zero there would be answering for an
- * address the chip has nothing at, which is the one thing a device here may not
- * do. It is also the address a reader gets by forgetting the plus-four, so
- * making it faulty rather than plausible is what turns that mistake into a
- * message instead of a zero.
+ * The upper half of a register's eight-byte slot is not on this list, and
+ * that is deliberate rather than an omission. It holds no register — the data
+ * is in the low half — so a model returning zero there would be answering for
+ * an address the chip has nothing at, which is the one thing a device here
+ * may not do. It is also the address a reader gets by forgetting the
+ * plus-four, so making it faulty rather than plausible is what turns that
+ * mistake into a message instead of a zero.
  */
 static bool sgi_xbow_implemented(hwaddr addr)
 {
@@ -180,6 +182,8 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     dc->realize = sgi_xbow_realize;
     dc->vmsd = &vmstate_sgi_xbow;
     device_class_set_props(dc, sgi_xbow_properties);
+    /* The span is board wiring, so -device could only fail at realize. */
+    dc->user_creatable = false;
 }
 
 static const TypeInfo sgi_xbow_types[] = {

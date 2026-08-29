@@ -6,7 +6,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * A third-party bus controller with a public interface, modelled from the
- * register contract in docs/datasheets/pcf8584-elsc.md.
+ * register contract in the controller-and-ELSC datasheet kept in the
+ * Origami project tree (docs/datasheets/pcf8584-elsc.md there, not in
+ * this QEMU tree).
  */
 
 #include "qemu/osdep.h"

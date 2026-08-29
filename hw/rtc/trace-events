@@ -43,3 +43,9 @@ goldfish_rtc_write(uint64_t addr, uint64_t value) "addr 0x%02" PRIx64 " value 0x
 # rs5c372.c
 rs5c372_recv(uint32_t addr, uint8_t value) "[0x%" PRIx32 "] -> 0x%02" PRIx8
 rs5c372_send(uint32_t addr, uint8_t value) "[0x%" PRIx32 "] <- 0x%02" PRIx8
+
+# m48t35.c
+m48t35_nvram_read(uint64_t addr, uint64_t value) "nvram read addr:0x%04" PRIx64 " value:0x%02" PRIx64
+m48t35_nvram_write(uint64_t addr, uint64_t value) "nvram write addr:0x%04" PRIx64 " value:0x%02" PRIx64
+m48t35_clock_read(uint64_t addr, uint64_t value) "clock read addr:0x%04" PRIx64 " value:0x%02" PRIx64
+m48t35_clock_write(uint64_t addr, uint64_t value) "clock write addr:0x%04" PRIx64 " value:0x%02" PRIx64
