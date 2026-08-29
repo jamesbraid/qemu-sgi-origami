@@ -25,6 +25,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 /* Crosstalk space, and the chip's window inside the console widget. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -1310,6 +1311,52 @@ static void test_the_default_station_address_is_an_sgi_address(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
+}
+
+/*
+ * The converse promise: mac= is the operator's word, and the device must
+ * never rewrite it -- even when the value happens to sit inside the range
+ * QEMU's own generator draws from, which is the one range a provenance
+ * guess from the address bytes cannot tell apart from a generated one.
+ */
+static const uint8_t explicit_prefix_mac[6] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56
+};
+#define EXPLICIT_PREFIX_MAC_STR "52:54:00:12:34:56"
+
+static void test_an_explicit_mac_in_the_generator_range_stays(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], EXPLICIT_PREFIX_MAC_STR);
+
+    assert_ethernet_address_page(qts, ONEWIRE_SELECT_MATCH, 0xf0,
+                                 explicit_prefix_mac);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* The same promise on the -device path, where no -nic parsing intervenes. */
+static void test_a_device_supplied_mac_survives(const void *data)
+{
+    QTestState *qts;
+    QDict *resp;
+
+    qts = qtest_init("-M origin200,io-bridge=on "
+                     "-device sgi-ioc3,id=spare,mac=" EXPLICIT_PREFIX_MAC_STR);
+
+    resp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': "
+                     "{ 'path': '/machine/peripheral/spare', "
+                     "'property': 'mac' } }");
+    g_assert(qdict_haskey(resp, "return"));
+    g_assert_cmpstr(qdict_get_str(resp, "return"), ==,
+                    EXPLICIT_PREFIX_MAC_STR);
+    qobject_unref(resp);
+
+    qtest_quit(qts);
 }
 
 /*
@@ -4762,6 +4809,10 @@ int main(int argc, char **argv)
                         test_reading_the_page_after_search);
     qtest_add_data_func("sn0/ioc3/one-wire-default-mac-is-sgi", NULL,
                         test_the_default_station_address_is_an_sgi_address);
+    qtest_add_data_func("sn0/ioc3/one-wire-explicit-mac-survives", NULL,
+                        test_an_explicit_mac_in_the_generator_range_stays);
+    qtest_add_data_func("sn0/ioc3/device-supplied-mac-survives", NULL,
+                        test_a_device_supplied_mac_survives);
     qtest_add_data_func("sn0/ioc3/one-wire-read-status-no-redirection", NULL,
                         test_read_status_returns_no_redirection);
     qtest_add_data_func("sn0/ioc3/pin-control-two-aliases", NULL,

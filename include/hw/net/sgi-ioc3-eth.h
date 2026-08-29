@@ -285,6 +285,12 @@ struct SGIIOC3EthState {
      * destination for the bytes.
      */
     NICConf conf;
+    /*
+     * Set alongside the mac property when its value came from QEMU's
+     * default generator rather than an operator's mac= — the one case
+     * realize may replace with an SGI-prefixed address.
+     */
+    bool mac_generated;
     NICState *nic;
     uint8_t frame[SGI_IOC3_ENET_FRAME_MAX];
 

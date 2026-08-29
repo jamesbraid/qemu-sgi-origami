@@ -426,10 +426,10 @@ static void build_arp_request(uint8_t *frame, size_t len)
 {
     static const uint8_t head[42] = {
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+        0x08, 0x00, 0x69, 0x12, 0x34, 0x56,
         0x08, 0x06,
         0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
-        0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 10, 0, 2, 15,
+        0x08, 0x00, 0x69, 0x12, 0x34, 0x56, 10, 0, 2, 15,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 0, 2, 2
     };
 
@@ -461,9 +461,9 @@ static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
 
     /* Addressed to us, from the gateway user-mode networking answers as. */
-    g_assert_cmphex(landed[0], ==, 0x52);
-    g_assert_cmphex(landed[1], ==, 0x54);
-    g_assert_cmphex(landed[2], ==, 0x00);
+    g_assert_cmphex(landed[0], ==, 0x08);
+    g_assert_cmphex(landed[1], ==, 0x00);
+    g_assert_cmphex(landed[2], ==, 0x69);
 
     /* An ARP reply: the ethertype, then the opcode. */
     g_assert_cmphex(landed[12], ==, 0x08);
@@ -1392,7 +1392,7 @@ static uint16_t ones_complement_sum(const uint8_t *data, size_t len)
  * Our own address and the one user-mode networking answers on, which are its
  * documented defaults rather than anything this model chooses.
  */
-static const uint8_t guest_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
+static const uint8_t guest_mac[6] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
 static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
 static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
 
