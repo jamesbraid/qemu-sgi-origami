@@ -746,6 +746,28 @@ static void test_processor_number(const void *data)
  */
 #define MD_ONEWIRE_RESET    ((0x31ULL << 20) | (0x31ULL << 27))
 
+/*
+ * A reset in the middle of a slot. The slot armed before the reset must not
+ * finish after it: its completion bits would land on the register reset just
+ * cleared, and the next guest's first poll would read a finished transaction
+ * it never started -- the fabricated completion the model otherwise takes
+ * such care to refuse.
+ */
+static void test_a_reset_cancels_a_running_slot(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE, MD_ONEWIRE_RESET);
+    qtest_system_reset(qts);
+
+    /* Step past the slot deadline; nothing may report done. */
+    qtest_clock_step(qts, 10000);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE), ==,
+                    MD_ONEWIRE_RESET);
+
+    qtest_quit(qts);
+}
+
 static void test_the_one_wire_master_resets_to_its_timing(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -3047,6 +3069,8 @@ int main(int argc, char **argv)
                         test_a_masked_pending_bit_raises_nothing);
     qtest_add_data_func("sn0/hub/pending-banks-masked-per-processor", NULL,
                         test_pending_banks_are_masked_per_processor);
+    qtest_add_data_func("sn0/hub/one-wire-reset-cancels-a-slot", NULL,
+                        test_a_reset_cancels_a_running_slot);
     qtest_add_data_func("sn0/hub/one-wire-resets-to-its-timing", NULL,
                         test_the_one_wire_master_resets_to_its_timing);
     qtest_add_data_func("sn0/hub/one-wire-keeps-its-wide-field", NULL,
