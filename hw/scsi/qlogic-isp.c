@@ -48,11 +48,14 @@
 #include "qemu/queue.h"
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
+#include "migration/qemu-file-types.h"
+#include "migration/qemu-file.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
 #define TYPE_QLOGIC_ISP1040 "qlogic-isp1040"
 typedef struct QLogicISPState QLogicISPState;
+typedef struct QLogicISPRequest QLogicISPRequest;
 DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 
 #define QLOGIC_ISP_VENDOR_ID    0x1077
@@ -465,6 +468,16 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 
 #define ISP_DEVICE_LUN(dev)     ((dev) & 0xff)
 #define ISP_DEVICE_TARGET(dev)  (((dev) >> 8) & 0x7f)
+#define ISP_DEVICE_BUS(dev)     (((dev) >> 15) & 0x1)
+
+/*
+ * Wide SCSI: sixteen targets, 0 through 15, and eight luns, 0 through 7.
+ * The SCSI core's realize check is inclusive — a device with an id equal
+ * to max_target realizes — so what these carry is the largest usable
+ * address, not the count.
+ */
+#define ISP_MAX_TARGET_ID   15
+#define ISP_MAX_LUN         7
 
 /* A continuation entry: four bytes reserved, then seven more segments. */
 #define ISP_CONT_OFF_SEGS       8
@@ -635,12 +648,18 @@ struct QLogicISPState {
     /*
      * Completions the response ring had no room for when they were ready to
      * post. Not covered by vmstate: a migration landing while this is
-     * non-empty loses the queued completions, the same gap this device
-     * already has for every other in-flight SCSI request, and the condition
-     * these exist for is one the datasheet itself says real hardware never
+     * non-empty loses the queued completions, and the condition these
+     * exist for is one the datasheet itself says real hardware never
      * reaches.
      */
     QTAILQ_HEAD(, QLogicISPPendingStatus) pending_status;
+
+    /*
+     * Every request handed to the SCSI core and not yet completed or
+     * cancelled: the device's own account of what is in flight, which
+     * the guest-reset and migration paths need.
+     */
+    QTAILQ_HEAD(, QLogicISPRequest) requests;
 };
 
 /*
@@ -649,12 +668,13 @@ struct QLogicISPState {
  * is how QEMU's generic SCSI layer hands this back on completion or
  * cancellation, the same mechanism every SCSI HBA model in the tree uses.
  */
-typedef struct QLogicISPRequest {
+struct QLogicISPRequest {
     QLogicISPState *dev;
     SCSIRequest *sreq;
     QEMUSGList qsg;
     uint32_t handle;
-} QLogicISPRequest;
+    QTAILQ_ENTRY(QLogicISPRequest) next;
+};
 
 /*
  * The adapter presents one PCI interrupt line and it is a level, so the line
@@ -1147,13 +1167,16 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     }
 
     /*
-     * Nothing in this model distinguishes a bus that has been reset from one
-     * that has not — there are no in-flight commands to abort and no
-     * negotiated transfer parameters to drop, since neither is modelled yet
-     * — so the only contract to honour is the one the driver checks: that
-     * the command completes.
+     * A SCSI bus reset, and since the rings landed this adapter can
+     * genuinely have commands in flight, so the reset must reach them.
+     * Cold-resetting the SCSI bus cancels every outstanding request
+     * through the core and leaves each device carrying the unit
+     * attention a real bus reset provokes. The chip's own state — the
+     * rings included — survives, as it does on hardware: this resets
+     * the bus, not the adapter.
      */
     case ISP_MBOX_CMD_BUS_RESET:
+        bus_cold_reset(BUS(&s->bus));
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
@@ -1492,6 +1515,25 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
                                sense, sense_len);
 }
 
+/*
+ * The SCSIRequest can outlive this device's bookkeeping for it — the SCSI
+ * core and the backing block layer hold references of their own — so the
+ * request is detached from sreq->hba_private before the unref, the shape
+ * mptsas_free_request() uses. Freeing while that pointer still aims here
+ * leaves any later core path that consults it reading freed memory.
+ */
+static void qlogic_isp_free_request(QLogicISPRequest *req)
+{
+    QTAILQ_REMOVE(&req->dev->requests, req, next);
+    if (req->sreq != NULL) {
+        req->sreq->hba_private = NULL;
+        scsi_req_unref(req->sreq);
+        req->sreq = NULL;
+    }
+    qemu_sglist_destroy(&req->qsg);
+    g_free(req);
+}
+
 static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
 {
     QLogicISPRequest *req = sreq->hba_private;
@@ -1523,18 +1565,14 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
                            ISP_STATE_FLAGS_ALL_PHASES, 0, resid, sense,
                            sense_len);
 
-    scsi_req_unref(req->sreq);
-    qemu_sglist_destroy(&req->qsg);
-    g_free(req);
+    qlogic_isp_free_request(req);
 }
 
 static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
-    scsi_req_unref(req->sreq);
-    qemu_sglist_destroy(&req->qsg);
-    g_free(req);
+    qlogic_isp_free_request(req);
 }
 
 /*
@@ -1557,13 +1595,90 @@ static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
     return &req->qsg;
 }
 
+/*
+ * Migration of a device with commands in flight. The SCSI core saves each
+ * device's request queue and recreates every SCSIRequest on the
+ * destination, but hba_private on a recreated request stays NULL until
+ * the HBA restores its own half — without these callbacks the restarted
+ * request reaches qlogic_isp_get_sg_list() or the completion callback
+ * with nothing behind that pointer and the destination dereferences
+ * NULL. The handle and the scatter-gather layout are the whole HBA half;
+ * the shape is mptsas's.
+ */
+static void qlogic_isp_save_request(QEMUFile *f, SCSIRequest *sreq)
+{
+    QLogicISPRequest *req = sreq->hba_private;
+    int i;
+
+    qemu_put_be32(f, req->handle);
+    qemu_put_be32(f, req->qsg.nsg);
+    for (i = 0; i < req->qsg.nsg; i++) {
+        qemu_put_be64(f, req->qsg.sg[i].base);
+        qemu_put_be64(f, req->qsg.sg[i].len);
+    }
+}
+
+/*
+ * The most segments any saved request can carry: the 32-bit format's four
+ * inline segments plus seven per continuation entry, with the eight-bit
+ * entry count counting the command entry itself. The A64 format stays
+ * below this (two inline, five per continuation).
+ */
+#define ISP_MIGRATE_SEGS_MAX \
+    (ISP_REQ_SEGS_INLINE + ISP_CONT_SEGS * (UINT8_MAX - 1))
+
+static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
+{
+    SCSIBus *bus = sreq->bus;
+    QLogicISPState *s = container_of(bus, QLogicISPState, bus);
+    PCIDevice *pci = PCI_DEVICE(s);
+    QLogicISPRequest *req;
+    int i, n;
+
+    req = g_new0(QLogicISPRequest, 1);
+    req->dev = s;
+    req->handle = qemu_get_be32(f);
+    pci_dma_sglist_init(&req->qsg, pci, 1);
+
+    scsi_req_ref(sreq);
+    req->sreq = sreq;
+    QTAILQ_INSERT_TAIL(&s->requests, req, next);
+
+    /*
+     * The count is the stream's word, not the device's: no saved request can
+     * exceed the entry format's ceiling, so allocate nothing on a claim above
+     * it. Rejecting the count also leaves its segment records unread, and
+     * everything after them would then be decoded from the middle of this
+     * request, so the stream has to be failed rather than merely not
+     * followed. The callback has no failure return — the SCSI bus interface
+     * offers none, which is why mptsas asserts here instead — so the file is
+     * marked failed directly and the loader stops on it. The wrapper is
+     * already on the device's list and consistent for teardown.
+     */
+    n = qemu_get_be32(f);
+    if (n < 0 || n > ISP_MIGRATE_SEGS_MAX || qemu_file_get_error(f)) {
+        qemu_file_set_error(f, -EINVAL);
+        return req;
+    }
+    for (i = 0; i < n; i++) {
+        uint64_t base = qemu_get_be64(f);
+        uint64_t len = qemu_get_be64(f);
+
+        qemu_sglist_add(&req->qsg, base, len);
+    }
+
+    return req;
+}
+
 static const struct SCSIBusInfo qlogic_isp_scsi_info = {
     .tcq = false,
-    .max_target = 16,
-    .max_lun = 8,
+    .max_target = ISP_MAX_TARGET_ID,
+    .max_lun = ISP_MAX_LUN,
     .get_sg_list = qlogic_isp_get_sg_list,
     .complete = qlogic_isp_scsi_complete,
     .cancel = qlogic_isp_scsi_cancel,
+    .save_request = qlogic_isp_save_request,
+    .load_request = qlogic_isp_load_request,
 };
 
 /*
@@ -1644,6 +1759,19 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
 
+    /*
+     * One SCSI bus on this part. A request naming the second one must
+     * not execute on bus 0 — the same target and lun that answer there
+     * are not the device the guest named — so it is answered incomplete
+     * with no phase reached, which Linux's failure ladder reads as a bus
+     * that never answered.
+     */
+    if (ISP_DEVICE_BUS(device) != 0) {
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                               0, 0, 0, NULL, 0);
+        return;
+    }
+
     sdev = scsi_device_find(&s->bus, 0, target, lun);
     if (!sdev) {
         /*
@@ -1676,10 +1804,16 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
-    pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
+    QTAILQ_INSERT_TAIL(&s->requests, req, next);
+    /*
+     * A size hint only — the list grows as segments are added — so it must
+     * not be the guest's raw seg_count, which reserves sixteen bytes per
+     * claimed segment up front: a claimed 65535 is a megabyte per request.
+     */
+    pci_dma_sglist_init(&req->qsg, pci, ISP_REQ_SEGS_INLINE);
     qlogic_isp_read_segments(s, &req->qsg, addr, entry_count, seg_count);
 
-    req->sreq = scsi_req_new(sdev, 0, lun, cdb,
+    req->sreq = scsi_req_new(sdev, handle, lun, cdb,
                              MIN(cdb_len, sizeof(cdb)), req);
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
@@ -1770,6 +1904,13 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
 
+    /* The same single-bus check as the 32-bit path. */
+    if (ISP_DEVICE_BUS(device) != 0) {
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                               0, 0, 0, NULL, 0);
+        return;
+    }
+
     sdev = scsi_device_find(&s->bus, 0, target, lun);
     if (!sdev) {
         /*
@@ -1789,10 +1930,12 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
-    pci_dma_sglist_init(&req->qsg, pci, seg_count ? seg_count : 1);
+    QTAILQ_INSERT_TAIL(&s->requests, req, next);
+    /* A size hint only, for the reason the 32-bit path gives. */
+    pci_dma_sglist_init(&req->qsg, pci, ISP_A64_REQ_SEGS_INLINE);
     qlogic_isp_read_segments_a64(s, &req->qsg, addr, entry_count, seg_count);
 
-    req->sreq = scsi_req_new(sdev, 0, lun, cdb,
+    req->sreq = scsi_req_new(sdev, handle, lun, cdb,
                              MIN(cdb_len, sizeof(cdb)), req);
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
@@ -1818,22 +1961,29 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
  * this wrapping convention — makes rqst_cons != prod true forever, since
  * rqst_cons can never leave [0, rqst_len). That is an infinite loop in the
  * emulator itself, driven entirely by guest-supplied data. Wrapping prod
- * here, the same way rqst_cons is always wrapped, removes the gap instead
- * of adding a bounds check for it: the loop terminates by construction for
- * every possible 16-bit value, not just the ones a well-behaved driver
- * sends.
+ * closes that gap but is not enough on its own: the cursor advances by
+ * each entry's own entry_count, also guest-supplied, so an exact-equality
+ * exit still never fires when entry_count shares a factor with the ring
+ * length and prod sits at an index the cursor never lands on — rqst_len
+ * 512, cons 0, prod 1, every entry_count 2 steps over it forever. So the
+ * walk is driven by the count of published entries instead: a budget the
+ * loop decrements and each entry's claimed slot count is clamped to,
+ * which terminates for every guest-supplied combination and stops an
+ * entry claiming slots the guest never published.
  */
 static void qlogic_isp_process_requests(QLogicISPState *s)
 {
     uint16_t prod;
+    uint16_t budget;
 
     if (s->rqst_len == 0) {
         return;
     }
 
     prod = s->mailbox[ISP_MAILBOX_REQUEST_QUEUE] % s->rqst_len;
+    budget = (prod + s->rqst_len - s->rqst_cons) % s->rqst_len;
 
-    while (s->rqst_cons != prod) {
+    while (budget > 0) {
         PCIDevice *pci = PCI_DEVICE(s);
         hwaddr addr = qlogic_isp_rqst_entry_addr(s, s->rqst_cons);
         uint8_t entry_type;
@@ -1845,6 +1995,7 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         if (entry_count == 0) {
             entry_count = 1;
         }
+        entry_count = MIN(entry_count, budget);
 
         switch (entry_type) {
         case ISP_ENTRY_TYPE_REQUEST:
@@ -1896,6 +2047,7 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         }
 
         s->rqst_cons = (s->rqst_cons + entry_count) % s->rqst_len;
+        budget -= entry_count;
     }
 }
 
@@ -2073,6 +2225,15 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
         s->bus_ctrl = val & ISP_BUS_CTRL_WRITE_MASK;
         if (val & ISP_BUS_CTRL_SOFT_RESET) {
             qlogic_isp_reset_state(s);
+            /*
+             * Requests the SCSI core still holds must not complete into
+             * rings the reset just dissolved: cancel them by cold-resetting
+             * the bus, which also arms each device's reset unit attention.
+             * Only here and not in qlogic_isp_reset_state(), because the
+             * device's own reset phase reaches the child bus through the
+             * qdev tree already.
+             */
+            bus_cold_reset(BUS(&s->bus));
         }
         qlogic_isp_update_irq(s);
         break;
@@ -2199,9 +2360,24 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
 
     QTAILQ_INIT(&s->pending_status);
+    QTAILQ_INIT(&s->requests);
 
     scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev),
                  &qlogic_isp_scsi_info);
+}
+
+/*
+ * In-flight requests need no walk here: unrealize purges each child SCSI
+ * device's queue before this hook runs, and each cancellation frees our
+ * wrapper. Completions held for response-ring room are the one allocation
+ * whose life is not tied to a SCSIRequest, so unrealizing the device with
+ * the list non-empty leaked them.
+ */
+static void qlogic_isp_exit(PCIDevice *dev)
+{
+    QLogicISPState *s = QLOGIC_ISP1040(dev);
+
+    qlogic_isp_drop_pending_status(s);
 }
 
 /*
@@ -2216,9 +2392,10 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
  *
  * Pending completions queued for lack of ring room (QLogicISPPendingStatus)
  * are not migrated. A migration landing while that list is non-empty loses
- * them — the same gap this device already has for every other in-flight
- * SCSI request, and the condition that fills the list is one the datasheet
- * itself says real hardware never reaches.
+ * them — the condition that fills the list is one the datasheet itself
+ * says real hardware never reaches. In-flight SCSI requests do migrate:
+ * the core saves them with each device and qlogic_isp_load_request()
+ * restores the HBA half.
  */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
@@ -2256,6 +2433,7 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     pc->realize = qlogic_isp_realize;
+    pc->exit = qlogic_isp_exit;
     pc->vendor_id = QLOGIC_ISP_VENDOR_ID;
     pc->device_id = QLOGIC_ISP_DEVICE_ID;
     pc->revision = QLOGIC_ISP_REVISION;
