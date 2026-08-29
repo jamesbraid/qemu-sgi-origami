@@ -253,7 +253,7 @@ static G_NORETURN void raise_unimplemented_operation(CPUMIPSState *env,
 static void check_denormal_result_d(CPUMIPSState *env, uint64_t ret,
                                     uintptr_t pc)
 {
-    if (unlikely((env->insn_flags & INSN_R10K) &&
+    if (unlikely(env->cfg.fp_traps_denormal_result &&
                  !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
                  float64_is_denormal(ret))) {
         raise_unimplemented_operation(env, pc);
@@ -263,7 +263,7 @@ static void check_denormal_result_d(CPUMIPSState *env, uint64_t ret,
 static void check_denormal_result_s(CPUMIPSState *env, uint32_t ret,
                                     uintptr_t pc)
 {
-    if (unlikely((env->insn_flags & INSN_R10K) &&
+    if (unlikely(env->cfg.fp_traps_denormal_result &&
                  !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
                  float32_is_denormal(ret))) {
         raise_unimplemented_operation(env, pc);
@@ -330,7 +330,7 @@ uint64_t helper_float_cvtd_l(CPUMIPSState *env, uint64_t dt0)
 static void check_cvt_l_result(CPUMIPSState *env, uint64_t ret, bool invalid,
                                uintptr_t pc)
 {
-    if (unlikely((env->insn_flags & INSN_R10K) &&
+    if (unlikely(env->cfg.fp_cvt_l_limited_to_51_bits &&
                  (invalid || ret != (uint64_t)sextract64(ret, 0, 52)))) {
         raise_unimplemented_operation(env, pc);
     }

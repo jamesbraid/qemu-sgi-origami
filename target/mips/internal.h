@@ -89,6 +89,7 @@ struct mips_def_t {
     uint32_t lcsr_cpucfg1;
     uint32_t lcsr_cpucfg2;
     uint64_t insn_flags;
+    MIPSCPUConfig cfg;
     enum mips_mmu_types mmu_type;
 };
 

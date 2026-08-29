@@ -127,15 +127,14 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
 }
 
 /*
- * A write that leaves Count at or past Compare, on the R10000. The manual
- * (14.8) makes the comparison continuous - "Whenever their values equal,
- * the interrupt bit IP[7] in the Cause register is set" - so equality
- * standing at the moment of the write raises the interrupt at once. The
- * expiry path must not come here: at expiry the registers are also equal,
- * but that match has just been delivered, and cpu_mips_timer_update()'s
- * zero-interval clamp correctly defers the next one a full wrap - which is
- * also the deadline both write paths have already programmed for the match
- * after this one.
+ * A write that leaves Count at or past Compare. The manual (14.8) makes the
+ * comparison continuous - "Whenever their values equal, the interrupt bit
+ * IP[7] in the Cause register is set" - so equality standing at the moment
+ * of the write raises the interrupt at once. The expiry path must not come
+ * here: at expiry the registers are also equal, but that match has just been
+ * delivered, and cpu_mips_timer_update()'s zero-interval clamp correctly
+ * defers the next one a full wrap - which is also the deadline both write
+ * paths have already programmed for the match after this one.
  *
  * The window treats a Compare write up to half the counter space behind
  * Count as the match it just missed. That corner needs a stall between
@@ -146,7 +145,7 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
 static bool cpu_mips_write_matches(CPUMIPSState *env, uint32_t count,
                                    uint32_t compare, uint32_t window)
 {
-    if (!(env->insn_flags & INSN_R10K) ||
+    if (!env->cfg.compare_match_is_continuous ||
         (uint32_t)(count - compare) > window) {
         return false;
     }

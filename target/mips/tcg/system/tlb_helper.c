@@ -118,15 +118,15 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
 
     /*
      * The top two bits of each low half are either the read-inhibit and
-     * execute-inhibit bits or the R10000 family's uncached attribute. No
-     * processor has both, so they are read one way or the other and never both:
-     * reading an attribute as inhibit bits would make the page unreadable, and
-     * a guest that programmed one would get an exception it never asked for.
+     * execute-inhibit bits or the uncached attribute. No processor has both,
+     * so they are read one way or the other and never both: reading an
+     * attribute as inhibit bits would make the page unreadable, and a guest
+     * that programmed one would get an exception it never asked for.
      */
     tlb->UC0 = 0;
     tlb->UC1 = 0;
 #if defined(TARGET_MIPS64)
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.uncached_attribute) {
         tlb->UC0 = extract64(env->CP0_EntryLo0, CP0EnLo_UC, 2);
         tlb->UC1 = extract64(env->CP0_EntryLo1, CP0EnLo_UC, 2);
         tlb->XI0 = 0;
@@ -311,12 +311,12 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
 
     if (tlb->EHINV) {
         /*
-         * The R10000 family has no EHINV: EntryHi bits 12:8 read as zero
-         * there, and the bit would stick, because the EntryHi write helper
-         * only clears it on a processor whose Config4 grants the feature.
-         * Once stuck, the fill helper reads it back as "write an invalid
-         * entry" and every later TLB write is silently thrown away. Present
-         * an invalidated entry's EntryHi and EntryLo as zeroes instead.
+         * Without EHINV, EntryHi bits 12:8 read as zero, and the bit would
+         * stick, because the EntryHi write helper only clears it on a
+         * processor whose Config4 grants the feature. Once stuck, the fill
+         * helper reads it back as "write an invalid entry" and every later
+         * TLB write is silently thrown away. Present an invalidated entry's
+         * EntryHi and EntryLo as zeroes instead.
          *
          * The PageMask register keeps the entry's own stale mask: a
          * read-back loads PageMask like any other read, and a guest that
@@ -324,9 +324,9 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
          * size it ever writes would otherwise inherit a 4 Kbyte mask for
          * its next TLB write.
          */
-        env->CP0_EntryHi = (env->insn_flags & INSN_R10K)
+        env->CP0_EntryHi = env->cfg.tlb_has_no_ehinv
                            ? 0 : 1 << CP0EnHi_EHINV;
-        env->CP0_PageMask = (env->insn_flags & INSN_R10K)
+        env->CP0_PageMask = env->cfg.tlb_has_no_ehinv
                             ? tlb->PageMask : 0;
         env->CP0_EntryLo0 = 0;
         env->CP0_EntryLo1 = 0;
@@ -340,7 +340,7 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
          * keeps the entry as written, and lookup masks at compare time, so
          * only this architectural read-back needs the clearing.
          */
-        if (env->insn_flags & INSN_R10K) {
+        if (env->cfg.tlb_has_no_ehinv) {
             VPN &= ~(target_ulong)tlb->PageMask;
         }
         env->CP0_EntryHi = mi ? VPN : VPN | tlb->ASID;
@@ -612,7 +612,7 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                  * address, since the attribute that names memory is window
                  * zero.
                  */
-                if ((env->insn_flags & INSN_R10K) && (cca == 2 || cca == 7)) {
+                if (env->cfg.uncached_attribute && (cca == 2 || cca == 7)) {
                     unsigned int uc = n ? tlb->UC1 : tlb->UC0;
 
                     window = (hwaddr)((uc + 1) & 3) <<
@@ -1145,7 +1145,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         break;
     }
     if (ret == TLBRET_MATCH) {
-        if (unlikely((env->insn_flags & INSN_R10K) &&
+        if (unlikely(env->cfg.watch_is_physical &&
                      (env->CP0_WatchLo[0] &
                       (CP0WL_R10K_R | CP0WL_R10K_W)))) {
             mips_r10k_watch_fill(cs, env, address, physical);
@@ -1345,7 +1345,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
         break;
     case EXCP_SRESET:
         env->CP0_Status |= (1 << CP0St_SR);
-        if (env->insn_flags & INSN_R10K) {
+        if (env->cfg.warm_reset_reports_sr) {
             /*
              * The NMI bit tells the two warm entries apart: an NMI sets
              * it, a Soft Reset writes it back to zero (R10000 User's
@@ -1358,7 +1358,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
         goto set_error_EPC;
     case EXCP_NMI:
         env->CP0_Status |= (1 << CP0St_NMI);
-        if (env->insn_flags & INSN_R10K) {
+        if (env->cfg.warm_reset_reports_sr) {
             /*
              * "Both Soft Reset and NMI exceptions set the SR bit" (R10000
              * User's Manual version 2.0, chapter 17, NMI Exception), so a
@@ -1388,7 +1388,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
          * report through ErrorEPC, so the branch-delay bit still
          * describes the exception that wrote EPC.
          */
-        if (!(env->insn_flags & INSN_R10K) &&
+        if (!env->cfg.warm_reset_reports_sr &&
             !(env->CP0_Status & (1 << CP0St_EXL))) {
             cp0_cause_update(env, 1U << CP0Ca_BD, 0);
         }
@@ -1553,19 +1553,18 @@ void mips_cpu_do_interrupt(CPUState *cs)
     case EXCP_CACHE:
         cause = 30;
         offset = 0x100;
-        if (env->insn_flags & INSN_R10K) {
+        if (env->cfg.cache_error_is_error_level) {
             /*
-             * A Cache Error is an error-level exception on the R10000:
-             * "the CP0 Status register ERL bit is asserted. Instruction
-             * fetching begins from 0xa0000100 or 0xbfc00300, depending on
-             * the CP0 Status register BEV bit. The CP0 ErrorEPC register
-             * is loaded" (User's Manual version 2.0, section 9.4). EPC,
-             * EXL and Cause stay untouched -- exception codes 24 to 30
-             * are reserved on this processor, so the delivery writes no
-             * code. "While the CP0 Status register ERL bit is asserted,
-             * any subsequent Cache Error exceptions are ignored", so one
-             * arriving with ERL up leaves every register and the PC
-             * alone.
+             * An error-level exception: "the CP0 Status register ERL bit
+             * is asserted. Instruction fetching begins from 0xa0000100 or
+             * 0xbfc00300, depending on the CP0 Status register BEV bit.
+             * The CP0 ErrorEPC register is loaded" (User's Manual version
+             * 2.0, section 9.4). EPC, EXL and Cause stay untouched --
+             * exception codes 24 to 30 are reserved on this processor, so
+             * the delivery writes no code. "While the CP0 Status register
+             * ERL bit is asserted, any subsequent Cache Error exceptions
+             * are ignored", so one arriving with ERL up leaves every
+             * register and the PC alone.
              */
             if (env->CP0_Status & (1 << CP0St_ERL)) {
                 break;
@@ -1633,7 +1632,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
      * not restore it. The in-band poison value is helper_eret()'s: never
      * a valid word address, so no later store-conditional can match it.
      */
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.exception_breaks_ll_link) {
         env->lladdr = 1;
     }
     if (qemu_loglevel_mask(CPU_LOG_INT)

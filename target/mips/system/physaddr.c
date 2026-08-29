@@ -93,14 +93,14 @@ static int get_seg_physical_address(CPUMIPSState *env, hwaddr *physical,
                                      access_type, attrs);
     } else {
         /*
-         * The segment is unmapped. On the R10000 family an unmapped
-         * reference whose cache algorithm is uncached or uncached
-         * accelerated is an uncached request on the system interface, and
-         * the machine is entitled to tell it apart from a cached one — the
-         * Origin's boot firmware depends on the distinction while it runs
-         * with its data cache standing in for memory.
+         * The segment is unmapped. An unmapped reference whose cache
+         * algorithm is uncached or uncached accelerated is an uncached
+         * request on the system interface, and the machine is entitled to
+         * tell it apart from a cached one — the Origin's boot firmware
+         * depends on the distinction while it runs with its data cache
+         * standing in for memory.
          */
-        if ((env->insn_flags & INSN_R10K) && (cca == 2 || cca == 7)) {
+        if (env->cfg.uncached_attribute && (cca == 2 || cca == 7)) {
             attrs->mips_uncached = 1;
         }
         *physical = physical_base | (real_address & segmask);
@@ -158,15 +158,15 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
 #if defined(TARGET_MIPS64)
     } else if (address < 0x4000000000000000ULL) {
         /*
-         * xuseg. On the R10000 family the space above 2 Gbytes exists only
-         * while ERL is clear: the manual's 64-bit kernel mode user space
-         * section says that with UX = 0 or ERL = 1 only the low 2 Gbytes
-         * are selected, and everything from 0x0000000080000000 to the top
-         * of the region is an address error. The low 2 Gbytes are the useg
-         * branch above, which the segment control's erl-unmapped bit
-         * already turns into an unmapped alias of physical memory.
+         * xuseg. The space above 2 Gbytes exists only while ERL is clear:
+         * the manual's 64-bit kernel mode user space section says that with
+         * UX = 0 or ERL = 1 only the low 2 Gbytes are selected, and
+         * everything from 0x0000000080000000 to the top of the region is an
+         * address error. The low 2 Gbytes are the useg branch above, which
+         * the segment control's erl-unmapped bit already turns into an
+         * unmapped alias of physical memory.
          */
-        bool erl = (env->insn_flags & INSN_R10K) && mmu_idx == 3;
+        bool erl = env->cfg.erl_restricts_xuseg && mmu_idx == 3;
 
         if (UX && !erl && address <= (0x3FFFFFFFFFFFFFFFULL & env->SEGMask)) {
             ret = env->tlb->map_address(env, physical, prot,
@@ -188,13 +188,13 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         uint64_t pa = address & 0x07FFFFFFFFFFFFFFULL;
 
         /*
-         * The R10000 family drives a two-bit uncached attribute out to the
-         * system interface alongside the address, and for an unmapped
-         * reference it takes that attribute from address bits 58:57. Those two
-         * bits are not part of the physical address and, for an uncached or
-         * uncached accelerated reference, are not checked for address errors;
-         * only bits 56:40 have to be zero. Any other cache algorithm keeps the
-         * narrower rule that bits 58:40 must be zero.
+         * The two-bit uncached attribute goes out to the system interface
+         * alongside the address, and an unmapped reference takes it from
+         * address bits 58:57. Those two bits are not part of the physical
+         * address and, for an uncached or uncached accelerated reference, are
+         * not checked for address errors; only bits 56:40 have to be zero.
+         * Any other cache algorithm keeps the narrower rule that bits 58:40
+         * must be zero.
          *
          * The SGI Origin address map is built on this: the four values of the
          * attribute are how a processor says whether an uncached reference is
@@ -204,7 +204,7 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         hwaddr window = 0;
         unsigned int cca = (address >> 59) & 0x7;
 
-        if (env->insn_flags & INSN_R10K) {
+        if (env->cfg.uncached_attribute) {
             if (cca == 2 || cca == 7) {
                 /*
                  * The attribute is a separate signal, not address, so it has

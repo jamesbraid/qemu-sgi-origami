@@ -347,6 +347,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     env->active_fpu.fcr31 = env->cpu_model->CP1_fcr31;
     env->msair = env->cpu_model->MSAIR;
     env->insn_flags = env->cpu_model->insn_flags;
+    env->cfg = env->cpu_model->cfg;
     if (env->insn_flags & INSN_OCTEON) {
         env->octeon_crypto.chord = 1;
     }
@@ -427,17 +428,16 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
         env->CP0_WatchLo[7] = 0;
         env->CP0_WatchHi[7] = 0;
     }
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.watch_is_physical) {
         int i;
 
         /*
-         * The R10000 family's WatchHi is only physical address bits 39:32;
-         * it has no M bit, so the chain-marking initialisation above would
-         * read back as an address bit that was never written. A reset also
-         * clears a postponed Watch exception, which
-         * memset(env, ...) above already did, and any watchpoints planted
-         * for the old registers are dismissed on sight because the
-         * enables are now clear.
+         * WatchHi is only physical address bits 39:32; it has no M bit, so
+         * the chain-marking initialisation above would read back as an
+         * address bit that was never written. A reset also clears a
+         * postponed Watch exception, which memset(env, ...) above already
+         * did, and any watchpoints planted for the old registers are
+         * dismissed on sight because the enables are now clear.
          */
         for (i = 0; i < 8; i++) {
             env->CP0_WatchHi[i] = 0;

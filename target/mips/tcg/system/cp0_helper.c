@@ -743,14 +743,14 @@ void helper_mtc0_entrylo0(CPUMIPSState *env, target_ulong arg1)
 
 #if defined(TARGET_MIPS64)
     /*
-     * The R10000 moves all sixty-four general register bits on a word-sized
-     * MTC0 to a 64-bit register (Table 14-26), the same store the doubleword
-     * form makes. A 32-bit-mode register file holds the sign-extended word,
+     * All sixty-four general register bits move on a word-sized MTC0 to a
+     * 64-bit register (Table 14-26), the same store the doubleword form
+     * makes. A 32-bit-mode register file holds the sign-extended word,
      * which is how the manual's "EntryLo[33:31] ... can only be set to all
      * zeroes or all ones" (14.3) comes about, and how the sign reaches the
      * uncached attribute in the top two bits.
      */
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.mtc0_entrylo_moves_64_bits) {
         helper_dmtc0_entrylo0(env, arg1);
         return;
     }
@@ -1038,8 +1038,8 @@ void helper_mtc0_entrylo1(CPUMIPSState *env, target_ulong arg1)
     target_ulong rxi;
 
 #if defined(TARGET_MIPS64)
-    /* All sixty-four bits, as for EntryLo0 above. */
-    if (env->insn_flags & INSN_R10K) {
+    /* All sixty-four bits, as for EntryLo0. */
+    if (env->cfg.mtc0_entrylo_moves_64_bits) {
         helper_dmtc0_entrylo1(env, arg1);
         return;
     }
@@ -1592,12 +1592,12 @@ void helper_mtc0_maari(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_watchlo(CPUMIPSState *env, target_ulong arg1, uint32_t sel)
 {
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.watch_is_physical) {
         /*
          * Physical address bits 31:3 above the two enable bits, trap on
          * load and trap on store; bit 2 is ignored on write and reads as
          * zero. The MIPS32 mask below would clear both enables. Only
-         * selector zero reaches here: the R10000 has one watch pair.
+         * selector zero reaches here: there is one watch pair.
          */
         env->CP0_WatchLo[sel] = arg1 & (CP0WL_R10K_MASK |
                                         CP0WL_R10K_R | CP0WL_R10K_W);
@@ -1616,7 +1616,7 @@ void helper_mtc0_watchhi(CPUMIPSState *env, target_ulong arg1, uint32_t sel)
     uint64_t mask = 0x40000FF8 | (env->CP0_EntryHi_ASID_mask << CP0WH_ASID);
     uint64_t m_bit = env->CP0_WatchHi[sel] & (1 << CP0WH_M); /* read-only */
 
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.watch_is_physical) {
         /*
          * Physical address bits 39:32 in bits 7:0; bits 31:8 are ignored
          * on write and read as zero. No M bit, no ASID: the register is

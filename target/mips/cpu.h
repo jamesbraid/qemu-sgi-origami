@@ -15,6 +15,84 @@
 
 typedef struct CPUMIPSTLBContext CPUMIPSTLBContext;
 
+/*
+ * Behaviours a CPU definition selects. Each field names what the processor
+ * does, so a use site can say why it branches; a definition maps its own
+ * identity onto the set it implements.
+ */
+typedef struct MIPSCPUConfig {
+    /*
+     * An uncached or uncached accelerated CCA drives a two-bit attribute out
+     * to the memory system, encoded as a window above the physical address.
+     */
+    bool uncached_attribute;
+    /* With ERL set, only the low 2 Gbytes of xuseg are selected. */
+    bool erl_restricts_xuseg;
+    /*
+     * The watch registers hold a physical doubleword address with load and
+     * store enables, and have no M bit or ASID.
+     */
+    bool watch_is_physical;
+    /*
+     * The TLB has no EHINV bit, so a read of an invalidated entry presents
+     * zeroes and keeps the entry's page mask; a read also masks the VPN with
+     * that page mask.
+     */
+    bool tlb_has_no_ehinv;
+    /*
+     * Soft Reset and NMI both set SR and clear TS, NMI additionally sets NMI,
+     * and Cause is left untouched by either.
+     */
+    bool warm_reset_reports_sr;
+    /*
+     * A Cache Error exception is error-level: it loads ErrorEPC, sets ERL,
+     * writes no exception code, and is ignored entirely while ERL is already
+     * set.
+     */
+    bool cache_error_is_error_level;
+    /* Taking any exception breaks the load-linked link. */
+    bool exception_breaks_ll_link;
+    /* The LLAddr register is plain scratch that the link never writes. */
+    bool lladdr_is_scratch;
+    /*
+     * A denormalized result with the flush bit clear raises Unimplemented
+     * Operation.
+     */
+    bool fp_traps_denormal_result;
+    /*
+     * Conversion to long refuses results wider than 51 bits with
+     * Unimplemented Operation.
+     */
+    bool fp_cvt_l_limited_to_51_bits;
+    /*
+     * A failed store is not the processor's to report; the write is posted
+     * and completes.
+     */
+    bool stores_are_posted;
+    /*
+     * The CACHE instruction's index and hit operations work dedicated tag and
+     * data arrays.
+     */
+    bool has_cache_diagnostics;
+    /* The Diagnostic register reaches a branch prediction table. */
+    bool has_branch_prediction_table;
+    /*
+     * Coprocessor 0 register 25 holds two counters and two control registers
+     * reached by selector.
+     */
+    bool has_performance_counters;
+    /*
+     * Count and Compare are compared continuously, so a write leaving them
+     * equal raises the interrupt at once.
+     */
+    bool compare_match_is_continuous;
+    /*
+     * A word-sized MTC0 to a 64-bit EntryLo moves all sixty-four register
+     * bits.
+     */
+    bool mtc0_entrylo_moves_64_bits;
+} MIPSCPUConfig;
+
 /* MSA Context */
 #define MSA_WRLEN (128)
 
@@ -1446,6 +1524,7 @@ typedef struct CPUArchState {
     uint32_t CP0_Status_rw_bitmask; /* Read/write bits in CP0_Status */
     uint32_t CP0_TCStatus_rw_bitmask; /* Read/write bits in CP0_TCStatus */
     uint64_t insn_flags; /* Supported instruction set */
+    MIPSCPUConfig cfg; /* Behaviours this processor selects */
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

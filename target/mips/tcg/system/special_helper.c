@@ -141,12 +141,11 @@ void helper_eret(CPUMIPSState *env)
 {
     exception_return(env);
     /*
-     * ERET breaks the load-linked link, and the link is env->lladdr. The
-     * R10000's LLAddr register is a plain scratch word the link never
-     * touches (manual 14.15), so only the older processors' register
-     * takes the poison value.
+     * ERET breaks the load-linked link, and the link is env->lladdr. Where
+     * the LLAddr register is a plain scratch word the link never touches
+     * (manual 14.15), it does not take the poison value.
      */
-    if (!(env->insn_flags & INSN_R10K)) {
+    if (!env->cfg.lladdr_is_scratch) {
         env->CP0_LLAddr = 1;
     }
     env->lladdr = 1;
@@ -182,7 +181,7 @@ void helper_cache(CPUMIPSState *env, target_ulong addr, uint32_t op)
     uint32_t cache_operation = extract32(op, 2, 3);
     target_ulong index = addr & 0x1fffffff;
 
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.has_cache_diagnostics) {
         r10k_cache_op(env, addr, op, GETPC());
         return;
     }

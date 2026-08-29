@@ -32,9 +32,9 @@
 #include "exec/tlb-flags.h"
 
 /*
- * The R10000's LLAddr is a plain scratch register the link never touches
- * (manual 14.15), so only the older processors record the physical address
- * there; the internal link state is what SC checks, on every processor.
+ * Where LLAddr is a plain scratch register the link never touches (manual
+ * 14.15), nothing records the physical address there; the internal link
+ * state is what SC checks, on every processor.
  */
 #define HELPER_LD_ATOMIC(name, insn, almask, do_cast)                         \
 target_ulong helper_##name(CPUMIPSState *env, target_ulong arg,               \
@@ -52,7 +52,7 @@ target_ulong helper_##name(CPUMIPSState *env, target_ulong arg,               \
     flags = probe_access_full(env, arg, size, MMU_DATA_LOAD, mem_idx,         \
                               true, &host_unused, &full, ra);                 \
     assert(!(flags & TLB_INVALID_MASK));                                      \
-    if (!(env->insn_flags & INSN_R10K)) {                                     \
+    if (!env->cfg.lladdr_is_scratch) {                                        \
         env->CP0_LLAddr = full->phys_addr;                                    \
     }                                                                         \
     env->lladdr = arg;                                                        \
