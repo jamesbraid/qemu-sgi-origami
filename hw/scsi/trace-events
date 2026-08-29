@@ -393,3 +393,20 @@ scsi_generic_ioctl_sgio_command(uint8_t cmd, uint32_t timeout) "generic ioctl sg
 scsi_generic_ioctl_sgio_done(uint8_t cmd, int ret, uint8_t status, uint8_t host_status) "generic ioctl sgio: cmd=0x%x ret=%d status=0x%x host_status=0x%x"
 scsi_generic_persistent_reserve_out_reply(uint8_t service_action, uint8_t resv_type, uint64_t old_key, uint64_t new_key) "persistent reserve out reply service_action=%u resv_type=%u old_key=0x%" PRIx64 " new_key=0x%" PRIx64
 scsi_generic_pr_state_preempt(uint64_t key, uint8_t resv_type) "key=0x%" PRIx64 " resv_type=%u"
+
+# qlogic-isp.c
+qlogic_isp_mbox_command(uint16_t cmd) "cmd 0x%04x"
+qlogic_isp_mbox_complete(uint16_t cmd, uint16_t result) "cmd 0x%04x result 0x%04x"
+qlogic_isp_host_command(unsigned int cmd) "cmd 0x%x"
+qlogic_isp_queue_init(const char *queue, uint64_t base, uint16_t len) "%s queue base 0x%" PRIx64 " len %u"
+qlogic_isp_request(uint32_t handle, int target, int lun, uint8_t cdb0, uint16_t seg_count) "handle 0x%08x target %d lun %d cdb 0x%02x segs %u"
+qlogic_isp_request_ring(uint16_t prod, uint16_t cons) "prod %u cons %u"
+qlogic_isp_response_ring(uint16_t prod, uint16_t cons) "prod %u cons %u"
+qlogic_isp_status_post(uint32_t handle, uint16_t scsi_status, uint16_t completion, uint16_t state_flags, uint16_t status_flags, uint32_t resid) "handle 0x%08x scsi_status 0x%04x completion 0x%04x state_flags 0x%04x status_flags 0x%04x resid %u"
+qlogic_isp_status_held(uint32_t handle) "handle 0x%08x"
+qlogic_isp_request_cancelled(uint32_t handle) "handle 0x%08x"
+qlogic_isp_irq(int level) "level %d"
+qlogic_isp_firmware_load(uint16_t base, uint16_t count, uint64_t host) "base 0x%04x words %u host 0x%" PRIx64
+qlogic_isp_firmware_dump(uint16_t base, uint16_t count, uint64_t host) "base 0x%04x words %u host 0x%" PRIx64
+qlogic_isp_bank_read(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" PRIx64 " -> 0x%04x"
+qlogic_isp_bank_write(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" PRIx64 " <- 0x%04x"
