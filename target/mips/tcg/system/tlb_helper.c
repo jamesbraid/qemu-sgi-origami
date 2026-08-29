@@ -258,14 +258,25 @@ static bool r4k_shadow_covers_staged(CPUMIPSState *env)
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = mi ? env->CP0_MemoryMapID : (uint32_t)ASID;
+    target_ulong staged;
     int i;
+
+    /* 1k pages are not supported. */
+    staged = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);
 
     for (i = env->tlb->nb_tlb; i < env->tlb->tlb_in_use; i++) {
         r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
-        /* 1k pages are not supported. */
-        target_ulong mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
-        target_ulong tag = env->CP0_EntryHi & ~mask;
-        target_ulong VPN = tlb->VPN & ~mask;
+        /*
+         * Compare at the coarser of the two page sizes, as the conflict
+         * scan does. Masking at the shadow's granularity alone would miss
+         * a large staged page that covers a small shadow lying anywhere
+         * but at its own base -- the two tags differ there, and the stale
+         * translation would survive precisely the write that supersedes
+         * it.
+         */
+        target_ulong both = staged | tlb->PageMask;
+        target_ulong tag = env->CP0_EntryHi & ~both;
+        target_ulong VPN = tlb->VPN & ~both;
         uint32_t tlb_mmid = mi ? tlb->MMID : (uint32_t)tlb->ASID;
 
 #if defined(TARGET_MIPS64)
