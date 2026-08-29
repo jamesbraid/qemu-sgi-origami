@@ -44,7 +44,6 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
-#include "hw/misc/sgi-ioc3.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci/pci_device.h"
@@ -962,9 +961,9 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
  * processor access at a reversed offset within its word. The DMA path asks
  * because the IOC3 is a big-endian PCI device and both public drivers clear
  * its DMA swap bits, so reading those bits literally would have this model
- * reverse every Ethernet frame the part moves. The keying below, and the
- * OpenBSD precedent for it, are common to both; the byte-lane tables cited
- * further down are the programmed-access half of the story.
+ * reverse every Ethernet frame the part moves. The per-slot exempt bit, and
+ * the reason a slot carries it, are common to both; the byte-lane tables
+ * cited further down are the programmed-access half of the story.
  *
  * Real Bridge hardware has exactly one mechanism for this question: the
  * per-device DEV_SWAP_PROGRAMMED bit (Table 36 of the Bridge ASIC
@@ -976,44 +975,18 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
  * bytes land reversed within their 32-bit word — not passed through
  * unmodified — which is what the correction below undoes.
  *
- * What this function decides is therefore not a hardware fact: real
- * silicon has no notion of PCI vendor or device ID, and nothing here claims
- * it does. It is a model-level compatibility policy, and the guest-facing
- * reason it is correct is that OpenBSD's own driver author already had to
- * answer the identical question with the identical hardware signal (none)
- * to ask, and answered it by device identity —
- * `xbridge_probe_device_hook()` exempts IOC3, IOC4 and RAD1 by PCI vendor
- * and device ID and leaves every other device to correct itself in
- * software. This model exempts the same way, checked against the PCI
- * configuration space every device on this bus already carries, rather
- * than against a slot number, which would silently go stale the moment a
- * device moved slots, or against this model's own declared endianness,
- * which is a QEMU-internal detail that happens to correlate with the real
- * fact today and is not the same fact.
- *
- * IOC4 and RAD1 are not modelled in this fork and do not exist on an
- * Origin 200, so the exemption checked here is IOC3 alone — sized for what
- * a device in this machine can actually be, not padded for parts it does
- * not have. An unrecognised device, or an empty slot, is corrected: that
- * is the same default OpenBSD's own else-branch gives a device it does not
- * name, and it means a future device added to this Bridge's window is
- * corrected unless a later change adds it to the exemption list for a
- * stated, sourced reason, rather than silently inheriting a gap.
+ * Which slots are exempt is not a hardware fact the Bridge can read -- real
+ * silicon has no notion of PCI vendor or device ID -- but a model-level
+ * compatibility policy. So the board resolves it and hands it down as the
+ * byte_lane_exempt bitmask, one bit per slot, rather than this function
+ * probing each device's identity on every access. The policy of which parts
+ * are exempt, and the OpenBSD driver precedent for it, lives with the board
+ * that places them.
  */
 static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
                                              unsigned int slot)
 {
-    PCIHostState *phb = PCI_HOST_BRIDGE(s);
-    PCIDevice *dev = phb->bus ? pci_find_device(phb->bus, 0,
-                                                PCI_DEVFN(slot, 0)) : NULL;
-
-    if (!dev) {
-        return true;
-    }
-    return !(pci_get_word(dev->config + PCI_VENDOR_ID) ==
-             SGI_IOC3_VENDOR_ID &&
-             pci_get_word(dev->config + PCI_DEVICE_ID) ==
-             SGI_IOC3_DEVICE_ID);
+    return !(s->byte_lane_exempt & (1u << slot));
 }
 
 /*
@@ -3058,6 +3031,7 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
     DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
+    DEFINE_PROP_UINT32("byte-lane-exempt", SGIBridgeState, byte_lane_exempt, 0),
 };
 
 static void sgi_bridge_class_init(ObjectClass *oc, const void *data)

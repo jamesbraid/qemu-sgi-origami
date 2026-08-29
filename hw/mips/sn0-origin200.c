@@ -369,6 +369,7 @@ static void origin200_create_bridge(SN0MachineState *s,
 {
     MemoryRegion *system = get_system_memory();
     SGIBridgeState *bridge;
+    uint64_t exempt;
     g_autofree char *bridge_name = node_index == 0 ?
         g_strdup("bridge") : g_strdup_printf("bridge%u", node_index);
     g_autofree char *widget0_name = node_index == 0 ?
@@ -420,6 +421,18 @@ static void origin200_create_bridge(SN0MachineState *s,
                              &error_fatal);
     qdev_prop_set_uint64(DEVICE(bridge), "fabric-base", SN0_SPACE_XTALK);
     qdev_prop_set_uint32(DEVICE(bridge), "fabric-node-shift", SN0_NODE_SHIFT);
+
+    /*
+     * The board wires the IOC3 into a slot the Bridge must not byte-lane-
+     * correct -- OpenBSD's xbridge driver exempts the IOC3 (and the IOC4 and
+     * RAD1, neither present on an Origin 200) by PCI identity. Add its slot to
+     * whatever a -global already exempted, rather than overwrite, so a test can
+     * exempt another slot without the board clobbering it.
+     */
+    exempt = object_property_get_uint(OBJECT(bridge), "byte-lane-exempt",
+                                      &error_abort);
+    object_property_set_uint(OBJECT(bridge), "byte-lane-exempt",
+                             exempt | (1u << SN0_IOC3_DEVICE), &error_abort);
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
 
     /*
