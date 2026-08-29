@@ -712,7 +712,7 @@ void sn0_mode_bits_reset(void *opaque)
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(qdev_get_machine());
 
     env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
-                       (smc->processor_mode_bits & SN0_PROCESSOR_MODE_MASK);
+                       (smc->cpu_module.mode_bits & SN0_PROCESSOR_MODE_MASK);
 }
 
 /*
@@ -1413,7 +1413,7 @@ static void sn0_init(MachineState *machine)
     }
 
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk, smc->cpu_hz);
+    clock_set_hz(s->cpu_refclk, smc->cpu_module.clock_hz);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];

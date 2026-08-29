@@ -1003,10 +1003,15 @@ DECLARE_OBJ_CHECKERS(SN0MachineState, SN0MachineClass,
                      SN0_MACHINE, TYPE_SN0_MACHINE)
 
 /*
- * What tells one SN0 product from another. A concrete product's class_init
- * fills these in and registers its machine type; the construction code the
- * products share reads them from here rather than from per-product
- * constants, the same shape PowerNV and Aspeed use for their families.
+ * What a concrete SN0 product's class_init fills in when it registers its
+ * machine type; the construction code the products share reads it from
+ * here rather than from per-product constants, the same shape PowerNV and
+ * Aspeed use for their families. Two kinds of fact live here and they are
+ * kept apart: what makes the product the product -- its chassis ceiling,
+ * the ip27conf words its firmware expects, how its board fits memory, what
+ * I/O it carries -- and the processor module the model installs in it,
+ * which is not product identity at all: the same R10000 and R12000 modules
+ * at the same range of clocks fit every SN0 product.
  */
 struct SN0MachineClass {
     /*< private >*/
@@ -1017,17 +1022,12 @@ struct SN0MachineClass {
     unsigned int max_nodes;
 
     /*
-     * The product's clocks. The processor's own counter runs at half the
-     * processor clock, which is what the CPU model's counter divisor
-     * expresses, so cpu_hz is the input that counter is derived from. All
-     * three clocks are advertised through the flash configuration block,
-     * and the processor and secondary-cache clocks appear again in each
-     * configuration-graph processor record.
+     * The node board's own clocks, advertised through the flash
+     * configuration block: the Hub clock, which the configuration graph's
+     * Hub record repeats, and the real-time clock's tick.
      */
-    uint64_t cpu_hz;
     uint64_t hub_hz;
     uint64_t rtc_hz;
-    uint32_t scache_clock_mhz;
 
     /*
      * The product-specific words in the flash configuration block: the
@@ -1039,15 +1039,24 @@ struct SN0MachineClass {
     uint32_t fprom_wr;
 
     /*
-     * The processor mode bits the product's board drives into its R10000 at
-     * reset, and the same word the flash configuration block advertises.
-     * Real firmware's very first check reads the word out of that block,
-     * compares it against what the processor actually latched, and reports
-     * "an error copying mode bits" if the two disagree — so the board and
-     * the block have to be saying the same thing, and the way to guarantee
-     * that is for there to be one of them.
+     * The processor module installed in the product's reference population
+     * -- not product identity: the whole family takes the same modules.
+     * The processor clock is what the CPU model's counter divisor derives
+     * the on-chip counter from, and it and the secondary-cache clock appear
+     * in the flash configuration block and each configuration-graph
+     * processor record. The mode bits are the word this module's board
+     * drives into the R10000 at reset and the same word the configuration
+     * block advertises: real firmware's first check compares the two and
+     * reports "an error copying mode bits" if they disagree, so one place
+     * holds both. Selecting another module by machine option waits on the
+     * mode word's encoding being documented; until then the population is
+     * the recorded one.
      */
-    uint32_t processor_mode_bits;
+    struct {
+        uint64_t clock_hz;
+        uint32_t scache_clock_mhz;
+        uint32_t mode_bits;
+    } cpu_module;
 
     /*
      * Fit a node's memory into the banks the product's board provides.
