@@ -614,6 +614,16 @@ typedef struct MIPSOcteonCryptoState {
  */
 #define CP0_TAGLO_RW_BITMASK_GENERIC 0xFFFFFCF6
 
+/*
+ * The Config bits a write preserves, and the PageMask bits a write can set,
+ * on a processor whose definition does not say. Both are what this code
+ * applied unconditionally before either became a per-processor property: a
+ * Config preserve mask cut for the MIPS32 layout, and every bit
+ * compute_pagemask() looks at, which narrows no write.
+ */
+#define CP0_CONFIG0_PRESERVE_BITMASK_GENERIC 0x81FFFFF8
+#define CP0_PAGEMASK_RW_BITMASK_GENERIC      0x1FFFE000
+
 typedef struct CPUArchState {
     TCState active_tc;
     CPUMIPSFPUContext active_fpu;
@@ -628,6 +638,8 @@ typedef struct CPUArchState {
 # define PABITS_BASE 32
 #endif
     target_ulong SEGMask;
+    /* The last address xkseg maps, derived from SEGMask at reset. */
+    target_ulong xkseg_limit;
     uint64_t PAMask;
 #define PAMASK_BASE ((1ULL << PABITS_BASE) - 1)
 
@@ -717,6 +729,11 @@ typedef struct CPUArchState {
 # define CP0EnLo_RI 31
 # define CP0EnLo_XI 30
 #endif
+    /*
+     * Writable EntryLo bits beyond those the physical address mask names.
+     * The R10000 family's uncached attribute sits there; zero elsewhere.
+     */
+    uint64_t CP0_EntryLo_extra_rw_bitmask;
     int32_t CP0_GlobalNumber;
 #define CP0GN_VPId 0
 /*
@@ -729,6 +746,8 @@ typedef struct CPUArchState {
  */
     int32_t CP0_PageMask;
 #define CP0PM_MASK 13
+    /* The PageMask bits a write can set; the rest read back as zero. */
+    int32_t CP0_PageMask_rw_bitmask;
     int32_t CP0_PageGrain_rw_bitmask;
     int32_t CP0_PageGrain;
 #define CP0PG_RIE 31
@@ -994,6 +1013,8 @@ typedef struct CPUArchState {
 #define CP0C0_R10K_PE 6  /* processor eliminate requests enabled */
 #define CP0C0_R10K_CT 5  /* target of coherent requests */
 #define CP0C0_R10K_DN 3  /* 4..3 processor device number */
+    /* The Config bits a write preserves; it only ever sets the kseg0 field. */
+    int32_t CP0_Config0_preserve_bitmask;
     int32_t CP0_Config1;
 #define CP0C1_M    31
 #define CP0C1_MMU  25    /* 30..25 */
@@ -1167,6 +1188,12 @@ typedef struct CPUArchState {
  */
     target_ulong CP0_XContext;
     int32_t CP0_Framemask;
+    /*
+     * The FrameMask bits this processor implements, zero where it has no such
+     * register. r4k_fill_tlb() masks with this as well, so a processor without
+     * the register masks nothing out of a TLB entry as it is written.
+     */
+    int32_t CP0_Framemask_rw_bitmask;
 /*
  * CP0 Register 22, the R10000 family's Diagnostic register. Architecturally 64
  * bits wide, and not all of its fields lie in the low half: the instruction

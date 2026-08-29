@@ -69,17 +69,18 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
      * top of the frame number field programs this mask so those bits never
      * become physical address bits 39:24.
      *
-     * The clamp to sixteen bits mirrors the write helper's: every value the
-     * helper stores already fits, but the field is int32_t, and a stray
-     * high bit arriving through an incoming migration stream would
-     * sign-extend here and mask far more than the register can name.
+     * The clamp to the implemented width mirrors the write helper's: every
+     * value the helper stores already fits, but the field is int32_t, and a
+     * stray high bit arriving through an incoming migration stream would
+     * sign-extend here and mask far more than the register can name. It also
+     * empties the mask on a processor that has no such register, which is
+     * every processor outside the family.
      */
-    if (env->insn_flags & INSN_R10K) {
-        uint64_t framemask = (uint64_t)(env->CP0_Framemask & 0xffff) << 18;
+    uint64_t framemask = (uint64_t)(env->CP0_Framemask &
+                                    env->CP0_Framemask_rw_bitmask) << 18;
 
-        lo0 &= ~framemask;
-        lo1 &= ~framemask;
-    }
+    lo0 &= ~framemask;
+    lo1 &= ~framemask;
 #endif
 
     /*
