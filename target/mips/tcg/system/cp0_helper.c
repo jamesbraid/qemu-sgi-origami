@@ -768,8 +768,7 @@ void helper_mtc0_entrylo0(CPUMIPSState *env, target_ulong arg1)
  * inhibit-bit extension is enabled.
  */
 #define DMTC0_ENTRYLO_MASK(env) \
-    ((env->PAMask >> 6) | \
-     ((env->insn_flags & INSN_R10K) ? (3ULL << CP0EnLo_UC) : 0))
+    ((env->PAMask >> 6) | env->CP0_EntryLo_extra_rw_bitmask)
 
 void helper_dmtc0_entrylo0(CPUMIPSState *env, uint64_t arg1)
 {
@@ -1093,15 +1092,10 @@ uint32_t compute_pagemask(uint32_t val)
 void helper_mtc0_pagemask(CPUMIPSState *env, target_ulong arg1)
 {
     /*
-     * The R10000's mask field is bits 24:13 - seven sizes, 4 Kbyte to
-     * 16 Mbyte (manual 14.5) - and the fields either side are reserved,
-     * written as zeroes and returning zeroes. Drop them before the width
-     * check so a reserved bit can neither read back nor widen a page.
+     * Drop the bits this processor's mask field does not reach before the
+     * width check, so a reserved bit can neither read back nor widen a page.
      */
-    if (env->insn_flags & INSN_R10K) {
-        arg1 &= 0x01ffe000;
-    }
-    env->CP0_PageMask = compute_pagemask(arg1);
+    env->CP0_PageMask = compute_pagemask(arg1 & env->CP0_PageMask_rw_bitmask);
 }
 
 void helper_mtc0_pagegrain(CPUMIPSState *env, target_ulong arg1)
@@ -1518,21 +1512,13 @@ target_ulong helper_mftc0_configx(CPUMIPSState *env, target_ulong idx)
 
 void helper_mtc0_config0(CPUMIPSState *env, target_ulong arg1)
 {
-    uint32_t keep = 0x81FFFFF8;
-
     /*
-     * The R10000's Config layout (manual 14.14) hardwires the primary
-     * cache size fields in bits 31:26 and reserves 25:22; the generic
-     * preserve mask was cut for the MIPS32 layout and zeroes 30:25, which
-     * destroys both cache size fields on any read-modify-write. The kseg0
-     * algorithm in bits 2:0 stays software's, the field the manual carries
-     * forward from the R4400; everything else is hardwired or latched from
-     * the reset mode bits, so a write leaves it alone.
+     * The kseg0 algorithm in bits 2:0 is the only field software owns.
+     * Everything else is hardwired or latched from the reset mode bits, so a
+     * write preserves whichever of those bits the processor implements.
      */
-    if (env->insn_flags & INSN_R10K) {
-        keep = 0xFFFFFFF8;
-    }
-    env->CP0_Config0 = (env->CP0_Config0 & keep) | (arg1 & 0x00000007);
+    env->CP0_Config0 = (env->CP0_Config0 & env->CP0_Config0_preserve_bitmask) |
+                       (arg1 & 0x00000007);
 }
 
 void helper_mtc0_config2(CPUMIPSState *env, target_ulong arg1)
@@ -1662,16 +1648,15 @@ void helper_mtc0_xcontext(CPUMIPSState *env, target_ulong arg1)
 void helper_mtc0_framemask(CPUMIPSState *env, target_ulong arg1)
 {
     /*
-     * Sixteen bits, masking physical address bits 39:24 out of an entry as it
-     * is written to the TLB. The rest of the register is ignored on write and
-     * reads as zero. The masking itself is applied by r4k_fill_tlb().
+     * The masking of an entry is applied by r4k_fill_tlb(); this only narrows
+     * the register to the width its processor implements.
      *
-     * The register belongs to the R10000 family alone, but the translator lets
-     * any processor without release 6 reach it, so only narrow it where its
-     * width is known and leave the rest as they were.
+     * A definition naming no bits has no such register, but the translator
+     * lets any processor without release 6 reach it, so leave those as they
+     * were.
      */
-    if (env->insn_flags & INSN_R10K) {
-        env->CP0_Framemask = arg1 & 0xffff;
+    if (env->CP0_Framemask_rw_bitmask) {
+        env->CP0_Framemask = arg1 & env->CP0_Framemask_rw_bitmask;
     } else {
         env->CP0_Framemask = arg1; /* XXX */
     }

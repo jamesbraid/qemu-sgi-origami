@@ -601,6 +601,42 @@ const mips_def_t mips_defs[] =
                        (3 << CP0C0_K0),
         /* Config1 is only used internally; the R10000 has only Config0. */
         .CP0_Config1 = (1 << CP0C1_FP) | (63 << CP0C1_MMU),
+        /*
+         * The Config layout (manual 14.14) hardwires the primary cache size
+         * fields in bits 31:26 and reserves 25:22, so a write preserves
+         * everything above the kseg0 algorithm in bits 2:0 -- the one field
+         * the manual carries forward from the R4400. The generic preserve
+         * mask was cut for the MIPS32 layout and zeroes bits 30:25, which
+         * destroys both cache size fields on any read-modify-write.
+         */
+        .CP0_Config0_preserve_bitmask = 0xFFFFFFF8,
+        /*
+         * PageMask's mask field is bits 24:13 - seven sizes, 4 Kbyte to
+         * 16 Mbyte (manual 14.5) - and the fields either side are reserved,
+         * written as zeroes and returning zeroes. Dropping them before the
+         * width check stops a reserved bit reading back or widening a page.
+         */
+        .CP0_PageMask_rw_bitmask = 0x01FFE000,
+        /*
+         * FrameMask is sixteen bits, masking physical address bits 39:24 out
+         * of a TLB entry as it is written. The rest of the register is
+         * ignored on write and reads as zero.
+         */
+        .CP0_Framemask_rw_bitmask = 0xFFFF,
+        /*
+         * EntryLo's uncached attribute occupies the top two bits, above
+         * everything the physical address mask names, and has to survive a
+         * write.
+         */
+        .CP0_EntryLo_extra_rw_bitmask = 3ULL << CP0EnLo_UC,
+        /*
+         * xkseg ends a full 2^32-byte band below the compatibility spaces
+         * rather than at the generic bound: the manual gives the segment as
+         * 0xC000000000000000 through 0xC0000FFEFFFFFFFF in the 64-bit kernel
+         * mode figure, the virtual address space table and the TLB refill
+         * vector table alike, with everything above that an address error.
+         */
+        .xkseg_limit = 0xC0000FFEFFFFFFFFULL,
         .CP0_LLAddr_rw_bitmask = 0xFFFFFFFF,
         .CP0_LLAddr_shift = 0,
         /*

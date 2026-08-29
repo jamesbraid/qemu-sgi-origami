@@ -285,6 +285,26 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
      * code has always given it, so no existing model changes.
      */
     env->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
+    /*
+     * Config and PageMask read the same way as TagLo above: zero is not a
+     * definition either register could carry, so it reads as unset and the
+     * historical mask stands.
+     */
+    env->CP0_Config0_preserve_bitmask =
+        env->cpu_model->CP0_Config0_preserve_bitmask ?
+        env->cpu_model->CP0_Config0_preserve_bitmask :
+        CP0_CONFIG0_PRESERVE_BITMASK_GENERIC;
+    env->CP0_PageMask_rw_bitmask = env->cpu_model->CP0_PageMask_rw_bitmask ?
+                                   env->cpu_model->CP0_PageMask_rw_bitmask :
+                                   CP0_PAGEMASK_RW_BITMASK_GENERIC;
+    /*
+     * FrameMask and the extra EntryLo bits belong to the R10000 family alone,
+     * so zero here means the processor has neither and both masks are simply
+     * empty.
+     */
+    env->CP0_Framemask_rw_bitmask = env->cpu_model->CP0_Framemask_rw_bitmask;
+    env->CP0_EntryLo_extra_rw_bitmask =
+        env->cpu_model->CP0_EntryLo_extra_rw_bitmask;
     env->SYNCI_Step = env->cpu_model->SYNCI_Step;
     env->CCRes = env->cpu_model->CCRes;
     env->CP0_Status_rw_bitmask = env->cpu_model->CP0_Status_rw_bitmask;
@@ -297,6 +317,14 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     if (env->cpu_model->insn_flags & ISA_MIPS3) {
         env->SEGMask |= 3ULL << 62;
     }
+    /*
+     * The generic bound on xkseg is the R4000's, the segment mask less 2^31.
+     * A definition naming its own ends the segment somewhere else; zero reads
+     * as unset, no processor ending it at address zero.
+     */
+    env->xkseg_limit = env->cpu_model->xkseg_limit ?
+                       env->cpu_model->xkseg_limit :
+                       (0xFFFFFFFF7FFFFFFFULL & env->SEGMask);
 #endif
     env->PABITS = env->cpu_model->PABITS;
     env->CP0_SRSConf0_rw_bitmask = env->cpu_model->CP0_SRSConf0_rw_bitmask;

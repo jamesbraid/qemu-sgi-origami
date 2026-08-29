@@ -254,20 +254,8 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
             ret = TLBRET_BADADDR;
         }
     } else if (address < 0xFFFFFFFF80000000ULL) {
-        /*
-         * xkseg. The generic bound is the R4000's: the segment mask minus
-         * 2^31. The R10000 ends the segment a full 2^32-byte band below
-         * the compatibility spaces instead -- its manual gives xkseg as
-         * 0xC000000000000000 through 0xC0000FFEFFFFFFFF in the 64-bit
-         * kernel mode figure, the virtual address space table and the TLB
-         * refill vector table alike, with everything above the bound an
-         * address error.
-         */
-        target_ulong xkseg_limit = (env->insn_flags & INSN_R10K) ?
-                                   0xC0000FFEFFFFFFFFULL :
-                                   (0xFFFFFFFF7FFFFFFFULL & env->SEGMask);
-
-        if (kernel_mode && KX && address <= xkseg_limit) {
+        /* xkseg. Everything above the segment's bound is an address error. */
+        if (kernel_mode && KX && address <= env->xkseg_limit) {
             ret = env->tlb->map_address(env, physical, prot,
                                         real_address, access_type, attrs);
         } else {

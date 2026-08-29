@@ -48,6 +48,10 @@ struct mips_def_t {
     int CP0_LLAddr_shift;
     int32_t CP0_TagLo_rw_bitmask;
     int32_t CP0_ECC_rw_bitmask;
+    int32_t CP0_Config0_preserve_bitmask;
+    int32_t CP0_PageMask_rw_bitmask;
+    int32_t CP0_Framemask_rw_bitmask;
+    uint64_t CP0_EntryLo_extra_rw_bitmask;
     int32_t SYNCI_Step;
     /*
      * @CCRes: rate at which the coprocessor 0 counter increments
@@ -68,6 +72,7 @@ struct mips_def_t {
     int32_t MSAIR;
     int32_t SEGBITS;
     int32_t PABITS;
+    uint64_t xkseg_limit;
     int32_t CP0_SRSConf0_rw_bitmask;
     int32_t CP0_SRSConf0;
     int32_t CP0_SRSConf1_rw_bitmask;
