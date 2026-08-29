@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 200/2000 ("SN0", IP27) physical address map.
+ * SGI Origin 200/2000 ("SN0", IP27) physical address map and family machine.
+ *
+ * The first half of this header is the address map every SN0 product shares;
+ * the second half is the family machine the products parameterize, shared by
+ * the family's translation units (sn0.c, sn0-diag.c, sn0-firmware.c and the
+ * product files).
  *
  * The machine presents one flat 40-bit physical address space shared by every
  * node. The node number occupies the top eight of those bits, so a node's
@@ -720,31 +725,26 @@
 #define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
 
 /*
- * The processor mode bits this board drives into its R10000 at reset, and the
- * same word the firmware configuration block advertises. Real firmware's very
- * first check reads the word out of that block, compares it against what the
- * processor actually latched, and reports "an error copying mode bits" if the
- * two disagree — so the board and the block have to be saying the same thing,
- * and the way to guarantee that is for there to be one of them.
- *
- * **The processor does not accept these from software.** The R10000 user
- * manual gives bits 24:0 of the configuration register as taken from the mode
- * bit settings during a reset sequence, driven in over the system interface;
- * bits above that are hardwired, including both primary cache sizes. So this
- * is something the machine hands the processor at reset, not something a guest
- * writes — and a model that let a write stick here would pass the firmware's
- * check while describing a processor that does not exist.
+ * The width of the processor mode-bits word a board drives into its R10000
+ * at reset. **The processor does not accept these from software.** The
+ * R10000 user manual gives bits 24:0 of the configuration register as taken
+ * from the mode bit settings during a reset sequence, driven in over the
+ * system interface; bits above that are hardwired, including both primary
+ * cache sizes. So the word is something the machine hands the processor at
+ * reset, not something a guest writes — and a model that let a write stick
+ * would pass the firmware's mode-bits check while describing a processor
+ * that does not exist. The word itself encodes a product's clock ratios and
+ * lives in SN0MachineClass.
  */
-#define SN0_PROCESSOR_MODE_BITS 0x1211a785
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffff  /* bits 24:0, latched at reset */
 
-/* AMD 29F080 command addresses and geometry. */
-#define SN0_FLASH_CMD_ADDR1   0x5555
-#define SN0_FLASH_CMD_ADDR2   0x2aaa
+/*
+ * The AMD 29F080's erase-sector size: the one piece of chip geometry both
+ * the chip model (sn0.c) and the flash image builder (sn0-firmware.c) need.
+ * The command addresses stay private to the chip model, and the environment
+ * log's placement to the image builder.
+ */
 #define SN0_FLASH_SECTOR_SIZE (64 * KiB)
-#define SN0_PROMLOG_SECTOR    14
-#define SN0_PROMLOG_MAGIC     0x504c4f47
-#define SN0_PROMLOG_VERSION   1
 
 /*
  * The SN0 family machine, shared by the family's translation units. One
@@ -1040,6 +1040,17 @@ struct SN0MachineClass {
     uint32_t fprom_wr;
 
     /*
+     * The processor mode bits the product's board drives into its R10000 at
+     * reset, and the same word the flash configuration block advertises.
+     * Real firmware's very first check reads the word out of that block,
+     * compares it against what the processor actually latched, and reports
+     * "an error copying mode bits" if the two disagree — so the board and
+     * the block have to be saying the same thing, and the way to guarantee
+     * that is for there to be one of them.
+     */
+    uint32_t processor_mode_bits;
+
+    /*
      * Fit a node's memory into the banks the product's board provides.
      * False when the size cannot be expressed in that board's DIMMs.
      */
@@ -1072,7 +1083,7 @@ void sn0_mode_bits_reset(void *opaque);
  * every reset: the widget-0 window redirection and the PCI resource
  * assignment.
  */
-void sn0_firmware_init(MachineState *machine, unsigned int node_count);
+void sn0_firmware_init(MachineState *machine);
 void sn0_firmware_reset(void *opaque);
 void sn0_assign_pci_resources(void *opaque);
 SgiOriginState *sn0_query_origin_state(uint32_t event_limit, Error **errp);

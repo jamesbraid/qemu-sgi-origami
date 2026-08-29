@@ -13,7 +13,6 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
@@ -23,7 +22,6 @@
 #include "system/system.h"
 #include "system/block-backend.h"
 #include "system/address-spaces.h"
-#include "cpu.h"
 #include "sn0.h"
 
 #define SN0_BRIDGE_ONEWIRE_SERIAL_BASE 0x060504030201ULL
@@ -500,6 +498,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     smc->fw_machine_type = 1;       /* 0 is Origin 2000, 1 is Origin 200 */
     smc->fprom_cyc = 15;
     smc->fprom_wr = 4;
+    smc->processor_mode_bits = 0x1211a785;
     smc->node_memory_layout = sn0_ip29_memory_layout;
     smc->populate_io = origin200_populate_io;
 }
