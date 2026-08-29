@@ -1033,6 +1033,69 @@ static void test_a_refused_status_write_raises_no_interrupt(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The status entry pairs two 16-bit values into each 32-bit word -- scsi_status
+ * with completion, state_flags with status_flags. The firmware reads the A64
+ * response ring whole-word (the word-value reversal normalise_words undoes
+ * here), and the four missing-target values are pairwise distinct, so a change
+ * that transposed either shared pair -- reordering the entry's DMA or reading a
+ * field at the wrong lane -- fails here, where the missing-target tests, which
+ * assert the completion's meaning rather than its byte placement, might not.
+ * This pins the placement.
+ */
+static void test_status_pairs_survive_word_reversal(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -drive id=d0,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=0,drive=d0");
+    const uint32_t probe_handle = 0x50a1b2c3;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /*
+     * Target 5 is an empty slot on the live bus; its completion carries the
+     * missing-target flags, whose four values are pairwise distinct.
+     */
+    build_a64_command(entry, probe_handle, 0x0500, 0x00, 0x00);
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qtest_memread(qts, RESP_PHYS, status, sizeof(status));
+    normalise_words(status, sizeof(status));
+
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
+    /*
+     * Each 16-bit field recovered in its own lane; a transposed half fails
+     * both members of its pair.
+     */
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0x0000);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAG_GOT_BUS);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==,
+                    ISP_STATUS_FLAG_TIMEOUT);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1059,6 +1122,8 @@ int main(int argc, char **argv)
                         test_a64_ring_missing_target);
     qtest_add_data_func("sn0/qlogic-isp/ring-missing-target", NULL,
                         test_ring_missing_target);
+    qtest_add_data_func("sn0/qlogic-isp/status-pairs-survive-word-reversal",
+                        NULL, test_status_pairs_survive_word_reversal);
     qtest_add_data_func("sn0/qlogic-isp/ram-dma-through-the-direct-window",
                         NULL, test_ram_dma_through_the_direct_window);
     qtest_add_data_func("sn0/qlogic-isp/verify-checksum-answers-both-mailboxes",
