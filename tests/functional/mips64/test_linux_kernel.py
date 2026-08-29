@@ -65,31 +65,21 @@ is satisfied or a timeout expires, then shuts the VM down hard -- the
 same shape test_prom_boot.py's own poll loop uses against QEMU's trace
 output instead of a guest console.
 
-Free of any qemu_test import on purpose below the guarded import: this
-module's own pure verdict logic lives entirely in
-test_linux_kernel_verdict.py (imported unconditionally, since it needs
-no qemu_test itself -- see that file's own docstring); only the real
-QemuSystemTest below needs qemu_test, which requires MESON_BUILD_ROOT
-(see tests/functional/qemu_test/config.py) and is therefore guarded the
-same way test_prom_boot.py and test_diag.py guard it.
+This module's own pure verdict logic lives entirely in
+test_linux_kernel_verdict.py (imported below; it needs no qemu_test
+itself -- see that file's own docstring). What is left here is the real
+boot.
 """
 
 import os
 import socket
-import sys
 import time
 
-# This file's own directory, so a plain `pytest test_linux_kernel.py` run
-# finds test_linux_kernel_verdict.py the same way test_diag.py finds
-# itself for test_diag_verdict.py's own import.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from test_linux_kernel_verdict import missing_assertions  # noqa: E402
+from lib_prom import resolve_asset
 
-try:
-    from qemu_test import QemuSystemTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from test_linux_kernel_verdict import missing_assertions
 
 
 # Where ORIGAMI_ASSETS resolves the built kernel, matching tools/linux-run's
@@ -143,109 +133,105 @@ def cpu_qemu_args(cpus):
     return args
 
 
-if QemuSystemTest is not None:
+class LinuxKernel(QemuSystemTest):
+    """Boots the mainline Linux/IP27 kernel's embedded userspace at
+    one, two, or four CPUs and requires missing_assertions() to return
+    empty. See this module's docstring for the full contract; this
+    class only wires it to a real boot, the same division
+    test_prom_boot.py keeps between its pure logic and PromBoot.
+    """
 
-    class LinuxKernel(QemuSystemTest):
-        """Boots the mainline Linux/IP27 kernel's embedded userspace at
-        one, two, or four CPUs and requires missing_assertions() to return
-        empty. See this module's docstring for the full contract; this
-        class only wires it to a real boot, the same division
-        test_prom_boot.py keeps between its pure logic and PromBoot.
-        """
+    def _kernel_path(self):
+        """The built kernel under ORIGAMI_ASSETS, or None if it is not
+        there -- the runner may not have it built yet (see this
+        method's caller)."""
+        return resolve_asset(os.environ['ORIGAMI_ASSETS'], KERNEL_REL)
 
-        def _kernel_path(self):
-            """The built kernel under ORIGAMI_ASSETS, or None if the env
-            var is unset or the kernel is not there -- the runner may
-            not have it built yet (see this method's caller)."""
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            path = os.path.join(assets_root, KERNEL_REL)
-            return path if os.path.isfile(path) else None
+    def _boot_and_capture(self, cpus, mem_mib, name):
+        kernel = self._kernel_path()
+        if kernel is None:
+            self.skipTest(
+                'no kernel at '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} -- point it at a '
+                'checkout with the embedded-userspace kernel built '
+                '(tools/linux-userspace) to run this test')
 
-        def _boot_and_capture(self, cpus, mem_mib, name):
-            kernel = self._kernel_path()
-            if kernel is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no kernel at '
-                    f'<ORIGAMI_ASSETS>/{KERNEL_REL} -- point it at a '
-                    'checkout with the embedded-userspace kernel built '
-                    '(tools/linux-userspace) to run this test')
+        vm = self.get_vm(name=name)
+        vm.set_machine('origin200')
+        vm.set_console()
+        vm.add_args('-cpu', 'R10000', '-m', str(mem_mib),
+                   '-kernel', kernel, '-no-reboot',
+                   *cpu_qemu_args(cpus))
+        vm.launch()
 
-            vm = self.get_vm(name=name)
-            vm.set_machine('origin200')
-            vm.set_console()
-            vm.add_args('-cpu', 'R10000', '-m', str(mem_mib),
-                       '-kernel', kernel, '-no-reboot',
-                       *cpu_qemu_args(cpus))
-            vm.launch()
+        log_path = self.log_file(f'{name}.log')
+        timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4
+                   else BOOT_TIMEOUT_SECONDS)
+        deadline = time.monotonic() + timeout
+        transcript = ''
+        sock = vm.console_socket
+        sock.settimeout(POLL_INTERVAL_SECONDS)
+        try:
+            with open(log_path, 'a', encoding='utf-8') as log:
+                while time.monotonic() < deadline:
+                    if not missing_assertions(transcript, cpus):
+                        break
+                    try:
+                        chunk = sock.recv(4096)
+                    except socket.timeout:
+                        chunk = b''
+                    except OSError:
+                        break
+                    if chunk:
+                        text = chunk.decode('utf-8', errors='replace')
+                        transcript += text
+                        log.write(text)
+                        log.flush()
+                    if vm.exitcode() is not None:
+                        break
+        finally:
+            # A VM that crashed or exited on its own has already
+            # left; a graceful shutdown() against an already-dead
+            # process still raises AbnormalShutdown even though qemu
+            # is in fact gone. Matches PromBoot.test_prom_boot's own
+            # reasoning in test_prom_boot.py.
+            vm.shutdown(hard=vm.exitcode() is not None)
 
-            log_path = self.log_file(f'{name}.log')
-            timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4
-                       else BOOT_TIMEOUT_SECONDS)
-            deadline = time.monotonic() + timeout
-            transcript = ''
-            sock = vm.console_socket
-            sock.settimeout(POLL_INTERVAL_SECONDS)
-            try:
-                with open(log_path, 'a', encoding='utf-8') as log:
-                    while time.monotonic() < deadline:
-                        if not missing_assertions(transcript, cpus):
-                            break
-                        try:
-                            chunk = sock.recv(4096)
-                        except socket.timeout:
-                            chunk = b''
-                        except OSError:
-                            break
-                        if chunk:
-                            text = chunk.decode('utf-8', errors='replace')
-                            transcript += text
-                            log.write(text)
-                            log.flush()
-                        if vm.exitcode() is not None:
-                            break
-            finally:
-                # A VM that crashed or exited on its own has already
-                # left; a graceful shutdown() against an already-dead
-                # process still raises AbnormalShutdown even though qemu
-                # is in fact gone. Matches PromBoot.test_prom_boot's own
-                # reasoning in test_prom_boot.py.
-                vm.shutdown(hard=vm.exitcode() is not None)
+        return transcript
 
-            return transcript
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_one_cpu(self):
+        name = 'linux_kernel_1cpu'
+        transcript = self._boot_and_capture(cpus=1, mem_mib=64, name=name)
+        missing = missing_assertions(transcript, 1)
+        self.assertEqual(
+            missing, [],
+            'linux-usercheck one-CPU contract: missing ' +
+            ', '.join(missing) +
+            f' (full transcript: {self.log_file(f"{name}.log")})')
 
-        def test_one_cpu(self):
-            name = 'linux_kernel_1cpu'
-            transcript = self._boot_and_capture(cpus=1, mem_mib=64, name=name)
-            missing = missing_assertions(transcript, 1)
-            self.assertEqual(
-                missing, [],
-                'linux-usercheck one-CPU contract: missing ' +
-                ', '.join(missing) +
-                f' (full transcript: {self.log_file(f"{name}.log")})')
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_two_cpu(self):
+        name = 'linux_kernel_2cpu'
+        transcript = self._boot_and_capture(cpus=2, mem_mib=64, name=name)
+        missing = missing_assertions(transcript, 2)
+        self.assertEqual(
+            missing, [],
+            'linux-usercheck two-CPU contract: missing ' +
+            ', '.join(missing) +
+            f' (full transcript: {self.log_file(f"{name}.log")})')
 
-        def test_two_cpu(self):
-            name = 'linux_kernel_2cpu'
-            transcript = self._boot_and_capture(cpus=2, mem_mib=64, name=name)
-            missing = missing_assertions(transcript, 2)
-            self.assertEqual(
-                missing, [],
-                'linux-usercheck two-CPU contract: missing ' +
-                ', '.join(missing) +
-                f' (full transcript: {self.log_file(f"{name}.log")})')
-
-        def test_four_cpu(self):
-            name = 'linux_kernel_4cpu'
-            transcript = self._boot_and_capture(cpus=4, mem_mib=128, name=name)
-            missing = missing_assertions(transcript, 4)
-            self.assertEqual(
-                missing, [],
-                'linux-usercheck four-CPU contract: missing ' +
-                ', '.join(missing) +
-                f' (full transcript: {self.log_file(f"{name}.log")})')
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_four_cpu(self):
+        name = 'linux_kernel_4cpu'
+        transcript = self._boot_and_capture(cpus=4, mem_mib=128, name=name)
+        missing = missing_assertions(transcript, 4)
+        self.assertEqual(
+            missing, [],
+            'linux-usercheck four-CPU contract: missing ' +
+            ', '.join(missing) +
+            f' (full transcript: {self.log_file(f"{name}.log")})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

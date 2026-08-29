@@ -40,13 +40,9 @@ synthesized):
       BASEIO PROM loads. Verbatim, truncated, not edited.
 """
 
-import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from test_prom_mdk_memory import (
+from lib_prom_mdk_memory import (
     TESTS,
     count_problems,
     failure_markers_present,

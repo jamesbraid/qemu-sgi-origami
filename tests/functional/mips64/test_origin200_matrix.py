@@ -4,11 +4,15 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-One test_<id> method per row of origin200-matrix, attached to OriginMatrix
-at class-definition time by parse_matrix(). All per-cell configuration,
-command-line construction, pass-condition scoring, retry and
-expected-failure logic lives in lib_matrix; this file only wires it to a
-real boot.
+One test_<id> method per row of origin200-matrix whose speed column says
+quick, attached to OriginMatrix at import time by register_matrix_cells();
+test_origin200_matrix_thorough.py attaches the thorough rows to its own
+class the same way, so the manifest's speed column maps onto meson's
+quick/thorough split. Each method parses and validates its own row when
+it runs, so a bad row fails that one test instead of taking the whole
+script down at collection. All per-cell configuration, command-line
+construction, pass-condition scoring, retry and expected-failure logic
+lives in lib_matrix; this file only wires it to a real boot.
 """
 
 import os
@@ -16,9 +20,10 @@ import time
 
 from qemu_test import QemuSystemTest
 
-from lib_matrix import (AttemptResult, FIRMWARE_REL_PATH, first_progress_code,
-                        machine_props, parse_matrix, pass_condition_met,
-                        prom_args, qemu_args, resolve_prom, verdict)
+from lib_matrix import (AttemptResult, MatrixError, machine_props,
+                        matrix_rows, parse_row, pass_condition_met,
+                        peek_row, prom_args, qemu_args, verdict)
+from lib_prom import FIRMWARE_REL, first_progress_code, resolve_asset
 
 
 MATRIX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -49,11 +54,12 @@ def _boot_one_attempt(test, cell, attempt_index):
         # provisioned, rather than launching a machine with no
         # firmware at all. firmware=synth cells never take this branch:
         # no -bios, no trace, no skip.
-        firmware_path = resolve_prom(os.environ.get('ORIGAMI_ASSETS'))
+        firmware_path = resolve_asset(os.environ.get('ORIGAMI_ASSETS'),
+                                      FIRMWARE_REL)
         if firmware_path is None:
             test.skipTest(
                 'ORIGAMI_ASSETS is not set, or has no firmware at '
-                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL_PATH} -- point it at a '
+                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} -- point it at a '
                 'checkout with the real PROM image extracted '
                 '(tools/extract-irix prom) to run this test')
         vm.add_args(*prom_args(firmware_path))
@@ -127,10 +133,25 @@ def _wait_for_pass(test, vm, cell, log_path):
     return AttemptResult(reached_pass=False, signature='timeout')
 
 
-def _make(cell):
-    """Build the test_<id> method for one matrix cell."""
+def _make(lineno, line, problem):
+    """Build the test method for one manifest row.
+
+    The row is parsed inside the method, not here: parse_row() can
+    raise on a bad row, and raising at import would fail collection of
+    every cell in the script rather than the one test the row is.
+    `problem` carries what register_matrix_cells() already knows is
+    wrong with the row (a duplicate id) and the method fails on it
+    before spending a boot.
+    """
 
     def test_cell(self):
+        if problem is not None:
+            self.fail(problem)
+        try:
+            cell = parse_row(MATRIX_PATH, lineno, line)
+        except MatrixError as exc:
+            raise self.failureException(str(exc)) from None
+
         self.set_machine('origin200')
 
         attempts = [_boot_one_attempt(self, cell, i)
@@ -156,30 +177,46 @@ def _make(cell):
                   f'({cell.min_passes} of {cell.attempts} required): '
                   f'{attempts}')
 
-    test_cell.__name__ = f'test_{cell.id}'
-    test_cell.__doc__ = f'matrix cell {cell.id!r}: {cell.guest}/{cell.scenario}'
+    test_cell.__doc__ = f'matrix row {MATRIX_PATH}:{lineno}: {line}'
     return test_cell
 
 
-class OriginMatrix(QemuSystemTest):
-    """One test method per row of origin200-matrix. See _make() above for
-    what each one does; the manifest, not this class, is the source of
-    truth for what cells exist."""
+def register_matrix_cells(cls, speed):
+    """Attach one test method to cls per manifest row of the given speed.
 
-
-def _register_matrix_cells():
-    """Attach one test_<id> method to OriginMatrix per manifest row.
-
-    A plain module-level for loop would leak its loop variable, which
-    NameErrors on del if the manifest is ever empty; wrapping it in a
-    function scopes that variable away and stays empty-safe by
-    construction -- zero rows means zero iterations, nothing more.
+    Rows are only peeked at here (peek_row(): the raw id and speed
+    fields); the parse that can fail happens inside each method. A row
+    whose speed field is unusable is routed to the quick script, where
+    it fails on the run everyone runs; a row whose id field is unusable
+    is named test_row<lineno>, so it still appears and still fails.
+    Duplicate ids are found across the whole manifest, whichever speed
+    each copy names, and every copy fails.
     """
-    for cell in parse_matrix(MATRIX_PATH):
-        setattr(OriginMatrix, 'test_' + cell.id, _make(cell))
+    rows = matrix_rows(MATRIX_PATH)
+    ids = [peek_row(line)[0] for _lineno, line in rows]
+    duplicates = {cell_id for cell_id in ids
+                  if cell_id is not None and ids.count(cell_id) > 1}
+    for lineno, line in rows:
+        cell_id, row_speed = peek_row(line)
+        if (row_speed or 'quick') != speed:
+            continue
+        problem = None
+        if cell_id in duplicates:
+            problem = f'{MATRIX_PATH}:{lineno}: duplicate cell id {cell_id!r}'
+        name = cell_id if cell_id is not None and cell_id not in duplicates \
+            else f'row{lineno}'
+        method = _make(lineno, line, problem)
+        method.__name__ = f'test_{name}'
+        setattr(cls, method.__name__, method)
 
 
-_register_matrix_cells()
+class OriginMatrix(QemuSystemTest):
+    """One test method per quick row of origin200-matrix. See _make()
+    above for what each one does; the manifest, not this class, is the
+    source of truth for what cells exist."""
+
+
+register_matrix_cells(OriginMatrix, 'quick')
 
 
 if __name__ == '__main__':

@@ -20,7 +20,7 @@ the verdict; and no codes at all is "did not start", not "failed early".
 
 import unittest
 
-from test_prom_boot import MARK, codes_seen, mark_reached
+from lib_prom import MARK, codes_seen, mark_reached
 
 
 def _trace_line(code, kind='progress', cpu=0, meaning='test fixture'):
@@ -38,7 +38,7 @@ class CodesSeenTest(unittest.TestCase):
         # boot-gate's own CODE regex (tools/boot-gate) is not kind-filtered
         # -- a FAILURE or undecoded line counts the same as a progress
         # line. codes_seen() keeps that contract; only
-        # lib_matrix.first_progress_code (a different oracle) filters.
+        # lib_prom.first_progress_code (a different pass condition) filters.
         text = '\n'.join([
             _trace_line('0x10', kind='progress'),
             _trace_line('0x11', kind='FAILURE'),

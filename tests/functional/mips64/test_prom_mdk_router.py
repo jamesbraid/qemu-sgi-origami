@@ -28,75 +28,19 @@ import json
 import os
 import re
 import shutil
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from test_prom_mdk import (
-    FIRMWARE_REL,
-    _drive_console,
-    _file_record,
-    _fork_git_identity,
-    _utc_now,
-    mdk_extra_args,
-    payload_identity_problems,
-)
-
-try:
-    from qemu_test import QemuSystemTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from lib_prom import (FIRMWARE_REL, drive_console, file_record,
+                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom_mdk import mdk_extra_args, payload_identity_problems
+from lib_prom_mdk_router import NETBOOT_PATH, verdict
 
 
-NETBOOT_PATH = "mdk/MDK_router_sso"
 MDK_REL = os.path.join('assets', 'boot', 'mdk', 'MDK_router_sso')
 ROUTER_SSO_SHA256 = (
     "8caaf050bbf1a71caf0bb59944415e98c7ffd49242975c2b41e5d29cdd3108f2"
 )
-
-ASSERTIONS = (
-    ("path-structured netboot fetch",
-     f"Obtaining {NETBOOT_PATH} from server"),
-    ("MDK 1.6 banner", "SGI MDK Version 1.6"),
-    ("two nodes discovered", "Number of nodes:           2"),
-    ("router test started", "Starting Router SSO test"),
-    ("router test completion", "MDK Router_sso test run is complete"),
-)
-
-# The one-node decline is a failure here, not a skip: this leg exists to
-# run the test. The manual's own failure spellings follow.
-FAILURE_MARKERS = (
-    "EXITING router_sso test",
-    "TEST RESULT: ****",
-    "Headless HUB inaccessible",
-    "Unexpected exception",
-    "ERROR",
-)
-
-
-def missing_assertions(log):
-    return [name for name, evidence in ASSERTIONS if evidence not in log]
-
-
-def failure_markers_present(log):
-    return [marker for marker in FAILURE_MARKERS if marker in log]
-
-
-def verdict(log, reached=True):
-    problems = []
-    for name in missing_assertions(log):
-        problems.append(f"missing {name}")
-    for marker in failure_markers_present(log):
-        problems.append(f"failure output present: {marker!r}")
-    if not reached:
-        problems.append(
-            "console driver did not reach the router test's completion "
-            "line before timeout")
-    return {
-        "verdict": "PASS" if not problems else "FAIL",
-        "problems": problems,
-    }
-
 
 BOOT_TIMEOUT_SECONDS = 1740
 
@@ -117,118 +61,114 @@ DRIVER_STEPS = (
 DRIVER_UNTIL_RE = re.compile(rb"Router_sso test run is complete")
 
 
-if QemuSystemTest is not None:
+_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
 
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
+class PromMdkRouter(QemuSystemTest):
+    """Boots the real IP27 PROM as two chassis, netboots
+    MDK_router_sso, and requires the router test to run."""
 
-    class PromMdkRouter(QemuSystemTest):
-        """Boots the real IP27 PROM as two chassis, netboots
-        MDK_router_sso, and requires the router test to run."""
+    def _asset_paths(self):
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        prom = resolve_asset(assets_root, FIRMWARE_REL)
+        mdk = resolve_asset(assets_root, MDK_REL)
+        if not (prom and mdk):
+            return None
+        return prom, mdk
 
-        def _asset_paths(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            prom = os.path.join(assets_root, FIRMWARE_REL)
-            mdk = os.path.join(assets_root, MDK_REL)
-            if not (os.path.isfile(prom) and os.path.isfile(mdk)):
-                return None
-            return prom, mdk
+    def _stage_netboot_tftp(self, mdk):
+        root = self.scratch_file('netboot-tftp')
+        staged = os.path.join(root, *NETBOOT_PATH.split('/'))
+        os.makedirs(os.path.dirname(staged), exist_ok=True)
+        shutil.copyfile(mdk, staged)
+        return root
 
-        def _stage_netboot_tftp(self, mdk):
-            root = self.scratch_file('netboot-tftp')
-            staged = os.path.join(root, *NETBOOT_PATH.split('/'))
-            os.makedirs(os.path.dirname(staged), exist_ok=True)
-            shutil.copyfile(mdk, staged)
-            return root
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_prom_mdk_router(self):
+        paths = self._asset_paths()
+        if paths is None:
+            self.skipTest(
+                'no firmware/'
+                f'MDK_router_sso at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{MDK_REL} -- tools/extract-irix mdk '
+                'in the project checkout lands the MDK packages')
+        prom, mdk = paths
 
-        def test_prom_mdk_router(self):
-            paths = self._asset_paths()
-            if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no firmware/'
-                    f'MDK_router_sso at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{MDK_REL} -- tools/extract-irix mdk '
-                    'in the project checkout lands the MDK packages')
-            prom, mdk = paths
+        identity_problems = payload_identity_problems(
+            prom, mdk, ROUTER_SSO_SHA256, "MDK_router_sso")
+        if identity_problems:
+            self.fail('asset identity problems: ' +
+                      '; '.join(identity_problems))
 
-            identity_problems = payload_identity_problems(
-                prom, mdk, ROUTER_SSO_SHA256, "MDK_router_sso")
-            if identity_problems:
-                self.fail('asset identity problems: ' +
-                          '; '.join(identity_problems))
+        netboot_tftp = self._stage_netboot_tftp(mdk)
 
-            netboot_tftp = self._stage_netboot_tftp(mdk)
+        vm = self.get_vm(name='prom_mdk_router')
+        # No debug-leds=off: with more than one CPU that option wedged
+        # the PROM boot (test_prom_mdk_instgen.py).
+        vm.set_machine('origin200,synthesized-firmware=off')
+        vm.set_console()
+        elsc_log = self.log_file('elsc-aux.log')
+        capture = self.log_file('wire.pcap')
+        extra = mdk_extra_args(prom, netboot_tftp, elsc_log, capture,
+                               netboot_path=NETBOOT_PATH)
+        extra[extra.index('-smp') + 1] = '4,sockets=2,cores=2,threads=1'
+        extra[extra.index('-m') + 1] = '128'
+        vm.add_args('-accel', 'tcg,thread=single', *extra,
+                    *TWO_CHASSIS_ARGS)
 
-            vm = self.get_vm(name='prom_mdk_router')
-            # No debug-leds=off: with more than one CPU that option wedged
-            # the PROM boot (test_prom_mdk_instgen.py).
-            vm.set_machine('origin200,synthesized-firmware=off')
-            vm.set_console()
-            elsc_log = self.log_file('elsc-aux.log')
-            capture = self.log_file('wire.pcap')
-            extra = mdk_extra_args(prom, netboot_tftp, elsc_log, capture,
-                                   netboot_path=NETBOOT_PATH)
-            extra[extra.index('-smp') + 1] = '4,sockets=2,cores=2,threads=1'
-            extra[extra.index('-m') + 1] = '128'
-            vm.add_args('-accel', 'tcg,thread=single', *extra,
-                        *TWO_CHASSIS_ARGS)
+        started = utc_now()
+        vm.launch()
+        log_path = self.log_file('mdk.log')
+        try:
+            transcript, reached = drive_console(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                DRIVER_STEPS, until=DRIVER_UNTIL_RE)
+        finally:
+            vm.shutdown(hard=vm.exitcode() is not None)
+        ended = utc_now()
 
-            started = _utc_now()
-            vm.launch()
-            log_path = self.log_file('mdk.log')
-            try:
-                transcript, reached = _drive_console(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                    steps=DRIVER_STEPS, until=DRIVER_UNTIL_RE)
-            finally:
-                vm.shutdown(hard=vm.exitcode() is not None)
-            ended = _utc_now()
+        if not transcript:
+            self.fail(
+                'the firmware printed nothing at all -- a run that '
+                'did not start, not a boot that failed early')
 
-            if not transcript:
-                self.fail(
-                    'the firmware printed nothing at all -- a run that '
-                    'did not start, not a boot that failed early')
+        report = verdict(transcript, reached=reached)
 
-            report = verdict(transcript, reached=reached)
+        summary_path = self.log_file('mdk-summary.json')
+        with open(summary_path, 'w', encoding='utf-8') as summary_file:
+            json.dump({
+                'schema': 1,
+                'reached_completion': reached,
+                'report': report,
+            }, summary_file, indent=2, sort_keys=True)
+            summary_file.write('\n')
 
-            summary_path = self.log_file('mdk-summary.json')
-            with open(summary_path, 'w', encoding='utf-8') as summary_file:
-                json.dump({
-                    'schema': 1,
-                    'reached_completion': reached,
-                    'report': report,
-                }, summary_file, indent=2, sort_keys=True)
-                summary_file.write('\n')
-
-            run_path = self.log_file('run.json')
-            with open(run_path, 'w', encoding='utf-8') as run_file:
-                json.dump({
-                    'schema': 1,
-                    'started_utc': started,
-                    'ended_utc': ended,
-                    'console_driver_reached_until': reached,
-                    'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'identity': {
-                        'fork': _fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': _file_record(self.qemu_bin),
-                        'payload': {
-                            'prom': _file_record(prom),
-                            'router_sso': _file_record(mdk),
-                        },
+        run_path = self.log_file('run.json')
+        with open(run_path, 'w', encoding='utf-8') as run_file:
+            json.dump({
+                'schema': 1,
+                'started_utc': started,
+                'ended_utc': ended,
+                'console_driver_reached_until': reached,
+                'timeout_seconds': BOOT_TIMEOUT_SECONDS,
+                'identity': {
+                    'fork': fork_git_identity(_FORK_ROOT),
+                    'qemu_binary': file_record(self.qemu_bin),
+                    'payload': {
+                        'prom': file_record(prom),
+                        'router_sso': file_record(mdk),
                     },
-                    'verdict': report['verdict'],
-                    'problems': report['problems'],
-                }, run_file, indent=2, sort_keys=True)
-                run_file.write('\n')
+                },
+                'verdict': report['verdict'],
+                'problems': report['problems'],
+            }, run_file, indent=2, sort_keys=True)
+            run_file.write('\n')
 
-            self.assertEqual(
-                report['verdict'], 'PASS',
-                'MDK router problems: ' + '; '.join(report['problems']) +
-                f' (full report: {summary_path})')
+        self.assertEqual(
+            report['verdict'], 'PASS',
+            'MDK router problems: ' + '; '.join(report['problems']) +
+            f' (full report: {summary_path})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

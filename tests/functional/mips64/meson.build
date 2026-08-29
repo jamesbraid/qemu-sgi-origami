@@ -3,15 +3,24 @@
 test_mips64_timeouts = {
   'malta' : 240,
   'mttcg_cause' : 60,
-  # One test_<id> method per origin200-matrix row runs one after another in
-  # this one script (test_origin200_matrix.py), each budgeted up to its own
-  # cell.timeout before declaring FAIL: the asset-free smoke cell (120s)
-  # plus the three real firmware-boot cells this budget was raised for
-  # (700s each -- 4-CPU, two-node, mttcg), worst case all four running out
-  # their own budget in sequence, plus VM launch/shutdown overhead. Matches
-  # linux_kernel's own reasoning below for the same one-script,
-  # several-budgets-in-sequence shape.
-  'origin200_matrix' : 2500,
+  # Fourteen bare-metal SMP scheduling checks, each its own short VM
+  # launch, in one script: the whole run took 41-42s on a moderately
+  # loaded host (measured twice, 2026-08-28). 240 gives better than
+  # four times that for a heavily contended CI host; the previous
+  # unlisted default of 90 left under half.
+  'sn0_smp' : 240,
+  # One test method per origin200-matrix row whose speed column says quick
+  # runs after another in this one script (test_origin200_matrix.py), each
+  # budgeted up to its own cell.timeout before declaring FAIL: today the
+  # asset-free smoke cell (120s), plus VM launch/shutdown overhead and room
+  # for a second quick cell.
+  'origin200_matrix' : 300,
+  # The thorough rows of the same manifest, in test_origin200_matrix_thorough
+  # .py: the three real firmware-boot cells (700s each -- 4-CPU, two-node,
+  # mttcg), worst case all three running out their own budget in sequence,
+  # plus VM launch/shutdown overhead. Matches linux_kernel's own reasoning
+  # below for the same one-script, several-budgets-in-sequence shape.
+  'origin200_matrix_thorough' : 2500,
   'prom_boot' : 700,
   'prom_copy_speed' : 320,
   'prom_diagnostics' : 1800,
@@ -24,15 +33,15 @@ test_mips64_timeouts = {
   # BOOT_TIMEOUT_SECONDS in test_irix_miniroot.py keeps a 60s margin under
   # this, the same margin test_prom_sash.py keeps against its own timeout.
   'irix_miniroot' : 900,
-  # A single netboot pass plus the kernel's own primary-data-cache test
-  # (announced as five minutes, about two emulated); BOOT_TIMEOUT_SECONDS in
-  # test_prom_mdk.py keeps the usual 60s margin under this.
   # Boot to the POD prompt plus sixteen immediate commands; BOOT_TIMEOUT
   # in test_prom_pod.py keeps the usual 60s margin under this.
   'prom_pod' : 900,
   # Netboot fx and a 100,000-block write-compare exercise (19s emulated);
   # BOOT_TIMEOUT in test_prom_fx.py keeps the usual 60s margin under this.
   'prom_fx' : 900,
+  # A single netboot pass plus the kernel's own primary-data-cache test
+  # (announced as five minutes, about two emulated); BOOT_TIMEOUT_SECONDS in
+  # test_prom_mdk.py keeps the usual 60s margin under this.
   'prom_mdk' : 1200,
   # The full memory.mdk battery in one boot: eight tests, the two long
   # ones near twenty minutes each under a heavily contended host;
@@ -96,6 +105,7 @@ tests_mips64_system_quick = [
 tests_mips64_system_thorough = [
   'malta',
   'tuxrun',
+  'origin200_matrix_thorough',
   'prom_boot',
   'prom_copy_speed',
   'prom_diagnostics',
@@ -113,3 +123,37 @@ tests_mips64_system_thorough = [
   'openbsd_net_transfer',
   'openbsd_install',
 ]
+
+# The boot tests' pure-logic companions: the *_verdict.py suites that pin
+# each test's pass condition against real captured transcripts, and the
+# unit tests of the lib_*.py helper modules they import. Plain unittest
+# modules -- no QEMU, no assets, no qemu_test import -- so they run under
+# the venv's bare python3 rather than through the qemu_test TAP machinery
+# the lists above feed, and they belong to the quick suite: the whole set
+# is seconds.
+tests_mips64_unit = [
+  'lib_matrix',
+  'lib_prom',
+  'linux_kernel_verdict',
+  'linux_multiuser_verdict',
+  'openbsd_install_verdict',
+  'openbsd_login_verdict',
+  'openbsd_net_transfer_verdict',
+  'prom_boot_verdict',
+  'prom_copy_speed_verdict',
+  'prom_diagnostics_verdict',
+  'prom_fx_verdict',
+  'prom_mdk_instgen_verdict',
+  'prom_mdk_memory_verdict',
+  'prom_mdk_router_verdict',
+  'prom_mdk_verdict',
+  'prom_pod_verdict',
+  'prom_sash_verdict',
+]
+
+foreach test : tests_mips64_unit
+  test('func-mips64-' + test,
+       python,
+       args: [meson.current_source_dir() / 'test_' + test + '.py'],
+       suite: ['func-quick', 'func-mips64'])
+endforeach

@@ -7,9 +7,10 @@ comments and blank lines are ignored, and each row's pipe-separated
 fields follow the exact order of the Cell dataclass below.
 parse_matrix() turns a manifest into Cell records; machine_props() and
 qemu_args() turn a Cell into the -M value and the rest of the QEMU
-command line; resolve_prom() and prom_args() supply the real PROM
-image a firmware=prom cell's -M string demands (a firmware=synth cell
-needs neither); pass_condition_met() decides whether a captured boot
+command line; prom_args() supplies the -bios and trace arguments a
+firmware=prom cell's -M string demands (lib_prom.resolve_asset finds
+the image; a firmware=synth cell needs neither);
+pass_condition_met() decides whether a captured boot
 log satisfies a cell's pass condition (the firmware progress mark for
 a real boot, a first progress code for the asset-free smoke scenario);
 verdict() turns a cell and its recorded AttemptResults into a
@@ -18,25 +19,11 @@ pass/fail/xfail/xpass/error outcome. Later stages of this subsystem
 these.
 """
 
-import os
 import re
-import sys
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-# test_prom_boot.py lives one directory down (tests/functional/mips64/), not
-# on sys.path by default here -- inserted the same way test_lib_matrix.py
-# does, so pass_condition_met() below can reach MARK, codes_seen() and
-# mark_reached(). The insertion itself is harmless at module load (it does
-# not import anything yet); the import stays deferred to pass_condition_met's
-# own body rather than happening here, because test_prom_boot.py already
-# does `from lib_matrix import Cell, machine_props, qemu_args,
-# _PROGRESS_CODE_RE` -- an eager import back from here would be a load-time
-# cycle, breaking whichever of the two modules a caller (e.g.
-# test_prom_boot_verdict.py, which imports test_prom_boot directly) happens
-# to load first. By call time both modules have always finished loading.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                'mips64'))
+from lib_prom import MARK, codes_seen, first_progress_code, mark_reached
 
 
 class MatrixError(Exception):
@@ -75,6 +62,24 @@ _VALID_FIRMWARE = {'synth', 'prom'}
 _VALID_EXPECTS = {'pass', 'xfail'}
 
 
+def matrix_rows(path):
+    """Every data row of a manifest, as (lineno, line) pairs.
+
+    Comments and blank lines are dropped and nothing is parsed, so this
+    cannot fail on a bad row: a caller that wants one test per row can
+    enumerate the rows here and leave parse_row(), which can fail, to
+    each row's own test.
+    """
+    rows = []
+    lines = Path(path).read_text(encoding='utf-8').splitlines()
+    for lineno, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        rows.append((lineno, line))
+    return rows
+
+
 def parse_matrix(path):
     """Parse a pipe-delimited matrix manifest into a list of Cell rows.
 
@@ -83,12 +88,8 @@ def parse_matrix(path):
     """
     cells = []
     seen_ids = set()
-    lines = Path(path).read_text(encoding='utf-8').splitlines()
-    for lineno, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line or line.startswith('#'):
-            continue
-        cell = _parse_row(path, lineno, line)
+    for lineno, line in matrix_rows(path):
+        cell = parse_row(path, lineno, line)
         if cell.id in seen_ids:
             raise MatrixError(
                 f'{path}:{lineno}: duplicate cell id {cell.id!r}')
@@ -97,7 +98,33 @@ def parse_matrix(path):
     return cells
 
 
-def _parse_row(path, lineno, line):
+def peek_row(line):
+    """A row's id and speed fields read raw, before any parsing: (id, speed).
+
+    For naming and routing a test before parse_row() has judged the row.
+    Either value is None when the row cannot supply a usable one -- the
+    field count is wrong, the id is not [a-z0-9_]+, or the speed is not
+    one of the known speeds -- so a caller can give such a row a
+    placeholder name and route it wherever a bad row should fail. Every
+    check parse_row() makes is still made by parse_row(); this reads
+    two fields and validates nothing else.
+    """
+    raw_fields = [field.strip() for field in line.split('|')]
+    if len(raw_fields) != len(_FIELD_NAMES):
+        return None, None
+    values = dict(zip(_FIELD_NAMES, raw_fields))
+    cell_id = values['id'] if _ID_RE.match(values['id']) else None
+    speed = values['speed'] if values['speed'] in _VALID_SPEEDS else None
+    return cell_id, speed
+
+
+def parse_row(path, lineno, line):
+    """Parse and validate one manifest row into a Cell.
+
+    Raises MatrixError, naming path and lineno, on a wrong field count
+    or a failed value check. The duplicate-id check needs the whole
+    manifest and is parse_matrix()'s.
+    """
     raw_fields = [field.strip() for field in line.split('|')]
     if len(raw_fields) != len(_FIELD_NAMES):
         raise MatrixError(
@@ -200,33 +227,6 @@ def qemu_args(cell):
     return args
 
 
-# Where ORIGAMI_ASSETS resolves the real PROM image for a firmware=prom
-# cell, matching test_prom_boot.py's own FIRMWARE_REL exactly -- both name
-# the same image, so the path is kept here rather than re-derived twice.
-FIRMWARE_REL_PATH = os.path.join('assets', 'firmware', '6.5-base',
-                                 'ip27prom.payload.bin')
-
-
-def resolve_prom(assets_root):
-    """The real PROM image's path under assets_root, or None.
-
-    None when assets_root is falsy (ORIGAMI_ASSETS unset) or the image
-    is not there -- the runner may not have it provisioned yet. Purely
-    a path check: callers resolve ORIGAMI_ASSETS from the environment
-    themselves and hand the result in, rather than this function reading
-    the environment directly -- the file-existence logic is identical to
-    test_prom_boot.py's own _firmware_path(), which reads ORIGAMI_ASSETS
-    itself since it has no separate caller to hand it one. The caller
-    decides what an unresolved image means for the cell
-    (test_origin200_matrix.py skips it); this function only answers
-    whether the image is there.
-    """
-    if not assets_root:
-        return None
-    path = os.path.join(assets_root, FIRMWARE_REL_PATH)
-    return path if os.path.isfile(path) else None
-
-
 def prom_args(firmware_path):
     """The -bios/-d args a firmware=prom cell needs to run the real PROM.
 
@@ -299,36 +299,13 @@ def verdict(cell, attempts):
     return 'fail'
 
 
-_PROGRESS_CODE_RE = re.compile(r'sgi_hub_led CPU \d+: (0x[0-9a-f]{2}) \((\w+):')
-
-
-def first_progress_code(text):
-    """Return the first firmware boot-progress code in text, or None.
-
-    The Hub's debug-leds trace event prints a line of the form
-    'sgi_hub_led CPU N: 0xNN (KIND: meaning)' for every write to its
-    indicator register, where KIND is 'progress', 'FAILURE' (a
-    diagnosed self-test failure such as ECC or FPU), or 'undecoded'.
-    A failure line has the identical shape a progress line does, so
-    this only ever returns a code whose kind is explicitly 'progress'
-    -- scoring a FAILURE code as progress would be a false pass for a
-    cell that actually hit one -- skipping past any failure or
-    undecoded line that appears first.
-    """
-    for match in _PROGRESS_CODE_RE.finditer(text):
-        code, kind = match.group(1), match.group(2)
-        if kind == 'progress':
-            return code
-    return None
-
-
 def pass_condition_met(scenario, log_text):
     """Whether log_text (a captured boot log) satisfies scenario's pass
     condition. Pure text-in, bool-out -- unit-testable without a boot.
 
     The 'smoke' scenario is the asset-free harness self-test: it keeps
     the weaker signal it always has, any progress code appearing at all
-    (first_progress_code() above) -- it exists to prove the harness
+    (lib_prom.first_progress_code) -- it exists to prove the harness
     end-to-end against a machine that has no firmware image to run and
     so has no code path that could ever write a progress indicator. The
     framework glue additionally accepts a QMP-confirmed running VM with
@@ -336,25 +313,14 @@ def pass_condition_met(scenario, log_text):
     not this function's.
 
     Every other scenario is a real firmware boot, and passes only when
-    the recorded firmware-boot progress mark (test_prom_boot.MARK) is a
-    SUBSET of the codes seen in log_text -- test_prom_boot's own
+    the recorded firmware-boot progress mark (lib_prom.MARK) is a SUBSET
+    of the codes seen in log_text -- lib_prom's own
     mark_reached(codes_seen(log_text), MARK). A boot that wedges after
     an early code never reaches the mark and so never satisfies this;
     the timeout path stays the caller's job too.
-
-    test_prom_boot is imported here, at call time rather than at this
-    module's own load time, to avoid a load-time import cycle: that
-    module already does `from lib_matrix import Cell, machine_props,
-    qemu_args, _PROGRESS_CODE_RE`, so importing it back at the top of
-    this file would try to load whichever of the two a caller happens to
-    reach first (e.g. test_prom_boot_verdict.py, which imports
-    test_prom_boot directly) while it is still mid-import. By the time
-    anything actually calls this function, both modules have always
-    finished loading.
     """
     if scenario == 'smoke':
         return first_progress_code(log_text) is not None
-    from test_prom_boot import MARK, codes_seen, mark_reached
     reached, _missing = mark_reached(codes_seen(log_text), MARK)
     return reached
 
