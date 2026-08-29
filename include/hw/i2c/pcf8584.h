@@ -10,7 +10,7 @@
 #define HW_I2C_PCF8584_H
 
 #include "hw/core/sysbus.h"
-#include "hw/core/device-diagnostic.h"
+#include "hw/misc/sgi-diagnostic.h"
 #include "hw/i2c/i2c.h"
 #include "qom/object.h"
 
