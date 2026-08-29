@@ -13,7 +13,7 @@
 
 #include "qemu/units.h"
 #include "hw/core/irq.h"
-#include "hw/core/device-diagnostic.h"
+#include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/pcf8584.h"

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
-#ifndef HW_CORE_DEVICE_DIAGNOSTIC_H
-#define HW_CORE_DEVICE_DIAGNOSTIC_H
+#ifndef HW_MISC_SGI_DIAGNOSTIC_H
+#define HW_MISC_SGI_DIAGNOSTIC_H
 
 typedef void DeviceDiagnosticRecord(void *opaque, const char *component,
                                     const char *operation, uint64_t address,
@@ -28,4 +28,4 @@ static inline void device_diagnostic_record(DeviceDiagnosticSink *sink,
     }
 }
 
-#endif /* HW_CORE_DEVICE_DIAGNOSTIC_H */
+#endif /* HW_MISC_SGI_DIAGNOSTIC_H */
