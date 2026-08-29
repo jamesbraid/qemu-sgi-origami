@@ -2,6 +2,8 @@
 /*
  * M48T35-class Timekeeper: battery-backed storage with a clock in its top
  * bytes.
+ *
+ * Copyright (c) 2026 Origami contributors
  */
 
 #ifndef HW_RTC_M48T35_H
@@ -9,7 +11,6 @@
 
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
-#include "system/block-backend.h"
 
 #define TYPE_M48T35 "m48t35"
 OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
@@ -61,12 +62,13 @@ struct M48T35State {
     MemoryRegion iomem;
 
     /*
-     * The cells. The clock's eight bytes are not kept here -- they are
-     * answered from the host's time and this array's entries for them are
-     * unused -- because storage that shadowed a running clock would have two
-     * places to be wrong.
+     * The cells, allocated at realize: 32 KiB by value would travel with
+     * every state that embeds this one. The clock's eight bytes are not
+     * kept here -- they are answered from the host's time and this
+     * buffer's entries for them are unused -- because storage that
+     * shadowed a running clock would have two places to be wrong.
      */
-    uint8_t cell[M48T35_SIZE];
+    uint8_t *cell;
 
     /*
      * The battery, optional. Unset, a fresh process starts from zeroed
@@ -107,4 +109,4 @@ struct M48T35State {
     int32_t staged_year;
 };
 
-#endif
+#endif /* HW_RTC_M48T35_H */

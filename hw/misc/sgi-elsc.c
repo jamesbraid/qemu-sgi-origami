@@ -6,7 +6,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * The system controller's checksummed ASCII command/response channel,
- * modelled from docs/datasheets/pcf8584-elsc.md. Every command is a short
+ * modelled from the controller-and-ELSC datasheet in the Origami project
+ * tree (docs/datasheets/pcf8584-elsc.md there, not in this QEMU tree).
+ * Every command is a short
  * mnemonic sent and answered inside one combined write-then-read I2C
  * transaction: a length byte, that many bytes of text, and a checksum byte
  * chosen so the whole packet -- length through checksum, inclusive -- sums
@@ -71,7 +73,7 @@ static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
  * The framed packet starts at txbuf[0]. An earlier version of this device
  * put a throwaway byte ahead of it, reasoning that the PCF8584's receive
  * pipeline discarded a byte from whichever slave answered. It does not:
- * the discard docs/datasheets/pcf8584-elsc.md describes is the driver's
+ * the discard that datasheet describes is the driver's
  * first read returning the address-and-direction byte the chip's own data
  * register already held, before any response byte has arrived -- the
  * Philips product specification attaches the transfer to the read, not
@@ -213,8 +215,10 @@ static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
     }
 }
 
-/* Dispatch one fully-received, checksum- and length-checked request, and
- * frame its reply. */
+/*
+ * Dispatch one fully-received, checksum- and length-checked request,
+ * and frame its reply.
+ */
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -242,9 +246,11 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
-        /* A minimal protected command, to exercise supervisor gating --
+        /*
+         * A minimal protected command, to exercise supervisor gating --
          * not a claim that "rst" is the real vocabulary's reset mnemonic,
-         * which is not established by anything read for the datasheet. */
+         * which is not established by anything read for the datasheet.
+         */
         if (!s->supervisor) {
             elsc_frame_response_str(s, "err perm");
             return;
@@ -289,8 +295,10 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         s->rxlen = 0;
         break;
     case I2C_START_RECV:
-        /* The master switched to read: the request just written is
-         * complete. */
+        /*
+         * The master switched to read: the request just written is
+         * complete.
+         */
         elsc_request_complete(s);
         break;
     case I2C_FINISH:
@@ -385,8 +393,10 @@ static uint8_t elsc_recv_internal(SGIElscState *s)
         return s->txbuf[s->txpos++];
     }
 
-    /* Past the end of a well-formed response the driver's own length byte
-     * already told it to stop reading; this is what it gets if it doesn't. */
+    /*
+     * Past the end of a well-formed response the driver's own length byte
+     * already told it to stop reading; this is what it gets if it doesn't.
+     */
     return 0xff;
 }
 
@@ -424,8 +434,8 @@ static uint8_t elsc_recv(I2CSlave *i2c)
  * addressable space supplies, four node slots of two processors each, and
  * the firmware's own configuration for the family's larger machines
  * confirms it by name, excluding any node slot whose code would exceed
- * seven from ever using the controller at all. See
- * docs/datasheets/pcf8584-elsc.md.
+ * seven from ever using the controller at all. The project-tree datasheet
+ * carries the sources.
  *
  * A real controller cannot know in advance which of the eight codes are
  * actually populated, so it offers all eight in turn regardless -- what a
@@ -446,8 +456,8 @@ static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
  * A one-shot broadcast write: address nobody, send one byte, release the
  * bus. Nothing about this is an ordinary transaction from any Hub's point
  * of view -- the byte simply appears in every PCF8584's data register,
- * which is the whole of what the arbitration protocol needs (see
- * docs/notebooks/ds-hub.md's construction note and hw/i2c/pcf8584.c's
+ * which is the whole of what the arbitration protocol needs (see the
+ * project-tree datasheet's construction note and hw/i2c/pcf8584.c's
  * broadcast receiver). If nothing is listening this is a silent no-op:
  * broadcasting to an empty bus is not an error, it just has no effect, and
  * the rotation still advances next time the timer fires.
@@ -475,7 +485,7 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
 /*
  * Model choices, not measured values: the gap only needs to be long enough
  * that a poll can observe it, and the hold only needs to clear the 250us
- * threshold docs/datasheets/pcf8584-elsc.md specifies with margin. Neither
+ * threshold the project-tree datasheet specifies with margin. Neither
  * number comes from real hardware.
  */
 #define ELSC_ARB_GAP_US    50
@@ -626,6 +636,17 @@ static void elsc_realize(DeviceState *dev, Error **errp)
                              NULL, NULL, s, NULL, true);
 }
 
+static void elsc_unrealize(DeviceState *dev)
+{
+    SGIElscState *s = SGI_ELSC(dev);
+
+    /* timer_free() also cancels a pending expiry before freeing. */
+    timer_free(s->arb_timer);
+    s->arb_timer = NULL;
+    qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
+                             true);
+}
+
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
     .version_id = 3,
@@ -663,6 +684,7 @@ static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
 
     dc->desc = "SGI Origin 200 module system controller (MSC)";
     dc->realize = elsc_realize;
+    dc->unrealize = elsc_unrealize;
     dc->vmsd = &vmstate_sgi_elsc;
     device_class_set_props(dc, sgi_elsc_properties);
     rc->phases.hold = elsc_reset_hold;

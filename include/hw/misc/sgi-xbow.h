@@ -2,6 +2,8 @@
 /*
  * SGI Crossbow, the crosstalk crossbar.
  *
+ * Copyright (c) 2026 Origami contributors
+ *
  * An eight-port switch whose own register block answers as crosstalk widget 0.
  * The identity it reports there is what a guest decides the shape of the
  * machine from, so it is a property rather than a constant: an Origin 200

@@ -1,5 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
+/*
+ * The SGI machine's flight-recorder sink: a machine-installed listener the
+ * SGI devices feed before/after records into, backing x-query-origin-state.
+ * Deliberately not a generic hw/core concept -- trace events are the tree's
+ * general answer -- and an upstream posting of the PCF8584 would strip its
+ * sink along with this include.
+ */
 #ifndef HW_MISC_SGI_DIAGNOSTIC_H
 #define HW_MISC_SGI_DIAGNOSTIC_H
 
