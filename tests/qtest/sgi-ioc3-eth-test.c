@@ -22,7 +22,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "hw/pci/pci_regs.h"
 #include <sys/socket.h>
@@ -215,22 +214,20 @@
 #define RXE_BADPKT        0x20000000u
 
 /*
- * The register window is declared big-endian and this machine is not, so the
- * memory system swaps between the value a test hands it and the value the
- * device sees. Every access here goes through these two rather than through
- * qtest_readl and qtest_writel directly, because getting that swap wrong
- * produces registers that read back whatever was written and a device that
- * never does anything -- which looks like a model that ignores its inputs
- * rather than like a test with its bytes reversed.
+ * The register window is declared little-endian, like this machine, so the
+ * memory system hands the device the value a test writes without swapping it.
+ * Every access still goes through these two rather than qtest_readl/writel
+ * directly, so the window's byte order lives in one place: a window that
+ * changed endianness again would reintroduce a swap here and nowhere else.
  */
 static void ioc3_writel(QTestState *qts, uint64_t addr, uint32_t val)
 {
-    qtest_writel(qts, addr, bswap32(val));
+    qtest_writel(qts, addr, val);
 }
 
 static uint32_t ioc3_readl(QTestState *qts, uint64_t addr)
 {
-    return bswap32(qtest_readl(qts, addr));
+    return qtest_readl(qts, addr);
 }
 
 /*

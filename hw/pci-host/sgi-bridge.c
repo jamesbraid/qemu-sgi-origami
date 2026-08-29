@@ -1001,49 +1001,6 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
     return (offset & ~3u) | ((offset & 3u) ^ (4u - size));
 }
 
-/*
- * Whether the device actually answering a corrected access declares an
- * endianness that `address_space_read`/`write` would silently value-swap
- * against, on top of the address correction above.
- *
- * `address_space_read`/`write` always dispatch to whatever they reach with
- * a bare `size_memop()` — no endianness bit of its own, confirmed directly
- * in `flatview_read_continue_step`/`write_continue_step`
- * (`system/physmem.c`) — and QEMU's `adjust_endianness` then compares that
- * bare op against the target region's own declared endianness and swaps
- * the value whenever they disagree. For a region declared
- * `DEVICE_LITTLE_ENDIAN` on this fork's little-endian-host build tools run
- * on, the bare op already agrees (`MO_LE` is bit pattern zero on a
- * little-endian host) and nothing swaps — which is why the ISP1040
- * mailbox, declared exactly that, needed no correction here beyond the
- * address one. A region declared `DEVICE_BIG_ENDIAN` — IOC3's own blocks —
- * disagrees with that same bare op and gets swapped once, silently, which
- * this window's own address_space_read/write call would otherwise pass
- * straight through uncorrected. This function reads the resolved target's
- * own declaration and says whether that swap happened, so the value can be
- * undone the same way the address already is.
- */
-static bool sgi_bridge_leaf_value_was_swapped(AddressSpace *space,
-                                              hwaddr addr, unsigned int size,
-                                              bool is_write)
-{
-    hwaddr xlat = addr;
-    hwaddr len = size;
-    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
-    MemoryRegion *leaf;
-    enum device_endian end;
-    bool leaf_big_endian;
-
-    RCU_READ_LOCK_GUARD();
-    leaf = address_space_translate(space, addr, &xlat, &len, is_write, attrs);
-    if (!leaf || !leaf->ops) {
-        return false;
-    }
-    end = leaf->ops->endianness;
-    leaf_big_endian = end == DEVICE_NATIVE_ENDIAN ? target_big_endian() :
-                      end == DEVICE_BIG_ENDIAN;
-    return leaf_big_endian != (bool)HOST_BIG_ENDIAN;
-}
 
 /*
  * A device-window access, corrected if this slot needs it, then delivered
@@ -1058,17 +1015,15 @@ static bool sgi_bridge_leaf_value_was_swapped(AddressSpace *space,
  * Those two move raw bytes and apply no endianness conversion of their own
  * to the *address-corrected* transfer, which is what makes them the right
  * tool for the address half of this window — qtest's own `qtest_memread`
- * is the same call for the same reason. The buffer holds the value this
- * host's own C compiler would give a `uint64_t` variable of that value —
- * its byte order is the host's — decoded and encoded as such below,
- * because that is what a `.read`/`.write` callback's own value looks like
- * as bytes on *this machine running QEMU*. What that raw decode does not
- * see is the swap `adjust_endianness` already applied *inside* the
- * dispatch this window's own call triggers, whenever the device actually
- * answering declares a fixed endianness that disagrees with the bare op
- * `address_space_read`/`write` always use — `sgi_bridge_leaf_value_was_
- * swapped` undoes exactly that, so the value crossing this window is
- * reinterpreted no more than it would be crossing a transparent alias.
+ * is the same call for the same reason.
+ *
+ * Both windows are declared `DEVICE_LITTLE_ENDIAN` — the byte order of the
+ * PCI endpoints they front — so the memory core swaps the value once for
+ * the big-endian guest at this window's own boundary. Packing the transfer
+ * buffer big-endian below is the inverse of that swap, leaving a guest
+ * register access reinterpreted no more than it would be crossing a
+ * transparent alias, the way a raven-style little-endian PCI window behaves
+ * and with no dependence on the build host's own endianness.
  */
 static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
                                        AddressSpace *space, hwaddr addr,
@@ -1093,14 +1048,7 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
     assert(size <= sizeof(bytes));
 
     address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
-#if HOST_BIG_ENDIAN
     val = ldn_be_p(bytes, size);
-#else
-    val = ldn_le_p(bytes, size);
-#endif
-    if (sgi_bridge_leaf_value_was_swapped(space, target, size, false)) {
-        val = bswap64(val) >> (64 - size * 8);
-    }
     return val;
 }
 
@@ -1116,14 +1064,7 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
     /* The same four-byte implementation cap the read path relies on. */
     assert(size <= sizeof(bytes));
 
-    if (sgi_bridge_leaf_value_was_swapped(space, target, size, true)) {
-        val = bswap64(val) >> (64 - size * 8);
-    }
-#if HOST_BIG_ENDIAN
     stn_be_p(bytes, size, val);
-#else
-    stn_le_p(bytes, size, val);
-#endif
     address_space_write(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
 }
 
@@ -1180,7 +1121,7 @@ static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps sgi_bridge_window_mem_ops = {
     .read = sgi_bridge_window_mem_read,
     .write = sgi_bridge_window_mem_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
@@ -1190,7 +1131,7 @@ static const MemoryRegionOps sgi_bridge_window_mem_ops = {
 static const MemoryRegionOps sgi_bridge_window_io_ops = {
     .read = sgi_bridge_window_io_read,
     .write = sgi_bridge_window_io_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
