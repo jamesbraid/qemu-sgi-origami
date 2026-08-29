@@ -1555,23 +1555,21 @@ static void test_dma_swap_bits_reset_clear(const void *data)
 
 
 /*
- * The exemption, proved by identity rather than by slot.
+ * The exemption, set as a per-slot board property rather than probed by
+ * identity.
  *
- * The bridge decides which devices are exempt from the DMA correction by PCI
- * vendor and device id, so the test makes one device wear two identities in
- * the same slot. Moving a real part into a slot instead would test the slot as
- * much as the rule, and would not have shown the pair below diverging.
- *
- * Both halves run because bytes-identical is also what a test that never wrote
- * the swap bit produces, and what a transfer that never happened produces. The
- * non-exempt twin is what makes the exempt result mean something.
+ * The Bridge exempts a slot from the DMA correction when the board's
+ * byte-lane-exempt bitmask carries that slot's bit. The test puts one plain
+ * device in the slot and exempts it with -global, then runs the same device in
+ * the same slot unexempted -- the non-exempt twin is what makes the exempt
+ * result mean something, since bytes-identical is also what a test that never
+ * wrote the swap bit, or a transfer that never happened, would produce.
  */
 #define MASQ_SLOT               7
-#define MASQ_CARD_BASE          " -device sgi-bridge-dma-test,addr=" \
+#define MASQ_CARD               " -device sgi-bridge-dma-test,addr=" \
                                 stringify(MASQ_SLOT)
-#define MASQ_CARD_EXEMPT        MASQ_CARD_BASE ",vendor-id=0x10A9" \
-                                ",device-id=0x0003"
-#define MASQ_CARD_PLAIN         MASQ_CARD_BASE
+/* Exempt slot 7 -- bit 7 -- from the Bridge's byte-lane correction. */
+#define MASQ_EXEMPT             " -global sgi-bridge.byte-lane-exempt=0x80"
 
 static void masq_start(QTestState *qts)
 {
@@ -1590,9 +1588,9 @@ static void masq_transfer(QTestState *qts, uint32_t addr, uint32_t len)
     qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_GO, 1);
 }
 
-static void test_dma_exempt_identity_is_never_swapped(const void *data)
+static void test_dma_exempt_slot_is_never_swapped(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD_EXEMPT);
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD MASQ_EXEMPT);
     uint8_t seen[SWAP_LEN];
     unsigned int i;
     uint32_t dev;
@@ -1630,13 +1628,14 @@ static void test_dma_exempt_identity_is_never_swapped(const void *data)
 }
 
 /*
- * The same device, same slot, same transfer, with only its identity changed.
+ * The same device, same slot, same transfer, with only the exemption dropped.
  * This one IS permuted, which is what says the exemption above came from the
- * identity rather than from the test never having exercised the correction.
+ * board property rather than from the test never having exercised the
+ * correction.
  */
-static void test_dma_plain_identity_in_the_same_slot_is_swapped(const void *data)
+static void test_dma_unexempt_slot_is_swapped(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD_PLAIN);
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD);
     uint8_t seen[SWAP_LEN];
     unsigned int i;
 
@@ -1699,18 +1698,18 @@ static bool bridge_log_has_the_message(const char *extra_device,
 static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
 {
     /* The configuration itself. */
-    g_assert_true(bridge_log_has_the_message(MASQ_CARD_EXEMPT,
+    g_assert_true(bridge_log_has_the_message(MASQ_CARD MASQ_EXEMPT,
                                              DEV_SWAP_TRANSLATED));
-    g_assert_true(bridge_log_has_the_message(MASQ_CARD_EXEMPT,
+    g_assert_true(bridge_log_has_the_message(MASQ_CARD MASQ_EXEMPT,
                                              DEV_SWAP_DIRECT));
 
     /*
      * Same bits, same slot, same register write -- a device the model does
      * correct. Nothing to report, because this one works.
      */
-    g_assert_false(bridge_log_has_the_message(MASQ_CARD_PLAIN,
+    g_assert_false(bridge_log_has_the_message(MASQ_CARD,
                                               DEV_SWAP_TRANSLATED));
-    g_assert_false(bridge_log_has_the_message(MASQ_CARD_PLAIN,
+    g_assert_false(bridge_log_has_the_message(MASQ_CARD,
                                               DEV_SWAP_DIRECT));
 
     /*
@@ -1718,7 +1717,7 @@ static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
      * every guest actually does. A model keying on the write rather than on
      * what the write asked for would fail here.
      */
-    g_assert_false(bridge_log_has_the_message(MASQ_CARD_EXEMPT, 0));
+    g_assert_false(bridge_log_has_the_message(MASQ_CARD MASQ_EXEMPT, 0));
 }
 
 
@@ -3272,10 +3271,10 @@ int main(int argc, char **argv)
                         test_dma_unaligned_start);
     qtest_add_data_func("sn0/bridge/dma-swap-bits-reset-clear", NULL,
                         test_dma_swap_bits_reset_clear);
-    qtest_add_data_func("sn0/bridge/dma-exempt-identity-is-never-swapped", NULL,
-                        test_dma_exempt_identity_is_never_swapped);
-    qtest_add_data_func("sn0/bridge/dma-plain-identity-same-slot-is-swapped",
-                        NULL, test_dma_plain_identity_in_the_same_slot_is_swapped);
+    qtest_add_data_func("sn0/bridge/dma-exempt-slot-is-never-swapped", NULL,
+                        test_dma_exempt_slot_is_never_swapped);
+    qtest_add_data_func("sn0/bridge/dma-unexempt-slot-is-swapped",
+                        NULL, test_dma_unexempt_slot_is_swapped);
     qtest_add_data_func("sn0/bridge/dma-swap-on-an-exempt-slot-is-reported",
                         NULL, test_dma_swap_on_an_exempt_slot_is_reported);
     qtest_add_data_func("sn0/bridge/dma-direct-window-swap-clear", NULL,

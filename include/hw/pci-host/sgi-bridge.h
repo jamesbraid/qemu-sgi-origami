@@ -146,6 +146,14 @@ struct SGIBridgeState {
     hwaddr device_window_base[SGI_BRIDGE_DEVICES];
 
     /*
+     * A bitmask of the device slots exempt from the byte-lane correction, one
+     * bit per slot. The board sets a slot's bit when the part it places there
+     * is one a compatibility policy exempts, so the Bridge resolves the policy
+     * from this rather than probing each device's PCI identity per access.
+     */
+    uint32_t byte_lane_exempt;
+
+    /*
      * What a window's read/write callback needs to know beyond the value and
      * the address a guest issued: which slot it is and, through that, this
      * chip as a whole. One of these backs every window, memory and I/O alike,
