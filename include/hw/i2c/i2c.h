@@ -9,6 +9,9 @@
    defer their response (eg. CPU slave interfaces where the data is supplied
    by the device driver in response to an interrupt).  */
 
+/* A transfer to this address is a general call and reaches every slave. */
+#define I2C_BROADCAST 0x00
+
 enum i2c_event {
     I2C_START_RECV,
     I2C_START_SEND,

@@ -15,6 +15,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 
 /*
  * Which register the A0-low address selects. ESO picks between the working
@@ -68,7 +69,7 @@ static void pcf8584_update_irq(PCF8584State *s)
      * honest rather than because anything drives it today.
      */
     bool level = (s->control & PCF8584_CTL_ENI) &&
-                 !(s->status & I2C_PCF_PIN);
+                 !(s->status & PCF8584_STS_PIN);
 
     qemu_set_irq(s->irq, level);
 }
@@ -76,17 +77,18 @@ static void pcf8584_update_irq(PCF8584State *s)
 /* Mark the byte transfer finished, recording whether the far end acked. */
 static void pcf8584_complete(PCF8584State *s, bool nacked)
 {
-    s->status &= ~I2C_PCF_PIN;
+    s->status &= ~PCF8584_STS_PIN;
     if (nacked) {
-        s->status |= I2C_PCF_LRB;
+        s->status |= PCF8584_STS_LRB;
     } else {
-        s->status &= ~I2C_PCF_LRB;
+        s->status &= ~PCF8584_STS_LRB;
     }
     pcf8584_update_irq(s);
 }
 
 static void pcf8584_stop(PCF8584State *s)
 {
+    trace_pcf8584_stop();
     if (s->transfer) {
         i2c_end_transfer(s->bus);
     }
@@ -94,7 +96,7 @@ static void pcf8584_stop(PCF8584State *s)
     s->recv = false;
     s->start_pending = false;
     s->start_address_staged = false;
-    s->status |= I2C_PCF_BB;
+    s->status |= PCF8584_STS_BB;
 }
 
 /*
@@ -131,14 +133,25 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
      */
     if (s->transfer && addr7 != s->cur_addr7) {
         i2c_end_transfer(s->bus);
+        s->transfer = false;
     }
     s->cur_addr7 = addr7;
 
     s->recv = recv;
-    s->status &= ~I2C_PCF_BB;
+    s->status &= ~PCF8584_STS_BB;
 
     rc = i2c_start_transfer(s->bus, addr7, recv);
-    s->transfer = true;
+    if (rc && s->transfer) {
+        /*
+         * A same-address repeated start the matched slave refused. The
+         * core leaves such a transfer open for the caller to terminate
+         * (hw/i2c/core.c's contract), and holding it open would keep
+         * i2c_bus_busy() true against the arbitration broadcast forever.
+         */
+        i2c_end_transfer(s->bus);
+    }
+    s->transfer = rc == 0;
+    trace_pcf8584_start(addr7, recv, rc == 0);
 
     if (rc) {
         /*
@@ -173,10 +186,11 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
         return;
     }
 
-    if (!s->transfer) {
+    if (s->status & PCF8584_STS_BB) {
         /*
-         * Not an error: this is the address byte being staged ahead of the
-         * control write that will generate the start.
+         * Bus free -- no transaction is open. Not an error: this is the
+         * address byte being staged ahead of the control write that will
+         * generate the start.
          */
         s->data = val;
         s->start_address_staged = true;
@@ -189,8 +203,19 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
         return;
     }
 
-    s->status |= I2C_PCF_PIN;
-    rc = i2c_send(s->bus, val);
+    s->status |= PCF8584_STS_PIN;
+    if (s->transfer) {
+        rc = i2c_send(s->bus, val);
+    } else {
+        /*
+         * The start was refused, so the byte goes out on a wire nobody
+         * acknowledges. i2c_send() over the core's empty matched list
+         * would report success -- the loop body never runs -- which is
+         * why the refusal is remembered rather than asked again.
+         */
+        rc = -1;
+    }
+    trace_pcf8584_send(val, rc == 0);
     s->data = val;
     pcf8584_complete(s, rc != 0);
 }
@@ -208,9 +233,11 @@ static uint8_t pcf8584_read_data(PCF8584State *s)
          */
         if (!(s->control & PCF8584_CTL_ACK)) {
             /* ACK cleared means the driver wants this to be the last byte. */
+            trace_pcf8584_nack();
             i2c_nack(s->bus);
         }
         s->data = i2c_recv(s->bus);
+        trace_pcf8584_recv(s->data);
         pcf8584_complete(s, false);
     }
 
@@ -230,18 +257,18 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
          * to select a configuration register, so it must not disturb a
          * transfer by itself.
          */
-        s->status |= I2C_PCF_PIN;
-        s->status &= ~(I2C_PCF_BER | I2C_PCF_LAB | I2C_PCF_AAS);
+        s->status |= PCF8584_STS_PIN;
+        s->status &= ~(PCF8584_STS_BER | PCF8584_STS_LAB | PCF8584_STS_AAS);
     }
 
     if (val & PCF8584_CTL_STA) {
-        if (s->transfer) {
+        if (!(s->status & PCF8584_STS_BB)) {
             /* Repeated start: the address byte has not been written yet. */
             s->start_pending = true;
-            s->status |= I2C_PCF_PIN;
+            s->status |= PCF8584_STS_PIN;
         } else {
             /* First start: the address is already staged in the register. */
-            s->status |= I2C_PCF_PIN;
+            s->status |= PCF8584_STS_PIN;
             pcf8584_start(s, s->data);
         }
         return;
@@ -249,7 +276,7 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
 
     if (val & PCF8584_CTL_STO) {
         pcf8584_stop(s);
-        s->status |= I2C_PCF_PIN;
+        s->status |= PCF8584_STS_PIN;
         pcf8584_update_irq(s);
         return;
     }
@@ -274,7 +301,7 @@ static uint64_t pcf8584_read_internal(void *opaque, hwaddr addr,
         if (s->control & PCF8584_CTL_ESO) {
             return s->status;
         }
-        return (s->control & ~I2C_PCF_PIN) | (s->status & I2C_PCF_PIN);
+        return (s->control & ~PCF8584_STS_PIN) | (s->status & PCF8584_STS_PIN);
     }
 
     switch (pcf8584_selected(s)) {
@@ -332,13 +359,16 @@ static uint64_t pcf8584_read(void *opaque, hwaddr addr, unsigned size)
     uint64_t after;
 
     if (likely(!s->diagnostic)) {
-        return pcf8584_read_internal(opaque, addr, size);
+        value = pcf8584_read_internal(opaque, addr, size);
+        trace_pcf8584_read(addr, value, size);
+        return value;
     }
 
     before = pcf8584_diagnostic_state(s);
     value = pcf8584_read_internal(opaque, addr, size);
     after = pcf8584_diagnostic_state(s);
 
+    trace_pcf8584_read(addr, value, size);
     device_diagnostic_record(s->diagnostic, "pcf8584", "mmio-read",
                              addr, value, size, true, before, after);
     return value;
@@ -350,6 +380,8 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
     PCF8584State *s = PCF8584(opaque);
     uint64_t before;
     uint64_t after;
+
+    trace_pcf8584_write(addr, val, size);
 
     if (likely(!s->diagnostic)) {
         pcf8584_write_internal(opaque, addr, val, size);
@@ -381,15 +413,18 @@ static const MemoryRegionOps pcf8584_ops = {
 };
 
 /*
- * The system controller reaches every node's chip the way a real
- * multi-master I2C bus has to: it addresses nobody and broadcasts. QEMU's
- * I2C core already delivers a broadcast to every child of the bus a
- * transfer's address names as the broadcast address (hw/i2c/core.c's default
- * match_and_add adds any slave once broadcast is set, regardless of its own
- * address), so this chip only needs a slave-side receiver sitting on its own
- * bus to catch one. The receiver carries no state of its own to migrate --
- * the byte it captures is written straight into the chip's data register,
- * which is already part of the chip's own vmstate.
+ * The chip's slave half, as a helper device on its own bus. It catches
+ * two kinds of transfer. The system controller reaches every node's chip
+ * the way a real multi-master I2C bus has to -- it addresses nobody and
+ * broadcasts -- and QEMU's I2C core delivers a broadcast to every child
+ * of the bus regardless of address, so a receiver merely has to exist to
+ * catch one. And a transfer directed at the address the guest programmed
+ * into S0' is the chip being addressed as a slave, which it must
+ * acknowledge and report through the AAS status bit. The helper carries
+ * no state of its own to migrate -- the byte it captures is written
+ * straight into the chip's data register, which is already part of the
+ * chip's own vmstate, and the address it answers is read live from the
+ * chip's own-address register.
  */
 #define TYPE_PCF8584_BCAST_RX "pcf8584-broadcast-rx"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584BcastRxState, PCF8584_BCAST_RX)
@@ -398,6 +433,39 @@ struct PCF8584BcastRxState {
     I2CSlave parent_obj;
     PCF8584State *chip;
 };
+
+/*
+ * Consulting the chip's own-address register at match time, rather than
+ * mirroring it into this device's address property, is what keeps reset
+ * and migration from needing to copy it back.
+ */
+static bool pcf8584_bcast_rx_match_and_add(I2CSlave *candidate,
+                                           uint8_t address, bool broadcast,
+                                           I2CNodeList *current_devs)
+{
+    PCF8584BcastRxState *rx = PCF8584_BCAST_RX(candidate);
+    I2CNode *node;
+
+    if (!broadcast && address != rx->chip->own_address) {
+        return false;
+    }
+
+    node = g_new(struct I2CNode, 1);
+    node->elt = candidate;
+    QLIST_INSERT_HEAD(current_devs, node, next);
+    return true;
+}
+
+static int pcf8584_bcast_rx_event(I2CSlave *dev, enum i2c_event event)
+{
+    PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
+
+    /* Addressed as slave: a directed hit on S0' or the general call. */
+    if (event == I2C_START_SEND || event == I2C_START_RECV) {
+        rx->chip->status |= PCF8584_STS_AAS;
+    }
+    return 0;
+}
 
 static int pcf8584_bcast_rx_send(I2CSlave *dev, uint8_t data)
 {
@@ -419,15 +487,10 @@ static void pcf8584_bcast_rx_class_init(ObjectClass *klass, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
 
+    sc->match_and_add = pcf8584_bcast_rx_match_and_add;
+    sc->event = pcf8584_bcast_rx_event;
     sc->send = pcf8584_bcast_rx_send;
 }
-
-static const TypeInfo pcf8584_bcast_rx_type = {
-    .name          = TYPE_PCF8584_BCAST_RX,
-    .parent        = TYPE_I2C_SLAVE,
-    .instance_size = sizeof(PCF8584BcastRxState),
-    .class_init    = pcf8584_bcast_rx_class_init,
-};
 
 static void pcf8584_reset_hold(Object *obj, ResetType type)
 {
@@ -439,7 +502,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->data = 0;
     s->control = 0;
     /* Out of reset the chip is idle and the bus is free. */
-    s->status = I2C_PCF_PIN | I2C_PCF_BB;
+    s->status = PCF8584_STS_PIN | PCF8584_STS_BB;
     s->transfer = false;
     s->recv = false;
     s->start_pending = false;
@@ -503,13 +566,12 @@ static const TypeInfo pcf8584_types[] = {
         .instance_size = sizeof(PCF8584State),
         .class_init    = pcf8584_class_init,
     },
+    {
+        .name          = TYPE_PCF8584_BCAST_RX,
+        .parent        = TYPE_I2C_SLAVE,
+        .instance_size = sizeof(PCF8584BcastRxState),
+        .class_init    = pcf8584_bcast_rx_class_init,
+    },
 };
 
 DEFINE_TYPES(pcf8584_types)
-
-static void pcf8584_bcast_rx_register(void)
-{
-    type_register_static(&pcf8584_bcast_rx_type);
-}
-
-type_init(pcf8584_bcast_rx_register)

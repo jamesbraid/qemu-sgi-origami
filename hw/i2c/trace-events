@@ -61,3 +61,13 @@ pca954x_read_data(uint8_t value) "PCA954X read data: 0x%02x"
 
 imx_i2c_read(const char *id, const char *reg, uint64_t ofs, uint64_t value) "%s:[%s (0x%" PRIx64 ")] -> 0x%02" PRIx64
 imx_i2c_write(const char *id, const char *reg, uint64_t ofs, uint64_t value) "%s:[%s (0x%" PRIx64 ")] <- 0x%02" PRIx64
+
+# pcf8584.c
+
+pcf8584_read(uint64_t offset, uint64_t value, unsigned size) "offset: 0x%" PRIx64 " value: 0x%02" PRIx64 " size: %u"
+pcf8584_write(uint64_t offset, uint64_t value, unsigned size) "offset: 0x%" PRIx64 " value: 0x%02" PRIx64 " size: %u"
+pcf8584_start(uint8_t address, int recv, int success) "sending address: 0x%02x, recv: %d, success: %d"
+pcf8584_send(uint8_t value, int success) "send byte: 0x%02x, success: %d"
+pcf8584_recv(uint8_t value) "recv byte: 0x%02x"
+pcf8584_nack(void) "nacking"
+pcf8584_stop(void) "stopping"

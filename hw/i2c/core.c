@@ -16,8 +16,6 @@
 #include "qemu/main-loop.h"
 #include "trace.h"
 
-#define I2C_BROADCAST 0x00
-
 static const Property i2c_props[] = {
     DEFINE_PROP_UINT8("address", struct I2CSlave, address, 0),
 };
