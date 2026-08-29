@@ -51,6 +51,23 @@ typedef struct {
 /* The memory size the fields below describe. */
 #define SN0_MODEL_RAM_MB 128
 
+/* Installed hardware identity and board-record namespaces. */
+#define SN0_MODEL_CPU_PRID 0x926
+#define SN0_MODEL_FPU_PRID 0x900
+#define SN0_MODEL_HUB_NI_REVISION 0x3
+#define SN0_MODEL_HUB_WIDGET_REVISION 0x1
+#define SN0_MODEL_HUB_KLCONFIG_REVISION 0x3
+#define SN0_MODEL_BRIDGE_REVISION 0x4
+#define SN0_MODEL_IOC3_PCI_REVISION 0x1
+#define SN0_MODEL_ISP1040_PCI_REVISION 0x5
+#define SN0_MODEL_ISP1040_HARDWARE_REVISION 0x6
+#define SN0_MODEL_CPU_CLOCK_MHZ 0xb4
+#define SN0_MODEL_HUB_CLOCK_HZ 0x55d4a80
+#define SN0_MODEL_L2_CACHE_MB 0x1
+#define SN0_MODEL_NODE_BOARD_VERSION 0x3
+#define SN0_MODEL_MIDPLANE_BOARD_VERSION 0x2
+#define SN0_MODEL_BASE_IO_BOARD_VERSION 0x2
+
 /* Every field the configuration graph must carry. */
 static const SN0ModelField sn0_model_graph[] = {
     { 0x00004000, 8, 0xbeedbabeULL, "config_header.signature" },

@@ -73,6 +73,9 @@
     "-M origin200 " SN0_DUAL_CHASSIS_TOPOLOGY
 
 #define SN0_SPACE_XTALK         0x20000000000ULL
+#define SN0_HUB_BY_NODE(node)   (SN0_SPACE_XTALK + \
+                                 (uint64_t)(node) * SN0_NODE_STRIDE + \
+                                 SN0_HUB_NODE_WINDOW)
 #define SN0_BRIDGE_WIDGET       8
 #define SN0_BRIDGE_BASE(node)   (SN0_SPACE_XTALK + \
                                  (uint64_t)(node) * SN0_NODE_STRIDE + \
@@ -469,27 +472,37 @@ static void test_baseline_cpu_identity(const void *data)
     g_unlink(kernel);
 }
 
+void sn0_model_assert_device_identity(QTestState *qts, unsigned int node,
+                                      const SN0ModelDeviceIdentity *expected)
+{
+    uint64_t hub = SN0_HUB_BY_NODE(node);
+    uint64_t ni = qtest_readq(qts, hub + SN0_NI_STATUS);
+    uint64_t hub_widget = qtest_readq(qts,
+                                      hub + SN0_IO_WIDGET_ID);
+    uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(node) + 4);
+
+    g_assert_cmpuint((ni >> 4) & 0xf, ==, expected->hub_ni_revision);
+    g_assert_cmpuint((hub_widget >> 28) & 0xf, ==,
+                     expected->hub_widget_revision);
+    g_assert_cmpuint(bridge >> 28, ==, expected->bridge_revision);
+    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) +
+                                      SN0_PCI_REVISION_ID) & 0xff, ==,
+                     expected->ioc3_pci_revision);
+    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_SCSI_DEVICE0) +
+                                      SN0_PCI_REVISION_ID) & 0xff, ==,
+                     expected->isp1040_pci_revision);
+    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_SCSI_DEVICE1) +
+                                      SN0_PCI_REVISION_ID) & 0xff, ==,
+                     expected->isp1040_pci_revision);
+}
+
 static void test_baseline_device_identity(const void *data)
 {
+    const SN0ModelDeviceIdentity expected =
+        SN0_MODEL_DEVICE_IDENTITY_INIT;
     QTestState *qts = qtest_init("-M origin200");
-    uint64_t ni = qtest_readq(qts, SN0_HUB_LOCAL + SN0_NI_STATUS);
-    uint64_t hub_widget = qtest_readq(qts,
-                                      SN0_HUB_LOCAL + SN0_IO_WIDGET_ID);
-    uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(0) + 4);
 
-    g_assert_cmpuint((ni >> 4) & 0xf, ==, SN0_MODEL_HUB_NI_REVISION);
-    g_assert_cmpuint((hub_widget >> 28) & 0xf, ==,
-                     SN0_MODEL_HUB_WIDGET_REVISION);
-    g_assert_cmpuint(bridge >> 28, ==, SN0_MODEL_BRIDGE_REVISION);
-    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(0, SN0_IOC3_DEVICE) +
-                                      SN0_PCI_REVISION_ID) & 0xff, ==,
-                     SN0_MODEL_IOC3_PCI_REVISION);
-    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(0, SN0_SCSI_DEVICE0) +
-                                      SN0_PCI_REVISION_ID) & 0xff, ==,
-                     SN0_MODEL_ISP1040_PCI_REVISION);
-    g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(0, SN0_SCSI_DEVICE1) +
-                                      SN0_PCI_REVISION_ID) & 0xff, ==,
-                     SN0_MODEL_ISP1040_PCI_REVISION);
+    sn0_model_assert_device_identity(qts, 0, &expected);
     qtest_quit(qts);
 }
 
@@ -879,14 +892,34 @@ static bool sn0_model_profile_paths_match(const SN0ModelDevice *expected,
                                           size_t expected_count,
                                           GHashTable *actual)
 {
+    g_autoptr(GHashTable) expected_paths =
+        g_hash_table_new(g_str_hash, g_str_equal);
+    g_autoptr(GHashTable) expected_types =
+        g_hash_table_new(g_str_hash, g_str_equal);
+    GHashTableIter iter;
+    gpointer key;
+    gpointer value;
     size_t i;
 
     for (i = 0; i < expected_count; i++) {
         const char *actual_type = g_hash_table_lookup(actual,
                                                       expected[i].qom_path);
 
+        if (!g_hash_table_add(expected_paths,
+                              (gpointer)expected[i].qom_path)) {
+            return false;
+        }
+        g_hash_table_add(expected_types, (gpointer)expected[i].qom_type);
         if (!actual_type ||
             !g_str_equal(actual_type, expected[i].qom_type)) {
+            return false;
+        }
+    }
+
+    g_hash_table_iter_init(&iter, actual);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (g_hash_table_contains(expected_types, value) &&
+            !g_hash_table_contains(expected_paths, key)) {
             return false;
         }
     }
@@ -908,9 +941,49 @@ static void test_profile_path_isolation(const void *data)
     g_assert_false(sn0_model_profile_paths_match(
         expected, ARRAY_SIZE(expected), actual));
 
+    g_hash_table_remove(actual, "/machine/outside-hub");
     g_hash_table_insert(actual, g_strdup("/machine/node1/hub"),
                         g_strdup("sgi-hub"));
     g_assert_true(sn0_model_profile_paths_match(
+        expected, ARRAY_SIZE(expected), actual));
+}
+
+static void test_profile_path_rejects_extra_selected_type(const void *data)
+{
+    static const SN0ModelDevice expected[] = {
+        {
+            "node1-hub", "Hub", "sgi-hub", "/machine/node1/hub",
+        },
+    };
+    g_autoptr(GHashTable) actual =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    g_hash_table_insert(actual, g_strdup("/machine/node1/hub"),
+                        g_strdup("sgi-hub"));
+    g_hash_table_insert(actual, g_strdup("/machine/outside-hub"),
+                        g_strdup("sgi-hub"));
+
+    g_assert_false(sn0_model_profile_paths_match(
+        expected, ARRAY_SIZE(expected), actual));
+}
+
+static void test_profile_path_rejects_duplicate_expectations(const void *data)
+{
+    static const SN0ModelDevice expected[] = {
+        {
+            "node1-hub", "Hub", "sgi-hub", "/machine/node1/hub",
+        },
+        {
+            "duplicate-hub", "Hub", "sgi-hub", "/machine/node1/hub",
+        },
+    };
+    g_autoptr(GHashTable) actual =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+    g_hash_table_insert(actual, g_strdup("/machine/node1/hub"),
+                        g_strdup("sgi-hub"));
+
+    g_assert_false(sn0_model_profile_paths_match(
         expected, ARRAY_SIZE(expected), actual));
 }
 
@@ -1042,6 +1115,19 @@ void sn0_model_assert_object_graph(QTestState *qts, const char *machine_type,
     g_hash_table_destroy(actual);
 }
 
+static unsigned int generated_qom_count(const char *type)
+{
+    unsigned int count = 0;
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(sn0_model_devices); i++) {
+        if (g_str_equal(sn0_model_devices[i].qom_type, type)) {
+            count++;
+        }
+    }
+    return count;
+}
+
 /*
  * Every device the model says is built, at the exact frequency selected by
  * this machine profile. A matching type elsewhere in the object graph cannot
@@ -1051,6 +1137,12 @@ static void test_object_graph(const void *data)
 {
     QTestState *qts = qtest_initf("-M %s -m %dM",
                                   SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
+
+    g_assert_cmpuint(generated_qom_count("sgi-hub"), ==, 1);
+    g_assert_cmpuint(generated_qom_count("sgi-bridge"), ==, 1);
+    g_assert_cmpuint(generated_qom_count("sgi-ioc3"), ==, 1);
+    g_assert_cmpuint(generated_qom_count("qlogic-isp1040"), ==, 2);
+    g_assert_cmpuint(generated_qom_count("R10000-mips64-cpu"), ==, 1);
 
     sn0_model_assert_object_graph(qts, SN0_MODEL_MACHINE_TYPE,
                                   sn0_model_devices,
@@ -1167,6 +1259,14 @@ static void test_one_node_smp(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200 -smp 2");
     QDict *response;
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                              " 'arguments': { 'path': '/machine/node0/cpu0',"
+                              "                  'property': 'type' } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "R10000-mips64-cpu");
+    qobject_unref(response);
 
     response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
                               " 'arguments': { 'path': '/machine/node0/cpu1',"
@@ -1287,8 +1387,7 @@ static void test_dual_chassis_numa(const void *data)
     QList *cpus;
     QObject *entry;
     unsigned int seen = 0;
-    uint64_t node1_hub = SN0_HUB_LOCAL + SN0_NODE_STRIDE +
-                         (SN0_HUB_NODE_WINDOW - 0x01000000ULL);
+    uint64_t node1_hub = SN0_HUB_BY_NODE(1);
     uint64_t status;
 
     response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
@@ -1659,10 +1758,18 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
     qtest_add_data_func("sn0/model/profile-path-isolation", NULL,
                         test_profile_path_isolation);
+    qtest_add_data_func("sn0/model/profile-path-extra-selected-type", NULL,
+                        test_profile_path_rejects_extra_selected_type);
+    qtest_add_data_func("sn0/model/profile-path-duplicate-expectation", NULL,
+                        test_profile_path_rejects_duplicate_expectations);
     qtest_add_data_func("sn0/model/dual-config-graphs", NULL,
                         sn0_model_test_dual_config_graph);
+    qtest_add_data_func("sn0/model/dual-device-identity", NULL,
+                        sn0_model_test_dual_device_identity);
     qtest_add_data_func("sn0/model/dual-object-graph", NULL,
                         sn0_model_test_dual_object_graph);
+    qtest_add_data_func("sn0/model/dual-divergence-masking", NULL,
+                        sn0_model_test_dual_divergence_masking);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
