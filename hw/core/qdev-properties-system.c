@@ -564,6 +564,10 @@ void qdev_prop_set_netdev(DeviceState *dev, const char *name,
 void qdev_set_nic_properties(DeviceState *dev, NICInfo *nd)
 {
     qdev_prop_set_macaddr(dev, "mac", nd->macaddr.a);
+    if (nd->mac_generated &&
+        object_property_find(OBJECT(dev), "mac-generated")) {
+        qdev_prop_set_bit(dev, "mac-generated", true);
+    }
     if (nd->netdev) {
         qdev_prop_set_netdev(dev, "netdev", nd->netdev);
     }

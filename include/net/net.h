@@ -309,8 +309,7 @@ GPtrArray *qemu_get_nic_models(const char *device_type);
 
 struct NICInfo {
     MACAddr macaddr;
-    /* Whether the command line supplied macaddr rather than accepting one. */
-    bool macaddr_explicit;
+    bool mac_generated; /* macaddr came from the default generator, not mac= */
     char *model;
     char *name;
     char *devaddr;

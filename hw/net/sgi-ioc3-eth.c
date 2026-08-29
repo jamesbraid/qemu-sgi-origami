@@ -1088,6 +1088,13 @@ static const MemoryRegionOps sgi_ioc3_enet_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool sgi_ioc3_eth_mac_unset(const MACAddr *mac)
+{
+    static const MACAddr zero = { };
+
+    return memcmp(mac, &zero, sizeof(*mac)) == 0;
+}
+
 static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(dev);
@@ -1114,13 +1121,22 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     }
 
     /*
-     * The network backend. Its address has no relation to what a guest's
-     * driver believes its own station address is -- that comes from the
-     * one-wire bus behind the parent chip's MicroLAN engine -- so a default
-     * here costs nothing real hardware would have supplied differently:
-     * nothing on this path reads it back.
+     * The network backend. A guest learns its station address from the
+     * one-wire part behind the parent chip's MicroLAN engine, and that part
+     * answers with this address -- so an address nobody chose takes QEMU's
+     * generated suffix under SGI's OUI, the prefix the firmware expects a
+     * real part to carry before it starts the network loader. A -nic line
+     * without mac= arrives here already generated, which mac-generated
+     * reports -- the address bytes alone cannot, since mac= may name any
+     * value, the generator's own range included. An explicit mac= is a
+     * replacement part's programmed identity and stays intact.
      */
-    qemu_macaddr_default_if_unset(&s->conf.macaddr);
+    if (sgi_ioc3_eth_mac_unset(&s->conf.macaddr) || s->mac_generated) {
+        qemu_macaddr_default_if_unset(&s->conf.macaddr);
+        s->conf.macaddr.a[0] = 0x08;
+        s->conf.macaddr.a[1] = 0x00;
+        s->conf.macaddr.a[2] = 0x69;
+    }
     s->nic = qemu_new_nic(&sgi_ioc3_eth_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), dev->id,
                           &dev->mem_reentrancy_guard, s);
@@ -1188,6 +1204,7 @@ static const VMStateDescription vmstate_sgi_ioc3_eth = {
 
 static const Property sgi_ioc3_eth_properties[] = {
     DEFINE_NIC_PROPERTIES(SGIIOC3EthState, conf),
+    DEFINE_PROP_BOOL("mac-generated", SGIIOC3EthState, mac_generated, false),
     DEFINE_PROP_LINK("dma-memory", SGIIOC3EthState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };

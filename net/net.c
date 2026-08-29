@@ -1041,7 +1041,7 @@ static int net_init_nic(const Netdev *netdev, const char *name,
         nd->devaddr = g_strdup(nic->addr);
     }
 
-    nd->macaddr_explicit = nic->macaddr != NULL;
+    nd->mac_generated = nic->macaddr == NULL;
     if (nic->macaddr &&
         net_parse_macaddr(nd->macaddr.a, nic->macaddr) < 0) {
         error_setg(errp, "invalid syntax for ethernet address");
@@ -1915,7 +1915,7 @@ static int net_param_nic(void *dummy, QemuOpts *opts, Error **errp)
 
     /* Handle MAC address */
     mac = qemu_opt_get_del(opts, "mac");
-    ni->macaddr_explicit = mac != NULL;
+    ni->mac_generated = mac == NULL;
     if (mac) {
         ret = net_parse_macaddr(ni->macaddr.a, mac);
         g_free(mac);

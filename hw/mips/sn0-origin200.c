@@ -140,8 +140,6 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
 static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 {
     PCIDevice *ioc3;
-    MACAddr mac = { };
-    NICInfo *nd;
     unsigned int slot;
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
@@ -164,27 +162,6 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
      */
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
                          SGI_IOC3_ONEWIRE_SERIAL + node_index);
-
-    /*
-     * Each controller claims its host network backend itself, so the board
-     * only adjusts the automatic address before that claim: QEMU supplies the
-     * unique suffix, while an on-board IOC3 needs SGI's OUI because the PROM
-     * reads it from the one-wire part before it starts the network loader. An
-     * explicit mac= is a replacement part's programmed identity and stays
-     * intact. An unbacked controller still has that physical identity.
-     */
-    nd = qemu_find_nic_info(TYPE_SGI_IOC3_ETH, true, NULL);
-    if (nd && !nd->macaddr_explicit) {
-        nd->macaddr.a[0] = 0x08;
-        nd->macaddr.a[1] = 0x00;
-        nd->macaddr.a[2] = 0x69;
-    } else if (!nd) {
-        qemu_macaddr_default_if_unset(&mac);
-        mac.a[0] = 0x08;
-        mac.a[1] = 0x00;
-        mac.a[2] = 0x69;
-        qdev_prop_set_macaddr(DEVICE(ioc3), "mac", mac.a);
-    }
 
     /*
      * The timekeeper's battery, optional and per node: each base I/O board
