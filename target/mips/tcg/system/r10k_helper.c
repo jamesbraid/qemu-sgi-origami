@@ -444,7 +444,7 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
 #if defined(TARGET_MIPS64)
     target_ulong mask, VPN;
     uint16_t ASID;
-    bool G, conflict = false;
+    bool G, conflict = false, translating = false;
     int i;
 
     /* 1k pages are not supported. */
@@ -466,12 +466,24 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
         if (!G && !tlb->G && tlb->ASID != ASID) {
             continue;
         }
+        /*
+         * Only an entry that could translate leaves anything behind to
+         * discard. The guest writes invalid entries sharing one page
+         * number as a matter of course -- a context switch installs
+         * several from a table whose unused slots hold the same sentinel
+         * -- and those still count as matches, so they are still
+         * invalidated and still recorded, but flushing for them would
+         * throw away every cached translation to remove none.
+         */
+        translating |= tlb->V0 || tlb->V1;
         tlb->EHINV = 1;
         conflict = true;
     }
 
     if (conflict) {
         env->CP0_Status |= 1 << CP0St_TS;
+    }
+    if (translating) {
         /*
          * An invalidated entry may live on as a shadow copy, and its pages
          * may be in QEMU's own TLB: discard both, or a stale translation
