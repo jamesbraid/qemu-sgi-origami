@@ -4140,6 +4140,26 @@ static void sn0_init(MachineState *machine)
         }
 
         /*
+         * A 32-bit ELF's entry point is the low half of a compatibility
+         * address: bit 31 set means the missing upper word is all ones, not
+         * all zeros, and load_elf() zero-extends it. Sign-extend so a kernel
+         * linked in the 0x8xxxxxxx range is handed off at its canonical
+         * address rather than an unmapped low one. Only for a 32-bit ELF: a
+         * 64-bit one carries the whole address already, and truncating it
+         * would destroy any entry outside the compatibility segment.
+         */
+        bool elf_is_64 = false;
+        union {
+            Elf32_Ehdr h32;
+            Elf64_Ehdr h64;
+        } ehdr;
+
+        if (load_elf_hdr(machine->kernel_filename, &ehdr, &elf_is_64, NULL) &&
+            !elf_is_64) {
+            entry = (int64_t)(int32_t)entry;
+        }
+
+        /*
          * One argument, the kernel's own name, which is what a firmware that
          * loaded it by name would pass. Nothing on the path to a console reads
          * it, but the count and the vector are both read, so both are real.
