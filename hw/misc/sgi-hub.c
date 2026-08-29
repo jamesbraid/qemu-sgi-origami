@@ -386,7 +386,8 @@
  */
 #define HUB_MD_ERROR_BASE       0x200050
 #define HUB_MD_ERROR_STRIDE     8
-#define HUB_MD_ERROR_LAST_OFF   (HUB_MD_ERROR_BASE + 7 * HUB_MD_ERROR_STRIDE) /* MD_MISC_ERROR_CLR */
+/* The last error slot, MD_MISC_ERROR_CLR. */
+#define HUB_MD_ERROR_LAST_OFF   (HUB_MD_ERROR_BASE + 7 * HUB_MD_ERROR_STRIDE)
 
 /*
  * The two per-DIMM mode-initialisation registers. Both dual-sourced
@@ -985,7 +986,7 @@ static void sgi_hub_update_irq(SGIHubState *s)
     for (cpu = 0; cpu < SGI_HUB_PROCESSORS; cpu++) {
         for (bank = 0; bank < SGI_HUB_PENDING_BANKS; bank++) {
             qemu_set_irq(s->bank_irq[cpu][bank],
-                         !!(qatomic_read(&s->pi_int_pend[bank]) &
+                         !!(s->pi_int_pend[bank] &
                             s->pi_int_mask[cpu * SGI_HUB_PENDING_BANKS +
                                            bank]));
         }
@@ -1069,9 +1070,9 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
 
     if (val & PI_INT_MODIFY_SET) {
-        qatomic_or(&s->pi_int_pend[bank], bit);
+        s->pi_int_pend[bank] |= bit;
     } else {
-        qatomic_and(&s->pi_int_pend[bank], ~bit);
+        s->pi_int_pend[bank] &= ~bit;
     }
     sgi_hub_update_irq(s);
 
@@ -1110,7 +1111,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
 {
     CPUState *primary = qemu_get_cpu(s->cpu_base);
     CPUState *secondary = qemu_get_cpu(s->cpu_base + 1);
-    uint64_t value = qatomic_read(&s->pi_int_pend[1]);
+    uint64_t value = s->pi_int_pend[1];
 
     if (s->cpus >= 2 && primary && secondary && current_cpu == secondary &&
         (value & (1ULL << (113 - SGI_HUB_BANK_BITS)))) {
@@ -1170,7 +1171,7 @@ static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
  */
 static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
 {
-    uint64_t value = qatomic_read(&s->pi_int_pend[bank]);
+    uint64_t value = s->pi_int_pend[bank];
     unsigned int i;
 
     if (!current_cpu || current_cpu->cpu_index < s->cpu_base ||
@@ -1324,12 +1325,12 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
          * whether hardware writes more of the line is unobserved, and the
          * kernel reads only the first doubleword.
          */
-        uint8_t status[8];
+        MemTxResult res;
 
-        stq_be_p(status, s->bte_length[engine]);
-        if (address_space_write(&s->bte_as, s->bte_notify[engine],
-                                MEMTXATTRS_UNSPECIFIED, status,
-                                sizeof(status)) != MEMTX_OK) {
+        address_space_stq_be(&s->bte_as, s->bte_notify[engine],
+                             s->bte_length[engine], MEMTXATTRS_UNSPECIFIED,
+                             &res);
+        if (res != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-hub: BTE%u notification address 0x%" PRIx64
                           " reaches no memory\n",
@@ -1471,7 +1472,7 @@ static uint64_t sgi_hub_rt_compare_read(SGIHubState *s, unsigned int i)
      * value before the reader consumes that entire loop in one slice.
      */
     sgi_hub_yield_to_peer(owner);
-    return qatomic_read(&s->pi_rt_compare[i]);
+    return s->pi_rt_compare[i];
 }
 
 /* Move the origin so the counter reads what was written, and keep running. */
@@ -1526,7 +1527,7 @@ static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
     if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_EXPIRE)) {
         trace_sgi_hub_rt_expire(
             s->cpu_base, sgi_hub_programmed_nasid(s), index,
-            sgi_hub_rt_count(s), qatomic_read(&s->pi_rt_compare[index]),
+            sgi_hub_rt_count(s), s->pi_rt_compare[index],
             s->pi_rt_enable[index],
             qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -1551,9 +1552,17 @@ static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
  */
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index, bool programmed)
 {
-    uint64_t ticks = ((qatomic_read(&s->pi_rt_compare[index]) -
+    uint64_t ticks = ((s->pi_rt_compare[index] -
                        sgi_hub_rt_count(s) - 1) &
                       PI_RT_MASK) + 1;
+
+    /*
+     * An unpopulated slice has no comparator to arm and no interrupt line
+     * wired; arming its timer would only burn a wakeup per counter write.
+     */
+    if (index >= s->cpus) {
+        return;
+    }
 
     if (programmed && ticks > (PI_RT_MASK >> 1)) {
         /*
@@ -2119,7 +2128,8 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x08] = "unexpected extended TLB miss", /* 0x89 */
     [0x09] = "unexpected user TLB miss", /* 0x8a */
     [0x0a] = "unexpected kernel TLB miss", /* 0x8b */
-    [0x0b] = "the processor took an exception outside every specifically-handled category", /* 0x8c */
+    [0x0b] = "the processor took an exception outside every "
+             "specifically-handled category", /* 0x8c */
     [0x0c] = "unimplemented-instruction exception", /* 0x8d */
     [0x0d] = "the processor signaled a cache parity or ECC fault", /* 0x8e */
     [0x0e] = "the operating system requested this code", /* 0x8f */
@@ -2130,7 +2140,8 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x13] = NULL, /* 0x94: reserved (a POD re-entry via NMI was requested) */
     [0x14] = "Hub UART initialization failed", /* 0x95 */
     [0x15] = "Hub cross-processor interrupt self-test failed", /* 0x96 */
-    [0x16] = "execution fell out of the firmware's main() routine, which should never return", /* 0x97 */
+    [0x16] = "execution fell out of the firmware's main() routine, "
+             "which should never return", /* 0x97 */
     [0x17] = "this node has no memory of its own installed", /* 0x98 */
     [0x18] = "an I2C condition that should be impossible occurred", /* 0x99 */
     [0x19] = "this processor is disabled by an environment variable", /* 0x9a */
@@ -2152,8 +2163,10 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x29] = NULL, /* 0xaa: reserved (source marks this value avoid-use) */
     [0x2a] = "surveying the rest of the interconnect fabric did not succeed", /* 0xab */
     [0x2b] = "node-id calculation failed", /* 0xac */
-    [0x2c] = "computing the paths packets should take between nodes did not succeed", /* 0xad */
-    [0x2d] = "sending the computed routing table out to the rest of the machine did not succeed", /* 0xae */
+    [0x2c] = "computing the paths packets should take between nodes "
+             "did not succeed", /* 0xad */
+    [0x2d] = "sending the computed routing table out to the rest of "
+             "the machine did not succeed", /* 0xae */
     [0x2e] = "node-id distribution failed", /* 0xaf */
     [0x2f] = "boot master assigned no node id", /* 0xb0 */
     [0x30] = "module-id arbitration failed", /* 0xb1 */
@@ -2213,10 +2226,10 @@ static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
         *value = sgi_hub_rt_count(s);
         return true;
     case HUB_PI_RT_COMPARE_A:
-        *value = qatomic_read(&s->pi_rt_compare[0]);
+        *value = s->pi_rt_compare[0];
         return true;
     case HUB_PI_RT_COMPARE_B:
-        *value = qatomic_read(&s->pi_rt_compare[1]);
+        *value = s->pi_rt_compare[1];
         return true;
     case HUB_PI_RT_PENDING_A:
         *value = s->pi_rt_pending[0];
@@ -2258,8 +2271,8 @@ static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
         *value = s->pi_cpu_enable[1];
         return true;
     case HUB_PI_INT_MODIFY:
-        *value = qatomic_read(&s->pi_int_pend[
-            (write_value & PI_INT_MODIFY_NUMBER) / SGI_HUB_BANK_BITS]);
+        *value = s->pi_int_pend[
+            (write_value & PI_INT_MODIFY_NUMBER) / SGI_HUB_BANK_BITS];
         return true;
     case HUB_PI_REGION_PRESENT:
         *value = s->pi_region_present;
@@ -2463,7 +2476,7 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         unsigned int i = (addr == HUB_PI_RT_COMPARE_B);
         CPUState *peer;
 
-        qatomic_set(&s->pi_rt_compare[i], val & PI_RT_MASK);
+        s->pi_rt_compare[i] = val & PI_RT_MASK;
         sgi_hub_rt_arm(s, i, true);
 
         /*
@@ -2875,7 +2888,7 @@ static const MemoryRegionOps sgi_hub_ops = {
     .impl.max_access_size = 8,
 };
 
-static void sgi_hub_reset_hold(Object *obj, ResetType type)
+static void sgi_hub_reset_enter(Object *obj, ResetType type)
 {
     SGIHubState *s = SGI_HUB(obj);
     unsigned int n;
@@ -2967,6 +2980,13 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     s->md_perf_cnt0 = 0;
     s->md_config = MD_CONFIG_RESET;
     s->md_onewire = MD_ONEWIRE_RESET;
+    /*
+     * A slot armed before the reset must not finish after it: a stale
+     * expiry would set the completion bits on a register that reset just
+     * cleared, fabricating exactly the completion the contract above
+     * says a write-started slot alone may report.
+     */
+    timer_del(s->md_onewire_timer);
 
     /*
      * Every entry resets to zero, which names widget 0 at its first slice in
@@ -3007,8 +3027,16 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
         s->io_bwin[n] = 0;
         sgi_hub_bwin_follow(s, n);
     }
+}
 
-    sgi_hub_update_irq(s);
+/*
+ * Output lines move in the hold phase, after every device's enter phase has
+ * put its local state back: a line re-driven from half-reset neighbours is
+ * the ordering hazard the phase split exists to prevent.
+ */
+static void sgi_hub_reset_hold(Object *obj, ResetType type)
+{
+    sgi_hub_update_irq(SGI_HUB(obj));
 }
 
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
@@ -3290,8 +3318,11 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI SN0 Hub ASIC";
     dc->realize = sgi_hub_realize;
+    /* The machine supplies the memory, crosstalk and peer links. */
+    dc->user_creatable = false;
     dc->vmsd = &vmstate_sgi_hub;
     device_class_set_props(dc, sgi_hub_properties);
+    rc->phases.enter = sgi_hub_reset_enter;
     rc->phases.hold = sgi_hub_reset_hold;
 }
 
