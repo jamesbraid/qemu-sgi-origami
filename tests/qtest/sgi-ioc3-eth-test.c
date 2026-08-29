@@ -53,7 +53,9 @@
 #define ENET_TX_RING_LO   (IOC3_BAR_ADDR + 0x12c)
 #define ENET_TX_CONSUME   (IOC3_BAR_ADDR + 0x130)
 #define ENET_TX_PRODUCE   (IOC3_BAR_ADDR + 0x134)
+#define ENET_MII_CONTROL  (IOC3_BAR_ADDR + 0x148)
 #define ENET_MII_DATA_R   (IOC3_BAR_ADDR + 0x14c)
+#define ENET_MII_DATA_W   (IOC3_BAR_ADDR + 0x150)
 
 #define MCR_PROMISC       (1u << 1)
 #define MCR_RXOFF_SHIFT   3
@@ -67,6 +69,27 @@
 #define ENET_INT_RX_THRESHOLD (1u << 1)
 #define ENET_INT_TX_COMPLETE  (1u << 22)
 #define RPIR_ARM          (1u << 31)
+
+/*
+ * A management request: the register number in the low five bits, the
+ * transceiver address above it, and a bit that asks for a read. The board
+ * wires its one transceiver at address 31 -- every real Origin 200 capture
+ * in the boot-log library prints it there.
+ */
+#define MII_CTL_READ      (1u << 10)
+#define MII_PHY_SHIFT     5
+#define PHY_ADDRESS       31
+
+/*
+ * The transceiver registers and bits this file drives, numbered by the
+ * 802.3 management register set rather than by our own header.
+ */
+#define PHY_BMCR          0
+#define PHY_BMSR          1
+#define BMCR_SPEED100     0x2000
+#define BMCR_DUPLEX       0x0100
+#define BMSR_AN_COMP      0x0020
+#define BMSR_LINK         0x0004
 
 #define TXD_INT_DONE      (1u << 12)
 #define TXD_DATA_VALID    (1u << 16)
@@ -1398,6 +1421,61 @@ static const uint32_t walk_sizes[] = { 74, 104, 105, 170, 554, 1042,
                                        ETHER_MAX_LEN - ETHER_FCS_LEN };
 
 /*
+ * The two halves of a management transfer, in the order both drivers use:
+ * a read is a request naming an address and register, answered in the data
+ * register; a write loads the data register first.
+ */
+static uint16_t mii_read(QTestState *qts, unsigned int reg)
+{
+    ioc3_writel(qts, ENET_MII_CONTROL,
+                (PHY_ADDRESS << MII_PHY_SHIFT) | reg | MII_CTL_READ);
+    return (uint16_t)ioc3_readl(qts, ENET_MII_DATA_R);
+}
+
+static void mii_write(QTestState *qts, unsigned int reg, uint16_t val)
+{
+    ioc3_writel(qts, ENET_MII_DATA_W, val);
+    ioc3_writel(qts, ENET_MII_CONTROL, (PHY_ADDRESS << MII_PHY_SHIFT) | reg);
+}
+
+/*
+ * The backend's link state, read back through the transceiver's status
+ * word. Out of the box the backend's link is up, so the status register
+ * reports a link once negotiation is forced closed -- and set_link is the
+ * cable being pulled: the link and completion bits must drop while it is
+ * out and return when it is back, or a guest that watches its carrier
+ * keeps trusting an interface the operator disconnected.
+ */
+static void test_the_backend_link_reaches_the_status_word(const void *data)
+{
+    QTestState *qts;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+
+    qts = ioc3_start(ring, rxbuf, 2);
+
+    /*
+     * Force the link up the way the PROM's network boot does: a control
+     * write that is not a reset closes negotiation at once.
+     */
+    mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & (BMSR_LINK | BMSR_AN_COMP),
+                    ==, BMSR_LINK | BMSR_AN_COMP);
+
+    qtest_qmp_assert_success(qts, "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': false}}");
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & (BMSR_LINK | BMSR_AN_COMP),
+                    ==, 0);
+
+    qtest_qmp_assert_success(qts, "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': true}}");
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & (BMSR_LINK | BMSR_AN_COMP),
+                    ==, BMSR_LINK | BMSR_AN_COMP);
+
+    qtest_quit(qts);
+}
+
+/*
  * The complement, standing alone for the reason set out in the origin200
  * version of this case: an assertion about an absence should not inherit a
  * wait. Nothing is asked for here, so nothing can come back, and the absence
@@ -1454,6 +1532,8 @@ int main(int argc, char **argv)
      */
     qtest_add_data_func("sgi-ioc3-eth/no-reply-raises-nothing", NULL,
                         test_a_transmit_with_no_reply_raises_nothing);
+    qtest_add_data_func("sgi-ioc3-eth/backend-link-reaches-status", NULL,
+                        test_the_backend_link_reaches_the_status_word);
 
     for (i = 0; i < ARRAY_SIZE(walk_sizes); i++) {
         char *name = g_strdup_printf("sgi-ioc3-eth/reply-inside-the-walk/%u",

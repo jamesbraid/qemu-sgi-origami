@@ -508,12 +508,25 @@ static void sgi_ioc3_eth_cleanup(NetClientState *nc)
     s->nic = NULL;
 }
 
+/*
+ * The operator's set_link, relayed to the part that reports it: the link
+ * bit a guest watches is the transceiver's, so the cable being pulled has
+ * to reach the transceiver rather than any state of this block's own.
+ */
+static void sgi_ioc3_eth_set_link(NetClientState *nc)
+{
+    SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
+
+    dp83840_update_link(&s->phy, nc->link_down);
+}
+
 static NetClientInfo sgi_ioc3_eth_net_info = {
     .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .can_receive = sgi_ioc3_eth_can_receive,
     .receive = sgi_ioc3_eth_receive,
     .cleanup = sgi_ioc3_eth_cleanup,
+    .link_status_changed = sgi_ioc3_eth_set_link,
 };
 
 /*
@@ -859,16 +872,16 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
          * data register on the write side has already been loaded by the time
          * a write request arrives -- that is the order both drivers use.
          *
-         * Only the one address the board wires answers. Every other address
-         * reads all-ones, which is what a scan takes as an empty address, and
-         * is why a model answering everywhere would be found at address zero
-         * and print a line no real machine prints.
+         * Only the address the transceiver is configured on answers. Every
+         * other address reads all-ones, which is what a scan takes as an
+         * empty address, and is why a model answering everywhere would be
+         * found at address zero and print a line no real machine prints.
          */
         if (val & SGI_IOC3_ENET_MII_READ) {
-            s->mii_data = phy == DP83840_ADDRESS
+            s->mii_data = phy == s->phy.addr
                           ? dp83840_read(&s->phy, reg)
                           : SGI_IOC3_ENET_MII_ABSENT;
-        } else if (phy == DP83840_ADDRESS) {
+        } else if (phy == s->phy.addr) {
             dp83840_write(&s->phy, reg, s->mii_data_w);
         }
 
@@ -1011,6 +1024,12 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
                           object_get_typename(OBJECT(dev)), dev->id,
                           &dev->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
+
+    /*
+     * The callback above only fires on a change, so a backend whose link
+     * was taken down before this device existed has to be read once here.
+     */
+    dp83840_update_link(&s->phy, qemu_get_queue(s->nic)->link_down);
 }
 
 static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
@@ -1031,6 +1050,13 @@ static void sgi_ioc3_eth_init(Object *obj)
     SGIIOC3EthState *s = SGI_IOC3_ETH(obj);
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_DP83840);
+
+    /*
+     * The transceiver's management address, offered where a board would
+     * configure it. One copy: the alias keeps the address the controller
+     * routes by and the one the transceiver reports the same value.
+     */
+    object_property_add_alias(obj, "phy-addr", OBJECT(&s->phy), "addr");
 }
 
 static const VMStateDescription vmstate_sgi_ioc3_eth = {

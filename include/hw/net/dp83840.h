@@ -8,6 +8,7 @@
 #define HW_NET_DP83840_H
 
 #include "hw/core/sysbus.h"
+#include "hw/net/mii.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
 
@@ -15,81 +16,15 @@
 OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 
 /*
- * Where the board puts it. Both drivers walk all thirty-two management
- * addresses and take the first that answers, so nothing forces this on the
- * model -- but every one of the thirty-one real Origin 200 captures in the
- * boot-log library prints the transceiver at address 31, on the second
- * controller as well as the first, so it is the board's wiring rather than one
- * machine's accident. A model answering everywhere is found at zero, and the
- * guest prints the address it found.
+ * The registers this part has beyond the standard management set. The
+ * standard registers, their bits and this part's own two identifier words
+ * are hw/net/mii.h's vocabulary (MII_BMCR and the rest, DP83840_PHYID1 and
+ * DP83840_PHYID2); only what mii.h has no name for is defined here.
  */
-#define DP83840_ADDRESS         31
-
-/* The management registers the two drivers we run actually touch. */
-#define DP83840_CONTROL         0x00
-#define DP83840_STATUS          0x01
-#define DP83840_IDENTITY_HIGH   0x02
-#define DP83840_IDENTITY_LOW    0x03
-#define DP83840_ADVERTISE       0x04
-#define DP83840_PARTNER         0x05
-#define DP83840_EXPANSION       0x06
 #define DP83840_PCS_CONFIG      0x17
 #define DP83840_LOOPBACK_BYPASS 0x18
 #define DP83840_ADDRESS_STATUS  0x19
 #define DP83840_10BT_CONFIG     0x1c
-
-/*
- * The identity, as the two sixteen-bit words a driver reads rather than as a
- * description of them. They decode to National Semiconductor's organisational
- * identifier, model zero and revision one, which is the pair OpenBSD's table
- * matches to bind its transceiver driver and the revision its console line
- * prints. The high word also satisfies mainline Linux's cruder scan, which
- * accepts anything that is neither all-zeroes nor all-ones.
- */
-#define DP83840_IDENTITY_HIGH_VALUE 0x2000
-#define DP83840_IDENTITY_LOW_VALUE  0x5c01
-
-/* Control register bits the drivers write. */
-#define DP83840_CTRL_RESET      0x8000  /* self-clearing */
-#define DP83840_CTRL_LOOPBACK   0x4000
-#define DP83840_CTRL_SPEED_100  0x2000
-#define DP83840_CTRL_AUTONEG    0x1000
-#define DP83840_CTRL_ISOLATE    0x0400
-#define DP83840_CTRL_RESTART    0x0200  /* self-clearing */
-#define DP83840_CTRL_DUPLEX     0x0100
-
-/* Status register bits the drivers read. */
-#define DP83840_STAT_100_FDX    0x4000
-#define DP83840_STAT_100_HDX    0x2000
-#define DP83840_STAT_10_FDX     0x1000
-#define DP83840_STAT_10_HDX     0x0800
-#define DP83840_STAT_AUTONEG_OK 0x0020
-#define DP83840_STAT_CAN_AUTONEG 0x0008
-#define DP83840_STAT_LINK       0x0004
-#define DP83840_STAT_EXTENDED   0x0001
-
-/*
- * Advertisement and link-partner bits. The status path intersects the two
- * words and reads the media out of the result, so the partner has to advertise
- * something the station also advertises or the guest concludes there is no
- * usable media.
- */
-#define DP83840_LINK_100_FDX    0x0100
-#define DP83840_LINK_100_HDX    0x0080
-#define DP83840_LINK_10_FDX     0x0040
-#define DP83840_LINK_10_HDX     0x0020
-#define DP83840_LINK_SELECTOR   0x0001  /* 802.3 */
-
-/*
- * The expansion register's one bit that matters: whether the far end can
- * autonegotiate. It chooses which of two routes the driver takes to a media
- * type, and only one of them is a route the driver's own comment trusts.
- */
-#define DP83840_EXP_PARTNER_AUTONEG 0x0001
-
-/* The address-and-status register: its low bits report the part's own address. */
-#define DP83840_ADDR_MASK       0x001f
-#define DP83840_ADDR_10MBIT     0x0040
 
 /*
  * Reset values, taken from the part's own published specification. SGI's
@@ -104,9 +39,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
  * configuration register comes up transmitting link pulses over twisted pair
  * with heartbeat and jabber enabled.
  */
-#define DP83840_CONTROL_RESET_VALUE  (DP83840_CTRL_SPEED_100 | \
-                                      DP83840_CTRL_AUTONEG | \
-                                      DP83840_CTRL_DUPLEX)
+#define DP83840_CONTROL_RESET_VALUE  (MII_BMCR_SPEED100 | \
+                                      MII_BMCR_AUTOEN | \
+                                      MII_BMCR_FD)
 #define DP83840_PCS_RESET_VALUE      0x8040
 #define DP83840_10BT_RESET_VALUE     0x80b9
 
@@ -148,6 +83,20 @@ struct DP83840State {
     SysBusDevice parent_obj;
 
     /*
+     * The management address the part answers on, an "addr" property the
+     * controller asks for when it routes a request and the address-status
+     * register reports back. It defaults to 31, which is where the board
+     * wires it: both drivers walk all thirty-two management addresses and
+     * take the first that answers, so nothing forces this on the model --
+     * but every one of the thirty-one real Origin 200 captures in the
+     * boot-log library prints the transceiver at address 31, on the second
+     * controller as well as the first, so it is the board's wiring rather
+     * than one machine's accident. A model answering everywhere is found
+     * at zero, and the guest prints the address it found.
+     */
+    uint8_t addr;
+
+    /*
      * The writable registers, held as the words a driver reads back. Everything
      * else this part answers is either constant or derived, and deriving it on
      * each read is what keeps the derived words from disagreeing with the state
@@ -179,6 +128,16 @@ struct DP83840State {
     bool autoneg_done;
 
     /*
+     * Whether the backend reports its link down -- the operator's set_link,
+     * the model's stand-in for the cable being pulled. Kept apart from
+     * autoneg_done because the two answer different questions: one is
+     * whether negotiation has run its course, the other whether there is a
+     * wire to negotiate over. The status word's link and completion bits
+     * need both.
+     */
+    bool link_down;
+
+    /*
      * The autonegotiation settling clock and whether it has been started since
      * reset. A real part negotiates on its own once autonegotiation is enabled,
      * which it is at reset; this models that as a delay armed the first time
@@ -195,6 +154,7 @@ struct DP83840State {
 };
 
 void dp83840_reset(DP83840State *s);
+void dp83840_update_link(DP83840State *s, bool link_down);
 bool dp83840_in_loopback(DP83840State *s);
 uint16_t dp83840_read(DP83840State *s, int reg);
 void dp83840_write(DP83840State *s, int reg, uint16_t val);
