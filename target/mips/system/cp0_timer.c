@@ -54,7 +54,7 @@ static void cpu_mips_update_ip7(CPUMIPSState *env)
     unsigned irq = extract32(env->CP0_IntCtl, CP0IntCtl_IPTI, 3);
     bool level = env->cp0_timer_ip7;
 
-    if (env->insn_flags & INSN_R10K) {
+    if (env->r10k_perf_timer) {
         level = level || cpu_mips_r10k_perf_ip7(env);
     }
     qemu_set_irq(env->irq[irq], level);
