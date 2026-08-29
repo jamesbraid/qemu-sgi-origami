@@ -491,9 +491,18 @@ static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
     uint64_t buffer = env->active_tc.gpr[5];
     uint64_t length = env->active_tc.gpr[6];
     uint64_t count_ptr = env->active_tc.gpr[7];
-    uint32_t written = 0;
+    uint64_t written = 0;
     uint8_t chunk[256];
 
+    /*
+     * The count reported back is a 32-bit field, so cap the operation at
+     * what that field can express. The cap is also what bounds this loop:
+     * a guest length just under 2^64 with a mapped buffer would otherwise
+     * keep this MMIO callback busy for an unbounded time -- and with a
+     * narrower counter than the length's own type it never terminated at
+     * all, the comparison staying true forever once the counter wrapped.
+     */
+    length = MIN(length, UINT32_MAX);
     while (written < length) {
         unsigned int n = MIN(sizeof(chunk), length - written);
 
