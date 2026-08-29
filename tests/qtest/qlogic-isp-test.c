@@ -105,6 +105,7 @@
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST 0x0006
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE  0x0010
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE  0x0011
+#define ISP_MBOX_CMD_BUS_RESET       0x0018
 #define ISP_MBOX_CMD_PARAM_ERROR     0x4006
 
 #define ISP_QUEUE_ENTRY_SIZE     64
@@ -112,6 +113,7 @@
 #define ISP_ENTRY_TYPE_REQUEST      0x01
 #define ISP_ENTRY_TYPE_CONTINUATION 0x02
 #define ISP_ENTRY_TYPE_STATUS       0x03
+#define ISP_ENTRY_TYPE_MARKER       0x04
 /* EXTENDED_CMD_TYPE (qla1280.h): real, documented, and "Unused by the
  * driver!" per its own struct comment -- a genuinely safe stand-in for
  * "an entry type this model does not implement" now that COMMAND_A64_TYPE
@@ -2081,6 +2083,298 @@ static void test_unrecognized_entry_type_consumes_continuation(void *obj,
 }
 
 /*
+ * The ring walk must terminate for every producer value and every
+ * entry_count the guest can publish, not just the pairs a well-behaved
+ * driver produces. The walker used to advance the consumer cursor by each
+ * entry's own entry_count and exit only on exact equality with the
+ * producer, so an entry_count sharing a factor with the ring length could
+ * step the cursor over the producer forever: in a ring of 4 with every
+ * slot claiming entry_count 2 and a producer of 1, the cursor visits 0,
+ * 2, 0, 2... and the MMIO write that published the entry never returns —
+ * an infinite loop under the BQL from one guest store. The walk is now
+ * driven by the count of published entries, so it stops at the producer
+ * no matter what the entries themselves claim.
+ */
+static void test_ring_walk_bounded_by_producer(void *obj, void *data,
+                                               QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    int i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Markers claiming two slots each, in every slot of a four-slot ring. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_MARKER;
+    entry[1] = 2;
+    for (i = 0; i < 4; i++) {
+        qtest_memwrite(qts, rqst_addr + i * ISP_QUEUE_ENTRY_SIZE, entry,
+                       sizeof(entry));
+    }
+
+    /* One published entry: the cursor must stop exactly here. */
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    /* The walk consumed what was published and a marker posts nothing. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    /* The ring is still live: a real command from the next slot completes. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x51);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 2);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x51);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * Writes a test-unit-ready request entry at the given request ring slot,
+ * publishes it, asserts a status entry for the same handle landed in the
+ * given response slot, acknowledges the interrupt, and hands back the
+ * SCSI status word. The full status entry is left in the caller's buffer
+ * for any further field it wants to read.
+ */
+static uint16_t isp_test_unit_ready(QPCIDevice *dev, QPCIBar io,
+                                    QTestState *qts, uint64_t rqst_addr,
+                                    uint64_t resp_addr, int slot,
+                                    int resp_slot, uint16_t prod,
+                                    uint32_t handle, uint8_t *status)
+{
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, handle);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);    /* bus 0, target 0, lun 0. */
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr + slot * ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, prod);
+
+    qtest_memread(qts, resp_addr + resp_slot * ISP_QUEUE_ENTRY_SIZE, status,
+                  ISP_QUEUE_ENTRY_SIZE);
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, handle);
+    qlogic_isp_ack(dev, io);
+
+    return isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS);
+}
+
+/*
+ * A guest soft reset re-initialises the whole chip, and it must reach the
+ * SCSI bus behind the chip too: since the rings landed this adapter can
+ * genuinely have commands in flight, and a reset that only clears
+ * registers leaves those commands alive to complete into rings that no
+ * longer exist. The observable a qtest has for the reset reaching the bus
+ * is each device's own unit attention. A bus reset re-arms it, so a disk
+ * whose power-on unit attention was already consumed answers the first
+ * command after the reset with a check condition again — and a reset that
+ * never touched the bus leaves the disk answering good status, which is
+ * exactly what this device used to do.
+ *
+ * Every command here completes inside the MMIO write that publishes it —
+ * the null block backend has no latency — so the reset always meets an
+ * empty in-flight queue in this test. What is pinned is that the reset
+ * reaches the devices, and that resetting with nothing in flight is safe.
+ */
+static void test_soft_reset_resets_scsi_bus(void *obj, void *data,
+                                            QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Consume the power-on unit attention, then see a clean command. */
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        0, 0, 1, 0x11, status), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        1, 1, 2, 0x12, status), ==, GOOD);
+
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_CTRL), ==, 0);
+
+    /* The chip is back at power-on state: re-initialise the queues. */
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* The reset reached the disk: its unit attention is armed again. */
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        0, 0, 1, 0x13, status), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + 2] & 0x0f, ==,
+                    UNIT_ATTENTION);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The bus-reset mailbox command is a SCSI bus reset, not a chip reset:
+ * the rings survive it, but the devices on the bus must see it — the
+ * same unit-attention observable the soft-reset test pins, reached
+ * through the command a driver actually issues to reset the bus.
+ */
+static void test_bus_reset_mailbox_resets_scsi_bus(void *obj, void *data,
+                                                   QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Consume the power-on unit attention, then see a clean command. */
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        0, 0, 1, 0x21, status), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        1, 1, 2, 0x22, status), ==, GOOD);
+
+    /* Reset the SCSI bus by mailbox command; mailbox 1 is the delay. */
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_BUS_RESET, 1, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* The rings survived, and the disk saw the reset. */
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        2, 2, 3, 0x23, status), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + 2] & 0x0f, ==,
+                    UNIT_ATTENTION);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The request entry's device word carries a bus bit above the target
+ * field — OpenBSD builds the word as (((bus << 7) | target) << 8) | lun —
+ * and this part drives one SCSI bus. The device used to mask the bit
+ * away and execute a bus-1 request on bus 0, aiming it at a device the
+ * guest never named: the same target and lun that answer on bus 0 would
+ * answer for a bus that does not exist. A bus-1 request must instead be
+ * answered incomplete with no phase reached, which Linux's failure
+ * ladder reads as a bus that never answered.
+ */
+static void test_second_bus_request_rejected(void *obj, void *data,
+                                             QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   2, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Bus 1, target 0, lun 0: the address behind the bus bit is populated. */
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x31);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 1 << 15);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x31);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    /* No phase reached: the second bus does not exist to be reached. */
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==, 0);
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
  * The round trip above only ever sends test unit ready, which carries no
  * data phase at all — it is not what actually exercises a scatter-gather
  * transfer, and a real driver's target probe issues something that does on
@@ -2923,6 +3217,14 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("unrecognized-entry-type-consumes-continuation",
                  "qlogic-isp1040",
                  test_unrecognized_entry_type_consumes_continuation, NULL);
+    qos_add_test("ring-walk-bounded-by-producer", "qlogic-isp1040",
+                 test_ring_walk_bounded_by_producer, NULL);
+    qos_add_test("soft-reset-resets-scsi-bus", "qlogic-isp1040",
+                 test_soft_reset_resets_scsi_bus, NULL);
+    qos_add_test("bus-reset-mailbox-resets-scsi-bus", "qlogic-isp1040",
+                 test_bus_reset_mailbox_resets_scsi_bus, NULL);
+    qos_add_test("second-bus-request-rejected", "qlogic-isp1040",
+                 test_second_bus_request_rejected, NULL);
     qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
                  test_inquiry_data_transfer, NULL);
     qos_add_test("continuation-entry-segments", "qlogic-isp1040",
