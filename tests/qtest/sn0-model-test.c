@@ -1007,6 +1007,29 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_nonnull(strstr(error_output, message));
 }
 
+/*
+ * The Bridge wires eight slots to eight interrupt pins; nothing past slot 7
+ * exists on the chip. A device placed there must be refused when it is
+ * added -- accepted, it would sit unreachable until its first interrupt
+ * asserted a pin the bus never wired and aborted the emulator.
+ */
+static void test_reject_a_device_beyond_the_bridge_slots(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,io-bridge=on",
+        "-device", "sgi-bridge-dma-test,addr=8",
+        "-display", "none", NULL
+    };
+
+    if (!qtest_has_device("sgi-bridge-dma-test")) {
+        g_test_skip("sgi-bridge-dma-test is not in this build");
+        return;
+    }
+
+    assert_qemu_rejects(args,
+                        "not available for sgi-bridge-dma-test, reserved");
+}
+
 static void test_reject_three_numa_nodes(const void *data)
 {
     const char *args[] = {
@@ -1159,6 +1182,8 @@ int main(int argc, char **argv)
                         test_reject_three_sockets);
     qtest_add_data_func("sn0/model/reject-uneven-no-numa-split", NULL,
                         test_reject_uneven_no_numa_split);
+    qtest_add_data_func("sn0/model/reject-device-beyond-bridge-slots", NULL,
+                        test_reject_a_device_beyond_the_bridge_slots);
     qtest_add_data_func("sn0/model/reject-three-numa-nodes", NULL,
                         test_reject_three_numa_nodes);
     qtest_add_data_func("sn0/model/reject-partial-cpu-numa-mapping", NULL,

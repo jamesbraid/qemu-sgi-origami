@@ -39,13 +39,13 @@ config SGI_SN0
     bool
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
+    imply TEST_DEVICES
     select AT24C
     select DP83840
     select M48T35
     select PCF8584
     select QLOGIC_ISP_SCSI_PCI
     select SGI_BRIDGE
-    select SGI_BRIDGE_DMA_TEST
     select SGI_ELSC
     select SGI_HUB
     select SGI_IOC3
