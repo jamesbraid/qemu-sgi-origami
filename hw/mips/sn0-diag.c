@@ -374,6 +374,10 @@ void sn0_diagnostic_finalize(SN0MachineState *s)
     g_free(s->diagnostic_events);
     g_free(s->diagnostic_read_cache);
     g_free(s->diagnostic_read_cache_next);
-    g_free(s->diagnostic_sink);
-    g_free(s->diagnostic_sink_context);
+    /*
+     * The sink and context arrays stay: each realized Hub — a QOM child
+     * released only after instance_finalize — still holds its diagnostic
+     * pointer into them, the same release-after-finalize hazard that keeps
+     * the machine's widget alias storage allocated.
+     */
 }

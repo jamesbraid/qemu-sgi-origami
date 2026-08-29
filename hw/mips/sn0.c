@@ -2,14 +2,18 @@
 /*
  * SGI Origin 200/2000 ("SN0", IP27) family machines.
  *
- * The bare machine: one node's memory and its boot flash, and nothing else yet.
- * The Hub, the crossbar and the I/O bridge grow into the address space this
- * file lays out.
+ * The family core: the abstract SN0 machine, which derives its chassis count
+ * from the SMP topology and builds one node per chassis, and the node device
+ * itself -- up to two R10000s with their per-processor views of the shared
+ * address map, the node's memory banks, the boot flash with its Hub-special
+ * views, the directory and ECC back doors, and the Hub. Products register
+ * concrete machine types beside this and parameterize it through
+ * SN0MachineClass (sn0-origin200.c); the synthesized firmware lives in
+ * sn0-firmware.c and the host diagnostics in sn0-diag.c.
  */
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "qemu/log.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
@@ -18,27 +22,19 @@
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
-#include "hw/core/loader.h"
-#include "hw/mips/bootloader.h"
-#include "elf.h"
-#include "chardev/char-fe.h"
 #include "system/system.h"
 #include "exec/cpu-common.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
-#include "qemu/datadir.h"
 #include "hw/misc/sgi-hub.h"
-#include "hw/misc/sgi-ioc3.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
 #include "system/address-spaces.h"
-#include "system/block-backend.h"
 #include "system/numa.h"
 #include "system/reset.h"
 #include "migration/vmstate.h"
-#include "net/net.h"
 #include "trace/control.h"
 #include "cpu.h"
 #include "sn0.h"
@@ -61,6 +57,10 @@
 #define TYPE_SN0_NODE "sn0-node"
 
 DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
+
+/* The AMD 29F080's two unlock-cycle command addresses. */
+#define SN0_FLASH_CMD_ADDR1   0x5555
+#define SN0_FLASH_CMD_ADDR2   0x2aaa
 
 static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
 {
@@ -709,9 +709,10 @@ static void sn0_cpu_reset(void *opaque)
 void sn0_mode_bits_reset(void *opaque)
 {
     CPUMIPSState *env = &MIPS_CPU(opaque)->env;
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(qdev_get_machine());
 
     env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
-                       (SN0_PROCESSOR_MODE_BITS & SN0_PROCESSOR_MODE_MASK);
+                       (smc->processor_mode_bits & SN0_PROCESSOR_MODE_MASK);
 }
 
 static void sn0_machine_ready(Notifier *notifier, void *data)
@@ -1494,7 +1495,7 @@ static void sn0_init(MachineState *machine)
         smc->populate_io(s, node_index);
     }
 
-    sn0_firmware_init(machine, node_count);
+    sn0_firmware_init(machine);
 
     qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
 }

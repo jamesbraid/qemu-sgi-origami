@@ -69,6 +69,11 @@
 #define SN0_SASH_SCRATCH_GAP  (1 * MiB)
 #define SN0_SASH_STACK_SIZE   (64 * KiB)
 
+/* Where the factory-fresh environment log sits in the flash image. */
+#define SN0_PROMLOG_SECTOR    14
+#define SN0_PROMLOG_MAGIC     0x504c4f47
+#define SN0_PROMLOG_VERSION   1
+
 /* The configuration block's fixed geometry; its values come from the class. */
 #define SN0_CONFIG_SIZE   0x50
 #define SN0_CONFIG_FPROM_CYC_OFFSET 0x2c
@@ -243,10 +248,11 @@ static bool sn0_kernel_file_is_ecoff(const char *filename)
  * and the physical extent it occupies, for the same free-memory-descriptor
  * bookkeeping the ELF kernel path keeps.
  */
-static void sn0_load_ecoff(const char *filename, hwaddr node,
-                           uint64_t *entry, uint64_t *gp_value,
+static void sn0_load_ecoff(MachineState *machine, const char *filename,
+                           hwaddr node, uint64_t *entry, uint64_t *gp_value,
                            uint64_t *low, uint64_t *high)
 {
+    const char *mc_name = MACHINE_GET_CLASS(machine)->name;
     g_autofree uint8_t *buf = NULL;
     int64_t file_size;
     unsigned int nscns, opthdr, i;
@@ -254,36 +260,37 @@ static void sn0_load_ecoff(const char *filename, hwaddr node,
 
     file_size = get_image_size(filename, &error_fatal);
     if (file_size < ECOFF_FILEHDR_SIZE) {
-        error_report("origin200: '%s' is too small to be an ECOFF image",
-                     filename);
+        error_report("%s: '%s' is too small to be an ECOFF image",
+                     mc_name, filename);
         exit(EXIT_FAILURE);
     }
 
     buf = g_malloc(file_size);
     if (load_image_size(filename, buf, file_size) != file_size) {
-        error_report("origin200: cannot read '%s'", filename);
+        error_report("%s: cannot read '%s'", mc_name, filename);
         exit(EXIT_FAILURE);
     }
 
     if (lduw_be_p(buf + ECOFF_FILEHDR_MAGIC_OFF) != ECOFF_MAGIC_MIPSEB) {
-        error_report("origin200: '%s' is not a big-endian MIPS ECOFF image",
-                     filename);
+        error_report("%s: '%s' is not a big-endian MIPS ECOFF image",
+                     mc_name, filename);
         exit(EXIT_FAILURE);
     }
 
     nscns = lduw_be_p(buf + ECOFF_FILEHDR_NSCNS_OFF);
     opthdr = lduw_be_p(buf + ECOFF_FILEHDR_OPTHDR_OFF);
     if (opthdr < ECOFF_AOUTHDR_GPVALUE_OFF + 4) {
-        error_report("origin200: '%s' has too small an ECOFF optional "
-                     "header", filename);
+        error_report("%s: '%s' has too small an ECOFF optional "
+                     "header", mc_name, filename);
         exit(EXIT_FAILURE);
     }
 
     aout_magic = lduw_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_MAGIC_OFF);
     if (aout_magic != ECOFF_AOUTHDR_OMAGIC) {
-        error_report("origin200: '%s' is not an OMAGIC ECOFF executable "
+        error_report("%s: '%s' is not an OMAGIC ECOFF executable "
                      "(sashARCS loads directly; its relocatable sibling "
-                     "sash64 needs a linker, not this loader)", filename);
+                     "sash64 needs a linker, not this loader)", mc_name,
+                     filename);
         exit(EXIT_FAILURE);
     }
 
@@ -306,8 +313,8 @@ static void sn0_load_ecoff(const char *filename, hwaddr node,
         if (scnptr != 0) {
             /* Real data -- text, rdata, data. Copy it as the header says. */
             if (scnptr + (uint64_t)size > file_size) {
-                error_report("origin200: '%s' section %u runs past the "
-                             "end of the file", filename, i);
+                error_report("%s: '%s' section %u runs past the "
+                             "end of the file", mc_name, filename, i);
                 exit(EXIT_FAILURE);
             }
             rom_add_blob_fixed(name, buf + scnptr, size, node + vaddr);
@@ -323,7 +330,7 @@ static void sn0_load_ecoff(const char *filename, hwaddr node,
     }
 
     if (*high == 0) {
-        error_report("origin200: '%s' has no loadable sections", filename);
+        error_report("%s: '%s' has no loadable sections", mc_name, filename);
         exit(EXIT_FAILURE);
     }
 }
@@ -389,7 +396,7 @@ static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash)
      * this product's Origin 200 values directly.
      */
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
-    stl_be_p(config + 0x04, SN0_PROCESSOR_MODE_BITS);
+    stl_be_p(config + 0x04, smc->processor_mode_bits);
     stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
     stq_be_p(config + 0x10, smc->cpu_hz);
     stq_be_p(config + 0x18, smc->hub_hz);
@@ -1571,15 +1578,17 @@ void sn0_assign_pci_resources(void *opaque)
  * kernel or sashARCS, and the low-memory structures that describe both.
  * Runs after every node's memory and boot storage exist.
  */
-void sn0_firmware_init(MachineState *machine, unsigned int node_count)
+void sn0_firmware_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
     MemoryRegion *system = get_system_memory();
+    unsigned int node_count = s->num_nodes;
     hwaddr node = SN0_NODE_BASE(0);
     uint8_t *flash, *fw;
     hwaddr fw_vaddr;
     uint64_t kernel_page = 0, kernel_pages = 0;
+    uint64_t kernel_low = 0, kernel_high = 0;
     unsigned int node_index;
 
     /*
@@ -1597,7 +1606,8 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
         ssize_t size = path ? load_image_size(path, flash, SN0_FLASH_SIZE) : -1;
 
         if (size < 0) {
-            error_report("origin200: cannot read the firmware image '%s'",
+            error_report("%s: cannot read the firmware image '%s'",
+                         MACHINE_GET_CLASS(machine)->name,
                          machine->firmware);
             exit(EXIT_FAILURE);
         }
@@ -1686,14 +1696,18 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
      * test and every guest we care about uses. Booting from a disk is the
      * firmware's job and arrives with the disk.
      */
-    if (machine->kernel_filename && sn0_kernel_file_is_ecoff(machine->kernel_filename)) {
-        uint64_t entry, gp_value, low, high;
+    if (machine->kernel_filename &&
+        sn0_kernel_file_is_ecoff(machine->kernel_filename)) {
+        uint64_t entry, gp_value;
+        uint64_t low = 0, high = 0;
         hwaddr scratch, argv0_str, argv_array, envp_array, sp;
         size_t name_len = strlen(machine->kernel_filename) + 1;
         uint32_t argv0_ptr, zero32 = 0;
 
-        sn0_load_ecoff(machine->kernel_filename, node,
+        sn0_load_ecoff(machine, machine->kernel_filename, node,
                        &entry, &gp_value, &low, &high);
+        kernel_low = low;
+        kernel_high = high;
 
         /*
          * argv/envp/stack for the handoff, in sash's own node-local address
@@ -1721,9 +1735,6 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
 
         sn0_build_sash_handoff(flash, fw, fw_vaddr, entry, gp_value, 1,
                                argv_array, envp_array, sp);
-
-        kernel_page = low / 0x1000;
-        kernel_pages = (high - low + 0xfff) / 0x1000;
     } else if (machine->kernel_filename) {
         uint64_t entry, low, high;
         ssize_t size = load_elf(machine->kernel_filename, NULL,
@@ -1731,7 +1742,8 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
                                 NULL, ELFDATA2MSB, EM_MIPS, 1, 0);
 
         if (size < 0) {
-            error_report("origin200: cannot load the kernel '%s'",
+            error_report("%s: cannot load the kernel '%s'",
+                         MACHINE_GET_CLASS(machine)->name,
                          machine->kernel_filename);
             exit(EXIT_FAILURE);
         }
@@ -1773,9 +1785,13 @@ void sn0_firmware_init(MachineState *machine, unsigned int node_count)
 
         sn0_build_kernel_handoff(flash, fw, fw_vaddr, entry, 1,
                                  SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
+        kernel_low = low;
+        kernel_high = high;
+    }
 
-        kernel_page = low / 0x1000;
-        kernel_pages = (high - low + 0xfff) / 0x1000;
+    if (kernel_high) {
+        kernel_page = kernel_low / 0x1000;
+        kernel_pages = DIV_ROUND_UP(kernel_high - kernel_low, 0x1000);
     }
 
     /*
