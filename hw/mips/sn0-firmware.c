@@ -260,9 +260,9 @@ static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash)
      * this product's Origin 200 values directly.
      */
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
-    stl_be_p(config + 0x04, smc->processor_mode_bits);
+    stl_be_p(config + 0x04, smc->cpu_module.mode_bits);
     stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
-    stq_be_p(config + 0x10, smc->cpu_hz);
+    stq_be_p(config + 0x10, smc->cpu_module.clock_hz);
     stq_be_p(config + 0x18, smc->hub_hz);
     stq_be_p(config + 0x20, smc->rtc_hz);
     stl_be_p(config + 0x28, 1);                    /* error correction on */
@@ -983,9 +983,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
          * The floating-point unit is on the same die but reports revision zero.
          */
         stw_be_p(cpu + 0x3a, 0x0900);
-        stw_be_p(cpu + 0x3c, smc->cpu_hz / 1000000); /* clock in MHz */
+        stw_be_p(cpu + 0x3c, smc->cpu_module.clock_hz / 1000000); /* clock in MHz */
         stw_be_p(cpu + 0x3e, 1);                /* secondary cache, megabytes */
-        stw_be_p(cpu + 0x40, smc->scache_clock_mhz);
+        stw_be_p(cpu + 0x40, smc->cpu_module.scache_clock_mhz);
     }
 
     hub = sn0_component_at(graph, hub_component);

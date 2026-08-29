@@ -488,21 +488,24 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
      */
     mc->numa_mem_supported = false;
 
-    /*
-     * One chassis or two coupled over CrayLink, two processor slots each. A
-     * stock Origin 200 runs its R10000 at 180 MHz and its Hub and secondary
-     * cache at 90 MHz.
-     */
+    /* One chassis or two coupled over CrayLink, two processor slots each. */
     smc->max_nodes = SN0_ORIGIN200_MAX_NODES;
     mc->max_cpus = SN0_CPUS_PER_NODE * smc->max_nodes;
-    smc->cpu_hz = 180000000;
     smc->hub_hz = 90000000;
     smc->rtc_hz = 1250000;          /* an 800 ns tick */
-    smc->scache_clock_mhz = 90;
     smc->fw_machine_type = 1;       /* 0 is Origin 2000, 1 is Origin 200 */
     smc->fprom_cyc = 15;
     smc->fprom_wr = 4;
-    smc->processor_mode_bits = 0x1211a785;
+
+    /*
+     * The recorded population: a 180 MHz R10000 module with a 1 MB
+     * secondary cache clocked at 90 MHz, and the reset mode word a real
+     * board of that population was captured advertising. Other modules fit
+     * this product just as they fit every SN0 product; see the class.
+     */
+    smc->cpu_module.clock_hz = 180000000;
+    smc->cpu_module.scache_clock_mhz = 90;
+    smc->cpu_module.mode_bits = 0x1211a785;
     smc->node_memory_layout = sn0_ip29_memory_layout;
     smc->populate_io = origin200_populate_io;
 }
