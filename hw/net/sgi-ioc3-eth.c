@@ -1081,7 +1081,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps sgi_ioc3_enet_ops = {
     .read = sgi_ioc3_enet_read,
     .write = sgi_ioc3_enet_write,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
     .impl.min_access_size = 4,

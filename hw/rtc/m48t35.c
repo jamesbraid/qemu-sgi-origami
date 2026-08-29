@@ -306,7 +306,7 @@ static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps m48t35_ops = {
     .read = m48t35_read,
     .write = m48t35_write,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 1,
     .impl.min_access_size = 1,

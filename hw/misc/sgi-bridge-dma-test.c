@@ -258,7 +258,7 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps sgi_bridge_dma_test_ops = {
     .read = sgi_bridge_dma_test_read,
     .write = sgi_bridge_dma_test_write,
-    .endianness = DEVICE_BIG_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
     .impl.min_access_size = 4,
