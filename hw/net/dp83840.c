@@ -11,11 +11,12 @@
  * the shape QEMU's own lan9118-phy already has, for the same reason.
  *
  * What is modelled is what the two drivers we run require, which is a good
- * deal less than the part does -- see docs/datasheets/dp83840.md, which also
- * records why answering with the real identity is a decision rather than a
- * detail: it binds OpenBSD's specific transceiver driver instead of its
- * generic one, and widens the contract by two registers belonging to this part
- * alone.
+ * deal less than the part does -- see the DP83840 datasheet in the Origami
+ * project tree (docs/datasheets/dp83840.md there, not in this QEMU tree),
+ * which also records why answering with the real identity is a decision
+ * rather than a detail: it binds OpenBSD's specific transceiver driver
+ * instead of its generic one, and widens the contract by two registers
+ * belonging to this part alone.
  *
  * The link takes a moment to come up, the way real autonegotiation does. Out
  * of reset this is a board still negotiating -- link down, autonegotiation
@@ -38,6 +39,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 
 /*
  * What the station advertises, and it is a choice rather than a finding. The
@@ -93,6 +95,7 @@ static uint16_t dp83840_status(DP83840State *s)
  */
 void dp83840_update_link(DP83840State *s, bool link_down)
 {
+    trace_dp83840_update_link(link_down ? "down" : "up");
     s->link_down = link_down;
 }
 
@@ -133,7 +136,7 @@ static uint16_t dp83840_status_read(DP83840State *s)
     return dp83840_status(s);
 }
 
-uint16_t dp83840_read(DP83840State *s, int reg)
+static uint16_t dp83840_read_impl(DP83840State *s, int reg)
 {
     switch (reg) {
     case MII_BMCR:
@@ -216,8 +219,22 @@ uint16_t dp83840_read(DP83840State *s, int reg)
     }
 }
 
+/*
+ * A wrapper rather than a trace call at each return above: several cases
+ * derive their answer, and a trace that misses one reads as no access.
+ */
+uint16_t dp83840_read(DP83840State *s, int reg)
+{
+    uint16_t val = dp83840_read_impl(s, reg);
+
+    trace_dp83840_read(val, reg);
+    return val;
+}
+
 void dp83840_write(DP83840State *s, int reg, uint16_t val)
 {
+    trace_dp83840_write(val, reg);
+
     switch (reg) {
     case MII_BMCR:
         /*
@@ -234,17 +251,19 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
         }
 
         /*
-         * Any other write to this register is a guest configuring the interface
-         * to carry traffic -- restarting autonegotiation, or forcing a speed and
-         * duplex. That brings the link up at once: there is no cable to
-         * negotiate against, so we stand in as a cooperative far end and the
-         * negotiation succeeds immediately. This is the path the PROM's network
-         * boot and OpenBSD take. Isolating the part takes it back off the link,
-         * and leaves the settle free to re-arm on the next status read.
+         * Any other write to this register is a guest configuring the
+         * interface to carry traffic -- restarting autonegotiation, or
+         * forcing a speed and duplex. That brings the link up at once:
+         * there is no cable to negotiate against, so we stand in as a
+         * cooperative far end and the negotiation succeeds immediately.
+         * This is the path the PROM's network boot and OpenBSD take.
+         * Isolating the part takes it back off the link, and leaves the
+         * settle free to re-arm on the next status read.
          *
-         * Linux's phylib does not reach here: it leaves autonegotiation enabled
-         * from reset and polls status without rewriting the control register, so
-         * its link comes up through the settle armed in dp83840_status_read().
+         * Linux's phylib does not reach here: it leaves autonegotiation
+         * enabled from reset and polls status without rewriting the control
+         * register, so its link comes up through the settle armed in
+         * dp83840_status_read().
          */
         if (val & MII_BMCR_ISOLATE) {
             s->autoneg_done = false;
@@ -322,21 +341,25 @@ bool dp83840_in_loopback(DP83840State *s)
 
 void dp83840_reset(DP83840State *s)
 {
+    trace_dp83840_reset();
+
     /*
      * Out of reset the part is autonegotiating and advertising everything it
      * can do, and its registers hold the values its own specification gives.
      *
      * The link is not one of those values. Real silicon comes up with the link
      * down and autonegotiation incomplete, then negotiates on its own and
-     * brings the link up a short time later. SGI's power-on diagnostic reads the
-     * status, link-partner and expansion registers early, as pure reads before
-     * it has driven the part, and expects that not-yet-settled state: no link,
-     * no completed autonegotiation, no partner. A model that came up with the
-     * link already live answered those reads wrong, which is what the
-     * diagnostic's three reset-value warnings reported. So the link stays down
-     * out of reset and comes up a settle after the interface first reads status
-     * -- see dp83840_status_read() -- or at once if a guest forces it up with a
-     * control-register write -- see dp83840_write(). See docs/datasheets/dp83840.md.
+     * brings the link up a short time later. SGI's power-on diagnostic reads
+     * the status, link-partner and expansion registers early, as pure reads
+     * before it has driven the part, and expects that not-yet-settled state:
+     * no link, no completed autonegotiation, no partner. A model that came
+     * up with the link already live answered those reads wrong, which is
+     * what the diagnostic's three reset-value warnings reported. So the
+     * link stays down out of reset and comes up a settle after the
+     * interface first reads status -- see dp83840_status_read() -- or at
+     * once if a guest forces it up with a control-register write -- see
+     * dp83840_write(). The DP83840 datasheet in the Origami project tree
+     * (docs/datasheets/dp83840.md) records the diagnostic's three warnings.
      */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
@@ -360,6 +383,14 @@ static void dp83840_realize(DeviceState *dev, Error **errp)
     DP83840State *s = DP83840(dev);
 
     s->settle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, dp83840_settle_done, s);
+}
+
+static void dp83840_unrealize(DeviceState *dev)
+{
+    DP83840State *s = DP83840(dev);
+
+    timer_free(s->settle_timer);
+    s->settle_timer = NULL;
 }
 
 static const VMStateDescription vmstate_dp83840 = {
@@ -390,7 +421,9 @@ static void dp83840_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "DP83840 10/100 ethernet transceiver";
+    set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
     dc->realize = dp83840_realize;
+    dc->unrealize = dp83840_unrealize;
     dc->vmsd = &vmstate_dp83840;
     device_class_set_props(dc, dp83840_properties);
     rc->phases.hold = dp83840_reset_hold;

@@ -64,6 +64,7 @@
 #define MCR_TX_EN         (1u << 14)
 #define MCR_RX_DMA_EN     (1u << 15)
 #define MCR_RX_EN         (1u << 16)
+#define MCR_LOOPBACK      (1u << 17)
 
 #define ENET_INT_RX_TIMER (1u << 0)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
@@ -86,6 +87,7 @@
  */
 #define PHY_BMCR          0
 #define PHY_BMSR          1
+#define BMCR_LOOPBACK     0x4000
 #define BMCR_SPEED100     0x2000
 #define BMCR_DUPLEX       0x0100
 #define BMSR_AN_COMP      0x0020
@@ -202,6 +204,17 @@
 #define RXE_GOODPKT       0x40000000u
 
 /*
+ * The long-event and bad-packet bits beside it, again from a driver rather
+ * than from our header: OpenBSD's if_iecreg.h names them IEC_RXERR_LONGEVENT
+ * 0x10000000 and IEC_RXERR_BADPACKET 0x20000000, and its iec_rxintr drops
+ * any frame wearing either. The engine sets both when it truncates a
+ * delivery, so what a guest sees of a frame too long to represent is a drop
+ * with a printed reason rather than a silently shortened frame.
+ */
+#define RXE_LONGEVENT     0x10000000u
+#define RXE_BADPKT        0x20000000u
+
+/*
  * The register window is declared big-endian and this machine is not, so the
  * memory system swaps between the value a test hands it and the value the
  * device sees. Every access here goes through these two rather than through
@@ -271,13 +284,13 @@ static void pci_cfg_writel(QTestState *qts, uint8_t slot, uint8_t offset,
  * be the only thing that differs between them.
  *
  * Promiscuous, unlike a real driver: this file's own address-filter
- * consideration is out of its scope (docs/datasheets/ioc3.md's register
- * table covers the filter contract, and tests/qtest/sn0-ioc3-test.c is
- * where it is exercised). Several tests here address a frame with an
- * arbitrary byte pattern to probe gather and DMA-boundary mechanics rather
- * than a station address at all, so without this bit the filter this device
- * now applies would drop them for a reason that has nothing to do with what
- * they test.
+ * consideration is out of its scope (the IOC3 datasheet in the Origami
+ * project tree, docs/datasheets/ioc3.md, covers the filter contract, and
+ * tests/qtest/sn0-ioc3-test.c is where it is exercised). Several tests here
+ * address a frame with an arbitrary byte pattern to probe gather and
+ * DMA-boundary mechanics rather than a station address at all, so without
+ * this bit the filter this device now applies would drop them for a reason
+ * that has nothing to do with what they test.
  */
 static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
                           unsigned int buffers)
@@ -857,6 +870,8 @@ static void test_the_delivery_truncation_point(const void *data)
         uint32_t count = receive_and_inspect(qts, sv[0], frame, sizes[n],
                                              RAM_SCRATCH + 0xc000, n,
                                              landed, kept);
+        uint32_t word1 = dma_ldl_be(qts, RAM_SCRATCH + 0xc000 + n * 0x1000
+                                    + 4);
 
         /*
          * The count describes what was kept, not what was offered. Reporting
@@ -865,6 +880,15 @@ static void test_the_delivery_truncation_point(const void *data)
          */
         g_assert_cmpuint(count, ==, kept + ETHER_FCS_LEN);
         g_assert_cmpmem(landed, kept, frame, kept);
+
+        /*
+         * And a truncated delivery says so where a driver looks: the long
+         * and bad bits OpenBSD drops on, on the one size that was cut and
+         * on neither of its neighbours.
+         */
+        g_assert_cmphex(word1 & (RXE_LONGEVENT | RXE_BADPKT), ==,
+                        kept == sizes[n] ? 0
+                                         : RXE_LONGEVENT | RXE_BADPKT);
     }
 
     qtest_quit(qts);
@@ -1116,6 +1140,109 @@ static void test_a_burst_behind_one_doorbell(const void *data)
 
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
                     (BURST * TX_DESC_SIZE) | TX_CONSUME_IDLE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A transmit descriptor that cannot be read. Every field the walk needs comes
+ * out of that fetch -- the command bits, the byte counts, both buffer
+ * addresses and the inline area -- so an engine that reads it without looking
+ * at the result assembles a frame out of whatever the failed reads left on its
+ * stack, sends it, and steps the consume index over a descriptor it never saw.
+ * The frame is what makes this worth a test: the wire carries something no
+ * driver asked for.
+ *
+ * The walk stops on the descriptor instead, and the index stays on it: the
+ * fetch is what failed, so there is nothing to say the descriptor was
+ * processed. A guest that repairs the address and rings again gets it sent,
+ * which is the second half below.
+ */
+static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
+{
+    enum { LEN = 64 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[128];
+    uint32_t base = RAM_SCRATCH;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket(sv[1], 4);
+
+    queue_tx_run(qts, base, 0, 1, TX_RING_SMALL * TX_DESC_SIZE, LEN);
+
+    /* Sixty-four gigabytes up, where this machine has nothing at all. */
+    ioc3_writel(qts, ENET_TX_RING_HI, 0x10);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
+
+    net_socket_expect_no_frame(sv[0]);
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==, 0);
+
+    /* The ring back where memory answers: the same descriptor goes out. */
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
+
+    net_socket_set_recv_timeout(sv[0], 10);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==, LEN);
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
+                    TX_DESC_SIZE | TX_CONSUME_IDLE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The same for the frame's own bytes rather than its descriptor. A pointer
+ * descriptor names memory the engine gathers the frame from, and a gather that
+ * fails leaves the frame buffer holding whatever it held before -- the frame
+ * before this one, or nothing at all. Sending that is the worst version of
+ * this fault, because it puts bytes on the wire that no guest ever wrote and
+ * tells the driver the transmit succeeded.
+ */
+static void test_a_transmit_buffer_that_cannot_be_read(const void *data)
+{
+    enum { LEN = 128 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[LEN];
+    uint8_t got[256];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t buf = RAM_SCRATCH + 0x4000;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x40);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket(sv[1], 4);
+
+    qtest_memwrite(qts, buf, frame, sizeof(frame));
+    dma_stl_be(qts, base + 0, LEN | TXD_BUF1_VALID | TXD_INT_DONE);
+    dma_stl_be(qts, base + 4, LEN << TXD_BUF1_LEN_SHIFT);
+    /* The buffer's high word, which is where the frame is not. */
+    dma_stl_be(qts, base + 8, 0x10);
+    dma_stl_be(qts, base + 12, buf);
+    dma_stl_be(qts, base + 16, 0);
+    dma_stl_be(qts, base + 20, 0);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
+
+    net_socket_expect_no_frame(sv[0]);
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==, 0);
+
+    /* The buffer back where the frame is: the same descriptor goes out. */
+    dma_stl_be(qts, base + 8, 0);
+    ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
+
+    net_socket_set_recv_timeout(sv[0], 10);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==, LEN);
+    g_assert_cmpmem(got, LEN, frame, LEN);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -1476,6 +1603,110 @@ static void test_the_backend_link_reaches_the_status_word(const void *data)
 }
 
 /*
+ * A frame held back by transceiver loopback goes in when the loopback
+ * clears. While either loopback is selected the block refuses the backend's
+ * traffic, and the refusal queues the frame rather than dropping it -- so
+ * clearing the loopback must deliver what was queued without another frame
+ * arriving to prompt it. SGI's power-on diagnostic is the reason this edge
+ * exists at all: it walks the transceiver's loopback selects while the
+ * backend is free to have traffic waiting.
+ */
+static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x80);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 2);
+
+    mii_write(qts, PHY_BMCR, BMCR_LOOPBACK | BMCR_SPEED100 | BMCR_DUPLEX);
+
+    /* Refused while looping back: the index must sit still. */
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(200000);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /*
+     * Nothing arrives after this write. Only the flush it triggers can
+     * deliver the queued frame.
+     */
+    mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+    wait_for_rx_consume(qts, RX_RING_STRIDE);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A frame whose receive ring entry cannot be read. That entry carries the
+ * address every write the delivery makes is aimed at -- both header words,
+ * the payload, and the phantom check sequence -- so a fetch that fails
+ * leaves the engine with no destination at all. Continuing past it writes
+ * those five kilobytes wherever the failed read left the address variable
+ * pointing, advances the consume index and raises the receive interrupt:
+ * the driver is told a good packet is waiting in a buffer nothing was
+ * written to, and takes whatever the buffer held before. Dropping the frame
+ * is the honest outcome, since the transfer never happened and this block
+ * has no status a driver reads for one the fabric refused.
+ *
+ * The ring is moved above every address the machine answers rather than
+ * unmapped underneath it, so the failure is the memory system's own. MAC
+ * loopback turns the transmit round inside the block, which puts the whole
+ * delivery inside the doorbell write and leaves nothing to wait for.
+ */
+static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
+{
+    QTestState *qts;
+    uint8_t frame[60];
+    uint8_t landed[60];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+
+    build_arp_request(frame, sizeof(frame));
+    qts = ioc3_start(ring, rxbuf, 4);
+    ioc3_writel(qts, ENET_MAC_CONTROL,
+                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+
+    /* Sixty-four gigabytes up, where this machine has nothing at all. */
+    ioc3_writel(qts, ENET_RX_RING_HI, 0x10);
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) &
+                    (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==, 0);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, 0);
+
+    /*
+     * The drop costs the engine nothing else. With the ring back where
+     * memory answers, the next frame takes the slot the dropped one left
+     * alone, which is also what says the index never moved for it.
+     */
+    ioc3_writel(qts, ENET_RX_RING_HI, 0);
+    tx_one(qts, base, 1, frame, sizeof(frame));
+
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, RX_RING_STRIDE);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    qtest_quit(qts);
+}
+
+/*
  * The complement, standing alone for the reason set out in the origin200
  * version of this case: an assertion about an absence should not inherit a
  * wait. Nothing is asked for here, so nothing can come back, and the absence
@@ -1534,6 +1765,14 @@ int main(int argc, char **argv)
                         test_a_transmit_with_no_reply_raises_nothing);
     qtest_add_data_func("sgi-ioc3-eth/backend-link-reaches-status", NULL,
                         test_the_backend_link_reaches_the_status_word);
+    qtest_add_data_func("sgi-ioc3-eth/queued-frame-lands-after-loopback", NULL,
+                        test_a_queued_frame_lands_when_phy_loopback_clears);
+    qtest_add_data_func("sgi-ioc3-eth/unreadable-ring-entry-drops-the-frame",
+                        NULL, test_a_frame_whose_ring_entry_cannot_be_read);
+    qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
+                        test_a_transmit_descriptor_that_cannot_be_read);
+    qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-buffer", NULL,
+                        test_a_transmit_buffer_that_cannot_be_read);
 
     for (i = 0; i < ARRAY_SIZE(walk_sizes); i++) {
         char *name = g_strdup_printf("sgi-ioc3-eth/reply-inside-the-walk/%u",

@@ -4,9 +4,10 @@
  *
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c), mapped into that
  * chip's PCI BAR at the ethernet block's offset. Its media access
- * controller is SGI's own design rather than a catalogue part, so
- * docs/datasheets/ioc3.md's register table is the whole specification and
- * there is no vendor document behind it to consult.
+ * controller is SGI's own design rather than a catalogue part, so the
+ * register table in the IOC3 datasheet kept in the Origami project tree
+ * (docs/datasheets/ioc3.md there, not in this QEMU tree) is the whole
+ * specification and there is no vendor document behind it to consult.
  */
 
 #ifndef HW_NET_SGI_IOC3_ETH_H
@@ -63,14 +64,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
  * where the halving comes from; the datasheet's byte-offset description and
  * this scale agree once that unit is known.
  */
-#define SGI_IOC3_ENET_MCR_DUPLEX    (1u << 0)
 #define SGI_IOC3_ENET_MCR_PROMISC   (1u << 1)
 #define SGI_IOC3_ENET_MCR_PAD_EN    (1u << 2)
 #define SGI_IOC3_ENET_MCR_RXOFF_MASK   0x1f8u
 #define SGI_IOC3_ENET_MCR_RXOFF_SHIFT  3
 #define SGI_IOC3_ENET_MCR_RAM_PARITY   (1u << 9)
-#define SGI_IOC3_ENET_MCR_BAD_PARITY   (1u << 11)
-#define SGI_IOC3_ENET_MCR_BUFSIZ    (1u << 12)
 #define SGI_IOC3_ENET_MCR_TX_DMA_EN (1u << 13)
 #define SGI_IOC3_ENET_MCR_TX_EN     (1u << 14)
 #define SGI_IOC3_ENET_MCR_RX_DMA_EN (1u << 15)
@@ -155,20 +153,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_RXH_VALID       (1u << 31)
 #define SGI_IOC3_ENET_RXH_BYTECNT_MASK   0x07ff0000u
 #define SGI_IOC3_ENET_RXH_BYTECNT_SHIFT  16
-#define SGI_IOC3_ENET_RXE_CRC         (1u << 0)
-#define SGI_IOC3_ENET_RXE_FRAMING     (1u << 1)
-#define SGI_IOC3_ENET_RXE_CODE        (1u << 2)
-#define SGI_IOC3_ENET_RXE_PREAMBLE    (1u << 3)
-#define SGI_IOC3_ENET_RXE_LEN_LO_MASK    0x00007000u
 #define SGI_IOC3_ENET_RXE_LEN_LO_SHIFT   12
-#define SGI_IOC3_ENET_RXE_LEN_HI_MASK    0x03ff0000u
 #define SGI_IOC3_ENET_RXE_LEN_HI_SHIFT   16
 #define SGI_IOC3_ENET_RXE_MULTICAST   (1u << 26)
 #define SGI_IOC3_ENET_RXE_BROADCAST   (1u << 27)
 #define SGI_IOC3_ENET_RXE_LONGEVENT   (1u << 28)
 #define SGI_IOC3_ENET_RXE_BADPKT      (1u << 29)
 #define SGI_IOC3_ENET_RXE_GOODPKT     (1u << 30)
-#define SGI_IOC3_ENET_RXE_CARRIER     (1u << 31)
 
 /*
  * The transmit ring holds descriptors inline rather than pointers, 128 bytes
@@ -178,7 +169,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
  * which is the tell that it is not part of the count.
  */
 #define SGI_IOC3_ENET_TX_DESC_SIZE       128
-#define SGI_IOC3_ENET_TX_DESC_SHIFT      7
 #define SGI_IOC3_ENET_TX_RING_SMALL      128
 #define SGI_IOC3_ENET_TX_RING_LARGE      512
 #define SGI_IOC3_ENET_TX_RING_SEL        (1u << 0)
@@ -195,7 +185,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_TXD_DATA_VALID     (1u << 16)
 #define SGI_IOC3_ENET_TXD_BUF1_VALID     (1u << 17)
 #define SGI_IOC3_ENET_TXD_BUF2_VALID     (1u << 18)
-#define SGI_IOC3_ENET_TXD_DOCHECKSUM     (1u << 19)   /* insert transport checksum */
+/* Insert the transport checksum into the assembled frame. */
+#define SGI_IOC3_ENET_TXD_DOCHECKSUM     (1u << 19)
 #define SGI_IOC3_ENET_TXD_DATA_LEN_MASK  0x0000007fu
 #define SGI_IOC3_ENET_TXD_BUF1_LEN_MASK  0x0007ff00u
 #define SGI_IOC3_ENET_TXD_BUF1_LEN_SHIFT 8
@@ -264,12 +255,16 @@ struct SGIIOC3EthState {
     qemu_irq irq;
 
     /*
-     * The parent PCI function's own DMA address space, handed down once at
-     * realize. This block sits behind the same Bridge the parent's BAR
-     * does, and every DMA master in the chip must go through that
-     * translation -- see docs/datasheets/ioc3.md's "DMA" section.
+     * The memory this block's DMA reads and writes, set through the
+     * "dma-memory" link property before realize, and the address space
+     * realize builds over it. The parent chip hands over its own PCI
+     * function's bus-master view: this block sits behind the same Bridge
+     * the parent's BAR does, and every DMA master in the chip must go
+     * through that translation -- see the "DMA" section of the IOC3
+     * datasheet in the Origami project tree (docs/datasheets/ioc3.md).
      */
-    AddressSpace *dma_as;
+    MemoryRegion *dma_mr;
+    AddressSpace dma_as;
 
     /*
      * The register block, held as one array indexed by register rather than

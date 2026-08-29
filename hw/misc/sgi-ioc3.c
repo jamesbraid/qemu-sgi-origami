@@ -1704,12 +1704,14 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
     /*
      * The ethernet block. Its DMA has to go through this chip's own PCI
-     * function to reach the Bridge's address translation, so the address
-     * space is handed down before the child realizes -- see
+     * function to reach the Bridge's address translation, so the function's
+     * bus-master view is handed down before the child realizes -- see
      * docs/datasheets/ioc3.md's "DMA" section for why every transfer there
      * must go through it rather than the plain system address space.
      */
-    s->eth.dma_as = pci_get_address_space(dev);
+    object_property_set_link(OBJECT(&s->eth), "dma-memory",
+                             OBJECT(&dev->bus_master_container_region),
+                             &error_abort);
     /*
      * And the serial engines' own, which is the same space for the same
      * reason: their rings sit in guest memory reached through the Bridge's
