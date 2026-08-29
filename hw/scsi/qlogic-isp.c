@@ -34,12 +34,13 @@
  * termination control on later parts of the family — are ones a guest may touch
  * without meaning anything by it.
  *
- * Written from the reviewed datasheet docs/datasheets/isp1040.md, whose
- * register contract is driver-sourced because no vendor programming manual
- * for this part exists: a Linux qla1280 against NetBSD isp cross-check for
- * the map, and OpenBSD 7.9's qlw for the behaviour. We read those to learn
- * the facts and wrote our own code; no vendor or driver code, comments or
- * file structure is reproduced.
+ * Written from the reviewed datasheet at docs/datasheets/isp1040.md in the
+ * origami project tree — the checkout this fork is developed inside, not
+ * this repository. Its register contract is driver-sourced because no
+ * vendor programming manual for this part exists: a Linux qla1280 against
+ * NetBSD isp cross-check for the map, and OpenBSD 7.9's qlw for the
+ * behaviour. We read those to learn the facts and wrote our own code; no
+ * vendor or driver code, comments or file structure is reproduced.
  */
 
 #include "qemu/osdep.h"
@@ -51,6 +52,7 @@
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
 #include "migration/vmstate.h"
+#include "trace.h"
 #include "qom/object.h"
 
 #define TYPE_QLOGIC_ISP1040 "qlogic-isp1040"
@@ -620,7 +622,7 @@ struct QLogicISPState {
     PCIDevice parent_obj;
 
     MemoryRegion io;    /* Base address register 0, the I/O window. */
-    MemoryRegion mmio;  /* Base address register 1, the memory window. */
+    MemoryRegion mmio;  /* Base address register 1: an alias of io. */
 
     uint16_t bus_cfg1;
     uint16_t bus_ctrl;
@@ -693,11 +695,19 @@ struct QLogicISPRequest {
  * A source that says a bit is inert is worth as much as one that says what a
  * bit does, and is why this model does not condition the line on it.
  */
+/*
+ * The single AND below works only because the RISC interrupt enable in bus
+ * interface control and the RISC interrupt request in bus interface status
+ * are the same bit position in their two registers.
+ */
+QEMU_BUILD_BUG_ON(ISP_BUS_CTRL_RISC_INT_ENABLE != ISP_BUS_STATUS_RISC_INT_REQ);
+
 static void qlogic_isp_update_irq(QLogicISPState *s)
 {
     bool level = (s->bus_status & s->bus_ctrl &
                   ISP_BUS_STATUS_RISC_INT_REQ) != 0;
 
+    trace_qlogic_isp_irq(level);
     pci_set_irq(PCI_DEVICE(s), level);
 }
 
@@ -852,6 +862,12 @@ static void qlogic_isp_ram_block_dma(QLogicISPState *s, bool to_adapter)
                 | ISP_MBOX_ADDR_LOW(s->mailbox);
     uint16_t i;
 
+    if (to_adapter) {
+        trace_qlogic_isp_firmware_load(base, count, host);
+    } else {
+        trace_qlogic_isp_firmware_dump(base, count, host);
+    }
+
     for (i = 0; i < count; i++) {
         uint16_t *slot = &s->risc_ram[(uint16_t)(base + i)];
 
@@ -885,6 +901,10 @@ static void qlogic_isp_ram_block_dma(QLogicISPState *s, bool to_adapter)
  */
 static void qlogic_isp_mailbox_command(QLogicISPState *s)
 {
+    uint16_t cmd = s->mailbox[0];
+
+    trace_qlogic_isp_mbox_command(cmd);
+
     switch (s->mailbox[0]) {
     case ISP_MBOX_CMD_NOP:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
@@ -1135,6 +1155,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->rqst_len = s->mailbox[1];
         s->rqst_cons = 0;
         s->mailbox[ISP_MAILBOX_REQUEST_QUEUE] = 0;
+        trace_qlogic_isp_queue_init("request", addr, s->rqst_len);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
     }
@@ -1162,6 +1183,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
          * until a reset clears the queue.
          */
         qlogic_isp_drop_pending_status(s);
+        trace_qlogic_isp_queue_init("response", addr, s->resp_len);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
     }
@@ -1188,6 +1210,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
     }
 
+    trace_qlogic_isp_mbox_complete(cmd, s->mailbox[0]);
+
     s->semaphore = ISP_SEMAPHORE_LOCK;
     s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
     qlogic_isp_update_irq(s);
@@ -1196,6 +1220,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
 static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
 {
     unsigned cmd = val >> ISP_HOST_CMD_SHIFT;
+
+    trace_qlogic_isp_host_command(cmd);
 
     switch (cmd) {
     case ISP_HOST_CMD_NOP:
@@ -1408,6 +1434,9 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
      * run of stores is what lets one rule cover every field, the sub-word ones
      * included, and it also stops the slot ever being visible half-written.
      */
+    trace_qlogic_isp_status_post(handle, scsi_status, completion,
+                                 state_flags, status_flags, resid);
+
     memset(entry, 0, sizeof(entry));
     entry[ISP_ENTRY_OFF_TYPE] = ISP_ENTRY_TYPE_STATUS;
     entry[ISP_ENTRY_OFF_COUNT] = 1;
@@ -1425,6 +1454,7 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
     pci_dma_write(pci, addr, entry, sizeof(entry));
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
+    trace_qlogic_isp_response_ring(s->resp_prod, s->resp_cons);
 
     s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
     qlogic_isp_update_irq(s);
@@ -1494,6 +1524,7 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
                       "qlogic-isp: response queue full, holding handle "
                       "0x%08" PRIx32 " until the guest acknowledges\n",
                       handle);
+        trace_qlogic_isp_status_held(handle);
 
         pending->handle = handle;
         pending->scsi_status = scsi_status;
@@ -1572,6 +1603,7 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
+    trace_qlogic_isp_request_cancelled(req->handle);
     qlogic_isp_free_request(req);
 }
 
@@ -1759,6 +1791,8 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
 
+    trace_qlogic_isp_request(handle, target, lun, cdb[0], seg_count);
+
     /*
      * One SCSI bus on this part. A request naming the second one must
      * not execute on bus 0 — the same target and lun that answer there
@@ -1904,6 +1938,8 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
 
+    trace_qlogic_isp_request(handle, target, lun, cdb[0], seg_count);
+
     /* The same single-bus check as the 32-bit path. */
     if (ISP_DEVICE_BUS(device) != 0) {
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
@@ -1982,6 +2018,7 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
 
     prod = s->mailbox[ISP_MAILBOX_REQUEST_QUEUE] % s->rqst_len;
     budget = (prod + s->rqst_len - s->rqst_cons) % s->rqst_len;
+    trace_qlogic_isp_request_ring(prod, s->rqst_cons);
 
     while (budget > 0) {
         PCIDevice *pci = PCI_DEVICE(s);
@@ -2112,13 +2149,20 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         return s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2];
     }
 
+    /*
+     * Not LOG_UNIMP: the bank select and the storage behind it are
+     * implemented, the individual registers are just not decoded. A trace
+     * event records the access without flooding the unimp log on every
+     * boot that touches the window.
+     */
     if (addr >= ISP_REG_SXP_RISC_BASE && addr < ISP_REG_SXP_RISC_END) {
-        qemu_log_mask(LOG_UNIMP,
-                      "qlogic-isp: read of unimplemented %s register "
-                      "0x%02" HWADDR_PRIx "\n",
-                      (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
-                      addr);
-        return qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2];
+        uint16_t val =
+            qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2];
+
+        trace_qlogic_isp_bank_read(
+            (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
+            addr, val);
+        return val;
     }
 
     switch (addr) {
@@ -2179,6 +2223,7 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
             return;
         }
         s->resp_cons = val % s->resp_len;
+        trace_qlogic_isp_response_ring(s->resp_prod, s->resp_cons);
         qlogic_isp_drain_pending_status(s);
         return;
     }
@@ -2197,12 +2242,11 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     }
 
+    /* Traced, not LOG_UNIMP, for the reason the read side gives. */
     if (addr >= ISP_REG_SXP_RISC_BASE && addr < ISP_REG_SXP_RISC_END) {
-        qemu_log_mask(LOG_UNIMP,
-                      "qlogic-isp: write 0x%04x to unimplemented %s register "
-                      "0x%02" HWADDR_PRIx "\n", (unsigned)val,
-                      (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
-                      addr);
+        trace_qlogic_isp_bank_write(
+            (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
+            addr, val);
         qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2] = val;
         return;
     }
@@ -2346,15 +2390,20 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
      * this whole dword and fails the I/O slot on a zero Status half. The
      * bit is read-only -- pci_init_wmask leaves wmask[PCI_STATUS] clear and
      * only the error latches are write-one-to-clear -- so it survives the
-     * reset that clears the writable and w1c bits. See
-     * docs/datasheets/isp1040.md.
+     * reset that clears the writable and w1c bits. See the datasheet at
+     * docs/datasheets/isp1040.md in the origami project tree.
      */
     pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
 
+    /*
+     * One register file behind two windows: the memory window is an alias
+     * of the I/O window rather than a second region over the same ops, so
+     * the two cannot drift apart. test_window pins that both answer.
+     */
     memory_region_init_io(&s->io, OBJECT(s), &qlogic_isp_reg_ops, s,
                           "qlogic-isp-io", QLOGIC_ISP_REG_WINDOW_SIZE);
-    memory_region_init_io(&s->mmio, OBJECT(s), &qlogic_isp_reg_ops, s,
-                          "qlogic-isp-mmio", QLOGIC_ISP_REG_WINDOW_SIZE);
+    memory_region_init_alias(&s->mmio, OBJECT(s), "qlogic-isp-mmio",
+                             &s->io, 0, QLOGIC_ISP_REG_WINDOW_SIZE);
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
