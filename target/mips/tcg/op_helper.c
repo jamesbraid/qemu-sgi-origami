@@ -352,9 +352,9 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     CPUMIPSState *env = cpu_env(cs);
 
     /*
-     * On the R10000 family a failed store is not the processor's to report.
-     * The R10000 User's Manual version 2.0 gives the Bus Error exception one
-     * cause, and every request kind in it is a read: "a processor block read,
+     * A failed store is not the processor's to report. The R10000 User's
+     * Manual version 2.0 gives the Bus Error exception one cause, and
+     * every request kind in it is a read: "a processor block read,
      * upgrade, or double/single/partial-word read request receives an
      * external ERR completion response". An uncached store leaves the
      * processor as a double/single/partial-word write request, which its
@@ -372,7 +372,7 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
      * so every store that gets this far is treated as the posted uncached
      * write, which is what device probing actually uses.
      */
-    if (access_type == MMU_DATA_STORE && (env->insn_flags & INSN_R10K)) {
+    if (access_type == MMU_DATA_STORE && env->cfg.stores_are_posted) {
         qemu_log_mask(LOG_UNIMP,
                       "mips: store of %u byte%s at 0x%" VADDR_PRIx
                       " (physical 0x%" HWADDR_PRIx ") reached no device; the "

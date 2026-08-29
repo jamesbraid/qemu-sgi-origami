@@ -355,7 +355,7 @@ static bool mips_r10k_scache_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.insn_flags & INSN_R10K;
+    return cpu->env.cfg.has_cache_diagnostics;
 }
 
 static const VMStateDescription mips_vmstate_r10k_scache = {
@@ -390,7 +390,7 @@ static bool mips_r10k_pcache_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.insn_flags & INSN_R10K;
+    return cpu->env.cfg.has_cache_diagnostics;
 }
 
 static const VMStateDescription mips_vmstate_r10k_pcache = {
@@ -432,7 +432,7 @@ static bool mips_r10k_cacherr_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.insn_flags & INSN_R10K;
+    return cpu->env.cfg.has_cache_diagnostics;
 }
 
 static const VMStateDescription mips_vmstate_r10k_cacherr = {
@@ -450,7 +450,7 @@ static bool mips_r10k_diagnostic_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.insn_flags & INSN_R10K;
+    return cpu->env.cfg.has_branch_prediction_table;
 }
 
 static const VMStateDescription mips_vmstate_r10k_diagnostic = {
@@ -475,7 +475,7 @@ static bool mips_r10k_watch_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return (cpu->env.insn_flags & INSN_R10K) &&
+    return cpu->env.cfg.watch_is_physical &&
            cpu->env.CP0_R10K_DelayedWatch;
 }
 
@@ -491,17 +491,17 @@ static const VMStateDescription mips_vmstate_r10k_watch = {
 };
 
 /*
- * On the R10000 family, whether the timer is holding IP[7] up decides what
- * a performance counter write may take down on the far side, so a pending
- * timer level travels. Other processors reconstruct exactly the old
- * behaviour from Cause alone, and a clear level matches the field's
- * default, so neither sends the section.
+ * Where the counters share IP[7] with the timer, whether the timer is
+ * holding the level up decides what a performance counter write may take
+ * down on the far side, so a pending timer level travels. Other processors
+ * reconstruct exactly the old behaviour from Cause alone, and a clear level
+ * matches the field's default, so neither sends the section.
  */
 static bool mips_timer_ip7_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return (cpu->env.insn_flags & INSN_R10K) && cpu->env.cp0_timer_ip7;
+    return cpu->env.cfg.has_performance_counters && cpu->env.cp0_timer_ip7;
 }
 
 static const VMStateDescription mips_vmstate_timer_ip7 = {

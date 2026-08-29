@@ -712,6 +712,30 @@ const mips_def_t mips_defs[] =
         .SEGBITS = 44,
         .PABITS = 40,
         .insn_flags = CPU_MIPS4 | INSN_R10K,
+        /*
+         * Every behaviour the rest of the target selects by name. This is the
+         * only place this processor's identity is mapped onto them, so a
+         * later member of the family names its own set here and nothing else
+         * has to be revisited.
+         */
+        .cfg = {
+            .uncached_attribute = true,
+            .erl_restricts_xuseg = true,
+            .watch_is_physical = true,
+            .tlb_has_no_ehinv = true,
+            .warm_reset_reports_sr = true,
+            .cache_error_is_error_level = true,
+            .exception_breaks_ll_link = true,
+            .lladdr_is_scratch = true,
+            .fp_traps_denormal_result = true,
+            .fp_cvt_l_limited_to_51_bits = true,
+            .stores_are_posted = true,
+            .has_cache_diagnostics = true,
+            .has_branch_prediction_table = true,
+            .has_performance_counters = true,
+            .compare_match_is_continuous = true,
+            .mtc0_entrylo_moves_64_bits = true,
+        },
         .mmu_type = MMU_TYPE_R4000,
     },
     {
