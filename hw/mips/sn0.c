@@ -12,6 +12,7 @@
 #include "qemu/log.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qobject/qlist.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "hw/core/boards.h"
@@ -839,30 +840,23 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
  * as the processors that programmed them.
  */
 static hwaddr sn0_node_local_memory_base(MachineState *machine,
-                                         SN0NodeState *node,
                                          unsigned int node_index)
 {
     if (node_index != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
         machine->kernel_filename) {
         return SN0_NODE_BASE(0);
     }
-    return SN0_NODE_BASE(node->nasid);
+    return SN0_NODE_BASE(node_index);
 }
 
-static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
-                                 unsigned int node_index,
-                                 unsigned int cpu_base,
-                                 unsigned int cpu_count,
-                                 uint64_t ram_offset)
+static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    unsigned int node_index = node->nasid;
     unsigned int slice, half, space;
 
-    node->cpuclk = clock_new(OBJECT(node), "cpu-refclk");
-    clock_set_hz(node->cpuclk, SN0_MACHINE_GET_CLASS(machine)->cpu_hz);
-    for (slice = 0; slice < cpu_count; slice++) {
-        unsigned int cpu_index = cpu_base + slice;
+    for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *alias_name =
             g_strdup_printf("sn0.node%u.cpu%u.system", node_index, slice);
         g_autofree char *name = g_strdup_printf("cpu%u", slice);
@@ -882,7 +876,7 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
 
         /*
          * Addresses without a NASID normally name the reading processor's
-         * node; sn0_node_local_memory_base() carries the one exception,
+         * node; the local-memory-base property carries the one exception,
          * which applies to memory space alone.  Keep the global system map
          * underneath so an explicit NASID still reaches either node in
          * both cases.
@@ -891,8 +885,7 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
             g_autofree char *local_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.local-space%u", node_index, slice, space);
             hwaddr alias_node_base = space == 0 ?
-                sn0_node_local_memory_base(machine, node, node_index) :
-                node_base;
+                node->local_memory_base : node_base;
             hwaddr local_offset = 0;
             hwaddr local_size = SN0_NODE_SIZE;
 
@@ -953,11 +946,11 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
         for (half = 0; half < 2; half++) {
             g_autofree char *private_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.hub-private%u", node_index, slice, half);
-            uint64_t private_offset = ram_offset +
+            uint64_t private_offset = node->ram_start +
                 (half ^ slice) * SN0_HUB_PRIVATE_HALF;
 
             memory_region_init_alias(&node->hub_private[slice][half],
-                                     OBJECT(node), private_name, machine->ram,
+                                     OBJECT(node), private_name, node->ram,
                                      private_offset, SN0_HUB_PRIVATE_HALF);
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice],
@@ -965,7 +958,7 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
                 &node->hub_private[slice][half], 1);
         }
 
-        node->cpu[slice] = MIPS_CPU(qdev_new(machine->cpu_type));
+        node->cpu[slice] = MIPS_CPU(qdev_new(node->cpu_type));
 
         /*
          * The cache-only private phase the filter models exists only under
@@ -975,15 +968,15 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
          * forwarding -- except that an I/O region cannot back translated
          * code, so kernel text linked into this 32 KiB window would execute
          * one instruction per translation block.  For a directly loaded kernel
-         * there is no cache-only phase, so map the window as the plain RAM it
-         * forwards to.  For a real PROM boot the filter is genuinely needed
-         * during that phase, so keep it -- but it disables itself once the
+         * there is no cache-only phase, so the machine leaves promdata-filter
+         * off and the window is the plain RAM it forwards to.  For a real
+         * PROM boot the filter is genuinely needed during that phase, so
+         * keep it -- but it disables itself once the
          * operating system first executes from the window
          * (sn0_promdata_leave_private), after which the window is the plain
          * shared RAM underneath and backs cached translations at full speed.
          */
-        if (!(SN0_MACHINE(machine)->synthesized_firmware &&
-              machine->kernel_filename)) {
+        if (node->promdata_filter) {
             node->promdata[slice].cpu = node->cpu[slice];
             node->promdata[slice].node_base = node_base;
             node->promdata[slice].present = true;
@@ -1026,29 +1019,18 @@ static void sn0_node_create_cpus(MachineState *machine, SN0NodeState *node,
         object_property_set_bool(OBJECT(node->cpu[slice]), "big-endian", true,
                                  &error_abort);
         qdev_realize(DEVICE(node->cpu[slice]), NULL, &error_abort);
-        machine->possible_cpus->cpus[cpu_index].cpu = CPU(node->cpu[slice]);
         cpu_mips_irq_init_cpu(node->cpu[slice]);
         cpu_mips_clock_init(node->cpu[slice]);
     }
 }
 
-static uint64_t sn0_node_map_memory(MachineState *machine,
-                                    SN0NodeState *node,
-                                    unsigned int node_index,
-                                    uint64_t ram_offset,
-                                    uint64_t ram_size)
+static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    uint64_t ram_offset = node->ram_start;
+    unsigned int node_index = node->nasid;
     unsigned int bank, segment;
-
-    if (!SN0_MACHINE_GET_CLASS(machine)->node_memory_layout(
-            ram_size, node->bank_mb, &node->populated_banks)) {
-        error_report("origin200: node %u's %" PRIu64 " MiB cannot be "
-                     "populated from IP29 memory banks without overlapping "
-                     "firmware regions", node_index, ram_size / MiB);
-        exit(EXIT_FAILURE);
-    }
 
     /*
      * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
@@ -1069,7 +1051,7 @@ static uint64_t sn0_node_map_memory(MachineState *machine,
                 "sn0.node%u.ram.bank%u.slot%u", node_index, bank, segment);
 
             memory_region_init_alias(&node->mem_slot[bank][segment],
-                                     OBJECT(node), name, machine->ram,
+                                     OBJECT(node), name, node->ram,
                                      ram_offset, segment_size);
             memory_region_add_subregion(system, node_base + segment_addr,
                                         &node->mem_slot[bank][segment]);
@@ -1092,7 +1074,7 @@ static uint64_t sn0_node_map_memory(MachineState *machine,
 
                 memory_region_init_alias(
                     &node->hub_local_mem_slot[bank][segment], OBJECT(node),
-                    alias_name, machine->ram, ram_offset, alias_size);
+                    alias_name, node->ram, ram_offset, alias_size);
                 memory_region_add_subregion(
                     system, SN0_SPACE_HUB + node_base + segment_addr,
                     &node->hub_local_mem_slot[bank][segment]);
@@ -1100,15 +1082,13 @@ static uint64_t sn0_node_map_memory(MachineState *machine,
             ram_offset += segment_size;
         }
     }
-
-    return ram_offset;
 }
 
-static void sn0_node_map_boot_storage(SN0NodeState *node,
-                                      unsigned int node_index)
+static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    unsigned int node_index = node->nasid;
     g_autofree char *flash_name =
         g_strdup_printf("sn0.node%u.flash", node_index);
     g_autofree char *hub_name =
@@ -1208,13 +1188,9 @@ static void sn0_node_map_boot_storage(SN0NodeState *node,
     }
 }
 
-static void sn0_node_create_hub(SN0MachineState *machine,
-                                SN0NodeState *node,
-                                unsigned int node_index,
-                                unsigned int cpu_base,
-                                unsigned int cpu_count,
-                                SGIHubState *network_peer)
+static void sn0_node_create_hub(SN0NodeState *node)
 {
+    unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
     g_autofree char *memory_name =
@@ -1250,47 +1226,19 @@ static void sn0_node_create_hub(SN0MachineState *machine,
                                         &node->hub_memory_system, -1);
     memory_region_init_alias(&node->hub_memory_local, OBJECT(node),
                              memory_local_name, system,
-                             SN0_SPACE_MEMORY +
-                             sn0_node_local_memory_base(MACHINE(machine),
-                                                        node, node_index),
+                             SN0_SPACE_MEMORY + node->local_memory_base,
                              SN0_NODE_SIZE);
     memory_region_add_subregion_overlap(&node->hub_memory, SN0_SPACE_MEMORY,
                                         &node->hub_memory_local, 0);
     object_property_set_link(OBJECT(&node->hub), "memory",
                              OBJECT(&node->hub_memory), &error_fatal);
 
-    sn0_diagnostic_attach(machine, node_index);
-
-    qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
-                         machine->synthesized_firmware ? node->nasid : 0);
-    qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", node_index != 0);
-    qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", cpu_count);
-    qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", cpu_base);
-    qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
-                        machine->elsc_dip_switches);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
-    if (network_peer) {
-        qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
-        object_property_set_link(OBJECT(&node->hub), "network-peer",
-                                 OBJECT(network_peer), &error_fatal);
-    }
     object_property_set_link(OBJECT(&node->hub), "xtalk",
                              OBJECT(&node->xtalk), &error_fatal);
-
-    /*
-     * The bring-up UART is a node-0 diagnostic device, not part of either
-     * shipped chassis. Keeping it on the console node also avoids assigning
-     * one character backend to two frontends.
-     */
-    qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
-                      node_index == 0 && machine->junk_uart_present);
-    if (node_index == 0 && machine->junk_uart_present &&
-        serial_hd(SN0_JUNK_UART_CHARDEV)) {
-        object_property_set_link(OBJECT(&node->hub), "junk-uart-chardev",
-                                 OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
-                                 &error_fatal);
-    }
     sysbus_realize(SYS_BUS_DEVICE(&node->hub), &error_fatal);
 
     cpu = node->cpu[0];
@@ -1300,7 +1248,7 @@ static void sn0_node_create_hub(SN0MachineState *machine,
                        cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
     sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 2,
                        cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
-    if (cpu_count == SN0_CPUS_PER_NODE) {
+    if (node->nr_cpus == SN0_CPUS_PER_NODE) {
         cpu = node->cpu[1];
         sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 4,
                            cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
@@ -1311,11 +1259,11 @@ static void sn0_node_create_hub(SN0MachineState *machine,
     }
 }
 
-static void sn0_node_map_xtalk_windows(SN0NodeState *node,
-                                       unsigned int node_index)
+static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    unsigned int node_index = node->nasid;
     unsigned int widget;
 
     for (widget = SN0_WIDGET0;
@@ -1411,25 +1359,89 @@ static void sn0_init(MachineState *machine)
     if (node_count == 2) {
         object_initialize_child(OBJECT(machine), "node1", &s->nodes[1],
                                 TYPE_SN0_NODE);
-        s->nodes[1].nasid = 1;
     }
 
+    s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
+    clock_set_hz(s->cpu_refclk, smc->cpu_hz);
+
     for (node_index = 0; node_index < node_count; node_index++) {
+        SN0NodeState *node = &s->nodes[node_index];
         uint64_t ram_size = node_count == 1 ? machine->ram_size :
                             machine->numa_state->nodes[node_index].node_mem;
         unsigned int cpu_base = node_index * SN0_CPUS_PER_NODE;
         unsigned int cpu_count = node_count == 1 ? machine->smp.cpus :
                                  SN0_CPUS_PER_NODE;
-        SGIHubState *network_peer = node_count == 2 ?
-            &s->nodes[1 - node_index].hub : NULL;
+        uint16_t bank_mb[SN0_MEM_BANKS];
+        unsigned int populated_banks;
+        QList *banks_mb;
+        unsigned int slice, bank;
 
-        sn0_node_create_cpus(machine, &s->nodes[node_index], node_index,
-                             cpu_base, cpu_count, ram_offset);
-        ram_offset = sn0_node_map_memory(machine, &s->nodes[node_index],
-                                         node_index, ram_offset, ram_size);
-        sn0_node_map_boot_storage(&s->nodes[node_index], node_index);
-        sn0_node_create_hub(s, &s->nodes[node_index], node_index, cpu_base,
-                            cpu_count, network_peer);
+        if (!smc->node_memory_layout(ram_size, bank_mb, &populated_banks)) {
+            error_report("%s: node %u's %" PRIu64 " MiB cannot be "
+                         "populated from IP29 memory banks without "
+                         "overlapping firmware regions",
+                         MACHINE_GET_CLASS(machine)->name, node_index,
+                         ram_size / MiB);
+            exit(EXIT_FAILURE);
+        }
+        banks_mb = qlist_new();
+        for (bank = 0; bank < populated_banks; bank++) {
+            qlist_append_int(banks_mb, bank_mb[bank]);
+        }
+
+        qdev_prop_set_uint32(DEVICE(node), "nasid", node_index);
+        qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
+        qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
+        qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
+        object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
+                                 &error_abort);
+        qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
+        qdev_prop_set_uint64(DEVICE(node), "local-memory-base",
+                             sn0_node_local_memory_base(machine, node_index));
+        qdev_prop_set_bit(DEVICE(node), "promdata-filter",
+                          !(s->synthesized_firmware &&
+                            machine->kernel_filename));
+        qdev_prop_set_array(DEVICE(node), "banks-mb", banks_mb);
+        qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
+
+        /*
+         * The Hub facts the machine rather than the node owns: its
+         * programmed node number (real firmware programs it later, so a
+         * real-PROM boot starts at zero), which chassis is the slave, the
+         * chassis DIP switches, the CrayLink peer, and the bring-up UART.
+         * The UART is a node-0 diagnostic device, not part of either
+         * shipped chassis; keeping it on the console node also avoids
+         * assigning one character backend to two frontends.
+         */
+        qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
+                             s->synthesized_firmware ? node_index : 0);
+        qdev_prop_set_bit(DEVICE(&node->hub), "slave-module",
+                          node_index != 0);
+        qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
+                            s->elsc_dip_switches);
+        if (node_count == 2) {
+            qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
+            object_property_set_link(OBJECT(&node->hub), "network-peer",
+                                     OBJECT(&s->nodes[1 - node_index].hub),
+                                     &error_fatal);
+        }
+        qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
+                          node_index == 0 && s->junk_uart_present);
+        if (node_index == 0 && s->junk_uart_present &&
+            serial_hd(SN0_JUNK_UART_CHARDEV)) {
+            object_property_set_link(OBJECT(&node->hub), "junk-uart-chardev",
+                                     OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
+                                     &error_fatal);
+        }
+        sn0_diagnostic_attach(s, node_index);
+
+        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+
+        for (slice = 0; slice < cpu_count; slice++) {
+            machine->possible_cpus->cpus[cpu_base + slice].cpu =
+                CPU(node->cpu[slice]);
+        }
+        ram_offset += ram_size;
     }
     g_assert(ram_offset == machine->ram_size);
 
@@ -1437,15 +1449,7 @@ static void sn0_init(MachineState *machine)
         smc->populate_io(s, node_index);
     }
 
-    for (node_index = 0; node_index < node_count; node_index++) {
-        sn0_node_map_xtalk_windows(&s->nodes[node_index], node_index);
-    }
-
     sn0_firmware_init(machine, node_count);
-
-    for (node_index = 0; node_index < node_count; node_index++) {
-        qdev_realize(DEVICE(&s->nodes[node_index]), NULL, &error_fatal);
-    }
 
     qemu_add_machine_init_done_notifier(&sn0_machine_ready_notifier);
 }
@@ -1549,18 +1553,82 @@ static void sn0_set_widget0_revision(Object *obj, Visitor *v, const char *name,
     SN0_MACHINE(obj)->widget0_revision = value;
 }
 
+static void sn0_node_realize(DeviceState *dev, Error **errp)
+{
+    SN0NodeState *node = SN0_NODE(dev);
+    unsigned int bank;
+
+    if (node->nr_cpus < 1 || node->nr_cpus > SN0_CPUS_PER_NODE) {
+        error_setg(errp, "a node carries one or two processors, not %u",
+                   node->nr_cpus);
+        return;
+    }
+    if (node->nr_banks_mb < 1 || node->nr_banks_mb > SN0_MEM_BANKS) {
+        error_setg(errp, "a node fills one to %u memory banks, not %u",
+                   SN0_MEM_BANKS, node->nr_banks_mb);
+        return;
+    }
+    if (!node->ram || !node->cpu_type) {
+        error_setg(errp, "the machine must set the node's ram and cpu-type");
+        return;
+    }
+
+    node->populated_banks = node->nr_banks_mb;
+    for (bank = 0; bank < node->nr_banks_mb; bank++) {
+        node->bank_mb[bank] = node->banks_mb[bank];
+    }
+
+    sn0_node_create_cpus(node);
+    sn0_node_map_memory(node);
+    sn0_node_map_boot_storage(node);
+    sn0_node_create_hub(node);
+    sn0_node_map_xtalk_windows(node);
+}
+
 static void sn0_node_instance_init(Object *obj)
 {
     SN0NodeState *node = SN0_NODE(obj);
 
     object_initialize_child(obj, "hub", &node->hub, TYPE_SGI_HUB);
+    node->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpu-refclk",
+                                      NULL, NULL, 0);
 }
 
+static const Property sn0_node_properties[] = {
+    DEFINE_PROP_UINT32("nasid", SN0NodeState, nasid, 0),
+    DEFINE_PROP_UINT32("cpu-base", SN0NodeState, cpu_base, 0),
+    DEFINE_PROP_UINT32("nr-cpus", SN0NodeState, nr_cpus, 1),
+    DEFINE_PROP_STRING("cpu-type", SN0NodeState, cpu_type),
+    DEFINE_PROP_LINK("ram", SN0NodeState, ram, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
+    DEFINE_PROP_UINT64("ram-start", SN0NodeState, ram_start, 0),
+    DEFINE_PROP_UINT64("local-memory-base", SN0NodeState,
+                       local_memory_base, 0),
+    DEFINE_PROP_BOOL("promdata-filter", SN0NodeState, promdata_filter, true),
+    DEFINE_PROP_ARRAY("banks-mb", SN0NodeState, nr_banks_mb, banks_mb,
+                      qdev_prop_uint16, uint16_t),
+};
+
+/*
+ * A sysbus device, following the family precedent for a machine's
+ * chip-level unit (PowerNV's chip is one) and the tree's own device rule.
+ * Sysbus parentage does not move the node's migration sections: the main
+ * system bus implements no get_dev_path, so the vmstate below keeps its
+ * per-name instance ids either way — proven by loading a stream saved by
+ * the bus-less build. The node's resettable state — the flash command
+ * machine and the promdata overlay — keeps its explicit reset handlers and
+ * their long-standing order for now; sysbus parentage is what allows a
+ * later move onto ResettablePhases without re-parenting.
+ */
 static void sn0_node_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
+    dc->realize = sn0_node_realize;
     dc->vmsd = &vmstate_sn0_flash;
+    device_class_set_props(dc, sn0_node_properties);
+    /* The machine wires a node's RAM, clock and Hub; -device cannot. */
+    dc->user_creatable = false;
 }
 
 static void sn0_instance_init(Object *obj)
@@ -1568,7 +1636,6 @@ static void sn0_instance_init(Object *obj)
     SN0MachineState *s = SN0_MACHINE(obj);
 
     object_initialize_child(obj, "node0", &s->nodes[0], TYPE_SN0_NODE);
-    s->nodes[0].nasid = 0;
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
     s->debug_leds = true;
@@ -1679,7 +1746,7 @@ static const TypeInfo sn0_machine_types[] = {
     },
     {
         .name              = TYPE_SN0_NODE,
-        .parent            = TYPE_DEVICE,
+        .parent            = TYPE_SYS_BUS_DEVICE,
         .instance_size     = sizeof(SN0NodeState),
         .instance_init     = sn0_node_instance_init,
         .class_init        = sn0_node_class_init,

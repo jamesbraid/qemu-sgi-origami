@@ -784,9 +784,31 @@ typedef struct SN0PromDataState {
 } SN0PromDataState;
 
 typedef struct SN0NodeState {
-    DeviceState parent_obj;
+    SysBusDevice parent_obj;
 
+    /*
+     * Properties: what the machine tells a node about itself. The node's
+     * memory is a window into the machine's backing RAM starting at
+     * ram-start, cut into the populated bank sizes banks-mb carries.
+     * local-memory-base is where a NASID-less memory-space address lands:
+     * normally the node's own window, but node 0's when synthesized
+     * firmware hands a directly loaded kernel control, because Linux
+     * disables PI_CALIAS_SIZE before launching remote processors and their
+     * unqualified kernel-text addresses then name node zero. promdata-filter
+     * installs the PROM's cache-as-RAM overlay, which only a real PROM boot
+     * enters.
+     */
     uint32_t nasid;
+    uint32_t cpu_base;
+    uint32_t nr_cpus;
+    char *cpu_type;
+    MemoryRegion *ram;
+    uint64_t ram_start;
+    uint64_t local_memory_base;
+    bool promdata_filter;
+    uint32_t nr_banks_mb;
+    uint16_t *banks_mb;
+
     Clock *cpuclk;
     MIPSCPU *cpu[SN0_CPUS_PER_NODE];
     MemoryRegion cpu_sysmem[SN0_CPUS_PER_NODE];
@@ -854,6 +876,9 @@ struct SN0MachineState {
 
     SN0NodeState nodes[SN0_ORIGIN200_MAX_NODES];
     SGIBridgeState io_bridge[SN0_ORIGIN200_MAX_NODES];
+
+    /* The product reference clock every node's processors derive from. */
+    Clock *cpu_refclk;
 
     /* Host diagnostics only; not guest-visible and not migrated. */
     bool diagnostic_recording;
