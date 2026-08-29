@@ -1478,7 +1478,28 @@ S: Odd Fixes
 F: configs/devices/mips*/*
 F: hw/mips/
 F: include/hw/mips/
-F: tests/functional/mips64/test_sn0_smp.py
+
+SGI Origin 200
+M: James Braid <jamesb@loreland.org>
+S: Maintained
+F: hw/mips/sn0*
+F: hw/i2c/pcf8584.c
+F: hw/misc/sgi-*.c
+F: hw/net/dp83840.c
+F: hw/net/sgi-ioc3-eth.c
+F: hw/pci-host/sgi-bridge.c
+F: hw/rtc/m48t35.c
+F: hw/scsi/qlogic-isp.c
+F: include/hw/i2c/pcf8584.h
+F: include/hw/misc/sgi-*.h
+F: include/hw/net/dp83840.h
+F: include/hw/net/sgi-ioc3-eth.h
+F: include/hw/pci-host/sgi-bridge.h
+F: include/hw/rtc/m48t35.h
+F: tests/functional/mips64/
+F: tests/qtest/mips64-*.c
+F: tests/qtest/qlogic-isp-test.c
+F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/sn0-*
 
 Jazz
