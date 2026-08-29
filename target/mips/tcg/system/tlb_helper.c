@@ -240,11 +240,52 @@ static void r10k_helper_tlbwi(CPUMIPSState *env)
     r4k_fill_tlb(env, idx);
 }
 
+/*
+ * A random write displaces an entry into a shadow slot rather than
+ * flushing the translations qemu cached through it, which is what makes
+ * the write cheap. Those translations stay correct only while nothing
+ * else maps the page: the moment a write installs a new entry for a page
+ * a shadow still answers for, the cached translation is stale and
+ * nothing else would ever discard it. The indexed write reaches the same
+ * state through r4k_mips_tlb_flush_extra() on a material change; the
+ * random write has to look, because it does not otherwise touch the
+ * shadows it is about to contradict.
+ *
+ * Returns true when a shadow covers the page this write is staging.
+ */
+static bool r4k_shadow_covers_staged(CPUMIPSState *env)
+{
+    bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
+    uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    uint32_t MMID = mi ? env->CP0_MemoryMapID : (uint32_t)ASID;
+    int i;
+
+    for (i = env->tlb->nb_tlb; i < env->tlb->tlb_in_use; i++) {
+        r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
+        /* 1k pages are not supported. */
+        target_ulong mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
+        target_ulong tag = env->CP0_EntryHi & ~mask;
+        target_ulong VPN = tlb->VPN & ~mask;
+        uint32_t tlb_mmid = mi ? tlb->MMID : (uint32_t)tlb->ASID;
+
+#if defined(TARGET_MIPS64)
+        tag &= env->SEGMask;
+#endif
+        if (VPN == tag && (tlb->G || tlb_mmid == MMID)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void r4k_helper_tlbwr(CPUMIPSState *env)
 {
     int r = cpu_mips_get_random(env);
 
     r4k_invalidate_tlb(env, r, 1);
+    if (r4k_shadow_covers_staged(env)) {
+        r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+    }
     r4k_fill_tlb(env, r);
 }
 
@@ -253,6 +294,9 @@ static void r10k_helper_tlbwr(CPUMIPSState *env)
     int r = cpu_mips_get_random(env);
 
     r4k_invalidate_tlb(env, r, 1);
+    if (r4k_shadow_covers_staged(env)) {
+        r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+    }
     r10k_invalidate_conflicts(env, r);
     r4k_fill_tlb(env, r);
 }
