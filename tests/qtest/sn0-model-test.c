@@ -204,6 +204,200 @@ static char *write_prid_guest(void)
     return path;
 }
 
+/*
+ * The same guest as a 64-bit ELF that declares an entry point with its
+ * upper word clear -- a legal image, and one no 32-bit rule may touch. The
+ * address it names is in the segment the processor translates through the
+ * table, so nothing can run there on a machine that has just come out of
+ * reset. That is the point: the marker below appears only if something
+ * rewrote the entry into the compatibility segment on the image's behalf.
+ */
+static char *write_prid_guest_elf64_low_entry(void)
+{
+    static const uint32_t code[] = {
+        0x40087800,             /* mfc0 t0, PRId */
+        0x3c099600,             /* lui t1, 0x9600 */
+        0x0009483c,             /* dsll32 t1, t1, 0 */
+        0x3c0a0003,             /* lui t2, 0x0003 */
+        0x012a4825,             /* or t1, t1, t2 */
+        0xad280000,             /* sw t0, 0(t1) */
+        0x1000ffff,             /* b . */
+        0x00000000,             /* nop */
+    };
+    uint8_t image[0x1000 + sizeof(code)] = { 0 };
+    const uint64_t entry = 0x0000000080020000ULL;
+    GError *err = NULL;
+    char *path = NULL;
+    int fd;
+    size_t i;
+
+    fd = g_file_open_tmp("sn0-prid-guest64-low-XXXXXX", &path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(fd, >=, 0);
+
+    image[0] = ELFMAG0;
+    image[1] = ELFMAG1;
+    image[2] = ELFMAG2;
+    image[3] = ELFMAG3;
+    image[EI_CLASS] = ELFCLASS64;
+    image[EI_DATA] = ELFDATA2MSB;
+    image[EI_VERSION] = EV_CURRENT;
+    stw_be_p(image + 16, ET_EXEC);
+    stw_be_p(image + 18, EM_MIPS);
+    stl_be_p(image + 20, EV_CURRENT);
+    stq_be_p(image + 24, entry);
+    stq_be_p(image + 32, 64);              /* e_phoff */
+    stw_be_p(image + 52, 64);              /* e_ehsize */
+    stw_be_p(image + 54, 56);              /* e_phentsize */
+    stw_be_p(image + 56, 1);               /* e_phnum */
+
+    stl_be_p(image + 64, PT_LOAD);
+    stl_be_p(image + 68, PF_R | PF_X);
+    stq_be_p(image + 72, 0x1000);          /* p_offset */
+    stq_be_p(image + 80, entry);           /* p_vaddr */
+    stq_be_p(image + 88, entry & 0x1fffffff); /* p_paddr: physical */
+    stq_be_p(image + 96, sizeof(code));    /* p_filesz */
+    stq_be_p(image + 104, sizeof(code));   /* p_memsz */
+    stq_be_p(image + 112, 0x1000);         /* p_align */
+
+    for (i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
+    }
+
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
+                    (ssize_t)sizeof(image));
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+/*
+ * The same guest linked as a 32-bit ELF, the class IRIX kernels ship as.
+ * Its segment loads at a physical address and its entry point is the
+ * kseg0 address whose upper word the ELF header cannot carry: the entry
+ * must be sign-extended into the compatibility segment, or the processor
+ * starts at an unmapped low address and the marker below never appears.
+ */
+static char *write_prid_guest_elf32(void)
+{
+    static const uint32_t code[] = {
+        0x40087800,             /* mfc0 t0, PRId */
+        0x3c099600,             /* lui t1, 0x9600 */
+        0x0009483c,             /* dsll32 t1, t1, 0 */
+        0x3c0a0003,             /* lui t2, 0x0003 */
+        0x012a4825,             /* or t1, t1, t2 */
+        0xad280000,             /* sw t0, 0(t1) */
+        0x1000ffff,             /* b . */
+        0x00000000,             /* nop */
+    };
+    uint8_t image[0x1000 + sizeof(code)] = { 0 };
+    const uint32_t entry = 0x80020000U;
+    GError *err = NULL;
+    char *path = NULL;
+    int fd;
+    size_t i;
+
+    fd = g_file_open_tmp("sn0-prid-guest32-XXXXXX", &path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(fd, >=, 0);
+
+    image[0] = ELFMAG0;
+    image[1] = ELFMAG1;
+    image[2] = ELFMAG2;
+    image[3] = ELFMAG3;
+    image[EI_CLASS] = ELFCLASS32;
+    image[EI_DATA] = ELFDATA2MSB;
+    image[EI_VERSION] = EV_CURRENT;
+    stw_be_p(image + 16, ET_EXEC);
+    stw_be_p(image + 18, EM_MIPS);
+    stl_be_p(image + 20, EV_CURRENT);
+    stl_be_p(image + 24, entry);
+    stl_be_p(image + 28, 52);              /* e_phoff */
+    stw_be_p(image + 40, 52);              /* e_ehsize */
+    stw_be_p(image + 42, 32);              /* e_phentsize */
+    stw_be_p(image + 44, 1);               /* e_phnum */
+
+    stl_be_p(image + 52, PT_LOAD);
+    stl_be_p(image + 56, 0x1000);          /* p_offset */
+    stl_be_p(image + 60, entry);           /* p_vaddr: kseg0 */
+    stl_be_p(image + 64, entry & 0x1fffffff); /* p_paddr: physical */
+    stl_be_p(image + 68, sizeof(code));    /* p_filesz */
+    stl_be_p(image + 72, sizeof(code));    /* p_memsz */
+    stl_be_p(image + 76, PF_R | PF_X);
+    stl_be_p(image + 80, 0x1000);          /* p_align */
+
+    for (i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
+    }
+
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
+                    (ssize_t)sizeof(image));
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_a_32_bit_kernel_entry_is_sign_extended(const void *data)
+{
+    g_autofree char *kernel = write_prid_guest_elf32();
+    QTestState *qts;
+    uint32_t prid = 0;
+
+    qts = qtest_initf("-M origin200,synthesized-firmware=off "
+                      "-accel tcg -smp 1 -kernel %s", kernel);
+
+    g_test_timer_start();
+    while (prid == 0 && g_test_timer_elapsed() < 1) {
+        prid = qtest_readl(qts, SN0_CPU_ID_ADDR);
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    qtest_quit(qts);
+    g_unlink(kernel);
+}
+
+/*
+ * The other half of that rule: the class in the file decides, not the shape
+ * of the entry value. A 64-bit image naming an address whose upper word is
+ * clear means that address, so the machine must hand the processor exactly
+ * what the image asked for -- which on a machine out of reset reaches
+ * nothing, and the marker never appears. The 32-bit image runs immediately
+ * afterwards under the same options and the same budget, so the silence
+ * above is the entry point rather than a slow machine or a broken marker.
+ */
+static void test_a_64_bit_kernel_entry_is_left_alone(const void *data)
+{
+    g_autofree char *low_entry = write_prid_guest_elf64_low_entry();
+    g_autofree char *elf32 = write_prid_guest_elf32();
+    QTestState *qts;
+    uint32_t prid = 0;
+
+    qts = qtest_initf("-M origin200,synthesized-firmware=off "
+                      "-accel tcg -smp 1 -kernel %s", low_entry);
+
+    g_test_timer_start();
+    while (prid == 0 && g_test_timer_elapsed() < 1) {
+        prid = qtest_readl(qts, SN0_CPU_ID_ADDR);
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(prid, ==, 0);
+    qtest_quit(qts);
+    g_unlink(low_entry);
+
+    qts = qtest_initf("-M origin200,synthesized-firmware=off "
+                      "-accel tcg -smp 1 -kernel %s", elf32);
+
+    g_test_timer_start();
+    while (prid == 0 && g_test_timer_elapsed() < 1) {
+        prid = qtest_readl(qts, SN0_CPU_ID_ADDR);
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    qtest_quit(qts);
+    g_unlink(elf32);
+}
+
 static void test_baseline_cpu_identity(const void *data)
 {
     g_autofree char *kernel = write_prid_guest();
@@ -1013,6 +1207,135 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
  * added -- accepted, it would sit unreachable until its first interrupt
  * asserted a pin the bus never wired and aborted the emulator.
  */
+/*
+ * Crafted ECOFF kernels whose headers reach outside the file. Each of
+ * these used to make the loader read past its buffer -- a verdict from
+ * heap garbage at best, an abort under sanitizers -- and each must now be
+ * refused with a clean load error before anything is read out of bounds.
+ */
+static char *write_truncated_ecoff(unsigned int variant)
+{
+    uint8_t image[0x100] = { 0 };
+    size_t len = 20;
+    GError *err = NULL;
+    char *path = NULL;
+    int fd;
+
+    stw_be_p(image + 0x00, 0x0163);        /* big-endian MIPS ECOFF */
+    stw_be_p(image + 0x02, 1);             /* one section */
+    stw_be_p(image + 0x10, 0x38);          /* optional-header size */
+
+    if (variant >= 1) {
+        /* A full OMAGIC optional header follows the file header. */
+        stw_be_p(image + 20 + 0x00, 0407);
+        stl_be_p(image + 20 + 0x10, 0x80020000);
+        stl_be_p(image + 20 + 0x34, 0x80030000);
+        len = 20 + 0x38;
+    }
+    if (variant == 1) {
+        /* A hundred section headers, none of them in the file. */
+        stw_be_p(image + 0x02, 100);
+    }
+    if (variant == 2) {
+        /* One section header whose contents run past the file's end. */
+        stl_be_p(image + len + 0x0c, 0x1000);   /* vaddr */
+        stl_be_p(image + len + 0x10, 0x1000);   /* size */
+        stl_be_p(image + len + 0x14, 0x5000);   /* scnptr, past the end */
+        len += 40;
+    }
+
+    fd = g_file_open_tmp("sn0-ecoff-XXXXXX", &path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(write(fd, image, len), ==, (ssize_t)len);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+/*
+ * A minimal valid OMAGIC image: one text section holding the same
+ * marker-writing guest the ELF tests boot. sashARCS is the real consumer
+ * of this path; this pins the load mechanics without needing its binary.
+ */
+static char *write_prid_guest_ecoff(void)
+{
+    /*
+     * The sash hand-off leaves CP0 Status at its reset state, so the
+     * marker store goes through kseg1 -- the 32-bit uncached window a
+     * fresh processor can always reach -- not the 64-bit space the ELF
+     * guests use.
+     */
+    static const uint32_t code[] = {
+        0x40087800,             /* mfc0 t0, PRId */
+        0x3c09a003,             /* lui t1, 0xa003 -- kseg1 + 0x30000 */
+        0xad280000,             /* sw t0, 0(t1) */
+        0x1000ffff,             /* b . */
+        0x00000000,             /* nop */
+    };
+    const uint32_t vaddr = 0x00030000 + 0x10000;
+    uint8_t image[20 + 0x38 + 40 + sizeof(code)] = { 0 };
+    size_t scnptr = 20 + 0x38 + 40;
+    GError *err = NULL;
+    char *path = NULL;
+    unsigned int i;
+    int fd;
+
+    stw_be_p(image + 0x00, 0x0163);        /* big-endian MIPS ECOFF */
+    stw_be_p(image + 0x02, 1);             /* one section */
+    stw_be_p(image + 0x10, 0x38);          /* optional-header size */
+    stw_be_p(image + 20 + 0x00, 0407);     /* OMAGIC */
+    stl_be_p(image + 20 + 0x10, vaddr);    /* entry */
+    stl_be_p(image + 20 + 0x34, vaddr);    /* gp, unused by this guest */
+    stl_be_p(image + 20 + 0x38 + 0x0c, vaddr);
+    stl_be_p(image + 20 + 0x38 + 0x10, sizeof(code));
+    stl_be_p(image + 20 + 0x38 + 0x14, scnptr);
+    for (i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + scnptr + i * sizeof(code[0]), code[i]);
+    }
+
+    fd = g_file_open_tmp("sn0-ecoff-guest-XXXXXX", &path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
+                    (ssize_t)sizeof(image));
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_an_ecoff_kernel_boots(const void *data)
+{
+    g_autofree char *kernel = write_prid_guest_ecoff();
+    QTestState *qts;
+    uint32_t prid = 0;
+
+    qts = qtest_initf("-M origin200,synthesized-firmware=on "
+                      "-accel tcg -smp 1 -kernel %s", kernel);
+
+    g_test_timer_start();
+    while (prid == 0 && g_test_timer_elapsed() < 5) {
+        prid = qtest_readl(qts, SN0_CPU_ID_ADDR);
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    qtest_quit(qts);
+    g_unlink(kernel);
+}
+
+static void test_reject_a_truncated_ecoff_kernel(const void *data)
+{
+    unsigned int variant;
+
+    for (variant = 0; variant < 3; variant++) {
+        g_autofree char *kernel = write_truncated_ecoff(variant);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "origin200",
+            "-kernel", kernel, "-display", "none", NULL
+        };
+
+        assert_qemu_rejects(args, "the ECOFF headers reach outside the file");
+        g_unlink(kernel);
+    }
+}
+
 static void test_reject_a_device_beyond_the_bridge_slots(const void *data)
 {
     const char *args[] = {
@@ -1182,6 +1505,14 @@ int main(int argc, char **argv)
                         test_reject_three_sockets);
     qtest_add_data_func("sn0/model/reject-uneven-no-numa-split", NULL,
                         test_reject_uneven_no_numa_split);
+    qtest_add_data_func("sn0/model/32-bit-kernel-entry-sign-extended", NULL,
+                        test_a_32_bit_kernel_entry_is_sign_extended);
+    qtest_add_data_func("sn0/model/64-bit-kernel-entry-left-alone", NULL,
+                        test_a_64_bit_kernel_entry_is_left_alone);
+    qtest_add_data_func("sn0/model/ecoff-kernel-boots", NULL,
+                        test_an_ecoff_kernel_boots);
+    qtest_add_data_func("sn0/model/reject-truncated-ecoff-kernel", NULL,
+                        test_reject_a_truncated_ecoff_kernel);
     qtest_add_data_func("sn0/model/reject-device-beyond-bridge-slots", NULL,
                         test_reject_a_device_beyond_the_bridge_slots);
     qtest_add_data_func("sn0/model/reject-three-numa-nodes", NULL,

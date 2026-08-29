@@ -41,27 +41,6 @@
 #define SN0_ARGV_STRING (SN0_ARGV_ADDR + 0x40)
 
 /*
- * The standard MIPS ECOFF object layout: documented publicly in binutils'
- * COFF/ECOFF support and used by SGI's own pre-ELF toolchain among others,
- * not SGI-proprietary. Every offset below is cross-checked directly against
- * a real sashARCS binary -- see
- * docs/library/irix-sash-direct-load-proposal.md for the byte trace.
- */
-#define ECOFF_MAGIC_MIPSEB        0x0163
-#define ECOFF_FILEHDR_SIZE        20
-#define ECOFF_FILEHDR_MAGIC_OFF   0x00   /* uint16 */
-#define ECOFF_FILEHDR_NSCNS_OFF   0x02   /* uint16 */
-#define ECOFF_FILEHDR_OPTHDR_OFF  0x10   /* uint16 */
-#define ECOFF_AOUTHDR_OMAGIC      0407   /* fixed-address, unrelocated */
-#define ECOFF_AOUTHDR_MAGIC_OFF   0x00   /* uint16, within the optional header */
-#define ECOFF_AOUTHDR_ENTRY_OFF   0x10   /* uint32 */
-#define ECOFF_AOUTHDR_GPVALUE_OFF 0x34   /* uint32, the o32 ABI gp base */
-#define ECOFF_SCNHDR_SIZE         40
-#define ECOFF_SCNHDR_VADDR_OFF    0x0c   /* uint32, within each section header */
-#define ECOFF_SCNHDR_SIZE_OFF     0x10   /* uint32 */
-#define ECOFF_SCNHDR_SCNPTR_OFF   0x14   /* uint32 */
-
-/*
  * Scratch layout for a direct-loaded sashARCS's argv/envp/stack: computed
  * from the image's own extent, never a fixed address, since the two IRIX
  * releases this project holds ship differently sized images.
@@ -220,121 +199,6 @@ static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
  * is ELF64; sashARCS is the one other format this machine loads directly,
  * told apart by its own file-format magic in the first two bytes.
  */
-static bool sn0_kernel_file_is_ecoff(const char *filename)
-{
-    uint8_t magic[2];
-    FILE *f = fopen(filename, "rb");
-    bool is_ecoff;
-
-    if (!f) {
-        return false;
-    }
-    is_ecoff = fread(magic, 1, sizeof(magic), f) == sizeof(magic) &&
-              lduw_be_p(magic) == ECOFF_MAGIC_MIPSEB;
-    fclose(f);
-    return is_ecoff;
-}
-
-/*
- * Parse a genuine SGI sashARCS-format ECOFF image and place its sections in
- * guest memory. sashARCS links as a fixed-address OMAGIC executable with a
- * real entry point -- unlike its ELF64 sibling sash64, which is a
- * relocatable object with none -- so this is a plain "read each section to
- * its linked address, zero bss" load, the same shape load_elf already does
- * for a kernel. See docs/library/irix-sash-direct-load-proposal.md for the
- * mechanism this reproduces and why no CP0 or TLB setup belongs here.
- *
- * Returns the entry point, the o32 ABI gp-register value the image expects,
- * and the physical extent it occupies, for the same free-memory-descriptor
- * bookkeeping the ELF kernel path keeps.
- */
-static void sn0_load_ecoff(MachineState *machine, const char *filename,
-                           hwaddr node, uint64_t *entry, uint64_t *gp_value,
-                           uint64_t *low, uint64_t *high)
-{
-    const char *mc_name = MACHINE_GET_CLASS(machine)->name;
-    g_autofree uint8_t *buf = NULL;
-    int64_t file_size;
-    unsigned int nscns, opthdr, i;
-    uint32_t scnhdr_base, aout_magic;
-
-    file_size = get_image_size(filename, &error_fatal);
-    if (file_size < ECOFF_FILEHDR_SIZE) {
-        error_report("%s: '%s' is too small to be an ECOFF image",
-                     mc_name, filename);
-        exit(EXIT_FAILURE);
-    }
-
-    buf = g_malloc(file_size);
-    if (load_image_size(filename, buf, file_size) != file_size) {
-        error_report("%s: cannot read '%s'", mc_name, filename);
-        exit(EXIT_FAILURE);
-    }
-
-    if (lduw_be_p(buf + ECOFF_FILEHDR_MAGIC_OFF) != ECOFF_MAGIC_MIPSEB) {
-        error_report("%s: '%s' is not a big-endian MIPS ECOFF image",
-                     mc_name, filename);
-        exit(EXIT_FAILURE);
-    }
-
-    nscns = lduw_be_p(buf + ECOFF_FILEHDR_NSCNS_OFF);
-    opthdr = lduw_be_p(buf + ECOFF_FILEHDR_OPTHDR_OFF);
-    if (opthdr < ECOFF_AOUTHDR_GPVALUE_OFF + 4) {
-        error_report("%s: '%s' has too small an ECOFF optional "
-                     "header", mc_name, filename);
-        exit(EXIT_FAILURE);
-    }
-
-    aout_magic = lduw_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_MAGIC_OFF);
-    if (aout_magic != ECOFF_AOUTHDR_OMAGIC) {
-        error_report("%s: '%s' is not an OMAGIC ECOFF executable "
-                     "(sashARCS loads directly; its relocatable sibling "
-                     "sash64 needs a linker, not this loader)", mc_name,
-                     filename);
-        exit(EXIT_FAILURE);
-    }
-
-    *entry = ldl_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_ENTRY_OFF);
-    *gp_value = ldl_be_p(buf + ECOFF_FILEHDR_SIZE + ECOFF_AOUTHDR_GPVALUE_OFF);
-    *low = UINT64_MAX;
-    *high = 0;
-
-    scnhdr_base = ECOFF_FILEHDR_SIZE + opthdr;
-    for (i = 0; i < nscns; i++) {
-        uint8_t *scn = buf + scnhdr_base + i * ECOFF_SCNHDR_SIZE;
-        uint32_t vaddr = ldl_be_p(scn + ECOFF_SCNHDR_VADDR_OFF);
-        uint32_t size = ldl_be_p(scn + ECOFF_SCNHDR_SIZE_OFF);
-        uint32_t scnptr = ldl_be_p(scn + ECOFF_SCNHDR_SCNPTR_OFF);
-        g_autofree char *name = g_strdup_printf("sn0.sash.section%u", i);
-
-        if (size == 0) {
-            continue;
-        }
-        if (scnptr != 0) {
-            /* Real data -- text, rdata, data. Copy it as the header says. */
-            if (scnptr + (uint64_t)size > file_size) {
-                error_report("%s: '%s' section %u runs past the "
-                             "end of the file", mc_name, filename, i);
-                exit(EXIT_FAILURE);
-            }
-            rom_add_blob_fixed(name, buf + scnptr, size, node + vaddr);
-        } else {
-            /* bss and its kin: zero-filled, nothing in the file to copy. */
-            g_autofree uint8_t *zero = g_malloc0(size);
-
-            rom_add_blob_fixed(name, zero, size, node + vaddr);
-        }
-
-        *low = MIN(*low, (uint64_t)vaddr);
-        *high = MAX(*high, (uint64_t)vaddr + size);
-    }
-
-    if (*high == 0) {
-        error_report("%s: '%s' has no loadable sections", mc_name, filename);
-        exit(EXIT_FAILURE);
-    }
-}
-
 /*
  * Hand a directly-loaded sashARCS the same registers the real ARCS
  * client_start routine hands a standalone program: argc/argv/environ in
@@ -1587,6 +1451,62 @@ void sn0_assign_pci_resources(void *opaque)
  * kernel or sashARCS, and the low-memory structures that describe both.
  * Runs after every node's memory and boot storage exist.
  */
+/*
+ * argv/envp/stack for a directly-loaded sashARCS, in its own node-local
+ * address space, placed a fixed gap above wherever this image's own
+ * sections ended -- never a hard-coded address, since the two IRIX
+ * releases this project holds ship differently sized sashARCS images.
+ */
+static void sn0_hand_off_sash(MachineState *machine, uint8_t *flash,
+                              uint8_t *fw, hwaddr fw_vaddr, hwaddr node,
+                              uint64_t entry, uint64_t gp_value,
+                              uint64_t high)
+{
+    hwaddr scratch, argv0_str, argv_array, envp_array, sp;
+    size_t name_len = strlen(machine->kernel_filename) + 1;
+    uint32_t argv0_ptr, zero32 = 0;
+
+    scratch = ROUND_UP(high, SN0_SASH_SCRATCH_GAP) + SN0_SASH_SCRATCH_GAP;
+    argv0_str = scratch;
+    argv_array = argv0_str + ROUND_UP(name_len, sizeof(uint32_t));
+    envp_array = argv_array + 2 * sizeof(uint32_t);
+    sp = ROUND_UP(envp_array + sizeof(uint32_t), 16) + SN0_SASH_STACK_SIZE;
+
+    argv0_ptr = cpu_to_be32(argv0_str);
+    rom_add_blob_fixed("sn0.sash.argv0", machine->kernel_filename,
+                       name_len, node + argv0_str);
+    rom_add_blob_fixed("sn0.sash.argv", &argv0_ptr, sizeof(argv0_ptr),
+                       node + argv_array);
+    rom_add_blob_fixed("sn0.sash.argv.nul", &zero32, sizeof(zero32),
+                       node + argv_array + sizeof(uint32_t));
+    rom_add_blob_fixed("sn0.sash.envp.nul", &zero32, sizeof(zero32),
+                       node + envp_array);
+
+    sn0_build_sash_handoff(flash, fw, fw_vaddr, entry, gp_value, 1,
+                           argv_array, envp_array, sp);
+}
+
+/*
+ * One argument, the kernel's own name, which is what a firmware that
+ * loaded it by name would pass. Nothing on the path to a console reads
+ * it, but the count and the vector are both read, so both are real.
+ */
+static void sn0_hand_off_elf_kernel(MachineState *machine, uint8_t *flash,
+                                    uint8_t *fw, hwaddr fw_vaddr,
+                                    hwaddr node, uint64_t entry)
+{
+    uint64_t argv0 = cpu_to_be64(SN0_COMPAT_CACHED + SN0_ARGV_STRING);
+
+    rom_add_blob_fixed("sn0.argv.string", machine->kernel_filename,
+                       strlen(machine->kernel_filename) + 1,
+                       node + SN0_ARGV_STRING);
+    rom_add_blob_fixed("sn0.argv", &argv0, sizeof(argv0),
+                       node + SN0_ARGV_ADDR);
+
+    sn0_build_kernel_handoff(flash, fw, fw_vaddr, entry, 1,
+                             SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
+}
+
 void sn0_firmware_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -1705,97 +1625,54 @@ void sn0_firmware_init(MachineState *machine)
      * test and every guest we care about uses. Booting from a disk is the
      * firmware's job and arrives with the disk.
      */
-    if (machine->kernel_filename &&
-        sn0_kernel_file_is_ecoff(machine->kernel_filename)) {
-        uint64_t entry, gp_value;
-        uint64_t low = 0, high = 0;
-        hwaddr scratch, argv0_str, argv_array, envp_array, sp;
-        size_t name_len = strlen(machine->kernel_filename) + 1;
-        uint32_t argv0_ptr, zero32 = 0;
+    if (machine->kernel_filename) {
+        uint64_t entry, low, high, gp_value = 0;
+        ssize_t elf_size = load_elf(machine->kernel_filename, NULL,
+                                    sn0_elf_to_phys, NULL, &entry, &low,
+                                    &high, NULL, ELFDATA2MSB, EM_MIPS, 1, 0);
+        ssize_t ecoff_size = ECOFF_LOAD_FAILED;
 
-        sn0_load_ecoff(machine, machine->kernel_filename, node,
-                       &entry, &gp_value, &low, &high);
-        kernel_low = low;
-        kernel_high = high;
-
-        /*
-         * argv/envp/stack for the handoff, in sash's own node-local address
-         * space (added to node only where memory is actually populated
-         * below), placed a fixed gap above wherever this image's own
-         * sections ended -- never a hard-coded address, since the two IRIX
-         * releases this project holds ship differently sized sashARCS
-         * images.
-         */
-        scratch = ROUND_UP(high, SN0_SASH_SCRATCH_GAP) + SN0_SASH_SCRATCH_GAP;
-        argv0_str = scratch;
-        argv_array = argv0_str + ROUND_UP(name_len, sizeof(uint32_t));
-        envp_array = argv_array + 2 * sizeof(uint32_t);
-        sp = ROUND_UP(envp_array + sizeof(uint32_t), 16) + SN0_SASH_STACK_SIZE;
-
-        argv0_ptr = cpu_to_be32(argv0_str);
-        rom_add_blob_fixed("sn0.sash.argv0", machine->kernel_filename,
-                           name_len, node + argv0_str);
-        rom_add_blob_fixed("sn0.sash.argv", &argv0_ptr, sizeof(argv0_ptr),
-                           node + argv_array);
-        rom_add_blob_fixed("sn0.sash.argv.nul", &zero32, sizeof(zero32),
-                           node + argv_array + sizeof(uint32_t));
-        rom_add_blob_fixed("sn0.sash.envp.nul", &zero32, sizeof(zero32),
-                           node + envp_array);
-
-        sn0_build_sash_handoff(flash, fw, fw_vaddr, entry, gp_value, 1,
-                               argv_array, envp_array, sp);
-    } else if (machine->kernel_filename) {
-        uint64_t entry, low, high;
-        ssize_t size = load_elf(machine->kernel_filename, NULL,
-                                sn0_elf_to_phys, NULL, &entry, &low, &high,
-                                NULL, ELFDATA2MSB, EM_MIPS, 1, 0);
-
-        if (size < 0) {
-            error_report("%s: cannot load the kernel '%s'",
+        if (elf_size < 0) {
+            /* Not an ELF: sashARCS ships as an ECOFF OMAGIC executable. */
+            ecoff_size = load_ecoff(machine->kernel_filename, &entry,
+                                    &gp_value, &low, &high, node);
+        }
+        if (elf_size < 0 && ecoff_size < 0) {
+            error_report("%s: cannot load the kernel '%s': %s; as ECOFF: %s",
                          MACHINE_GET_CLASS(machine)->name,
-                         machine->kernel_filename);
-            exit(EXIT_FAILURE);
+                         machine->kernel_filename,
+                         load_elf_strerror(elf_size),
+                         load_ecoff_strerror(ecoff_size));
+            exit(1);
         }
-
-        /*
-         * A 32-bit ELF's entry point is the low half of a compatibility
-         * address: bit 31 set means the missing upper word is all ones, not
-         * all zeros, and load_elf() zero-extends it. Sign-extend so a kernel
-         * linked in the 0x8xxxxxxx range is handed off at its canonical
-         * address rather than an unmapped low one. Only for a 32-bit ELF: a
-         * 64-bit one carries the whole address already, and truncating it
-         * would destroy any entry outside the compatibility segment.
-         */
-        bool elf_is_64 = false;
-        union {
-            Elf32_Ehdr h32;
-            Elf64_Ehdr h64;
-        } ehdr;
-
-        if (load_elf_hdr(machine->kernel_filename, &ehdr, &elf_is_64, NULL) &&
-            !elf_is_64) {
-            entry = (int64_t)(int32_t)entry;
-        }
-
-        /*
-         * One argument, the kernel's own name, which is what a firmware that
-         * loaded it by name would pass. Nothing on the path to a console reads
-         * it, but the count and the vector are both read, so both are real.
-         */
-        rom_add_blob_fixed("sn0.argv.string", machine->kernel_filename,
-                           strlen(machine->kernel_filename) + 1,
-                           node + SN0_ARGV_STRING);
-        {
-            uint64_t argv0 = cpu_to_be64(SN0_COMPAT_CACHED + SN0_ARGV_STRING);
-
-            rom_add_blob_fixed("sn0.argv", &argv0, sizeof(argv0),
-                               node + SN0_ARGV_ADDR);
-        }
-
-        sn0_build_kernel_handoff(flash, fw, fw_vaddr, entry, 1,
-                                 SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
         kernel_low = low;
         kernel_high = high;
+
+        if (ecoff_size >= 0) {
+            sn0_hand_off_sash(machine, flash, fw, fw_vaddr, node,
+                              entry, gp_value, high);
+        } else {
+            bool elf_is_64 = false;
+
+            /*
+             * IRIX kernels link as 32-bit ELF although they run in 64-bit
+             * mode, and the loader zero-extends a 32-bit entry point. A
+             * kseg address in the low word is the compatibility segment's
+             * address with its upper word all ones, so sign-extend it.
+             *
+             * The file's own class decides that, not the shape of the entry.
+             * A 64-bit ELF carries its upper word already, and one declaring
+             * an entry with that word clear means it; guessing from the value
+             * sends such an image to an address it never asked for. Reading
+             * the class costs one header read of a file already open once.
+             */
+            if (load_elf_hdr(machine->kernel_filename, NULL, &elf_is_64,
+                             NULL) && !elf_is_64 && (entry & 0x80000000)) {
+                entry = (uint64_t)(int64_t)(int32_t)entry;
+            }
+            sn0_hand_off_elf_kernel(machine, flash, fw, fw_vaddr, node,
+                                    entry);
+        }
     }
 
     if (kernel_high) {
