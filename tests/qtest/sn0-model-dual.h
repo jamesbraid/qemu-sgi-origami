@@ -13,8 +13,8 @@
  * checks them against the one model they came from.
  */
 
-#ifndef TESTS_QTEST_SN0_MODEL_H
-#define TESTS_QTEST_SN0_MODEL_H
+#ifndef TESTS_QTEST_SN0_MODEL_DUAL_H
+#define TESTS_QTEST_SN0_MODEL_DUAL_H
 
 typedef struct {
     uint64_t offset;        /* node offset in the memory space */
@@ -844,4 +844,4 @@ static const SN0ModelDivergence sn0_model_divergences[] = {
 #define SN0_MODEL_MACHINE "origin200"
 #define SN0_MODEL_MACHINE_TYPE "origin200-machine"
 
-#endif /* TESTS_QTEST_SN0_MODEL_H */
+#endif /* TESTS_QTEST_SN0_MODEL_DUAL_H */

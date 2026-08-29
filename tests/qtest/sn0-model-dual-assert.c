@@ -17,7 +17,7 @@
 #define SN0_NODE_STRIDE UINT64_C(0x100000000)
 
 #define SN0_DUAL_PROFILE_ARGS \
-    "-M origin200 " \
+    "-M " SN0_MODEL_MACHINE " " \
     "-m 128M " \
     "-object memory-backend-ram,id=ram0,size=64M " \
     "-object memory-backend-ram,id=ram1,size=64M " \
