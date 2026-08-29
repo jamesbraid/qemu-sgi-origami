@@ -33,13 +33,9 @@ synthesized):
       POD prompt. Verbatim, truncated, not edited.
 """
 
-import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from test_prom_pod import (
+from lib_prom_pod import (
     ASSERTIONS,
     failure_markers_present,
     missing_assertions,

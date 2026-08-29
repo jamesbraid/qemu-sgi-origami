@@ -86,7 +86,7 @@ import os
 import tempfile
 import unittest
 
-from test_prom_sash import (
+from lib_prom_sash import (
     ASSERTIONS,
     NETBOOT_PATH,
     NETBOOT_PATH_ASSERTION,

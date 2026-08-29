@@ -42,114 +42,14 @@ import json
 import os
 import re
 import socket
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from test_prom_mdk import (
-    PROM_SHA256,
-    _file_record,
-    _file_sha256,
-    _fork_git_identity,
-    _utc_now,
-)
-
-try:
-    from qemu_test import QemuSystemTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
-
-
-FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5-base',
-                            'ip27prom.payload.bin')
-
-# The local-POD debug-switch value, the same one tools/podlib.py names.
-LOCAL_POD_SWITCHES = 0x10
-
-# One command per prompt, in order. LF terminates a POD line (unlike
-# MDK's reader); the project harness's POD driver sends the same.
-COMMANDS = (
-    "version",
-    "why",
-    "cfg",
-    "pcfg v",
-    "santest 0xa800000002000000",
-    "memtest 0xa800000002000000 0x100000",
-    "error",
-    "error_dump",
-    "dumpspool",
-    "pr",
-    "crb",
-    "crbx",
-    "dips",
-    "module",
-    "tlbr 0",
-    "pf 0",
-)
-
-# Fixed lines of the firmware's own output, one per aspect the roadmap's
-# check names: the prompt itself, configuration, memory, error state and
-# registers. Regexes because the config block aligns with tabs.
-ASSERTIONS = (
-    ("POD prompt", re.compile(r"POD [A-Za-z]* ?(?:Cac|Dex|Unc)>")),
-    ("PROM version banner", re.compile(r"SGI Version 6\.11")),
-    ("power-on diagnostics verdict",
-     re.compile(r"Reason : 0 \(Device passed diagnostics\.\)")),
-    ("CPU speed in the flashed config",
-     re.compile(r"CPU speed\s+= 180 MHz")),
-    ("HUB speed in the flashed config",
-     re.compile(r"HUB speed\s+= 90 MHz")),
-    ("topology entry for node 0",
-     re.compile(r"NASID=0 Mod=0 Slot=1")),
-    ("memory sanity pass", re.compile(r"Sanity test passed\.")),
-    ("memory pattern pass",
-     re.compile(r"Address verify")),
-    ("error dump brackets", re.compile(
-        r"END Hardware Error State")),
-    ("error spool complete", re.compile(r"Spool dump complete\.")),
-    ("register dump", re.compile(r"r28/gp: 0x[0-9a-f]{16}")),
-    ("coherent request buffers", re.compile(r"CRB_A")),
-    ("local-POD switch value", re.compile(
-        r"Hardware switches\s+10")),
-    ("module number", re.compile(r"Module number is 0")),
-    ("TLB entry zero", re.compile(r"00: ASID 00")),
-    ("floating-point register", re.compile(r"\$f00 = 0x[0-9a-f]{16}")),
-)
-
-FAILURE_MARKERS = (
-    "MEMORY FAILURE",
-    "Sanity test failed",
-    "Unexpected",
-    "Usage:",
-    "unknown command",
-)
-
-
-def missing_assertions(log):
-    return [name for name, pattern in ASSERTIONS if not pattern.search(log)]
-
-
-def failure_markers_present(log):
-    return [marker for marker in FAILURE_MARKERS if marker in log]
-
-
-def verdict(log, reached=True):
-    """PASS iff every fixed line appeared, no failure spelling did, and
-    the driver saw the prompt come back after the last command."""
-    problems = []
-    for name in missing_assertions(log):
-        problems.append(f"missing {name}")
-    for marker in failure_markers_present(log):
-        problems.append(f"failure output present: {marker!r}")
-    if not reached:
-        problems.append(
-            "console driver did not see the POD prompt after the last "
-            "command before timeout")
-    return {
-        "verdict": "PASS" if not problems else "FAIL",
-        "problems": problems,
-    }
+from lib_prom import (FIRMWARE_REL, file_record, file_sha256,
+                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom_mdk import PROM_SHA256
+from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
 
 
 # Boot to the POD prompt is about two minutes under a contended host and
@@ -212,93 +112,88 @@ def _drive_pod(sock, log_path, timeout, commands):
     return transcript.decode("utf-8", errors="replace"), reached
 
 
-if QemuSystemTest is not None:
+_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
 
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
+class PromPod(QemuSystemTest):
+    """Boots the real IP27 PROM with local-POD dip switches and
+    requires verdict() to be PASS over the driven command list."""
 
-    class PromPod(QemuSystemTest):
-        """Boots the real IP27 PROM with local-POD dip switches and
-        requires verdict() to be PASS over the driven command list."""
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_prom_pod(self):
+        prom = resolve_asset(os.environ['ORIGAMI_ASSETS'], FIRMWARE_REL)
+        if prom is None:
+            self.skipTest(
+                f'no firmware at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- '
+                'point it at a checkout with the real PROM extracted')
 
-        def test_prom_pod(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            prom = (os.path.join(assets_root, FIRMWARE_REL)
-                    if assets_root else None)
-            if not (prom and os.path.isfile(prom)):
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no firmware at '
-                    f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} -- point it at a '
-                    'checkout with the real PROM extracted')
+        if file_sha256(prom) != PROM_SHA256:
+            self.fail('PROM SHA-256 does not match the recorded release')
 
-            if _file_sha256(prom) != PROM_SHA256:
-                self.fail('PROM SHA-256 does not match the recorded release')
+        vm = self.get_vm(name='prom_pod')
+        vm.set_machine(
+            'origin200,synthesized-firmware=off,'
+            f'elsc-dip-switches={LOCAL_POD_SWITCHES},junk-uart=on')
+        # The junk-bus UART is serial line 3; the framework fills
+        # the earlier indexes with null backends.
+        vm.set_console(console_index=3)
+        vm.add_args('-accel', 'tcg,thread=single',
+                    '-cpu', 'R10000',
+                    '-smp', '1',
+                    '-m', '64',
+                    '-bios', str(prom),
+                    '-audio', 'none')
 
-            vm = self.get_vm(name='prom_pod')
-            vm.set_machine(
-                'origin200,synthesized-firmware=off,'
-                f'elsc-dip-switches={LOCAL_POD_SWITCHES},junk-uart=on')
-            # The junk-bus UART is serial line 3; the framework fills
-            # the earlier indexes with null backends.
-            vm.set_console(console_index=3)
-            vm.add_args('-accel', 'tcg,thread=single',
-                        '-cpu', 'R10000',
-                        '-smp', '1',
-                        '-m', '64',
-                        '-bios', str(prom),
-                        '-audio', 'none')
+        started = utc_now()
+        vm.launch()
+        log_path = self.log_file('pod.log')
+        try:
+            transcript, reached = _drive_pod(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                COMMANDS)
+        finally:
+            vm.shutdown(hard=vm.exitcode() is not None)
+        ended = utc_now()
 
-            started = _utc_now()
-            vm.launch()
-            log_path = self.log_file('pod.log')
-            try:
-                transcript, reached = _drive_pod(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                    COMMANDS)
-            finally:
-                vm.shutdown(hard=vm.exitcode() is not None)
-            ended = _utc_now()
+        if not transcript:
+            self.fail(
+                'the firmware printed nothing at all -- a run that '
+                'did not start, not a POD entry that failed')
 
-            if not transcript:
-                self.fail(
-                    'the firmware printed nothing at all -- a run that '
-                    'did not start, not a POD entry that failed')
+        report = verdict(transcript, reached=reached)
 
-            report = verdict(transcript, reached=reached)
+        summary_path = self.log_file('pod-summary.json')
+        with open(summary_path, 'w', encoding='utf-8') as summary_file:
+            json.dump({
+                'schema': 1,
+                'commands': list(COMMANDS),
+                'reached_final_prompt': reached,
+                'report': report,
+            }, summary_file, indent=2, sort_keys=True)
+            summary_file.write('\n')
 
-            summary_path = self.log_file('pod-summary.json')
-            with open(summary_path, 'w', encoding='utf-8') as summary_file:
-                json.dump({
-                    'schema': 1,
-                    'commands': list(COMMANDS),
-                    'reached_final_prompt': reached,
-                    'report': report,
-                }, summary_file, indent=2, sort_keys=True)
-                summary_file.write('\n')
+        run_path = self.log_file('run.json')
+        with open(run_path, 'w', encoding='utf-8') as run_file:
+            json.dump({
+                'schema': 1,
+                'started_utc': started,
+                'ended_utc': ended,
+                'timeout_seconds': BOOT_TIMEOUT_SECONDS,
+                'identity': {
+                    'fork': fork_git_identity(_FORK_ROOT),
+                    'qemu_binary': file_record(self.qemu_bin),
+                    'payload': {'prom': file_record(prom)},
+                },
+                'verdict': report['verdict'],
+                'problems': report['problems'],
+            }, run_file, indent=2, sort_keys=True)
+            run_file.write('\n')
 
-            run_path = self.log_file('run.json')
-            with open(run_path, 'w', encoding='utf-8') as run_file:
-                json.dump({
-                    'schema': 1,
-                    'started_utc': started,
-                    'ended_utc': ended,
-                    'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'identity': {
-                        'fork': _fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': _file_record(self.qemu_bin),
-                        'payload': {'prom': _file_record(prom)},
-                    },
-                    'verdict': report['verdict'],
-                    'problems': report['problems'],
-                }, run_file, indent=2, sort_keys=True)
-                run_file.write('\n')
-
-            self.assertEqual(
-                report['verdict'], 'PASS',
-                'POD sanity problems: ' + '; '.join(report['problems']) +
-                f' (full report: {summary_path})')
+        self.assertEqual(
+            report['verdict'], 'PASS',
+            'POD sanity problems: ' + '; '.join(report['problems']) +
+            f' (full report: {summary_path})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

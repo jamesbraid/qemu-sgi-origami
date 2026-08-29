@@ -88,17 +88,14 @@ own login boot is pinned to 128 MiB and not raised.
 Guarded by @skipBigDataTest() (the install media total several hundred
 MB) and @skipSlowTest() (a full install is 20-30 minutes) -- the
 framework's own env-var-gated decorators, matching test_openbsd_login.py
--- on top of the usual ORIGAMI_ASSETS resolution + skipTest() at method
-entry if any install input is missing. The install media are published to
+-- on top of @skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest() at
+method entry if any install input is missing. The install media are published to
 the forge asset store now (nightly provisioning for them is being added
 separately, out of this test's own scope).
 
-Free of any qemu_test import on purpose below the guarded import: the pure
-verdict logic lives entirely in test_openbsd_install_verdict.py (imported
-unconditionally, since it needs no qemu_test itself); only the real
-QemuSystemTest below needs qemu_test, guarded the same way
-test_openbsd_login.py, test_prom_sash.py, test_diag.py, and
-test_prom_boot.py guard it.
+The pure verdict logic lives entirely in test_openbsd_install_verdict.py
+(imported below; it needs no qemu_test itself). What is left here is the
+real install.
 """
 
 import os
@@ -107,22 +104,16 @@ import shutil
 import socket
 import struct
 import subprocess
-import sys
 import time
 
-# This file's own directory, so a plain `pytest test_openbsd_install.py`
-# run finds test_openbsd_install_verdict.py the same way
-# test_openbsd_login.py finds test_openbsd_login_verdict.py.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import (
+    QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest,
+    get_qemu_img, which)
 
-from test_openbsd_install_verdict import (  # noqa: E402
+from lib_prom import resolve_asset
+
+from test_openbsd_install_verdict import (
     install_verdict, CONGRATULATIONS_RE, LOCATION_OF_SETS_RE, TRIPWIRES)
-
-try:
-    from qemu_test import (
-        QemuSystemTest, skipBigDataTest, skipSlowTest, get_qemu_img, which)
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
 
 
 # Where ORIGAMI_ASSETS resolves the install media, matching
@@ -318,8 +309,8 @@ _TAIL_MAX = 4096
 def _drive_install(sock, log_path, timeout):
     """Answers the installer's prompts as install-driver.py proved,
     against a real framework console socket -- the same shape
-    test_openbsd_login.py's own _drive_login() and test_prom_sash.py's own
-    _drive_console() use, adapted for install-driver.py's own generic
+    test_openbsd_login.py's own _drive_login() and lib_prom.py's own
+    drive_console() use, adapted for install-driver.py's own generic
     "prompt went quiet, send a bare newline" fallback (FALLBACK_QUIET),
     which those two simpler drivers do not need: a real install passes
     through several prompts (DNS domain, DNS nameservers, root ssh login,
@@ -427,138 +418,137 @@ def _drive_install(sock, log_path, timeout):
 # needs to be pure or independently testable the way the verdict logic is.
 # ---------------------------------------------------------------------------
 
-if QemuSystemTest is not None:
 
-    class OpenbsdInstall(QemuSystemTest):
-        """Drives a full, unattended OpenBSD/sgi 6.9 install and requires
-        install_verdict() be PASS. See this module's docstring for the
-        full contract; this class only wires it to a real install, the
-        same division test_openbsd_login.py and test_prom_sash.py keep
-        between their pure verdict logic and their own QemuSystemTest.
-        """
+class OpenbsdInstall(QemuSystemTest):
+    """Drives a full, unattended OpenBSD/sgi 6.9 install and requires
+    install_verdict() be PASS. See this module's docstring for the
+    full contract; this class only wires it to a real install, the
+    same division test_openbsd_login.py and test_prom_sash.py keep
+    between their pure verdict logic and their own QemuSystemTest.
+    """
 
-        def _asset_paths(self):
-            """The install ramdisk kernel and the five sets-disk inputs
-            under ORIGAMI_ASSETS, or None if any is missing -- the runner
-            may not have assets provisioned yet (see this method's
-            caller)."""
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            release = os.path.join(assets_root, RELEASE_REL)
-            kernel = os.path.join(release, INSTALL_KERNEL_NAME)
-            sets_files = [os.path.join(release, name) for name in SETS_FILE_NAMES]
-            if not (os.path.isfile(kernel) and
-                    all(os.path.isfile(p) for p in sets_files)):
-                return None
-            return kernel, sets_files
+    def _asset_paths(self):
+        """The install ramdisk kernel and the five sets-disk inputs
+        under ORIGAMI_ASSETS, or None if any is missing -- the runner
+        may not have assets provisioned yet (see this method's
+        caller)."""
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        kernel = resolve_asset(
+            assets_root, os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME))
+        sets_files = [
+            resolve_asset(assets_root, os.path.join(RELEASE_REL, name))
+            for name in SETS_FILE_NAMES]
+        if not (kernel and all(sets_files)):
+            return None
+        return kernel, sets_files
 
-        def _build_target_disk(self, qemu_img):
-            """The blank root disk, created raw then labeled -- ported
-            from tools/openbsd-install's own step 3 (create, then
-            write_disklabel()); the installer's own newfs formats it
-            during install, so no filesystem is written here."""
-            target = self.scratch_file('target.img')
-            subprocess.run(
-                [qemu_img, 'create', '-f', 'raw', target, TARGET_DISK_SIZE],
-                check=True, capture_output=True, text=True)
-            secperunit = _write_disklabel(target, 'QEMU-ORIGAMI', 'target')
-            self.log.debug(
-                'openbsd_install: target disk %s: secperunit=%d',
-                target, secperunit)
-            return target
+    def _build_target_disk(self, qemu_img):
+        """The blank root disk, created raw then labeled -- ported
+        from tools/openbsd-install's own step 3 (create, then
+        write_disklabel()); the installer's own newfs formats it
+        during install, so no filesystem is written here."""
+        target = self.scratch_file('target.img')
+        subprocess.run(
+            [qemu_img, 'create', '-f', 'raw', target, TARGET_DISK_SIZE],
+            check=True, capture_output=True, text=True)
+        secperunit = _write_disklabel(target, 'QEMU-ORIGAMI', 'target')
+        self.log.debug(
+            'openbsd_install: target disk %s: secperunit=%d',
+            target, secperunit)
+        return target
 
-        def _build_sets_disk(self, makefs_bin, sets_files):
-            """The sets disk: an FFS filesystem containing the five
-            install inputs as top-level files, built with makefs (ported
-            from tools/mk-disk.py's own run_makefs()), then labeled --
-            ported from tools/openbsd-install's own step 2 (build the
-            sets disk via mk-disk.py, which pairs this exact makefs
-            invocation with this exact disklabel logic)."""
-            sets_tree = self.scratch_file('sets-tree')
-            os.makedirs(sets_tree, exist_ok=True)
-            for path in sets_files:
-                shutil.copyfile(path, os.path.join(sets_tree, os.path.basename(path)))
+    def _build_sets_disk(self, makefs_bin, sets_files):
+        """The sets disk: an FFS filesystem containing the five
+        install inputs as top-level files, built with makefs (ported
+        from tools/mk-disk.py's own run_makefs()), then labeled --
+        ported from tools/openbsd-install's own step 2 (build the
+        sets disk via mk-disk.py, which pairs this exact makefs
+        invocation with this exact disklabel logic)."""
+        sets_tree = self.scratch_file('sets-tree')
+        os.makedirs(sets_tree, exist_ok=True)
+        for path in sets_files:
+            shutil.copyfile(
+                path, os.path.join(sets_tree, os.path.basename(path)))
 
-            sets_img = self.scratch_file('sets.img')
-            # makefs writes into an existing file; touch it first (mirrors
-            # tools/mk-disk.py's own image.touch(exist_ok=True)).
-            open(sets_img, 'a').close()
-            subprocess.run(
-                [makefs_bin, '-t', 'ffs', '-B', 'be',
-                 '-o', 'bsize=8192,fsize=1024,minfree=5',
-                 '-s', SETS_DISK_SIZE, sets_img, sets_tree],
-                check=True, capture_output=True, text=True)
-            secperunit = _write_disklabel(sets_img, 'QEMU-ORIGAMI', 'sets')
-            self.log.debug(
-                'openbsd_install: sets disk %s: secperunit=%d',
-                sets_img, secperunit)
-            return sets_img
+        sets_img = self.scratch_file('sets.img')
+        # makefs writes into an existing file; touch it first (mirrors
+        # tools/mk-disk.py's own image.touch(exist_ok=True)).
+        open(sets_img, 'a').close()
+        subprocess.run(
+            [makefs_bin, '-t', 'ffs', '-B', 'be',
+             '-o', 'bsize=8192,fsize=1024,minfree=5',
+             '-s', SETS_DISK_SIZE, sets_img, sets_tree],
+            check=True, capture_output=True, text=True)
+        secperunit = _write_disklabel(sets_img, 'QEMU-ORIGAMI', 'sets')
+        self.log.debug(
+            'openbsd_install: sets disk %s: secperunit=%d',
+            sets_img, secperunit)
+        return sets_img
 
-        @skipBigDataTest()
-        @skipSlowTest()
-        def test_openbsd_install(self):
-            paths = self._asset_paths()
-            if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or is missing one of the '
-                    f'install inputs under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
-                    f'({INSTALL_KERNEL_NAME}, ' +
-                    ', '.join(SETS_FILE_NAMES) +
-                    ') -- point it at a checkout with the OpenBSD 6.9 '
-                    'install media provisioned to run this test')
-            kernel, sets_files = paths
+    @skipBigDataTest()
+    @skipSlowTest()
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_openbsd_install(self):
+        paths = self._asset_paths()
+        if paths is None:
+            self.skipTest(
+                'missing one of the '
+                f'install inputs under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
+                f'({INSTALL_KERNEL_NAME}, ' +
+                ', '.join(SETS_FILE_NAMES) +
+                ') -- point it at a checkout with the OpenBSD 6.9 '
+                'install media provisioned to run this test')
+        kernel, sets_files = paths
 
-            qemu_img = get_qemu_img(self)
-            makefs_bin = which('makefs')
-            if makefs_bin is None:
-                self.skipTest("makefs not found in '$PATH' -- needed to "
-                             "build the sets disk (tools/mk-disk.py's own "
-                             "invocation; see this module's docstring)")
+        qemu_img = get_qemu_img(self)
+        makefs_bin = which('makefs')
+        if makefs_bin is None:
+            self.skipTest("makefs not found in '$PATH' -- needed to "
+                         "build the sets disk (tools/mk-disk.py's own "
+                         "invocation; see this module's docstring)")
 
-            target_disk = self._build_target_disk(qemu_img)
-            sets_disk = self._build_sets_disk(makefs_bin, sets_files)
+        target_disk = self._build_target_disk(qemu_img)
+        sets_disk = self._build_sets_disk(makefs_bin, sets_files)
 
-            vm = self.get_vm(name='openbsd_install')
-            vm.set_machine('origin200')
-            vm.set_console()
-            vm.add_args(
-                '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-no-reboot',
-                '-kernel', kernel,
-                '-drive', f'if=none,id=root-disk,file={target_disk},format=raw',
-                '-device', 'scsi-hd,drive=root-disk,bus=scsi.0,scsi-id=1',
-                '-drive', f'if=none,id=sets-disk,file={sets_disk},format=raw',
-                '-device', 'scsi-hd,drive=sets-disk,bus=scsi.1,scsi-id=1')
-            vm.launch()
+        vm = self.get_vm(name='openbsd_install')
+        vm.set_machine('origin200')
+        vm.set_console()
+        vm.add_args(
+            '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-no-reboot',
+            '-kernel', kernel,
+            '-drive', f'if=none,id=root-disk,file={target_disk},format=raw',
+            '-device', 'scsi-hd,drive=root-disk,bus=scsi.0,scsi-id=1',
+            '-drive', f'if=none,id=sets-disk,file={sets_disk},format=raw',
+            '-device', 'scsi-hd,drive=sets-disk,bus=scsi.1,scsi-id=1')
+        vm.launch()
 
-            log_path = self.log_file('openbsd-install.log')
-            try:
-                transcript = _drive_install(
-                    vm.console_socket, log_path, INSTALL_TIMEOUT_SECONDS)
-            finally:
-                # A VM that crashed, exited on its own (-no-reboot after
-                # the installer's own post-completion reboot request), or
-                # was left running has each been seen here; a graceful
-                # shutdown() against an already-dead process still raises
-                # AbnormalShutdown even though qemu is in fact gone.
-                # Matches test_openbsd_login.py's own OpenbsdLogin.
-                # test_openbsd_login.
-                vm.shutdown(hard=vm.exitcode() is not None)
+        log_path = self.log_file('openbsd-install.log')
+        try:
+            transcript = _drive_install(
+                vm.console_socket, log_path, INSTALL_TIMEOUT_SECONDS)
+        finally:
+            # A VM that crashed, exited on its own (-no-reboot after
+            # the installer's own post-completion reboot request), or
+            # was left running has each been seen here; a graceful
+            # shutdown() against an already-dead process still raises
+            # AbnormalShutdown even though qemu is in fact gone.
+            # Matches test_openbsd_login.py's own OpenbsdLogin.
+            # test_openbsd_login.
+            vm.shutdown(hard=vm.exitcode() is not None)
 
-            if not transcript:
-                self.fail(
-                    'the guest printed nothing at all -- a run that did '
-                    'not start, not an install that failed early. Check '
-                    'the emulator built, and that nothing ended the '
-                    'machine before it printed anything.')
+        if not transcript:
+            self.fail(
+                'the guest printed nothing at all -- a run that did '
+                'not start, not an install that failed early. Check '
+                'the emulator built, and that nothing ended the '
+                'machine before it printed anything.')
 
-            report = install_verdict(transcript)
-            self.assertEqual(
-                report['verdict'], 'PASS',
-                'OpenBSD install problems: ' + '; '.join(report['problems']) +
-                f' (full transcript: {log_path})')
+        report = install_verdict(transcript)
+        self.assertEqual(
+            report['verdict'], 'PASS',
+            'OpenBSD install problems: ' + '; '.join(report['problems']) +
+            f' (full transcript: {log_path})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

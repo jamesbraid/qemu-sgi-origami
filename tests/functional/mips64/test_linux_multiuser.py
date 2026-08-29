@@ -18,9 +18,9 @@ remote-memory contract with no disk and no network.
 Both assets are provisioned into ORIGAMI_ASSETS by the nightly, published
 content-addressed (generic/linux-ip27-net/<sha>/vmlinux and
 generic/gentoo/<sha>/gentoo-rootfs.img). Guarded by @skipBigDataTest()
-(a 2 GiB disk) and @skipSlowTest() (the boot is minutes) plus the usual
-ORIGAMI_ASSETS skipTest at method entry -- the same guards
-test_openbsd_login.py keeps.
+(a 2 GiB disk) and @skipSlowTest() (the boot is minutes) plus
+@skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest at method entry --
+the same guards test_openbsd_login.py keeps.
 
 The machine matches the verified milestone boot: -M origin200 -cpu R10000
 -m 256, two 128 MiB memory backends as NUMA nodes 0-1, -smp
@@ -38,29 +38,22 @@ password is driven: a returned banner is the pass condition for a live
 network service; an authenticated round-trip is a deliberate follow-up,
 not this cut.
 
-Free of any qemu_test import on purpose below the guarded import: the pure
-verdict lives entirely in test_linux_multiuser_verdict.py (imported
-unconditionally, it needs no qemu_test); only the real QemuSystemTest
-below needs qemu_test (MESON_BUILD_ROOT), guarded the same way
-test_openbsd_login.py and test_linux_kernel.py guard it.
+The pure verdict lives entirely in test_linux_multiuser_verdict.py
+(imported below; it needs no qemu_test). What is left here is the real
+boot.
 """
 
 import os
 import re
 import socket
-import sys
 import time
 
-# This file's own directory, so a plain pytest run finds the verdict module
-# the same way test_openbsd_login.py finds test_openbsd_login_verdict.py.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
+                       skipSlowTest)
 
-from test_linux_multiuser_verdict import missing_multiuser_markers  # noqa: E402
+from lib_prom import resolve_asset
 
-try:
-    from qemu_test import QemuSystemTest, skipBigDataTest, skipSlowTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from test_linux_multiuser_verdict import missing_multiuser_markers
 
 
 # Where ORIGAMI_ASSETS resolves the networked kernel and the Gentoo rootfs,
@@ -128,101 +121,97 @@ def _ssh_banner(port, timeout=15):
         return ""
 
 
-if QemuSystemTest is not None:
+class LinuxMultiuser(QemuSystemTest):
+    """Boots the networked Gentoo disk and requires a networked
+    multiuser system with a live ssh service. See this module's
+    docstring for the contract; this class only wires it to a real
+    boot, the division test_openbsd_login.py keeps between its pure
+    verdict and its own QemuSystemTest."""
 
-    class LinuxMultiuser(QemuSystemTest):
-        """Boots the networked Gentoo disk and requires a networked
-        multiuser system with a live ssh service. See this module's
-        docstring for the contract; this class only wires it to a real
-        boot, the division test_openbsd_login.py keeps between its pure
-        verdict and its own QemuSystemTest."""
+    def _asset_paths(self):
+        """The kernel and rootfs under ORIGAMI_ASSETS, or None if either
+        is missing -- the runner may not have assets provisioned yet."""
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        kernel = resolve_asset(assets_root, KERNEL_REL)
+        disk = resolve_asset(assets_root, DISK_REL)
+        if not (kernel and disk):
+            return None
+        return kernel, disk
 
-        def _asset_paths(self):
-            """The kernel and rootfs under ORIGAMI_ASSETS, or None if either
-            is missing -- the runner may not have assets provisioned yet."""
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            kernel = os.path.join(assets_root, KERNEL_REL)
-            disk = os.path.join(assets_root, DISK_REL)
-            if not (os.path.isfile(kernel) and os.path.isfile(disk)):
-                return None
-            return kernel, disk
+    @skipBigDataTest()
+    @skipSlowTest()
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_linux_multiuser(self):
+        paths = self._asset_paths()
+        if paths is None:
+            self.skipTest(
+                'no kernel/disk at '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a checkout '
+                'with the networked kernel and Gentoo rootfs provisioned '
+                '(nightly assets) to run this test')
+        kernel, disk = paths
 
-        @skipBigDataTest()
-        @skipSlowTest()
-        def test_linux_multiuser(self):
-            paths = self._asset_paths()
-            if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no kernel/disk at '
-                    f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a checkout '
-                    'with the networked kernel and Gentoo rootfs provisioned '
-                    '(nightly assets) to run this test')
-            kernel, disk = paths
+        vm = self.get_vm(name='linux_multiuser')
+        vm.set_machine('origin200')
+        vm.set_console()
+        vm.add_args(
+            '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-snapshot',
+            '-kernel', kernel, '-no-reboot',
+            '-drive', f'if=none,id=disk0,file={disk},format=raw',
+            '-device', 'scsi-hd,drive=disk0,bus=scsi.0,scsi-id=0,lun=0',
+            '-object', 'memory-backend-ram,id=ram0,size=128M',
+            '-object', 'memory-backend-ram,id=ram1,size=128M',
+            '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
+            '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-accel', 'tcg,thread=multi',
+            '-nic', f'user,id=n1,hostfwd=tcp::{SSH_HOST_PORT}-:22')
+        vm.launch()
 
-            vm = self.get_vm(name='linux_multiuser')
-            vm.set_machine('origin200')
-            vm.set_console()
-            vm.add_args(
-                '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-snapshot',
-                '-kernel', kernel, '-no-reboot',
-                '-drive', f'if=none,id=disk0,file={disk},format=raw',
-                '-device', 'scsi-hd,drive=disk0,bus=scsi.0,scsi-id=0,lun=0',
-                '-object', 'memory-backend-ram,id=ram0,size=128M',
-                '-object', 'memory-backend-ram,id=ram1,size=128M',
-                '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
-                '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
-                '-smp', '4,sockets=2,cores=2,threads=1',
-                '-accel', 'tcg,thread=multi',
-                '-nic', f'user,id=n1,hostfwd=tcp::{SSH_HOST_PORT}-:22')
-            vm.launch()
+        log_path = self.log_file('linux-multiuser.log')
+        banner = ''
+        missing = None
+        try:
+            transcript = _boot_to_login(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
+            # Probe ssh only once the boot reached networked multiuser --
+            # gated on the same verdict the markers use, not a separate
+            # login match, so the banner is asserted exactly when the
+            # markers say the service should be up. sshd starts just
+            # before the getty prompt; give it a moment to bind, and
+            # probe while the VM is still up (shutdown is below).
+            missing = missing_multiuser_markers(transcript)
+            if not missing:
+                time.sleep(10)
+                banner = _ssh_banner(SSH_HOST_PORT)
+        finally:
+            # A VM that crashed or exited on its own has already left; a
+            # graceful shutdown() against an already-dead process still
+            # raises AbnormalShutdown even though qemu is gone. Matches
+            # test_openbsd_login.py's own reasoning.
+            vm.shutdown(hard=vm.exitcode() is not None)
 
-            log_path = self.log_file('linux-multiuser.log')
-            banner = ''
-            missing = None
-            try:
-                transcript = _boot_to_login(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
-                # Probe ssh only once the boot reached networked multiuser --
-                # gated on the same verdict the markers use, not a separate
-                # login match, so the banner is asserted exactly when the
-                # markers say the service should be up. sshd starts just
-                # before the getty prompt; give it a moment to bind, and
-                # probe while the VM is still up (shutdown is below).
-                missing = missing_multiuser_markers(transcript)
-                if not missing:
-                    time.sleep(10)
-                    banner = _ssh_banner(SSH_HOST_PORT)
-            finally:
-                # A VM that crashed or exited on its own has already left; a
-                # graceful shutdown() against an already-dead process still
-                # raises AbnormalShutdown even though qemu is gone. Matches
-                # test_openbsd_login.py's own reasoning.
-                vm.shutdown(hard=vm.exitcode() is not None)
+        if not transcript:
+            self.fail(
+                'the guest printed nothing at all -- a run that did not '
+                'start, not a boot that failed early. Check the emulator '
+                'built and that nothing ended the machine before it '
+                'printed anything.')
 
-            if not transcript:
-                self.fail(
-                    'the guest printed nothing at all -- a run that did not '
-                    'start, not a boot that failed early. Check the emulator '
-                    'built and that nothing ended the machine before it '
-                    'printed anything.')
-
-            self.assertEqual(
-                missing, [],
-                'networked-multiuser markers missing: ' + ', '.join(missing) +
-                f' (full transcript: {log_path})')
-            # Reached only when the markers passed, so a failure here is
-            # unambiguous: the console came up multiuser but the ssh service
-            # did not answer.
-            self.assertTrue(
-                banner.startswith('SSH-2.0'),
-                'the console reached networked multiuser but the ssh service '
-                f'did not answer over the forwarded port (got {banner!r}; '
-                f'transcript: {log_path})')
+        self.assertEqual(
+            missing, [],
+            'networked-multiuser markers missing: ' + ', '.join(missing) +
+            f' (full transcript: {log_path})')
+        # Reached only when the markers passed, so a failure here is
+        # unambiguous: the console came up multiuser but the ssh service
+        # did not answer.
+        self.assertTrue(
+            banner.startswith('SSH-2.0'),
+            'the console reached networked multiuser but the ssh service '
+            f'did not answer over the forwarded port (got {banner!r}; '
+            f'transcript: {log_path})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

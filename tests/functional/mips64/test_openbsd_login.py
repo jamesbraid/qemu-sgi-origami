@@ -32,8 +32,8 @@ file only wires it to a real boot: _drive_login() drives the console
 through the same ordered questions login_origin() answers (root device,
 swap device default, login, password), against this fork's own
 framework console socket (QEMUMachine.console_socket via
-QemuSystemTest.get_vm(), the same real API test_prom_sash.py's own
-_drive_console() drives) -- not net-transfer-diag's own Console class,
+QemuSystemTest.get_vm(), the same real API lib_prom.py's own
+drive_console() drives) -- not net-transfer-diag's own Console class,
 per this port's SELF-CONTAINED brief. _drive_login() also breaks out of
 its read loop early on a TRIPWIRES match (imported from
 test_openbsd_login_verdict.py rather than duplicated), matching
@@ -57,37 +57,27 @@ the same division); -snapshot keeps the 2 GiB disk read-only.
 Guarded by @skipBigDataTest() (the disk is 2 GiB) and @skipSlowTest()
 (the boot is minutes) -- the framework's own env-var-gated decorators
 ($QEMU_TEST_ALLOW_LARGE_STORAGE, $QEMU_TEST_ALLOW_SLOW;
-tests/functional/qemu_test/decorators.py) -- on top of the usual
-ORIGAMI_ASSETS resolution + skipTest() at method entry if either asset is
-missing (test_prom_boot.py's own pattern). Both assets are provisioned
+tests/functional/qemu_test/decorators.py) -- on top of
+@skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest() at method entry if
+either asset is missing. Both assets are provisioned
 into ORIGAMI_ASSETS by the nightly.
 
-Free of any qemu_test import on purpose below the guarded import: the
-pure verdict logic lives entirely in test_openbsd_login_verdict.py
-(imported unconditionally, since it needs no qemu_test itself); only the
-real QemuSystemTest below needs qemu_test, which requires
-MESON_BUILD_ROOT (see tests/functional/qemu_test/config.py) and is
-therefore guarded the same way test_prom_boot.py, test_diag.py, and
-test_linux_kernel.py guard it.
+The pure verdict logic lives entirely in test_openbsd_login_verdict.py
+(imported below; it needs no qemu_test itself). What is left here is the
+real boot.
 """
 
 import os
 import re
 import socket
-import sys
 import time
 
-# This file's own directory, so a plain `pytest test_openbsd_login.py` run
-# finds test_openbsd_login_verdict.py the same way test_linux_kernel.py
-# finds test_linux_kernel_verdict.py.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
+                       skipSlowTest)
 
-from test_openbsd_login_verdict import login_verdict, TRIPWIRES  # noqa: E402
+from lib_prom import resolve_asset
 
-try:
-    from qemu_test import QemuSystemTest, skipBigDataTest, skipSlowTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from test_openbsd_login_verdict import login_verdict, TRIPWIRES
 
 
 # Where ORIGAMI_ASSETS resolves the kernel and installed disk, matching
@@ -122,8 +112,8 @@ _TAIL_MAX = 4096
 
 def _drive_login(sock, log_path, timeout):
     """Answer the kernel's device questions, then log in, against a real
-    framework console socket -- the same shape as test_prom_sash.py's own
-    _drive_console(), adapted for login_origin()'s own ordered questions
+    framework console socket -- the same shape as lib_prom.py's own
+    drive_console(), adapted for login_origin()'s own ordered questions
     instead of sash-gate's PROM menu.
 
     Every byte received is accumulated into the returned transcript and
@@ -170,80 +160,76 @@ def _drive_login(sock, log_path, timeout):
     return transcript
 
 
-if QemuSystemTest is not None:
+class OpenbsdLogin(QemuSystemTest):
+    """Boots the installed OpenBSD 6.9 disk directly via -kernel and
+    requires login_verdict() to be PASS. See this module's docstring
+    for the full contract; this class only wires it to a real boot,
+    the same division test_prom_sash.py and test_linux_kernel.py keep
+    between their pure verdict logic and their own QemuSystemTest.
+    """
 
-    class OpenbsdLogin(QemuSystemTest):
-        """Boots the installed OpenBSD 6.9 disk directly via -kernel and
-        requires login_verdict() to be PASS. See this module's docstring
-        for the full contract; this class only wires it to a real boot,
-        the same division test_prom_sash.py and test_linux_kernel.py keep
-        between their pure verdict logic and their own QemuSystemTest.
-        """
+    def _asset_paths(self):
+        """The kernel and installed disk under ORIGAMI_ASSETS, or
+        None if either is missing -- the runner may not have assets
+        provisioned yet (see this method's caller)."""
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        kernel = resolve_asset(assets_root, KERNEL_REL)
+        disk = resolve_asset(assets_root, DISK_REL)
+        if not (kernel and disk):
+            return None
+        return kernel, disk
 
-        def _asset_paths(self):
-            """The kernel and installed disk under ORIGAMI_ASSETS, or
-            None if either is missing -- the runner may not have assets
-            provisioned yet (see this method's caller)."""
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            kernel = os.path.join(assets_root, KERNEL_REL)
-            disk = os.path.join(assets_root, DISK_REL)
-            if not (os.path.isfile(kernel) and os.path.isfile(disk)):
-                return None
-            return kernel, disk
+    @skipBigDataTest()
+    @skipSlowTest()
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_openbsd_login(self):
+        paths = self._asset_paths()
+        if paths is None:
+            self.skipTest(
+                'no kernel/disk at '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a '
+                'checkout with the OpenBSD 6.9 kernel and installed '
+                'disk provisioned (nightly assets) to run this test')
+        kernel, disk = paths
 
-        @skipBigDataTest()
-        @skipSlowTest()
-        def test_openbsd_login(self):
-            paths = self._asset_paths()
-            if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no kernel/disk at '
-                    f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a '
-                    'checkout with the OpenBSD 6.9 kernel and installed '
-                    'disk provisioned (nightly assets) to run this test')
-            kernel, disk = paths
+        vm = self.get_vm(name='openbsd_login')
+        vm.set_machine('origin200')
+        vm.set_console()
+        vm.add_args(
+            '-m', str(MEMORY_MIB), '-snapshot',
+            '-kernel', kernel,
+            '-drive', f'if=none,id=hd0,file={disk},format=raw',
+            '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
+            '-nic', 'none')
+        vm.launch()
 
-            vm = self.get_vm(name='openbsd_login')
-            vm.set_machine('origin200')
-            vm.set_console()
-            vm.add_args(
-                '-m', str(MEMORY_MIB), '-snapshot',
-                '-kernel', kernel,
-                '-drive', f'if=none,id=hd0,file={disk},format=raw',
-                '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
-                '-nic', 'none')
-            vm.launch()
+        log_path = self.log_file('openbsd-login.log')
+        try:
+            transcript = _drive_login(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
+        finally:
+            # A VM that crashed or exited on its own has already
+            # left; a graceful shutdown() against an already-dead
+            # process still raises AbnormalShutdown even though qemu
+            # is in fact gone. Matches test_prom_sash.py's own
+            # PromSash.test_prom_sash and test_prom_boot.py's own
+            # PromBoot.test_prom_boot.
+            vm.shutdown(hard=vm.exitcode() is not None)
 
-            log_path = self.log_file('openbsd-login.log')
-            try:
-                transcript = _drive_login(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
-            finally:
-                # A VM that crashed or exited on its own has already
-                # left; a graceful shutdown() against an already-dead
-                # process still raises AbnormalShutdown even though qemu
-                # is in fact gone. Matches test_prom_sash.py's own
-                # PromSash.test_prom_sash and test_prom_boot.py's own
-                # PromBoot.test_prom_boot.
-                vm.shutdown(hard=vm.exitcode() is not None)
+        if not transcript:
+            self.fail(
+                'the guest printed nothing at all -- a run that did '
+                'not start, not a boot that failed early. Check the '
+                'emulator built, and that nothing ended the machine '
+                'before it printed anything.')
 
-            if not transcript:
-                self.fail(
-                    'the guest printed nothing at all -- a run that did '
-                    'not start, not a boot that failed early. Check the '
-                    'emulator built, and that nothing ended the machine '
-                    'before it printed anything.')
-
-            report = login_verdict(transcript)
-            self.assertEqual(
-                report['verdict'], 'PASS',
-                'OpenBSD login problems: ' + '; '.join(report['problems']) +
-                f' (full transcript: {log_path})')
+        report = login_verdict(transcript)
+        self.assertEqual(
+            report['verdict'], 'PASS',
+            'OpenBSD login problems: ' + '; '.join(report['problems']) +
+            f' (full transcript: {log_path})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

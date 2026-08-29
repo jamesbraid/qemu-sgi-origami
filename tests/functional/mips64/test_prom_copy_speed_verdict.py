@@ -18,7 +18,7 @@ sighting of each bracket code.
 
 import unittest
 
-from test_prom_copy_speed import (
+from lib_prom_copy_speed import (
     COPY_BRACKET_START,
     COPY_BRACKET_END,
     COPY_BRACKET_MAX_SECONDS,

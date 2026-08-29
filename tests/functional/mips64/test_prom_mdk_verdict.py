@@ -9,7 +9,7 @@ A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `uv run --with pytest pytest
 tests/functional/mips64/test_prom_mdk_verdict.py -v`. It exercises
 missing_assertions(), failure_markers_present(), verdict() and
-artifact_identity_problems() from test_prom_mdk.py against real captured
+artifact_identity_problems() from lib_prom_mdk.py against real captured
 console transcripts, the same division test_prom_sash_verdict.py keeps.
 
 Fixture provenance (every fixture is real captured guest-console text,
@@ -47,13 +47,10 @@ byte-exact including CR/LF; none is synthesized):
 """
 
 import os
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from test_prom_mdk import (
+from lib_prom_mdk import (
     ASSERTIONS,
     artifact_identity_problems,
     failure_markers_present,

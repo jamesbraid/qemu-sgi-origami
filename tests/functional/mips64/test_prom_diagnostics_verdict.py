@@ -87,7 +87,7 @@ file and what, if anything, was changed):
 
 import unittest
 
-from test_prom_diagnostics import (
+from lib_prom_diagnostics import (
     diag_extra_args,
     evaluate_run,
     EXPECTED_FAILURES,

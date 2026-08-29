@@ -46,10 +46,7 @@ but not every later kernel-console fix, and the banner is reached well
 before any of those matter.
 
 reached_banner() below is the one pure function this file factors the
-success check into, so test_irix_miniroot_verdict.py can prove it detects
-the banner without booting anything. It takes no qemu_test import on
-purpose, the same guarded-import split test_prom_sash.py keeps, so the
-verdict unit test can import it under a plain pytest run.
+success check into.
 """
 
 import datetime
@@ -57,25 +54,11 @@ import hashlib
 import json
 import os
 import re
-import socket
 import subprocess
-import sys
-import time
 
-# This file's own directory, so a plain `pytest test_irix_miniroot_verdict.py`
-# run (which imports straight from this module) finds it the same way
-# test_prom_sash_verdict.py finds test_prom_sash.py.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-# qemu_test is only importable inside meson's own test environment (see
-# test_prom_boot.py's docstring for the exact reason). Guarded so that the
-# pure surface test_irix_miniroot_verdict.py exercises stays importable
-# without it; IrixMiniroot itself is simply not defined in that case, which
-# is fine because nothing outside meson ever tries to run the real boot.
-try:
-    from qemu_test import QemuSystemTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from lib_prom import drive_console, resolve_asset
 
 
 # The miniroot kernel's own release banner, printed at kernel entry. The
@@ -149,7 +132,6 @@ DRIVER_STEPS = (
 # The run's proof the kernel actually loaded and entered, not merely that
 # its image was requested: the kernel's own release banner.
 DRIVER_UNTIL_RE = MINIROOT_BANNER_RE
-_TAIL_MAX = 8192
 
 
 def _file_sha256(path):
@@ -204,56 +186,6 @@ def miniroot_extra_args(prom, tftp, elsc_log, capture):
     ]
 
 
-def _drive_console(sock, log_path, timeout):
-    """Answer the PROM's System Maintenance Menu prompts and drive it to a
-    route-A direct boot of the miniroot kernel.
-
-    Ported from tools/serial-console's own expect loop the same way
-    test_prom_sash._drive_console is (see that file for why: commands sent
-    before the firmware is listening are lost, and a rule that could refire
-    on a prompt reappearing after being answered would send the wrong thing
-    next time). Every byte received is both accumulated into the returned
-    transcript and appended to log_path, so a run this drove is inspectable
-    exactly like a captured -serial file.
-
-    Returns (transcript, reached) -- reached is True once DRIVER_UNTIL_RE is
-    seen anywhere in the stream.
-    """
-    rules = [
-        {"re": re.compile(pattern.encode()), "response": response.encode(),
-         "fired": False}
-        for pattern, response in DRIVER_STEPS
-    ]
-    sock.settimeout(1.0)
-    deadline = time.monotonic() + timeout
-    transcript = bytearray()
-    tail = b""
-    reached = False
-    with open(log_path, "wb") as log:
-        while time.monotonic() < deadline:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if not chunk:
-                break
-            transcript += chunk
-            log.write(chunk)
-            log.flush()
-            tail = (tail + chunk)[-_TAIL_MAX:]
-            for rule in rules:
-                if not rule["fired"] and rule["re"].search(tail):
-                    sock.sendall(rule["response"])
-                    rule["fired"] = True
-                    tail = b""
-            if DRIVER_UNTIL_RE.search(tail):
-                reached = True
-                break
-    return transcript.decode("utf-8", errors="replace"), reached
-
-
 def _utc_now():
     return datetime.datetime.now(datetime.UTC).isoformat().replace(
         "+00:00", "Z")
@@ -297,125 +229,122 @@ def _fork_git_identity(tree):
     }
 
 
-if QemuSystemTest is not None:
+# This file's own repo root: tests/functional/mips64/test_irix_miniroot.py
+# is three directories below it.
+_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
 
-    # This file's own repo root: tests/functional/mips64/test_irix_miniroot.py
-    # is three directories below it.
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
+class IrixMiniroot(QemuSystemTest):
+    """Boots the real IP27 PROM, direct-boots the 6.5.30 miniroot kernel
+    over SLIRP usermode networking, and requires the kernel's release
+    banner. See this module's docstring for the full contract; this
+    class only wires it to a real boot, the same division
+    test_prom_sash.py keeps between its pure logic and its QemuSystemTest
+    class.
+    """
 
-    class IrixMiniroot(QemuSystemTest):
-        """Boots the real IP27 PROM, direct-boots the 6.5.30 miniroot kernel
-        over SLIRP usermode networking, and requires the kernel's release
-        banner. See this module's docstring for the full contract; this
-        class only wires it to a real boot, the same division
-        test_prom_sash.py keeps between its pure logic and its QemuSystemTest
-        class.
-        """
+    def _release_paths(self):
+        """The real PROM image and miniroot-kernel TFTP tree under
+        ORIGAMI_ASSETS, or None if either is missing -- the runner may
+        not have assets provisioned yet (see this method's caller)."""
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        prom = resolve_asset(assets_root, FIRMWARE_REL)
+        kernel = resolve_asset(assets_root,
+                               os.path.join(TFTP_REL, KERNEL_NAME))
+        if not (prom and kernel):
+            return None
+        return prom, os.path.join(assets_root, TFTP_REL)
 
-        def _release_paths(self):
-            """The real PROM image and miniroot-kernel TFTP tree under
-            ORIGAMI_ASSETS, or None if either is missing -- the runner may
-            not have assets provisioned yet (see this method's caller)."""
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            prom = os.path.join(assets_root, FIRMWARE_REL)
-            tftp = os.path.join(assets_root, TFTP_REL)
-            kernel = os.path.join(tftp, KERNEL_NAME)
-            if not (os.path.isfile(prom) and os.path.isfile(kernel)):
-                return None
-            return prom, tftp
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_irix_miniroot(self):
+        paths = self._release_paths()
+        if paths is None:
+            self.skipTest(
+                'no firmware/kernel '
+                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{TFTP_REL}/{KERNEL_NAME} -- point it '
+                'at a checkout with the real PROM and release-matched '
+                'miniroot kernel extracted (tools/extract-irix) to run '
+                'this test')
+        prom, tftp = paths
+        kernel = os.path.join(tftp, KERNEL_NAME)
 
-        def test_irix_miniroot(self):
-            paths = self._release_paths()
-            if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no firmware/kernel '
-                    f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{TFTP_REL}/{KERNEL_NAME} -- point it '
-                    'at a checkout with the real PROM and release-matched '
-                    'miniroot kernel extracted (tools/extract-irix) to run '
-                    'this test')
-            prom, tftp = paths
-            kernel = os.path.join(tftp, KERNEL_NAME)
+        # Refuse a stale or wrong-release PROM/kernel before spending a
+        # boot on assets that would silently produce a meaningless pass
+        # or a confusing failure, the same refusal test_prom_sash makes.
+        identity_problems = artifact_identity_problems(prom, kernel)
+        if identity_problems:
+            self.fail(
+                f'release {RELEASE} asset identity problems: ' +
+                '; '.join(identity_problems))
 
-            # Refuse a stale or wrong-release PROM/kernel before spending a
-            # boot on assets that would silently produce a meaningless pass
-            # or a confusing failure, the same refusal test_prom_sash makes.
-            identity_problems = artifact_identity_problems(prom, kernel)
-            if identity_problems:
-                self.fail(
-                    f'release {RELEASE} asset identity problems: ' +
-                    '; '.join(identity_problems))
+        vm = self.get_vm(name='irix_miniroot')
+        vm.set_machine(
+            'origin200,synthesized-firmware=off,debug-leds=off')
+        vm.set_console()
+        elsc_log = self.log_file('elsc-aux.log')
+        capture = self.log_file('wire.pcap')
+        vm.add_args('-accel', 'tcg,thread=single',
+                   *miniroot_extra_args(prom, tftp, elsc_log, capture))
 
-            vm = self.get_vm(name='irix_miniroot')
-            vm.set_machine(
-                'origin200,synthesized-firmware=off,debug-leds=off')
-            vm.set_console()
-            elsc_log = self.log_file('elsc-aux.log')
-            capture = self.log_file('wire.pcap')
-            vm.add_args('-accel', 'tcg,thread=single',
-                       *miniroot_extra_args(prom, tftp, elsc_log, capture))
+        started = _utc_now()
+        vm.launch()
+        log_path = self.log_file('miniroot.log')
+        try:
+            transcript, reached = drive_console(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                DRIVER_STEPS, until=DRIVER_UNTIL_RE)
+        finally:
+            # A VM that crashed or exited on its own has already left; a
+            # graceful shutdown() against an already-dead process still
+            # raises AbnormalShutdown even though qemu is in fact gone.
+            # Matches test_prom_sash.py's PromSash.test_prom_sash.
+            vm.shutdown(hard=vm.exitcode() is not None)
+        ended = _utc_now()
 
-            started = _utc_now()
-            vm.launch()
-            log_path = self.log_file('miniroot.log')
-            try:
-                transcript, reached = _drive_console(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
-            finally:
-                # A VM that crashed or exited on its own has already left; a
-                # graceful shutdown() against an already-dead process still
-                # raises AbnormalShutdown even though qemu is in fact gone.
-                # Matches test_prom_sash.py's PromSash.test_prom_sash.
-                vm.shutdown(hard=vm.exitcode() is not None)
-            ended = _utc_now()
+        if not transcript:
+            self.fail(
+                'the firmware printed nothing at all -- a run that did '
+                'not start, not a netboot that failed early. Check the '
+                'emulator built, and that nothing ended the machine '
+                'before it printed anything.')
 
-            if not transcript:
-                self.fail(
-                    'the firmware printed nothing at all -- a run that did '
-                    'not start, not a netboot that failed early. Check the '
-                    'emulator built, and that nothing ended the machine '
-                    'before it printed anything.')
-
-            run_path = self.log_file('run.json')
-            with open(run_path, 'w', encoding='utf-8') as run_file:
-                json.dump({
-                    'schema': 1,
-                    'started_utc': started,
-                    'ended_utc': ended,
-                    'reached_banner': reached,
-                    'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'command': {
-                        'binary': self.qemu_bin,
-                        'machine': (
-                            'origin200,synthesized-firmware=off,'
-                            'debug-leds=off'),
-                        'args': miniroot_extra_args(
-                            prom, tftp, elsc_log, capture),
+        run_path = self.log_file('run.json')
+        with open(run_path, 'w', encoding='utf-8') as run_file:
+            json.dump({
+                'schema': 1,
+                'started_utc': started,
+                'ended_utc': ended,
+                'reached_banner': reached,
+                'timeout_seconds': BOOT_TIMEOUT_SECONDS,
+                'command': {
+                    'binary': self.qemu_bin,
+                    'machine': (
+                        'origin200,synthesized-firmware=off,'
+                        'debug-leds=off'),
+                    'args': miniroot_extra_args(
+                        prom, tftp, elsc_log, capture),
+                },
+                'identity': {
+                    'fork': _fork_git_identity(_FORK_ROOT),
+                    'qemu_binary': _file_record(self.qemu_bin),
+                    'firmware': {
+                        'release': RELEASE,
+                        'prom': _file_record(prom),
+                        'kernel': _file_record(kernel),
                     },
-                    'identity': {
-                        'fork': _fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': _file_record(self.qemu_bin),
-                        'firmware': {
-                            'release': RELEASE,
-                            'prom': _file_record(prom),
-                            'kernel': _file_record(kernel),
-                        },
-                    },
-                }, run_file, indent=2, sort_keys=True)
-                run_file.write('\n')
+                },
+            }, run_file, indent=2, sort_keys=True)
+            run_file.write('\n')
 
-            self.assertTrue(
-                reached,
-                'the miniroot kernel never reached its release banner '
-                f'("IRIX Release 6.5 IP27") within {BOOT_TIMEOUT_SECONDS}s. '
-                'The PROM was driven to a route-A direct boot of '
-                f'{KERNEL_NAME}; the kernel either did not load or did not '
-                f'reach its own console output (full transcript: {log_path}).')
+        self.assertTrue(
+            reached,
+            'the miniroot kernel never reached its release banner '
+            f'("IRIX Release 6.5 IP27") within {BOOT_TIMEOUT_SECONDS}s. '
+            'The PROM was driven to a route-A direct boot of '
+            f'{KERNEL_NAME}; the kernel either did not load or did not '
+            f'reach its own console output (full transcript: {log_path}).')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()

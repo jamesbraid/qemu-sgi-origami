@@ -42,96 +42,22 @@ import json
 import os
 import re
 import shutil
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from test_prom_mdk import (
-    FIRMWARE_REL,
-    _drive_console,
-    _file_record,
-    _fork_git_identity,
-    _utc_now,
-    payload_identity_problems,
-)
-
-try:
-    from qemu_test import QemuSystemTest
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from lib_prom import (FIRMWARE_REL, drive_console, file_record,
+                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom_fx import LEDGERS_EXPECTED, NBLOCKS, NETBOOT_PATH, verdict
+from lib_prom_mdk import payload_identity_problems
 
 
-NETBOOT_PATH = "stand/fx.64"
 FX_REL = os.path.join('assets', 'boot', '6.5-base', 'fx.64')
 # The 6.5-base disc's fx.64, as tools/extract-irix boot records it.
 FX_SHA256 = (
     "c4cbacad625ee4587e24ba69f4610293383452b0c69114a4e3b3804e1e8b3100"
 )
 
-NBLOCKS = 100000
 SCRATCH_DISK_BYTES = 1 << 30
-
-ASSERTIONS = (
-    ("path-structured netboot fetch",
-     f"Obtaining {NETBOOT_PATH} from server"),
-    ("fx banner", "SGI Version 6.5 ARCS BE64"),
-    ("disk opened", "...opening dksc(0,1,0)"),
-    ("drive self-test", "...drive selftest...OK"),
-    ("write-compare scan started",
-     f"sequential pass 1: scanning [0, {NBLOCKS}] ({NBLOCKS} blocks)"),
-    ("scan completed", "100%"),
-    ("butterfly scan started",
-     f"butterfly pass 1: scanning [0, {NBLOCKS}] ({NBLOCKS} blocks)"),
-)
-
-ZERO_LEDGER = "TOTAL ERR BLOCKS r0(0 hard) w0(0 hard)"
-LEDGERS_EXPECTED = 2
-
-# fx's own error ledger (the zero-error line above) is the authority for
-# miscompares and hard errors; the word "miscompare" itself appears in
-# the exercise menu and its help, so it cannot be a marker.
-FAILURE_MARKERS = (
-    "hard error",
-    "Failed to open",
-    "no such device",
-    "Unexpected",
-)
-
-
-def missing_assertions(log):
-    missing = [name for name, evidence in ASSERTIONS if evidence not in log]
-    ledgers = log.count(ZERO_LEDGER)
-    if ledgers != LEDGERS_EXPECTED:
-        missing.append(
-            f"zero-error ledger after each exercise ({ledgers} of "
-            f"{LEDGERS_EXPECTED})")
-    return missing
-
-
-def failure_markers_present(log):
-    return [marker for marker in FAILURE_MARKERS if marker in log]
-
-
-def verdict(log, reached=True):
-    """PASS iff fx netbooted by path, opened the disk, ran the full
-    write-compare scan, reported zero error blocks, and printed no
-    failure spelling; and the driver saw the error ledger before
-    timeout."""
-    problems = []
-    for name in missing_assertions(log):
-        problems.append(f"missing {name}")
-    for marker in failure_markers_present(log):
-        problems.append(f"failure output present: {marker!r}")
-    if not reached:
-        problems.append(
-            "console driver did not see fx's error ledger after both "
-            "exercises before timeout -- the run never proved they "
-            "finished")
-    return {
-        "verdict": "PASS" if not problems else "FAIL",
-        "problems": problems,
-    }
-
 
 # Boot to the menu is minutes under a contended host; fx loads in
 # seconds, the 100,000-block write-compare took 19s and the butterfly
@@ -193,122 +119,118 @@ def fx_extra_args(prom, tftp, elsc_log, capture, disk):
     ]
 
 
-if QemuSystemTest is not None:
+_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
 
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
+class PromFx(QemuSystemTest):
+    """Boots the real IP27 PROM, netboots fx.64, and requires a clean
+    write-compare exercise on a fresh scratch disk."""
 
-    class PromFx(QemuSystemTest):
-        """Boots the real IP27 PROM, netboots fx.64, and requires a clean
-        write-compare exercise on a fresh scratch disk."""
+    def _asset_paths(self):
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        prom = resolve_asset(assets_root, FIRMWARE_REL)
+        fx = resolve_asset(assets_root, FX_REL)
+        if not (prom and fx):
+            return None
+        return prom, fx
 
-        def _asset_paths(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            prom = os.path.join(assets_root, FIRMWARE_REL)
-            fx = os.path.join(assets_root, FX_REL)
-            if not (os.path.isfile(prom) and os.path.isfile(fx)):
-                return None
-            return prom, fx
+    def _stage_netboot_tftp(self, fx):
+        root = self.scratch_file('netboot-tftp')
+        staged = os.path.join(root, *NETBOOT_PATH.split('/'))
+        os.makedirs(os.path.dirname(staged), exist_ok=True)
+        shutil.copyfile(fx, staged)
+        return root
 
-        def _stage_netboot_tftp(self, fx):
-            root = self.scratch_file('netboot-tftp')
-            staged = os.path.join(root, *NETBOOT_PATH.split('/'))
-            os.makedirs(os.path.dirname(staged), exist_ok=True)
-            shutil.copyfile(fx, staged)
-            return root
+    def _scratch_disk(self):
+        path = self.scratch_file('fx-scratch.img')
+        with open(path, 'wb') as disk:
+            disk.truncate(SCRATCH_DISK_BYTES)
+        return path
 
-        def _scratch_disk(self):
-            path = self.scratch_file('fx-scratch.img')
-            with open(path, 'wb') as disk:
-                disk.truncate(SCRATCH_DISK_BYTES)
-            return path
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_prom_fx(self):
+        paths = self._asset_paths()
+        if paths is None:
+            self.skipTest(
+                'no firmware/fx.64 at '
+                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{FX_REL} -- tools/extract-irix boot '
+                'in the project checkout lands fx.64')
+        prom, fx = paths
 
-        def test_prom_fx(self):
-            paths = self._asset_paths()
-            if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no firmware/fx.64 at '
-                    f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{FX_REL} -- tools/extract-irix boot '
-                    'in the project checkout lands fx.64')
-            prom, fx = paths
+        identity_problems = payload_identity_problems(
+            prom, fx, FX_SHA256, "fx.64")
+        if identity_problems:
+            self.fail('asset identity problems: ' +
+                      '; '.join(identity_problems))
 
-            identity_problems = payload_identity_problems(
-                prom, fx, FX_SHA256, "fx.64")
-            if identity_problems:
-                self.fail('asset identity problems: ' +
-                          '; '.join(identity_problems))
+        netboot_tftp = self._stage_netboot_tftp(fx)
+        disk = self._scratch_disk()
 
-            netboot_tftp = self._stage_netboot_tftp(fx)
-            disk = self._scratch_disk()
+        vm = self.get_vm(name='prom_fx')
+        vm.set_machine(
+            'origin200,synthesized-firmware=off,debug-leds=off')
+        vm.set_console()
+        elsc_log = self.log_file('elsc-aux.log')
+        capture = self.log_file('wire.pcap')
+        vm.add_args('-accel', 'tcg,thread=single',
+                    *fx_extra_args(prom, netboot_tftp, elsc_log,
+                                   capture, disk))
 
-            vm = self.get_vm(name='prom_fx')
-            vm.set_machine(
-                'origin200,synthesized-firmware=off,debug-leds=off')
-            vm.set_console()
-            elsc_log = self.log_file('elsc-aux.log')
-            capture = self.log_file('wire.pcap')
-            vm.add_args('-accel', 'tcg,thread=single',
-                        *fx_extra_args(prom, netboot_tftp, elsc_log,
-                                       capture, disk))
+        started = utc_now()
+        vm.launch()
+        log_path = self.log_file('fx.log')
+        try:
+            transcript, reached = drive_console(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                DRIVER_STEPS, reached_when=reached_both_ledgers)
+        finally:
+            vm.shutdown(hard=vm.exitcode() is not None)
+        ended = utc_now()
 
-            started = _utc_now()
-            vm.launch()
-            log_path = self.log_file('fx.log')
-            try:
-                transcript, reached = _drive_console(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                    steps=DRIVER_STEPS, reached_when=reached_both_ledgers)
-            finally:
-                vm.shutdown(hard=vm.exitcode() is not None)
-            ended = _utc_now()
+        if not transcript:
+            self.fail(
+                'the firmware printed nothing at all -- a run that '
+                'did not start, not a netboot that failed early')
 
-            if not transcript:
-                self.fail(
-                    'the firmware printed nothing at all -- a run that '
-                    'did not start, not a netboot that failed early')
+        report = verdict(transcript, reached=reached)
 
-            report = verdict(transcript, reached=reached)
+        summary_path = self.log_file('fx-summary.json')
+        with open(summary_path, 'w', encoding='utf-8') as summary_file:
+            json.dump({
+                'schema': 1,
+                'nblocks': NBLOCKS,
+                'reached_error_ledger': reached,
+                'report': report,
+            }, summary_file, indent=2, sort_keys=True)
+            summary_file.write('\n')
 
-            summary_path = self.log_file('fx-summary.json')
-            with open(summary_path, 'w', encoding='utf-8') as summary_file:
-                json.dump({
-                    'schema': 1,
-                    'nblocks': NBLOCKS,
-                    'reached_error_ledger': reached,
-                    'report': report,
-                }, summary_file, indent=2, sort_keys=True)
-                summary_file.write('\n')
-
-            run_path = self.log_file('run.json')
-            with open(run_path, 'w', encoding='utf-8') as run_file:
-                json.dump({
-                    'schema': 1,
-                    'started_utc': started,
-                    'ended_utc': ended,
-                    'console_driver_reached_until': reached,
-                    'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'identity': {
-                        'fork': _fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': _file_record(self.qemu_bin),
-                        'payload': {
-                            'prom': _file_record(prom),
-                            'fx': _file_record(fx),
-                        },
+        run_path = self.log_file('run.json')
+        with open(run_path, 'w', encoding='utf-8') as run_file:
+            json.dump({
+                'schema': 1,
+                'started_utc': started,
+                'ended_utc': ended,
+                'console_driver_reached_until': reached,
+                'timeout_seconds': BOOT_TIMEOUT_SECONDS,
+                'identity': {
+                    'fork': fork_git_identity(_FORK_ROOT),
+                    'qemu_binary': file_record(self.qemu_bin),
+                    'payload': {
+                        'prom': file_record(prom),
+                        'fx': file_record(fx),
                     },
-                    'verdict': report['verdict'],
-                    'problems': report['problems'],
-                }, run_file, indent=2, sort_keys=True)
-                run_file.write('\n')
+                },
+                'verdict': report['verdict'],
+                'problems': report['problems'],
+            }, run_file, indent=2, sort_keys=True)
+            run_file.write('\n')
 
-            self.assertEqual(
-                report['verdict'], 'PASS',
-                'fx exercise problems: ' + '; '.join(report['problems']) +
-                f' (full report: {summary_path})')
+        self.assertEqual(
+            report['verdict'], 'PASS',
+            'fx exercise problems: ' + '; '.join(report['problems']) +
+            f' (full report: {summary_path})')
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()
