@@ -29,11 +29,9 @@
 #include "qapi/error.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/core/qdev-properties-system.h"
 #include "hw/pci/pci.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "chardev/char-fe.h"
 #include "system/dma.h"
 #include "net/net.h"
 #include "trace.h"
@@ -842,9 +840,17 @@ static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
         return false;
     }
 
-    dma_memory_write(s->dma_as, ring + (*produce & mask),
-                     s->sdma_packer[port], SGI_IOC3_SDMA_ENTRY_SIZE,
-                     MEMTXATTRS_UNSPECIFIED);
+    /*
+     * A failed fabric write must not advance the index: an index past an
+     * entry that never reached memory points the driver at garbage. The
+     * characters stay in the packer, exactly as they do for a full ring.
+     */
+    if (dma_memory_write(s->dma_as, ring + (*produce & mask),
+                         s->sdma_packer[port], SGI_IOC3_SDMA_ENTRY_SIZE,
+                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_PCI_ERROR);
+        return false;
+    }
     *produce = next;
     s->sdma_packed[port] = 0;
     memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
@@ -1093,8 +1099,17 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
         uint8_t entry[SGI_IOC3_SDMA_ENTRY_SIZE];
         unsigned int i;
 
-        dma_memory_read(s->dma_as, ring + (*consume & mask), entry,
-                        sizeof(entry), MEMTXATTRS_UNSPECIFIED);
+        /*
+         * A failed entry fetch stops the walk where it is: the bytes on the
+         * stack are not an entry, and transmitting them would turn a fabric
+         * error into line noise nothing reports.
+         */
+        if (dma_memory_read(s->dma_as, ring + (*consume & mask), entry,
+                            sizeof(entry), MEMTXATTRS_UNSPECIFIED) !=
+            MEMTX_OK) {
+            sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_PCI_ERROR);
+            break;
+        }
 
         for (i = 0; i < SGI_IOC3_SDMA_ENTRY_CHARS; i++) {
             uint8_t control = entry[SGI_IOC3_SDMA_ENTRY_CHARS + i];
@@ -1801,6 +1816,24 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     qdev_init_gpio_out(DEVICE(dev), &s->superio_irq, 1);
 }
 
+static void sgi_ioc3_exit(PCIDevice *dev)
+{
+    SGIIOC3State *s = SGI_IOC3(dev);
+    unsigned int i;
+
+    /*
+     * The serial children registered reset handlers when they realized;
+     * leaving them realized after unplug leaves those handlers pointing at
+     * freed state, and the next machine reset walks into it.
+     */
+    for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
+        qdev_unrealize(DEVICE(&s->serial[i]));
+        timer_free(s->sdma_rx_timer[i]);
+    }
+    qdev_unrealize(DEVICE(&s->eth));
+    qdev_unrealize(DEVICE(&s->rtc));
+}
+
 static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
 {
     SGIIOC3State *s = SGI_IOC3(obj);
@@ -1856,6 +1889,22 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->pin_control = 0;
     s->pin_data = 0;
     s->chip_control = 0;
+
+    /*
+     * The one-wire transaction machine too: a reset mid-answer must not
+     * leave the part shifting out stale bits into the next guest's first
+     * read. Zero throughout is its idle state.
+     */
+    s->onewire_phase = 0;
+    s->onewire_bit = 0;
+    s->onewire_command = 0;
+    s->onewire_match = 0;
+    s->onewire_args[0] = 0;
+    s->onewire_args[1] = 0;
+    s->onewire_argn = 0;
+    memset(s->onewire_out, 0, sizeof(s->onewire_out));
+    s->onewire_out_len = 0;
+    s->onewire_outbit = 0;
 }
 
 static void sgi_ioc3_init(Object *obj)
@@ -1877,6 +1926,17 @@ static void sgi_ioc3_init(Object *obj)
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         object_initialize_child(obj, "serial[*]", &s->serial[i], TYPE_SERIAL);
     }
+
+    /*
+     * The ports' chardevs, through each child's own property rather than a
+     * parent property aimed at a field inside it -- the same shape as the
+     * netdev, mac and nvram-drive aliases below, and what keeps the ports'
+     * remaining properties (baudbase among them) reachable.
+     */
+    object_property_add_alias(obj, "chardev-a", OBJECT(&s->serial[0]),
+                              "chardev");
+    object_property_add_alias(obj, "chardev-b", OBJECT(&s->serial[1]),
+                              "chardev");
 
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_IOC3_ETH);
 
@@ -1905,26 +1965,40 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
 }
 
+/*
+ * The interrupt line is derived state: re-drive it from the restored status
+ * and enable words rather than leaving it wherever the destination's reset
+ * put it until the guest's next register write.
+ */
+static int sgi_ioc3_post_load(void *opaque, int version_id)
+{
+    SGIIOC3State *s = opaque;
+
+    sgi_ioc3_update_irq(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
     .version_id = 12,
     .minimum_version_id = 12,
+    .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
-        VMSTATE_UINT32_V(int_status, SGIIOC3State, 2),
-        VMSTATE_UINT32_V(int_enable, SGIIOC3State, 2),
+        VMSTATE_UINT32(int_status, SGIIOC3State),
+        VMSTATE_UINT32(int_enable, SGIIOC3State),
         VMSTATE_STRUCT_ARRAY(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS, 0,
                              vmstate_serial, SerialState),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
-        VMSTATE_UINT32_V(chip_control, SGIIOC3State, 11),
-        VMSTATE_UINT8_2DARRAY_V(sdma_packer, SGIIOC3State,
-                                SGI_IOC3_SERIAL_PORTS,
-                                SGI_IOC3_SDMA_ENTRY_SIZE, 11),
-        VMSTATE_UINT8_ARRAY_V(sdma_packed, SGIIOC3State,
-                              SGI_IOC3_SERIAL_PORTS, 11),
+        VMSTATE_UINT32(chip_control, SGIIOC3State),
+        VMSTATE_UINT8_2DARRAY(sdma_packer, SGIIOC3State,
+                              SGI_IOC3_SERIAL_PORTS,
+                              SGI_IOC3_SDMA_ENTRY_SIZE),
+        VMSTATE_UINT8_ARRAY(sdma_packed, SGIIOC3State,
+                            SGI_IOC3_SERIAL_PORTS),
         VMSTATE_TIMER_PTR_ARRAY(sdma_rx_timer, SGIIOC3State,
                                 SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32(kbc_control, SGIIOC3State),
@@ -1934,8 +2008,6 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
 };
 
 static const Property sgi_ioc3_properties[] = {
-    DEFINE_PROP_CHR("chardev-a", SGIIOC3State, serial[0].chr),
-    DEFINE_PROP_CHR("chardev-b", SGIIOC3State, serial[1].chr),
     DEFINE_PROP_UINT64("onewire-serial", SGIIOC3State, onewire_serial,
                        SGI_IOC3_ONEWIRE_SERIAL),
 };
@@ -1949,6 +2021,7 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
     dc->desc = "SGI IOC3 base I/O controller";
 
     pc->realize = sgi_ioc3_realize;
+    pc->exit = sgi_ioc3_exit;
     pc->vendor_id = SGI_IOC3_VENDOR_ID;
     pc->device_id = SGI_IOC3_DEVICE_ID;
     pc->revision = SGI_IOC3_REVISION;
@@ -1957,6 +2030,7 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
     pc->subsystem_id = SGI_IOC3_SUBSYSTEM_ID;
     rc->phases.hold = sgi_ioc3_reset_hold;
     dc->vmsd = &vmstate_sgi_ioc3;
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     device_class_set_props(dc, sgi_ioc3_properties);
 }
 

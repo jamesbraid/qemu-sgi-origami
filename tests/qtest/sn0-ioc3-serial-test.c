@@ -1673,6 +1673,88 @@ static void test_a_system_reset_clears_the_held_packer_and_the_timer(
     qtest_quit(qts);
 }
 
+/*
+ * Where no memory answers. The node's default population is 64 MB, so a
+ * ring base past it lands in the memory space's hole, and the engine's
+ * fabric access fails rather than reading or writing anything.
+ */
+#define UNBACKED_RING_BASE 0x07000000u
+
+/*
+ * A transmit ring the guest aimed at unbacked memory. The engine's entry
+ * fetch fails on the fabric, and the chip's answer is the port's PCI error
+ * source -- not a walk over whatever the failed read left on the stack. The
+ * consume index stays where it was: nothing was transmitted.
+ */
+static void test_an_unbacked_transmit_ring_raises_the_pci_error(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, UNBACKED_RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 0);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    /* Publishing an entry starts the walk; its fetch has nothing to read. */
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_PCI_ERROR),
+                    ==, SOURCE(0, SRC_PCI_ERROR));
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * The receive side of the same failure: a character arrives, the packer
+ * posts it, and the ring write fails. The produce index must not advance --
+ * an index past an entry that never reached memory tells the driver to read
+ * garbage -- and the PCI error source must say why nothing is arriving.
+ */
+static void test_an_unbacked_receive_ring_raises_the_pci_error(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent[4] = { 'x', 'x', 'x', 'x' };
+
+    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, UNBACKED_RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    /*
+     * Ring DMA on with a four-character high-water mark, so four arrivals
+     * drain the packer into the ring without the clock moving.
+     */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), 0x10100004);
+
+    g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
+    wait_for_source(qts, SOURCE(0, SRC_PCI_ERROR));
+
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8,
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1750,6 +1832,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/system-reset-clears-held-packer",
                         NULL,
                         test_a_system_reset_clears_the_held_packer_and_the_timer);
+    qtest_add_data_func("sn0/ioc3-serial/unbacked-transmit-ring-raises-error",
+                        NULL,
+                        test_an_unbacked_transmit_ring_raises_the_pci_error);
+    qtest_add_data_func("sn0/ioc3-serial/unbacked-receive-ring-raises-error",
+                        NULL,
+                        test_an_unbacked_receive_ring_raises_the_pci_error);
 
     return g_test_run();
 }
