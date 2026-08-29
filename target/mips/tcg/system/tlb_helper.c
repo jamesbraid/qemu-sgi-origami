@@ -167,7 +167,12 @@ static void r4k_helper_tlbinvf(CPUMIPSState *env)
     cpu_mips_tlb_flush(env);
 }
 
-static void r4k_helper_tlbwi(CPUMIPSState *env)
+/*
+ * Everything an indexed TLB write does before writing: pick the entry the
+ * Index register names and discard cached TLB entries unless the write is
+ * only upgrading access permissions. Returns the index to write.
+ */
+static int r4k_tlbwi_prepare(CPUMIPSState *env)
 {
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
     target_ulong VPN;
@@ -211,12 +216,39 @@ static void r4k_helper_tlbwi(CPUMIPSState *env)
         r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
     }
 
+    return idx;
+}
+
+static void r4k_helper_tlbwi(CPUMIPSState *env)
+{
+    int idx = r4k_tlbwi_prepare(env);
+
+    r4k_invalidate_tlb(env, idx, 0);
+    r4k_fill_tlb(env, idx);
+}
+
+/*
+ * The R10000 family's TLB writes take every entry the new one would overlap
+ * out of matching, between the old entry going and the new one landing.
+ */
+static void r10k_helper_tlbwi(CPUMIPSState *env)
+{
+    int idx = r4k_tlbwi_prepare(env);
+
     r4k_invalidate_tlb(env, idx, 0);
     r10k_invalidate_conflicts(env, idx);
     r4k_fill_tlb(env, idx);
 }
 
 static void r4k_helper_tlbwr(CPUMIPSState *env)
+{
+    int r = cpu_mips_get_random(env);
+
+    r4k_invalidate_tlb(env, r, 1);
+    r4k_fill_tlb(env, r);
+}
+
+static void r10k_helper_tlbwr(CPUMIPSState *env)
 {
     int r = cpu_mips_get_random(env);
 
@@ -288,6 +320,25 @@ static inline uint64_t get_entrylo_pfn_from_tlb(uint64_t tlb_pfn)
 #endif
 }
 
+/* The EntryLo pair a TLB read presents from a valid entry. */
+static void r4k_tlbr_load_entrylo(CPUMIPSState *env, const r4k_tlb_t *tlb)
+{
+    env->CP0_EntryLo0 = tlb->G | (tlb->V0 << 1) | (tlb->D0 << 2) |
+                    ((uint64_t)tlb->RI0 << CP0EnLo_RI) |
+                    ((uint64_t)tlb->XI0 << CP0EnLo_XI) | (tlb->C0 << 3) |
+#if defined(TARGET_MIPS64)
+                    ((uint64_t)tlb->UC0 << CP0EnLo_UC) |
+#endif
+                    get_entrylo_pfn_from_tlb(tlb->PFN[0] >> 12);
+    env->CP0_EntryLo1 = tlb->G | (tlb->V1 << 1) | (tlb->D1 << 2) |
+                    ((uint64_t)tlb->RI1 << CP0EnLo_RI) |
+                    ((uint64_t)tlb->XI1 << CP0EnLo_XI) | (tlb->C1 << 3) |
+#if defined(TARGET_MIPS64)
+                    ((uint64_t)tlb->UC1 << CP0EnLo_UC) |
+#endif
+                    get_entrylo_pfn_from_tlb(tlb->PFN[1] >> 12);
+}
+
 static void r4k_helper_tlbr(CPUMIPSState *env)
 {
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
@@ -310,13 +361,49 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
     r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
 
     if (tlb->EHINV) {
+        env->CP0_EntryHi = 1 << CP0EnHi_EHINV;
+        env->CP0_PageMask = 0;
+        env->CP0_EntryLo0 = 0;
+        env->CP0_EntryLo1 = 0;
+    } else {
+        env->CP0_EntryHi = mi ? tlb->VPN : tlb->VPN | tlb->ASID;
+        env->CP0_MemoryMapID = tlb->MMID;
+        env->CP0_PageMask = tlb->PageMask;
+        r4k_tlbr_load_entrylo(env, tlb);
+    }
+}
+
+/*
+ * The R10000 family's TLB read. Config5 does not exist on this processor, so
+ * its memory map identifier bit is clear and an entry is matched by its
+ * address space identifier.
+ */
+static void r10k_helper_tlbr(CPUMIPSState *env)
+{
+    uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    r4k_tlb_t *tlb;
+    int idx;
+
+    idx = (env->CP0_Index & ~0x80000000) % env->tlb->nb_tlb;
+    tlb = &env->tlb->mmu.r4k.tlb[idx];
+
+    /* If this will change the current ASID, flush qemu's TLB.  */
+    if (ASID != tlb->ASID) {
+        cpu_mips_tlb_flush(env);
+    }
+
+    r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+
+    if (tlb->EHINV) {
         /*
-         * Without EHINV, EntryHi bits 12:8 read as zero, and the bit would
-         * stick, because the EntryHi write helper only clears it on a
-         * processor whose Config4 grants the feature. Once stuck, the fill
-         * helper reads it back as "write an invalid entry" and every later
-         * TLB write is silently thrown away. Present an invalidated entry's
-         * EntryHi and EntryLo as zeroes instead.
+         * This processor has no EHINV bit, but r10k_invalidate_conflicts()
+         * marks a conflicting entry this way to take it out of matching, so
+         * the read can still land on one. EntryHi bits 12:8 read as zero,
+         * and the bit would stick if presented, because the EntryHi write
+         * helper only clears it on a processor whose Config4 grants the
+         * feature. Once stuck, the fill helper reads it back as "write an
+         * invalid entry" and every later TLB write is silently thrown away.
+         * Present the EntryHi and EntryLo of such an entry as zeroes.
          *
          * The PageMask register keeps the entry's own stale mask: a
          * read-back loads PageMask like any other read, and a guest that
@@ -324,42 +411,24 @@ static void r4k_helper_tlbr(CPUMIPSState *env)
          * size it ever writes would otherwise inherit a 4 Kbyte mask for
          * its next TLB write.
          */
-        env->CP0_EntryHi = env->cfg.tlb_has_no_ehinv
-                           ? 0 : 1 << CP0EnHi_EHINV;
-        env->CP0_PageMask = env->cfg.tlb_has_no_ehinv
-                            ? tlb->PageMask : 0;
+        env->CP0_EntryHi = 0;
+        env->CP0_PageMask = tlb->PageMask;
         env->CP0_EntryLo0 = 0;
         env->CP0_EntryLo1 = 0;
     } else {
-        target_ulong VPN = tlb->VPN;
-
         /*
-         * The R10000's TLBR pseudocode (manual 14.35) reads EntryHi as the
-         * entry and-not its page mask word, so virtual page number bits a
-         * guest wrote under a large page's mask present as zeroes. The fill
-         * keeps the entry as written, and lookup masks at compare time, so
-         * only this architectural read-back needs the clearing.
+         * The TLBR pseudocode (R10000 User's Manual version 2.0, section
+         * 14.35) reads EntryHi as the entry and-not its page mask word, so
+         * virtual page number bits a guest wrote under a large page's mask
+         * present as zeroes. The fill keeps the entry as written, and lookup
+         * masks at compare time, so only this architectural read-back needs
+         * the clearing.
          */
-        if (env->cfg.tlb_has_no_ehinv) {
-            VPN &= ~(target_ulong)tlb->PageMask;
-        }
-        env->CP0_EntryHi = mi ? VPN : VPN | tlb->ASID;
+        env->CP0_EntryHi = (tlb->VPN & ~(target_ulong)tlb->PageMask) |
+                           tlb->ASID;
         env->CP0_MemoryMapID = tlb->MMID;
         env->CP0_PageMask = tlb->PageMask;
-        env->CP0_EntryLo0 = tlb->G | (tlb->V0 << 1) | (tlb->D0 << 2) |
-                        ((uint64_t)tlb->RI0 << CP0EnLo_RI) |
-                        ((uint64_t)tlb->XI0 << CP0EnLo_XI) | (tlb->C0 << 3) |
-#if defined(TARGET_MIPS64)
-                        ((uint64_t)tlb->UC0 << CP0EnLo_UC) |
-#endif
-                        get_entrylo_pfn_from_tlb(tlb->PFN[0] >> 12);
-        env->CP0_EntryLo1 = tlb->G | (tlb->V1 << 1) | (tlb->D1 << 2) |
-                        ((uint64_t)tlb->RI1 << CP0EnLo_RI) |
-                        ((uint64_t)tlb->XI1 << CP0EnLo_XI) | (tlb->C1 << 3) |
-#if defined(TARGET_MIPS64)
-                        ((uint64_t)tlb->UC1 << CP0EnLo_UC) |
-#endif
-                        get_entrylo_pfn_from_tlb(tlb->PFN[1] >> 12);
+        r4k_tlbr_load_entrylo(env, tlb);
     }
 }
 
@@ -660,6 +729,23 @@ static void r4k_mmu_init(CPUMIPSState *env, const mips_def_t *def)
     env->tlb->helper_tlbinvf = r4k_helper_tlbinvf;
 }
 
+/*
+ * The R4000-style MMU with this family's own TLB writes and reads. The
+ * lookup and the fill stay shared: their differences are a few lines apiece
+ * inside long functions, and a private copy of either would drift.
+ */
+static void r10k_mmu_init(CPUMIPSState *env, const mips_def_t *def)
+{
+    env->tlb->nb_tlb = 1 + ((def->CP0_Config1 >> CP0C1_MMU) & 63);
+    env->tlb->map_address = &r4k_map_address;
+    env->tlb->helper_tlbwi = r10k_helper_tlbwi;
+    env->tlb->helper_tlbwr = r10k_helper_tlbwr;
+    env->tlb->helper_tlbp = r4k_helper_tlbp;
+    env->tlb->helper_tlbr = r10k_helper_tlbr;
+    env->tlb->helper_tlbinv = r4k_helper_tlbinv;
+    env->tlb->helper_tlbinvf = r4k_helper_tlbinvf;
+}
+
 void mmu_init(CPUMIPSState *env, const mips_def_t *def)
 {
     env->tlb = g_malloc0(sizeof(CPUMIPSTLBContext));
@@ -670,6 +756,9 @@ void mmu_init(CPUMIPSState *env, const mips_def_t *def)
         break;
     case MMU_TYPE_R4000:
         r4k_mmu_init(env, def);
+        break;
+    case MMU_TYPE_R10000:
+        r10k_mmu_init(env, def);
         break;
     case MMU_TYPE_FMT:
         fixed_mmu_init(env, def);

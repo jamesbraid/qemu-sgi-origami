@@ -435,6 +435,9 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
  * entries are marked the way tlbinv marks them, which takes them out of
  * every match; the valid bits stay untouched because a cleared valid bit
  * still matches, it just faults instead of translating.
+ *
+ * Only this family's TLB write helpers call this, so it carries no test of
+ * its own for the processor it belongs to.
  */
 void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
 {
@@ -443,10 +446,6 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
     uint16_t ASID;
     bool G, conflict = false;
     int i;
-
-    if (!(env->insn_flags & INSN_R10K)) {
-        return;
-    }
 
     /* 1k pages are not supported. */
     mask = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);

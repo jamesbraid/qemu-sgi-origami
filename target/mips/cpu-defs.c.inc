@@ -722,7 +722,6 @@ const mips_def_t mips_defs[] =
             .uncached_attribute = true,
             .erl_restricts_xuseg = true,
             .watch_is_physical = true,
-            .tlb_has_no_ehinv = true,
             .warm_reset_reports_sr = true,
             .cache_error_is_error_level = true,
             .exception_breaks_ll_link = true,
@@ -736,7 +735,7 @@ const mips_def_t mips_defs[] =
             .compare_match_is_continuous = true,
             .mtc0_entrylo_moves_64_bits = true,
         },
-        .mmu_type = MMU_TYPE_R4000,
+        .mmu_type = MMU_TYPE_R10000,
     },
     {
         .name = "VR5432",

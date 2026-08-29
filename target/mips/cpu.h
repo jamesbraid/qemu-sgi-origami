@@ -34,12 +34,6 @@ typedef struct MIPSCPUConfig {
      */
     bool watch_is_physical;
     /*
-     * The TLB has no EHINV bit, so a read of an invalidated entry presents
-     * zeroes and keeps the entry's page mask; a read also masks the VPN with
-     * that page mask.
-     */
-    bool tlb_has_no_ehinv;
-    /*
      * Soft Reset and NMI both set SR and clear TS, NMI additionally sets NMI,
      * and Cause is left untouched by either.
      */
