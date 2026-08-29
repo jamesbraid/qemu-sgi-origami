@@ -624,6 +624,12 @@ typedef enum {
  * a wrong reset value on this chip surfaces a long way from the register that
  * carries it.
  *
+ * This is deliberately not hw/core/register.h's RegisterAccessInfo: that
+ * framework builds the MemoryRegion itself at a four-byte stride, and this
+ * chip's registers sit one per eight-byte slot with the register in the
+ * upper word, behind a decode that must also tell a defined register from
+ * an undefined address it posts rather than refuses.
+ *
  * Where the reset values come from, because they are not all the same kind of
  * fact. Every non-zero value below is read from the chip's own specification,
  * which is the only source for any of them: the public headers encode bit
@@ -1014,8 +1020,8 @@ static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
  * The byte-lane correction itself. Only the low two bits of a window offset
  * move — a transfer never crosses the 32-bit word its lanes are defined
  * within, which is what the specification's own tables show and why
- * `sgi_bridge_config_address()` above applies the identical arithmetic to
- * configuration space for the identical reason.
+ * `sgi_bridge_config_address()` composes configuration addresses through
+ * this same helper for the identical reason.
  */
 static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 {
@@ -1257,31 +1263,20 @@ static uint32_t sgi_bridge_identification(SGIBridgeState *s)
 }
 
 /*
- * The chip defines the first 0x300 bytes of a 64 KB register block and decodes
- * the whole block. A defined register answers normally; an access above 0x300,
- * to a slot with no register, or to the wrong half of a slot is an undefined
- * address, which the real Bridge does not refuse with a bus error — it posts
- * the access and flags it asynchronously as an invalid-address error. So every
- * access within the block's width is accepted here, and the read and write
- * handlers below tell a defined register from an undefined address and raise
- * the error for the latter. (This is why the block bus-errored undefined
- * addresses once: a firmware self-test provokes one deliberately and fails on
- * any synchronous processor exception, so posting is what lets it pass.)
- */
-static bool sgi_bridge_accepts(void *opaque, hwaddr addr, unsigned size,
-                               bool is_write, MemTxAttrs attrs)
-{
-    return true;
-}
-
-/*
  * Post an access to an undefined address in the register window and record the
- * invalid-address error, rather than raising a synchronous bus error. The
- * failing access completes; the error is reported asynchronously through the
- * interrupt status register's bit 24, which a guest polls or takes an interrupt
- * on. Still logged, because a genuine firmware probe of an unused slot and a
- * gap in this model's register coverage look alike from here and the log is
- * where they are told apart.
+ * invalid-address error, rather than raising a synchronous bus error. The chip
+ * defines the first 0x300 bytes of a 64 KB register block and decodes the
+ * whole block; the real Bridge does not refuse an undefined address with a
+ * bus error — it posts the access and flags it asynchronously — so the
+ * register region accepts every access within its width and the handlers tell
+ * a defined register from an undefined address here. (A firmware self-test
+ * provokes an undefined access deliberately and fails on any synchronous
+ * processor exception, so posting is what lets it pass.) The failing access
+ * completes; the error is reported through the interrupt status register's
+ * bit 24, which a guest polls or takes an interrupt on. Still logged, because
+ * a genuine firmware probe of an unused slot and a gap in this model's
+ * register coverage look alike from here and the log is where they are told
+ * apart.
  */
 static void sgi_bridge_raise_host_error(SGIBridgeState *s);
 
@@ -1969,7 +1964,6 @@ static const MemoryRegionOps sgi_bridge_reg_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
-    .valid.accepts = sgi_bridge_accepts,
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
 };
@@ -2168,7 +2162,7 @@ static uint32_t sgi_bridge_config_address(hwaddr addr, unsigned size)
     unsigned int devfn = PCI_DEVFN(BRIDGE_CFG0_DEVICE(addr),
                                    BRIDGE_CFG0_FUNCTION(addr));
 
-    reg = (reg & ~3u) | ((reg & 3u) ^ (4u - size));
+    reg = sgi_bridge_window_correct(reg, size);
 
     return (devfn << 8) | reg;
 }
@@ -2360,9 +2354,9 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
                                  number, true);
 }
 
-static void sgi_bridge_set_irq(void *opaque, int pin, int level)
+static void sgi_bridge_update_pin(SGIBridgeState *s, int pin)
 {
-    SGIBridgeState *s = opaque;
+    bool level = extract32(s->pci_pin_level | s->gpio_pin_level, pin, 1);
     bool was = extract32(s->pin_level, pin, 1);
     bool enabled = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] & (1u << pin);
 
@@ -2388,6 +2382,24 @@ static void sgi_bridge_set_irq(void *opaque, int pin, int level)
             sgi_bridge_send_interrupt(s, pin, false);
         }
     }
+}
+
+/* The PCI core's view of a pin: its aggregated INTx level for that pin. */
+static void sgi_bridge_set_irq(void *opaque, int pin, int level)
+{
+    SGIBridgeState *s = opaque;
+
+    s->pci_pin_level = deposit32(s->pci_pin_level, pin, 1, level);
+    sgi_bridge_update_pin(s, pin);
+}
+
+/* A directly wired line: the machine driving one of the chip's GPIO inputs. */
+static void sgi_bridge_set_wire_irq(void *opaque, int pin, int level)
+{
+    SGIBridgeState *s = opaque;
+
+    s->gpio_pin_level = deposit32(s->gpio_pin_level, pin, 1, level);
+    sgi_bridge_update_pin(s, pin);
 }
 
 /*
@@ -2685,11 +2697,31 @@ static const PCIIOMMUOps sgi_bridge_iommu_ops = {
 
 #define TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION "sgi-bridge-iommu-memory-region"
 
+/*
+ * Nothing invalidates a notifier's view when the guest rewrites a
+ * translation entry, so a consumer that caches mappings (vfio, vhost) would
+ * run on stale ones. Refuse map notifiers outright rather than feeding them
+ * wrong answers; unmap-only consumers need nothing from us.
+ */
+static int sgi_bridge_iommu_notify_flag_changed(IOMMUMemoryRegion *iommu,
+                                                IOMMUNotifierFlag old_flags,
+                                                IOMMUNotifierFlag new_flags,
+                                                Error **errp)
+{
+    if (new_flags & IOMMU_NOTIFIER_MAP) {
+        error_setg(errp,
+                   "sgi-bridge does not notify of translation changes");
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static void sgi_bridge_iommu_class_init(ObjectClass *oc, const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(oc);
 
     imrc->translate = sgi_bridge_translate;
+    imrc->notify_flag_changed = sgi_bridge_iommu_notify_flag_changed;
 }
 
 static void sgi_bridge_reset_hold(Object *obj, ResetType type)
@@ -2717,6 +2749,8 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
         sgi_bridge_identification(s);
 
     s->pin_level = 0;
+    s->pci_pin_level = 0;
+    s->gpio_pin_level = 0;
     s->int_error = 0;
 
     /*
@@ -2743,9 +2777,19 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     Object *obj = OBJECT(dev);
     unsigned int slot;
 
+    /*
+     * Everything a property can get wrong is refused before the first region
+     * exists: a realize that fails after building regions leaves a half-built
+     * device behind for the error path to trip over.
+     */
     if (s->onewire_serial & ~NIC_ROM_SERIAL_MASK) {
         error_setg(errp, "the I/O bridge one-wire serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
+        return;
+    }
+    if (!s->fabric) {
+        error_setg(errp, "the I/O bridge needs the fabric its interrupt "
+                         "packets travel");
         return;
     }
     s->onewire_identity = sgi_bridge_onewire_rom_id(s->onewire_serial);
@@ -2775,11 +2819,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * machine's own, given rather than assumed, so that a packet travels the
      * same fabric a processor's access does.
      */
-    if (!s->fabric) {
-        error_setg(errp, "the I/O bridge needs the fabric its interrupt "
-                         "packets travel");
-        return;
-    }
     address_space_init(&s->fabric_as, s->fabric, "sgi-bridge.fabric");
 
     /*
@@ -2840,15 +2879,23 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                                      TYPE_PCI_BUS);
 
     /*
+     * The chip has eight slots and eight interrupt pins, and its INTx
+     * mapping is defined only within them. Reserve the rest of the devfn
+     * space so a device placed past slot 7 is refused when it is added,
+     * rather than aborting in the interrupt core the first time it drives a
+     * pin the bus never wired.
+     */
+    pci_bus_set_slot_reserved_mask(phb->bus, ~((1u << SGI_BRIDGE_PINS) - 1));
+
+    /*
      * The same eight pins, reachable directly rather than only through a PCI
      * function's own INTx line. Real board wiring puts more than PCI devices
      * on this chip's interrupt pins — the base I/O controller's second
-     * interrupt is the case this exists for — and sgi_bridge_set_irq() above
-     * already is the entire mechanism a pin needs: it does not care whether a
-     * transition arrived from the PCI core's own routing or from a plain
-     * wire, so there is nothing to duplicate here, only a second way in.
+     * interrupt is the case this exists for. The wire lines keep their own
+     * level word beside the PCI core's: the two domains can drive one pin at
+     * once, and each must hold it on its own.
      */
-    qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_irq, s, NULL,
+    qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_wire_irq, s, NULL,
                                         SGI_BRIDGE_PINS);
 
     /*
@@ -2933,17 +2980,29 @@ static int sgi_bridge_post_load(void *opaque, int version_id)
     SGIBridgeState *s = opaque;
 
     sgi_bridge_aim_all_windows(s);
+    /*
+     * A stream older than the split of the pin word into its two source
+     * domains carries only the effective levels. Attribute them to the PCI
+     * side: a wire level is re-driven by its source device's own restored
+     * state, a PCI level is not.
+     */
+    if (version_id < 5) {
+        s->pci_pin_level = s->pin_level;
+        s->gpio_pin_level = 0;
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_bridge = {
     .name = "sgi-bridge",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = sgi_bridge_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIBridgeState, SGI_BRIDGE_REG_SLOTS),
         VMSTATE_UINT8(pin_level, SGIBridgeState),
+        VMSTATE_UINT8_V(pci_pin_level, SGIBridgeState, 5),
+        VMSTATE_UINT8_V(gpio_pin_level, SGIBridgeState, 5),
         VMSTATE_UINT32_V(int_error, SGIBridgeState, 4),
         VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
                                SGI_BRIDGE_ATE_ENTRIES, 2),
@@ -2998,6 +3057,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "SGI Bridge crosstalk-to-PCI host bridge";
+    dc->fw_name = "pci";
     dc->realize = sgi_bridge_realize;
     dc->vmsd = &vmstate_sgi_bridge;
     dc->user_creatable = false;

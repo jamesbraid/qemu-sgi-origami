@@ -311,6 +311,17 @@ struct SGIBridgeState {
     uint8_t pin_level;
 
     /*
+     * The two source domains behind that word, kept apart so each holds the
+     * pin on its own: the PCI core's aggregated INTx level per pin, and the
+     * directly wired lines the machine drives through the chip's GPIO inputs
+     * (the base I/O controller's second interrupt travels this way). A pin's
+     * effective level is their OR; one word for both would let the last
+     * writer clear a level the other source still holds.
+     */
+    uint8_t pci_pin_level;
+    uint8_t gpio_pin_level;
+
+    /*
      * Latched error bits of the interrupt status register (bits 31:8), as
      * opposed to the device pins (7:0) which follow the level and never latch.
      * The model raises one of them: the invalid-address bit, set when a guest

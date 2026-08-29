@@ -285,4 +285,5 @@ config SGI_XBOW
 
 config SGI_BRIDGE_DMA_TEST
     bool
+    default y if TEST_DEVICES
     depends on PCI

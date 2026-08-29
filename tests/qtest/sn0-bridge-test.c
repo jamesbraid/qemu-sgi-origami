@@ -2873,6 +2873,48 @@ static void test_the_status_register_follows_the_level(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The same pin can carry two sources on this machine: a PCI function's INTx
+ * routed by the core, and a directly wired line the machine drives through
+ * the chip's GPIO inputs — the base I/O controller's second interrupt travels
+ * that way. Each source must hold the pin on its own. A model that kept one
+ * level word and let the last writer win would drop a held PCI level the
+ * moment the wire beside it fell, and the guest would never service the
+ * device still asking.
+ */
+static void test_the_pin_ors_its_wire_and_pci_sources(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+
+    /* The PCI function holds its level. */
+    bridge_drive_pin(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    /* The wire beside it rises and falls; the held PCI level stays. */
+    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 1);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    /* And the wire holds after the function lets go. */
+    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 1);
+    bridge_drive_pin(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    /* Both down, the pin is down. */
+    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /* Route the test pin at node 0 with a number in the guest range. */
 static void bridge_route_pin(QTestState *qts)
 {
@@ -3182,6 +3224,8 @@ int main(int argc, char **argv)
                         test_the_interrupt_pins_fold);
     qtest_add_data_func("sn0/bridge/status-follows-the-level", NULL,
                         test_the_status_register_follows_the_level);
+    qtest_add_data_func("sn0/bridge/pin-ors-wire-and-pci-sources", NULL,
+                        test_the_pin_ors_its_wire_and_pci_sources);
     qtest_add_data_func("sn0/bridge/enabled-pin-edge-reaches-the-hub", NULL,
                         test_an_enabled_pin_edge_reaches_the_hub);
     qtest_add_data_func("sn0/bridge/disabled-pin-edge-sends-no-packet", NULL,

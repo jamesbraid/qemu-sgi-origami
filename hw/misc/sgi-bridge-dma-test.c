@@ -6,34 +6,29 @@
  *
  * The bridge's address translation table is the thing a device transfer goes
  * through, and the defect it must not have is translating once per transfer
- * instead of once per page. That defect is invisible to every transfer fitting
- * inside one page, which is nearly all of them, so the only test that catches
- * it
- * is a transfer crossing a page boundary where the two pages map to physical
- * addresses that are not adjacent. Making that assertion needs a device on the
- * bridge's bus that issues one transfer of a length and address a test chooses.
- * Nothing in the tree could do it. The in-tree educational device is the
- * natural
- * candidate and is gated on a build option meaning the interrupt controller
- * supports message-signalled interrupts, which this machine's bridge does not
- * do — it turns a level on a pin into a write across the crossbar — so
- * selecting that option to obtain a test device would put a false claim about
- * the hardware
- * in the machine's configuration. The SCSI controller in the tree does transfer
- * data, and driving its script engine would test the translation table through
- * another chip's correctness. So this is a device of our own, deliberately the
- * smallest thing that makes the assertion.
+ * instead of once per page. That defect is invisible to every transfer
+ * fitting inside one page, which is nearly all of them, so the only test that
+ * catches it is a transfer crossing a page boundary where the two pages map
+ * to physical addresses that are not adjacent. Making that assertion needs a
+ * device on the bridge's bus that issues one transfer of a length and address
+ * a test chooses.
+ *
+ * The tree's iommu-testdev covers that basic shape, but three things the
+ * bridge tests assert are still missing from it: a seeded byte pattern so a
+ * straddle can name which page each byte landed in, a held interrupt level so
+ * a status register that must follow rather than latch can be told from one
+ * that latches, and a settable PCI identity so the bridge's per-device
+ * byte-lane policy can be exercised without the real part. Until those grow
+ * on the shared device, this one carries them; retiring it onto an extended
+ * iommu-testdev is recorded follow-up work.
  *
  * It is for tests and nothing else: no machine instantiates it, it appears
  * only when a command line asks for it by name, and it models no real
- * hardware. If it
- * ever seems useful for something other than exercising a host bridge's
- * translation, that is a sign something else should be built instead.
- * The transfer is one call, issued while the register write that asked for it
- * is
- * still being served, and it goes through the PCI DMA helpers so that whatever
- * translation the bridge above imposes is honoured. That is the whole point:
- * a transfer that bypassed the translation would prove nothing about it.
+ * hardware. The transfer is one call, issued while the register write that
+ * asked for it is still being served, and it goes through the PCI DMA helpers
+ * so that whatever translation the bridge above imposes is honoured. That is
+ * the whole point: a transfer that bypassed the translation would prove
+ * nothing about it.
  */
 
 #include "qemu/osdep.h"
@@ -54,9 +49,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeDMATestState, SGI_BRIDGE_DMA_TEST)
  */
 #define SGI_BRIDGE_DMA_TEST_MAX 256
 
-/* An identifier for a device that exists only in this fork's tests. */
-#define SGI_BRIDGE_DMA_TEST_VENDOR 0x1234
-#define SGI_BRIDGE_DMA_TEST_DEVICE 0x0d1a
+/*
+ * The identity every QEMU-internal test device wears: an allocated Red Hat
+ * id rather than a made-up number that could collide with a real vendor.
+ */
+#define SGI_BRIDGE_DMA_TEST_VENDOR PCI_VENDOR_ID_REDHAT
+#define SGI_BRIDGE_DMA_TEST_DEVICE PCI_DEVICE_ID_REDHAT_TEST
 
 struct SGIBridgeDMATestState {
     PCIDevice parent_obj;
@@ -201,6 +199,9 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
     case REG_INTERRUPT:
         return s->interrupt;
     default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge-dma-test: read of undefined register 0x%"
+                      HWADDR_PRIx "\n", addr);
         return 0;
     }
 }
@@ -241,6 +242,9 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
         pci_set_irq(PCI_DEVICE(s), s->interrupt);
         break;
     default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge-dma-test: write of undefined register 0x%"
+                      HWADDR_PRIx "\n", addr);
         break;
     }
 }
@@ -288,21 +292,22 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->address = 0;
     s->length = 0;
     s->seed = 0;
+    s->source = 0;
     s->interrupt = 0;
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIBridgeDMATestState),
         VMSTATE_UINT64(address, SGIBridgeDMATestState),
+        VMSTATE_UINT64(source, SGIBridgeDMATestState),
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
-        VMSTATE_UINT8(interrupt_pin, SGIBridgeDMATestState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -335,11 +340,9 @@ static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &vmstate_sgi_bridge_dma_test;
     rc->phases.hold = sgi_bridge_dma_test_reset_hold;
     device_class_set_props(dc, sgi_bridge_dma_test_properties);
-    /*
-     * A command line may ask for it; no machine builds one. It is not on any
-     * category list, because it belongs to none of them.
-     */
+    /* A command line may ask for it; no machine builds one. */
     dc->user_creatable = true;
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
 
 static const TypeInfo sgi_bridge_dma_test_types[] = {
