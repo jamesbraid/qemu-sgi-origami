@@ -26,11 +26,8 @@
                          BRIDGE_DEVICE2)
 
 /*
- * The two things a guest's own bus scan would do before the bridge's device
- * window reaches anything: give the controller a PCI address by writing its
- * base address register, and aim the window at that same address. The
- * crosstalk-side offset is fixed by slot number, so IOC3_BASE above still
- * names where to read the result -- only the PCI-side address is ours to pick.
+ * A guest's bus scan: assign the controller a PCI address and aim the
+ * bridge's device window at it. The crosstalk-side offset stays fixed.
  */
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
@@ -66,10 +63,7 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define INT_STATUS      (IOC3_BASE + 0x1c)
 #define INT_ENABLE_SET  (IOC3_BASE + 0x20)
 
-/*
- * The nine sources a serial port raises, at their offsets from that port's
- * first bit. Port A's block starts at bit 0 and port B's at bit 9.
- */
+/* The nine per-port sources: port A at bit 0, port B at bit 9. */
 #define SRC_TX_RING_EMPTY   0
 #define SRC_RX_RING_FULL    1
 #define SRC_RX_HIGH_WATER   2
@@ -98,12 +92,8 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define SDMA_SHADOW     0x18
 
 /*
- * The 16550 shadow register's fields: the port's own status and modem lines,
- * mirrored so software driving the DMA rings never has to touch the byte-wide
- * window. Data-ready and transmit-holding-empty come from the line status
- * register, the clear-to-send and carrier-detect levels from the modem status
- * register, and the driven data-terminal-ready and request-to-send from modem
- * control.
+ * The 16550 shadow's fields: line status, modem status and the driven
+ * modem-control levels, mirrored for ring-side software.
  */
 #define SHADOW_DR       (1u << 0)
 #define SHADOW_THRE     (1u << 5)
@@ -118,10 +108,7 @@ static uint64_t sdma(unsigned int port, unsigned int reg)
     return (port ? SDMA_PORT_B : SDMA_PORT_A) + reg;
 }
 
-/*
- * The alias pages, which expose one port's seven registers on a page of their
- * own so a privileged process can map them without the rest of the chip.
- */
+/* Alias pages: one port's seven registers on a page of their own. */
 #define SDMA_ALIAS_A    (IOC3_BASE + 0x08000)
 #define SDMA_ALIAS_B    (IOC3_BASE + 0x0c000)
 
@@ -141,10 +128,7 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 #define CTRL_PAUSED     (1u << 30)
 #define CTRL_RESET      (1u << 31)
 
-/*
- * A transmit entry's control byte: a two-bit type in the top bits, and an
- * independent request for an interrupt once that byte has gone out.
- */
+/* A transmit control byte: a two-bit type plus an interrupt request. */
 #define TX_EMPTY        0x00
 #define TX_CHARACTER    0x40
 #define TX_MODEM        0x80
@@ -188,12 +172,9 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 #define RX_ERRORS       (RX_OVERRUN | RX_PARITY | RX_FRAMING | RX_BREAK)
 
 /*
- * The SuperIO enable mask IRIX 6.5.30's miniroot console runs with once it
- * has switched onto the rings, read live off the stalled machine: port A
- * receive high-water (bit 2), port A receive timer (bit 3) and the keyboard
- * (bit 22) -- and, pointedly, not bit 6, the port's 16550 pass-through. A
- * guest in this mode hears about input through the ring sources or not at
- * all.
+ * IRIX 6.5.30's ring-console SuperIO enable mask, read live off a stalled
+ * machine: the ring receive sources and the keyboard, not the 16550
+ * pass-through.
  */
 #define IRIX_RING_ENABLE_MASK 0x0040000c
 
@@ -203,19 +184,11 @@ static uint64_t serial_port(unsigned int port)
 }
 
 /*
- * Turns a would-be hang into a failure; it does not bound a healthy run.
- * The byte is in the host socket before qtest_writel returns, only
- * scheduling delays it -- past ten seconds on an oversubscribed host, so
- * 120s is the deadline load triage settled on (docs/notebooks/
- * ioc3-serial-dma.md in the project tree).
+ * Turns a would-be hang into a failure; 120s is the load-triage deadline
+ * (docs/notebooks/ioc3-serial-dma.md in the project tree).
  */
 #define IOC3_SERIAL_SOCKET_TIMEOUT_SECS 120
 
-/*
- * A read on the port's own socket is how a test sees a character leave the
- * chip, and a model that sends nothing would otherwise hang the suite at that
- * read rather than fail it. A deadline turns the one into the other.
- */
 static void serial_socket_deadline(int fd)
 {
     struct timeval tv = { .tv_sec = IOC3_SERIAL_SOCKET_TIMEOUT_SECS,
@@ -226,9 +199,8 @@ static void serial_socket_deadline(int fd)
 }
 
 /*
- * A TCP listener serial_hd(1) connects out to: the only proof chardev-b
- * is wired rather than dark, since qtest_init_with_serial wires only
- * serial_hd(0) and the other port-B tests use internal loopback.
+ * A TCP listener serial_hd(1) connects out to: the only proof chardev-b is
+ * wired, since qtest_init_with_serial wires only serial_hd(0).
  */
 static int portb_listen(uint16_t *port)
 {
@@ -266,23 +238,13 @@ static int portb_accept(int lfd)
     return fd;
 }
 
-/*
- * Where the rings go. Guest RAM, 4 KB aligned as the base register requires,
- * and far enough into memory that nothing the firmware left behind is under
- * it. With 4 KB rings selected the block is four of them: port A transmit,
- * port A receive, port B transmit, port B receive, in that order.
- */
+/* Rings in guest RAM: TX A, RX A, TX B, RX B, in the fixed order. */
 #define RING_BASE       0x00100000u
 #define RING_SIZE       0x1000u
 #define RING_TX(port)   (RING_BASE + (port) * 2 * RING_SIZE)
 #define RING_RX(port)   (RING_TX(port) + RING_SIZE)
 
-/*
- * Put one entry in a transmit ring: four data bytes and the four control
- * bytes that say what each of them is. A caller passing fewer than four
- * characters leaves the remaining control bytes empty, which is what an
- * engine must stop on.
- */
+/* Four data bytes and their control bytes; unfilled slots stay empty. */
 static void write_transmit_entry(QTestState *qts, uint32_t ring,
                                  uint32_t offset,
                                  const uint8_t *data, const uint8_t *control)
@@ -291,10 +253,7 @@ static void write_transmit_entry(QTestState *qts, uint32_t ring,
     qtest_memwrite(qts, ring + offset + 4, control, 4);
 }
 
-/*
- * Bring one port's engine up the way a driver does: aim the shared ring base
- * at guest RAM with 4 KB rings, clear both indices, and enable ring DMA.
- */
+/* Aim the ring base, clear the indices, enable ring DMA. */
 static void enable_dma(QTestState *qts, unsigned int port)
 {
     qtest_writel(qts, SDMA_RING_HI, 0);
@@ -318,10 +277,8 @@ static void set_loopback(QTestState *qts, unsigned int port)
 }
 
 /*
- * Collect the first n delivered characters. How bytes group into entries
- * is the host's choice; what is deterministic is the characters in order
- * under data-valid flags, so assertions built on this cannot flake on
- * TCP segmentation.
+ * Collect n characters in order under data-valid flags; entry grouping is
+ * the host's chunking, so nothing built on this flakes on segmentation.
  */
 static void collect_rx_chars(QTestState *qts, unsigned int port,
                              unsigned int n, uint8_t *data, uint8_t *status)
@@ -366,11 +323,7 @@ static void wait_for_source(QTestState *qts, uint32_t bit)
     }
 }
 
-/*
- * The firmware's own chip-control value. No guest reads the fields back,
- * so a model dropping them looks identical from a transcript -- asserted
- * here or not at all.
- */
+/* No guest reads these fields back: asserted here or not at all. */
 static void test_the_control_register_round_trips(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
@@ -385,12 +338,9 @@ static void test_the_control_register_round_trips(const void *data)
 }
 
 /*
- * The index registers address the ring in eight-byte units, so the pointer
- * occupies bits three upward and its width follows the ring size currently
- * selected: bits 3-9 for 1 KB rings and bits 3-11 for 4 KB ones. A model
- * storing the whole word answers every ordinary driver write unchanged --
- * every one of them is already in range -- so only a write of the bits the
- * register does not own can tell the two apart.
+ * The pointer's width follows the selected ring size. Every ordinary driver
+ * write is already in range, so only writing bits the register does not own
+ * tells a masked pointer from a stored whole word.
  */
 static void test_an_index_keeps_only_its_pointer_field(const void *data)
 {
@@ -417,10 +367,8 @@ static void test_an_index_keeps_only_its_pointer_field(const void *data)
 }
 
 /*
- * The receive consume index is the one index that carries something besides a
- * pointer: bit 31 arms the receive timer. So it keeps one bit more than its
- * three siblings, and a model masking all four alike drops the arming bit
- * without any driver noticing until an interrupt fails to arrive.
+ * Bit 31 arms the receive timer, so this index keeps one bit more than its
+ * three siblings.
  */
 static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 {
@@ -437,10 +385,8 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 }
 
 /*
- * The receive timer holds a twelve-bit reload in its low bits and reads its
- * current count back in bits 16-27. Nothing above bit 27 belongs to it. The
- * ethernet block has a timer at a different offset that keeps eleven bits, so
- * a model sharing one width between them is wrong for one of the two.
+ * Twelve-bit reload, count read back in bits 16-27; the ethernet block's
+ * timer keeps eleven bits, so a shared width is wrong for one of the two.
  */
 static void test_the_receive_timer_keeps_twelve_bits(const void *data)
 {
@@ -458,12 +404,8 @@ static void test_the_receive_timer_keeps_twelve_bits(const void *data)
 }
 
 /*
- * The alias pages are additional views of the same seven registers, not
- * storage of their own, and three of the seven are read-only through the
- * alias where they are not through the main block -- the two indices hardware
- * advances and the 16550 shadow. A model implementing the page as a second
- * copy passes a write-then-read of the page alone, which is why both
- * directions are crossed here.
+ * Views, not storage: a second-copy model passes a write-then-read of the
+ * page alone, so both directions are crossed.
  */
 static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
 {
@@ -516,11 +458,7 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
         qtest_writel(qts, sdma_alias(port, SDMA_RX_PRODUCE), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)), ==, 0);
 
-        /*
-         * The shadow is read-only too, but it is not a stored zero: it mirrors
-         * the port's live status and modem lines, so a write must leave what it
-         * reads untouched rather than land in it.
-         */
+        /* Read-only but live: the write must leave what it reads untouched. */
         shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         qtest_writel(qts, sdma_alias(port, SDMA_SHADOW), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, shadow);
@@ -530,16 +468,9 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 }
 
 /*
- * The 16550 shadow register is a read-only mirror of the port's own status and
- * modem lines, and the DMA-side console driver reads carrier-detect and
- * clear-to-send from it rather than from the byte-wide modem-status register.
- * The port comes up with carrier and clear-to-send asserted and the
- * transmitter empty, so a shadow that read zero tells that driver the line is
- * dead -- which is what latched a carrier-down at console open and hung the
- * console. A boot cannot catch this: the firmware's own DMA diagnostic runs in
- * loopback and never reads carrier, so a shadow of zero passes it. Only a
- * driver reading the shadow sees the difference, which is why it is asserted
- * here.
+ * The DMA console driver reads carrier from the shadow; a shadow of zero
+ * cached a carrier-down at console open and hung the console, and the
+ * firmware's loopback diagnostic never reads carrier -- only this does.
  */
 static void test_the_shadow_mirrors_the_port(const void *data)
 {
@@ -550,22 +481,14 @@ static void test_the_shadow_mirrors_the_port(const void *data)
     sn0_ioc3_attach(qts);
 
     for (port = 0; port < 2; port++) {
-        /*
-         * Carrier and clear-to-send present, transmitter empty, nothing
-         * received -- the port's reset modem and line status, which each
-         * port reports for itself rather than sharing one register.
-         */
+        /* The port's reset modem and line status, reported per port. */
         shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         g_assert_cmphex(shadow & SHADOW_CD, ==, SHADOW_CD);
         g_assert_cmphex(shadow & SHADOW_CTS, ==, SHADOW_CTS);
         g_assert_cmphex(shadow & SHADOW_THRE, ==, SHADOW_THRE);
         g_assert_cmphex(shadow & SHADOW_DR, ==, 0);
 
-        /*
-         * The driven modem-control levels appear in the shadow too: assert
-         * data-terminal-ready and request-to-send by hand through the
-         * byte-wide window and read them back on the DMA side.
-         */
+        /* The driven modem-control levels appear in the shadow too. */
         qtest_writeb(qts, serial_port(port) + REG_MCR, MCR_DTR | MCR_RTS);
         shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         g_assert_cmphex(shadow & SHADOW_DTR, ==, SHADOW_DTR);
@@ -576,11 +499,8 @@ static void test_the_shadow_mirrors_the_port(const void *data)
 }
 
 /*
- * A transmit entry carries four characters and the engine sends all four. The
- * port's own serial line is where they have to arrive: an engine that walked
- * the ring and advanced its index without handing anything to the 16550 moves
- * every register correctly and sends nothing, and no register read tells the
- * two apart.
+ * The characters must reach the line: an engine that only moved indices
+ * answers every register read correctly and sends nothing.
  */
 static void test_a_transmit_entry_sends_its_four_characters(const void *data)
 {
@@ -613,11 +533,8 @@ static void test_a_transmit_entry_sends_its_four_characters(const void *data)
 }
 
 /*
- * An entry whose control byte asks for one raises the explicit transmit
- * completion source, and a ring the engine has walked to its end raises
- * transmit ring empty. They are separate sources and a driver may enable
- * either without the other, so a model raising one for both conditions
- * satisfies a driver watching that one and never prompts the other.
+ * Separate sources a driver may enable independently: one raised for both
+ * conditions never prompts the other watcher.
  */
 static void test_a_completed_transmit_raises_both_its_sources(const void *data)
 {
@@ -655,10 +572,8 @@ static void test_a_completed_transmit_raises_both_its_sources(const void *data)
 }
 
 /*
- * An entry with no interrupt requested raises the ring-empty source and not
- * the completion one. Asserting only that the completion source appears when
- * asked for passes on a model that raises it unconditionally, which is a
- * driver taking an interrupt per entry on a queue it meant to complete once.
+ * Completion only when asked for: raised unconditionally, a driver takes an
+ * interrupt per entry on a queue it meant to complete once.
  */
 static void test_an_entry_that_asked_for_nothing_gets_nothing(const void *data)
 {
@@ -687,11 +602,8 @@ static void test_an_entry_that_asked_for_nothing_gets_nothing(const void *data)
 }
 
 /*
- * A ring the engine has not been told to walk stays where it is. Enabling DMA
- * is the guest's decision and the console depends on it staying off: the
- * firmware and both guests drive these ports through the byte-wide window
- * with every one of these registers at zero, so an engine that ran without
- * being enabled would take characters out of memory nobody put there.
+ * Both guests run the console with every one of these registers at zero; an
+ * engine running unenabled takes characters out of memory nobody put there.
  */
 static void test_a_disabled_engine_walks_nothing(const void *data)
 {
@@ -717,17 +629,9 @@ static void test_a_disabled_engine_walks_nothing(const void *data)
 }
 
 /*
- * The four rings are one allocation told apart by port and direction, and
- * that is the arrangement with no read-back anywhere: every index register
- * answers identically whichever ring the engine resolved. So each ring is
- * pinned by where a character actually lands.
- *
- * With the port's 16550 in loopback, a character the transmit engine sends
- * comes straight back to the same port's receiver, and the receive engine
- * writes it into that port's receive ring. Reading it out of guest RAM at the
- * one address the datasheet's fixed order allows is what fails on a model
- * that resolved the ring anywhere else -- including at the base plus the
- * ring-size select bit, which is the arithmetic slip this order invites.
+ * No ring address reads back anywhere, so each ring is pinned by where a
+ * character lands: loopback returns a sent character to the same port's
+ * receive ring, read out of guest RAM at the fixed-order address.
  */
 static void ring_block_one_port(unsigned int port)
 {
@@ -771,14 +675,8 @@ static void test_port_b_uses_the_second_two_rings(const void *data)
 }
 
 /*
- * Port B's backend comes from serial_hd(1): the two IOC3 rear ports are
- * serial_hd(0) and serial_hd(1) (hw/misc/sgi-hub.h). A character the port-B
- * transmit engine sends -- with the port out of loopback, so it goes out the
- * line rather than back to its own receiver -- has to arrive on the host
- * socket attached to serial_hd(1). Before chardev-b was wired the property was
- * defined but never set, so every character port B sent went to a NULL backend
- * and this read would time out. serial_hd(0) is left empty here, so the byte
- * arriving proves the second port's chardev, not the first's.
+ * Port B's backend is serial_hd(1) (hw/misc/sgi-hub.h). serial_hd(0) is
+ * left empty, so the byte arriving proves the second port's chardev.
  */
 static void test_port_b_transmits_through_serial_hd_1(const void *data)
 {
@@ -812,11 +710,8 @@ static void test_port_b_transmits_through_serial_hd_1(const void *data)
 }
 
 /*
- * The ring-size select is bit 0 of the base register and the base is bits 12
- * upward, so the select bit must never reach an address. A base written with
- * the bit set resolves to the same rings as one written without it, and this
- * is the assertion that fails on a model or-ing the whole register into its
- * arithmetic.
+ * The size-select bit must never reach an address: this fails on a model
+ * or-ing the whole base register into its arithmetic.
  */
 static void test_the_size_bit_is_not_part_of_the_address(const void *data)
 {
@@ -831,10 +726,6 @@ static void test_the_size_bit_is_not_part_of_the_address(const void *data)
     configure_line(qts, 0);
     set_loopback(qts, 0);
 
-    /*
-     * RING_4K is bit 0 and RING_BASE is 4 KB aligned, so the sum is the
-     * register's full contents and the address is the base alone.
-     */
     qtest_writel(qts, SDMA_RING_HI, 0);
     qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
@@ -849,10 +740,8 @@ static void test_the_size_bit_is_not_part_of_the_address(const void *data)
 }
 
 /*
- * A paused engine reports the pause and stops walking, and reads its own
- * acknowledgement back rather than only the bit the guest wrote. A model
- * storing the pause request and never answering the acknowledgement leaves a
- * driver waiting for a bit that never appears.
+ * The pause must be acknowledged in the register, or a driver waits forever
+ * on a bit that never appears.
  */
 static void test_a_pause_is_acknowledged_and_stops_the_walk(const void *data)
 {
@@ -889,11 +778,8 @@ static void test_a_pause_is_acknowledged_and_stops_the_walk(const void *data)
 }
 
 /*
- * A reset puts both of the port's channels back at the start of their rings.
- * It is the one control bit that is an action rather than a setting, and a
- * model storing it like the rest leaves the engine held in reset for as long
- * as the guest leaves the bit set -- which every driver does, because it
- * writes the bit once and moves on.
+ * Reset is an action, not a setting: stored, it holds the engine in reset
+ * forever, since every driver writes it once and moves on.
  */
 static void test_a_reset_returns_the_channels_to_the_start(const void *data)
 {
@@ -924,12 +810,8 @@ static void test_a_reset_returns_the_channels_to_the_start(const void *data)
 }
 
 /*
- * The line the port drives is the engine's to set as well as the byte-wide
- * window's: an entry whose control byte types its data byte as modem control
- * reaches the 16550's modem control register rather than its transmitter. A
- * model treating every entry as a character sends the modem byte down the
- * wire, which is a stray character on the console and a modem line that never
- * moves.
+ * A modem-typed byte reaches the modem control register, not the wire --
+ * mistyped, it is a stray console character and a line that never moves.
  */
 static void test_a_modem_entry_reaches_the_modem_register(const void *data)
 {
@@ -967,11 +849,8 @@ static void test_a_modem_entry_reaches_the_modem_register(const void *data)
 }
 
 /*
- * An empty entry ends the walk. The type field's both-bits-clear value means
- * the entry holds nothing, and a driver fills only as many of an entry's four
- * slots as it has characters for. A model sending all four regardless emits
- * three bytes of whatever was in memory after every short write, which on a
- * console is visible garbage and in a test is the only way to see it.
+ * The empty type ends the entry; sending all four slots regardless emits
+ * memory garbage after every short write.
  */
 static void test_an_empty_slot_ends_the_entry(const void *data)
 {
@@ -1007,10 +886,8 @@ static void test_an_empty_slot_ends_the_entry(const void *data)
 }
 
 /*
- * The engine wraps at the end of its ring rather than running past it. The
- * pointer field is the ring's whole extent, so the entry after the last one
- * is the first, and a model adding eight without wrapping walks into the next
- * ring in the block -- which is another port's, and silently.
+ * The pointer wraps at the ring's extent; adding eight without wrapping
+ * walks silently into another port's ring.
  */
 static void test_the_walk_wraps_at_the_end_of_the_ring(const void *data)
 {
@@ -1048,11 +925,8 @@ static void test_the_walk_wraps_at_the_end_of_the_ring(const void *data)
 }
 
 /*
- * A source raised while the engine is enabled reaches the SuperIO line only
- * once the guest has enabled it, and the line follows the intersection rather
- * than the event. The serial DMA sources are new members of a register that
- * already had this contract, so what is asserted here is that they join it
- * rather than raising a line of their own.
+ * The DMA sources join the existing status/enable contract rather than
+ * raising a line of their own.
  */
 static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
 {
@@ -1087,15 +961,10 @@ static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
 }
 
 /*
- * A guest that receives through the rings alone. IRIX 6.5.30's miniroot
- * console runs this way once it raises the line rate: ring DMA on, the
- * receive timer armed, the SuperIO enable mask carrying only the ring
- * receive sources, and the 16550's own interrupt-enable register never
- * written -- so the port's interrupt line, the engine's old only prompt,
- * never rises. A character arriving from the chardev must still be packed
- * into the receive ring and advance the produce index, or the console is
- * deaf for the whole interactive install. This is the register state the
- * live probe read off the stalled machine, replayed as a test.
+ * IRIX's ring-only console: DMA on, timer armed, only ring sources enabled,
+ * the 16550's interrupt enables never written. An arriving character must
+ * still reach the ring -- the register state read off a stalled machine,
+ * replayed.
  */
 static void test_a_ring_only_guest_receives_arriving_characters(
     const void *data)
@@ -1117,10 +986,7 @@ static void test_a_ring_only_guest_receives_arriving_characters(
     qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
-    /*
-     * The control value the miniroot programs: ring DMA enabled, quadruple
-     * speed, a receive high-water mark of four characters.
-     */
+    /* The miniroot's control value: DMA on, high water four. */
     qtest_writel(qts, sdma(0, SDMA_CONTROL), 0x10100004);
 
     g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
@@ -1133,11 +999,7 @@ static void test_a_ring_only_guest_receives_arriving_characters(
     }
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, >=, 8);
 
-    /*
-     * The pass-through source stayed out of it: the 16550's own interrupt
-     * enables were never written, so its line never rose, and the bit that
-     * follows it stays clear. Delivery came through the engine alone.
-     */
+    /* The pass-through bit stayed clear: delivery came through the engine. */
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_PASSTHROUGH),
                     ==, 0);
 
@@ -1146,14 +1008,9 @@ static void test_a_ring_only_guest_receives_arriving_characters(
 }
 
 /*
- * The receive timer: armed through bit 31 of the consume index, wound to its
- * reload by a delivery, counting receive idleness at 16 kHz, and raising its
- * source on expiry -- not on the delivery itself. Under the qtest
- * accelerator the virtual clock moves only when the test steps it, so the
- * gap between "character delivered" and "interrupt raised" is observable
- * here in a way no boot can pin down: the source must still be clear after
- * delivery, the count field must read the full reload, and stepping the
- * clock past the deadline must raise the source and run the count out.
+ * The timer raises on expiry, not delivery. Under qtest the clock moves
+ * only when stepped, so the gap is observable: clear after delivery, full
+ * count, then raised and run out after the step.
  */
 static void test_the_receive_timer_raises_on_expiry(
     const void *data)
@@ -1206,12 +1063,8 @@ static void test_the_receive_timer_raises_on_expiry(
 }
 
 /*
- * The receive high-water mark: a supply warning that fires once the
- * characters waiting for software reach the mark the control register sets.
- * It is separate from the timer source -- the timer stays unarmed here, so
- * anything that appears came from the mark -- and the model counts waiting
- * characters as published entries times four, so the mark is set two entries
- * deep and crossed with the fifth character.
+ * Waiting characters count as published entries times four; the timer stays
+ * unarmed, so anything raised came from the mark.
  */
 static void test_crossing_the_high_water_mark_raises_its_source(
     const void *data)
@@ -1255,14 +1108,9 @@ static void test_crossing_the_high_water_mark_raises_its_source(
 }
 
 /*
- * The high-water source is a level, not a latch: once the waiting count falls
- * back below the mark it clears itself, with no acknowledgement from software.
- * IRIX's DMA-ring console depends on this -- it never writes a one to the
- * source, and its service loop reads the status register until the level
- * drops. A latched raise only software could clear leaves that loop spinning
- * on a bit that never falls, the storm the live boot showed once delivery
- * reached the ring. Crossing the mark and then consuming back below it must
- * return the source to clear on its own.
+ * A level, not a latch: IRIX never acknowledges it, its service loop reads
+ * until the level drops -- a latched raise leaves that loop spinning.
+ * Consuming below the mark must clear it unaided.
  */
 static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
 {
@@ -1284,21 +1132,13 @@ static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
     qtest_writel(qts, sdma(0, SDMA_CONTROL),
                  CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
 
-    /*
-     * Eight characters are at least two entries, so the waiting count reaches
-     * the mark of eight and the source raises.
-     */
+    /* Eight characters reach the mark of eight however the host chunks. */
     g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
     collect_rx_chars(qts, 0, sizeof(sent), got, status);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
                     ==, SOURCE(0, SRC_RX_HIGH_WATER));
 
-    /*
-     * Consume every published entry but one. However the host chunked the
-     * characters into entries, one entry left is four waiting or fewer --
-     * below the mark -- so the level falls, and no acknowledgement is written
-     * to make it fall.
-     */
+    /* One entry left is four waiting or fewer: below the mark, unaided. */
     produce = qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8;
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), produce - 8);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
@@ -1309,15 +1149,9 @@ static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
 }
 
 /*
- * A full receive ring is flow control, not data loss. The engine stops
- * writing when the next entry it would fill is the one software has not
- * consumed yet, raises the ring-full source, and holds what it cannot place
- * -- in its packer and behind that in the port's FIFO, whose fullness is
- * what finally stops the chardev. Nothing is overwritten and nothing is
- * dropped: when software advances the consume index, every held character
- * arrives in order. The consume index starts two entries in, which shrinks
- * the ring's capacity to one entry and makes the full condition cheap to
- * reach.
+ * Flow control, not loss: the engine refuses the colliding entry, holds
+ * characters in packer and FIFO, and delivers all of them in order once
+ * software makes room. Consume starts two entries in to make full cheap.
  */
 static void test_a_full_ring_holds_characters(
     const void *data)
@@ -1353,13 +1187,7 @@ static void test_a_full_ring_holds_characters(
     qtest_memread(qts, RING_RX(0) + 8, landed, sizeof(landed));
     g_assert_cmpint(memcmp(landed, sentinel, sizeof(sentinel)), ==, 0);
 
-    /*
-     * Software makes room, and everything held arrives in order. The room
-     * is granted in entries and how the characters group into entries is
-     * the host's chunking, worst case one character each -- eleven may
-     * still be in flight -- so the consume index moves fourteen entries
-     * ahead rather than the two a four-per-entry packing would need.
-     */
+    /* Chunking is the host's, worst case one character per entry. */
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 128);
     collect_rx_chars(qts, 0, sizeof(sent), got, status);
     for (i = 0; i < sizeof(sent); i++) {
@@ -1372,12 +1200,8 @@ static void test_a_full_ring_holds_characters(
 }
 
 /*
- * Pass-through mode still works with the engine present: with ring DMA off
- * and the 16550's own receive interrupt enabled -- OpenBSD's arrangement --
- * an arriving character stays in the port's FIFO for the byte-wide window,
- * raises the pass-through source, and never touches the receive ring. The
- * engine running on every port event must not steal characters a guest
- * means to read itself.
+ * OpenBSD's arrangement: rings off, the 16550's own interrupt on. The
+ * engine must not steal characters the guest reads itself.
  */
 static void test_pass_through_receives_while_the_rings_stay_off(
     const void *data)
@@ -1416,15 +1240,9 @@ static void test_pass_through_receives_while_the_rings_stay_off(
 }
 
 /*
- * The receive drain, control bit 27, is a command rather than a setting: it
- * moves whatever the port is holding into the receive ring, and it reads
- * back clear once that has happened. IRIX's DMA-ring console writes enable
- * plus drain while reconfiguring the port and then polls the control
- * register until the drain bit clears -- against a model that stored the
- * bit it burned a million polls, tore the console down and retried forever,
- * and the boot never returned. The read-back is the load-bearing half of
- * the contract; the delivery half is that a character already waiting in
- * the port when the drain is written ends up in the ring.
+ * The drain is a command that reads back clear once done: IRIX polls it to
+ * zero, and against a stored bit tore the console down forever. The other
+ * half is that a waiting character ends up in the ring.
  */
 static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
 {
@@ -1468,14 +1286,8 @@ static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
 }
 
 /*
- * A channel reset stops the receive timer as it clears the indices. The
- * consume index it zeroes is the timer's arming, so a timer left running
- * would count out and raise a source for a ring the reset just emptied. Wind
- * the timer with a delivery, reset the channel, and the timer is gone: its
- * count reads zero and stepping the clock past the old deadline raises
- * nothing. This is the reset half of the receive timer's lifetime that the
- * Resettable hold phase owns, alongside the indices the other reset test
- * covers.
+ * The consume index a reset zeroes is the timer's arming, so the reset must
+ * stop the timer or it expires into a ring the reset just emptied.
  */
 static void test_a_channel_reset_stops_the_receive_timer(const void *data)
 {
@@ -1517,13 +1329,8 @@ static void test_a_channel_reset_stops_the_receive_timer(const void *data)
 }
 
 /*
- * An entry the engine filled short says so: the slots it did not fill carry
- * neither validity flag. The packer is zeroed after every post, so a short
- * entry cannot inherit the previous entry's flags. A model that stamped the
- * data-valid flag on all four slots regardless would pass every other test
- * whenever the host delivered a write unsplit, so this pins it deterministically
- * with loopback, which cannot chunk: a full entry first, then a single
- * character, and the single-character entry's three empty slots read clean.
+ * Unfilled slots carry no validity flag. Loopback cannot chunk, so a full
+ * entry then a single character pins it deterministically.
  */
 static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
 {
@@ -1563,11 +1370,8 @@ static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
 }
 
 /*
- * Set up a receive ring with room for a single entry: the consume index two
- * entries in, so the engine posts one entry and then the ring is full. Six
- * characters delivered in loopback fill and post that one entry and leave two
- * held in the packer, which the produce index reports in its held-count field,
- * bits 26:24.
+ * A one-entry ring: six loopback characters post one entry and leave two
+ * held in the packer, reported in bits 26:24 of the produce index.
  */
 static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
 {
@@ -1597,10 +1401,8 @@ static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
 }
 
 /*
- * The channel reset clears the held packer along with the indices. The run the
- * reset write performs would otherwise flush a packer the reset left behind
- * into the ring -- a stranded entry the guest never sent -- so the whole
- * produce index, held count and pointer both, must read zero afterwards.
+ * Reset clears the packer too, or the enable's own run flushes a stranded
+ * entry the guest never sent.
  */
 static void test_a_channel_reset_clears_the_held_packer(const void *data)
 {
@@ -1615,11 +1417,8 @@ static void test_a_channel_reset_clears_the_held_packer(const void *data)
 }
 
 /*
- * The Resettable hold phase clears the same held packer, and stops the receive
- * timer, on a whole-machine reset. Arm and wind the timer through the same
- * delivery, reset the machine, and the held count and the timer's count both
- * read zero on the far side -- a hold phase that zeroed only the register block
- * would leave two characters and a running timer behind.
+ * The system-reset hold phase clears the packer and stops the timer, not
+ * only the register block.
  */
 static void test_a_system_reset_clears_the_held_packer_and_the_timer(
     const void *data)
@@ -1643,18 +1442,12 @@ static void test_a_system_reset_clears_the_held_packer_and_the_timer(
     qtest_quit(qts);
 }
 
-/*
- * Where no memory answers. The node's default population is 64 MB, so a
- * ring base past it lands in the memory space's hole, and the engine's
- * fabric access fails rather than reading or writing anything.
- */
+/* Past the 64 MB default population: the fabric access fails. */
 #define UNBACKED_RING_BASE 0x07000000u
 
 /*
- * A transmit ring the guest aimed at unbacked memory. The engine's entry
- * fetch fails on the fabric, and the chip's answer is the port's PCI error
- * source -- not a walk over whatever the failed read left on the stack. The
- * consume index stays where it was: nothing was transmitted.
+ * A failed entry fetch raises the port's PCI error source and leaves the
+ * consume index put -- not a walk over stack garbage.
  */
 static void test_an_unbacked_transmit_ring_raises_the_pci_error(
     const void *data)
@@ -1687,10 +1480,8 @@ static void test_an_unbacked_transmit_ring_raises_the_pci_error(
 }
 
 /*
- * The receive side of the same failure: a character arrives, the packer
- * posts it, and the ring write fails. The produce index must not advance --
- * an index past an entry that never reached memory tells the driver to read
- * garbage -- and the PCI error source must say why nothing is arriving.
+ * The failed ring write must not advance produce: an index past an
+ * unwritten entry points the driver at garbage.
  */
 static void test_an_unbacked_receive_ring_raises_the_pci_error(
     const void *data)
@@ -1709,10 +1500,7 @@ static void test_an_unbacked_receive_ring_raises_the_pci_error(
     qtest_writel(qts, SDMA_RING_LO, UNBACKED_RING_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
-    /*
-     * Ring DMA on with a four-character high-water mark, so four arrivals
-     * drain the packer into the ring without the clock moving.
-     */
+    /* High water of four drains the packer without the clock moving. */
     qtest_writel(qts, sdma(0, SDMA_CONTROL), 0x10100004);
 
     g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
