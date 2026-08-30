@@ -23,9 +23,12 @@
  * block DMA'd to the host, with the DMA byte order settled here; and the receive
  * ring -- posted standard-ring buffers, the frame DMA'd in, a completed
  * descriptor written to the return ring, and the status block's receive
- * producer advanced. Interrupts and the dual-port device arrive in later
- * commits; a write to a register with no modelled behaviour logs LOG_UNIMP and
- * is stored so a read-back still round-trips.
+ * producer advanced; and the INTA interrupt -- the 0x0204 mailbox
+ * mask/acknowledge protocol, the MISC_CTL global mask, and
+ * PCISTATE.INTR_NOT_ACTIVE, driven as a level through the Bridge when a
+ * status-block update is posted with interrupts unmasked. The dual-port device
+ * arrives in a later commit; a write to a register with no modelled behaviour
+ * logs LOG_UNIMP and is stored so a read-back still round-trips.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -89,6 +92,27 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_PCI_MISC_CTL        0x68
 #define BCM570X_CHIPID_BCM5701      0x0105  /* B5 stepping; ASIC revision 0x0 */
 #define BCM570X_CHIPID_BCM5704      0x2003  /* A3 stepping; ASIC revision 0x2 */
+
+/*
+ * The two MISC_CTL low bits that gate the interrupt. CLEAR_INTA is a
+ * write-1-to-acknowledge that self-clears; MASK_PCI_INTR is a global mask the
+ * driver holds set through reset and clears in bge_blockinit to let the line
+ * assert. Both sit in the writable low half of MISC_CTL.
+ */
+#define BCM570X_MISCCTL_CLEAR_INTA      0x00000001u
+#define BCM570X_MISCCTL_MASK_PCI_INTR   0x00000002u
+
+/*
+ * Config 0x70 (PCISTATE) reports the bus and the interrupt line. The chip runs
+ * in conventional PCI behind the Bridge, so PCI_BUSMODE reads 1; the driver
+ * branches its DMA-watermark setup on that and takes the plain-PCI arm.
+ * INTR_NOT_ACTIVE follows the line -- set while the chip is not asserting INTA,
+ * which is the driver's shared-interrupt spurious check (bge_intr). The chip
+ * drives INTR_NOT_ACTIVE, so the register is presented read-only to the guest.
+ */
+#define BCM570X_PCI_PCISTATE            0x70
+#define BCM570X_PCISTATE_INTR_NOT_ACTIVE 0x00000002u
+#define BCM570X_PCISTATE_BUSMODE_PCI     0x00000004u
 
 /* Register-file offsets with modelled behaviour. */
 #define BCM570X_MAC_MODE            0x0400
@@ -175,6 +199,15 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_STATUS_TX_CONS_OFF  16
 #define BCM570X_STATUS_RX_PROD_OFF  18
 
+/*
+ * The interrupt mailbox. Writing 1 masks the line and acknowledges the pending
+ * status-block update; writing 0 re-enables it. The driver writes 1 on entry to
+ * its handler and 0 on exit (bge_intr), and writes 0 once in bge_blockinit to
+ * first enable host interrupts. Only the low 32 bits of the 64-bit mailbox are
+ * used, and the chip acts on a write to the low half.
+ */
+#define BCM570X_MBX_IRQ0_LO         0x0204
+
 /* The largest frame the transmit engine assembles across descriptors. */
 #define BCM570X_MAX_FRAME           2048
 
@@ -233,6 +266,13 @@ struct Bcm570xState {
     uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
     bool tx_busy;               /* guards the send against netdev re-entrancy */
 
+    /* Interrupt state: a mask set through the 0x0204 mailbox and a pending
+     * latch set when a status-block update awaits the driver. The line is the
+     * conjunction of the latch with neither mask (mailbox nor MISC_CTL global)
+     * set; tx_busy above is transient and not migrated, these two are. */
+    bool irq_masked;
+    bool irq_pending;
+
     /* The integrated copper PHY, reached through the MI registers. */
     Bcm570xPhyState phy;
 };
@@ -270,6 +310,38 @@ static uint16_t bcm570x_chip_id(Bcm570xState *s)
 }
 
 /*
+ * The interrupt is a level, not an edge: the chip asserts INTA while it has a
+ * status-block update the driver has not taken (irq_pending) and neither mask
+ * is set -- the interrupt mailbox (irq_masked) nor the global
+ * MISC_CTL.MASK_PCI_INTR. PCISTATE.INTR_NOT_ACTIVE mirrors the inverse, so the
+ * driver's shared-interrupt spurious check (bge_intr) reads true exactly when
+ * the line is down. Recompute the config bit and drive the wire together so the
+ * two never disagree; the Bridge follows this level to the Hub.
+ */
+static bool bcm570x_irq_active(Bcm570xState *s)
+{
+    uint32_t misc = pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL);
+
+    return s->irq_pending && !s->irq_masked &&
+           !(misc & BCM570X_MISCCTL_MASK_PCI_INTR);
+}
+
+static void bcm570x_update_irq(Bcm570xState *s)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    bool active = bcm570x_irq_active(s);
+    uint32_t pcistate = pci_get_long(pci->config + BCM570X_PCI_PCISTATE);
+
+    if (active) {
+        pcistate &= ~BCM570X_PCISTATE_INTR_NOT_ACTIVE;
+    } else {
+        pcistate |= BCM570X_PCISTATE_INTR_NOT_ACTIVE;
+    }
+    pci_set_long(pci->config + BCM570X_PCI_PCISTATE, pcistate);
+    pci_set_irq(pci, active);
+}
+
+/*
  * Present the station address in the SRAM mailbox the driver reads first, with
  * the tag in the high half of 0x0C14. The on-chip bootcode leaves it there, so
  * every reset re-populates it.
@@ -302,8 +374,11 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
     s->rx_std_cons = 0;
+    s->irq_masked = true;
+    s->irq_pending = false;
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_HANDSHAKE_DONE);
     bcm570x_load_mac_mailbox(s);
+    bcm570x_update_irq(s);
 }
 
 /*
@@ -338,6 +413,14 @@ static void bcm570x_dma_status_block(Bcm570xState *s)
     stw_be_p(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
     stw_be_p(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
     pci_dma_write(pci, base, blk, sizeof(blk));
+
+    /*
+     * The block now carries work the driver has not taken; latch it and let the
+     * line assert if interrupts are unmasked. Reached only past the enable gate
+     * above, so a disabled host-coalescing block raises no interrupt either.
+     */
+    s->irq_pending = true;
+    bcm570x_update_irq(s);
 }
 
 /*
@@ -442,6 +525,21 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
         break;
+    case BCM570X_MBX_IRQ0_LO:
+        /*
+         * The interrupt mask. Writing 1 masks and acknowledges: it drops the
+         * line and clears the pending latch, so re-enabling does not re-fire on
+         * an update already taken. Writing 0 re-enables, and a later update
+         * re-asserts. The driver reads completions from the status block, not
+         * this register, so the stored value is only for read-back.
+         */
+        s->irq_masked = (val & 1) != 0;
+        if (val & 1) {
+            s->irq_pending = false;
+        }
+        bcm570x_regfile_write(s, off, val);
+        bcm570x_update_irq(s);
+        return;
     case BCM570X_MBX_TX_PROD_LO:
         /* Store the producer for read-back, then send up to it. */
         bcm570x_regfile_write(s, off, val);
@@ -609,6 +707,24 @@ static void bcm570x_config_write(PCIDevice *dev, uint32_t addr, uint32_t val,
         }
     }
     pci_default_write_config(dev, addr, val, len);
+
+    /*
+     * MISC_CTL's low bits gate the interrupt: MASK_PCI_INTR is the global mask
+     * and CLEAR_INTA is a write-1-to-acknowledge that self-clears. A write that
+     * lands anywhere in that register acknowledges if asked and re-derives the
+     * line -- this is how bge_blockinit's "set CLEAR_INTA, clear MASK_PCI_INTR"
+     * enables the interrupt.
+     */
+    if (addr < BCM570X_PCI_MISC_CTL + 4 && addr + len > BCM570X_PCI_MISC_CTL) {
+        uint32_t misc = pci_get_long(dev->config + BCM570X_PCI_MISC_CTL);
+
+        if (misc & BCM570X_MISCCTL_CLEAR_INTA) {
+            s->irq_pending = false;
+            misc &= ~BCM570X_MISCCTL_CLEAR_INTA;
+            pci_set_long(dev->config + BCM570X_PCI_MISC_CTL, misc);
+        }
+        bcm570x_update_irq(s);
+    }
 }
 
 static uint32_t bcm570x_config_read(PCIDevice *dev, uint32_t addr, int len)
@@ -796,6 +912,16 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                  (uint32_t)bcm570x_chip_id(s) << 16);
     pci_set_word(dev->wmask + BCM570X_PCI_MISC_CTL, 0xffff);
 
+    /*
+     * PCISTATE presents conventional-PCI bus mode and, in INTR_NOT_ACTIVE, the
+     * inverse of the interrupt line the driver reads for its spurious check.
+     * The chip drives it, so it stays read-only to the guest (no wmask); the
+     * reset value has the line inactive.
+     */
+    pci_set_long(pci_conf + BCM570X_PCI_PCISTATE,
+                 BCM570X_PCISTATE_BUSMODE_PCI |
+                 BCM570X_PCISTATE_INTR_NOT_ACTIVE);
+
     memory_region_init_io(&s->bar0, OBJECT(s), &bcm570x_bar0_ops, s,
                           "bcm570x-bar0", BCM570X_BAR0_SIZE);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
@@ -836,13 +962,30 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->status_rx_prod = 0;
     s->rx_std_cons = 0;
     s->tx_busy = false;
+    s->irq_masked = true;
+    s->irq_pending = false;
     bcm570x_load_mac_mailbox(s);
+    bcm570x_update_irq(s);
+}
+
+/*
+ * The migration stream carries the interrupt's cause and its masks but not the
+ * wire itself. Re-derive the line on the destination from the restored state so
+ * it asserts INTA exactly when the source did, and so PCISTATE.INTR_NOT_ACTIVE
+ * and the wire agree. The PHY migrates as its own section (it is a realized
+ * child device with its own VMStateDescription), so it is not enumerated here.
+ */
+static int bcm570x_post_load(void *opaque, int version_id)
+{
+    bcm570x_update_irq(opaque);
+    return 0;
 }
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, Bcm570xState),
         VMSTATE_UINT32_ARRAY(regfile, Bcm570xState, BCM570X_REG_FILE_WORDS),
@@ -853,6 +996,8 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16(status_tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_rx_prod, Bcm570xState),
         VMSTATE_UINT16(rx_std_cons, Bcm570xState),
+        VMSTATE_BOOL_V(irq_masked, Bcm570xState, 2),
+        VMSTATE_BOOL_V(irq_pending, Bcm570xState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
