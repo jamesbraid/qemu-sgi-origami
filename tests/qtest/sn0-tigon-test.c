@@ -20,7 +20,12 @@
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
-#define MACHINE_WITH_BRIDGE  "-M origin200,io-bridge=on -device tigon,addr=3"
+/* A fixed station address so PAR0/PAR1 and the EEPROM read are deterministic. */
+#define TIGON_MAC       "52:54:00:12:34:56"
+static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
+
+#define MACHINE_WITH_BRIDGE  \
+    "-M origin200,io-bridge=on -device tigon,addr=3,mac=" TIGON_MAC
 
 /*
  * The card's slot. Devices 0 and 1 are the base I/O board's SCSI adapters and
@@ -59,8 +64,18 @@
 
 /* Register offsets within the card's own window (if_tireg.h). */
 #define TI_MISC_HOST_CTL    0x040
+#define TI_MISC_LOCAL_CTL   0x044
+#define TI_GCR_PAR0         0x600
+#define TI_GCR_PAR1         0x604
 #define TI_MHC_RESET        0x00000008
 #define TI_MHC_CHIP_REV_MASK 0xf0000000
+
+/* Serial-EEPROM bit-bang lines in MISC_LOCAL_CTL. */
+#define TI_MLC_EE_CLK       0x00100000
+#define TI_MLC_EE_TXEN      0x00200000
+#define TI_MLC_EE_DOUT      0x00400000
+#define TI_MLC_EE_DIN       0x00800000
+#define TI_EE_MAC_OFFSET    0x8c
 
 /*
  * A 4-byte access needs no byte-lane correction -- sgi_bridge_window_correct()
@@ -128,6 +143,144 @@ static void test_misc_host_ctl_chip_rev(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The station-address paths. The driver reads the MAC before any firmware is
+ * downloaded, so both routes must answer independently of firmware state: the
+ * bit-banged serial EEPROM (MISC_LOCAL_CTL) that the driver reads at attach,
+ * and the GCR PAR0/PAR1 registers real firmware would present once running.
+ *
+ * The EEPROM helpers below replay the exact 24Cxx I2C sequence the NetBSD "ti"
+ * driver's ti_eeprom_getbyte()/EEPROM_START()/EEPROM_STOP() macros drive
+ * (if_ti.c, if_tireg.h): a start condition, an 8-bit control byte, two address
+ * bytes for a write, a stop/start, an 8-bit read control byte, then eight bits
+ * clocked out on EE_DIN.
+ */
+static uint32_t ee_read(QTestState *qts)
+{
+    return qtest_readl(qts, WINDOW_TIGON + TI_MISC_LOCAL_CTL);
+}
+
+static void ee_write(QTestState *qts, uint32_t v)
+{
+    qtest_writel(qts, WINDOW_TIGON + TI_MISC_LOCAL_CTL, v);
+}
+
+static void ee_setbit(QTestState *qts, uint32_t bit)
+{
+    ee_write(qts, ee_read(qts) | bit);
+}
+
+static void ee_clrbit(QTestState *qts, uint32_t bit)
+{
+    ee_write(qts, ee_read(qts) & ~bit);
+}
+
+static void ee_start(QTestState *qts)
+{
+    ee_setbit(qts, TI_MLC_EE_CLK);
+    ee_setbit(qts, TI_MLC_EE_DOUT);
+    ee_setbit(qts, TI_MLC_EE_TXEN);
+    ee_clrbit(qts, TI_MLC_EE_DOUT);
+    ee_clrbit(qts, TI_MLC_EE_CLK);
+}
+
+static void ee_stop(QTestState *qts)
+{
+    ee_clrbit(qts, TI_MLC_EE_TXEN);
+    ee_clrbit(qts, TI_MLC_EE_DOUT);
+    ee_setbit(qts, TI_MLC_EE_CLK);
+    ee_setbit(qts, TI_MLC_EE_TXEN);
+    ee_setbit(qts, TI_MLC_EE_DOUT);
+    ee_clrbit(qts, TI_MLC_EE_TXEN);
+    ee_clrbit(qts, TI_MLC_EE_CLK);
+}
+
+static void ee_putbyte(QTestState *qts, uint8_t byte)
+{
+    int i;
+
+    ee_setbit(qts, TI_MLC_EE_TXEN);
+    for (i = 0x80; i; i >>= 1) {
+        if (byte & i) {
+            ee_setbit(qts, TI_MLC_EE_DOUT);
+        } else {
+            ee_clrbit(qts, TI_MLC_EE_DOUT);
+        }
+        ee_setbit(qts, TI_MLC_EE_CLK);
+        ee_clrbit(qts, TI_MLC_EE_CLK);
+    }
+    ee_clrbit(qts, TI_MLC_EE_TXEN);
+    /* The ninth clock is the acknowledge; the driver reads and ignores it. */
+    ee_setbit(qts, TI_MLC_EE_CLK);
+    (void)ee_read(qts);
+    ee_clrbit(qts, TI_MLC_EE_CLK);
+}
+
+static uint8_t ee_getbyte(QTestState *qts, uint16_t addr)
+{
+    uint8_t byte = 0;
+    int i;
+
+    ee_start(qts);
+    ee_putbyte(qts, 0xa0);              /* write control byte */
+    ee_putbyte(qts, (addr >> 8) & 0xff);
+    ee_putbyte(qts, addr & 0xff);
+    ee_stop(qts);
+    ee_start(qts);
+    ee_putbyte(qts, 0xa1);             /* read control byte */
+
+    ee_clrbit(qts, TI_MLC_EE_TXEN);
+    for (i = 0x80; i; i >>= 1) {
+        ee_setbit(qts, TI_MLC_EE_CLK);
+        if (ee_read(qts) & TI_MLC_EE_DIN) {
+            byte |= i;
+        }
+        ee_clrbit(qts, TI_MLC_EE_CLK);
+    }
+    ee_stop(qts);
+
+    return byte;
+}
+
+static void test_station_addr_par(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_window_at_bar(qts);
+
+    /* PAR0 = bytes 0-1, PAR1 = bytes 2-5, in the driver's big-endian pair. */
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_PAR0), ==,
+                    ((uint32_t)tigon_mac[0] << 8) | tigon_mac[1]);
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_PAR1), ==,
+                    ((uint32_t)tigon_mac[2] << 24) |
+                    ((uint32_t)tigon_mac[3] << 16) |
+                    ((uint32_t)tigon_mac[4] << 8) | tigon_mac[5]);
+
+    qtest_quit(qts);
+}
+
+static void test_station_addr_eeprom(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    int i;
+
+    aim_window_at_bar(qts);
+
+    /*
+     * The six MAC bytes sit at TI_EE_MAC_OFFSET + 2, not at TI_EE_MAC_OFFSET:
+     * the manual's stated offset is two zero pad bytes before the address
+     * (if_ti.c comment at the read call). Confirm both facts.
+     */
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(ee_getbyte(qts, TI_EE_MAC_OFFSET + 2 + i), ==,
+                        tigon_mac[i]);
+    }
+    g_assert_cmphex(ee_getbyte(qts, TI_EE_MAC_OFFSET), ==, 0);
+    g_assert_cmphex(ee_getbyte(qts, TI_EE_MAC_OFFSET + 1), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -138,6 +291,10 @@ int main(int argc, char **argv)
                         test_one_memory_bar);
     qtest_add_data_func("/sn0/tigon/misc-host-ctl-chip-rev", NULL,
                         test_misc_host_ctl_chip_rev);
+    qtest_add_data_func("/sn0/tigon/station-addr-par", NULL,
+                        test_station_addr_par);
+    qtest_add_data_func("/sn0/tigon/station-addr-eeprom", NULL,
+                        test_station_addr_eeprom);
 
     return g_test_run();
 }
