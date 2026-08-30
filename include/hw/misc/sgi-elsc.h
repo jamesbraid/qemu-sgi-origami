@@ -22,10 +22,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 #define SGI_ELSC_ADDR 0x08
 
 /*
- * One frame for commands and responses: length, text, checksum summing the
- * packet to zero mod 256. The firmware's buffers are 96 bytes and a length
- * above 94 overruns them, so a model must never emit one (docs/specs and
- * the project-tree datasheet carry the sources).
+ * Length, text, checksum summing to zero mod 256. A length above 94
+ * overruns the firmware's own 96-byte buffers; never emit one.
  */
 #define SGI_ELSC_MAX_TEXT   94
 #define SGI_ELSC_MAX_FRAME  (SGI_ELSC_MAX_TEXT + 2)

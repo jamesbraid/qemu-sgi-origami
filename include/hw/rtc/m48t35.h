@@ -34,9 +34,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 #define M48T35_CLOCK_FIRST  M48T35_CONTROL
 
 /*
- * Bit 6 freezes the clock registers so that six reads are one instant, and
- * bit 7 arms a write of them. Software sets one, does its six accesses, and
- * writes the register back with the bit clear.
+ * Bit 6 freezes the clock so six reads are one instant; bit 7 arms a
+ * write of them.
  */
 #define M48T35_CSR_READ     0x40
 #define M48T35_CSR_WRITE    0x80
