@@ -15,6 +15,9 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
@@ -81,6 +84,13 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 /* Interrupt and CPU control. */
 #define TI_MHC_INTSTATE     0x00000001
 #define TI_CPU_STATE        0x140
+
+/* Mailbox doorbells and descriptor flags. */
+#define TI_MB_SENDPROD_IDX  0x514
+#define TI_MB_STDRXPROD_IDX 0x51c
+#define TI_BDFLAG_END       0x0004
+#define TI_BDFLAG_UCAST_PKT 0x0020
+#define TI_BDFLAG_BCAST_PKT 0x0060
 
 /* GCR registers exercised by the ring model. */
 #define TI_GCR_GENINFO_HI   0x608
@@ -381,6 +391,47 @@ static void release_cpu(QTestState *qts)
     qtest_writel(qts, WINDOW_TIGON + TI_CPU_STATE, 0);
 }
 
+/* Drive the whole download-and-release handshake to the operational state. */
+static void go_operational(QTestState *qts)
+{
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+    publish_gib(qts);
+    release_cpu(qts);
+}
+
+/*
+ * The socket backend frames each packet with a four-byte network-order length,
+ * the same way the other NIC qtests drive a socketpair-backed netdev.
+ */
+static void net_recv_timeout(int fd, int seconds)
+{
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
+                    ==, 0);
+}
+
+static size_t net_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint32_t hdr;
+    size_t len;
+
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    len = ntohl(hdr);
+    g_assert_cmpint(len, <=, buf_size);
+    g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
+    return len;
+}
+
+static QTestState *tigon_init_netdev(int guest_fd)
+{
+    return qtest_initf("-M origin200,io-bridge=on "
+                       "-netdev socket,fd=%d,id=n0 "
+                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0",
+                       guest_fd);
+}
+
 static bool irq_asserted(QTestState *qts)
 {
     return (qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
@@ -421,6 +472,49 @@ static void test_firmware_up_posts_event(const void *data)
     qtest_quit(qts);
 }
 
+/* A minimal well-formed ethernet frame the test chooses byte for byte. */
+static const uint8_t test_frame[60] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,      /* broadcast dest */
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* source = our MAC */
+    0x08, 0x06,                              /* ethertype ARP */
+    0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04,
+};
+
+static void test_transmit(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[2048];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* One transmit descriptor: a single fragment marked end-of-frame. */
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    /* Ring the send doorbell: producer index 1. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(test_frame));
+    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
+
+    /* The transmit consumer index advanced in host memory. */
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -439,6 +533,7 @@ int main(int argc, char **argv)
                         test_firmware_up_requires_gib);
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
+    qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
 
     return g_test_run();
 }
