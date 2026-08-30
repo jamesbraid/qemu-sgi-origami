@@ -237,12 +237,9 @@ static void test_liveness_probe_silent_chip_is_stable(const void *data)
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * Nothing on this machine broadcasts yet at this milestone. The real
-     * driver's probe reads this register in a tight loop and returns only
-     * once two consecutive reads differ; asserting it does not here is what
-     * distinguishes "the chip answers a stable data register" from "the
-     * chip answers whatever a guest wrote," which a model that let writes
-     * leak straight back out during a probe would fail silently.
+     * The probe loop returns once two consecutive reads differ; asserting
+     * stability here tells a stable data register from writes leaking
+     * straight back out.
      */
     uint64_t first = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, first);
@@ -252,35 +249,13 @@ static void test_liveness_probe_silent_chip_is_stable(const void *data)
 }
 
 /*
- * The closing invalid-address step: every transaction that moves data ends
- * with a repeated start to 0x7f, control register written before the
- * address, which every real PCF8584 NAKs. Testing "nothing answers" only
- * proves an empty bus stays empty; to prove the *specific* byte 0xfe (0x7f
- * shifted left with a clear direction bit) reaches the wire, and that it
- * reaches it only once the control write precedes the address write, this
- * attaches a generic i2c-echo responder at 0x7f as a test fixture and
- * checks it by identity, not by the model's own ACK bit.
- *
- * The ACK bit alone is not that check: an earlier version of this test
- * asserted only the status register's NAK bit after the sequence, and it
- * kept passing against a model that always started fresh on the control
- * write, using whatever stale byte the data register still held from the
- * transaction being closed rather than the 0xfe written after it. That
- * model reached no device at all, but qtest_readq(I2C_CTRL) & I2C_PCF_LRB read
- * 0 anyway -- QEMU's i2c_send() loops over the bus's currently-matched
- * device list, and an empty list makes the loop body never run, so its
- * accumulated return value stays the zero it was initialised to. Bug and
- * no-bug produce the identical ACK reading, for unrelated reasons, and the
- * two-variant check the datasheet asks for is exactly what caught it.
- *
- * So this sends three known bytes after the address instead of stopping
- * right away -- more than real firmware ever does at this point, since the
- * datasheet's own close is address-then-stop, but the payload is a test
- * fixture, not a claim about the protocol -- then opens a fresh, ordinary
- * read of the same address and checks those three bytes come back. i2c-echo
- * can only return what it was actually sent, so this fails whenever the
- * write half missed the device, by any mechanism, not only the one already
- * caught once.
+ * The closing invalid-address step, checked by identity rather than by
+ * the ACK bit: an i2c-echo fixture at 0x7f must receive the specific
+ * byte 0xfe, control write before address write. The ACK bit alone
+ * false-passes -- i2c_send() over an empty matched list reads ACK 0 for
+ * bug and no-bug alike -- so three known bytes are sent and read back,
+ * which fails whenever the write half missed the device by any
+ * mechanism. The payload is a fixture, not a protocol claim.
  */
 static void test_closing_invalid_address_shift_and_order(const void *data)
 {
@@ -311,16 +286,9 @@ static void test_closing_invalid_address_shift_and_order(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
 
     /*
-     * A fresh, ordinary read of 0x7f. i2c-echo answers with exactly the
-     * three bytes it was sent, in order. The discarded first read returns
-     * this chip's own data register as it stood before this start -- the
-     * 0xff address-and-direction byte just written below -- and it is that
-     * read, not the start condition, that fetches the first real byte
-     * (docs/datasheets/pcf8584-elsc.md: "the driver reads the data
-     * register once and throws the byte away"; hw/i2c/pcf8584.c attaches
-     * the fetch to the read, per the Philips product specification). So
-     * the sequence is one discard of stale chip state, then all three
-     * echoed bytes in order.
+     * One discard, then the three echoed bytes: the first read returns the
+     * chip's own stale data register, because the fetch attaches to the
+     * read rather than the start.
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xff);        /* addr 0x7f, read */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
