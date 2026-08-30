@@ -1,13 +1,9 @@
 /*
- * SGI IOC3 base I/O controller: the serial console's access contract.
- *
- * The console ports' byte stride and byte width are what a working boot
- * cannot prove -- a guest issuing only byte accesses behaves identically
- * either way -- so this file issues what the guest does not. The console
- * address is read out of the configuration graph rather than restated, so
- * the descriptor and the mapping cannot drift apart unnoticed. Every test
- * asks for the I/O bridge explicitly: without it nothing answers at the
- * controller's crosstalk address.
+ * SGI IOC3 base I/O controller: the serial console's access contract, the
+ * one-wire station-address part, the ethernet engine, the buffer RAM, and
+ * the timekeeper. The console's byte stride and width are what a working
+ * boot cannot prove; the console address is read out of the configuration
+ * graph so descriptor and mapping fail together.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -23,12 +19,7 @@
 #define IOC3_BASE       (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE2)
 
-/*
- * The attach does what a guest's bus scan would: write the BAR, then aim
- * the bridge's device window at that address. The window's crosstalk-side
- * offset is fixed by slot, so IOC3_BASE still names the result; only the
- * PCI-side address in between is the test's to choose.
- */
+/* A guest's bus scan: write the BAR, aim the bridge's device window at it. */
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
 #define BRIDGE_CFG0     0x020000
@@ -154,10 +145,8 @@ static void test_registers_are_a_byte_apart(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Different values at consecutive offsets prove the one-byte stride:
-     * at the chip's usual four-byte stride both writes land in one
-     * register and the second wins. The LCR value leaves the divisor
-     * latch unselected so the neighbouring offsets keep their meaning.
+     * Different values at consecutive offsets prove the one-byte stride;
+     * the LCR value leaves the divisor latch unselected.
      */
     qtest_writeb(qts, SERIAL_A + REG_LCR, 0x03);
     qtest_writeb(qts, SERIAL_A + REG_MCR, 0x05);
@@ -176,11 +165,8 @@ static void test_a_wide_access_is_not_narrowed(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Deliberately negative: no source establishes what hardware does with
-     * a wide access, so the model refuses it as a recorded choice. What
-     * must not happen is silent narrowing -- one register's value returned
-     * as though it were the word -- so the assertion is only that the
-     * answer is not the narrowed one.
+     * No source establishes the wide-access behaviour, so the model refuses
+     * it; the assertion is only that the answer is not the narrowed one.
      */
     qtest_writeb(qts, SERIAL_A + REG_LCR, 0x03);
     qtest_writeb(qts, SERIAL_A + REG_MCR, 0x05);
@@ -201,13 +187,9 @@ static void test_port_answers_where_the_graph_says(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The graph's console descriptor is read, not restated: a restated
-     * constant passes against a wrong descriptor, and the descriptor and
-     * the mapping have to fail together when either moves. The descriptor
-     * is a guest-issued unmapped-window address, so it is decoded the way
-     * the processor decodes it before comparing against the bus address --
-     * compared undecoded it fails on a correct machine, and asserted raw
-     * it passes with the device somewhere else entirely.
+     * The graph's console descriptor is read, not restated, and decoded the
+     * way the processor decodes it -- undecoded it fails on a correct
+     * machine, raw it passes with the device somewhere else.
      */
     g_assert_cmphex(advertised >> 62, ==, 2);            /* unmapped window */
     g_assert_cmphex((advertised >> 57) & 3, ==, 1);      /* crosstalk I/O */
@@ -283,12 +265,9 @@ static void test_a_serial_bit_ignores_an_acknowledgement(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The serial bits follow the 16550's level; an acknowledgement write
-     * must not clear one, or a guest's write-back-everything handler drops
-     * a still-asserted level and never takes that interrupt again. The
-     * port must be asserting first or the test is vacuous -- clearing zero
-     * and ignoring zero look the same -- so the transmitter-empty enable
-     * raises the 16550 immediately against its empty holding register.
+     * The serial bits follow the 16550's level; an ack write must not clear
+     * one. The port must be asserting first or clearing zero and ignoring
+     * zero look the same.
      */
     qtest_writeb(qts, SERIAL_A + 1, 0x02);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_SERIAL_A, ==,
@@ -376,10 +355,8 @@ static void test_a_one_wire_reset_finds_the_ethernet_address_part(
     sn0_ioc3_attach(qts);
 
     /*
-     * The wire idles high and the ethernet-address part answers a reset
-     * by pulling it low -- presence. A high level here is what "no part"
-     * reads as, so the wrong answer makes a guest give up on a populated
-     * bus.
+     * The part answers a reset by pulling the wire low; high is what "no
+     * part" reads as.
      */
     qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
@@ -446,11 +423,8 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Pin register 3 is a convenience alias onto bit 3 of the shared data
-     * word, not storage of its own -- writing through it and reading back
-     * through the data register is what proves that, the same reasoning
-     * the ports-are-distinct test applies to the two serial files: two
-     * addresses reaching one place, not two places that happen to agree.
+     * Pin register 3 is an alias onto bit 3 of the shared data word: two
+     * addresses reaching one place, not two places agreeing.
      */
     qtest_writel(qts, PIN_REG(3), 1);
     g_assert_cmphex(qtest_readl(qts, PIN_DATA), ==, 1u << 3);
@@ -688,12 +662,7 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define MCR_ARB_DIAG_IDLE (1u << 21)
 #define MCR_RESET         (1u << 31)
 
-/* The receive buffer offset field holds the distance from the buffer's
- * start to where the frame begins, in sixteen-bit halfwords -- see
- * ioc3.md's ethernet register table. 33 halfwords (66 bytes) is what
- * OpenBSD's own driver programs: eight bytes for the two header words
- * this engine writes, plus its own alignment padding.
- */
+/* Frame offset in halfwords; 33 (66 bytes) is what OpenBSD programs. */
 #define MCR_RXOFF_SHIFT   3
 #define MCR_RXOFF(halfwords) ((uint32_t)(halfwords) << MCR_RXOFF_SHIFT)
 
@@ -703,19 +672,14 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
 
 /*
- * The good-packet bit in a receive buffer's error word. Linux gates every
- * delivered frame on it and drops the frame without it; OpenBSD reads the
- * error bits beside it instead and never looks at this one. So it is a field
- * only one of the two guests can miss, which is exactly the kind that goes
- * unasserted -- the guest in front of you keeps working.
+ * Linux gates every delivered frame on the good-packet bit; OpenBSD never
+ * reads it -- a field only one of the two guests can miss.
  */
 #define ENET_RXE_GOODPKT      (1u << 30)
 
 /*
- * The receive control register's watermark field and the produce index's
- * arm bit, the two things that decide which source a delivered frame
- * raises. RX_CONTROL is the register OpenBSD calls RCSR. Linux calls it
- * ercsr. Its low nine bits are the watermark.
+ * The watermark field and the arm bit: the two things that decide which
+ * source a delivered frame raises.
  */
 #define RX_CONTROL        (IOC3_BASE + 0x0fc)
 #define RX_TIMER          (IOC3_BASE + 0x114)
@@ -734,11 +698,8 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define TXD_BUF2_LEN_SHIFT 20
 
 /*
- * The inline data area's offset and size, taken from the drivers rather
- * than the model so the assertions can fail: OpenBSD's iec_txdesc and
- * Linux's ioc3_etxd both compute 24 and 104. When this file restated the
- * model's wrong 16, every transmit assertion passed with eight bytes of
- * the second pointer in front of every frame.
+ * Offset and size from the drivers, not the model: restating the model's
+ * wrong 16 once passed every transmit assertion.
  */
 #define TXD_DATA_OFFSET   24
 #define TXD_DATA_SIZE     104
@@ -776,10 +737,8 @@ static void test_the_ethernet_mac_reset_reports_idle(const void *data)
 }
 
 /*
- * A connected socket pair as the backend; -nic rather than -netdev is
- * what qemu_configure_nic_device's lookup finds for an on-board
- * controller. Also sets bus-master, which only DMA needs and the plain
- * register attach leaves out.
+ * -nic is what qemu_configure_nic_device finds for an on-board controller;
+ * also sets bus-master, which only DMA needs.
  */
 static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
 {
@@ -869,11 +828,9 @@ static uint8_t onewire_read_byte(QTestState *qts)
     return byte;
 }
 
-/* The standard Dallas/Maxim one-wire eight-bit CRC: polynomial 0x8c
- * reflected, seeded at zero, sent as computed -- see the datasheet section
- * named above. A different algorithm and a different transmission
- * convention from the Bridge test file's sixteen-bit nic_crc(), which is
- * why this is its own function rather than a shared one.
+/*
+ * The one-wire CRC-8: 0x8c reflected, seeded zero, sent as computed -- a
+ * different algorithm and convention from the Bridge file's CRC-16.
  */
 static uint8_t onewire_crc8(uint8_t crc, const uint8_t *data, unsigned int len)
 {
@@ -945,10 +902,8 @@ static void test_a_search_finds_the_ethernet_address_part(const void *data)
 }
 
 /*
- * A Match ROM naming a different part leaves this one unselected: the
- * following function command reads the bus's idle-high 0xff, not a CRC-8
- * answer. A Skip-ROM-only model works for Linux and never answers
- * OpenBSD's owmac.
+ * A Match ROM naming another part leaves this one unselected; a
+ * Skip-ROM-only model never answers OpenBSD's owmac.
  */
 static void test_a_wrong_match_rom_leaves_the_part_unselected(const void *data)
 {
@@ -977,13 +932,9 @@ static void test_a_wrong_match_rom_leaves_the_part_unselected(const void *data)
 }
 
 /*
- * Read the page holding the station address, the way each guest actually
- * does it: OpenBSD's owmac_read_page() selects with a Match ROM and reads
- * memory with the plain Read Memory command (0xf0); Linux's
- * w1_ds2502_read_page() selects with a Skip ROM (its w1 core takes that
- * path whenever only one device is registered) and reads memory with the
- * Read Memory-with-CRC command (0xc3). SGI's PROM continues directly from
- * Search ROM to Read Memory. All three must answer identically.
+ * The three guests' three selections -- OpenBSD Match ROM + 0xf0, Linux
+ * Skip ROM + 0xc3, SGI's PROM straight from Search ROM -- must answer
+ * identically.
  */
 typedef enum OneWireSelection {
     ONEWIRE_SELECT_MATCH,
@@ -1113,12 +1064,9 @@ static void test_reading_the_page_after_search(const void *data)
 }
 
 /*
- * An on-board IOC3 is not an arbitrary add-in NIC: its station address lives
- * in the SGI-programmed one-wire part the PROM reads before it enables the
- * ethernet engine.  A command line that supplies a backend but no mac= must
- * therefore get an SGI address rather than QEMU's generic virtual-NIC OUI.
- * Read the value through that part, not through a QOM property, because this
- * is the firmware-visible contract that decides whether netboot can start.
+ * A backend with no mac= must get an SGI address: the PROM reads the
+ * one-wire part before enabling the engine, and that is the
+ * firmware-visible contract deciding whether netboot starts.
  */
 static void test_the_default_station_address_is_an_sgi_address(const void *data)
 {
@@ -1138,10 +1086,9 @@ static void test_the_default_station_address_is_an_sgi_address(const void *data)
 }
 
 /*
- * The converse promise: mac= is the operator's word, and the device must
- * never rewrite it -- even when the value happens to sit inside the range
- * QEMU's own generator draws from, which is the one range a provenance
- * guess from the address bytes cannot tell apart from a generated one.
+ * The converse: mac= is the operator's word, never rewritten -- even
+ * inside the generator's own range, the one range address bytes cannot
+ * attribute.
  */
 static const uint8_t explicit_prefix_mac[6] = {
     0x52, 0x54, 0x00, 0x12, 0x34, 0x56
@@ -1184,11 +1131,8 @@ static void test_a_device_supplied_mac_survives(const void *data)
 }
 
 /*
- * The redirection table owmac_read_redirect() reads before it trusts a
- * page: OpenBSD always asks for status offset 0x0001, and the part answers
- * with four bytes of 0xff, which is what tells owmem_redirect()'s loop to
- * stop immediately rather than fail -- see the datasheet section named
- * above for why the model does not track real redirection at all.
+ * The redirection status OpenBSD reads before trusting a page: four bytes
+ * of 0xff, which stops owmem_redirect()'s loop rather than failing it.
  */
 static void test_read_status_returns_no_redirection(const void *data)
 {
@@ -1293,10 +1237,8 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
 
     /*
-     * One descriptor: the command word says fourteen bytes, all of them
-     * inline, and asks for a completion interrupt; the buffer-count word's
-     * low seven bits repeat the inline length, which is what the engine
-     * actually reads to know how much of the inline area to take.
+     * The buffer-count word's low seven bits repeat the inline length,
+     * which is what the engine actually reads.
      */
     qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
     qtest_writel(qts, desc + 4, sizeof(frame));
@@ -1323,10 +1265,8 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
 }
 
 /*
- * Enabling transmit is a start, not only a gate: the firmware's loopback
- * diagnostic rings the doorbell first and enables afterwards, so a model
- * walking only on the doorbell never sends that frame. Neither guest
- * driver orders it this way, which is why no boot caught it.
+ * Enabling transmit is a start, not only a gate: the diagnostic rings the
+ * doorbell first and enables afterwards, an order no guest driver uses.
  */
 static void test_transmit_starts_when_enabled_late(const void *data)
 {
@@ -1453,11 +1393,9 @@ static void test_the_ethernet_transmit_bounds_the_inline_area(const void *data)
 }
 
 /*
- * The walk steps whole descriptors and exits on index equality, so a
- * produce index the steps never land on is a hang from two register
- * writes -- one no driver-shaped test finds, since drivers never set the
- * low bits. The assertion is that the test finishes: a model without the
- * bound fails as a timeout, the only way a hang can fail.
+ * The walk exits on index equality, so a produce index the steps never
+ * land on is a hang from two register writes; a model without the bound
+ * fails as a timeout, the only way a hang can fail.
  */
 static void test_an_unaligned_produce_index_terminates(const void *data)
 {
@@ -1484,10 +1422,8 @@ static void test_an_unaligned_produce_index_terminates(const void *data)
     g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, TX_CONSUME_IDLE);
 
     /*
-     * Eight tells a correct bound from eight-byte rounding: it survives
-     * that plausible wrong alignment where every other value here rounds
-     * identically under both rules -- without this line the test passes
-     * on an engine that hangs.
+     * Eight tells a correct bound from eight-byte rounding; every other
+     * value here rounds identically under both rules.
      */
     qtest_writel(qts, TX_CONSUME, 0);
     qtest_writel(qts, TX_PRODUCE, 8);
@@ -1565,10 +1501,8 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
     qtest_memwrite(qts, buf2_addr, buf2, sizeof(buf2));
 
     /*
-     * No inline data this time -- both validity flags name an out-of-line
-     * buffer instead, which is the path a frame too large for the inline
-     * area alone takes. Buffer one is read before buffer two, matching the
-     * order the two validity flags are given in.
+     * No inline data: both validity flags name out-of-line buffers, read
+     * in flag order.
      */
     qtest_writel(qts, desc + 0, sizeof(expect) | TXD_BUF1_VALID |
                 TXD_BUF2_VALID);
@@ -1592,10 +1526,8 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 }
 
 /*
- * A ones-complement Internet checksum (RFC 1071), hand rolled here rather
- * than borrowed from the model under test -- the assertion below is that the
- * engine's answer matches an independently computed one, not that two copies
- * of the same code agree with each other.
+ * RFC 1071, hand rolled: the assertion is against an independent
+ * computation, not two copies of one code agreeing.
  */
 static uint32_t inet_sum_add(uint32_t sum, const uint8_t *data, size_t len)
 {
@@ -1651,11 +1583,9 @@ static uint16_t inet_transport_checksum(uint8_t proto,
 }
 
 /*
- * A descriptor that asks the engine to insert the transmit checksum must
- * leave with a correct UDP checksum, not the driver's pre-loaded pseudo-
- * header partial -- "Inserting a transmit checksum" in the datasheet's
- * transmit-descriptor section. The frame below carries a deliberately wrong
- * checksum field so the assertion fails if the engine leaves it alone.
+ * Insert-checksum must leave a correct UDP checksum, not the driver's
+ * pseudo-header partial; the frame carries a deliberately wrong field so
+ * leaving it alone fails.
  */
 static void test_the_ethernet_transmit_inserts_udp_checksum(const void *data)
 {
@@ -1796,11 +1726,8 @@ static void test_the_ethernet_transmit_inserts_tcp_checksum(const void *data)
 }
 
 /*
- * Without the insert-checksum bit the engine must not touch a checksum it
- * was not asked to fix -- the frame reaches the backend byte for byte, wrong
- * UDP checksum included. This is what tells the positive tests above apart
- * from a model that recomputes every outgoing frame's checksum regardless of
- * the bit.
+ * Without the bit the engine must not touch the checksum -- what tells
+ * the positives from a model recomputing every frame regardless.
  */
 static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
     const void *data)
@@ -1844,13 +1771,8 @@ static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
 }
 
 /*
- * A descriptor sent while the MAC control register's pad-enable bit is set
- * must leave with a frame at least sixty bytes long, before the frame check
- * sequence -- "Padding a short frame" in the datasheet's transmit-descriptor
- * section. IRIX's kernel and its netboot PROM both rely on this and never
- * pad in software, so a model that ignores the bit ships an ARP request or a
- * bare acknowledgement at its true short length. The pad bytes must be zero
- * and the assembled bytes must survive unchanged.
+ * Pad-enable must extend a short frame to sixty zero bytes before the
+ * FCS: IRIX and its netboot PROM never pad in software.
  */
 static void test_the_ethernet_transmit_pads_short_frame(const void *data)
 {
@@ -1892,11 +1814,8 @@ static void test_the_ethernet_transmit_pads_short_frame(const void *data)
 }
 
 /*
- * With the pad-enable bit clear the engine must leave a short frame at its
- * assembled length. The two drivers that pad in their own transmit path and
- * leave the bit inert are what make this the case that catches a model
- * padding unconditionally -- one that always extended to sixty bytes would
- * pass the case above and only this one would show it.
+ * Pad-enable clear leaves the short frame at its assembled length -- the
+ * case that catches unconditional padding.
  */
 static void test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off(
     const void *data)
@@ -1937,11 +1856,8 @@ static void test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off(
 }
 
 /*
- * Internal loopback: the frame lands in the receive ring and must not
- * also reach the backend. Both halves are asserted -- a loop-and-also-
- * send model passes a receive-only check while leaking diagnostic
- * traffic onto the network, whose answers arrive as unexpected
- * interrupts.
+ * Internal loopback lands in the ring and must not also reach the
+ * backend; a loop-and-also-send model leaks diagnostic traffic.
  */
 static void test_internal_loopback_turns_a_frame_round(const void *data)
 {
@@ -1992,12 +1908,8 @@ static void test_internal_loopback_turns_a_frame_round(const void *data)
     g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
 
     /*
-     * The byte count is the length sent, with no phantom frame-check bytes
-     * added. A frame off the wire gets four added back because QEMU's net
-     * layer strips a trailing check sequence the guests' drivers expect to be
-     * counted; a frame that never left the block lost nothing to strip. SGI's
-     * loopback diagnostic sends a byte count and requires the same number
-     * back, and reports a data miscompare on the header word when it differs.
+     * No phantom FCS on a frame that never left the block: the loopback
+     * diagnostic requires the byte count it sent.
      */
     g_assert_cmphex((word0 >> 16) & 0x7ff, ==, sizeof(frame));
 
@@ -2041,10 +1953,8 @@ static void test_internal_loopback_refuses_the_wire(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
     /*
-     * Waited for rather than checked once: the frame is refused inside the
-     * main loop, so a single look could pass before delivery would have
-     * happened at all. The ring index staying put through the wait is the
-     * assertion.
+     * Waited for, not checked once: refusal happens inside the main loop,
+     * and the index staying put through the wait is the assertion.
      */
     for (attempt = 0; attempt < 20; attempt++) {
         g_usleep(10000);
@@ -2057,15 +1967,9 @@ static void test_internal_loopback_refuses_the_wire(const void *data)
 }
 
 /*
- * The transceiver's loopback turns a frame round too, and reports it
- * differently from the controller's own.
- *
- * A frame the controller short-circuits never reaches the logic that appends a
- * check sequence or builds a status vector, so it is reported at the length
- * sent with a zero status word. A frame the transceiver loops has been all the
- * way through the controller, so it is reported the way a frame off the wire
- * is. SGI's diagnostic runs both tests and requires each accordingly -- it is
- * the firmware, not a datasheet, that separates them.
+ * The transceiver's loopback reports like the wire -- FCS and status --
+ * where the controller's short circuit reports the sent length and a zero
+ * status word. The firmware's diagnostic requires each accordingly.
  */
 static void test_transceiver_loopback_reports_a_wire_frame(const void *data)
 {
@@ -2123,10 +2027,8 @@ static void test_transceiver_loopback_reports_a_wire_frame(const void *data)
 }
 
 /*
- * The block reset keeps the ring bases: the firmware diagnostic programs
- * them once, resets, rewrites only the indices, and never writes a base
- * again. The indices are asserted cleared in the same test, or a reset
- * preserving everything would pass.
+ * The block reset keeps the ring bases -- the diagnostic never rewrites
+ * them -- and must clear the indices, or preserving everything passes.
  */
 static void test_the_block_reset_keeps_the_ring_addresses(const void *data)
 {
@@ -2187,10 +2089,8 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
     /*
-     * Delivery happens on the main loop noticing the socket is readable,
-     * which is not synchronous with the send above; poll a live register
-     * with a generous bound rather than assume the first look already
-     * shows it.
+     * Delivery is not synchronous with the send: poll a live register
+     * with a generous bound.
      */
     for (attempt = 0; attempt < 50; attempt++) {
         if (qtest_readl(qts, RX_CONSUME) != 0) {
@@ -2232,12 +2132,9 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
 }
 
 /*
- * The checksum-offload partial in word0's low half: Linux finishes the
- * transport checksum from it and trusts the packet only when the
- * reconstruction folds to 0xffff. These tests replicate the driver's own
- * arithmetic over exactly the bytes it would read -- frame plus the four
- * FCS bytes -- requiring 0xffff for a good frame and never for a corrupt
- * one.
+ * The checksum-offload partial: these tests replicate Linux's own
+ * reconstruction over the bytes it reads, requiring 0xffff for a good
+ * frame and never for a corrupt one.
  */
 static uint16_t rxcsum_fold(uint32_t sum)
 {
@@ -2288,13 +2185,9 @@ static uint16_t rxcsum_transport(const uint8_t *saddr, const uint8_t *daddr,
 }
 
 /*
- * A replica of Linux's ioc3_tcpudp_checksum() arithmetic, from the public
- * driver drivers/net/ethernet/sgi/ioc3-eth.c. `eh` is the ethernet header as
- * the driver sees it, `len` the frame length without the FCS (the byte count
- * minus four), `hwsum` the partial from word0's low half. Returns the folded
- * value the driver compares against 0xffff. Big-endian words are read
- * explicitly because the driver runs on a big-endian CPU and the test host may
- * not, so a native 16-bit load would sum the wrong bytes.
+ * Linux's ioc3_tcpudp_checksum() arithmetic replicated; big-endian words
+ * are read explicitly because the driver's CPU is big-endian and the test
+ * host may not be.
  */
 static uint32_t rxcsum_driver(const uint8_t *eh, int len, uint32_t hwsum)
 {
@@ -2330,11 +2223,8 @@ static uint32_t rxcsum_driver(const uint8_t *eh, int len, uint32_t hwsum)
 }
 
 /*
- * Build a well-formed IPv4 frame -- TCP when proto is 6, UDP when 17 -- with a
- * correct IP header checksum and a correct transport checksum, into `out`.
- * Returns the frame length. A good frame built this way is exactly what the
- * offload has to verify; corrupting a byte after the fact is what it has to
- * refuse.
+ * A well-formed IPv4 frame with correct checksums; corrupting a byte
+ * after the fact is what the offload has to refuse.
  */
 static size_t rxcsum_build_frame(uint8_t *out, uint8_t proto,
                                  const uint8_t *payload, size_t payload_len)
@@ -2396,11 +2286,8 @@ static size_t rxcsum_build_frame(uint8_t *out, uint8_t proto,
 }
 
 /*
- * Deliver one frame through the receive path and return the value Linux's
- * checksum reconstruction would fold to, computed from word0's partial and the
- * bytes the model left in the buffer -- the frame and the four FCS bytes after
- * it. Asserts only the framing it depends on (valid, byte count) so a failure
- * points at the checksum rather than the delivery.
+ * Deliver one frame and return Linux's folded reconstruction; only the
+ * framing is asserted so a failure points at the checksum.
  */
 static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
 {
@@ -2489,12 +2376,8 @@ static void test_the_ethernet_receive_refuses_a_corrupt_checksum(const void *dat
 }
 
 /*
- * Address filtering: destination against the guest-programmed station
- * address, broadcast, the promiscuous bit, and the multicast hash -- real
- * hardware never hands the driver an unaddressed frame. The shared
- * station address is programmed the way Linux's __ioc3_set_mac_address()
- * writes it: first four octets in the low register, byte 0 lowest, last
- * two in the high register's low half.
+ * Address filtering, with the station address programmed the way Linux's
+ * __ioc3_set_mac_address() writes it.
  */
 #define FILTER_STATION_HI 0x00005544u
 #define FILTER_STATION_LO 0x33221100u
@@ -2582,10 +2465,8 @@ static void test_address_filter_drops_foreign_unicast(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
     /*
-     * An accepted frame is delivered inside the main loop, not synchronously
-     * with the send above, so a single look could pass before delivery
-     * would have happened at all. The ring index staying put through the
-     * wait is the assertion.
+     * Delivery is not synchronous with the send; the index staying put
+     * through the wait is the assertion.
      */
     for (attempt = 0; attempt < 20; attempt++) {
         g_usleep(10000);
@@ -2655,14 +2536,9 @@ static void test_promiscuous_accepts_a_foreign_unicast_address(const void *data)
 }
 
 /*
- * The multicast hash filter's two halves, checked against the public Linux
- * driver's own ioc3_hash() rather than against this model's implementation
- * of it: 01:00:5e:00:00:01 (an ordinary IPv4 multicast address) hashes to
- * index 31, the top bit of the low hash register; 33:33:00:00:00:01 (an
- * ordinary IPv6 multicast address) hashes to index 62, bit 30 of the high
- * one. Exercising one index in each register is what proves both halves are
- * wired to the filter rather than only the one a single address happens to
- * land in.
+ * The hash's two halves against Linux's own ioc3_hash(): an IPv4
+ * multicast address lands in the low register, an IPv6 one in the high,
+ * proving both are wired to the filter.
  */
 static void test_multicast_hash_accepts_a_set_bit_in_the_low_register(
     const void *data)
@@ -2751,17 +2627,10 @@ static void test_multicast_hash_drops_an_unset_bit(const void *data)
 }
 
 /*
- * Which source a delivered frame raises, and what has to be true for each.
- * Three runs of one arrangement -- four buffers supplied, one frame sent --
- * differing only in the receive timer's arming and the watermark in the
- * receive control register, because those are the two things that decide
- * the answer and a test that varied anything else could not say so.
- *
- * The frame is delivered in all three. What changes is what the guest is
- * told about it, which is the whole of the contract here: Linux enables the
- * timer source and no other receive source at all, so an engine that
- * announces every frame on the threshold source leaves a Linux guest with
- * status & enable == 0 on every frame it receives.
+ * Which source a delivered frame raises: three runs differing only in the
+ * timer arming and the watermark. Linux enables the timer source and no
+ * other, so announcing every frame on the threshold source leaves a Linux
+ * guest with status & enable == 0 on every frame.
  */
 static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
                                   uint32_t rxbuf, uint32_t produce,
@@ -2834,10 +2703,8 @@ static void test_an_armed_receive_timer_raises_its_own_source(const void *data)
 }
 
 /*
- * The same frame with the timer never armed and the supply still above the
- * watermark. Nothing is raised. This is the run that fails on an engine
- * announcing every frame on the threshold source, and the one above is what
- * stops it being satisfied by an engine that raises nothing at all.
+ * Timer unarmed, supply above the mark: nothing raised -- the run that
+ * fails an announce-everything engine.
  */
 static void test_a_frame_below_the_watermark_raises_nothing(const void *data)
 {
@@ -2884,11 +2751,8 @@ static void test_reaching_the_watermark_raises_the_threshold(const void *data)
 }
 
 /*
- * Past the watermark, not merely on it: the three cases above all pass an
- * engine comparing for equality instead of at-or-below. Here the supply
- * falls through the mark -- equality raises on the first delivery and
- * goes silent on the second; at-or-below raises on both, which is what a
- * low watermark asks for.
+ * Past the watermark, not merely on it: equality raises once and goes
+ * silent; at-or-below raises on both, which a low watermark asks for.
  */
 static void test_falling_past_the_watermark_keeps_raising(const void *data)
 {
@@ -2943,10 +2807,8 @@ static void test_falling_past_the_watermark_keeps_raising(const void *data)
 }
 
 /*
- * Arming is a command and the index is storage. SGI's own driver writes the
- * index without the arm bit from its interrupt path, so an engine that took
- * the bit's absence as a disarm would deliver one frame with an interrupt
- * and every frame after it in silence.
+ * Arming is a command and the index storage: SGI's driver writes the
+ * index without the bit from its interrupt path.
  */
 static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
 {
@@ -2987,16 +2849,9 @@ static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
 }
 
 /*
- * A source that set while its enable was clear has to raise the line when the
- * guest enables it. The line is level-driven from status & enable, so the
- * enable register decides it as much as the status register does -- and the
- * order this test uses is not contrived, it is the order every interface
- * bring-up takes: OpenBSD's iec_init stops the interface by writing zero to
- * the enable register, programs the receive enables in the control register,
- * and writes the enable register last.
- *
- * The Bridge's own pin is what gets asserted, so that is what this reads,
- * live, rather than trusting the model's own account of its line.
+ * A source set while masked must raise the line when enabled -- the order
+ * every bring-up takes (OpenBSD writes the enable register last). The
+ * Bridge's own pin is read live rather than the model's account of it.
  */
 static void test_enabling_a_set_source_raises_the_line(const void *data)
 {
@@ -3031,12 +2886,9 @@ static void test_enabling_a_set_source_raises_the_line(const void *data)
 }
 
 /*
- * Ring laps and a descriptor burst on the shipped machine. What this does
- * not show, established by trying: the two address spaces resolve alike
- * here, so it cannot tell the controller's DMA space from the system's
- * and proves nothing about the translation being in the path -- it buys
- * the same shapes under load, with attribution carried by the
- * plain-machine versions.
+ * The same shapes on the shipped machine, under load; the two address
+ * spaces resolve alike here, so attribution stays with the plain-machine
+ * versions.
  */
 static void test_the_rings_under_load_on_the_fabric(const void *data)
 {
@@ -3122,11 +2974,9 @@ static void test_the_rings_under_load_on_the_fabric(const void *data)
 
 
 /*
- * The register-only ack test cannot see the line: a model clearing the
- * register without recomputing the line passes it and leaves a guest's
- * interrupt permanently asserted, reported as spurious on every
- * dispatch. So the Bridge's own pin is read live, before and after the
- * acknowledge write, around a real transmit-completion interrupt.
+ * The Bridge's pin is read live around the acknowledge: clearing the
+ * register without recomputing the line passes the register-only test and
+ * leaves the interrupt permanently asserted.
  */
 static void test_the_ethernet_interrupt_line_drops_when_acknowledged(
     const void *data)
@@ -3177,12 +3027,9 @@ static void test_the_ethernet_interrupt_line_drops_when_acknowledged(
 }
 
 /*
- * A frame arriving inside the transmit walk must keep its interrupt
- * source. User-mode networking answers an ARP request synchronously,
- * several stack frames below the doorbell write -- so by the time that
- * write returns both directions have run, and an engine that snapshotted
- * the status register around the walk reports only the transmit sources;
- * a driver dispatching on them never collects the frame.
+ * User-mode networking answers inside the doorbell write, so an engine
+ * snapshotting the status register around the walk reports only the
+ * transmit sources and the frame's interrupt is lost.
  */
 static QTestState *sn0_ioc3_attach_with_user_net(void)
 {
@@ -3199,10 +3046,8 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
 {
     QTestState *qts;
     /*
-     * Destination broadcast, our own address as the sender, then the
-     * hardware and protocol types, the request opcode, and the two
-     * address pairs: 10.0.2.15 asking who has 10.0.2.2, which is the
-     * address user-mode networking answers for itself.
+     * 10.0.2.15 asking who has 10.0.2.2, the address user-mode networking
+     * answers for itself.
      */
     uint8_t arp_request[42] = {
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -3233,11 +3078,8 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
 
     /*
-     * Timer armed AND watermark reached, so the reply raises both receive
-     * sources and both must survive the walk. With a bare produce index
-     * the timer source is never raised, and an engine dropping only it
-     * would pass -- the timer source is the one receive source Linux
-     * enables.
+     * Timer armed AND watermark reached: both receive sources must survive
+     * the walk, and the timer source is the one Linux enables.
      */
     qtest_writel(qts, RX_RING_HI, 0);
     qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
@@ -3264,11 +3106,8 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     qtest_writel(qts, TX_PRODUCE, 128);
 
     /*
-     * No polling loop here, deliberately. The reply is delivered inside
-     * the doorbell write above rather than on a later main-loop pass, and
-     * that is the whole condition being tested -- a test that waited for
-     * it would also pass on a delivery that arrived afterwards, which is
-     * the case the engine already gets right.
+     * No polling: the reply is delivered inside the doorbell write, and a
+     * wait would also pass on a later delivery.
      */
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
 
@@ -3298,16 +3137,10 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
 }
 
 /*
- * A transmit with no reply must raise no receive source -- a model that
- * snapshots the status around the walk announces a receive on every
- * transmit. Its own case, not a second half of the one above: an absence
- * asserted after waiting for a reply inherits that wait, while here
- * nothing is asked for and the assertion holds by construction. A
- * receive buffer is left free so the silence is about the source, not
- * about having nowhere to land; the ethertype is one user-mode
- * networking does not answer; and the MAC control write spells out a
- * clear loopback bit, or a changed default would leave this measuring
- * nothing.
+ * A transmit with no reply must raise no receive source. Its own case, so
+ * the absence inherits no wait; a buffer is left free so the silence is
+ * about the source; the ethertype is unanswered; the MAC control write
+ * pins loopback clear.
  */
 static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 {
@@ -3362,16 +3195,9 @@ static void test_the_media_interface_never_reads_busy(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * A driver starts a read and then polls the busy bit until it clears,
-     * giving up with a timeout. Nothing here takes time, so busy must already
-     * be clear on the first look: a model that left it set would hang the
-     * driver's poll for its whole timeout on every register it reads, and a
-     * driver scanning thirty-two addresses does that thirty-two times.
-     *
-     * The read is issued first rather than asserting on an idle register,
-     * because the bit that has to be clear is the one after a read was asked
-     * for -- asserting it on an untouched register would pass on a model that
-     * sets busy and never clears it.
+     * Busy must already be clear on the first look after a read is asked
+     * for -- asserted on an untouched register it would pass on a model
+     * that sets busy and never clears it.
      */
     qtest_writel(qts, ENET_MII_CONTROL, (1u << 10));
     g_assert_cmphex(qtest_readl(qts, ENET_MII_CONTROL) & (1u << 11), ==, 0);
@@ -3383,13 +3209,8 @@ static void test_the_media_interface_never_reads_busy(const void *data)
 }
 
 /*
- * The ethernet buffer RAM window, and the offsets the three drivers that size
- * it actually touch. SGI's own driver and OpenBSD's put their second word at
- * the halfway point of the window; mainline Linux puts its a quarter of the
- * way in, which is inside the smaller RAM and so cannot fail on a chip that
- * has one. Both pairs are asserted here because both are issued at us, and
- * the halfway pair is asserted because it is the only one that fails on a
- * window aliasing at its midpoint.
+ * The buffer RAM offsets the three sizing drivers touch; the halfway pair
+ * is the only one that fails on a window aliasing at its midpoint.
  */
 #define SSRAM_FIRST       (IOC3_BASE + 0x40000)
 #define SSRAM_LINUX_PAIR  (IOC3_BASE + 0x50000)
@@ -3407,12 +3228,8 @@ static void test_the_buffer_ram_halves_are_distinct(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The size probe in full, as OpenBSD performs it: a pattern at the first
-     * word, its complement at the halfway word, then both read back. The
-     * driver compares the second read as a whole thirty-two-bit word rather
-     * than through the data mask, which is why this asserts the whole word
-     * too -- anything the model left in the bits above the data would send a
-     * driver that finds 128 KB of RAM down the branch for 64 KB.
+     * OpenBSD's size probe, comparing the second read as a whole word:
+     * anything above the data bits sends a driver down the 64 KB branch.
      */
     qtest_writel(qts, SSRAM_FIRST, SSRAM_PATTERN);
     qtest_writel(qts, SSRAM_HALFWAY, SSRAM_COMPLEMENT);
@@ -3425,12 +3242,7 @@ static void test_the_buffer_ram_halves_are_distinct(const void *data)
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_PATTERN);
     g_assert_cmphex(qtest_readl(qts, SSRAM_LINUX_PAIR), ==, SSRAM_COMPLEMENT);
 
-    /*
-     * The window runs to its end and does not wrap onto itself, which is the
-     * same property as the halves being distinct asserted at the other end of
-     * the region: a model whose storage stopped short of the top would either
-     * fault here or answer with the first word.
-     */
+    /* The window runs to its end and does not wrap onto itself. */
     qtest_writel(qts, SSRAM_LAST, 0x1234);
     g_assert_cmphex(qtest_readl(qts, SSRAM_LAST), ==, 0x1234);
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_PATTERN);
@@ -3445,12 +3257,9 @@ static void test_the_buffer_ram_is_seventeen_bits_wide(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Sixteen bits of data and the parity bit stored beside them, and nothing
-     * above. No boot can see this: every driver writes values that fit in the
-     * data field, so a model storing all thirty-two bits produces an identical
-     * transcript. The parity bit is asserted as storage rather than as
-     * something computed, because this chip moves no frames here and a
-     * diagnostic write is how software places a parity bit at all.
+     * Seventeen bits of storage, nothing above. Parity is storage, not
+     * computed: no frames move here and a diagnostic write is how software
+     * places a parity bit at all.
      */
     qtest_writel(qts, SSRAM_FIRST, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x0001ffff);
@@ -3462,18 +3271,10 @@ static void test_the_buffer_ram_is_seventeen_bits_wide(const void *data)
 }
 
 /*
- * The parity report the firmware's own buffer-RAM diagnostic reads back.
- *
- * The window stores sixteen data bits and one parity bit. Bit 17 is not
- * storage: it is the checker's answer, set when the seventeen stored bits do
- * not carry even parity. SGI's power-on diagnostic writes deliberately bad
- * parity and requires the bit, and the values below are the four words it
- * writes -- taken from the firmware's own accesses rather than composed here,
- * so a model that satisfies this test satisfies the diagnostic.
- *
- * The two good-parity words are asserted alongside the two bad ones because a
- * model that simply set the bit always would pass a test that only checked the
- * bad ones, and would then fail the diagnostic on its first two writes.
+ * Bit 17 is the checker's answer, not storage: even parity over the
+ * seventeen stored bits. The four words are the firmware diagnostic's own
+ * writes, good and bad parity both -- always-set passes the bad pair and
+ * fails the diagnostic's first two writes.
  */
 #define SSRAM_PARITY_ERROR    0x00020000u
 #define MAC_CONTROL_RAM_PARITY 0x00000200u
@@ -3492,10 +3293,8 @@ static void test_the_buffer_ram_reports_bad_parity(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Checking is off until the MAC control register enables it, and the
-     * report is asserted absent first: without this the test would pass on a
-     * model that reported unconditionally, which is a model that puts a bit
-     * into the whole-word comparison OpenBSD's size probe makes.
+     * Checking is off until enabled, asserted absent first -- a bit
+     * reported unconditionally lands in OpenBSD's whole-word size probe.
      */
     qtest_writel(qts, SSRAM_FIRST, SSRAM_BAD_EVEN_DATA);
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_BAD_EVEN_DATA);
@@ -3537,10 +3336,8 @@ static void test_the_buffer_ram_ignores_a_written_parity_report(
     sn0_ioc3_attach(qts);
 
     /*
-     * The diagnostic's address walk sets bit 17 in every word it writes and
-     * reads it back clear without complaining, so a write to the report is
-     * ignored. Asserting it matters because storing the bit would make the
-     * checker agree with the guest instead of with the data.
+     * A write to the report is ignored: stored, the checker would agree
+     * with the guest instead of the data.
      */
     qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
 
@@ -3557,12 +3354,8 @@ static void test_the_size_probe_survives_parity_checking(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The probe that decides 64 KB against 128 KB, run with checking on, which
-     * is how the firmware runs it. OpenBSD compares its second read as a whole
-     * thirty-two-bit word, so a report appearing in these two words would put
-     * a driver that found 128 KB of RAM on the branch for 64 KB -- the failure
-     * this asserts against is a console line naming the wrong size rather than
-     * anything the parity test itself would catch.
+     * The 64-vs-128 KB probe with checking on, as the firmware runs it: a
+     * report in these words puts the driver on the wrong size branch.
      */
     qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
 
@@ -3601,10 +3394,8 @@ static void test_the_size_probe_survives_parity_checking(const void *data)
 #define RTC_CSR_WRITE   0x80
 
 /*
- * A fixed time to start the clock at, so the fields can be asserted exactly
- * rather than for plausibility. The seconds are deliberately mid-minute: a run
- * takes a moment, and a base on a minute boundary would let the minute roll
- * underneath the test.
+ * A fixed base, mid-minute, so the fields assert exactly and the minute
+ * cannot roll underneath the test.
  */
 #define RTC_ARGS \
     "-M origin200,io-bridge=on -rtc base=2026-08-11T12:30:05,clock=vm"
@@ -3616,12 +3407,9 @@ static void test_the_clock_reads_the_time_it_was_given(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The read sequence all three drivers perform: freeze, read the fields,
-     * release. Asserting the values exactly is the point -- and the year is
-     * the assertion that matters most, because it is the one no boot can
-     * check. The clock holds two digits counted from 1970, so 2026 is 0x56,
-     * and a model presenting the calendar year's last two digits would answer
-     * 0x26 here and have a guest report 1996 with nothing else looking wrong.
+     * Freeze, read, release. The year is the assertion no boot can check:
+     * two digits from 1970, so 2026 is 0x56 -- calendar digits would answer
+     * 0x26 and a guest reports 1996 with nothing else looking wrong.
      */
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
 
@@ -3650,12 +3438,9 @@ static void test_the_clock_freeze_holds_an_instant(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The freeze has to be tested against a clock that is actually moving, and
-     * the virtual clock only moves when a test moves it. An earlier version of
-     * this file asserted that three reads in a row agreed, which passed with
-     * the freeze removed entirely -- nothing was advancing between the reads,
-     * so the assertion could not fail. Stepping the clock is what turns it
-     * into a test.
+     * The clock must actually move: three agreeing reads passed with the
+     * freeze removed, since nothing advanced between them. Stepping the
+     * clock is what makes this a test.
      */
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
     g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
@@ -3684,18 +3469,10 @@ static void test_the_clock_freeze_holds_an_instant(const void *data)
 static void test_the_clock_year_wraps_below_its_epoch(const void *data)
 {
     /*
-     * A clock started before its own epoch. The year cell holds two digits
-     * counted from 1970, so 1969 is minus one, and C's remainder keeps the
-     * sign of its left operand -- a plain modulo hands the binary-to-BCD
-     * conversion a negative number and produces a byte that is not BCD at all.
-     *
-     * There is no right answer for a date the register cannot express; what
-     * there is, is a wrong one, and this is the assertion that catches it. The
-     * wrap puts 1969 at 99, which is where two digits counting down from 1970
-     * land, and is what the same arithmetic does at the top end in 2070.
-     *
-     * It has its own machine because the base is the whole point: every other
-     * clock test here starts in 2026, where the defect is invisible.
+     * A clock started before its epoch: 1969 is minus one, C's remainder
+     * keeps the sign, and to_bcd() of a negative is not BCD. The wrap puts
+     * 1969 at 99. Its own machine, because every other clock test starts
+     * where the defect is invisible.
      */
     QTestState *qts = qtest_init("-M origin200,io-bridge=on "
                                  "-rtc base=1969-12-31T23:59:00,clock=vm");
@@ -3718,10 +3495,8 @@ static void test_the_clock_control_register_reads_back(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * A driver reads this register, sets a bit in what it read, writes it
-     * back, and later writes back the value it saved. So it has to read as
-     * what was written -- a register that answered zero would have every
-     * driver clear the other bit by accident on its way out.
+     * Drivers read-modify-write this register; answering zero has every
+     * driver clear the other bit on its way out.
      */
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
     g_assert_cmphex(qtest_readb(qts, RTC_CONTROL), ==, RTC_CSR_READ);
@@ -3743,11 +3518,8 @@ static void test_the_clock_takes_a_time_a_guest_sets(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The write sequence: arm, write the fields, release. The year written is
-     * 0x40 -- 1970 plus forty -- so reading back 0x40 rather than 0x10 is what
-     * says the epoch runs the same way in both directions. A model that
-     * applied the epoch on read alone would pass the read test above and fail
-     * here.
+     * Arm, write, release. The year written is 0x40, so reading 0x40 back
+     * says the epoch runs the same way in both directions.
      */
     /*
      * Step the virtual clock away from the host's first: a model
@@ -3791,12 +3563,9 @@ static void test_the_clock_storage_holds_a_write(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The cells below the clock are real storage, and that is load-bearing
-     * rather than incidental: SGI's own driver decides which of two clock
-     * parts is fitted by writing 0xff to the byte at offset 0x6 with the byte
-     * at 0xB set to zero, then reading 0x6 back. A model that answered those
-     * as zero, or answered only the clock block, would be identified as a
-     * Dallas part and driven through a register set this device does not have.
+     * The cells below the clock are real storage: SGI's driver probes the
+     * part type through them, and zero answers identify a Dallas part with
+     * a register set this device does not have.
      */
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x0b, 0x00);
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x06, 0xff);
@@ -3823,12 +3592,8 @@ static void test_the_clock_storage_holds_a_write(const void *data)
 }
 
 /*
- * Battery power outlasts more than a reset -- a real part keeps its content
- * with the host machine off, which a reset inside one QEMU process cannot
- * exercise at all. An optional drive is the model's equivalent of that: unset,
- * nothing here changes, but given one the storage has to read back across a
- * second, independent QEMU process the same way it already does across a
- * reset inside the first.
+ * Battery power outlasts a process: given a drive, storage must read back
+ * across a second, independent QEMU process.
  */
 static void test_the_storage_persists_across_a_process_with_a_drive(
     const void *data)
@@ -3865,13 +3630,9 @@ static void test_the_storage_persists_across_a_process_with_a_drive(
 }
 
 /*
- * The part is battery-backed: a reset line does not empty its storage. The
- * firmware relies on exactly that -- its first environment-checking pass
- * initializes the storage, warm-resets the machine, and expects to find its
- * own records on the next pass. A model that cleared the cells on reset
- * would re-warn on every boot pass and no single-pass test would notice.
- * What a reset must clear is only a transaction left in flight, because a
- * freeze nobody ends would hand the next guest a stopped clock.
+ * Battery-backed: firmware initializes storage, warm-resets, and expects
+ * its records on the next pass. What a reset must clear is only an
+ * in-flight transaction, or the next guest inherits a stopped clock.
  */
 static void test_the_storage_survives_a_system_reset(const void *data)
 {
@@ -3899,13 +3660,7 @@ static void test_the_storage_survives_a_system_reset(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * Drive a Search ROM on the given node's part and read its sixty-four-bit
- * identity out of it -- the same exchange
- * test_a_search_finds_the_ethernet_address_part performs at node zero, but
- * aimed at whichever node's MicroLAN engine the caller names, so a two-node
- * machine's two boards can be read one after the other.
- */
+/* A Search ROM at whichever node's MicroLAN engine the caller names. */
 static uint64_t onewire_search_rom_node(QTestState *qts, uint64_t node)
 {
     uint64_t rom = 0;
@@ -3932,10 +3687,8 @@ static uint64_t onewire_search_rom_node(QTestState *qts, uint64_t node)
 }
 
 /*
- * Two boards answering with one serial let the firmware merge two
- * physical nodes into one, and let Linux register the same w1 slave
- * twice. The parts must differ while each stays well-formed: family
- * 0x91, the 0x5e7 serial prefix, a closing CRC-8.
+ * Two boards with one serial merge two nodes in the firmware's eyes; the
+ * parts must differ while each stays well-formed.
  */
 static void test_each_node_has_its_own_onewire_identity(const void *data)
 {
@@ -3979,11 +3732,9 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
 }
 
 /*
- * Each node's base I/O board carries its own timekeeper, so the two-node
- * machine has two of these storages and they must not alias: the firmware
- * initializes per-module records through one node's window, and a model
- * backing both windows with one part would show phantom records on the
- * other node -- or scramble both -- while every single-node test passed.
+ * Two nodes, two timekeepers, no aliasing: one part behind both windows
+ * shows phantom records on the other node while every single-node test
+ * passes.
  */
 static void test_each_node_has_its_own_storage(const void *data)
 {
@@ -4021,11 +3772,9 @@ static void test_the_transceiver_answers_at_one_address(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Every address, not just the right one. Both drivers walk all thirty-two
-     * and stop at the first that answers, so a model answering everywhere is
-     * found at address zero and the guest prints an address no real machine
-     * prints. A boot cannot catch that -- it stops at the first answer and
-     * carries on happily -- so the count is the assertion.
+     * Every address: both drivers stop at the first that answers, so a
+     * model answering everywhere is found at address zero and no boot
+     * notices. The count is the assertion.
      */
     for (phy = 0; phy < 32; phy++) {
         if (phy_read(qts, phy, 2) != 0xffff) {
@@ -4046,10 +3795,8 @@ static void test_the_transceiver_identity(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The exact words, not merely something plausible. An identity that only
-     * passes the cruder of the two scans still fails the table match that
-     * decides which driver binds, and the failure shows up as a console line
-     * naming the wrong part -- or naming none.
+     * The exact words: an identity passing the cruder scan still fails the
+     * table match that decides which driver binds.
      */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 2), ==, 0x2000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 3), ==, 0x5c01);
@@ -4081,10 +3828,8 @@ static void test_the_transceiver_reports_a_usable_link(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The driver's whole route to a media type, in the order it takes it. Each
-     * step can be satisfied on its own by a model that still leaves the guest
-     * reporting no media at all, which is why they are asserted together
-     * rather than one standing for the rest.
+     * The driver's whole route to a media type, asserted together: each
+     * step alone can pass with the guest reporting no media.
      */
     phy_write(qts, PHY_ADDRESS, 0, 0x1000);   /* enable autonegotiation */
 
@@ -4115,15 +3860,9 @@ static void test_the_link_settles_when_polled(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Linux's phylib leaves autonegotiation enabled from reset and never
-     * rewrites the control register; it just polls status waiting for the PHY
-     * to negotiate on its own. So the link has to come up without a write.
-     *
-     * The first status read finds it still settling -- no link, no completed
-     * autonegotiation, and the partner and expansion registers reading zero --
-     * which is the bench state the reset-value diagnostic depends on. That read
-     * arms the settle; a driver that keeps polling sees the link once it
-     * elapses.
+     * phylib never writes the control register -- the link must come up
+     * unprompted. The first read finds it settling, the bench state the
+     * reset-value diagnostic depends on, and arms the settle.
      */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 1) & 0x0024, ==, 0x0000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 5), ==, 0x0000);
@@ -4165,16 +3904,10 @@ static void test_the_transceiver_configuration_register(const void *data)
 }
 
 /*
- * The reset values SGI's power-on transceiver test compares against, through
- * the masks it uses. Every one of them is also the public DP83840A datasheet's
- * documented default, which is what makes them the part's own numbers rather
- * than a reading of one firmware: a specification and a vendor diagnostic
- * arrived at them independently.
- *
- * Asserted through the diagnostic's masks rather than as whole words. The bits
- * outside each mask are ones the part's specification leaves as don't-care and
- * the diagnostic does not read, so pinning them here would fix values nothing
- * has checked.
+ * The reset values SGI's transceiver test compares, which are also the
+ * public DP83840A datasheet's defaults -- two independent sources.
+ * Asserted through the diagnostic's masks: bits outside them are
+ * don't-care and nothing has checked them.
  */
 static void test_the_transceiver_reset_values(const void *data)
 {
@@ -4192,11 +3925,9 @@ static void test_the_transceiver_reset_values(const void *data)
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x1c) & 0x003d, ==, 0x0039);
 
     /*
-     * Status, link-partner and expansion, read here before any control-register
-     * write, as the firmware's power-on diagnostic reads them: no link, no
-     * completed autonegotiation, no partner -- a board on a bench with no cable.
-     * A model that came up with the link already live answered these three
-     * wrong, which is exactly what the diagnostic's reset-value warnings caught.
+     * Read before any control write, as the diagnostic reads them: no
+     * link, no negotiation, no partner -- a bench with no cable. A model
+     * with the link already live answered these wrong.
      */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x01) & 0xf83f, ==, 0x7809);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x05) & 0xe3ff, ==, 0x0000);
@@ -4206,10 +3937,8 @@ static void test_the_transceiver_reset_values(const void *data)
 }
 
 /*
- * The loopback and bypass register, which only the firmware's transceiver test
- * reaches -- neither guest driver touches it, so this is the only place its
- * contract is checked. The diagnostic writes the two loopback selects and the
- * ten-megabit loopback bit and requires them to read back.
+ * Only the firmware's transceiver test reaches this register, so this is
+ * the only place its contract is checked.
  */
 static void test_the_transceiver_loopback_register(const void *data)
 {
@@ -4236,20 +3965,16 @@ static void test_pci_status_reset_value(const void *data)
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
     /*
-     * IRIX's configuration-space diagnostic compares this dword whole and
-     * fails the I/O slot on a zero Status half (expects Status 0x0280:
-     * medium DEVSEL, fast back-to-back). Only the Status half is asserted:
-     * the board pre-enables Command for no-firmware bring-up, and the
-     * miniroot's own reset clears it before the diagnostic runs.
+     * IRIX compares this dword whole and fails the slot on a zero Status
+     * half; only Status is asserted -- the board pre-enables Command and
+     * the miniroot clears it first.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) >> 16,
                     ==, 0x0280u);
 
     /*
-     * The Status capability bits are read-only and the error latches are
-     * write-one-to-clear from a reset of zero, so writing all ones leaves
-     * the Status half exactly 0x0280: bits 9 and 7 still set, no other bit
-     * set, no latch spuriously raised.
+     * Capability bits read-only, error latches W1C from zero: all-ones
+     * leaves Status exactly 0x0280.
      */
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, 0xffffffffu);
     g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) >> 16,
