@@ -728,6 +728,31 @@ static void test_byte_order_bridge_corrects(const void *data)
     byte_order_check(false);
 }
 
+/*
+ * A guest that writes an out-of-range producer index must not hang the
+ * emulator. The mailbox values are ring indices, so the walk reduces them into
+ * range rather than looping over an index it can never reach; if the guard were
+ * missing, an index of four billion would spin. The test writes such values and
+ * then proves the machine still answers, which it could not do from inside a
+ * runaway walk.
+ */
+static void test_hang_guard(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    go_operational(qts);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 0xffffffffu);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 0x40000000u);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 0xffffffffu);
+
+    /* The walks terminated: the register file still answers. */
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
+                    TI_MHC_CHIP_REV_MASK, ==, (uint32_t)TIGON_CHIP_REV << 28);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -754,6 +779,7 @@ int main(int argc, char **argv)
                         test_byte_order_bridge_transparent);
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-corrects", NULL,
                         test_byte_order_bridge_corrects);
+    qtest_add_data_func("/sn0/tigon/hang-guard", NULL, test_hang_guard);
 
     return g_test_run();
 }
