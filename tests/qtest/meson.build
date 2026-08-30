@@ -216,6 +216,7 @@ qtests_mips64 = \
                                                    'sn0-qlogic-isp-test',
                                                    'sn0-xframe-test',
                                                    'sn0-tigon-test',
+                                                   'bcm570x-test',
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
                                                    'sn0-i2c-test',
