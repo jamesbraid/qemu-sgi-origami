@@ -18,12 +18,14 @@
  * global reset with its on-chip firmware-ready handshake at SRAM 0x0B50; the
  * self-clearing *_MODE reset bits; the MII path to the integrated copper PHY
  * (a separate model) through the MI registers; the MAC-address mailbox in SRAM;
- * link status tied to the netdev; and the transmit ring -- the send-ring RCB,
- * the producer mailbox, the descriptor/data DMA through the Bridge, and the
- * status block DMA'd to the host, with the DMA byte order settled here. The
- * receive ring, interrupts and the dual-port device arrive in later commits; a
- * write to a register with no modelled behaviour logs LOG_UNIMP and is stored
- * so a read-back still round-trips.
+ * link status tied to the netdev; the transmit ring -- the send-ring RCB, the
+ * producer mailbox, the descriptor/data DMA through the Bridge, and the status
+ * block DMA'd to the host, with the DMA byte order settled here; and the receive
+ * ring -- posted standard-ring buffers, the frame DMA'd in, a completed
+ * descriptor written to the return ring, and the status block's receive
+ * producer advanced. Interrupts and the dual-port device arrive in later
+ * commits; a write to a register with no modelled behaviour logs LOG_UNIMP and
+ * is stored so a read-back still round-trips.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -176,6 +178,31 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 /* The largest frame the transmit engine assembles across descriptors. */
 #define BCM570X_MAX_FRAME           2048
 
+/*
+ * The receive rings. The host posts buffers into a standard ring in host
+ * memory -- its base in the standard-ring control block CSRs -- and bumps the
+ * producer mailbox 0x026C. The chip DMAs an incoming frame into the next posted
+ * buffer, writes a completed descriptor into a return ring in host memory
+ * (control block in SRAM 0x0200), and advances the receive producer index in
+ * the status block; the driver acknowledges by writing the return-ring consumer
+ * to 0x0284. A receive descriptor is 32 bytes: a 64-bit buffer address, then the
+ * buffer index, the frame length, and flags whose END bit marks the frame end
+ * and whose ERROR bit (with sub-flags in a separate word) marks a bad frame.
+ */
+#define BCM570X_MBX_RX_STD_PROD_LO  0x026c
+#define BCM570X_MBX_RX_CONS0_LO     0x0284
+#define BCM570X_RX_STD_RCB_HADDR_HI 0x2450
+#define BCM570X_RX_STD_RCB_HADDR_LO 0x2454
+#define BCM570X_RX_STD_RCB_MAXLEN_FLAGS 0x2458
+#define BCM570X_SRAM_RX_RETURN_RCB  0x0200
+#define BCM570X_RXBD_SIZE           32
+#define BCM570X_RXBD_ADDR_HI        0x00    /* offsets within an rx descriptor */
+#define BCM570X_RXBD_ADDR_LO        0x04
+#define BCM570X_RXBD_IDX            0x08
+#define BCM570X_RXBD_LEN            0x0a
+#define BCM570X_RXBD_FLAGS          0x0e
+#define BCM570X_RXBDFLAG_END        0x0004
+
 struct Bcm570xState {
     PCIDevice parent_obj;
 
@@ -202,7 +229,8 @@ struct Bcm570xState {
     /* Transmit-ring engine and the status block it reports through. */
     uint16_t tx_cons;           /* the chip's send-ring consumer */
     uint16_t status_tx_cons;    /* what the status block reports (TX) */
-    uint16_t status_rx_prod;    /* what the status block reports (RX) */
+    uint16_t status_rx_prod;    /* the return-ring producer the status reports */
+    uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
     bool tx_busy;               /* guards the send against netdev re-entrancy */
 
     /* The integrated copper PHY, reached through the MI registers. */
@@ -273,6 +301,7 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->tx_cons = 0;
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
+    s->rx_std_cons = 0;
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_HANDSHAKE_DONE);
     bcm570x_load_mac_mailbox(s);
 }
@@ -418,6 +447,37 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         bcm570x_regfile_write(s, off, val);
         bcm570x_tx_kick(s, val);
         return;
+    case BCM570X_MBX_RX_STD_PROD_LO: {
+        /* Posting standard-ring buffers; guard the index like the TX one. */
+        uint16_t std_len =
+            bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
+
+        if (std_len == 0 || (val & 0xffff) >= std_len) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: receive standard producer %u out of range "
+                          "(ring length %u)\n", val & 0xffff, std_len);
+            return;
+        }
+        bcm570x_regfile_write(s, off, val);
+        /* A newly posted buffer may release a frame the peer had queued. */
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        return;
+    }
+    case BCM570X_MBX_RX_CONS0_LO: {
+        /* The driver's return-ring acknowledgement; same range guard. */
+        uint16_t ret_len =
+            bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                              BCM570X_RCB_MAXLEN_FLAGS) >> 16;
+
+        if (ret_len == 0 || (val & 0xffff) >= ret_len) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: receive consumer %u out of range "
+                          "(ring length %u)\n", val & 0xffff, ret_len);
+            return;
+        }
+        bcm570x_regfile_write(s, off, val);
+        return;
+    }
     case BCM570X_MI_COMM: {
         /*
          * A PHY management access. The integrated PHY answers at any address
@@ -571,18 +631,115 @@ static uint32_t bcm570x_config_read(PCIDevice *dev, uint32_t addr, int len)
 }
 
 /*
- * The receive path is not modelled yet, so the frontend accepts no frames and
- * discards anything the backend hands it. Both arrive in the receive-ring
- * commit.
+ * Whether the engine can take a frame: the receive rings must be set up and the
+ * host-coalescing block enabled, and the host must have posted a standard-ring
+ * buffer the chip has not yet used -- its producer mailbox ahead of the chip's
+ * consumer. Shared by can_receive and receive so the two never disagree.
  */
-static bool bcm570x_can_receive(NetClientState *nc)
+static bool bcm570x_rx_ready(Bcm570xState *s)
 {
-    return false;
+    uint16_t std_len =
+        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
+    uint16_t ret_len =
+        bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                          BCM570X_RCB_MAXLEN_FLAGS) >> 16;
+    uint16_t std_prod =
+        bcm570x_regfile_read(s, BCM570X_MBX_RX_STD_PROD_LO) & 0xffff;
+
+    return std_len != 0 && ret_len != 0 &&
+           (bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
+            BCM570X_HCC_MODE_ENABLE) &&
+           std_prod != s->rx_std_cons;
 }
 
+static bool bcm570x_can_receive(NetClientState *nc)
+{
+    return bcm570x_rx_ready(qemu_get_nic_opaque(nc));
+}
+
+/*
+ * The address filter: accept broadcast and multicast, and unicast addressed to
+ * our station. The station address is the one handed through the SRAM mailbox
+ * (the device's network configuration); a guest that reprograms the MAC filter
+ * registers to a different address is not modelled here.
+ */
+static bool bcm570x_frame_accepted(Bcm570xState *s, const uint8_t *buf,
+                                   size_t size)
+{
+    if (size < 6) {
+        return false;
+    }
+    if (buf[0] & 0x01) {
+        return true;
+    }
+    return memcmp(buf, s->conf.macaddr.a, 6) == 0;
+}
+
+/*
+ * A frame from the backend. Not ready, or no buffer posted, returns 0 -- the
+ * only answer that leaves the frame at the peer's queue head for later. A frame
+ * the address filter drops returns the consumed count, never 0, so the peer is
+ * not wedged waiting on a frame that will never be taken. Otherwise the frame is
+ * DMA'd into the next posted standard-ring buffer, a completed descriptor is
+ * written into the return ring, the receive producer advances, and the status
+ * block reports it. The byte order reuses the transmit path's exactly:
+ * descriptors big-endian, the payload a raw byte stream, the Bridge a no-op.
+ */
 static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                size_t size)
 {
+    Bcm570xState *s = qemu_get_nic_opaque(nc);
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t std_len =
+        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
+    uint16_t ret_len =
+        bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                          BCM570X_RCB_MAXLEN_FLAGS) >> 16;
+    uint64_t std_base, ret_base, buf_addr;
+    uint8_t std_bd[BCM570X_RXBD_SIZE];
+    uint8_t ret_bd[BCM570X_RXBD_SIZE];
+    unsigned int idx;
+
+    if (!bcm570x_rx_ready(s)) {
+        return 0;
+    }
+    if (!bcm570x_frame_accepted(s, buf, size)) {
+        return size;
+    }
+    if (size > BCM570X_MAX_FRAME) {
+        size = BCM570X_MAX_FRAME;
+    }
+
+    std_base = ((uint64_t)bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI)
+                << 32) | bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO);
+    ret_base = ((uint64_t)bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                                            BCM570X_RCB_HOSTADDR_HI) << 32) |
+               bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                                 BCM570X_RCB_HOSTADDR_LO);
+    idx = s->rx_std_cons;
+
+    /* The posted buffer's host address, from the standard-ring descriptor. */
+    pci_dma_read(pci, std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
+                 std_bd, sizeof(std_bd));
+    buf_addr = ((uint64_t)ldl_be_p(std_bd + BCM570X_RXBD_ADDR_HI) << 32) |
+               ldl_be_p(std_bd + BCM570X_RXBD_ADDR_LO);
+
+    pci_dma_write(pci, buf_addr, buf, size);
+
+    /* The completed descriptor into the return ring, big-endian. */
+    memset(ret_bd, 0, sizeof(ret_bd));
+    stl_be_p(ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
+    stl_be_p(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
+    stw_be_p(ret_bd + BCM570X_RXBD_IDX, idx);
+    stw_be_p(ret_bd + BCM570X_RXBD_LEN, size);
+    stw_be_p(ret_bd + BCM570X_RXBD_FLAGS, BCM570X_RXBDFLAG_END);
+    pci_dma_write(pci, ret_base + (uint64_t)s->status_rx_prod *
+                  BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
+
+    s->rx_std_cons = (s->rx_std_cons + 1) % std_len;
+    s->status_rx_prod = (s->status_rx_prod + 1) % ret_len;
+
+    bcm570x_dma_status_block(s);
     return size;
 }
 
@@ -677,6 +834,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->tx_cons = 0;
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
+    s->rx_std_cons = 0;
     s->tx_busy = false;
     bcm570x_load_mac_mailbox(s);
 }
@@ -694,6 +852,7 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16(tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_rx_prod, Bcm570xState),
+        VMSTATE_UINT16(rx_std_cons, Bcm570xState),
         VMSTATE_END_OF_LIST()
     }
 };
