@@ -148,6 +148,20 @@ static const uint64_t window_offset[8] = {
 #define BCM_STATFLAG_UPDATED    0x00000001u
 #define BCM_STATUS_BLK_SIZE     0x50
 #define BCM_STATUS_TX_CONS_OFF  16
+#define BCM_STATUS_RX_PROD_OFF  18
+
+/* Receive ring (Task 5). */
+#define BCM_MBX_RX_STD_PROD_LO  0x026cu
+#define BCM_MBX_RX_CONS0_LO     0x0284u
+#define BCM_RX_STD_RCB_HI       0x2450u
+#define BCM_RX_STD_RCB_LO       0x2454u
+#define BCM_RX_STD_RCB_MAXLEN   0x2458u
+#define BCM_SRAM_RX_RETURN_RCB  0x0200u
+#define BCM_RXBD_SIZE           32
+#define BCM_RXBD_IDX            0x08
+#define BCM_RXBD_LEN            0x0a
+#define BCM_RXBD_FLAGS          0x0e
+#define BCM_RXBDFLAG_END        0x0004u
 
 /* The Bridge's per-slot DMA swapper (direct window) and the direct map. */
 #define DEV_SWAP_DIRECT         (1u << 19)
@@ -168,6 +182,13 @@ static const uint64_t window_offset[8] = {
 #define TX_BUF_IOVA             (DMA_PREFIX | TX_BUF_PHYS)
 #define STATUS_IOVA             (DMA_PREFIX | STATUS_PHYS)
 #define TX_RING_LEN             4u             /* descriptors in the test ring */
+#define STD_RING_PHYS           0x00230000u
+#define RET_RING_PHYS           0x00240000u
+#define RX_BUF_PHYS             0x00250000u
+#define STD_RING_IOVA           (DMA_PREFIX | STD_RING_PHYS)
+#define RET_RING_IOVA           (DMA_PREFIX | RET_RING_PHYS)
+#define RX_BUF_IOVA             (DMA_PREFIX | RX_BUF_PHYS)
+#define RX_RING_LEN             4u
 
 /*
  * The Bridge corrects a narrow (1- or 2-byte) device access by moving only the
@@ -304,6 +325,34 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
     g_assert_cmpint(len, <=, buf_size);
     g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
     return len;
+}
+
+static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
+{
+    uint32_t hdr = htonl((uint32_t)len);
+
+    g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
+}
+
+/*
+ * A socket backend delivers a received frame on a later pass of the main loop,
+ * so the status block's receive producer is polled rather than read once.
+ */
+static void wait_for_rx_prod(QTestState *qts, uint16_t want)
+{
+    uint8_t idx[2];
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, idx, 2);
+        if (get16be(idx) == want) {
+            return;
+        }
+        g_usleep(5000);
+    }
+    qtest_memread(qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, idx, 2);
+    g_assert_cmphex(get16be(idx), ==, want);
 }
 
 /*
@@ -672,6 +721,118 @@ static void test_tx_producer_out_of_range(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The receive round trip. A standard-ring buffer is posted, a broadcast frame
+ * injected from the backend, and the chip DMAs it into the buffer, writes a
+ * completed descriptor into the return ring big-endian, and advances the status
+ * block's receive producer. The driver's return-ring acknowledgement is
+ * accepted. Broadcast so the address filter passes it regardless of the
+ * station address.
+ */
+static void test_receive_round_trip(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint8_t got[64];
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    memset(frame, 0xff, 6);     /* broadcast destination */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -netdev socket,fd=%d,id=n0"
+                      " -device bcm570x,addr=%02x.0,netdev=n0", sv[1], BCM_SLOT);
+
+    bcm570x_setup_dma(qts);
+
+    /* Standard-ring RCB in CSRs, return-ring RCB in SRAM, status block on. */
+    bar_writel(qts, BCM_RX_STD_RCB_HI, STD_RING_IOVA >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, STD_RING_IOVA & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    ind_mem_writel(qts, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_IOVA >> 32);
+    ind_mem_writel(qts, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_IOVA & 0xffffffff);
+    ind_mem_writel(qts, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(qts, BCM_HCC_STATUSBLK_HI, STATUS_IOVA >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_LO, STATUS_IOVA & 0xffffffff);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* Post one standard-ring buffer at index 0, built big-endian. */
+    memset(bd, 0, sizeof(bd));
+    put32be(bd + 0, RX_BUF_IOVA >> 32);
+    put32be(bd + 4, RX_BUF_IOVA & 0xffffffff);
+    qtest_memwrite(qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(qts, RX_BUF_PHYS, 0, sizeof(frame));
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(qts, 1);
+
+    /* The completed descriptor landed in the return ring, big-endian. */
+    qtest_memread(qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16be(ret + BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16be(ret + BCM_RXBD_LEN), ==, sizeof(frame));
+    g_assert_cmphex(get16be(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+
+    /* The status block's receive producer advanced, big-endian. */
+    qtest_memread(qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get16be(sb + BCM_STATUS_RX_PROD_OFF), ==, 1);
+    g_assert_cmphex(sb[BCM_STATUS_RX_PROD_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_RX_PROD_OFF + 1], ==, 0x01);
+
+    /* And the frame reached the posted buffer byte-for-byte. */
+    qtest_memread(qts, RX_BUF_PHYS, got, sizeof(frame));
+    g_assert_cmpmem(got, sizeof(frame), frame, sizeof(frame));
+
+    /* The driver's return-ring acknowledgement is accepted (write returns). */
+    bar_writel(qts, BCM_MBX_RX_CONS0_LO, 1);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A receive producer or consumer index past its ring must not hang the mailbox
+ * write. The rings hold RX_RING_LEN descriptors, so an index at or beyond that
+ * is out of range; each write logs a guest error and returns, proven by the
+ * MMIO access after it.
+ */
+static void test_rx_producer_out_of_range(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_setup_dma(qts);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    ind_mem_writel(qts, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, RX_RING_LEN);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 0xffff);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+
+    bar_writel(qts, BCM_MBX_RX_CONS0_LO, RX_RING_LEN);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+    bar_writel(qts, BCM_MBX_RX_CONS0_LO, 0xffff);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -698,6 +859,10 @@ int main(int argc, char **argv)
                         test_transmit_round_trip);
     qtest_add_data_func("/bcm570x/tx-producer-out-of-range", NULL,
                         test_tx_producer_out_of_range);
+    qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
+                        test_receive_round_trip);
+    qtest_add_data_func("/bcm570x/rx-producer-out-of-range", NULL,
+                        test_rx_producer_out_of_range);
 
     return g_test_run();
 }
