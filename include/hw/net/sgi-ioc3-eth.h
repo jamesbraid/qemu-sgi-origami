@@ -58,11 +58,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_REGS          (SGI_IOC3_ENET_SIZE / 4)
 
 /*
- * MAC control register bits. The offset field holds the distance from a
- * receive buffer's start to where the frame begins, in sixteen-bit units --
- * SGI's own driver comments the field this way when it programs it, which is
- * where the halving comes from; the datasheet's byte-offset description and
- * this scale agree once that unit is known.
+ * MAC control bits. The offset field is buffer-start to frame-start in
+ * sixteen-bit units -- SGI's own driver states the unit.
  */
 #define SGI_IOC3_ENET_MCR_PROMISC   (1u << 1)
 #define SGI_IOC3_ENET_MCR_PAD_EN    (1u << 2)
@@ -78,11 +75,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_MCR_RESET     (1u << 31)
 
 /*
- * Interrupt sources, receive in the low half and transmit in the high half.
- * Only the two this engine actually raises are named; the rest exist so a
- * guest's write-back of the whole status word does not trip the SuperIO
- * register's read-only complaint transplanted onto this one, and so a bit
- * position is available if a later pass models the condition it reports.
+ * Interrupt sources, receive low, transmit high. The engine raises only a
+ * few; the rest exist so a whole-word write-back is not refused.
  */
 #define SGI_IOC3_ENET_INT_RX_TIMER      (1u << 0)
 #define SGI_IOC3_ENET_INT_RX_THRESHOLD  (1u << 1)
@@ -103,10 +97,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_INT_TX_PARITY     (1u << 26)
 
 /*
- * The receive ring: a fixed 512-entry array of eight-byte buffer addresses,
- * indexed by a byte offset rather than an entry number -- the entry number is
- * the offset shifted right by three, which is the same shift the offset's own
- * producer and consumer indices use.
+ * The receive ring: 512 eight-byte buffer addresses, indexed by byte
+ * offset -- the indices use the same unit.
  */
 #define SGI_IOC3_ENET_RX_RING_ENTRIES 512
 #define SGI_IOC3_ENET_RX_RING_SHIFT   3
@@ -116,39 +108,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_RX_INDEX_MASK   (SGI_IOC3_ENET_RX_RING_SIZE - 1)
 
 /*
- * What prompts a driver when a frame is delivered, which is two separate
- * sources rather than one.
- *
- * The threshold in the receive control register is a low watermark on the
- * buffers still available to the engine, counted downward. Linux's own
- * comment calls it that, and it sets 15 against the 64 buffers it supplies,
- * asking to hear when its supply runs low. OpenBSD sets its whole available
- * count, which puts the watermark where the very first delivered frame
- * crosses it. One register, two intentions -- so raising this source once
- * per frame regardless of what is programmed here satisfies OpenBSD by
- * accident and misreports for every other watermark.
- *
- * The receive timer is the per-frame source. It is armed through bit 31 of
- * the produce index and loaded with an idle timeout, and both drivers load
- * zero and say what they mean by it themselves -- OpenBSD's comment is "Set
- * up RX timer to interrupt immediately upon reception", Linux's is
- * "Interrupt immediately". Linux enables no other receive source at all and
- * dispatches its receive handler on this one alone.
- *
- * Arming is a command rather than storage: SGI's own driver writes the
- * produce index without bit 31 from its interrupt path, so a write lacking
- * the bit has to leave an armed timer armed.
+ * The two delivery-notice sources. The threshold is a low watermark on
+ * buffers still available, counted downward (Linux sets 15 of 64; OpenBSD
+ * sets its whole count) -- a once-per-frame raise satisfies only OpenBSD.
+ * The timer is the per-frame source, armed through bit 31 of the produce
+ * index; arming is a command, not storage -- SGI's driver writes the index
+ * without the bit and an armed timer must stay armed.
  */
 #define SGI_IOC3_ENET_RCSR_THRESH_MASK 0x1ffu
 #define SGI_IOC3_ENET_RTR_RELOAD_MASK  0x7ffu
 #define SGI_IOC3_ENET_RPIR_ARM         (1u << 31)
 
 /*
- * A receive buffer's own two-word header, immediately before the frame data
- * the offset field above places. Bit positions come from SGI's own header,
- * cross-checked against the datasheet's prose account of the same fields --
- * the two agree, and the split length field is why the datasheet describes
- * the frame length as arriving "in two pieces".
+ * A receive buffer's two-word header, before the frame data; bit positions
+ * from SGI's own header, agreeing with the datasheet's prose.
  */
 #define SGI_IOC3_ENET_RXH_VALID       (1u << 31)
 #define SGI_IOC3_ENET_RXH_BYTECNT_MASK   0x07ff0000u
@@ -162,11 +135,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_RXE_GOODPKT     (1u << 30)
 
 /*
- * The transmit ring holds descriptors inline rather than pointers, 128 bytes
- * each; the low bit of the base register picks how many of them there are.
- * The consume index carries an idle flag in the same word as its byte offset
- * -- OpenBSD's driver masks that bit off before dividing by descriptor size,
- * which is the tell that it is not part of the count.
+ * The transmit ring holds 128-byte descriptors inline; the base register's
+ * low bit selects the count. The consume index carries an idle flag beside
+ * its byte offset -- OpenBSD masks it off before dividing.
  */
 #define SGI_IOC3_ENET_TX_DESC_SIZE       128
 #define SGI_IOC3_ENET_TX_RING_SMALL      128
@@ -176,9 +147,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_TX_CONSUME_IDLE    (1u << 31)
 #define SGI_IOC3_ENET_TX_CONSUME_MASK    0xffffu
 
-/* A transmit descriptor's two header words and its two out-of-line buffer
- * pointers. Field positions are the datasheet's own, given here as named
- * bits rather than repeated as bare numbers in the engine that uses them.
+/*
+ * A transmit descriptor's header words and buffer pointers, per the
+ * datasheet.
  */
 #define SGI_IOC3_ENET_TXD_BYTECNT_MASK   0x000007ffu
 #define SGI_IOC3_ENET_TXD_INT_DONE       (1u << 12)
@@ -193,51 +164,32 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 #define SGI_IOC3_ENET_TXD_BUF2_LEN_MASK  0x7ff00000u
 #define SGI_IOC3_ENET_TXD_BUF2_LEN_SHIFT 20
 /*
- * Where the descriptor's own inline data area starts, and how much of the
- * descriptor is left for it: two four-byte header words and two eight-byte
- * buffer pointers come first, so the area is the last 104 bytes of the 128.
- * Both drivers state the same two numbers independently -- OpenBSD computes
- * the offset as two words plus two pointers and the size as what remains,
- * and Linux's own transmit descriptor declares its inline array 104 bytes
- * long -- which is what makes them the descriptor's layout rather than one
- * driver's convention.
- *
- * The length field above holds seven bits, so a guest can name up to 127
- * inline bytes in an area that holds 104. The engine takes the smaller.
+ * The inline data area: the last 104 bytes of the 128, both drivers
+ * agreeing independently. The seven-bit length field can name up to 127
+ * bytes for an area that holds 104; the engine takes the smaller.
  */
 #define SGI_IOC3_ENET_TXD_DATA_OFFSET    24
 #define SGI_IOC3_ENET_TXD_SIZE           SGI_IOC3_ENET_TX_DESC_SIZE
 #define SGI_IOC3_ENET_TXD_DATA_SIZE      (SGI_IOC3_ENET_TXD_SIZE - \
                                           SGI_IOC3_ENET_TXD_DATA_OFFSET)
 
-/* The largest frame this engine assembles before handing it to the network
- * backend: the eleven-bit byte count field's own limit, which no descriptor
- * can exceed regardless of how its buffers are split.
- */
+/* The eleven-bit byte-count field's own limit on an assembled frame. */
 #define SGI_IOC3_ENET_FRAME_MAX          2048
 
-/* Bit 10 of the media-independent interface control register starts a read,
- * and bit 11 reads back as busy while one is in flight. Nothing here takes
- * time, so a read is complete by the time the guest can look and busy never
- * reads set -- a driver that polls it therefore stops on its first look
- * rather than running its timeout out.
+/*
+ * MII control: bit 10 starts a read, bit 11 is busy -- never set here,
+ * since a read completes before the guest can look.
  */
 #define SGI_IOC3_ENET_MII_READ      (1u << 10)
 #define SGI_IOC3_ENET_MII_BUSY      (1u << 11)
 
 /*
- * An address with no transceiver on it reads as all-ones, which is what a
- * driver scanning the thirty-two addresses takes as "nothing here". The board
- * has exactly one transceiver and every other address must answer this way, or
- * the scan stops at the wrong one.
+ * An address with no transceiver reads all-ones, or a driver's scan of the
+ * thirty-two addresses stops at the wrong one.
  */
 #define SGI_IOC3_ENET_MII_ABSENT    0xffffu
 
-/*
- * How the management control register carries a request: the register number
- * in the low five bits and the transceiver address above it. A read is asked
- * for explicitly; a write is what the register means without that bit.
- */
+/* The request layout: register number low, transceiver address above. */
 #define SGI_IOC3_ENET_MII_REG_MASK  0x1fu
 #define SGI_IOC3_ENET_MII_PHY_SHIFT 5
 #define SGI_IOC3_ENET_MII_PHY_MASK  0x1fu
@@ -245,78 +197,57 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3EthState, SGI_IOC3_ETH)
 struct SGIIOC3EthState {
     SysBusDevice parent_obj;
 
-    /* The register window a guest reaches through the parent chip's BAR,
-     * and the level line this block's own interrupt pair drives -- the
-     * chip's ordinary PCI interrupt pin, not a wire of its own, so the
-     * parent connects this output to a handler that raises that pin
-     * rather than to any GPIO a guest could see.
+    /*
+     * The register window inside the parent's BAR, and the level line that
+     * drives the chip's ordinary PCI interrupt pin through the parent.
      */
     MemoryRegion mmio;
     qemu_irq irq;
 
     /*
-     * The memory this block's DMA reads and writes, set through the
-     * "dma-memory" link property before realize, and the address space
-     * realize builds over it. The parent chip hands over its own PCI
-     * function's bus-master view: this block sits behind the same Bridge
-     * the parent's BAR does, and every DMA master in the chip must go
-     * through that translation -- see the "DMA" section of the IOC3
-     * datasheet in the Origami project tree (docs/datasheets/ioc3.md).
+     * The DMA view, a "dma-memory" link set before realize: the parent
+     * hands down its PCI function's bus-master view so every transfer goes
+     * through the Bridge's translation.
      */
     MemoryRegion *dma_mr;
     AddressSpace dma_as;
 
     /*
-     * The register block, held as one array indexed by register rather than
-     * as two dozen named fields. Most registers in it are plain storage a
-     * driver writes and reads back; the ring bases, indices, MAC control and
-     * interrupt pair are also stored here but additionally drive the engine
-     * below through named accesses at their offsets, so naming the rest
-     * individually would add bulk without adding meaning.
+     * The registers as one array: most are plain storage, and the few that
+     * drive the engine are reached by named offsets into it.
      */
     uint32_t enet_reg[SGI_IOC3_ENET_REGS];
 
     /*
-     * The network backend and the scratch buffer a transmit descriptor's
-     * buffers are assembled into before handing the whole frame to
-     * qemu_send_packet in one call. Receiving needs no equivalent buffer: a
-     * received frame is written straight into the guest-supplied buffer the
-     * receive ring names, since unlike transmit there is only ever one
-     * destination for the bytes.
+     * The backend, and the scratch buffer a descriptor's pieces are
+     * assembled into for one qemu_send_packet call; receive writes straight
+     * into the guest's buffer.
      */
     NICConf conf;
     /*
-     * Set alongside the mac property when its value came from QEMU's
-     * default generator rather than an operator's mac= — the one case
-     * realize may replace with an SGI-prefixed address.
+     * Set with the mac property when the address came from the default
+     * generator -- the one case realize may replace with SGI's prefix.
      */
     bool mac_generated;
     NICState *nic;
     uint8_t frame[SGI_IOC3_ENET_FRAME_MAX];
 
     /*
-     * The transceiver on the far end of the management registers. It is a
-     * child of this device because that is the only way to it: no address of
-     * its own, reached by a guest writing an address and a register number
-     * here.
+     * The transceiver: a child because the management registers are the
+     * only way to it.
      */
     DP83840State phy;
 
     /*
-     * The two halves of a management transfer. The word a read request
-     * fetched, held until the guest reads the data register, and the word a
-     * guest loaded before issuing a write. They are separate registers on the
-     * chip and separate here, because a driver loads one and reads the other
-     * without the two ever meeting.
+     * A management transfer's two halves -- the fetched read word and the
+     * loaded write word -- separate registers on the chip.
      */
     uint16_t mii_data;
     uint16_t mii_data_w;
 
     /*
-     * Whether the receive timer has been armed. Held apart from the produce
-     * index it is written through, because the bit is a command and the
-     * index is storage: a later write of the index alone must not disarm
-     * what an earlier write armed.
+     * Receive-timer arming, apart from the index it is written through: a
+     * later index-only write must not disarm what an earlier write armed.
      */
     bool rx_timer_armed;
 };
