@@ -710,7 +710,9 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t flags = 0;
     uint64_t rx_desc, buf_addr, ret_desc;
-    uint16_t buf_idx;
+    uint32_t rx_word;
+    uint16_t buf_idx, buf_len;
+    size_t landed;
 
     if (!s->firmware_up) {
         return size;   /* not operational: consumed, not queued */
@@ -729,17 +731,26 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     /* Take the next posted standard receive buffer. */
     rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
     buf_addr = tigon_dma_ld_addr(s, rx_desc);
-    /* Big-endian layout: the buffer index is the high half of the word. */
-    buf_idx = tigon_dma_ld32(s, rx_desc + 8) >> 16;
+    /* Big-endian layout: index in the high half of the word, length in the low. */
+    rx_word = tigon_dma_ld32(s, rx_desc + 8);
+    buf_idx = rx_word >> 16;
+    buf_len = rx_word & 0xffff;
     s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
 
-    pci_dma_write(pci, buf_addr, buf, size);
+    /*
+     * Never write past the buffer the guest sized: a frame larger than it is
+     * clamped to its length, and the return descriptor reports what actually
+     * landed. The standard ring's buffers hold a full frame in normal use;
+     * this guards a guest that posts a short one.
+     */
+    landed = MIN(size, buf_len);
+    pci_dma_write(pci, buf_addr, buf, landed);
 
     /* Post a receive-return descriptor naming the buffer and the length. */
     ret_desc = s->return_ring_base + (uint64_t)s->return_prodidx * 32;
     tigon_dma_st_addr(s, ret_desc, buf_addr);
     tigon_dma_st32(s, ret_desc + 8,
-                   ((uint32_t)buf_idx << 16) | (size & 0xffff));
+                   ((uint32_t)buf_idx << 16) | (landed & 0xffff));
     tigon_dma_st32(s, ret_desc + 12,
                    ((uint32_t)TI_BDTYPE_RECV_BD << 16) | flags);
     tigon_dma_st32(s, ret_desc + 16, 0);   /* ip / tcp-udp checksum */

@@ -616,6 +616,50 @@ static void test_receive(const void *data)
     close(sv[0]);
 }
 
+/* An oversized frame must not be written past the buffer the guest posted. */
+static void test_receive_clamps_to_buffer(const void *data)
+{
+    static const uint8_t big_frame[128] = {
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,   /* dest = our MAC */
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x08, 0x00, 0xa1, 0xa2, 0xa3, 0xa4,
+    };
+    int sv[2];
+    QTestState *qts;
+    uint8_t guard[64];
+    uint32_t word2;
+    int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* A 64-byte buffer, with the 64 bytes past it seeded to catch a spill. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 128);
+    qtest_memset(qts, RX_BUF_PHYS + 64, 0xa5, 64);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 64);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], big_frame, sizeof(big_frame));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    /* The reported length is clamped to the buffer, not the frame. */
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 & 0xffff, ==, 64);
+
+    /* Nothing landed past the buffer: the seeded bytes are intact. */
+    qtest_memread(qts, RX_BUF_PHYS + 64, guard, sizeof(guard));
+    for (i = 0; i < (int)sizeof(guard); i++) {
+        g_assert_cmphex(guard[i], ==, 0xa5);
+    }
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_receive_filters_other(const void *data)
 {
     int sv[2];
@@ -810,6 +854,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
+    qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
+                        test_receive_clamps_to_buffer);
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-transparent", NULL,
                         test_byte_order_bridge_transparent);
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-corrects", NULL,
