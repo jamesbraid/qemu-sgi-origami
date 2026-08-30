@@ -27,6 +27,7 @@
 
 #include "cpu.h"
 #include "qapi/error.h"
+#include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -761,17 +762,6 @@ typedef struct SN0BackdoorState {
     unsigned int populated_banks;
 } SN0BackdoorState;
 
-typedef enum SN0FlashState {
-    SN0_FLASH_READ,
-    SN0_FLASH_UNLOCK1,
-    SN0_FLASH_UNLOCK2,
-    SN0_FLASH_AUTOSELECT,
-    SN0_FLASH_PROGRAM,
-    SN0_FLASH_ERASE_UNLOCK1,
-    SN0_FLASH_ERASE_UNLOCK2,
-    SN0_FLASH_ERASE_SELECT,
-} SN0FlashState;
-
 typedef struct SN0PromDataState {
     MIPSCPU *cpu;
     hwaddr node_base;
@@ -825,11 +815,11 @@ typedef struct SN0NodeState {
     MemoryRegion hub_memory_system;
     MemoryRegion hub_memory_local;
 
-    MemoryRegion flash;
+    PFlashCFI02 *flash;
+    MemoryRegion flash_reset_view;
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
     MemoryRegion flash_hub_fast;
-    SN0FlashState flash_state;
     MemoryRegion hub_regs_node_view;
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;

@@ -220,64 +220,6 @@ static void sn0_promdata_reset(void *opaque)
     memory_region_set_enabled(&s->filter, true);
 }
 
-static uint64_t sn0_flash_load(SN0NodeState *node, hwaddr addr, unsigned size)
-{
-    const uint8_t *p = memory_region_get_ram_ptr(&node->flash) +
-                       (addr & (SN0_FLASH_SIZE - 1));
-    uint8_t id[8];
-    unsigned int i;
-
-    if (node->flash_state == SN0_FLASH_AUTOSELECT) {
-        for (i = 0; i < size; i++) {
-            switch ((addr + i) & (SN0_FLASH_SIZE - 1)) {
-            case 0:
-                id[i] = 0x01; /* AMD */
-                break;
-            case 1:
-                id[i] = 0xd5; /* Am29F080 */
-                break;
-            default:
-                id[i] = 0xff;
-                break;
-            }
-        }
-        p = id;
-    }
-
-    switch (size) {
-    case 1:
-        return ldub_p(p);
-    case 2:
-        return lduw_be_p(p);
-    case 4:
-        return ldl_be_p(p);
-    case 8:
-        return ldq_be_p(p);
-    default:
-        g_assert_not_reached();
-    }
-}
-
-static void sn0_flash_read_mode(SN0NodeState *node)
-{
-    node->flash_state = SN0_FLASH_READ;
-    memory_region_rom_device_set_romd(&node->flash, true);
-}
-
-static void sn0_flash_reset(void *opaque)
-{
-    sn0_flash_read_mode(opaque);
-}
-
-static int sn0_flash_post_load(void *opaque, int version_id)
-{
-    SN0NodeState *node = opaque;
-
-    memory_region_rom_device_set_romd(
-        &node->flash, node->flash_state != SN0_FLASH_AUTOSELECT);
-    return 0;
-}
-
 /*
  * The ECC and directory back-door storage is a raw buffer behind the
  * populated-bank ops, not a RAM MemoryRegion, so the memory core does not
@@ -350,13 +292,25 @@ static const VMStateDescription vmstate_sn0_promdata = {
     }
 };
 
+/*
+ * Named "sn0-flash" for wire compatibility, but since the boot flash became
+ * a pflash device that migrates its own state through the qdev tree, this
+ * descriptor carries only the back-door storage and the promdata subsection.
+ * The unused field keeps the bytes the old flash state machine occupied, so
+ * version 1 and 2 streams still load. Their legacy state value is
+ * deliberately discarded rather than translated into the device: a stream
+ * captured inside a flash command sequence would wake in read-array mode
+ * with the sequence forgotten. That window is a handful of guest stores wide
+ * and no retained snapshot sits inside it, and a translation would couple
+ * this descriptor to the flash device's private state for a case that does
+ * not occur.
+ */
 static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
-    .post_load = sn0_flash_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(flash_state, SN0NodeState),
+        VMSTATE_UNUSED_V(1, 4),
         VMSTATE_STRUCT(backdoor_ecc_state, SN0NodeState, 2,
                        vmstate_sn0_backdoor, SN0BackdoorState),
         VMSTATE_STRUCT(backdoor_dir_state, SN0NodeState, 2,
@@ -369,121 +323,55 @@ static const VMStateDescription vmstate_sn0_flash = {
     }
 };
 
-static void sn0_flash_command(SN0NodeState *node, hwaddr addr, uint64_t val,
-                              unsigned size)
-{
-    uint32_t offset;
-    uint8_t byte = val;
-    uint8_t *p;
-
-    /* The Hub exposes the byte-wide command port only on 64-bit writes. */
-    if (size != 8) {
-        return;
-    }
-
-    offset = (addr / 8) & (SN0_FLASH_SIZE - 1);
-
-    if (byte == 0xf0 && node->flash_state != SN0_FLASH_PROGRAM) {
-        sn0_flash_read_mode(node);
-        return;
-    }
-
-    switch (node->flash_state) {
-    case SN0_FLASH_READ:
-        node->flash_state = offset == SN0_FLASH_CMD_ADDR1 && byte == 0xaa ?
-                            SN0_FLASH_UNLOCK1 : SN0_FLASH_READ;
-        break;
-    case SN0_FLASH_UNLOCK1:
-        node->flash_state = offset == SN0_FLASH_CMD_ADDR2 && byte == 0x55 ?
-                            SN0_FLASH_UNLOCK2 : SN0_FLASH_READ;
-        break;
-    case SN0_FLASH_UNLOCK2:
-        if (offset != SN0_FLASH_CMD_ADDR1) {
-            node->flash_state = SN0_FLASH_READ;
-        } else if (byte == 0x90) {
-            node->flash_state = SN0_FLASH_AUTOSELECT;
-            memory_region_rom_device_set_romd(&node->flash, false);
-        } else if (byte == 0xa0) {
-            node->flash_state = SN0_FLASH_PROGRAM;
-        } else if (byte == 0x80) {
-            node->flash_state = SN0_FLASH_ERASE_UNLOCK1;
-        } else {
-            node->flash_state = SN0_FLASH_READ;
-        }
-        break;
-    case SN0_FLASH_AUTOSELECT:
-        break;
-    case SN0_FLASH_PROGRAM:
-        p = memory_region_get_ram_ptr(&node->flash);
-        p[offset] &= byte;
-        memory_region_flush_rom_device(&node->flash, offset, 1);
-        sn0_flash_read_mode(node);
-        break;
-    case SN0_FLASH_ERASE_UNLOCK1:
-        node->flash_state = offset == SN0_FLASH_CMD_ADDR1 && byte == 0xaa ?
-                            SN0_FLASH_ERASE_UNLOCK2 : SN0_FLASH_READ;
-        break;
-    case SN0_FLASH_ERASE_UNLOCK2:
-        node->flash_state = offset == SN0_FLASH_CMD_ADDR2 && byte == 0x55 ?
-                            SN0_FLASH_ERASE_SELECT : SN0_FLASH_READ;
-        break;
-    case SN0_FLASH_ERASE_SELECT:
-        if (byte == 0x30) {
-            offset &= ~(SN0_FLASH_SECTOR_SIZE - 1);
-            p = memory_region_get_ram_ptr(&node->flash);
-            memset(p + offset, 0xff, SN0_FLASH_SECTOR_SIZE);
-            memory_region_flush_rom_device(&node->flash, offset,
-                                           SN0_FLASH_SECTOR_SIZE);
-        }
-        sn0_flash_read_mode(node);
-        break;
-    default:
-        g_assert_not_reached();
-    }
-}
-
-static void sn0_flash_write(void *opaque, hwaddr addr, uint64_t val,
-                            unsigned size)
-{
-    sn0_flash_command(opaque, addr, val, size);
-}
-
-static uint64_t sn0_flash_read(void *opaque, hwaddr addr, unsigned size)
-{
-    return sn0_flash_load(opaque, addr, size);
-}
-
-static const MemoryRegionOps sn0_flash_ops = {
-    .read = sn0_flash_read,
-    .write = sn0_flash_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-};
-
 /*
- * The Hub special views of the boot flash, LBOOT and RBOOT, are each 256 MB
- * decoding a 1 MB chip. A real chip-select ignores the offset bits above its
- * own size, so the chip's contents repeat every 1 MB across either window.
- * Expressed here as the decode dropping those bits rather than as 256 separate
- * aliases naming the same repeat, because that is what the hardware does and
- * a guest's own code genuinely lands on offsets past the first repeat.
+ * The Hub's flash controller: the decode between the 64-bit junk bus and the
+ * byte-wide chip, in front of the pflash device that models the chip itself.
  *
- * The mirror calls the same flash state machine as the reset view. Ordinary
- * reads come from the shared backing store; autoselect reads return the chip
- * identity instead.
+ * Reads pack the chip 1:1 -- image byte N at bus offset N. The Hub does not
+ * address-error decode the upper boot-space address bits, so the model
+ * repeats the 1 MB image across the 256 MB LBOOT and RBOOT windows by
+ * dropping those bits -- cheaper than 256 tiled aliases, and guest code
+ * genuinely lands on offsets past the first repeat. Command writes present
+ * the chip's byte-wide
+ * command port on 64-bit cycles only, low byte used, with chip byte N at bus
+ * offset 8N; the vendor flash programmer states the mapping directly (the
+ * boot-flash command interface, in the Hub memory/directory datasheet).
+ * Where code executes -- each node's own boot window -- a direct romd alias
+ * of the chip overlays this decode; the remote-node RBOOT window is never a
+ * fetch path, only the maintenance read/write path, so it takes no overlay.
  */
 static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
 {
-    return sn0_flash_load(opaque, addr, size);
+    SN0NodeState *node = opaque;
+    MemoryRegion *chip =
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
+    uint64_t value = 0;
+    unsigned int i;
+
+    for (i = 0; i < size; i++) {
+        uint64_t byte = 0;
+
+        memory_region_dispatch_read(chip,
+                                    (addr + i) & (SN0_FLASH_SIZE - 1),
+                                    &byte, MO_8, MEMTXATTRS_UNSPECIFIED);
+        value = (value << 8) | (byte & 0xff);
+    }
+    return value;
 }
 
 static void sn0_boot_mirror_write(void *opaque, hwaddr addr, uint64_t val,
                                   unsigned size)
 {
-    sn0_flash_command(opaque, addr, val, size);
+    SN0NodeState *node = opaque;
+    MemoryRegion *chip =
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
+
+    /* The Hub exposes the byte-wide command port only on 64-bit writes. */
+    if (size != 8) {
+        return;
+    }
+    memory_region_dispatch_write(chip, (addr / 8) & (SN0_FLASH_SIZE - 1),
+                                 val & 0xff, MO_8, MEMTXATTRS_UNSPECIFIED);
 }
 
 static const MemoryRegionOps sn0_boot_mirror_ops = {
@@ -1103,6 +991,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.flash.rboot", node_index);
     g_autofree char *hub_fast_name =
         g_strdup_printf("sn0.node%u.flash.hub.fast", node_index);
+    g_autofree char *reset_name =
+        g_strdup_printf("sn0.node%u.flash.reset", node_index);
     g_autofree char *ecc_absent_name =
         g_strdup_printf("sn0.node%u.backdoor.ecc.absent", node_index);
     g_autofree char *ecc_name =
@@ -1113,37 +1003,74 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
     /*
-     * The boot flash overlaps RAM at the reset-vector offset and wins. Its
-     * Hub-special LBOOT and RBOOT mappings are views of the same physical
-     * chip, so guest writes retained by the flash are visible through all
-     * three addresses.
+     * The chip is a standard AMD-command NOR flash device: an Am29F080,
+     * 1 MB in sixteen 64 KB sectors, byte-wide. Its region is never mapped
+     * directly -- every guest-visible view goes through the Hub decode
+     * below -- and it has no backing drive: the firmware builder seeds the
+     * synthesized image after realize. The unlock addresses are the chip's;
+     * the device masks them to its eleven command address bits.
      */
-    memory_region_init_rom_device(&node->flash, OBJECT(node), &sn0_flash_ops,
-                                  node, flash_name, SN0_FLASH_SIZE,
-                                  &error_fatal);
-    memory_region_add_subregion_overlap(system, node_base + SN0_FLASH_LOCAL,
-                                        &node->flash, 1);
-    qemu_register_reset(sn0_flash_reset, node);
+    DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
+    qdev_prop_set_uint32(flash_dev, "num-blocks",
+                         SN0_FLASH_SIZE / SN0_FLASH_SECTOR_SIZE);
+    qdev_prop_set_uint32(flash_dev, "sector-length", SN0_FLASH_SECTOR_SIZE);
+    qdev_prop_set_uint8(flash_dev, "width", 1);
+    qdev_prop_set_uint8(flash_dev, "mappings", 1);
+    qdev_prop_set_uint8(flash_dev, "big-endian", 1);
+    qdev_prop_set_uint16(flash_dev, "id0", 0x01);       /* AMD */
+    qdev_prop_set_uint16(flash_dev, "id1", 0xd5);       /* Am29F080 */
+    qdev_prop_set_uint16(flash_dev, "unlock-addr0", SN0_FLASH_CMD_ADDR1);
+    qdev_prop_set_uint16(flash_dev, "unlock-addr1", SN0_FLASH_CMD_ADDR2);
+    qdev_prop_set_string(flash_dev, "name", flash_name);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(flash_dev), &error_fatal);
+    node->flash = PFLASH_CFI02(flash_dev);
 
+    MemoryRegion *chip =
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_dev), 0);
+
+    /*
+     * The Hub-special LBOOT window: the controller decode (repeat and the
+     * strided command port), with a direct romd alias of the chip overlaid
+     * at the flash's own base inside it -- the PROM fetches its relocated
+     * code there, and an I/O region cannot back translated code.
+     */
     memory_region_init_io(&node->flash_hub_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, hub_name,
                           SN0_LBOOT_SIZE);
     memory_region_add_subregion(system,
                                 SN0_SPACE_HUB + node_base + SN0_FLASH_HUB,
                                 &node->flash_hub_view);
-
-    /*
-     * The PROM fetches its relocated code through the flash base in Hub space,
-     * not the reset view. An I/O region cannot back translated code, so overlay
-     * a direct romd alias of the chip there; the mirror underneath still serves
-     * the repeated decode and the byte-wide command port.
-     */
     memory_region_init_alias(&node->flash_hub_fast, OBJECT(node),
-                             hub_fast_name, &node->flash, 0, SN0_FLASH_SIZE);
+                             hub_fast_name, chip, 0, SN0_FLASH_SIZE);
     memory_region_add_subregion_overlap(
         system, SN0_SPACE_HUB + node_base + SN0_FLASH_LOCAL,
         &node->flash_hub_fast, 1);
 
+    /*
+     * The reset-vector view aliases the megabyte of Hub space at the flash
+     * base, so reads and fetches resolve to the romd chip -- required, since
+     * the processor boots by fetching here and an I/O region cannot back
+     * translated code. Writes through this view land on the chip's own
+     * byte-addressed decode rather than the controller's strided command
+     * port: the romd overlay wins the whole megabyte, and an alias cannot
+     * route reads and writes differently. That divergence from the old
+     * model is deliberate and confined -- every observed command sequence,
+     * and the vendor flash programmer the datasheet cites, drives commands
+     * through the Hub window, and the reset view's write decode is not
+     * established by any source we hold. It overlaps RAM and wins.
+     */
+    memory_region_init_alias(&node->flash_reset_view, OBJECT(node),
+                             reset_name, system,
+                             SN0_SPACE_HUB + node_base + SN0_FLASH_LOCAL,
+                             SN0_FLASH_SIZE);
+    memory_region_add_subregion_overlap(system, node_base + SN0_FLASH_LOCAL,
+                                        &node->flash_reset_view, 1);
+
+    /*
+     * The remote-node RBOOT window is only ever a maintenance read/write
+     * path -- no processor fetches through it -- so it is the bare
+     * controller decode with no romd overlay.
+     */
     memory_region_init_io(&node->flash_rboot_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, rboot_name,
                           SN0_RBOOT_SIZE);

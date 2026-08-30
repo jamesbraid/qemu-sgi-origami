@@ -1704,10 +1704,11 @@ void sn0_firmware_init(MachineState *machine)
      * environment changes the PROM deliberately retains across that reset.
      */
     for (node_index = 0; node_index < node_count; node_index++) {
-        memcpy(memory_region_get_ram_ptr(&s->nodes[node_index]->flash), flash,
-               SN0_FLASH_SIZE);
-        memory_region_set_dirty(&s->nodes[node_index]->flash, 0,
-                                SN0_FLASH_SIZE);
+        MemoryRegion *chip = sysbus_mmio_get_region(
+            SYS_BUS_DEVICE(s->nodes[node_index]->flash), 0);
+
+        memcpy(memory_region_get_ram_ptr(chip), flash, SN0_FLASH_SIZE);
+        memory_region_set_dirty(chip, 0, SN0_FLASH_SIZE);
     }
     g_free(flash);
 
