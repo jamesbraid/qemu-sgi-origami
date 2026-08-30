@@ -345,6 +345,19 @@ static void test_flash_autoselect(const void *data)
     g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE), ==, 0x01);
     g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE + 1), ==, 0xd5);
 
+    /*
+     * Every view of the chip must answer command-mode reads alike, at any
+     * width: the reset view is the same byte-wide chip behind the same
+     * controller, so a word read must gather the same bytes the Hub
+     * windows gather rather than widening one chip lookup across the bus.
+     */
+    g_assert_cmphex(qtest_readl(qts, FLASH_RESET), ==,
+                    qtest_readl(qts, FLASH_HUB));
+    g_assert_cmphex(qtest_readl(qts, FLASH_REMOTE), ==,
+                    qtest_readl(qts, FLASH_HUB));
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET), ==, 0x01);
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + 1), ==, 0xd5);
+
     flash_command(qts, 0, 0xf0);
     g_assert_cmphex(qtest_readl(qts, FLASH_HUB), ==, before);
 
