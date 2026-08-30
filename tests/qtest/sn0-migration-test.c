@@ -1,48 +1,18 @@
 /*
- * Whether a device's state comes back correct on the far side of a
- * migration, including whatever a `.post_load` hook re-derives rather than
- * carries in the migration stream directly.
+ * Whether device state comes back correct after a migration, including
+ * what a .post_load hook re-derives rather than carries in the stream.
  *
- * This does not build on QEMU's own tests/qtest/migration/ framework, and
- * that is a deliberate choice rather than a gap. That framework's job is
- * proving a *running* guest survives a *live* migration: it embeds a tiny
- * hand-assembled counting workload per target
- * (tests/qtest/migration/bootfile.c) and watches the count keep advancing on
- * the far side, which is how it tells a migration that preserved execution
- * from one that silently dropped it. mips64 has no such workload in that
- * file, and writing one would answer a question this fork is not asking:
- * every sn0-*-test.c file already runs the machine under the qtest
- * accelerator (`-accel qtest`, in libqtest.c's own qtest_init), which never
- * executes guest code at all, so "live" is not a meaningful property here
- * to begin with. What we need is narrower and does not need a workload — a
- * stopped machine's device state, including anything derived rather than
- * stored, has to round-trip.
+ * Deliberately not on tests/qtest/migration/: that framework proves a
+ * running guest survives a live migration, and qtest never executes guest
+ * code, so a stopped machine's device state is the whole question. The
+ * migrate-and-poll steps follow tests/qtest/nvme-test.c, which stands
+ * outside the framework for the same reason.
  *
- * The two migration steps below are a deliberately small rederivation of
- * what tests/qtest/migration/migration-qmp.c and migration-util.c already
- * do for the four architectures that use that framework, sized down to what
- * a device-only, no-workload test needs: start a source and a destination,
- * drive `migrate` over a Unix socket the destination is already listening
- * on, and poll `query-migrate` for "completed". tests/qtest/nvme-test.c
- * does the same thing this way, outside that framework, for the same
- * reason — proving one device's migration does not need the machinery
- * built for proving a live guest's.
- *
- * The concrete case here is the Bridge's device window, the one this
- * pattern was written to cover: task 53 found that `device_window_base`
- * and each window's memory-or-I/O selection are derived from the per-slot
- * register in `sgi_bridge_aim_window()` and are not independent migrated
- * facts, so a Bridge that migrates the register correctly but never re-runs
- * that derivation comes up with its windows aimed at the wrong PCI space.
- * That fix was verified by hand at the time — two qemu-system-mips64
- * processes, QMP over a bind-mounted Unix socket, a real OpenBSD boot to
- * program the windows, `info mtree` compared before and after — because no
- * automated coverage existed for it. This is that verification, automated,
- * using a real PCI card behind the window instead of a boot, so the
- * question the test answers is not "does the register's bit pattern
- * survive" (VMSTATE_UINT32_ARRAY already guarantees that on its own) but
- * "does a real access through the window still reach the card," which only
- * a correct `.post_load` can leave true.
+ * The founding case is the Bridge device window, whose aim is derived
+ * from the per-slot register on load: the register's bits surviving
+ * (VMSTATE_UINT32_ARRAY guarantees that) is a weaker claim than an access
+ * through the window still reaching the card, which only a correct
+ * .post_load leaves true.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -51,12 +21,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
-/*
- * Crosstalk space, the bridge's own widget window inside it, and the
- * per-slot device-window register — the same constants sn0-bridge-test.c
- * defines for itself, kept as this file's own copy rather than shared,
- * matching how every sn0-*-test.c file in this tree already stands alone.
- */
+/* This file's own copies, the way every sn0-*-test.c stands alone. */
 #define SPACE_XTALK             0x20000000000ULL
 #define NODE_STRIDE             0x100000000ULL
 #define BRIDGE_WIDGET           8
@@ -85,10 +50,7 @@
 #define NI_META_TABLE_LAST      0x6380f8
 #define NI_LOCAL_TABLE          0x638100
 
-/*
- * The block transfer engines' registers and fields — this file's own copy,
- * matching how every sn0-*-test.c file stands alone.
- */
+/* The block transfer engines' registers and fields. */
 #define BTE_LENGTH(e)           (0x410000 + (e) * 0x10000)
 #define BTE_SOURCE(e)           (BTE_LENGTH(e) + 0x08)
 #define BTE_DEST(e)             (BTE_LENGTH(e) + 0x10)
@@ -124,11 +86,7 @@
     (BRIDGE_BASE_FOR_NODE(node) + BRIDGE_CFG0 + \
      (device) * CFG0_DEVICE_STRIDE)
 
-/*
- * A card to probe with, the same in-tree device sn0-bridge-test.c uses for
- * the same reason: which card does not matter for a test about the window,
- * so pick one needing no backing file and no network.
- */
+/* Any card works for a window test; this one needs no backing or net. */
 #define PROBE_SLOT              4
 #define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
 
@@ -158,11 +116,8 @@
                                   IOC3_SCRATCH)
 
 /*
- * The IOC3's serial DMA engine on node 0: the SuperIO interrupt status
- * register, the shared ring base, port A's engine registers, and the
- * byte-wide 16550 registers the setup drives -- this file's own copy, like
- * the rest of its constants. The ring block sits in guest RAM; with 4 KB
- * rings the port A receive ring is the block's second page.
+ * The IOC3 serial DMA engine on node 0. The ring block sits in guest RAM;
+ * with 4 KB rings the port A receive ring is the block's second page.
  */
 #define IOC3_REG(offset)         (BRIDGE_BASE_FOR_NODE(0) + \
                                   IOC3_WINDOW_OFFSET + (offset))
@@ -196,11 +151,7 @@
 #define MACHINE_DUAL \
     "-M origin200,synthesized-firmware=off " DUAL_CHASSIS_TOPOLOGY
 
-/*
- * The board identity part's one-wire register, and the slot widths a guest
- * drives it with — again this file's own copy, matching how the other
- * sn0-*-test.c files stand alone.
- */
+/* The board identity part's one-wire register and slot widths. */
 #define BRIDGE_NIC               0x0b0
 #define NIC_LEVEL                (1u << 0)
 #define NIC_SAMPLE(us)           ((uint32_t)(us) << 2)
@@ -226,11 +177,9 @@ static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
 }
 
 /*
- * Drive a real migration between two already-connected qtest instances and
- * block until it either completes or fails. `to` must already be listening
- * on `uri` (an `-incoming` on its command line does that before qtest ever
- * gets a QMP handshake with it, so there is no window where `from` could
- * connect too early).
+ * Migrate and block until completed or failed. `-incoming` on the
+ * destination's command line has it listening before its QMP handshake,
+ * so `from` cannot connect too early.
  */
 static void migrate_stopped_vm(QTestState *from, const char *uri)
 {
@@ -324,15 +273,10 @@ static void test_dual_base_io_survives_migration(const void *data)
 }
 
 /*
- * The serial DMA receive path's live state: a ring the engine has produced
- * into, and a receive timer wound and counting. The indices and the ring's
- * contents migrate as plain fields and guest RAM, but the timer's deadline
- * lives in a QEMUTimer -- state that only crosses if the timer is in the
- * migration stream -- and a wound timer lost in transit is an interrupt
- * that never fires: the guest's console driver waits forever for a prompt
- * about characters already sitting in its ring. So the far side must show
- * the same count still pending, and stepping its clock past the deadline
- * must raise the receive-timer source there.
+ * A wound receive timer's deadline lives in a QEMUTimer, which crosses
+ * only if the timer is in the stream; lost in transit it is an interrupt
+ * that never fires and a console that waits forever. The far side must
+ * show the count still pending and still expire past the deadline.
  */
 static void test_a_wound_receive_timer_survives_migration(const void *data)
 {
@@ -358,10 +302,8 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     /*
-     * Eight data bits, the FIFO on, and loopback, so the entry the transmit
-     * engine sends arrives at the same port's receiver and lands in the
-     * receive ring -- a delivery with no chardev in it. The receive timer is
-     * armed and a reload programmed, so that delivery winds it.
+     * Loopback delivers the transmit entry to the same port's receive
+     * ring with no chardev in it; the armed timer is wound by delivery.
      */
     qtest_writeb(from, IOC3_SERIAL_A_LCR, 0x03);
     qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
@@ -407,16 +349,11 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
 }
 
 /*
- * The case task 53 fixed and nothing before this file automatically
- * re-checks: aim a window at a real card, migrate, and confirm the same
- * access that worked on the source still reaches the card on the
- * destination. Without `sgi_bridge_post_load()` re-deriving
- * `device_window_base` and the window's memory-or-I/O selection from the
- * migrated register, the destination's window comes up aimed at the wrong
- * PCI space (this was verified by hand at the time — mutating `post_load`
- * to a no-op put windows 0 and 1 back in PCI memory space instead of the
- * I/O space a real guest had put them in) and this read returns the bus's
- * unanswered value instead of the card's.
+ * Aim a window at a card, migrate, and require the same access to still
+ * reach the card: without sgi_bridge_post_load() re-deriving the window's
+ * aim, the destination comes up over the wrong PCI space -- observed by
+ * mutating post_load to a no-op -- and the read returns the bus's
+ * unanswered value.
  */
 static void test_a_device_window_survives_migration(const void *data)
 {
@@ -441,12 +378,7 @@ static void test_a_device_window_survives_migration(const void *data)
     g_assert_cmphex(qtest_readl(from, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
 
-    /*
-     * The destination starts with the same devices as the source — same
-     * card, same slot — and listens for the incoming migration before qtest
-     * ever hands it a QMP handshake, so there is no race with `from`
-     * connecting before it is ready.
-     */
+    /* Same devices as the source, listening before its QMP handshake. */
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE PROBE_CARD
                                    " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
@@ -454,10 +386,8 @@ static void test_a_device_window_survives_migration(const void *data)
     migrate_stopped_vm(from, uri);
 
     /*
-     * The actual claim: the same access that worked on the source still
-     * reaches the same card on the destination, which only holds if the
-     * window's derived state — not just the register a guest wrote — came
-     * back correct.
+     * The claim: the access still reaches the card, which only holds if
+     * the derived state came back, not just the register.
      */
     g_assert_cmphex(qtest_readl(to, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
@@ -598,28 +528,14 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
 }
 
 /*
- * A device with a conversation in it has state a snapshot at rest cannot
- * see, and this file could not see it either.
- *
- * The existing test migrates a machine whose devices are between accesses,
- * where everything that matters is already in a register. The board identity
- * part is not like that: a guest drives it one bit per register write, so
- * which phase it is in, how many bits of the current byte have arrived, what
- * they spell, and how far through an answer it is all live between accesses
- * and none of it is in any register. A snapshot taken at rest restores that
- * correctly by accident, because at rest there is nothing to restore.
- *
- * So this reads half a page on the source and the other half on the
- * destination, and checks the two halves as one page. The part number spans
- * the boundary and the page's own check covers all thirty-two bytes, so a
- * destination that came up having forgotten the conversation cannot produce
- * a page that passes -- it answers the idle wire instead, and idle reads as
- * ones.
- *
- * This fork has more than one device with a conversation in it, and the
- * general point is the reason to keep this test rather than the particular
- * bytes: a migration test that only ever snapshots at rest certifies a
- * property weaker than the one that has to hold.
+ * The board identity part is driven one bit per register write, so its
+ * conversation state lives between accesses and in no register -- a
+ * snapshot at rest restores it correctly by accident. Read half a page on
+ * the source and half on the destination, checked as one page: the part
+ * number spans the boundary and the page's check covers all of it, so a
+ * destination that forgot the conversation answers the idle wire (ones)
+ * and cannot pass. Snapshot-at-rest-only migration testing certifies a
+ * weaker property than the one that must hold.
  */
 static void test_a_conversation_survives_migration(const void *data)
 {
@@ -666,11 +582,7 @@ static void test_a_conversation_survives_migration(const void *data)
         page[i] = nic_read_byte(to);
     }
 
-    /*
-     * Checked as one page rather than byte by byte: the part number spans
-     * the halves and the page's own check covers all of it, so this is the
-     * whole value and not a property of it.
-     */
+    /* One page, not bytes: the whole value rather than a property of it. */
     g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
     g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
 
@@ -679,15 +591,10 @@ static void test_a_conversation_survives_migration(const void *data)
 }
 
 /*
- * The block transfer engines' registers are the whole of an engine's state
- * -- a transfer completes inside the store that launches it, so there is
- * never an in-flight transfer for the stream to carry -- but "the bit
- * pattern survives" is the weak half of what has to hold. The strong half
- * is that the moved state is still live: an engine armed on the source must
- * launch on the destination from nothing but its migrated registers, so
- * this arms engine 0 (busy and length set, addresses and interrupt word
- * programmed, control not yet stored) before the move and stores control
- * only on the far side.
+ * BTE registers are the whole of an engine's state, but bit-pattern
+ * survival is the weak half: an engine armed on the source must launch on
+ * the destination from nothing but its migrated registers, so control is
+ * stored only on the far side.
  */
 static void test_bte_state_survives_migration(const void *data)
 {
@@ -864,14 +771,9 @@ static void test_enabled_recorder_remains_wired_after_migration(
 #define BACKDOOR_DIR_HUB        (SPACE_HUB + 0xc0000000ULL)
 
 /*
- * The ECC and directory back-door storage is a plain heap buffer behind the
- * Hub's populated-bank ops, not a RAM MemoryRegion, so the memory core does
- * not migrate it the way it migrates guest RAM -- the node's vmstate has to
- * carry it. Write an entry to each window, migrate, and confirm it survives.
- * Only the low sixteen bits of an eight-byte-aligned entry are real storage
- * on this machine's directory format, so that is the part checked. Before the
- * buffer joined the node vmstate this read back the destination's
- * realize-time zero fill instead.
+ * The back-door storage is a heap buffer, not a RAM MemoryRegion, so the
+ * node's vmstate must carry it -- without that the destination reads its
+ * realize-time zero fill. The low sixteen bits are the real storage.
  */
 static void test_backdoor_storage_survives_migration(const void *data)
 {
