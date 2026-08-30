@@ -14,10 +14,11 @@
  * byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY MAC-config lock,
  * ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table -- as 64-bit
  * registers in native little-endian order. The transmit descriptor/doorbell
- * path behind the TxP window (BAR2) is modelled; the receive path is the
- * follow-on slice. A host bridge that corrects register byte order or access
- * width (the Origin 200 Bridge) is that bridge's concern, not this device's --
- * see docs/library/nic-on-bridge-conventions.md.
+ * path behind the TxP window (BAR2) is modelled, and so is the receive path:
+ * the RxDMA registers (also in BAR0) plus the RxD descriptor ring the card
+ * walks in guest memory. A host bridge that corrects register byte order or
+ * access width (the Origin 200 Bridge) is that bridge's concern, not this
+ * device's -- see docs/library/nic-on-bridge-conventions.md.
  */
 
 #ifndef HW_NET_XFRAME_H
@@ -126,7 +127,27 @@ struct XframeState {
      */
     uint8_t tx_frame[XFRAME_MAX_FRAME];
 
-    /* The netdev frontend. Transmit is modelled; receive is a later slice. */
+    /*
+     * RxDMA ring state -- docs/datasheets/xframe.md's RxDMA register bank and
+     * "Behavioral contract" Receive note. Only ring 0 is modelled: both
+     * public drivers use exactly one of the chip's eight receive rings
+     * (OpenBSD if_xge.c's own comment on PRC_RXD0_0: "PRC_RXD0_[1-7] are not
+     * used").
+     */
+    uint64_t prc_rxd0_0;        /* PRC_RXD0_0: ring 0's descriptor-page base */
+    uint64_t prc_ctrl_0;        /* PRC_CTRL_0: ring 0 control (RC_IN_SVC...) */
+    uint64_t rx_traffic_int;    /* RX_TRAFFIC_INT: receive completion status */
+
+    /*
+     * The card's own walk position through the RxD ring: not itself a
+     * guest-visible register, mirroring how real hardware tracks its current
+     * descriptor internally. Reset to the ring base whenever the guest
+     * (re)writes it or (re)arms RC_IN_SVC.
+     */
+    uint64_t rx_page_addr;
+    uint32_t rx_desc_idx;
+
+    /* The netdev frontend. */
     NICConf conf;
     NICState *nic;
 };

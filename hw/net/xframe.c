@@ -12,7 +12,9 @@
  * bridge's concern, not this device's. The transmit descriptor/doorbell path
  * behind the TxP window (BAR2) is modelled: a doorbell walks the FIFO's
  * descriptor list, gathers the buffers, and emits the frame. The receive path
- * is the follow-on slice.
+ * behind the RxDMA registers (also BAR0) is modelled too: the card walks its
+ * posted RxD ring, deposits an accepted frame into the guest's buffer, and
+ * raises the receive interrupt.
  *
  * QOM/PCI-realize/BAR shape and the ResettablePhases reset wiring follow
  * hw/scsi/qlogic-isp.c, the fork's PCI-endpoint reference -- not
@@ -42,9 +44,12 @@
 #define XFRAME_SW_RESET             0x0100
 #define XFRAME_ADAPTER_STATUS       0x0108
 #define XFRAME_ADAPTER_CONTROL      0x0110
+#define XFRAME_RX_TRAFFIC_INT       0x08f0
 #define XFRAME_SWAPPER_CTRL         0x0908
 #define XFRAME_PIF_RD_SWAPPER_FB    0x0910
 #define XFRAME_XMSI_ADDRESS         0x0960
+#define XFRAME_PRC_RXD0_0           0x1930
+#define XFRAME_PRC_CTRL_0           0x1970
 #define XFRAME_MAC_CFG              0x2100
 #define XFRAME_RMAC_CFG_KEY         0x2120
 #define XFRAME_RMAC_ADDR_CMD_MEM    0x2128
@@ -88,6 +93,14 @@
 #define XFRAME_RMAC_ADDR_CMD_OFF_MASK 0x3fULL
 
 /*
+ * PRC_CTRL_0: RC_IN_SVC arms receive ring 0, and bits 49:48 pick the
+ * descriptor buffer-count mode. Only 1-buffer mode (the value both public
+ * drivers use) is modelled.
+ */
+#define XFRAME_RC_IN_SVC                 (1ULL << 56)
+#define XFRAME_PRC_CTRL_RING_MODE_MASK   (3ULL << 48)
+
+/*
  * Pack the netdev's configured MAC into MAC-table entry 0 the way the factory
  * programs it: the six bytes in RMAC_ADDR_DATA0_MEM bits 63:16, most
  * significant byte first (the order both drivers unpack it in).
@@ -101,6 +114,16 @@ static void xframe_load_factory_mac(XframeState *s)
         mac |= (uint64_t)s->conf.macaddr.a[i] << (56 - 8 * i);
     }
     s->mac_addr[0] = mac;
+}
+
+/*
+ * Recompute the INTx line from the device's one interrupt source modelled so
+ * far: receive completion. A transmit-completion source, if one is ever
+ * added, would OR in here too.
+ */
+static void xframe_update_irq(XframeState *s)
+{
+    pci_set_irq(PCI_DEVICE(s), s->rx_traffic_int != 0);
 }
 
 /*
@@ -123,7 +146,13 @@ static void xframe_soft_reset(XframeState *s)
     s->rmac_addr_data1 = 0;
     memset(s->mac_addr, 0, sizeof(s->mac_addr));
     memset(s->txdl_par, 0, sizeof(s->txdl_par));
+    s->prc_rxd0_0 = 0;
+    s->prc_ctrl_0 = 0;
+    s->rx_traffic_int = 0;
+    s->rx_page_addr = 0;
+    s->rx_desc_idx = 0;
     xframe_load_factory_mac(s);
+    xframe_update_irq(s);
 }
 
 /*
@@ -181,6 +210,12 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
         return s->rmac_addr_data0;
     case XFRAME_RMAC_ADDR_DATA1_MEM:
         return s->rmac_addr_data1;
+    case XFRAME_RX_TRAFFIC_INT:
+        return s->rx_traffic_int;
+    case XFRAME_PRC_RXD0_0:
+        return s->prc_rxd0_0;
+    case XFRAME_PRC_CTRL_0:
+        return s->prc_ctrl_0;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "xframe: PIF read at 0x%" PRIx64 " (size %u) is not "
@@ -233,6 +268,54 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case XFRAME_RMAC_ADDR_CMD_MEM:
         xframe_rmac_addr_cmd(s, val);
+        return;
+    case XFRAME_RX_TRAFFIC_INT:
+        /*
+         * Write-1-to-clear: the driver reads the pending bits and writes the
+         * same value back to clear exactly those (OpenBSD if_xge.c's
+         * xge_intr: "if ((val = PIF_RCSR(RX_TRAFFIC_INT)))
+         * PIF_WCSR(RX_TRAFFIC_INT, val);").
+         */
+        s->rx_traffic_int &= ~val;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_PRC_RXD0_0:
+        s->prc_rxd0_0 = val;
+        s->rx_page_addr = val;
+        s->rx_desc_idx = 0;
+        /*
+         * Flushing here recovers a netdev queue a prior 0 return left
+         * holding a frame -- but only for the case this register write
+         * covers: the guest re-arming the ring itself. It is not a general
+         * fix for a ring that ran dry under sustained traffic. Both public
+         * drivers refill a live ring by flipping an RxD's OWN bit directly
+         * in guest RAM (OpenBSD xge_add_rxbuf, Linux fill_rx_buffers), never
+         * through a register write, so that refill never reaches this flush
+         * -- a ring exhausted and refilled in place stays wedged in the
+         * netdev queue until something else re-arms it. Tracked as a
+         * follow-on slice (RX recovery under ring exhaustion), not fixed
+         * here.
+         */
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        return;
+    case XFRAME_PRC_CTRL_0:
+        if ((val & XFRAME_RC_IN_SVC) && !(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
+            /*
+             * Arming the ring restarts the walk at its base -- the sequence
+             * both drivers use writes PRC_RXD0_0 once, before this.
+             */
+            s->rx_page_addr = s->prc_rxd0_0;
+            s->rx_desc_idx = 0;
+        }
+        if (val & XFRAME_PRC_CTRL_RING_MODE_MASK) {
+            qemu_log_mask(LOG_UNIMP,
+                          "xframe: only 1-buffer receive mode is modelled; "
+                          "ring mode %u ignored\n",
+                          (unsigned)((val >> 48) & 3));
+        }
+        s->prc_ctrl_0 = val;
+        /* Same flush, same in-place-refill limitation as PRC_RXD0_0 above. */
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
     case XFRAME_ADAPTER_STATUS:
     case XFRAME_PIF_RD_SWAPPER_FB:
@@ -429,24 +512,247 @@ static const MemoryRegionOps xframe_txp_ops = {
 };
 
 /*
- * The receive path is a follow-on slice (Task 3): there is no ring to
- * accept a frame into yet, so declining every frame here is the genuine
- * "no buffer available" case the can_receive/receive contract asks for,
- * not a frame this device inspects and drops -- see
- * docs/superpowers/plans/2026-08-29-xframe-ethernet-adapter.md's
- * can_receive/receive note. can_receive() always returning false means
- * receive() below is never called; it exists only so NetClientInfo has a
- * valid pointer.
+ * MAC_CFG bits the receive filter consults (if_xgereg.h RMAC_PROM_EN,
+ * RMAC_BCAST_EN, RMAC_ALL_ADDR_EN). Everything else in MAC_CFG (TMAC_EN,
+ * loopback, pad/FCS strip, RMAC_DISCARD_PFRM) has no filtering role.
  */
-static bool xframe_can_receive(NetClientState *nc)
+#define XFRAME_MAC_CFG_RMAC_PROM_EN      (1ULL << 56)
+#define XFRAME_MAC_CFG_RMAC_BCAST_EN     (1ULL << 54)
+#define XFRAME_MAC_CFG_RMAC_ALL_ADDR_EN  (1ULL << 53)
+
+/*
+ * A 1-buffer-mode RxD is four 64-bit words: host control, control1,
+ * control2, buffer pointer (if_xgereg.h's struct rxd1). control1 carries
+ * ownership (bit 56, 1=card/0=host) and the status code (XCODE, bits
+ * 51:48); control2 carries the buffer size in bits 63:48 -- the posted
+ * capacity, overwritten below with the received length.
+ */
+#define XFRAME_RXD_SIZE              32
+#define XFRAME_RXD_OWN               (1ULL << 56)
+#define XFRAME_RXD_XCODE_SHIFT       48
+#define XFRAME_RXD_XCODE_OK          0
+#define XFRAME_RXD_XCODE_ABORT       2   /* abort during transfer */
+#define XFRAME_RXD_XCODE_BSZ         7   /* buffer too small for the frame */
+#define XFRAME_RXD_BUFSIZ_SHIFT      48
+
+/*
+ * RxDs are laid out 127 to a 4 KB page (if_xgereg.h's NDESC_1BUFMODE),
+ * chained by a next-page pointer in the page's last eight bytes. Both public
+ * drivers allocate several such pages and link them into a ring, so the walk
+ * below follows that same chain rather than assuming one page is the whole
+ * ring.
+ */
+#define XFRAME_RXD1_PER_PAGE         127
+#define XFRAME_RXD1_PAGE_SIZE        4096
+#define XFRAME_RXD1_PAGE_NEXT_OFF    (XFRAME_RXD1_PAGE_SIZE - 8)
+
+/*
+ * RX_TRAFFIC_INT's ring-0 completion bit (Linux s2io-regs.h
+ * RX_TRAFFIC_INT_n(0), the driver's own MSB-first bit numbering: bit 63).
+ * Only ring 0 is modelled.
+ */
+#define XFRAME_RX_TRAFFIC_RING0      (1ULL << 63)
+
+/*
+ * Follow the ring's next-page pointer once its 127 descriptors are used up.
+ * Left in place (index forced back to the page's own start) on a DMA
+ * failure: xframe_rx_head's ring-index hygiene then finds that slot already
+ * handed back to the host and reports no buffer, rather than walking off
+ * the page.
+ */
+static void xframe_rx_advance_page(XframeState *s)
 {
+    PCIDevice *pdev = PCI_DEVICE(s);
+    uint8_t raw[8];
+
+    if (pci_dma_read(pdev, s->rx_page_addr + XFRAME_RXD1_PAGE_NEXT_OFF,
+                     raw, sizeof(raw)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: receive ring next-page pointer read at "
+                      "0x%" PRIx64 " failed\n",
+                      s->rx_page_addr + XFRAME_RXD1_PAGE_NEXT_OFF);
+        s->rx_desc_idx = 0;
+        return;
+    }
+    s->rx_page_addr = ldq_le_p(raw);
+    s->rx_desc_idx = 0;
+}
+
+/*
+ * Peek the head-of-ring RxD: whether the ring is armed and, if so, whether
+ * the card currently owns the next descriptor. can_receive and receive both
+ * call this and nothing else to decide "is there a buffer" -- the same
+ * question asked the same way, so a filtered frame's drop can never be
+ * mistaken for the no-buffer case the 0 return is reserved for.
+ *
+ * Ring-index hygiene: the in-page position is reduced modulo the page's
+ * descriptor count before any walk, the sgi-ioc3-eth/qlogic-isp pattern --
+ * so a stuck or corrupted position can never read past the page.
+ */
+static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
+                           uint8_t raw[XFRAME_RXD_SIZE])
+{
+    PCIDevice *pdev = PCI_DEVICE(s);
+
+    if (!(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
+        return false;
+    }
+
+    s->rx_desc_idx %= XFRAME_RXD1_PER_PAGE;
+    *desc_addr = s->rx_page_addr + (uint64_t)s->rx_desc_idx * XFRAME_RXD_SIZE;
+
+    if (pci_dma_read(pdev, *desc_addr, raw, XFRAME_RXD_SIZE) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: receive descriptor read at 0x%" PRIx64
+                      " failed\n", *desc_addr);
+        return false;
+    }
+
+    return (ldq_le_p(raw + 8) & XFRAME_RXD_OWN) != 0;
+}
+
+/*
+ * Whether a frame off the wire should reach the ring at all -- real hardware
+ * filters by destination address in the RMAC block before a frame is ever
+ * written to a receive buffer. The station/multicast table doubles as the
+ * unicast filter: any of its 64 programmed entries is a match, not only
+ * entry 0's factory address.
+ *
+ * Multicast is not modelled against that same table and is accepted only in
+ * the accept-all-multicast mode. Both public drivers program multicast
+ * groups as masked exact-match entries in the same 64-entry
+ * RMAC_ADDR_CMD_MEM/DATA0/DATA1_MEM table (OpenBSD xge_setmulti, Linux
+ * s2io_set_multicast), each entry's DATA1_MEM mask picking which address
+ * bits that entry cares about -- not a hash, and not what this filter does.
+ * A real driver joining specific multicast groups never sets
+ * RMAC_ALL_ADDR_EN, so this simplification under-delivers multicast traffic
+ * to any guest that filters it that way. Tracked as a follow-on slice
+ * (multicast CAM matching), not implemented here.
+ */
+static bool xframe_rx_filter(XframeState *s, const uint8_t *buf, size_t size)
+{
+    static const uint8_t broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint64_t dest;
+    size_t i;
+
+    if (s->mac_cfg & XFRAME_MAC_CFG_RMAC_PROM_EN) {
+        return true;
+    }
+    if (size < 6) {
+        return false;
+    }
+    if (memcmp(buf, broadcast, 6) == 0) {
+        return (s->mac_cfg & XFRAME_MAC_CFG_RMAC_BCAST_EN) != 0;
+    }
+    if (buf[0] & 1) {
+        return (s->mac_cfg & XFRAME_MAC_CFG_RMAC_ALL_ADDR_EN) != 0;
+    }
+
+    dest = 0;
+    for (i = 0; i < 6; i++) {
+        dest = (dest << 8) | buf[i];
+    }
+    for (i = 0; i < XFRAME_MAC_TABLE_ENTRIES; i++) {
+        if ((s->mac_addr[i] >> 16) == dest) {
+            return true;
+        }
+    }
     return false;
 }
 
+/*
+ * Whether the receive engine has anywhere to put a frame right now: the ring
+ * armed and its head descriptor owned by the card. Not gated on ADAPTER_EN
+ * or MAC_CFG's RMAC_EN, the same simplification the transmit doorbell
+ * already makes -- a driver arms the ring and enables the adapter together.
+ */
+static bool xframe_can_receive(NetClientState *nc)
+{
+    XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
+    uint64_t desc_addr;
+    uint8_t raw[XFRAME_RXD_SIZE];
+
+    return xframe_rx_head(s, &desc_addr, raw);
+}
+
+/*
+ * Deposit one frame into the head-of-ring RxD: filter it, write it into the
+ * posted buffer, and publish the completion -- length and status first, then
+ * ownership released last, the same order the transmit doorbell releases its
+ * own descriptor.
+ *
+ * Guest-driven hang safety: a filtered frame and a genuine no-buffer
+ * condition return different values on purpose. No buffer at all returns 0,
+ * which is QEMU's netdev-queue signal to hold and redeliver this same frame
+ * once can_receive reports true again. A filtered frame returns the frame's
+ * full size instead, because nothing about it changes on a retry -- treating
+ * it as consumed is what keeps the queue from wedging on a frame no future
+ * attempt will ever pass.
+ */
 static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
                               size_t size)
 {
-    return 0;
+    XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
+    PCIDevice *pdev = PCI_DEVICE(s);
+    uint64_t desc_addr, control2, bufaddr;
+    uint8_t raw[XFRAME_RXD_SIZE];
+    size_t capacity, copy_len;
+    unsigned xcode;
+    uint8_t word[8];
+
+    if (!xframe_rx_head(s, &desc_addr, raw)) {
+        return 0;   /* the genuine no-buffer condition */
+    }
+
+    if (!xframe_rx_filter(s, buf, size)) {
+        return size;
+    }
+
+    control2 = ldq_le_p(raw + 16);
+    bufaddr = ldq_le_p(raw + 24);
+    capacity = (control2 >> XFRAME_RXD_BUFSIZ_SHIFT) & 0xffff;
+
+    copy_len = size;
+    if (copy_len > XFRAME_MAX_FRAME) {
+        copy_len = XFRAME_MAX_FRAME;
+    }
+    xcode = XFRAME_RXD_XCODE_OK;
+    if (copy_len > capacity) {
+        xcode = XFRAME_RXD_XCODE_BSZ;
+        copy_len = capacity;
+    }
+
+    if (copy_len > 0 &&
+        pci_dma_write(pdev, bufaddr, buf, copy_len) != MEMTX_OK) {
+        /*
+         * The descriptor itself was fine; the buffer pointer it named was
+         * not. Release the descriptor and advance past it below rather than
+         * leaving it parked here -- the same bad pointer would fail
+         * identically on every future frame, permanently stalling the ring
+         * behind one bad buffer.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: receive buffer write at 0x%" PRIx64
+                      " failed; frame dropped\n", bufaddr);
+        copy_len = 0;
+        xcode = XFRAME_RXD_XCODE_ABORT;
+    }
+
+    stq_le_p(word, (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT);
+    pci_dma_write(pdev, desc_addr + 16, word, sizeof(word));
+
+    stq_le_p(word, (uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT);
+    pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
+
+    s->rx_desc_idx++;
+    if (s->rx_desc_idx >= XFRAME_RXD1_PER_PAGE) {
+        xframe_rx_advance_page(s);
+    }
+
+    s->rx_traffic_int |= XFRAME_RX_TRAFFIC_RING0;
+    xframe_update_irq(s);
+
+    return size;
 }
 
 static NetClientInfo xframe_net_info = {
@@ -529,11 +835,12 @@ static void xframe_exit(PCIDevice *dev)
  * migration fields": the byte-swap and scratch registers, ADAPTER_CONTROL,
  * MAC_CFG and its unlock latch, the whole MAC-address table (entry 0's factory
  * address plus any programmed entry -- whatever the guest wrote must survive
- * migration exactly), and the per-FIFO pending transmit list pointer. The
- * netdev frontend's own state lives in NICConf, which every NIC model leaves
- * out of its VMState (see hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI
- * config space is covered by VMSTATE_PCI_DEVICE. The receive ring bookkeeping
- * joins this when that slice lands.
+ * migration exactly), the per-FIFO pending transmit list pointer, and the
+ * receive ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the pending
+ * RX_TRAFFIC_INT status, and the card's current walk position through the
+ * ring). The netdev frontend's own state lives in NICConf, which every NIC
+ * model leaves out of its VMState (see hw/net/sgi-ioc3-eth.c and
+ * hw/net/rtl8139.c); PCI config space is covered by VMSTATE_PCI_DEVICE.
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
@@ -552,6 +859,11 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(rmac_addr_data1, XframeState),
         VMSTATE_UINT64_ARRAY(mac_addr, XframeState, XFRAME_MAC_TABLE_ENTRIES),
         VMSTATE_UINT64_ARRAY(txdl_par, XframeState, XFRAME_TXP_FIFOS),
+        VMSTATE_UINT64(prc_rxd0_0, XframeState),
+        VMSTATE_UINT64(prc_ctrl_0, XframeState),
+        VMSTATE_UINT64(rx_traffic_int, XframeState),
+        VMSTATE_UINT64(rx_page_addr, XframeState),
+        VMSTATE_UINT32(rx_desc_idx, XframeState),
         VMSTATE_END_OF_LIST()
     }
 };
