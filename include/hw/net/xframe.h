@@ -14,10 +14,10 @@
  * byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY MAC-config lock,
  * ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table -- as 64-bit
  * registers in native little-endian order. The transmit descriptor/doorbell
- * path behind the TxP window is a follow-on slice and stays a LOG_UNIMP stub.
- * A host bridge that corrects register byte order or access width (the Origin
- * 200 Bridge) is that bridge's concern, not this device's -- see
- * docs/library/nic-on-bridge-conventions.md.
+ * path behind the TxP window (BAR2) is modelled; the receive path is the
+ * follow-on slice. A host bridge that corrects register byte order or access
+ * width (the Origin 200 Bridge) is that bridge's concern, not this device's --
+ * see docs/library/nic-on-bridge-conventions.md.
  */
 
 #ifndef HW_NET_XFRAME_H
@@ -71,12 +71,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
  */
 #define XFRAME_MAC_TABLE_ENTRIES        64
 
+/*
+ * The TxP window is eight per-FIFO transmit doorbells at a 0x20000 stride
+ * (docs/datasheets/xframe.md's register map).
+ */
+#define XFRAME_TXP_FIFOS                8
+
+/*
+ * The largest frame the transmit path assembles from a descriptor list -- the
+ * card's 9600-byte jumbo limit (docs/datasheets/xframe.md's "Role"). A
+ * guest-supplied length beyond this is clamped rather than copied unbounded.
+ */
+#define XFRAME_MAX_FRAME                9600
+
 struct XframeState {
     PCIDevice parent_obj;
 
     /* BAR0: the PIF register window (the probe/attach register file). */
     MemoryRegion pif_mmio;
-    /* The second BAR: the TxP descriptor/doorbell window. Stub-only. */
+    /* The second BAR: the TxP transmit descriptor/doorbell window. */
     MemoryRegion txp_mmio;
 
     /* PCI-identity properties -- see "PCI identity" above. */
@@ -101,7 +114,19 @@ struct XframeState {
     uint64_t rmac_addr_data1;   /* MAC-table data word 1 (write-only mask) */
     uint64_t mac_addr[XFRAME_MAC_TABLE_ENTRIES]; /* the 64-entry MAC table */
 
-    /* The netdev frontend. No transmit or receive path yet (Tasks 2-3). */
+    /*
+     * Transmit doorbell: the pending TxDL list pointer per FIFO, written to the
+     * TxP window before the control word that launches the list.
+     */
+    uint64_t txdl_par[XFRAME_TXP_FIFOS];
+
+    /*
+     * Scratch for assembling one outgoing frame from a descriptor list.
+     * Transient within a doorbell; not migrated.
+     */
+    uint8_t tx_frame[XFRAME_MAX_FRAME];
+
+    /* The netdev frontend. Transmit is modelled; receive is a later slice. */
     NICConf conf;
     NICState *nic;
 };
