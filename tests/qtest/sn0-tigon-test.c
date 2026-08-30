@@ -112,6 +112,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_OPMODE       0x618
 #define TI_GCR_EVENTCONS_IDX 0x628
 #define TI_GCR_RXRETURNCONS_IDX 0x680
+#define TI_MHC_BYTE_SWAP_ENB 0x00000010
+#define TI_MHC_WORD_SWAP_ENB 0x00000020
 #define TI_OPMODE_BYTESWAP_BD   0x00000002
 #define TI_OPMODE_WORDSWAP_BD   0x00000004
 #define TI_OPMODE_BYTESWAP_DATA 0x00000010
@@ -854,6 +856,36 @@ static void test_interrupt_consumer_catchup(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Layer-A register-swap bits and the descriptor-swap operating mode are
+ * ordinary read/write state: the guest programs them and reads them back
+ * unchanged. This pins that the model stores them rather than acting on them
+ * in some hidden way.
+ */
+static void test_register_config_roundtrip(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_window_at_bar(qts);
+
+    /* MISC_HOST_CTL byte/word swap-enable bits round-trip (Layer A config). */
+    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL,
+                 TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB);
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
+                    (TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB), ==,
+                    TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB);
+
+    /* GCR OPMODE reads back exactly what was written. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                 TI_OPMODE_BYTESWAP_DATA);
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_OPMODE), ==,
+                    TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                    TI_OPMODE_BYTESWAP_DATA);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -887,6 +919,8 @@ int main(int argc, char **argv)
                         test_interrupt_mask_ack);
     qtest_add_data_func("/sn0/tigon/interrupt-consumer-catchup", NULL,
                         test_interrupt_consumer_catchup);
+    qtest_add_data_func("/sn0/tigon/register-config-roundtrip", NULL,
+                        test_register_config_roundtrip);
 
     return g_test_run();
 }
