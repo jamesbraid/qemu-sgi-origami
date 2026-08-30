@@ -56,6 +56,17 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define REG_DATA            4
 #define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
 #define DEV_MEMORY_SPACE    (1u << 12)
+#define DEV_SWAP_DIRECT     (1u << 19)   /* swap bit for the direct-map window */
+#define BRIDGE_DIRECT_MAP_REG (BRIDGE_BASE + 0x080 + REG_DATA)
+
+/*
+ * A 64-bit direct-map DMA address: the low bits reach system memory and the
+ * high half selects the direct-map path whose byte swap is gated by
+ * DEV_SWAP_DIRECT, the same base sn0-qlogic-isp-test.c uses to prove DMA runs
+ * through the Bridge rather than around it.
+ */
+#define IOVA_PREFIX         0xa500000000000000ULL
+#define IOVA(phys)          (IOVA_PREFIX | (uint32_t)(phys))
 
 /* Where the card's BAR is parked in PCI memory space (1 MB aligned). */
 #define ADAPTER_MMIO        0x10000000u
@@ -639,6 +650,84 @@ static void test_receive_filters_other(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The byte-order arbiter, run on the real Bridge fabric with DMA through the
+ * direct-map window whose swap the per-slot DEV_SWAP_DIRECT bit gates. Two
+ * mutually exclusive pairings both have to land descriptors big-endian in
+ * guest memory, each swapping exactly once:
+ *
+ *   transparent: the chip delivers big-endian (OPMODE byte-swap bits set) and
+ *   the Bridge swap bit is set so the Bridge is a no-op;
+ *
+ *   corrected: the chip stays little-endian (OPMODE native) and the Bridge
+ *   swap bit is clear so the Bridge performs the single correction -- the
+ *   ISP1040's own working precedent behind this Bridge.
+ *
+ * Which pairing the real SGI board and IRIX use is set by platform code the
+ * public driver never touches; this proves the emulator implements each
+ * correctly, not which one the hardware wired.
+ */
+static void byte_order_check(bool bridge_transparent)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    uint8_t seen[4];
+
+    aim_window_at_bar(qts);
+    qtest_writel(qts, CFG0(TIGON_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
+                 (bridge_transparent ? DEV_SWAP_DIRECT : 0));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 bridge_transparent ?
+                 (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                  TI_OPMODE_BYTESWAP_DATA) : 0);
+
+    /* GIB and event ring at direct-map addresses so the swap path is used. */
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, EVENT_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, EV_PROD_PHYS, 0, 8);
+    qtest_writeq(qts, GIB_PHYS + GIB_EV_RCB, IOVA(EVENT_RING_PHYS));
+    qtest_writeq(qts, GIB_PHYS + GIB_EV_PROD_PTR, IOVA(EV_PROD_PHYS));
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI,
+                 (uint32_t)(IOVA_PREFIX >> 32));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    release_cpu(qts);
+
+    /*
+     * The firmware-up event descriptor (eventx = 0x01000000) must read
+     * big-endian in guest memory whichever pairing produced it: byte 0 holds
+     * the event type. Any single missing, doubled, or half-width swap moves
+     * the 0x01 out of byte 0.
+     */
+    qtest_memread(qts, EVENT_RING_PHYS, seen, 4);
+    g_assert_cmphex(seen[0], ==, 0x01);
+    g_assert_cmphex(seen[1], ==, 0x00);
+    g_assert_cmphex(seen[2], ==, 0x00);
+    g_assert_cmphex(seen[3], ==, 0x00);
+
+    /* And the producer index, 1, in big-endian: the 0x01 lands in byte 3. */
+    qtest_memread(qts, EV_PROD_PHYS, seen, 4);
+    g_assert_cmphex(seen[0], ==, 0x00);
+    g_assert_cmphex(seen[1], ==, 0x00);
+    g_assert_cmphex(seen[2], ==, 0x00);
+    g_assert_cmphex(seen[3], ==, 0x01);
+
+    qtest_quit(qts);
+}
+
+static void test_byte_order_bridge_transparent(const void *data)
+{
+    byte_order_check(true);
+}
+
+static void test_byte_order_bridge_corrects(const void *data)
+{
+    byte_order_check(false);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -661,6 +750,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
+    qtest_add_data_func("/sn0/tigon/byte-order-bridge-transparent", NULL,
+                        test_byte_order_bridge_transparent);
+    qtest_add_data_func("/sn0/tigon/byte-order-bridge-corrects", NULL,
+                        test_byte_order_bridge_corrects);
 
     return g_test_run();
 }
