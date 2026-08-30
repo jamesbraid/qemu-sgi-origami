@@ -95,6 +95,15 @@
 /* Ring control block host-ring residency flag (if_tireg.h). */
 #define TI_RCB_FLAG_HOST_RING   0x0040
 
+/* Buffer-descriptor flags (if_tireg.h). */
+#define TI_BDFLAG_END           0x0004
+#define TI_BDFLAG_UCAST_PKT     0x0020
+#define TI_BDFLAG_MCAST_PKT     0x0040
+#define TI_BDFLAG_BCAST_PKT     0x0060
+
+/* Largest frame the model assembles (jumbo, with slack). */
+#define TIGON_MAX_FRAME_SIZE    9600
+
 /*
  * Field offsets inside the general information block (struct ti_gib): a 1 KB
  * statistics area, then seven 16-byte ring control blocks, then four 8-byte
@@ -342,6 +351,63 @@ static void tigon_try_firmware_up(TigonState *s)
     tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0);
 }
 
+/*
+ * Transmit doorbell. Walk the transmit ring from the saved consumer index to
+ * the guest's producer index, assembling each frame from its descriptors'
+ * fragments up to the end-of-frame flag, and hand it to the netdev. On Tigon 2
+ * the ring is host-resident (the host-ring flag); the Tigon-1 windowed-SRAM
+ * path is not modelled. The producer index is reduced into range so an
+ * out-of-range mailbox write cannot make the walk loop forever.
+ */
+static void tigon_tx(TigonState *s, uint32_t prod)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint8_t frame[TIGON_MAX_FRAME_SIZE];
+    uint32_t frame_len = 0;
+
+    if (!s->firmware_up) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: transmit doorbell before firmware-up\n");
+        return;
+    }
+    if (!s->tx_host_ring) {
+        qemu_log_mask(LOG_UNIMP,
+                      "tigon: Tigon-1 NIC-resident transmit ring not "
+                      "modelled\n");
+        return;
+    }
+
+    if (prod >= TI_TX_RING_CNT) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: transmit producer index %u out of range\n", prod);
+        prod %= TI_TX_RING_CNT;
+    }
+
+    while (s->tx_considx != prod) {
+        uint64_t desc = s->tx_ring_base + (uint64_t)s->tx_considx * 16;
+        uint64_t buf = tigon_dma_ld_addr(s, desc);
+        uint32_t word = tigon_dma_ld32(s, desc + 8);
+        uint16_t len = word >> 16;      /* big-endian: length high, flags low */
+        uint16_t flags = word & 0xffff;
+
+        if (len > sizeof(frame) - frame_len) {
+            len = sizeof(frame) - frame_len;
+        }
+        pci_dma_read(pci, buf, frame + frame_len, len);
+        frame_len += len;
+        s->tx_considx = (s->tx_considx + 1) % TI_TX_RING_CNT;
+
+        if (flags & TI_BDFLAG_END) {
+            qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
+            frame_len = 0;
+        }
+    }
+
+    tigon_dma_st32(s, s->tx_considx_ptr, s->tx_considx);
+    s->irq_asserted = true;
+    tigon_update_irq(s);
+}
+
 static void tigon_reset_state(TigonState *s)
 {
     /*
@@ -494,11 +560,13 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         s->mb_hostintr = val & 1;
         tigon_update_irq(s);
         return;
+    case TI_MB_SENDPROD_IDX:
+        tigon_tx(s, val);
+        return;
     case TI_WINDATA:
     case TI_SRAM_ADDR:
     case TI_SRAM_DATA:
     case TI_MB_CMDPROD_IDX:
-    case TI_MB_SENDPROD_IDX:
     case TI_MB_STDRXPROD_IDX:
     case TI_MB_JUMBORXPROD_IDX:
     case TI_MB_MINIRXPROD_IDX:
