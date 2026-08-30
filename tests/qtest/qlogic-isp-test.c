@@ -114,10 +114,10 @@
 #define ISP_ENTRY_TYPE_CONTINUATION 0x02
 #define ISP_ENTRY_TYPE_STATUS       0x03
 #define ISP_ENTRY_TYPE_MARKER       0x04
-/* EXTENDED_CMD_TYPE (qla1280.h): real, documented, and "Unused by the
- * driver!" per its own struct comment -- a genuinely safe stand-in for
- * "an entry type this model does not implement" now that COMMAND_A64_TYPE
- * (0x09) is one this model does. */
+/*
+ * Documented but unused by every driver (qla1280.h): the stand-in for an
+ * entry type this model does not implement.
+ */
 #define ISP_ENTRY_TYPE_EXTENDED_CMD 0x05
 
 #define ISP_CONT_OFF_SEGS 8
@@ -220,11 +220,8 @@ static void *qlogic_isp_create(void *pci_bus, QGuestAllocator *alloc,
 }
 
 /*
- * Configuration space names the family and carries the revision that selects
- * the part within it. The revision is functional rather than decorative:
- * OpenBSD switches on this byte to derive the adapter's 60 MHz clock, so a
- * model reporting a different value negotiates every synchronous transfer
- * against the wrong reference.
+ * The revision byte is functional: OpenBSD derives the adapter's 60 MHz
+ * clock from it.
  */
 static void test_identity(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -244,14 +241,9 @@ static void test_identity(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Both base address registers reach the same 0x100-byte window, and the window
- * is a file of 16-bit registers rather than one register aliased across it.
- *
- * Reading the identity words back is what proves the stride: the two sit at
- * adjacent 16-bit offsets and hold different values, so a model that decoded
- * the window at a coarser stride, or ignored the low address bits, would return
- * the same value from both. Asserting each word's full value rather than a
- * field of it leaves nothing weaker for a wrong decode to satisfy.
+ * Both BARs reach the same window of 16-bit registers. The two identity
+ * words prove the stride: adjacent offsets, different values, so a coarser
+ * decode returns the same value from both.
  */
 static void test_window(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -283,15 +275,9 @@ static void test_window(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Bus configuration 0 carries the other revision, and the two are numbered from
- * different origins: this field runs one ahead of the configuration-space byte
- * across the family, so the same part reports 5 there and 6 here. Linux is the
- * guest that reads this one.
- *
- * The whole register is asserted, not the revision nibble alone. The nibble is
- * the field the guest uses, which makes it the weaker property and the one a
- * model with stray bits set elsewhere would still pass; pinning the register
- * says what the guest actually reads.
+ * Bus configuration 0's revision field runs one ahead of the PCI byte, so
+ * the same part reports 5 there and 6 here; Linux reads this one. The
+ * whole register is asserted -- the nibble alone passes with stray bits.
  */
 static void test_bus_cfg0_revision(void *obj, void *data,
                                    QGuestAllocator *alloc)
@@ -316,15 +302,9 @@ static void test_bus_cfg0_revision(void *obj, void *data,
 }
 
 /*
- * The mailbox signature is the observable that proves the device was reset.
- * Every other register in this file resets to zero, which is also what an
- * uninitialised structure holds, so none of them can tell a device that was
- * reset from one that merely decodes and answers. These four cannot read zero
- * by accident.
- *
- * Reset reaches a PCI device through its bus, so this also pins the device to a
- * parent that resets it. A model that grew a bus-less parent would still decode
- * every register here and still answer them plausibly.
+ * The signature is the observable that proves reset ran: every other
+ * register resets to zero, which an uninitialised structure also holds.
+ * It also pins the device to a parent that resets it.
  */
 static void test_reset_signature(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -362,13 +342,9 @@ static void test_reset_signature(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Linux's qla1280_chip_diag() runs its own product-ID check straight off
- * these same four mailboxes, before it issues any mailbox command, and
- * aborts the adapter's attach outright on a mismatch -- unlike OpenBSD,
- * which never performs this check at all. Reproduces the exact
- * PROD_ID_1..PROD_ID_4 comparison from drivers/scsi/qla1280.h (0x4953,
- * 0x0000 or 0x5020, 0x2020, 0x0001) so a regression here fails as
- * concretely as the driver's own "Wrong product ID" abort would.
+ * Linux's qla1280_chip_diag() aborts the attach on any mismatch here,
+ * before issuing a single mailbox command; the exact PROD_ID comparison
+ * from qla1280.h.
  */
 static void test_linux_product_id_check(void *obj, void *data,
                                         QGuestAllocator *alloc)
@@ -395,15 +371,9 @@ static void test_linux_product_id_check(void *obj, void *data,
 }
 
 /*
- * The guest writes the soft reset bit and then polls this register up to a
- * thousand times for the bit to read back clear, failing the attach if it never
- * does. It also re-initialises the chip, which is asserted here by dirtying
- * state first and requiring the reset to put it back.
- *
- * Asserting the whole register reads zero rather than just the reset bit is
- * what makes this catch a reset that clears its own bit and nothing else. The
- * bit alone is the weaker property, and a model that self-clears without
- * re-initialising would satisfy it.
+ * The guest polls this bit to zero and fails the attach otherwise. State
+ * is dirtied first, so a reset that clears its own bit and nothing else
+ * fails here.
  */
 static void test_soft_reset(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -438,10 +408,8 @@ static void test_soft_reset(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Bus configuration 1 round-trips the fields it owns and drops the rest. The
- * four FIFO threshold encodings are checked individually rather than as a mask,
- * because the field is three bits wide and a model storing only the bits the
- * guest happens to set first would pass a single-value check.
+ * Round-trips owned fields, drops the rest. All four FIFO encodings run,
+ * or a model storing only some bits passes a single-value check.
  */
 static void test_bus_cfg1(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -481,12 +449,8 @@ static void test_bus_cfg1(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * The command and data DMA blocks' config registers, at the base of each
- * block. Only the burst-enable bit is on any boot path this device targets;
- * the two blocks are independent storage, not two names for one value, and
- * the read-modify-write OpenBSD's own attach sequence performs must see
- * back whatever it just wrote rather than the unimplemented-register
- * default of zero.
+ * The two DMA blocks' config registers are independent storage; OpenBSD's
+ * attach read-modify-writes each and must see back what it wrote.
  */
 static void test_dma_block_cfg(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -529,16 +493,10 @@ static void test_dma_block_cfg(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Each block's control register, one word past its config register, takes the
- * value the SGI firmware's SCSI diagnostic writes and keeps nothing.
- *
- * What this is really guarding is the config register beside it. A control
- * register implemented by widening the config register's own case, or by an
- * offset mask that swallows the low bit of the address, would land this write
- * on the config register and change a value a guest has already set — and
- * because nothing reads the control register back, that corruption would be
- * invisible from the control side. So the assertions are on the neighbour: the
- * config value written first has to survive the control write next to it.
+ * The control register keeps nothing; what this guards is the neighbour.
+ * A decode that swallows the low address bit lands this write on the
+ * config register, invisibly -- so the assertion is that the config value
+ * survives the control write beside it.
  */
 static void test_dma_block_ctrl_is_inert(void *obj, void *data,
                                          QGuestAllocator *alloc)
@@ -635,17 +593,10 @@ static void test_semaphore(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Each mailbox is its own register. Distinct values are written to six of
- * the eight and read back afterwards rather than one at a time, so a model
- * decoding them to one shared register, or dropping the low address bits,
- * fails here instead of passing six independent round-trips.
- *
- * All eight are included, mailboxes 4 and 5 among them. Both are queue
- * pointers under a second name, but only once the queue behind them exists;
- * with none initialised — which is the state here — they are ordinary
- * storage, and the firmware's own mailbox register test depends on that.
- * test_mailbox_register_test covers the other half, where a live queue makes
- * each answer its own count instead.
+ * Distinct values in all eight, read back after all writes, so a shared
+ * register or dropped address bits fail rather than pass eight separate
+ * round-trips. Mailboxes 4 and 5 are ordinary storage with no queue
+ * initialised, which the firmware's register test depends on.
  */
 static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -670,46 +621,13 @@ static void test_mailboxes(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * The queue pointers are mailboxes 4 and 5 reached under a second name, and
- * both now share the identical in-and-out-share-one-address shape: a write
- * is the guest's producer advance, and a read always answers this adapter's
- * own consumer position, never whatever the guest last wrote. Response-in
- * had this from the completion-erasure fix; request-in did not, until the
- * adversarial review (task #74) caught it as the same defect on the other
- * queue -- previously it fell through to plain storage on read, so a guest
- * recomputing free request-ring space (Linux's qla1280_start_scsi() does
- * exactly this) read back its own last write and learned nothing real.
- *
- * Request-in resets to ISP_MAILBOX4_SIGNATURE (0x0001), not zero -- the same
- * value Linux's product-ID check requires there, and the same value 86Box's
- * ql_reset_asic sets at raw reset. Both OpenBSD and Linux still work with
- * this: OpenBSD's qlw_softreset() explicitly writes zero to this register as
- * one of its own reset steps, before ever treating it as a live pointer, so
- * it never depends on the hardware's own post-reset value either way. This
- * datasheet previously claimed the queue pointers reset to zero at this
- * offset; that claim was never checked against a source that observes the
- * raw hardware value rather than a driver's own subsequent write, and it was
- * wrong for this one, the same class of mistake as the mailbox-signature
- * misattribution corrected alongside it.
- *
- * With no request queue configured (rqst_len == 0 throughout this test), a
- * write to request-in still updates the guest-producer storage internally
- * (qlogic_isp_process_requests() reads it once a real queue exists), but
- * qlogic_isp_process_requests() itself no-ops on an unconfigured ring, so
- * this adapter's own consumer position never advances. A read answering the
- * write back would be indistinguishable from a read answering rqst_cons
- * once a real ring is configured and fully drains every write synchronously
- * -- the two coincide there, which is exactly why this bug stayed masked --
- * so an unconfigured ring is the one place in this file that can show a read
- * genuinely sourcing from rqst_cons and not from an echo of the write.
- *
- * Response-in (mailbox 5) is not plain storage. A read always answers the
- * adapter's own producer count — still 0 here, since nothing has posted a
- * completion — never whatever the guest just wrote to that address; the
- * datasheet is explicit that letting a guest's write overwrite the
- * adapter's published count is the bug this device used to have. The
- * guest's write is recorded as its consumer position instead, which this
- * test has no completion to make observable; that half of the contract is
+ * Mailboxes 4 and 5 under their queue-pointer names. With no queue
+ * configured both are plain storage; request-in resets to 0x0001, the
+ * value Linux's product-ID check requires. Once queues exist, a read of
+ * either answers the adapter's own count, never an echo of the guest's
+ * write -- and a synchronously draining ring makes the two coincide,
+ * which is why only the unconfigured state can show the sourcing. The
+ * write half of response-in's contract is
  * test_ack_does_not_erase_a_later_completion's job.
  */
 static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
@@ -729,11 +647,8 @@ static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
     qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 0x0043);
 
     /*
-     * No queue exists yet, so both addresses are ordinary mailboxes and each
-     * reads back what was just written to it. Asserting the opposite here is
-     * what this test used to do, and it was encoding a defect: the firmware's
-     * mailbox register test writes a pattern across these two along with the
-     * rest and reads it back, before it has initialised anything.
+     * No queue yet, so both echo: the firmware's register test writes a
+     * pattern across these two before initialising anything.
      */
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 0x0021);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 0x0043);
@@ -753,10 +668,8 @@ static void test_queue_pointers(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * The host command register decodes the top four bits of a write and reports
- * the RISC processor's state on a read. The guest pauses the processor, resets
- * it and releases it as consecutive steps of its attach, so the release has to
- * undo both.
+ * The top four bits of a write are the command; a read reports the RISC
+ * state. Pause, reset, release run consecutively in a real attach.
  */
 static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -772,12 +685,7 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
                     ISP_RISC_FLAG_PAUSED);
 
-    /*
-     * Resetting the RISC replaces every flag rather than adding to them, so
-     * the paused flag set above does not survive it. A model that only set
-     * the reset flag would leave the paused flag standing here, which is the
-     * bug this asserts against.
-     */
+    /* Reset replaces every flag; the paused flag must not survive it. */
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_RESET_RISC << ISP_HOST_CMD_SHIFT);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
@@ -792,10 +700,7 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
                     ISP_RISC_FLAG_HOST_INT);
 
-    /*
-     * This command does nothing on real hardware, so the flag it might be
-     * mistaken for clearing is still set afterwards.
-     */
+    /* A no-op on real hardware: the flag it suggests clearing survives. */
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_CLEAR_HOST_INT << ISP_HOST_CMD_SHIFT);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==,
@@ -806,11 +711,7 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
                    ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
 
-    /*
-     * Only the top four bits are the command. The same command number in the
-     * low bits must do nothing, which is what pins the decode to a shift rather
-     * than a comparison against the whole value.
-     */
+    /* The same command number in the low bits must do nothing. */
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD, ISP_HOST_CMD_PAUSE_RISC);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_HOST_CMD), ==, 0);
 
@@ -818,16 +719,9 @@ static void test_host_command(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * The bank select is bus configuration 1 bit 3, and the window at 0x80
- * presents the RISC block with it clear and the SXP block with it set.
- * Neither block is decoded into named registers, so the only way to observe
- * the select working is that the same offset holds two different values
- * depending on it, which is what this writes and reads back to prove.
- *
- * Bit 0 is the wrong constant a model is most likely to inherit from a
- * driver header that defines it but never exercises it, so the test sets it
- * alongside a value in the RISC bank and confirms it neither switches the
- * bank nor is retained anywhere a guest could read it back.
+ * Bank select is bit 3; the observable of it working is the same offset
+ * holding two values. Bit 0 is the wrong constant a driver header offers,
+ * so it is set too and must switch nothing.
  */
 static void test_sxp_risc_bank_select(void *obj, void *data,
                                       QGuestAllocator *alloc)
@@ -875,29 +769,9 @@ static void test_sxp_risc_bank_select(void *obj, void *data,
 }
 
 /*
- * This suite asserts the register contract a guest driver actually reads and
- * writes, not the physical interrupt wire's assertion at the platform's
- * interrupt controller. No conventional-PCI storage or network device qtest
- * in this tree does the latter — the ones that observe a physical legacy
- * line at all are testing ISA-specific routing behaviour that is itself the
- * feature under test, which is not this device's contract. Reaching the wire
- * here would mean this qtest also programming the machine's PCI-to-ISA
- * interrupt routing, which is generic platform behaviour this device does
- * not own, tested nowhere else in this tree for a device that does not own
- * it either. What is tested is what the datasheet actually specifies at the
- * register level: bus interface status carries the pending-interrupt bits
- * unconditionally, and bus interface control carries the enables that gate
- * whether the wire those bits feed ever asserts.
- */
-
-/*
- * A no-op is the only mailbox command OpenBSD's own attach sequence issues at
- * this stage, used purely to confirm the adapter is alive. Completing it is
- * what proves the mailbox engine — not just the registers it uses — actually
- * runs: the semaphore lock and bus interface status only become non-zero as
- * a side effect of processing a command, so asserting them here is what
- * distinguishes a working engine from one that merely stores whatever is
- * written to mailbox 0.
+ * A no-op proves the mailbox engine runs, not just its registers: the
+ * semaphore lock and status bits only go non-zero as side effects of
+ * processing, distinguishing an engine from storage.
  */
 static void test_mailbox_nop(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -920,9 +794,8 @@ static void test_mailbox_nop(void *obj, void *data, QGuestAllocator *alloc)
                     ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
 
     /*
-     * Acknowledgement is two steps for a mailbox result. Clearing the RISC
-     * interrupt clears bus interface status and the host-interrupt flag;
-     * releasing the semaphore is a separate write the driver issues after.
+     * Two-step acknowledgement: clear the RISC interrupt, then release the
+     * semaphore in a separate write.
      */
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
@@ -938,11 +811,8 @@ static void test_mailbox_nop(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * A command this model does not implement still completes — as invalid,
- * posted through the same mechanism as a successful command. The mailbox
- * protocol has no way to leave a command pending: every write of the host
- * interrupt gets an answer, and unimplemented is one of the two answers
- * every command can receive.
+ * An unimplemented command still completes, as invalid: the protocol has
+ * no way to leave a command pending.
  */
 static void test_mailbox_invalid_command(void *obj, void *data,
                                          QGuestAllocator *alloc)
@@ -991,18 +861,9 @@ static void qlogic_isp_ack(QPCIDevice *dev, QPCIBar io)
 }
 
 /*
- * Builds a tiny firmware image the way the guest's own download loop does —
- * one write-ram-word command per word, address then data — verifies its
- * checksum, executes it, and confirms the mailbox engine still answers
- * afterward. None of this is ever run; accepting and answering it correctly
- * is the entire contract.
- *
- * The image is constructed so its checksum is genuinely zero rather than
- * asserting success and trusting the model to agree with itself: word 3 is
- * the length the guest's own loop would have used to know when to stop
- * sending, and the other three words are chosen so the sum of all four wraps
- * to zero, which is what a real firmware image built for this checksum
- * satisfies by construction rather than by accident.
+ * Download, verify, execute, and confirm the engine still answers; the
+ * image is never run. Its checksum is genuinely zero by construction, so
+ * the verify is not the model agreeing with itself.
  */
 static void test_firmware_download(void *obj, void *data,
                                    QGuestAllocator *alloc)
@@ -1046,11 +907,8 @@ static void test_firmware_download(void *obj, void *data,
 }
 
 /*
- * A non-zero sum is answered as a failure, with the sum itself in mailbox 1
- * — what OpenBSD's own driver prints on this path. Without this, a model
- * that always answered complete would look identical to a correct one on
- * every image that happens to already sum to zero, which the download test
- * above uses and would not by itself catch a checksum that never runs.
+ * A non-zero sum answers failure with the sum in mailbox 1; without this
+ * half, a model that never runs the checksum passes the zero-sum test.
  */
 static void test_verify_checksum_failure(void *obj, void *data,
                                          QGuestAllocator *alloc)
@@ -1081,20 +939,11 @@ static void test_verify_checksum_failure(void *obj, void *data,
 }
 
 /*
- * Loads the mailboxes a block RAM transfer takes and rings the doorbell.
- *
- * The high halves of the host address are written even when they are zero.
- * The mailboxes are plain storage that persists from one command to the next,
- * so a value an earlier command left in either one would be reassembled into
- * this transfer's address — a bug this suite would otherwise create for
- * itself rather than find.
- *
- * Writing the argument layout out here once is also what pins it: the offset
- * within the adapter in mailbox 1, the host address split across mailboxes 2
- * and 3 with the high half first, the word count in mailbox 4. That split is
- * taken from a driver's source rather than observed on this machine, so a
- * transposition of the two halves is exactly the error worth failing a test
- * rather than a firmware boot.
+ * Loads a block transfer's mailboxes. The high address halves are written
+ * even when zero -- mailboxes persist between commands, and a stale half
+ * would be reassembled into this transfer's address. The split (high half
+ * in 2, low in 3) is driver-sourced, so a transposition should fail a
+ * test rather than a firmware boot.
  */
 static void qlogic_isp_ram_block_call(QPCIDevice *dev, QPCIBar io,
                                       uint16_t cmd, uint16_t base,
@@ -1108,16 +957,9 @@ static void qlogic_isp_ram_block_call(QPCIDevice *dev, QPCIBar io,
 }
 
 /*
- * A word written to the adapter's memory is the word read back out of it.
- *
- * Mailbox 2 is loaded with a value that is not the answer before each read,
- * because that is the mailbox the answer arrives in: a model that never wrote
- * it would otherwise pass by handing back the caller's own argument. The reads
- * run in the opposite order from the writes, so a model answering with the
- * most recently written word regardless of offset fails too.
- *
- * The highest offset the adapter has is included because it is the boundary
- * where an off-by-one in indexing would land outside the storage.
+ * Round trip through the adapter's memory. The answer mailbox is poisoned
+ * before each read, the reads run in reverse order of the writes, and the
+ * highest offset is included as the off-by-one boundary.
  */
 static void test_read_ram_word_round_trip(void *obj, void *data,
                                           QGuestAllocator *alloc)
@@ -1159,17 +1001,10 @@ static void test_read_ram_word_round_trip(void *obj, void *data,
 }
 
 /*
- * A block loaded into the adapter and dumped back out is the same block, and
- * the single-word path agrees with what the block path moved.
- *
- * The destination is filled with something other than the pattern first, so
- * that a dump which never ran is distinguishable from one that copied
- * correctly — against a zeroed destination those two look the same wherever
- * the pattern happens to be zero.
- *
- * The wrap is driven rather than reasoned about: a two-word load based at the
- * adapter's highest offset has to put its second word at offset zero, because
- * the offset is a 16-bit quantity and there is no storage past the end of it.
+ * Load and dump round trip, cross-checked against the single-word path.
+ * The destination is pre-filled so a dump that never ran is visible, and
+ * the 16-bit offset wrap is driven: a load at the highest offset puts its
+ * second word at zero.
  */
 static void test_ram_block_dma_round_trip(void *obj, void *data,
                                           QGuestAllocator *alloc)
@@ -1243,17 +1078,9 @@ static void test_ram_block_dma_round_trip(void *obj, void *data,
 }
 
 /*
- * The order the block path lays bytes down in guest memory.
- *
- * A load followed by a dump round-trips under either byte order, because it
- * uses one accessor in both directions — so the round-trip check cannot see
- * this at all. Only reading the raw bytes can, and only a word whose two
- * halves differ makes the two orders tell apart.
- *
- * Both directions are driven, because a model could be little-endian on the
- * way out and big-endian on the way in and still satisfy either half alone.
- * The assertions name explicit byte values rather than deriving them from the
- * host's own layout, so this means the same thing on a big-endian host.
+ * The block path's byte order, read as raw bytes: a round trip cancels
+ * either order. Both directions run -- a model could differ per direction
+ * -- and the expected bytes are explicit, not derived from the host.
  */
 static void test_ram_dma_byte_order(void *obj, void *data,
                                     QGuestAllocator *alloc)
@@ -1306,10 +1133,8 @@ static void test_ram_dma_byte_order(void *obj, void *data,
 }
 
 /*
- * The driver prints this triple and aborts if the command fails, so the only
- * hard requirement is that it completes; the values are this model's own
- * declaration rather than a real QLogic release, which the datasheet states
- * is acceptable for a guest that never inspects them.
+ * Completion is the only hard requirement; the version triple is this
+ * model's own declaration, which no guest inspects.
  */
 static void test_about_firmware(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -1330,10 +1155,8 @@ static void test_about_firmware(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Sizes every queue the guest allocates. 512 is asserted explicitly rather
- * than just checking the command completes, because the datasheet marks
- * this value as a recorded decision rather than a driver-confirmed one, and
- * a qtest is what pins a decision in place against an accidental change.
+ * 512 sizes every queue the guest allocates; asserted explicitly because
+ * it is a recorded decision, not a driver-confirmed value.
  */
 static void test_get_firmware_status(void *obj, void *data,
                                      QGuestAllocator *alloc)
@@ -1356,17 +1179,9 @@ static void test_get_firmware_status(void *obj, void *data,
 }
 
 /*
- * The "config setters" the datasheet names in bring-up order: firmware
- * features, clock rate, retry count, async data setup, active negation, tag
- * age limit, selection timeout, then initiator ID and the per-target
- * parameter and queue-depth commands. OpenBSD's qlw_attach() aborts the
- * whole attach the instant any one of these answers invalid, before it ever
- * creates the SCSI bus or probes a target — a real boot against a build of
- * this model that had every earlier command but none of these attached the
- * adapter and then enumerated no disk at all, because the bus these commands
- * gate into existence was never created. None of them carries a value this
- * model reads back, so completion is the entire contract, the same as
- * bus-reset already relies on.
+ * The config setters in bring-up order. OpenBSD's qlw_attach() aborts the
+ * attach the instant any one answers invalid, before creating the SCSI
+ * bus; completion is the entire contract.
  */
 static void test_config_setters(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -1430,16 +1245,8 @@ static void test_config_setters(void *obj, void *data, QGuestAllocator *alloc)
     qlogic_isp_ack(dev, io);
 
     /*
-     * Three more, issued only by Linux's qla1280_nvram_config() (confirmed
-     * directly against qla1280.c) and never by OpenBSD's qlw.c (confirmed by
-     * an exhaustive grep of the file, not a name search that merely failed
-     * to find a call site). Unlike the group above, Linux's own caller
-     * discards qla1280_nvram_config()'s returned status outright, so
-     * whether this model answers complete or invalid here is not
-     * load-bearing for either guest -- these are included anyway so the
-     * model's behavior matches what a real adapter would answer to a
-     * documented command, rather than logging every one of them as
-     * unmodelled noise.
+     * Three more only Linux issues, whose status its caller discards --
+     * answered anyway so documented commands are not unmodelled noise.
      */
     qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_PCI_CONTROL, 2, 2, 0);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
@@ -1493,8 +1300,8 @@ static uint16_t isp_get16(const uint8_t *entry, int off)
 
 /*
  * Loads mailboxes 1, 2, 3, 6 and 7 with a queue's entry count and 64-bit
- * base address split the way OpenBSD's own driver splits it — low half in
- * mailbox 3, next in mailbox 2, next in mailbox 7, top in mailbox 6 — then
+ * base address split the way OpenBSD's own driver splits it -- low half in
+ * mailbox 3, next in mailbox 2, next in mailbox 7, top in mailbox 6 -- then
  * runs the given init command and returns mailbox 0.
  */
 static uint16_t isp_init_queue(QPCIDevice *dev, QPCIBar io, uint16_t cmd,
@@ -1518,12 +1325,8 @@ static uint16_t isp_init_queue(QPCIDevice *dev, QPCIBar io, uint16_t cmd,
 }
 
 /*
- * Initialising either queue with a zero address or a zero entry count is
- * rejected. No guest on this device's path sends either — the check exists
- * because 86Box's model makes the same one, evidence about the approach
- * worth keeping even where nothing here can watch it matter — so this pins
- * the one behaviour a qtest can actually exercise: the model does not
- * silently accept a queue it was not actually given.
+ * A zero address or entry count is rejected: the model must not silently
+ * accept a queue it was not given.
  */
 static void test_init_queue_rejects_zero(void *obj, void *data,
                                          QGuestAllocator *alloc)
@@ -1547,36 +1350,10 @@ static void test_init_queue_rejects_zero(void *obj, void *data,
 }
 
 /*
- * The steady-state contract in full: with both queues initialised, a
- * command entry written at the request-in index and the pointer advanced
- * produces a status entry in the response queue carrying the same handle,
- * the response-in pointer advanced, and an interrupt raised with the
- * semaphore lock clear — the datasheet's own words for what this test
- * checks, because an I/O completion is not a mailbox result and must not be
- * decoded as one.
- *
- * A test-unit-ready command is used because it moves no data, which keeps
- * this test to the ring protocol itself rather than also exercising the
- * scatter-gather path — that is worth its own test once this one is
- * trusted, not folded into the first one to pass.
- */
-/*
- * The mailbox register test, both sides of the gate that makes it work.
- *
- * The firmware issues this command with a walking pattern across mailboxes 1
- * through 7 and compares what comes back. It does so during its power-on SCSI
- * diagnostic, long before it initialises any queue -- so mailboxes 4 and 5,
- * which become the request and response queue pointers, have to behave as
- * plain storage at that point. They did not, and the diagnostic failed on
- * both: mailbox 4 answered the request consumer cursor and mailbox 5 the
- * response producer count.
- *
- * The second half asserts the queue behaviour is untouched once a queue does
- * exist, including the part that must not regress: a guest's acknowledgement
- * write to mailbox 5 must not disturb the producer count the adapter has
- * already published. Echo is deliberately not asserted there -- asserting it
- * would re-encode the completion-erasure bug this gate is built to preserve
- * the fix for.
+ * The firmware's walking-pattern register test runs before any queue is
+ * initialised, so mailboxes 4 and 5 must echo then; with queues live, both
+ * answer the adapter's own counts, and echo is deliberately not asserted
+ * -- asserting it would re-encode the completion-erasure bug.
  */
 static void test_mailbox_register_test(void *obj, void *data,
                                        QGuestAllocator *alloc)
@@ -1635,6 +1412,12 @@ static void test_mailbox_register_test(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/*
+ * The steady-state ring contract: a published command entry produces a
+ * status entry with the same handle, the response pointer advanced, and an
+ * interrupt with the semaphore clear -- an I/O completion is not a mailbox
+ * result. Test-unit-ready moves no data, keeping this to the ring protocol.
+ */
 static void test_command_round_trip(void *obj, void *data,
                                     QGuestAllocator *alloc)
 {
@@ -1671,15 +1454,10 @@ static void test_command_round_trip(void *obj, void *data,
     /* Test unit ready: an all-zero six-byte CDB. */
 
     /*
-     * The first command to a freshly attached SCSI device answers a pending
-     * power-on unit attention rather than the command itself — this is real
-     * generic-SCSI-layer behaviour, not this device's protocol, and
-     * virtio-scsi's own qtest suite documents and relies on the same thing.
-     * A round trip that only sent one command and asserted good status
-     * would not tell the difference between a model correctly relaying
-     * whatever the SCSI layer said and one that invented a fixed answer;
-     * asserting the specific condition here, and a clean status on the
-     * second command below, is what tells them apart.
+     * The first command answers the power-on unit attention (generic SCSI
+     * behaviour; virtio-scsi's suite relies on the same). Asserting the
+     * specific condition plus a clean second command distinguishes a
+     * relaying model from one inventing a fixed answer.
      */
     qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
@@ -1724,27 +1502,10 @@ static void test_command_round_trip(void *obj, void *data,
 }
 
 /*
- * Every status entry this device posts now zeroes its whole 64-byte slot
- * before writing into it (task #74/#97's adversarial review), rather than
- * leaving whatever a previous occupant of that ring slot wrote at any
- * offset this function does not explicitly set. A two-entry response ring
- * proves it the way test_reset_signature proves reset ran: not by reading
- * a value back, since a value that happens to be right could equally mean
- * "correctly zeroed" or "never overwritten and already zero" -- by first
- * putting a real, non-zero value where a stale leftover would show up, and
- * then confirming a later write to the same slot removes it rather than
- * leaving it standing.
- *
- * Slot 0 gets a real sense length and real sense bytes first (test unit
- * ready's automatic power-on unit attention, the same mechanism
- * test_command_round_trip uses). Slot 1 gets a clean command. A third
- * command wraps back onto slot 0, reusing the slot that held real sense
- * data, and this is the assertion that matters: slot 0 now reports
- * sense_len zero and thirty-two zero sense bytes, not the unit attention
- * this same slot held two completions ago. Before the fix this only
- * happened to hold because sense_len was never written and unit attention
- * sense data happens to still be present at that offset either way; the
- * new field is what makes "zeroed" and "never written" distinguishable.
+ * A status entry zeroes its whole slot before writing. Proven by putting
+ * real sense data in a slot first, then wrapping a clean completion onto
+ * it: sense_len zero and zero sense bytes afterwards distinguishes
+ * "zeroed" from "never written", which a fresh slot cannot.
  */
 static void test_status_entry_clears_stale_bytes(void *obj, void *data,
                                                   QGuestAllocator *alloc)
@@ -1836,13 +1597,9 @@ static void test_status_entry_clears_stale_bytes(void *obj, void *data,
 }
 
 /*
- * Linux's qla1280_return_status() reads state_flags only when the
- * completion code is incomplete, walking GOT_BUS, GOT_TARGET, SENT_CDB,
- * TRANSFERRED_DATA, GOT_STATUS and GOT_SENSE in order to decide which of
- * several specific failure reasons to report -- not just that something
- * failed. This device's one incomplete completion is "no SCSI device at
- * the requested target/lun", and the state_flags it reports has to say
- * exactly that: the bus was reached, nothing past it was.
+ * Linux walks state_flags on an incomplete completion to pick which
+ * failure to report; a missing device must say bus reached, nothing past
+ * it.
  */
 static void test_no_device_incomplete_state_flags(void *obj, void *data,
                                                    QGuestAllocator *alloc)
@@ -1860,14 +1617,8 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
     qts = dev->bus->qts;
 
     /*
-     * Two entries, not one: the request-in pointer wraps modulo the queue
-     * length (qlogic_isp_process_requests()), and a one-entry queue can
-     * never tell "one new entry has arrived" apart from "nothing has" --
-     * writing 1 wraps straight back to the same 0 the ring already sits at,
-     * so the loop that dispatches new entries never runs at all. The same
-     * reserve-one-slot shape the response ring's own contract already
-     * documents, hit here from the request side by writing this test with
-     * too small a ring the first time.
+     * Two entries, not one: a one-entry ring wraps producer 1 back onto
+     * consumer 0 and can never say "one entry arrived".
      */
     rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
     resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
@@ -1903,20 +1654,9 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
 }
 
 /*
- * Originally exercised with COMMAND_A64_TYPE (0x09) as the example
- * unrecognized entry type -- the live-confirmed failure from adversarial
- * review task #74/#97 finding #2/#4, where a real Linux/IP27 boot posted
- * one of these and waited forever for a completion this adapter used to
- * silently never send, because the request-processing loop's default case
- * consumed the entry and moved on without answering it. 0x09 stopped being
- * a usable example the moment task #114 implemented it for real: it is now
- * COMMAND_A64_TYPE handled by qlogic_isp_handle_request_a64(), not the
- * default case, so this test switched to EXTENDED_CMD_TYPE (0x05) --
- * genuinely unimplemented, per Linux's own struct comment on it. The
- * property under test is unchanged: the guest is told INCOMPLETE for the
- * handle it is actually waiting on, using the offset every entry type
- * carrying a handle places it at, rather than left waiting on an entry the
- * model silently consumed.
+ * An unrecognized entry type answers INCOMPLETE for the handle the guest
+ * is waiting on, at the offset every handle-carrying type shares, rather
+ * than being consumed silently -- the failure that hung a real boot.
  */
 static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
                                                      QGuestAllocator *alloc)
@@ -1933,12 +1673,7 @@ static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
     io = qpci_iomap(dev, 0, NULL);
     qts = dev->bus->qts;
 
-    /*
-     * Two entries, not one, for the same reason
-     * test_no_device_incomplete_state_flags needs them: the request-in
-     * pointer wraps modulo the queue length, and a one-entry queue can
-     * never tell "one new entry has arrived" apart from "nothing has".
-     */
+    /* Two entries: a one-entry ring can never publish anything. */
     rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
     resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
 
@@ -1969,37 +1704,13 @@ static void test_unrecognized_entry_type_incomplete(void *obj, void *data,
 }
 
 /*
- * fabric-dev's review of the fix above (task #106) confirmed it is correct
- * only because of something nothing tested: qlogic_isp_process_requests()
- * advances rqst_cons by the dispatched entry's own entry_count, so a
- * multi-slot entry has its later slots consumed as part of the same
- * dispatch -- they never reach the default case as an entry of their own.
- * Originally built with COMMAND_A64_TYPE (0x09) as the "command", which
- * stopped being a usable example once task #114 implemented it for real;
- * switched to EXTENDED_CMD_TYPE (0x05), still genuinely unimplemented. The
- * second slot keeps CONTINUE_A64_TYPE's real shape, since what it actually
- * is never matters here -- entry_count skips it regardless -- and it is
- * the concrete case that motivates the test: CONTINUE_A64_TYPE's offset 4
- * is a DMA buffer address's low 32 bits, not a handle, confirmed against
- * qla1280.h's struct cont_a64_entry. If the entry_count advance ever
- * regressed to a plain +1, that second slot WOULD reach the default case
- * next, and this model would read that address as a handle: the identifier
- * of whichever in-flight command that value happens to collide with. That
- * is a silent, spurious I/O failure on an unrelated healthy command --
- * worse than the hang this fix replaced, because nothing would name the
- * cause.
- *
- * This test is the one that would fail if that regression happened:
- * exactly one completion posted, carrying the command's own handle, not
- * two, and not the continuation's DMA address.
- *
- * "Exactly one" is asserted two ways, not just via the response-queue
- * producer count: that count catches a second post through modular
- * arithmetic (two posts into a two-entry ring leave the producer back at
- * 0, and 0 happens not to equal 1), which stops working the moment the
- * ring size changes. Poisoning the second response slot before the
- * dispatch and reading it back afterward is the direct property this
- * test actually means: that slot was never written at all.
+ * The cursor advances by an entry's own entry_count, so a continuation
+ * never reaches the default case alone. A regression to plain +1 would
+ * read the continuation's offset 4 -- a DMA address, not a handle -- and
+ * fail some unrelated in-flight command. "Exactly one completion" is
+ * asserted both by the producer count and by poisoning the second
+ * response slot, since the count alone stops working when the ring size
+ * changes.
  */
 static void test_unrecognized_entry_type_consumes_continuation(void *obj,
                                                                 void *data,
@@ -2020,14 +1731,8 @@ static void test_unrecognized_entry_type_consumes_continuation(void *obj,
     qts = dev->bus->qts;
 
     /*
-     * The request ring is 3 entries, not 2: this command occupies both of a
-     * 2-entry ring's slots, so writing producer=2 would wrap modulo 2 back
-     * to 0 -- indistinguishable from rqst_cons, which also starts at 0, so
-     * the dispatch loop would never run at all. A 3-entry ring makes
-     * producer=2 distinct from cons=0, the same reserve-past-the-command
-     * shape every other test here already uses for a one-entry command.
-     * The response ring stays at 2: only one completion is ever expected,
-     * and the second slot exists solely as the poisoned witness below.
+     * Three request entries so producer=2 stays distinct from consumer=0;
+     * the two-slot response ring's second slot is the poisoned witness.
      */
     rqst_addr = guest_alloc(alloc, 3 * ISP_QUEUE_ENTRY_SIZE);
     resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
@@ -2083,17 +1788,10 @@ static void test_unrecognized_entry_type_consumes_continuation(void *obj,
 }
 
 /*
- * The ring walk must terminate for every producer value and every
- * entry_count the guest can publish, not just the pairs a well-behaved
- * driver produces. The walker used to advance the consumer cursor by each
- * entry's own entry_count and exit only on exact equality with the
- * producer, so an entry_count sharing a factor with the ring length could
- * step the cursor over the producer forever: in a ring of 4 with every
- * slot claiming entry_count 2 and a producer of 1, the cursor visits 0,
- * 2, 0, 2... and the MMIO write that published the entry never returns —
- * an infinite loop under the BQL from one guest store. The walk is now
- * driven by the count of published entries, so it stops at the producer
- * no matter what the entries themselves claim.
+ * The walk must terminate for every producer and entry_count pair: an
+ * exact-equality exit with a stride sharing a factor with the ring length
+ * steps over the producer forever -- an infinite loop under the BQL from
+ * one guest store. The walk is bounded by the published-entry count.
  */
 static void test_ring_walk_bounded_by_producer(void *obj, void *data,
                                                QGuestAllocator *alloc)
@@ -2195,21 +1893,11 @@ static uint16_t isp_test_unit_ready(QPCIDevice *dev, QPCIBar io,
 }
 
 /*
- * A guest soft reset re-initialises the whole chip, and it must reach the
- * SCSI bus behind the chip too: since the rings landed this adapter can
- * genuinely have commands in flight, and a reset that only clears
- * registers leaves those commands alive to complete into rings that no
- * longer exist. The observable a qtest has for the reset reaching the bus
- * is each device's own unit attention. A bus reset re-arms it, so a disk
- * whose power-on unit attention was already consumed answers the first
- * command after the reset with a check condition again — and a reset that
- * never touched the bus leaves the disk answering good status, which is
- * exactly what this device used to do.
- *
- * Every command here completes inside the MMIO write that publishes it —
- * the null block backend has no latency — so the reset always meets an
- * empty in-flight queue in this test. What is pinned is that the reset
- * reaches the devices, and that resetting with nothing in flight is safe.
+ * A soft reset must reach the SCSI bus behind the chip. The observable is
+ * the disk's re-armed unit attention: consumed before the reset, it must
+ * answer check condition again after -- a reset that never touched the
+ * bus leaves the disk answering good. Everything here completes inside
+ * its doorbell, so what is pinned is reach, not in-flight cancellation.
  */
 static void test_soft_reset_resets_scsi_bus(void *obj, void *data,
                                             QGuestAllocator *alloc)
@@ -2265,7 +1953,7 @@ static void test_soft_reset_resets_scsi_bus(void *obj, void *data,
 
 /*
  * The bus-reset mailbox command is a SCSI bus reset, not a chip reset:
- * the rings survive it, but the devices on the bus must see it — the
+ * the rings survive it, but the devices on the bus must see it -- the
  * same unit-attention observable the soft-reset test pins, reached
  * through the command a driver actually issues to reset the bus.
  */
@@ -2317,14 +2005,9 @@ static void test_bus_reset_mailbox_resets_scsi_bus(void *obj, void *data,
 }
 
 /*
- * The request entry's device word carries a bus bit above the target
- * field — OpenBSD builds the word as (((bus << 7) | target) << 8) | lun —
- * and this part drives one SCSI bus. The device used to mask the bit
- * away and execute a bus-1 request on bus 0, aiming it at a device the
- * guest never named: the same target and lun that answer on bus 0 would
- * answer for a bus that does not exist. A bus-1 request must instead be
- * answered incomplete with no phase reached, which Linux's failure
- * ladder reads as a bus that never answered.
+ * The device word carries a bus bit and this part drives one bus: a
+ * bus-1 request must answer incomplete with no phase reached, not
+ * execute on bus 0 against a device the guest never named.
  */
 static void test_second_bus_request_rejected(void *obj, void *data,
                                              QGuestAllocator *alloc)
@@ -2375,18 +2058,9 @@ static void test_second_bus_request_rejected(void *obj, void *data,
 }
 
 /*
- * The round trip above only ever sends test unit ready, which carries no
- * data phase at all — it is not what actually exercises a scatter-gather
- * transfer, and a real driver's target probe issues something that does on
- * the very first command: inquiry. This model shipped with no scatter-
- * gather list handed to the SCSI layer, so any command that reached
- * scsi_req_data() found a null bus->info->transfer_data and crashed the
- * emulator itself — invisible to every qtest above, because none of them
- * carried data. A real OpenBSD boot found it the only way it could: it
- * reached "scsibus1 at qlw0: 16 targets" and crashed on the very next
- * command. This test sends an inquiry with a real data segment and reads
- * the answer back out of guest memory, which is what actually exercises
- * the path that crashed.
+ * An inquiry with a real data segment, read back out of guest memory: the
+ * data phase no test-unit-ready round trip touches, and the first command
+ * a real driver's target probe issues.
  */
 static void test_inquiry_data_transfer(void *obj, void *data,
                                        QGuestAllocator *alloc)
@@ -2459,10 +2133,8 @@ static void test_inquiry_data_transfer(void *obj, void *data,
     qlogic_isp_ack(dev, io);
 
     /*
-     * The buffer started as all-0xff; only a real DMA from the model can
-     * have put a device-type byte and the disk's vendor/product strings
-     * here. This is the assertion that would have failed loudly instead of
-     * segfaulting the emulator, had it existed before today.
+     * The buffer started all-0xff; only a real DMA can have put the
+     * device-type byte and the vendor strings here.
      */
     qtest_memread(qts, data_addr, inquiry, sizeof(inquiry));
     g_assert_cmphex(inquiry[0], ==, 0x00);
@@ -2473,22 +2145,10 @@ static void test_inquiry_data_transfer(void *obj, void *data,
 }
 
 /*
- * Every command above fits its whole transfer in the four segments a
- * request entry carries inline. Nothing has ever forced a fifth segment
- * into a continuation entry — not real firmware download, not the earlier
- * inquiry, not either real OpenBSD boot, since none of them needed more
- * than four scatter-gather pieces. This is exactly the shape that produced
- * both real bugs this device has had: an entire code path
- * (qlogic_isp_read_segments' continuation loop) with no test anywhere
- * near it. Deliberately split a 36-byte inquiry into five pieces — four
- * inline segments that exactly fill the request entry, then one more in a
- * continuation entry — so the boundary itself is what gets exercised, not
- * just "some segments somewhere in a continuation."
- *
- * The five destination regions are not contiguous in guest memory, which
- * is deliberate: scatter-gather exists for exactly this, and a model that
- * happened to work only because a test's segments were adjacent would be
- * passing for the wrong reason.
+ * Five segments for a 36-byte inquiry: four exactly filling the inline
+ * area, one in a continuation, so the boundary itself is exercised. The
+ * destinations are deliberately not contiguous -- adjacency is the wrong
+ * reason for a scatter-gather model to work.
  */
 static void test_continuation_entry_segments(void *obj, void *data,
                                              QGuestAllocator *alloc)
@@ -2537,10 +2197,8 @@ static void test_continuation_entry_segments(void *obj, void *data,
     qlogic_isp_ack(dev, io);
 
     /*
-     * Slots 1 and 2: the inquiry itself, five segments, two ring entries.
-     * Poison every destination first so a segment the model never writes
-     * shows up as 0xff instead of the zeroed guest_alloc default, which
-     * would silently pass either way.
+     * Poison every destination first, or a segment the model never writes
+     * matches the zeroed guest_alloc default.
      */
     for (i = 0; i < 5; i++) {
         uint8_t poison[64];
@@ -2595,13 +2253,8 @@ static void test_continuation_entry_segments(void *obj, void *data,
     g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
 
     /*
-     * Slot 3: the ring walker must have advanced rqst_cons by this
-     * command's entry_count (2), not by 1 — otherwise it would now be
-     * reading the continuation entry as if it were a fresh top-level
-     * request, and this command would never see its response. A plain
-     * test unit ready here is the check: it only gets a clean answer if
-     * the cursor already skipped past both of the previous command's
-     * slots correctly.
+     * A follow-up command only answers cleanly if the cursor advanced by
+     * the previous command's entry_count, past its continuation.
      */
     memset(entry, 0, sizeof(entry));
     entry[0] = ISP_ENTRY_TYPE_REQUEST;
@@ -2625,17 +2278,9 @@ static void test_continuation_entry_segments(void *obj, void *data,
 }
 
 /*
- * Task #114: the real Linux/IP27 disk-boot gate. task #106 made an
- * unrecognized COMMAND_A64_TYPE entry fail visibly instead of hanging the
- * guest forever, but visibly failing is not the same as working -- Linux
- * never falls back to the type-0 format on this architecture (confirmed:
- * QLA_64BIT_PTR follows CONFIG_ARCH_DMA_ADDR_T_64BIT, which every 64-bit
- * kernel sets, with no runtime alternative), so every SCSI command a real
- * Linux/IP27 boot issues past firmware load is this format. This test is
- * the A64 counterpart of test_inquiry_data_transfer above: same inquiry,
- * same "does not crash, actually moves bytes" bar, through the A64 fields
- * confirmed against qla1280.h's cmd_a64_entry_t -- one inline 12-byte
- * segment, low 32 bits of the address first.
+ * The A64 counterpart of the inquiry test: Linux never falls back to the
+ * type-0 format on a 64-bit kernel, so every command a real boot issues
+ * is this format -- one inline 12-byte segment, low address half first.
  */
 static void test_a64_inquiry_data_transfer(void *obj, void *data,
                                            QGuestAllocator *alloc)
@@ -2717,16 +2362,9 @@ static void test_a64_inquiry_data_transfer(void *obj, void *data,
 }
 
 /*
- * The A64 counterpart of test_continuation_entry_segments above: the same
- * "the boundary itself gets exercised" shape, but crossing at two inline
- * segments instead of four, since that is where the A64 format's own
- * inline capacity ends (confirmed against cmd_a64_entry_t: two 12-byte
- * segments, not four 8-byte ones). Splits the inquiry into two inline
- * pieces that exactly fill the request entry's own capacity, then one
- * more in a continuation entry, at non-adjacent guest-memory destinations
- * for the same reason the type-0 version uses non-adjacent ones: a model
- * that only worked because the pieces happened to be contiguous would be
- * passing for the wrong reason.
+ * The A64 continuation boundary, which sits at two inline segments rather
+ * than four; otherwise the same shape and the same non-adjacent
+ * destinations as the type-0 version.
  */
 static void test_a64_continuation_entry_segments(void *obj, void *data,
                                                   QGuestAllocator *alloc)
@@ -2774,11 +2412,7 @@ static void test_a64_continuation_entry_segments(void *obj, void *data,
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
     qlogic_isp_ack(dev, io);
 
-    /*
-     * Slots 1 and 2: the inquiry itself, three segments, two ring entries.
-     * Poison every destination first so a segment the model never writes
-     * shows up as 0xff instead of the zeroed guest_alloc default.
-     */
+    /* Poison the destinations, as in the type-0 version. */
     for (i = 0; i < 3; i++) {
         uint8_t poison[64];
         memset(poison, 0xff, sizeof(poison));
@@ -2833,13 +2467,7 @@ static void test_a64_continuation_entry_segments(void *obj, void *data,
     g_assert_cmpint(memcmp(&inquiry[8], "QEMU    ", 8), ==, 0);
     g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
 
-    /*
-     * Slot 3: the ring walker must have advanced rqst_cons by this A64
-     * command's entry_count (2), exactly as the type-0 version of this
-     * check already proves for the type-0 format -- this is the same
-     * property, exercised through the format that actually reaches this
-     * code on a real Linux/IP27 boot.
-     */
+    /* The cursor advanced by entry_count, as the type-0 version proves. */
     memset(entry, 0, sizeof(entry));
     entry[0] = ISP_ENTRY_TYPE_COMMAND_A64;
     entry[1] = 1;
@@ -2862,17 +2490,10 @@ static void test_a64_continuation_entry_segments(void *obj, void *data,
 }
 
 /*
- * Bit-bangs a read of the EEPROM's word 0 the way OpenBSD's driver does —
- * chip select and clock asserted, the read command and a word address
- * shifted out, then sixteen clocks reading data-in on each — and checks
- * every one of those sixteen bits comes back clear. That is what a guest
- * bit-banging any command or address ever gets from this register: nothing
- * here drives data-in, so the identifier bytes a real EEPROM would return
- * can never appear, and the guest's own validation is what turns that into
- * "nvram corrupt" and its built-in defaults. The register's own contract —
- * that the three bits it owns round-trip and the fourth never reads set —
- * is what this test actually pins; it does not need to reproduce the
- * guest's validation arithmetic to know that arithmetic will fail.
+ * Bit-bangs an EEPROM read the way OpenBSD does and checks every data-in
+ * bit comes back clear. What is pinned is the register's contract -- three
+ * bits round-trip, the fourth never reads set -- not the guest's
+ * validation arithmetic, which that contract guarantees will fail.
  */
 static void test_nvram_read_fails(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -2922,17 +2543,10 @@ static void test_nvram_read_fails(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Four completions with nothing acknowledged, on a four-entry response ring.
- *
- * This is the shape the adapter's own datasheet names: the driver issues each
- * command as its own doorbell, and a model with no bus latency can complete all
- * of them before the guest reads the response queue once. A ring that tracks no
- * acknowledged position and reserves no slot wraps its producer back onto the
- * consumer, and producer equal to consumer is how every driver spells *empty* —
- * so four posted completions become invisible and the guest sleeps.
- *
- * The request ring is given eight entries so that only the response side is
- * under test.
+ * Four unacknowledged completions on a four-entry ring: without a
+ * reserved slot the producer wraps onto the consumer, which every driver
+ * spells "empty", and the guest sleeps on four posted completions. The
+ * request ring is oversized so only the response side is under test.
  */
 static void test_four_completions_do_not_read_as_empty(void *obj, void *data,
                                                        QGuestAllocator *alloc)
@@ -2985,17 +2599,11 @@ static void test_four_completions_do_not_read_as_empty(void *obj, void *data,
 }
 
 /*
- * The guest's acknowledgement must not erase a completion posted behind it.
- *
- * The response queue's in and out pointers share one address: the adapter
- * publishes its producer there and the driver writes its consumer there. The
- * driver reads the producer once at the top of its handler and writes that same
- * value back as its acknowledgement at the end, so any completion landing in
- * between is one the adapter published into storage the driver is about to
- * overwrite with an older number.
- *
- * The ring is given eight entries so that a wrap cannot be the cause; this is
- * about the shared address alone.
+ * An acknowledgement must not erase a completion posted behind it: the
+ * driver reads the producer once and writes that value back at the end of
+ * its handler, so anything landing in between would be overwritten by an
+ * older number if the shared address were plain storage. The ring is
+ * oversized so a wrap cannot be the cause.
  */
 static void test_ack_does_not_erase_a_later_completion(void *obj, void *data,
                                                        QGuestAllocator *alloc)
@@ -3053,20 +2661,11 @@ static void test_ack_does_not_erase_a_later_completion(void *obj, void *data,
 }
 
 /*
- * A completion held for lack of ring room must re-signal the guest once it
- * finally posts, not just update the adapter's internal state silently.
- *
- * Fills a four-entry response ring to its reserve-one-slot capacity with
- * three real completions, nothing acknowledged, so a fourth has nowhere to
- * post and is held. Clears the interrupt the way a real driver's handler
- * does before checking anything further, so the checks that follow mean
- * something rather than passing on bits a completion earlier in the test
- * already set. The held completion must stay silent — no producer
- * movement, no interrupt — until the guest's next acknowledgement frees a
- * slot; only then does it post, and posting must raise the interrupt
- * again. A retry that writes a correct status entry but leaves bus_status
- * untouched would be a completion the driver has no reason to go looking
- * for, indistinguishable from one that never finished.
+ * A held completion must re-signal when it finally posts. The interrupt
+ * is cleared before the fill checks so they cannot pass on bits an
+ * earlier completion set; the held completion stays silent until an
+ * acknowledgement frees a slot, then posts and raises the interrupt --
+ * without which the driver has no reason to go looking.
  */
 static void test_held_completion_resignals_on_drain(void *obj, void *data,
                                                      QGuestAllocator *alloc)
