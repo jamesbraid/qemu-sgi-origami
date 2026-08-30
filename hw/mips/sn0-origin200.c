@@ -300,9 +300,18 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
                 "origin200: the base I/O controller is mapped directly "
                 "at its crosstalk address; without synthesized firmware "
                 "to assign it PCI resources the way real ARCS PROM does, "
-                "the I/O bridge cannot yet carry it to a booting guest "
-                "(an approved interim, see task #43)");
+                "the I/O bridge cannot yet carry it to a booting guest, "
+                "and registers wider than a byte read byte-swapped here "
+                "because nothing on this path does the bridge's endianness "
+                "translation (an approved interim, see task #43)");
         }
+        /*
+         * Straight into crosstalk space, with no bridge in the path. The
+         * bridge is what translates for a little-endian endpoint, so a guest
+         * reading a multi-byte register here gets it byte-swapped. Task #43's
+         * job, not a device defect: the interim only read correctly while the
+         * controller was wrongly big-endian.
+         */
         memory_region_add_subregion(
             &s->nodes[node_index]->xtalk,
             SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) + SN0_BRIDGE_DEVICE2,
