@@ -1,45 +1,16 @@
 /*
- * SGI QLogic ISP1040 SCSI adapter: the register window's access contract on
- * real crosstalk-to-PCI hardware.
+ * SGI QLogic ISP1040 SCSI adapter: the register window's access contract
+ * through the real crosstalk-to-PCI path.
  *
- * Every existing qtest for this device (tests/qtest/qlogic-isp-test.c) runs
- * through libqos's generic x86 PCI graph, which never leaves little-endian,
- * host-native byte order. That suite proved the device's own logic; it never
- * proved that a big-endian guest reading this device's registers through the
- * SGI Bridge gets the same bytes back, because nothing on that path — the
- * Bridge's per-device byte-swap bit, the crosstalk-to-PCI decode, the window
- * itself — exists in an x86 qtest. This is the first test to run the device
- * through that path, on the machine's real topology: the base I/O board's
- * two adapters, which origin200 fits at PCI devices 0 and 1 whenever the
- * bridge exists, with no drive attached and no -device needed to reach them.
- *
- * The Bridge corrects narrow device-window accesses now (task #44), so this
- * file issues the address a real guest issues rather than the device's own
- * natural offset: `offset ^ (4 - width)`, the same formula OpenBSD's
- * `xbridge(4)` and Linux's `mangle-port.h` both compute for this device, and
- * the same formula this Bridge model now applies to un-correct it before the
- * access reaches the adapter. That correction is not unconditional — it is
- * scoped to devices that need it (task #44's own design record), which is
- * why `sn0-ioc3-test.c` exists unmodified beside this file: the controller
- * needs none of this and its own tests still issue natural offsets.
- *
- * The reset signature is the register to prove it with: three mailbox words
- * whose two bytes are never equal, so a hidden byte swap cannot produce a
- * value that happens to look right the way a check on symmetric bits could.
- * The same three values anchor the x86 suite's own reset-signature test, so
- * agreement here is agreement about the same chip, not two different numbers
- * that happen to both look plausible.
- *
- * The programmed-access swap bit is asserted clear rather than left
- * unmentioned. Real Bridge hardware has exactly this one mechanism for a
- * live gate, and both guests leave it disabled, always — OpenBSD's
- * `xbridge(4)` corrects register addresses itself, by XOR, rather than
- * asking the Bridge to swap them, and Linux's own `bridge_probe()` never
- * touches this bit either. Asserting it here means a later change to either
- * the model or this test's understanding of the guest has to be a
- * deliberate edit, not a silent drift — and it is what makes the
- * correction below the right one to apply unconditionally with respect to
- * live register state, gated only by which device is in the slot.
+ * The libqos suite (tests/qtest/qlogic-isp-test.c) proves the device's own
+ * logic on a little-endian x86 graph; nothing there crosses the Bridge's
+ * byte-lane correction or the crosstalk decode. This file does, on the
+ * machine's real topology -- the base I/O board's two adapters at PCI
+ * devices 0 and 1, needing no drive and no -device. Accesses are issued at
+ * the address a real guest computes, offset ^ (4 - width), the formula
+ * OpenBSD's xbridge(4) and Linux's mangle-port.h both use. The reset
+ * signature is the instrument: three mailbox words whose two bytes are
+ * never equal, so a hidden byte swap anywhere on the path is visible.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -53,9 +24,8 @@
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /*
- * The bridge's own device(0) register: 32 bits in the low half of an
- * eight-byte slot, which this file touches exactly once, to aim the window
- * and to check the one bit this file is about.
+ * The bridge's device(0) register: 32 bits in the low half of an
+ * eight-byte slot.
  */
 #define REG_DATA                4
 #define BRIDGE_DEVICE0          0x200
@@ -65,9 +35,8 @@
 #define DEV_SWAP_PROGRAMMED     (1u << 13)
 
 /*
- * PCI type 0 configuration space, and where device 0 sits inside it: the
- * first of the base I/O board's two SCSI adapters. The machine fits both
- * whenever the bridge exists, so reaching this one needs no -device.
+ * PCI type 0 configuration space; device 0 is the first of the board's two
+ * SCSI adapters, fitted whenever the bridge exists.
  */
 #define BRIDGE_CFG0             0x020000
 #define CFG0_DEVICE_STRIDE      0x1000
@@ -80,27 +49,16 @@
 #define PCI_BAR0                0x10
 #define PCI_BAR1                0x14
 
-/*
- * The bridge's own per-slot device register, generalised from the
- * device-0-only form above: device 2's window-aiming and correction-
- * exemption test needs its own slot's register, not device 0's.
- */
+/* The per-slot form of the device register above. */
 #define BRIDGE_DEVICE(n)        (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
 
-/*
- * Device 0's window: the first of the two large 2 MB windows the base I/O
- * board's SCSI adapters sit in, matching the layout tests/qtest/sn0-bridge-
- * test.c already exercises for the other seven slots.
- */
+/* Device 0's window: the first of the two 2 MB slots. */
 #define WINDOW_OFFSET_DEVICE0   0x200000
 #define WINDOW_DEVICE0          (BRIDGE_BASE + WINDOW_OFFSET_DEVICE0)
 
 /*
- * IOC3's slot and window, restated from tests/qtest/sn0-ioc3-test.c rather
- * than shared with it, the same way that file restates SN0_IOC3_DEVICE
- * rather than importing it — this is the one device this file needs to
- * reach to test the *other* half of task #44's scoping claim, not a second
- * copy of that file's own coverage.
+ * IOC3's slot and window, restated from tests/qtest/sn0-ioc3-test.c the way
+ * that file restates its own constants.
  */
 #define PCI_IOC3_DEVICE         2
 #define WINDOW_IOC3             (BRIDGE_BASE + 0x600000)
@@ -111,19 +69,14 @@
 #define SERIAL_A_LCR            (SERIAL_A_BASE + 3)
 #define SERIAL_A_MCR            (SERIAL_A_BASE + 4)
 
-/*
- * Where this test points the adapter's BAR in PCI memory space. The value
- * only has to be twenty-bit aligned, which the window base field requires.
- */
+/* The adapter's BAR target; the window base field needs 20-bit alignment. */
 #define ADAPTER_MMIO             0x10000000u
 
 #define MACHINE_WITH_BRIDGE      "-M origin200,io-bridge=on"
 
 /*
- * Register offsets within the adapter's own window, exactly as the x86 qtest
- * suite addresses them (tests/qtest/qlogic-isp-test.c) — this is PCI space
- * reached through the window, not the bridge's own eight-byte-slot layout,
- * so no plus-four applies here.
+ * Offsets within the adapter's own window: PCI space, not the bridge's
+ * eight-byte-slot layout, so no plus-four applies.
  */
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX(n)          (ISP_REG_MAILBOX_BASE + (n) * 2)
@@ -133,25 +86,16 @@
 #define ISP_MAILBOX3_SIGNATURE  0x2020
 
 /*
- * The address a real guest issues for a halfword access to device-window
- * offset `natural`, on a device the Bridge corrects: only the low two bits
- * move, matching the Bridge ASIC specification's own byte-lane tables
- * (Appendix A, Tables 65/73/74) and the identical arithmetic
- * `sgi_bridge_config_address()` already applies to configuration space.
- * `xbridge_read_2`/`write_2` and Linux's `__swizzle_addr_w` both compute
- * exactly this for a 2-byte access.
+ * The address a real guest issues for a halfword at device-window offset
+ * `natural`: only the low two bits move (Bridge specification Tables
+ * 65/73/74; OpenBSD's xbridge_read_2 and Linux's __swizzle_addr_w compute
+ * the same).
  */
 #define GUEST_HALFWORD(natural)  (((natural) & ~3u) | (((natural) & 3u) ^ 2u))
 
 /*
- * What the adapter's memory DMA needs beyond plain register access: the bus
- * master bit, an address-translation entry, and the mailbox protocol.
- *
- * The translation entries and the translated window are the ones
- * tests/qtest/sn0-bridge-test.c drives with its own transfer source, restated
- * here rather than shared the same way this file already restates IOC3's slot.
- * What is under test is this adapter reaching guest memory the way its command
- * rings do, not the bridge's translation in general.
+ * What the adapter's memory DMA needs beyond register access: the bus
+ * master bit, a translation entry, and the mailbox protocol.
  */
 #define PCI_COMMAND_MASTER      0x0004
 #define ATE_BASE                0x010000
@@ -206,11 +150,8 @@
 #define ISP_REG_RESPONSE_QUEUE      (ISP_REG_MAILBOX_BASE + 0x0a)
 
 /*
- * A ring the guest addresses with a 64-bit base. The bridge's direct map
- * keeps the low 31 bits, so this lands at one megabyte of real memory while
- * still being a 64-bit address as far as the adapter is concerned -- which is
- * the whole point, since the ring's base is what selects descriptor byte
- * order.
+ * A ring addressed with a 64-bit base: the direct map keeps the low 31
+ * bits, and the 64-bit base is what selects descriptor byte order.
  */
 #define RING_PHYS                   0x00100000u
 #define RING_IOVA                   (0xa500000000000000ULL | RING_PHYS)
@@ -290,21 +231,11 @@ static void test_swap_bit_is_unset(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     /*
-     * Checked both before and after the window is aimed, because the two
-     * facts this bit rests on are independent: the reset value is a fact
-     * about the model with the window untouched, and the guest's own
-     * programming sequence never sets this bit while doing everything else
-     * aiming the window requires. Both must hold for "unset" to be more than
-     * an accident of which one this test happened to check.
-     *
-     * This is no longer a live gate the Bridge model reads — task #44's
-     * design keys the correction on which device occupies the slot, not on
-     * this bit, because both guests leave it disabled unconditionally. What
-     * this test still documents is why that scoping is right rather than a
-     * coincidence: if either guest ever programmed this bit for this
-     * device, the premise "the correction is unconditional with respect to
-     * live register state" would need re-examining, and this is the
-     * assertion that would catch a guest starting to do so.
+     * Pinned before and after aiming the window: the reset value and the
+     * programming sequence leaving the bit clear are independent facts.
+     * The correction is keyed on the slot's device, not this bit, because
+     * both guests always leave it disabled -- this assertion is the
+     * tripwire for a guest ever starting to set it.
      */
     g_assert_cmphex(qtest_readl(qts, REG_BRIDGE_DEVICE0) & DEV_SWAP_PROGRAMMED,
                     ==, 0);
@@ -317,29 +248,10 @@ static void test_swap_bit_is_unset(const void *data)
 }
 
 /*
- * qtest_readw/writew, not a raw-byte helper decoding by hand — the reverse
- * of what this file used before task #44's fix, and checked empirically
- * rather than assumed, because this exact reasoning has been wrong in both
- * directions this investigation already.
- *
- * Before the fix, the device window was a transparent alias with no
- * MemoryRegionOps and no declared endianness of its own — the only
- * declared-endianness boundary between a raw qtest access and the device
- * was the device's own (`DEVICE_LITTLE_ENDIAN`), and `qtest_memread`,
- * decoded by hand as little-endian, was the tool that reached it with
- * nothing else in between. After the fix, the window is a real
- * `memory_region_init_io` region with its own declared endianness
- * (`DEVICE_NATIVE_ENDIAN`, matching this machine's target so that a real
- * guest's own load or store crosses it with no swap of its own) — a second
- * genuine boundary that a raw, host-framed byte tool does not cross the
- * same way a target-framed guest access does. Measured directly: reading
- * `guest_mailbox1` through the new window, a raw-byte decode returns
- * `0x5349` (wrong) while `qtest_readw` returns `0x4953` (right) — the
- * mirror image of the false positive `qtest_readw` gave through the old
- * alias, for the mirror-image reason. `qtest_writew`/`qtest_readw` are
- * what a guest's own value-based load or store actually looks like now
- * that the window does its own endianness-aware dispatch, which is
- * precisely why they were the wrong tool before it did.
+ * qtest_readw/writew, not raw bytes decoded by hand: the window is a real
+ * region with its own declared endianness, so a value-based access is what
+ * a guest's load or store looks like, and a host-framed byte decode
+ * crosses that boundary differently and reads the halves reversed.
  */
 static void test_reset_signature_through_the_fabric(const void *data)
 {
@@ -352,45 +264,20 @@ static void test_reset_signature_through_the_fabric(const void *data)
     aim_device0_window_at_its_bar(qts);
 
     /*
-     * The same three values the x86 suite's reset-signature test checks,
-     * reached this time through the real crosstalk-to-PCI decode rather than
-     * libqos's generic x86 graph — and at the address a real guest computes
-     * for them, `GUEST_HALFWORD`, not the device's own natural offset: the
-     * whole point of task #44's fix is that the Bridge now expects the
-     * corrected address and un-corrects it, the way OpenBSD and Linux both
-     * already assume. Each halfword's two bytes differ, so a hidden byte
-     * swap anywhere on the path — the window's correction, the bridge's
-     * decode, the device's own MemoryRegionOps — returns a visibly wrong
-     * number rather than a coincidentally correct one, and reading the
-     * *uncorrected* natural offset instead would now be the wrong test:
-     * that is exactly the address this fix means to make land on the wrong
-     * register.
+     * The same three values the x86 suite checks, through the real decode
+     * at the guest-corrected addresses. Each halfword's bytes differ, so a
+     * hidden swap anywhere on the path returns a visibly wrong number.
      */
     g_assert_cmphex(qtest_readw(qts, guest_mailbox1), ==, ISP_MAILBOX1_SIGNATURE);
     g_assert_cmphex(qtest_readw(qts, guest_mailbox2), ==, ISP_MAILBOX2_SIGNATURE);
     g_assert_cmphex(qtest_readw(qts, guest_mailbox3), ==, ISP_MAILBOX3_SIGNATURE);
 
     /*
-     * The reset signature alone only proves the read side: those three
-     * values were placed in the device's own state before any guest access,
-     * so a model could get every read right here while still mishandling a
-     * write through this window. Mailbox 0 holds no signature and resets
-     * clear, which is what makes it safe to reuse for proving the write side
-     * too — nothing above depends on its reset value being anything in
-     * particular, and its two bytes still differ, so this still catches a
-     * swap.
-     *
-     * A write-then-read at one address alone is not enough, and left as
-     * that alone it would not have caught task #44's own real defect: write
-     * and read through the *same* wrong transform can land on the same
-     * wrong register and still round-trip. So the check that actually
-     * matters is the one after it — that mailbox 1's signature, checked
-     * above, is still exactly ISP_MAILBOX1_SIGNATURE and not the value just
-     * written to mailbox 0. Mailboxes 0 and 1 are the pair this correction
-     * swaps with each other (0x70 and 0x72, two bytes apart, both aligned),
-     * so a transform that is missing, doubled, or reversed sends this
-     * write to mailbox 1 instead of mailbox 0, and only re-checking
-     * mailbox 1's own, independently-known value afterwards would notice.
+     * The write side. A write-then-read at one address round-trips even
+     * through the same wrong transform, so the check that matters is the
+     * last one: mailbox 1's signature is still its own value, not the word
+     * just written to mailbox 0 -- those two are the pair a missing,
+     * doubled, or reversed correction swaps with each other.
      */
     qtest_writew(qts, guest_mailbox0, 0x1234);
     g_assert_cmphex(qtest_readw(qts, guest_mailbox0), ==, 0x1234);
@@ -404,24 +291,11 @@ static void test_ioc3_slot_is_exempt_at_the_same_stride(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     /*
-     * The other half of task #44's scoping claim, in the one file that
-     * argues for the correction existing at all: the same Bridge mechanism
-     * that now corrects device 0's window must leave device 2 — IOC3 — at
-     * natural offsets, because IOC3 needs none of it. sn0-ioc3-test.c
-     * already covers this device's own contract in full and is left
-     * unmodified by this change; this test exists so the exemption's
-     * evidence sits beside the correction it is the other half of, rather
-     * than being implicit in "the other file still passes."
-     *
-     * Line control and modem control are adjacent one-byte registers in
-     * IOC3's serial block (docs/datasheets/ioc3.md), a byte apart — the
-     * exact granularity a wrongly-applied `offset ^ 3` correction would
-     * scatter across the wrong side of a four-byte word. Writing distinct
-     * values to both and reading them back at their own natural offsets is
-     * the same shape sn0-ioc3-test.c's own
-     * test_registers_are_a_byte_apart uses, repeated here deliberately so
-     * this file states its own half of the contract rather than relying on
-     * a reader to know the other suite proves it.
+     * The exemption half of the correction's scoping: the same mechanism
+     * that corrects device 0 must leave the IOC3 at natural offsets. Line
+     * and modem control are one-byte registers a byte apart -- exactly the
+     * granularity a wrongly-applied offset ^ 3 would scatter across the
+     * wrong side of a four-byte word.
      */
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_MMIO);
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
@@ -438,21 +312,11 @@ static void test_ioc3_slot_is_exempt_at_the_same_stride(const void *data)
 }
 
 /*
- * The adapter's own memory DMA goes through the bridge's address translation,
- * the same path its command rings take.
- *
- * This is the only check before a firmware boot that says so. The device-level
- * round-trip in tests/qtest/qlogic-isp-test.c passes just as well against a
- * model reaching guest memory directly, because on that generic PCI machine
- * there is no translation to bypass — and a register trace of the firmware
- * proves nothing either, since the transfer that would have faulted was
- * refused before it began.
- *
- * The translated address and the physical page deliberately differ, so that a
- * transfer landing at the untranslated address is a visible failure rather
- * than an accidental pass. Both directions run: dump-RAM puts the adapter's
- * own memory into the page, and load-RAM reads a second pattern back out of
- * it, because a model could translate correctly in one direction only.
+ * The adapter's memory DMA goes through the bridge's translation, the path
+ * its command rings take -- the x86 round-trip cannot pin this, having no
+ * translation to bypass. The translated and physical addresses differ, so
+ * an untranslated transfer is a visible failure; both directions run
+ * because a model can translate correctly in only one.
  */
 static void test_ram_dma_translates_through_the_bridge(const void *data)
 {
@@ -478,24 +342,16 @@ static void test_ram_dma_translates_through_the_bridge(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * Read the raw bytes rather than a word, because a word accessor would
-     * apply its own correction and hide the very thing under test.
-     *
-     * Two effects compose here and the test pins both. The transfer goes
-     * through the page-mapped window with that window's swap bit clear, so
-     * the Bridge permutes its byte lanes: a two-byte access at window offset
-     * zero lands at memory offset zero-exclusive-or-two, and the two halves
-     * arrive in the opposite order to the little-endian store that made them.
+     * Raw bytes, because a word accessor would apply its own correction
+     * and hide the effect under test: with the window's swap bit clear a
+     * two-byte transfer at offset zero lands at offset zero ^ two with its
+     * halves reversed.
      */
     qtest_memread(qts, TARGET_PAGE + 2, seen, 2);
     g_assert_cmphex(seen[0], ==, first >> 8);
     g_assert_cmphex(seen[1], ==, first & 0xff);
 
-    /*
-     * And nothing was written where an uncorrected transfer would have put
-     * it. Without this the test still passes against a model that writes both
-     * places, which is a thing a careless correction does.
-     */
+    /* And nothing landed where an uncorrected transfer would have. */
     qtest_memread(qts, TARGET_PAGE, seen, 2);
     g_assert_cmphex(seen[0], ==, 0);
     g_assert_cmphex(seen[1], ==, 0);
@@ -522,16 +378,10 @@ static void test_ram_dma_translates_through_the_bridge(const void *data)
 }
 
 /*
- * The single-word RAM path, through the fabric, with the guard that makes it
- * mean something: two addresses are written before either is read, and the
- * read asks for the first. A model answering with the most recently written
- * word, or leaving a previous command's value in the answer mailbox, returns
- * the second value and fails. Reading the address just written cannot tell
- * those apart from a correct implementation.
- *
- * This runs under check-qtest-mips64. The richer device-level suite for this
- * command compiles into qos-test, which reports no tests on this target, so
- * for now this is the only coverage of read RAM word that CI executes.
+ * Two addresses are written before either is read, and the read asks for
+ * the first: a model answering with the most recent write, or a stale
+ * mailbox, returns the second value and fails. The qos-test suite reports
+ * no tests on this target, so this is the coverage CI executes.
  */
 static void test_read_ram_word_through_the_fabric(const void *data)
 {
@@ -545,9 +395,8 @@ static void test_read_ram_word_through_the_fabric(const void *data)
     isp_write_ram_word(qts, addr_b, val_b);
 
     /*
-     * Mailboxes 2 and 3 are loaded with values that are not the answer: 2
-     * carries the word out, and 3 is an output of this command that reads
-     * zero, so both would pass by accident if left holding the answer.
+     * Both output mailboxes are poisoned with values that are not the
+     * answer, or a model that never wrote them could pass by accident.
      */
     isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_READ_RAM_WORD);
     isp_writew(qts, ISP_MAILBOX(1), addr_a);
@@ -617,17 +466,10 @@ static void isp_init_queue_a64(QTestState *qts, uint16_t cmd, uint16_t count,
 }
 
 /*
- * A ring based at a 64-bit address carries its descriptors with each aligned
- * 32-bit word byte-reversed, and the adapter has to read and write them that
- * way. This is the firmware's arrangement: it is the only guest that gives a
- * queue a 64-bit base, and before this was modelled its command entries read
- * as entry type zero and its interrupt handler read our completions the same
- * way, in both directions at once.
- *
- * The command is aimed at a target with nothing behind it, which is what the
- * machine has here. That is deliberate rather than a limitation -- an absent
- * target still produces a completion carrying the handle, so the round trip
- * is testable without a disk, and it is the same path a bus walk takes.
+ * A ring with a 64-bit base carries each aligned 32-bit word
+ * byte-reversed, in both directions -- the firmware's arrangement, being
+ * the one guest that gives a queue a 64-bit base. An absent target still
+ * completes with the handle, so no disk is needed.
  */
 static void test_a64_ring_is_word_value(const void *data)
 {
@@ -652,11 +494,9 @@ static void test_a64_ring_is_word_value(const void *data)
                        RING_IOVA);
 
     /*
-     * Built canonically and then reversed per word, which is how a guest on
-     * this ring lays one down. Nothing here is hand-swizzled field by field:
-     * the same one transform covers the header bytes, the 32-bit handle and
-     * the 16-bit device and length fields together, which is exactly the
-     * property that would break if the model corrected fields individually.
+     * Built canonically, then reversed per word: one transform covers the
+     * bytes, the 32-bit handle and the 16-bit fields together -- the
+     * property a per-field correction would break.
      */
     memset(entry, 0, sizeof(entry));
     entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
@@ -672,10 +512,8 @@ static void test_a64_ring_is_word_value(const void *data)
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
 
     /*
-     * A completion appeared, and reading it back through the same correction
-     * recovers the entry type and the handle we sent. Read raw it would be
-     * neither -- which is precisely what the firmware saw before this, when
-     * its handler reported entry type zero.
+     * The completion reads back through the same correction; raw, the type
+     * byte is visibly not a status entry.
      */
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
 
@@ -689,26 +527,13 @@ static void test_a64_ring_is_word_value(const void *data)
 }
 
 /*
- * A data-out transfer on a word-value ring, which is the half an inquiry
- * never exercises. The command writes a block the guest laid down
- * word-reversed, and the check is that the disk received it the right way
- * round: the correction has to run on the way out, from a buffer this
- * adapter owns, without the guest's own buffer being touched.
- *
- * What this does and does not establish, said plainly because the
- * difference matters. It establishes that the command completes, that the
- * data-out path runs its cursor over the segment without faulting, and --
- * the point of the assertion -- that the guest's own buffer comes back
- * untouched, which is the ownership property the bounce exists to provide.
- *
- * It does NOT establish that the bytes reaching the medium were corrected.
- * The drive here discards writes, and reading back over the same ring
- * would not settle it either: both directions carry the same correction,
- * so a round trip returns the original whatever the correction does, the
- * same cancellation that makes a load-and-dump pair useless for byte
- * order. Only a reader that does not share this ring's byte order can
- * answer that, and the firmware writing a real partition table is what
- * actually does.
+ * Data-out on a word-value ring. What is pinned: the command completes,
+ * the segment cursor runs without faulting, and the guest's own buffer
+ * comes back untouched -- the ownership property the bounce provides. Not
+ * pinned: the bytes reaching the medium, because both directions carry the
+ * same correction and a round trip cancels it; only a reader outside this
+ * ring's byte order (the firmware writing a real partition table) settles
+ * that.
  */
 static void test_a64_ring_data_out(const void *data)
 {
@@ -738,9 +563,8 @@ static void test_a64_ring_data_out(const void *data)
                        RING_IOVA);
 
     /*
-     * A pattern whose every byte differs from its neighbours, so a
-     * correction that is missing, doubled or applied at the wrong width
-     * shows up rather than cancelling.
+     * Every byte differs from its neighbours, so a missing, doubled or
+     * wrong-width correction shows rather than cancelling.
      */
     for (i = 0; i < sizeof(block); i++) {
         block[i] = (uint8_t)(i * 7 + 1);
@@ -782,12 +606,9 @@ static void test_a64_ring_data_out(const void *data)
 }
 
 /*
- * A drive self-test completes with GOOD status through the adapter's command
- * ring. IRIX fx issues SEND DIAGNOSTIC when it opens a disk; before scsi-disk
- * answered the opcode the target returned CHECK CONDITION and fx reported the
- * disk broken ("Illegal request: Invalid command code"). This drives the same
- * crosstalk -> Bridge -> PCI -> scsi-disk path fx takes, and asserts the SCSI
- * status the adapter posts back is GOOD.
+ * A drive self-test completes GOOD through the command ring: IRIX fx
+ * issues SEND DIAGNOSTIC when it opens a disk and reports the disk broken
+ * on CHECK CONDITION.
  */
 static void build_a64_command(uint8_t *entry, uint32_t handle, uint16_t device,
                               uint8_t op, uint8_t op_byte1)
@@ -805,11 +626,8 @@ static void build_a64_command(uint8_t *entry, uint32_t handle, uint16_t device,
 }
 
 /*
- * The 32-bit-addressing command entry (type 0x01), built the same way as the
- * A64 sibling above. The header fields the missing-target path reads -- handle,
- * device, cdb -- sit at the same offsets in both formats, so only the entry
- * type byte differs. This exists for the 32-bit missing-target check; the
- * data-carrying tests use the A64 format the IP27 guests actually issue.
+ * The 32-bit command entry (type 0x01): the header fields sit at the same
+ * offsets as the A64 form, so only the type byte differs.
  */
 static void build_command(uint8_t *entry, uint32_t handle, uint16_t device,
                           uint8_t op, uint8_t op_byte1)
@@ -851,10 +669,8 @@ static void test_a64_ring_send_diagnostic(const void *data)
                        RING_IOVA);
 
     /*
-     * The drive at target 1, lun 0 (device 0x0100) raises a power-on UNIT
-     * ATTENTION on its first command, so send a TEST UNIT READY to absorb it,
-     * then the SEND DIAGNOSTIC self-test whose status we check. Both entries
-     * go in one doorbell.
+     * A TEST UNIT READY first, to absorb the drive's power-on UNIT
+     * ATTENTION; then the SEND DIAGNOSTIC whose status is checked.
      */
     build_a64_command(entry, 0x5d1a0000, 0x0100, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
@@ -877,18 +693,11 @@ static void test_a64_ring_send_diagnostic(const void *data)
 
 
 /*
- * A command for a target with no device completes as a benign empty slot.
- *
- * IRIX walks the ISP1040 bus at boot and probes every target. On the empty
- * ones the adapter reaches the bus but selects nothing, and the completion it
- * posts must say exactly that in both flag words: GOT_BUS set and GOT_TARGET
- * clear in state_flags, and the selection-timeout bit in status_flags. IRIX
- * faults the probe unless status_flags carries that bit, so a model that
- * leaves offset 14 at the zero a freshly cleared ring slot holds turns every
- * empty target into a fatal error and the install never starts. This drives
- * one command at an unpopulated target and checks all three fields. The
- * status_flags bit is the one the Linux, OpenBSD and NetBSD drivers never
- * read and this model used not to write.
+ * A command for an empty target completes as a benign empty slot: GOT_BUS
+ * set, GOT_TARGET clear, and the selection-timeout bit in status_flags --
+ * the bit only IRIX reads, and without which it faults every empty target
+ * it probes. A model leaving offset 14 at a cleared slot's zero fails
+ * exactly there.
  */
 static void test_a64_ring_missing_target(const void *data)
 {
@@ -915,10 +724,6 @@ static void test_a64_ring_missing_target(const void *data)
     isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
                        RING_IOVA);
 
-    /*
-     * The one drive sits at target 1, so target 5 is an empty slot on a live
-     * bus -- the case IRIX meets on most of the targets it probes.
-     */
     /* device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY. */
     build_a64_command(entry, probe_handle, 0x0500, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
@@ -949,13 +754,11 @@ static void test_a64_ring_missing_target(const void *data)
 
 
 /*
- * The same missing-target completion, driven through the 32-bit command entry
- * (type 0x01) instead of the A64 one. The model answers no-device from two
- * separate request handlers, one per entry format, and each has its own
- * post-status call site; the A64 test above covers one, this covers the other.
- * The ring is the same A64-based ring -- the entry type, not the ring, selects
- * the handler, and the missing-target path returns before any segment is read,
- * so the 32-bit-versus-A64 segment format never comes into play here.
+ * The same missing-target completion through the 32-bit entry: each entry
+ * format has its own handler and post-status call site, and the entry
+ * type, not the ring, selects between them. The missing-target path
+ * returns before any segment is read, so the segment formats never differ
+ * here.
  */
 static void test_ring_missing_target(const void *data)
 {
@@ -1012,15 +815,10 @@ static void test_ring_missing_target(const void *data)
 
 
 /*
- * The checksum command answers in mailbox 2 as well as mailbox 1.
- *
- * The firmware reads the one an emulator of the same part does not write, and
- * a model leaving it alone hands back whatever the previous command put there
- * -- so the failure this pins is a mailbox holding a stale value that happens
- * to be wrong, not a mailbox holding nothing. That is why both mailboxes are
- * poisoned first with values that are not the answer: without that, a model
- * that never wrote mailbox 2 would pass whenever the answer happened to be
- * what was already there, and zero is exactly such an answer.
+ * The checksum command answers in mailbox 2 as well as mailbox 1. The
+ * failure pinned is a stale value in the mailbox a model forgot to write,
+ * so both are poisoned first with values that are not the answer -- zero
+ * is exactly the answer a stale mailbox could hold by accident.
  */
 static void test_verify_checksum_answers_both_mailboxes(const void *data)
 {
@@ -1030,9 +828,8 @@ static void test_verify_checksum_answers_both_mailboxes(const void *data)
     aim_device0_window_at_its_bar(qts);
 
     /*
-     * Word three of the image is its length. Four words, three of them zero,
-     * so the sum is the length itself -- a small non-zero value that no
-     * mailbox holds by accident.
+     * Word three of the image is its length; with the rest zero the sum is
+     * the length itself, a value no mailbox holds by accident.
      */
     isp_write_ram_word(qts, base + 3, 4);
 
@@ -1049,9 +846,8 @@ static void test_verify_checksum_answers_both_mailboxes(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * And an image that sums to zero completes. Running both halves is what
-     * stops the test passing against a model that always reports failure, or
-     * always reports the length.
+     * And a zero-sum image completes: both halves together rule out a
+     * model that always fails or always reports the length.
      */
     isp_write_ram_word(qts, base, 0xfffc);
 
@@ -1071,18 +867,11 @@ static void test_verify_checksum_answers_both_mailboxes(const void *data)
 
 
 /*
- * The same block transfer through the DIRECT window, which is the one the
- * firmware actually drives.
- *
- * The existing translated-window test exercises the page-mapped swap bit; the
- * firmware's own download names an address in the 32-bit direct window and so
- * is governed by the other bit entirely. A model consulting the wrong one of
- * the two passes that test and fails this boot.
- *
- * Read the page from the host rather than dumping it back through the adapter.
- * A dump through the same window with the same bit applies the transform a
- * second time and cancels it exactly, which asserts nothing at all -- the same
- * round-trip trap as a load followed by a dump, one level down.
+ * The same block transfer through the DIRECT window, the one the firmware
+ * drives: its swap bit is the other of the two, so a model consulting the
+ * wrong bit passes the translated-window test and fails the boot. The page
+ * is read from the host, because a dump back through the same window
+ * cancels the transform exactly and asserts nothing.
  */
 static void test_ram_dma_through_the_direct_window(const void *data)
 {
@@ -1096,9 +885,9 @@ static void test_ram_dma_through_the_direct_window(const void *data)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     /*
-     * The add-512-megabytes field resets SET, and left alone it moves the
-     * transfer half a gigabyte from where this test looks -- which reads as a
-     * byte-order failure and is not one.
+     * The add-512-megabytes field resets set; left alone it moves the
+     * transfer half a gigabyte away, which reads as a byte-order failure
+     * and is not one.
      */
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
 
@@ -1111,8 +900,8 @@ static void test_ram_dma_through_the_direct_window(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * Two bytes written at window offset zero, with that window's bit clear,
-     * land at memory offset zero-exclusive-or-two with their halves reversed.
+     * With the window's bit clear, offset zero lands at zero ^ two,
+     * halves reversed.
      */
     qtest_memread(qts, TARGET_PAGE + 2, seen, 2);
     g_assert_cmphex(seen[0], ==, word >> 8);
@@ -1131,32 +920,20 @@ static void test_pci_status_reset_value(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     /*
-     * The single-CPU IRIX miniroot's io_config_space diagnostic
-     * (diag_io6confSpace_sanity) reads the PCI Command/Status dword at
-     * configuration offset 0x04 for each device and compares all 32 bits
-     * against a per-device reset value. For this adapter it expects
-     * 0x02000000: Command 0, Status 0x0200 (bit 9, medium DEVSEL). A model
-     * that leaves the Status half zero miscompares and the miniroot fails
-     * the I/O slot. See docs/datasheets/isp1040.md.
-     *
-     * This asserts the Status half only, not the full dword. The board
-     * (hw/mips/sn0.c) pre-enables the Command half for no-firmware bring-up,
-     * so at qtest time Command reads non-zero here; on the real machine the
-     * miniroot resets the device before the diagnostic (its console capture
-     * shows the whole dword reading 0 before this fix), which clears the
-     * writable Command bits while the read-only Status bits survive. So the
-     * reset value under test is the Status half, and the full-dword
-     * 0x02000000 the diagnostic compares is that Status half over a
-     * reset-cleared Command half — which the miniroot rerun is the gate for.
+     * IRIX's io_config_space diagnostic compares the whole Command/Status
+     * dword against 0x02000000 -- Status 0x0200, medium DEVSEL -- and
+     * fails the I/O slot on a zero Status half (see the project-tree
+     * ISP1040 datasheet). Only the Status half is asserted here: the board
+     * pre-enables Command for no-firmware bring-up, and the miniroot's own
+     * reset clears the writable half while the read-only Status survives.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND) >> 16,
                     ==, 0x0200u);
 
     /*
-     * The Status capability bits are read-only and the error latches are
-     * write-one-to-clear from a reset of zero, so writing all ones leaves
-     * the Status half exactly 0x0200: bit 9 still set, no other bit set,
-     * no latch spuriously raised.
+     * The capability bits are read-only and the error latches
+     * write-one-to-clear from zero, so writing all ones leaves the Status
+     * half exactly 0x0200.
      */
     qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND, 0xffffffffu);
     g_assert_cmphex(qtest_readl(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND) >> 16,
@@ -1166,11 +943,8 @@ static void test_pci_status_reset_value(const void *data)
 }
 
 /*
- * GET_TARGET_PARAMETERS (0x28) returns a target's negotiated transfer
- * parameters. The model negotiates nothing, so it answers async/narrow --
- * mailbox 2 and 3 zero -- and completes, rather than the invalid-command
- * answer that made Linux qla1280 log a mailbox failure after each target it
- * enumerated.
+ * GET_TARGET_PARAMETERS answers async/narrow and completes; the
+ * invalid-command answer made Linux log a mailbox failure per target.
  */
 static void test_mbox_get_target_parameters(const void *data)
 {
@@ -1192,9 +966,8 @@ static void test_mbox_get_target_parameters(const void *data)
 }
 
 /*
- * SET_RESET_DELAY_PARAMS (0x3a) completes rather than answering invalid. IRIX
- * issues it during adapter init on the path to its bus scan; the invalid
- * answer left it logging a mailbox error there.
+ * SET_RESET_DELAY_PARAMS completes rather than answering invalid, which
+ * left IRIX logging a mailbox error during adapter init.
  */
 static void test_mbox_set_reset_delay_params(const void *data)
 {
@@ -1213,11 +986,9 @@ static void test_mbox_set_reset_delay_params(const void *data)
 }
 
 /*
- * The fabric-refused-transfer pair. With 64 megabytes of memory the first
- * unbacked address is right after it, and the bridge's direct window passes
- * the address through, so a transfer aimed there is refused the way a
- * transfer through an invalid translation entry would be — without needing
- * the translation table for the refusal.
+ * The fabric-refused-transfer pair: with 64 MB of memory the first
+ * unbacked address is right after it, and a transfer there is refused the
+ * way one through an invalid translation entry would be.
  */
 #define ISP_REG_BUS_STATUS          0x0a
 #define ISP_BUS_STATUS_INT_REQ      0x0002
@@ -1230,15 +1001,13 @@ static void test_mbox_set_reset_delay_params(const void *data)
 #define UNBACKED_RESP_IOVA          (0xa500000000000000ULL | RAM_TOP_64M)
 
 /*
- * A request entry the fabric only half answers: the header words sit in the
- * last bytes of memory and the CDB field starts exactly at the boundary, so
- * every header read succeeds and the CDB read is refused. The adapter must
- * not act on a command it never received — before this was checked the CDB
- * buffer was uninitialized stack memory, and whatever it held went to the
- * bus, a write included. The right outcome is a drop: the consume index
- * stays on the entry and nothing is posted or raised, because the part
- * documents no status for a transfer the fabric refused and the bridge
- * reports the refusal on its own error path.
+ * A request entry the fabric only half answers: headers in the last bytes
+ * of memory, the CDB starting exactly at the boundary, so the header reads
+ * succeed and the CDB read is refused. The pinned outcome is a drop --
+ * consume index on the entry, nothing posted or raised -- and the
+ * discriminating shape matters: an entirely unreadable entry takes the
+ * fail-visibly default and posts a completion, which would pass for the
+ * wrong reason.
  */
 static void test_a_refused_cdb_read_drops_the_request(const void *data)
 {
@@ -1260,10 +1029,9 @@ static void test_a_refused_cdb_read_drops_the_request(const void *data)
     quiescent = isp_readw(qts, ISP_REG_BUS_STATUS) & ISP_BUS_STATUS_INT_BITS;
 
     /*
-     * Only the header bytes are written: the rest of the entry has no
-     * memory behind it to hold anything. The device word names an empty
-     * target, which would complete incomplete-with-timeout if the entry
-     * were acted on at all.
+     * Only the header bytes are written -- the rest has no memory behind
+     * it. The device word names an empty target, which would complete
+     * incomplete-with-timeout if the entry were acted on at all.
      */
     build_command(entry, 0x51add1e5, 0x0500, 0x00, 0x00);
     qtest_memwrite(qts, STRADDLE_PHYS, entry, ISP_REQ_OFF_CDB);
@@ -1279,12 +1047,10 @@ static void test_a_refused_cdb_read_drops_the_request(const void *data)
 }
 
 /*
- * The write half of the same defect: a completion bound for a response ring
- * the fabric refuses. Losing the completion is unavoidable — the part
- * documents no recovery — but the produce index must not step over a slot
- * that was never written and the interrupt must not be raised, because
- * together they tell the guest to read a stale ring entry as this command's
- * answer.
+ * The write half: a completion bound for a refused response ring is lost,
+ * but the produce index must not step over a slot never written and the
+ * interrupt must not be raised -- together they point the guest at a stale
+ * entry as this command's answer.
  */
 static void test_a_refused_status_write_raises_no_interrupt(const void *data)
 {
