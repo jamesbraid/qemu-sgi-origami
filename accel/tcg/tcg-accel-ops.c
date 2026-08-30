@@ -208,7 +208,6 @@ static void tcg_accel_ops_init(AccelClass *ac)
     } else {
         ops->create_vcpu_thread = rr_start_vcpu_thread;
         ops->kick_vcpu_thread = rr_kick_vcpu_thread;
-        ops->handoff_vcpu_thread = rr_handoff_vcpu_thread;
 
         if (icount_enabled()) {
             ops->handle_interrupt = icount_handle_interrupt;

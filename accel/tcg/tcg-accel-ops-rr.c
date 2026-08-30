@@ -59,39 +59,6 @@ void rr_kick_vcpu_thread(CPUState *requested)
 }
 
 /*
- * A device can request one immediate vCPU slice without changing the normal
- * round-robin order. The CPU-list generation makes an unplugged or replaced
- * target harmless before the RR thread consumes the request.
- */
-static uint64_t rr_handoff_request;
-
-void rr_handoff_vcpu_thread(CPUState *requested)
-{
-    unsigned int generation = cpu_list_generation_id_get();
-    bool accepted = false;
-
-    if (!icount_enabled() && replay_mode == REPLAY_MODE_NONE && requested &&
-        requested != current_cpu && requested->cpu_index >= 0) {
-        uint64_t request =
-            (uint64_t)generation << 32 |
-            (uint32_t)(requested->cpu_index + 1);
-
-        /* The first causal request defines the next slice. */
-        accepted = qatomic_cmpxchg(&rr_handoff_request, 0, request) == 0;
-    }
-
-    if (trace_event_get_state_backends(TRACE_RR_HANDOFF_REQUEST)) {
-        trace_rr_handoff_request(
-            current_cpu ? current_cpu->cpu_index : -1,
-            requested ? requested->cpu_index : -1, accepted, generation,
-            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-    }
-
-    rr_kick_vcpu_thread(requested);
-}
-
-/*
  * TCG vCPU kick timer
  *
  * The kick timer is responsible for moving single threaded vCPU
@@ -223,44 +190,6 @@ static int rr_cpu_count(void)
     return cpu_count;
 }
 
-enum {
-    RR_HANDOFF_DISCARD_STALE = 1,
-    RR_HANDOFF_DISCARD_MISSING,
-    RR_HANDOFF_DISCARD_UNRUNNABLE,
-    RR_HANDOFF_DISCARD_ALREADY_NEXT,
-};
-
-static CPUState *rr_handoff_cpu(uint64_t request, unsigned int *generation,
-                                int *discard_reason)
-{
-    unsigned int request_generation = request >> 32;
-    uint32_t encoded_index = request;
-    CPUState *cpu;
-
-    if (!encoded_index ||
-        request_generation != cpu_list_generation_id_get()) {
-        *discard_reason = RR_HANDOFF_DISCARD_STALE;
-        return NULL;
-    }
-
-    cpu = qemu_get_cpu(encoded_index - 1);
-    if (!cpu) {
-        *discard_reason = RR_HANDOFF_DISCARD_MISSING;
-        return NULL;
-    }
-    if (cpu->unplug || !cpu_can_run(cpu)) {
-        *discard_reason = RR_HANDOFF_DISCARD_UNRUNNABLE;
-        return NULL;
-    }
-    if (request_generation != cpu_list_generation_id_get()) {
-        *discard_reason = RR_HANDOFF_DISCARD_STALE;
-        return NULL;
-    }
-
-    *generation = request_generation;
-    return cpu;
-}
-
 /*
  * In the single-threaded case each vCPU is simulated in turn. If
  * there is more than a single vCPU we create a simple timer to kick
@@ -273,9 +202,6 @@ static void *rr_cpu_thread_fn(void *arg)
 {
     Notifier force_rcu;
     CPUState *cpu = arg;
-    int resume_cpu_index = -1;
-    unsigned int resume_generation = 0;
-    bool nested_handoff_used = false;
 
     assert(tcg_enabled());
     rcu_register_thread();
@@ -309,77 +235,6 @@ static void *rr_cpu_thread_fn(void *arg)
     while (1) {
         /* Only used for icount_enabled() */
         int64_t cpu_budget = 0;
-        CPUState *handoff_cpu = NULL;
-        CPUState *normal_cpu = cpu ? cpu : first_cpu;
-        int discard_reason = 0;
-        unsigned int request_generation = 0;
-        uint64_t request = 0;
-
-        if (resume_cpu_index >= 0) {
-            if (resume_generation == cpu_list_generation_id_get()) {
-                normal_cpu = qemu_get_cpu(resume_cpu_index);
-                if (normal_cpu &&
-                    (normal_cpu->unplug || !cpu_can_run(normal_cpu))) {
-                    normal_cpu = NULL;
-                }
-            } else {
-                normal_cpu = NULL;
-            }
-            if (!normal_cpu) {
-                resume_cpu_index = -1;
-                nested_handoff_used = false;
-                normal_cpu = cpu ? cpu : first_cpu;
-            }
-        }
-
-        /* One causal return may precede the saved RR successor. */
-        if (resume_cpu_index < 0 || !nested_handoff_used) {
-            request = qatomic_xchg(&rr_handoff_request, 0);
-        }
-
-        if (request) {
-            int requested_cpu = (uint32_t)request - 1;
-
-            handoff_cpu = rr_handoff_cpu(request, &request_generation,
-                                          &discard_reason);
-            if (handoff_cpu == normal_cpu) {
-                discard_reason = RR_HANDOFF_DISCARD_ALREADY_NEXT;
-                handoff_cpu = NULL;
-            } else if (handoff_cpu && normal_cpu && resume_cpu_index < 0) {
-                resume_cpu_index = normal_cpu->cpu_index;
-                resume_generation = request_generation;
-                nested_handoff_used = false;
-            } else if (handoff_cpu) {
-                nested_handoff_used = true;
-            }
-
-            if (handoff_cpu &&
-                trace_event_get_state_backends(TRACE_RR_HANDOFF_SELECT)) {
-                trace_rr_handoff_select(
-                    handoff_cpu->cpu_index, resume_cpu_index,
-                    request_generation,
-                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-            } else if (discard_reason &&
-                       trace_event_get_state_backends(
-                           TRACE_RR_HANDOFF_DISCARD)) {
-                trace_rr_handoff_discard(
-                    requested_cpu, discard_reason,
-                    request >> 32, cpu_list_generation_id_get(),
-                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-            }
-        }
-
-        if (!handoff_cpu && resume_cpu_index >= 0) {
-            handoff_cpu = normal_cpu;
-            resume_cpu_index = -1;
-            nested_handoff_used = false;
-        }
-
-        if (handoff_cpu) {
-            cpu = handoff_cpu;
-        }
 
         if (cpu) {
             /*

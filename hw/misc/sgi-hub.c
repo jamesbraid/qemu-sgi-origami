@@ -1025,6 +1025,41 @@ static void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int index,
     }
 }
 
+/*
+ * Let a peer make progress before this processor polls it again.
+ *
+ * Firmware polls a peer's progress through Hub registers with a timeout it
+ * measures in its own retired instructions. A poller that keeps running
+ * spends that entire budget before the peer it waits for runs at all, and
+ * reports the peer dead. Two accelerators need two different things, and
+ * both are cheap: wake the peer, whose own thread may be idle, and end this
+ * processor's round-robin slice, since under round robin the peer cannot run
+ * until this one stops. Leaving the slice also stops the poller's own
+ * instruction count, so the budget survives the wait. Changes no Hub or
+ * interrupt state.
+ *
+ * The slice cannot be handed to a named processor, only given up, so under
+ * round robin the peer is reached in rotation order rather than immediately.
+ * Nothing here depends on which processor runs next, only on this one
+ * stopping before its poll budget runs out.
+ *
+ * Under round robin the wake raises an exit request on every processor, which
+ * the scheduler clears as each becomes current: the peer loses one pass around
+ * the loop, not its slice.
+ */
+static void sgi_hub_yield_to_peer(CPUState *peer)
+{
+    if (!peer || peer == current_cpu) {
+        return;
+    }
+
+    qemu_cpu_kick(peer);
+
+    if (current_cpu) {
+        cpu_exit(current_cpu);
+    }
+}
+
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 {
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
@@ -1060,16 +1095,12 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
      * The PROM uses otherwise-unmasked pending bits as node-wide barrier and
      * lock mailboxes. A peer polling one of those bits must observe a write
      * before the writer exhausts the firmware's instruction-count timeout.
-     * Wake every other local processor just as the progress mailboxes do;
+     * Release every other local processor just as the progress mailboxes do;
      * this changes no interrupt state and only makes the already-atomic write
      * visible on the scheduling boundary where real hardware exposes it.
      */
     for (i = 0; i < s->cpus; i++) {
-        CPUState *peer = qemu_get_cpu(s->cpu_base + i);
-
-        if (peer && peer != current_cpu) {
-            qemu_cpu_handoff(peer);
-        }
+        sgi_hub_yield_to_peer(qemu_get_cpu(s->cpu_base + i));
     }
 }
 
@@ -1086,7 +1117,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
         if (s->pi_int_pend1_primary_credit) {
             s->pi_int_pend1_primary_credit = false;
         } else {
-            qemu_cpu_handoff(primary);
+            sgi_hub_yield_to_peer(primary);
         }
         return value;
     }
@@ -1114,11 +1145,7 @@ static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
      * progress mailboxes above.
      */
     for (i = 0; i < s->cpus; i++) {
-        CPUState *peer = qemu_get_cpu(s->cpu_base + i);
-
-        if (peer) {
-            qemu_cpu_handoff(peer);
-        }
+        sgi_hub_yield_to_peer(qemu_get_cpu(s->cpu_base + i));
     }
 }
 
@@ -1128,9 +1155,8 @@ static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
  * waits for the set, the other for the acknowledging clear.  On real
  * processors the peer runs concurrently and answers inside the poll's bounded
  * budget; under RR TCG the poller can exhaust that budget in one slice while
- * the peer is runnable and never scheduled.  Give the reader's local peer the
- * next slice.  The ordered handoff resumes the displaced successor and bounds
- * nesting, so rotation fairness holds across repeated rounds.
+ * the peer is runnable and never scheduled.  End the reader's slice so the
+ * peer is scheduled within one rotation.
  *
  * Only an unchanged re-read hands off.  A read whose value moved since the
  * same processor's previous read is an answered one -- the producer's own
@@ -1156,11 +1182,7 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     if (s->pi_int_pend_seen_valid[i][bank] &&
         s->pi_int_pend_seen[i][bank] == value) {
         for (i = 0; i < s->cpus; i++) {
-            CPUState *peer = qemu_get_cpu(s->cpu_base + i);
-
-            if (peer && peer != current_cpu) {
-                qemu_cpu_handoff(peer);
-            }
+            sgi_hub_yield_to_peer(qemu_get_cpu(s->cpu_base + i));
         }
         return value;
     }
@@ -1446,12 +1468,9 @@ static uint64_t sgi_hub_rt_compare_read(SGIHubState *s, unsigned int i)
     /*
      * Firmware polls the peer's progress through these registers with an
      * instruction-count timeout. Give the owner a chance to publish its next
-     * value before an MTTCG reader can consume that entire loop in one host
-     * time slice.
+     * value before the reader consumes that entire loop in one slice.
      */
-    if (owner && owner != current_cpu) {
-        qemu_cpu_handoff(owner);
-    }
+    sgi_hub_yield_to_peer(owner);
     return qatomic_read(&s->pi_rt_compare[i]);
 }
 
@@ -2450,9 +2469,9 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         /*
          * The boot PROM uses these registers as progress mailboxes while the
          * two local processors arbitrate. Its peer timeout is a tight MMIO
-         * read loop, short enough for one MTTCG host thread to exhaust before
-         * the other vCPU receives a host time slice. A real register write is
-         * immediately visible to the peer; kick that vCPU so host scheduling
+         * read loop, short enough for one processor to exhaust before the
+         * other receives a slice. A real register write is immediately
+         * visible to the peer; end the writer's slice so host scheduling
          * cannot turn the firmware's instruction-count timeout into a false
          * dead-processor report. This changes no register or interrupt state.
          *
@@ -2460,7 +2479,7 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
          * interrupt enable distinguishes: the arbitration polls with the
          * interrupt disabled, while a guest that has enabled it is writing a
          * deadline from its own tick path and re-arms on every tick. Under
-         * round-robin, a handoff here ends the writer's slice between its
+         * round-robin, yielding here ends the writer's slice between its
          * compare write and its read-back of the count, so the wall-clock
          * time the peer's slice consumes lands inside that window and every
          * deadline the guest asks for has already passed when it checks —
@@ -2471,8 +2490,8 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
          * could meet the same livelock.
          */
         peer = qemu_get_cpu(s->cpu_base + (i ^ 1));
-        if (!s->pi_rt_enable[i] && peer && (i ^ 1) < s->cpus) {
-            qemu_cpu_handoff(peer);
+        if (!s->pi_rt_enable[i] && (i ^ 1) < s->cpus) {
+            sgi_hub_yield_to_peer(peer);
         }
         break;
     }
