@@ -9,17 +9,15 @@
  * rtl8139 expose vendor/board identity as properties rather than as
  * separate devices.
  *
- * SCAFFOLDING SLICE: the two BAR windows and the netdev frontend exist, but
- * the 64-bit PIF/TxP register file behind them does not -- both windows
- * answer every access with LOG_UNIMP. The real registers carry full-value
- * side effects on a single 64-bit access (the byte-swapper diagnostic,
- * SW_RESET's key, RMAC_CFG_KEY), and the Bridge currently splits an 8-byte
- * device access into two 4-byte cycles before it reaches any device's
- * MemoryRegionOps regardless of what the device declares -- see the Access
- * width note in docs/library/nic-on-bridge-conventions.md. That is under
- * review by the Bridge owner (docs/superpowers/plans/
- * 2026-08-29-xframe-ethernet-adapter.md, Task P3); the register file is the
- * follow-on slice once it settles.
+ * This models the generic PCI card's own machine-independent contract. The
+ * PIF register window (BAR0) carries the probe/attach register file -- the
+ * byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY MAC-config lock,
+ * ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table -- as 64-bit
+ * registers in native little-endian order. The transmit descriptor/doorbell
+ * path behind the TxP window is a follow-on slice and stays a LOG_UNIMP stub.
+ * A host bridge that corrects register byte order or access width (the Origin
+ * 200 Bridge) is that bridge's concern, not this device's -- see
+ * docs/library/nic-on-bridge-conventions.md.
  */
 
 #ifndef HW_NET_XFRAME_H
@@ -66,10 +64,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
  */
 #define XFRAME_TXP_WINDOW_SIZE          0x100000
 
+/*
+ * The station/multicast MAC-address table has 64 entries, addressed by the
+ * 6-bit offset field of RMAC_ADDR_CMD_MEM. Entry 0 holds the factory MAC read
+ * back at attach (docs/datasheets/xframe.md's "Behavioral contract").
+ */
+#define XFRAME_MAC_TABLE_ENTRIES        64
+
 struct XframeState {
     PCIDevice parent_obj;
 
-    /* BAR0: the PIF register window. Stub-only in this slice. */
+    /* BAR0: the PIF register window (the probe/attach register file). */
     MemoryRegion pif_mmio;
     /* The second BAR: the TxP descriptor/doorbell window. Stub-only. */
     MemoryRegion txp_mmio;
@@ -79,6 +84,22 @@ struct XframeState {
     uint16_t device_id;
     uint16_t subsystem_vendor_id;
     uint16_t subsystem_id;
+
+    /*
+     * PIF register state, all 64-bit and in native little-endian order --
+     * docs/datasheets/xframe.md's "Register map" and "VMState / migration
+     * fields".
+     */
+    uint64_t swapper_ctrl;      /* byte-swap control (stored; not scrambled) */
+    uint64_t xmsi_address;      /* MSI address / byte-swap scratch */
+    uint64_t sw_reset;          /* reset-lane control (key is write-only) */
+    uint64_t adapter_control;   /* ADAPTER_EN, LED, EOI, wait-int, ECC */
+    uint64_t mac_cfg;           /* TMAC/RMAC config, key-locked */
+    bool rmac_cfg_unlocked;     /* RMAC_CFG_KEY unlocks a MAC_CFG write */
+    uint64_t rmac_addr_cmd;     /* MAC-table command/strobe/offset */
+    uint64_t rmac_addr_data0;   /* MAC-table data word 0 (the address) */
+    uint64_t rmac_addr_data1;   /* MAC-table data word 1 (write-only mask) */
+    uint64_t mac_addr[XFRAME_MAC_TABLE_ENTRIES]; /* the 64-entry MAC table */
 
     /* The netdev frontend. No transmit or receive path yet (Tasks 2-3). */
     NICConf conf;

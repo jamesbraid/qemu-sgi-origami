@@ -2,13 +2,19 @@
 /*
  * Neterion/S2io Xframe 10-Gigabit Ethernet controller.
  *
- * See include/hw/net/xframe.h for what this device is and what this slice
- * covers. In short: PCI identity, the two BAR windows, and the netdev
- * frontend are real; the 64-bit PIF/TxP register file behind the windows
- * is not modelled yet, and every access to either window logs LOG_UNIMP
- * and returns 0. QOM/PCI-realize/BAR shape and the ResettablePhases reset
- * wiring follow hw/scsi/qlogic-isp.c, the fork's PCI-endpoint reference --
- * not hw/pci-host/astro.c, which is a PCI host bridge with a different
+ * See include/hw/net/xframe.h for what this device is. This models the
+ * generic PCI card's own contract: PCI identity, the two BAR windows, the
+ * netdev frontend, and the PIF (BAR0) register file the probe/attach path
+ * binds on -- the byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY
+ * MAC-config lock, ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table.
+ * The registers are 64-bit and native little-endian; a host bridge that
+ * corrects register byte order or access width (the Origin 200 Bridge) is that
+ * bridge's concern, not this device's. The transmit descriptor/doorbell path
+ * behind the TxP window is a follow-on slice and stays a LOG_UNIMP stub.
+ *
+ * QOM/PCI-realize/BAR shape and the ResettablePhases reset wiring follow
+ * hw/scsi/qlogic-isp.c, the fork's PCI-endpoint reference -- not
+ * hw/pci-host/astro.c, which is a PCI host bridge with a different
  * TypeInfo/realize/BAR shape and which calls the forbidden
  * device_class_set_legacy_reset(). The netdev frontend follows
  * hw/net/sgi-ioc3-eth.c and upstream hw/net/dp8393x.c.
@@ -25,39 +31,216 @@
 #include "qapi/error.h"
 
 /*
- * Both BAR windows are placeholder-only in this slice: nothing behind them
- * has any state to read, and a write changes nothing. Declared 4-byte
- * min/max to match what the Origin 200 Bridge's own per-slot device window
- * currently serves (its impl.max_access_size = 4 splits any wider guest
- * access into two 4-byte device cycles before it reaches here regardless of
- * what this device declares -- docs/library/nic-on-bridge-conventions.md's
- * "Access width" note). The real PIF/TxP registers are 64-bit with
- * full-value side effects on a single access, which this narrow stub
- * cannot yet serve correctly either way; that is the follow-on slice,
- * gated on the Bridge owner's resolution of Task P3.
- *
- * DEVICE_LITTLE_ENDIAN is the ISP1040 precedent
- * (docs/library/nic-on-bridge-conventions.md's Layer A) and the starting
- * point named in the datasheet; which declared endianness actually
- * reproduces the driver's expected read-back through the Bridge is settled
- * by the byte-order qtest the register-file slice adds, not asserted here.
+ * PIF register offsets within BAR0, and the bit fields the probe/attach path
+ * touches. Public OpenBSD if_xgereg.h / Linux s2io-regs.h names, taken from
+ * docs/datasheets/xframe.md's register map. All registers are 64-bit.
+ */
+#define XFRAME_SW_RESET             0x0100
+#define XFRAME_ADAPTER_STATUS       0x0108
+#define XFRAME_ADAPTER_CONTROL      0x0110
+#define XFRAME_SWAPPER_CTRL         0x0908
+#define XFRAME_PIF_RD_SWAPPER_FB    0x0910
+#define XFRAME_XMSI_ADDRESS         0x0960
+#define XFRAME_MAC_CFG              0x2100
+#define XFRAME_RMAC_CFG_KEY         0x2120
+#define XFRAME_RMAC_ADDR_CMD_MEM    0x2128
+#define XFRAME_RMAC_ADDR_DATA0_MEM  0x2130
+#define XFRAME_RMAC_ADDR_DATA1_MEM  0x2138
+
+/*
+ * The byte-swapper diagnostic returns this fixed constant at a correctly
+ * ordered 64-bit read; the driver reads it back to confirm endianness. The
+ * model returns it unconditionally, since it presents registers in native
+ * order and never scrambles a read.
+ */
+#define XFRAME_SWAPPER_MAGIC        0x0123456789abcdefULL
+
+/*
+ * ADAPTER_STATUS quiescent/ready value the driver's single non-retrying attach
+ * read requires (if_xgereg.h QUIESCENT): TDMA/RDMA/PFC ready, TMAC buffer
+ * empty, PIC quiescent, memory-controller DRAM+queues ready, both PLLs locked
+ * -- and the fault bits clear. The model is always ready, so it presents this
+ * immediately.
+ */
+#define XFRAME_ADAPTER_STATUS_QUIESCENT  0xf40000c300000000ULL
+
+/*
+ * SW_RESET: writing the 0xa5a5a5 key in bits 63:40 (OpenBSD 0xa5a5a5<<40,
+ * Linux SW_RESET_ALL) triggers a soft reset. The key is a write-only trigger
+ * and does not persist; the readable content is the reset-lane control bits
+ * below it.
+ */
+#define XFRAME_SW_RESET_KEY         0xa5a5a5ULL
+
+/* RMAC_CFG_KEY: 0x4c0d in bits 63:48 unlocks the next MAC_CFG write. */
+#define XFRAME_RMAC_CFG_KEY_VALUE   0x4c0dULL
+
+/*
+ * RMAC_ADDR_CMD_MEM: write-enable selects write vs read, the strobe is
+ * self-clearing on completion, and the 6-bit offset selects a table entry.
+ */
+#define XFRAME_RMAC_ADDR_CMD_WE       (1ULL << 56)
+#define XFRAME_RMAC_ADDR_CMD_STROBE   (1ULL << 48)
+#define XFRAME_RMAC_ADDR_CMD_OFF_MASK 0x3fULL
+
+/*
+ * Pack the netdev's configured MAC into MAC-table entry 0 the way the factory
+ * programs it: the six bytes in RMAC_ADDR_DATA0_MEM bits 63:16, most
+ * significant byte first (the order both drivers unpack it in).
+ */
+static void xframe_load_factory_mac(XframeState *s)
+{
+    uint64_t mac = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(s->conf.macaddr.a); i++) {
+        mac |= (uint64_t)s->conf.macaddr.a[i] << (56 - 8 * i);
+    }
+    s->mac_addr[0] = mac;
+}
+
+/*
+ * Return the register file to its reset values. Shared by cold reset and the
+ * SW_RESET key path. It touches only device register state, never PCI config
+ * or BAR state: real hardware's SW_RESET can perturb config space, but this
+ * model must leave that to the PCI core (docs/datasheets/xframe.md's VMState
+ * note).
+ */
+static void xframe_soft_reset(XframeState *s)
+{
+    s->swapper_ctrl = 0;
+    s->xmsi_address = 0;
+    s->sw_reset = 0;
+    s->adapter_control = 0;
+    s->mac_cfg = 0;
+    s->rmac_cfg_unlocked = false;
+    s->rmac_addr_cmd = 0;
+    s->rmac_addr_data0 = 0;
+    s->rmac_addr_data1 = 0;
+    memset(s->mac_addr, 0, sizeof(s->mac_addr));
+    xframe_load_factory_mac(s);
+}
+
+/*
+ * The MAC-address table's indirect command: a strobe carries out a read or a
+ * write of one entry and then self-clears, so a driver polling the strobe bit
+ * sees the operation complete at once.
+ */
+static void xframe_rmac_addr_cmd(XframeState *s, uint64_t val)
+{
+    unsigned offset = (val >> 32) & XFRAME_RMAC_ADDR_CMD_OFF_MASK;
+
+    if (val & XFRAME_RMAC_ADDR_CMD_STROBE) {
+        if (val & XFRAME_RMAC_ADDR_CMD_WE) {
+            s->mac_addr[offset] = s->rmac_addr_data0;
+        } else {
+            s->rmac_addr_data0 = s->mac_addr[offset];
+        }
+        val &= ~XFRAME_RMAC_ADDR_CMD_STROBE;
+    }
+    s->rmac_addr_cmd = val;
+}
+
+/*
+ * The PIF register window (BAR0). The registers are 64-bit with full-value
+ * side effects on a single access (the swapper diagnostic, SW_RESET's key,
+ * RMAC_CFG_KEY), so xframe_pif_ops declares an 8-byte impl and valid width:
+ * every access reaches here as one 64-bit call. DEVICE_LITTLE_ENDIAN -- these
+ * are little-endian-native parts; values are delivered in native order and a
+ * host bridge composes whatever byte order the guest needs.
  */
 static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "xframe: PIF register read at 0x%" PRIx64 " (size %u) -- "
-                  "the register file is not modelled in this slice\n",
-                  addr, size);
-    return 0;
+    XframeState *s = opaque;
+
+    switch (addr) {
+    case XFRAME_ADAPTER_STATUS:
+        return XFRAME_ADAPTER_STATUS_QUIESCENT;
+    case XFRAME_PIF_RD_SWAPPER_FB:
+        return XFRAME_SWAPPER_MAGIC;
+    case XFRAME_SW_RESET:
+        return s->sw_reset;
+    case XFRAME_ADAPTER_CONTROL:
+        return s->adapter_control;
+    case XFRAME_SWAPPER_CTRL:
+        return s->swapper_ctrl;
+    case XFRAME_XMSI_ADDRESS:
+        return s->xmsi_address;
+    case XFRAME_MAC_CFG:
+        return s->mac_cfg;
+    case XFRAME_RMAC_CFG_KEY:
+        return 0;  /* write-only unlock key */
+    case XFRAME_RMAC_ADDR_CMD_MEM:
+        return s->rmac_addr_cmd;
+    case XFRAME_RMAC_ADDR_DATA0_MEM:
+        return s->rmac_addr_data0;
+    case XFRAME_RMAC_ADDR_DATA1_MEM:
+        return s->rmac_addr_data1;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "xframe: PIF read at 0x%" PRIx64 " (size %u) is not "
+                      "modelled\n", addr, size);
+        return 0;
+    }
 }
 
 static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
                              unsigned size)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "xframe: PIF register write at 0x%" PRIx64
-                  " = 0x%" PRIx64 " (size %u) -- the register file is not "
-                  "modelled in this slice\n", addr, val, size);
+    XframeState *s = opaque;
+
+    switch (addr) {
+    case XFRAME_SW_RESET:
+        if ((val >> 40) == XFRAME_SW_RESET_KEY) {
+            xframe_soft_reset(s);
+        } else {
+            s->sw_reset = val;
+        }
+        return;
+    case XFRAME_ADAPTER_CONTROL:
+        s->adapter_control = val;
+        return;
+    case XFRAME_SWAPPER_CTRL:
+        s->swapper_ctrl = val;
+        return;
+    case XFRAME_XMSI_ADDRESS:
+        s->xmsi_address = val;
+        return;
+    case XFRAME_RMAC_CFG_KEY:
+        s->rmac_cfg_unlocked = (val >> 48) == XFRAME_RMAC_CFG_KEY_VALUE;
+        return;
+    case XFRAME_MAC_CFG:
+        /* Write-locked: takes only with the config key freshly written. */
+        if (s->rmac_cfg_unlocked) {
+            s->mac_cfg = val;
+            s->rmac_cfg_unlocked = false;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: MAC_CFG write without RMAC_CFG_KEY, "
+                          "ignored\n");
+        }
+        return;
+    case XFRAME_RMAC_ADDR_DATA0_MEM:
+        s->rmac_addr_data0 = val;
+        return;
+    case XFRAME_RMAC_ADDR_DATA1_MEM:
+        s->rmac_addr_data1 = val;
+        return;
+    case XFRAME_RMAC_ADDR_CMD_MEM:
+        xframe_rmac_addr_cmd(s, val);
+        return;
+    case XFRAME_ADAPTER_STATUS:
+    case XFRAME_PIF_RD_SWAPPER_FB:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: write to read-only PIF register 0x%" PRIx64
+                      ", ignored\n", addr);
+        return;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "xframe: PIF write at 0x%" PRIx64 " = 0x%" PRIx64
+                      " (size %u) is not modelled\n", addr, val, size);
+        return;
+    }
 }
 
 static const MemoryRegionOps xframe_pif_ops = {
@@ -65,12 +248,12 @@ static const MemoryRegionOps xframe_pif_ops = {
     .write = xframe_pif_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 4,
-        .max_access_size = 4,
+        .min_access_size = 8,
+        .max_access_size = 8,
     },
     .impl = {
-        .min_access_size = 4,
-        .max_access_size = 4,
+        .min_access_size = 8,
+        .max_access_size = 8,
     },
 };
 
@@ -92,17 +275,22 @@ static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
                   "not modelled in this slice\n", addr, val, size);
 }
 
+/*
+ * The TxP transmit descriptor/doorbell registers are 64-bit like the PIF
+ * window's, so the widths match even though the window itself is still a stub:
+ * the transmit path is a follow-on slice.
+ */
 static const MemoryRegionOps xframe_txp_ops = {
     .read = xframe_txp_read,
     .write = xframe_txp_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 4,
-        .max_access_size = 4,
+        .min_access_size = 8,
+        .max_access_size = 8,
     },
     .impl = {
-        .min_access_size = 4,
-        .max_access_size = 4,
+        .min_access_size = 8,
+        .max_access_size = 8,
     },
 };
 
@@ -139,11 +327,12 @@ static void xframe_reset_hold(Object *obj, ResetType type)
     XframeState *s = XFRAME(obj);
 
     /*
-     * The register file this slice defers has no state of its own yet to
-     * put back to its documented reset values. Reset still owns the
-     * interrupt line, so a freshly reset (or migrated-in) device starts
-     * deasserted rather than however qdev happened to leave the pin.
+     * Put the register file back to its documented reset values (including
+     * reloading the factory MAC into table entry 0), then deassert the
+     * interrupt line so a freshly reset or migrated-in device starts with the
+     * pin low rather than however qdev left it.
      */
+    xframe_soft_reset(s);
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
@@ -202,14 +391,14 @@ static void xframe_exit(PCIDevice *dev)
 }
 
 /*
- * Nothing beyond the standard pci_device fields exists to migrate in this
- * slice -- both windows are stateless stubs and the netdev frontend's own
- * state lives in NICConf, which every NIC model leaves out of its own
- * VMState (see hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c). Present from
- * day one, per the shared convention, so later slices add fields rather
- * than introduce the description: the register file, ring state and
- * XMSI_ADDRESS scratch value docs/datasheets/xframe.md's "VMState /
- * migration fields" lists.
+ * The migratable register state, per docs/datasheets/xframe.md's "VMState /
+ * migration fields": the byte-swap and scratch registers, ADAPTER_CONTROL,
+ * MAC_CFG and its unlock latch, and the whole MAC-address table (entry 0's
+ * factory address plus any programmed entry -- whatever the guest wrote must
+ * survive migration exactly). The netdev frontend's own state lives in NICConf,
+ * which every NIC model leaves out of its VMState (see hw/net/sgi-ioc3-eth.c
+ * and hw/net/rtl8139.c); PCI config space is covered by VMSTATE_PCI_DEVICE. The
+ * transmit/receive ring bookkeeping joins this when that slice lands.
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
@@ -217,6 +406,16 @@ static const VMStateDescription vmstate_xframe = {
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, XframeState),
+        VMSTATE_UINT64(swapper_ctrl, XframeState),
+        VMSTATE_UINT64(xmsi_address, XframeState),
+        VMSTATE_UINT64(sw_reset, XframeState),
+        VMSTATE_UINT64(adapter_control, XframeState),
+        VMSTATE_UINT64(mac_cfg, XframeState),
+        VMSTATE_BOOL(rmac_cfg_unlocked, XframeState),
+        VMSTATE_UINT64(rmac_addr_cmd, XframeState),
+        VMSTATE_UINT64(rmac_addr_data0, XframeState),
+        VMSTATE_UINT64(rmac_addr_data1, XframeState),
+        VMSTATE_UINT64_ARRAY(mac_addr, XframeState, XFRAME_MAC_TABLE_ENTRIES),
         VMSTATE_END_OF_LIST()
     }
 };
