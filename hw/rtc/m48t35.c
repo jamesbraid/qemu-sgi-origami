@@ -5,10 +5,8 @@
  *
  * Copyright (c) 2026 Origami contributors
  *
- * Sits on the Origin 200 I/O controller's byte bus. The storage below the
- * clock must answer: SGI's driver probes which clock part is fitted by
- * writing a byte there and reading it back. Sources for every value are in
- * the Origami project tree's timekeeper datasheet.
+ * The storage below the clock must answer: SGI's driver probes which clock
+ * part is fitted by writing a byte there and reading it back.
  */
 
 #include "qemu/osdep.h"
@@ -25,10 +23,7 @@
 #include "qemu/error-report.h"
 #include "trace.h"
 
-/*
- * Frozen instant if requested, live time otherwise; both share the offset,
- * so releasing a freeze cannot make the clock jump.
- */
+/* Both paths share the offset, so releasing a freeze cannot jump the clock. */
 static void m48t35_now(M48T35State *s, struct tm *tm)
 {
     if (s->frozen) {
@@ -54,10 +49,7 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
     case M48T35_HOURS:
         return to_bcd(tm.tm_hour);
     case M48T35_WEEKDAY:
-        /*
-         * Stored, not counted. The part leaves this register alone until
-         * software writes it, and no driver here reads the value back.
-         */
+        /* Stored, not counted; no driver here reads it back. */
         return s->cell[M48T35_WEEKDAY];
     case M48T35_DAY:
         return to_bcd(tm.tm_mday);
@@ -65,10 +57,7 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
         /* One through twelve, where the C library counts from zero. */
         return to_bcd(tm.tm_mon + 1);
     case M48T35_YEAR:
-        /*
-         * Two digits from 1970. The +100 guards the pre-epoch case: C's
-         * remainder keeps the sign, and to_bcd() of a negative is not BCD.
-         */
+        /* +100: C's remainder keeps the sign; to_bcd(negative) is not BCD. */
         return to_bcd(((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100 + 100)
                       % 100);
     default:
@@ -76,11 +65,7 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
     }
 }
 
-/*
- * The one place that knows a drive is attached. A backing-store failure is
- * reported but not surfaced to the guest: the write already landed in
- * s->cell, and a host-side failure is not the guest's error.
- */
+/* A backing-store failure is not the guest's error; the write landed. */
 static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
 {
     s->cell[addr] = val;
@@ -91,10 +76,7 @@ static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
 
 static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
 {
-    /*
-     * Fields are collected while the write bit is set and applied together
-     * when it clears, so the clock moves once, to the time the guest meant.
-     */
+    /* Collected while the write bit is set, applied when it clears. */
     switch (addr) {
     case M48T35_SECONDS:
         s->staged_sec = from_bcd(val);
@@ -123,19 +105,13 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
     }
 }
 
-/*
- * Acted on as the bits change, not as they are written: drivers write the
- * whole register back each time and only the transitions mean anything.
- */
+/* Drivers write the whole register back; only the transitions mean anything. */
 static void m48t35_write_control(M48T35State *s, uint8_t val)
 {
     uint8_t was = s->cell[M48T35_CONTROL];
 
     if ((val & M48T35_CSR_READ) && !(was & M48T35_CSR_READ)) {
-        /*
-         * Freeze: every read until the bit clears reports this instant, so a
-         * driver's six reads describe one time.
-         */
+        /* Every read until the bit clears reports this instant. */
         struct tm tm;
 
         qemu_get_timedate(&tm, s->time_offset);
@@ -194,10 +170,7 @@ static uint64_t m48t35_read(void *opaque, hwaddr addr, unsigned size)
         return value;
     }
 
-    /*
-     * Control and below read as storage, including the bank of eight below
-     * the clock that no source we hold identifies.
-     */
+    /* Control and below are storage, the unidentified bank included. */
     value = s->cell[addr];
     if (addr >= M48T35_CLOCK_FIRST) {
         trace_m48t35_clock_read(addr, value);
@@ -227,10 +200,7 @@ static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
         if (s->staging) {
             m48t35_write_clock(s, addr, val);
         } else {
-            /*
-             * With the write bit clear the counters are running and the
-             * hardware has nowhere to put this; dropped.
-             */
+            /* The counters are running; hardware has nowhere to put this. */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "m48t35: write of 0x%02x to clock register 0x%04x "
                           "with the write bit clear\n",
@@ -242,10 +212,7 @@ static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
     m48t35_store(s, addr, val);
 }
 
-/*
- * Byte-wide by declaration: no guest reads it wide, so nothing but this
- * stops the core widening an access.
- */
+/* Byte-wide by declaration; nothing else stops the core widening an access. */
 static const MemoryRegionOps m48t35_ops = {
     .read = m48t35_read,
     .write = m48t35_write,
@@ -261,8 +228,8 @@ static void m48t35_reset_hold(Object *obj, ResetType type)
     M48T35State *s = M48T35(obj);
 
     /*
-     * Battery-backed: cells and time survive reset. An unfinished freeze or
-     * write transaction does not, or the next guest inherits a stopped clock.
+     * Battery-backed: cells and time survive reset; an unfinished freeze or
+     * write does not, or the next guest inherits a stopped clock.
      */
     s->frozen = false;
     s->staging = false;
@@ -275,10 +242,7 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
 
     s->cell = g_malloc0(M48T35_SIZE);
 
-    /*
-     * Exact size required, the same contract as hw/nvram/mac_nvram.c: a
-     * mismatch is a configuration mistake, not a size to adapt to.
-     */
+    /* Exact size required, as hw/nvram/mac_nvram.c: a mismatch is a mistake. */
     if (s->blk) {
         int64_t len = blk_getlength(s->blk);
 
