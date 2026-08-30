@@ -1,24 +1,12 @@
 /*
  * SGI IOC3 base I/O controller: the two serial ports' DMA engines.
  *
- * Each port has an engine that moves characters between a pair of memory
- * rings and its own 16550, and the firmware's base I/O diagnostic drives both
- * of them. The engines are separate from the byte-wide register files the
- * console uses, so nothing here is on the console's path: a console that works
- * proves none of it, and every assertion in this file is one only a test can
- * make.
- *
- * The rings themselves are the reason this is its own file rather than more of
- * the register suite. Four rings share one base register and are told apart by
- * port and direction alone, which is an arrangement with no read-back: a model
- * that resolved a ring to the wrong address would answer every register
- * correctly and put the characters somewhere else. So the ring addresses are
- * asserted by reading the memory the engine wrote, not by reading a register
- * back.
- *
- * The controller is a PCI device on the I/O bridge's bus, so every test here
- * asks for the bridge explicitly: without it there is no bus for the
- * controller to sit on and nothing answers at its crosstalk address at all.
+ * The engines are off the console's path, so a working console proves
+ * none of this. Four rings share one base register with no read-back --
+ * a model resolving a ring to the wrong address answers every register
+ * correctly -- so ring addresses are asserted by reading the memory the
+ * engine wrote. Every test asks for the I/O bridge explicitly; without
+ * it nothing answers at the controller's address.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -215,17 +203,11 @@ static uint64_t serial_port(unsigned int port)
 }
 
 /*
- * The deadline on a socket read or accept in this file. It exists only to
- * turn a would-be hang into a failure, not to bound how long a healthy run
- * takes: the device side runs synchronously inside the MMIO write callback
- * (sgi_ioc3_sdma_run under -accel qtest, which drives no vCPU), so the byte
- * is already in the host socket buffer before qtest_writel returns -- it is
- * never lost, only occasionally slow to be scheduled by the host OS. On an
- * oversubscribed CI host that scheduling delay can run past ten seconds, so
- * a short deadline reads as a flake. 120s is the value triage proved passes
- * 40/40 runs under that load (see docs/notebooks/ioc3-serial-dma.md), while
- * a healthy run still finishes the whole file in 7-17s -- nowhere near the
- * ceiling.
+ * Turns a would-be hang into a failure; it does not bound a healthy run.
+ * The byte is in the host socket before qtest_writel returns, only
+ * scheduling delays it -- past ten seconds on an oversubscribed host, so
+ * 120s is the deadline load triage settled on (docs/notebooks/
+ * ioc3-serial-dma.md in the project tree).
  */
 #define IOC3_SERIAL_SOCKET_TIMEOUT_SECS 120
 
@@ -244,13 +226,9 @@ static void serial_socket_deadline(int fd)
 }
 
 /*
- * A loopback TCP listener the guest's serial_hd(1) connects out to, so a
- * character leaving port B's own 16550 arrives here. qtest_init_with_serial
- * only ever wires serial_hd(0), and the other port-B tests reach the line
- * through the 16550's internal loopback, so this host socket is the only proof
- * that chardev-b is wired from serial_hd(1) rather than left dark. It follows
- * the same bind-listen-before-init pattern sn0-elsc-test.c uses for the AUX
- * port.
+ * A TCP listener serial_hd(1) connects out to: the only proof chardev-b
+ * is wired rather than dark, since qtest_init_with_serial wires only
+ * serial_hd(0) and the other port-B tests use internal loopback.
  */
 static int portb_listen(uint16_t *port)
 {
@@ -340,15 +318,10 @@ static void set_loopback(QTestState *qts, unsigned int port)
 }
 
 /*
- * Collect the first n characters the receive engine has delivered to a
- * port's ring, waiting for them to arrive. A character injected into the
- * guest's chardev crosses a host socket and the main loop before the engine
- * sees it, so arrival is asynchronous and how the bytes group into chunks --
- * and therefore into ring entries -- is the host's choice, not the test's.
- * What is deterministic is the characters themselves, in order, each under a
- * status byte with the data-valid flag: this walks the entries the produce
- * index has published and picks out exactly that, so an assertion built on
- * it cannot flake on TCP segmentation.
+ * Collect the first n delivered characters. How bytes group into entries
+ * is the host's choice; what is deterministic is the characters in order
+ * under data-valid flags, so assertions built on this cannot flake on
+ * TCP segmentation.
  */
 static void collect_rx_chars(QTestState *qts, unsigned int port,
                              unsigned int n, uint8_t *data, uint8_t *status)
@@ -394,12 +367,9 @@ static void wait_for_source(QTestState *qts, uint32_t bit)
 }
 
 /*
- * The value the firmware writes to the chip control register: port A's
- * SuperIO offset 0x178 divided by eight in bits 1-7, port B's 0x170 the same
- * way in bits 8-14, and a byte bus strobe length of 4. No guest reads those
- * fields back, so a model that dropped them would look identical from a
- * transcript -- which is why they are asserted here or not at all. The read
- * also reports the arbiter idle in bit 22, which the serial init polls.
+ * The firmware's own chip-control value. No guest reads the fields back,
+ * so a model dropping them looks identical from a transcript -- asserted
+ * here or not at all.
  */
 static void test_the_control_register_round_trips(const void *data)
 {
