@@ -1,17 +1,9 @@
 /*
- * SGI Origin 200 (IP27) physical address map.
- *
- * The bare machine puts two things in that map: a node's memory and its boot
- * flash. What this checks is that they appear where the address map says, that
- * the flash's three views really are one region rather than separate copies
- * that can drift, and that the contents a guest reads before any firmware runs
- * say what they are supposed to say.
- *
- * Addresses here are what the memory system sees, which for an uncached
- * reference is the physical address with the processor's uncached attribute
- * above it. The attribute that means memory is placed at window zero, so a
- * plain physical address addresses memory and the Hub's special space starts
- * one window up.
+ * SGI Origin 200 (IP27) physical address map: memory and boot flash appear
+ * where the map says, the flash's three views are one region rather than
+ * copies that can drift, and pre-firmware contents read as specified.
+ * Addresses are what the memory system sees; plain physical addresses
+ * reach memory, and the Hub's special space starts one window up.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -246,7 +238,7 @@ static void test_boot_windows_mirror_the_flash(const void *data)
     mirrored = qtest_readq(qts, FLASH_REMOTE + 0x100000 + CONFIG_OFFSET);
     g_assert_cmphex(mirrored, ==, direct);
 
-    /* Deep into the window, the offset this project's own D1 trace hit. */
+    /* Deep into the window, an offset a captured PROM trace really hit. */
     direct = qtest_readl(qts, FLASH_RESET + 0x2a3c);
     mirrored = qtest_readl(qts, FLASH_HUB + 0xfc02a3c);
     g_assert_cmphex(mirrored, ==, direct);
@@ -549,27 +541,20 @@ static void test_invalid_memory_size(const void *data)
 #define BACKDOOR_BANK_STRIDE   0x8000000ULL  /* 128 MiB */
 
 /*
- * The firmware's own classification pattern: 0x55 repeated across a
- * doubleword. Real firmware's presence probe writes this to an entry,
- * writes zero eight bytes further on (never compared against anything,
- * there only to disturb the shared data lines), and reads the first
- * location back -- premium format if the low 48 bits survived, standard
- * format if only the low 16 did, absent if neither did.
+ * Firmware's presence probe: write the 0x55 pattern, write zero eight
+ * bytes on (only to disturb the shared data lines), read back -- premium
+ * if the low 48 bits survived, standard if only the low 16, else absent.
  */
 #define BACKDOOR_PATTERN       0x5555555555555555ULL
 #define BACKDOOR_PATTERN_LOW16 0x5555ULL
 #define BACKDOOR_PATTERN_LOW48 0x0000555555555555ULL
 
 /*
- * A populated entry's real storage is only as wide as this machine's
- * directory format: the low sixteen bits of each eight-byte-aligned entry
- * round-trip, and the other six do not survive being written, whatever
- * they were written as. Checked at the bank's own base, one entry into the
- * middle of it, and its last aligned entry -- rather than one address at
- * the base -- because a populated region sized wrong at its own top is a
- * different bug from one that never held state at all. The pattern is
- * folded with the bank index so that two banks written in the same test
- * cannot pass by aliasing onto each other's bytes.
+ * Storage is only as wide as the directory format: the low sixteen bits
+ * round-trip, the rest do not survive. Checked at base, middle and last
+ * entry -- a region sized wrong at its top is a different bug from one
+ * that never held state -- with the pattern folded with the bank index so
+ * two banks cannot pass by aliasing onto each other.
  */
 static void check_backdoor_entry(QTestState *qts, uint64_t base,
                                  unsigned int bank)
@@ -593,14 +578,10 @@ static void check_backdoor_entry(QTestState *qts, uint64_t base,
 }
 
 /*
- * Real firmware's own presence probe, run against a bank this machine
- * populates: write the pattern to the entry, write zero eight bytes on,
- * read the entry back. Assert the classification the probe reaches --
- * standard format, this machine's own, per SGI's manual stating the
- * Origin 200 carries no premium directory memory -- not the value that
- * produces it. The low sixteen bits are the part the contract fixes; the
- * rest is only required to disagree with the wide mask, so this checks
- * that disagreement rather than a specific value.
+ * The probe against a populated bank must classify standard format (SGI's
+ * manual: no premium directory memory on an Origin 200). Assert the
+ * classification, not the value: the low sixteen bits are fixed, the rest
+ * only has to disagree with the wide mask.
  */
 static void check_backdoor_standard_format(QTestState *qts, uint64_t addr)
 {
@@ -615,16 +596,10 @@ static void check_backdoor_standard_format(QTestState *qts, uint64_t addr)
 }
 
 /*
- * Real firmware's own presence probe, run against a bank this machine does
- * not populate: write the pattern, write zero eight bytes on, read back.
- * It calls a bank present only when the pattern survives; for a bank that
- * does not exist, real hardware has nothing behind either write to land
- * in, so the low sixteen bits -- the part either format needs to survive
- * -- must not come back as the pattern wrote them. Assert the
- * classification the probe reaches, not what the location actually reads
- * as: that value is this model's own arbitrary choice (recorded beside
- * sn0_backdoor_absent_ops in hw/mips/sn0.c), and asserting it would freeze
- * a modelling choice as though it were a contract.
+ * The probe against an unpopulated bank must classify absent: the low
+ * sixteen bits must not survive. Assert the classification, not what the
+ * location reads as -- that value is the model's own choice, and pinning
+ * it would freeze a modelling choice as a contract.
  */
 static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 {
@@ -727,14 +702,10 @@ static void test_ecc_backdoor(const void *data)
 }
 
 /*
- * The same 768 MiB configuration as test_multi_bank_memory: bank 0 full,
- * bank 1 partial, both genuinely populated, bank 2 and beyond not. What this
- * adds beyond that test is proof the back door tracks how many banks a
- * configuration actually has rather than hard-coding "bank 0 only" --
- * bank 1's own share of the back door has to round-trip here although it
- * does not on the default machine above, and bank 0's pattern has to
- * survive bank 1 being written, which a model aliasing every populated
- * bank onto the same bytes would not show.
+ * Proof the back door tracks how many banks exist rather than hard-coding
+ * bank 0: bank 1's share must round-trip here though it does not on the
+ * default machine, and bank 0's pattern must survive bank 1 being written
+ * -- which a model aliasing all populated banks together would not show.
  */
 static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
 {
@@ -767,38 +738,17 @@ static void test_backdoor_tracks_populated_banks(const void *data)
 }
 
 /*
- * The promdata window holds the same bytes for every processor.
- *
- * Under synthesized firmware with a directly loaded kernel, an address
- * carrying no NASID names node zero's memory rather than the reading
- * processor's -- that is what lets one loaded image serve every processor,
- * and sn0_node_local_memory_base() is where the machine arranges it.
- *
- * One range can disagree with that alias, and it is worth stating why
- * because the disagreement is invisible from anywhere except a processor on
- * a node other than zero. Each processor's view of the 32 KiB at 1 MiB can
- * be covered by a filter modelling the PROM's cache-only private phase, and
- * that filter forwards to a base of its own, taken from the owning node's
- * NASID rather than from the alias underneath it. On node zero the two are
- * the same value and nothing shows. On any other node under the alias they
- * are not: the filter answers reads of the loaded kernel out of its own
- * node's memory, which nothing ever wrote. It reads as zeroes, and zeroes
- * are a run of nops -- which is how it was found, as a secondary processor
- * walking through instructions that were not there.
- *
- * Nothing builds that filter in this configuration today, so the two
- * processors below agree with no filter in the way. The case is here for
- * whoever puts one back: restore it for a multi-node kernel boot with its
- * forwarding base still derived from the NASID, and the node-one processor
- * reads the word this test plants in node one's memory instead of the
- * kernel's. That is also why the two words differ rather than one being
- * zero -- a failure should name what it read, not just that it was wrong.
- *
- * Reads go through each processor's own address space, which is what the
- * monitor's xp does once a processor is selected, and is the step a check
- * on the global address space cannot substitute for: the global space has
- * no filter in it and answers correctly however the per-processor views are
- * wired.
+ * The promdata window holds the same bytes for every processor. Under
+ * synthesized firmware a NASID-less address names node zero's memory,
+ * which is what lets one loaded kernel serve every processor. A
+ * per-processor filter over the 32 KiB at 1 MiB that forwards to a base
+ * derived from its own node's NASID disagrees with that alias on every
+ * node but zero -- the kernel reads back as zeroes there, and zeroes are
+ * nops. No such filter exists in this configuration today; the case is a
+ * sentinel for whoever restores one. Node one's memory is planted with a
+ * distinct word so a failure names what it read, and reads go through
+ * each processor's own address space, which the global space -- filter-
+ * free and always correct -- cannot substitute for.
  */
 
 #define NUMA_NODE1_BASE     0x100000000ULL
@@ -865,16 +815,11 @@ static size_t build_kernel_elf(uint8_t *image)
 }
 
 /*
- * One physical word as a given processor sees it, through that processor's
- * own address space -- which is the only way to see this at all, because
- * the global address space carries no per-processor filter and answers
- * correctly however the per-processor views are wired.
- *
- * The processor has to be named in the same request as the dump. Each
- * human-monitor-command runs on a monitor of its own, so an "xp" issued
- * after a separate "cpu" command does not inherit that selection -- it
- * reads processor zero and agrees with itself forever. That failure is
- * silent, and it is the reason this does not use qtest_hmp().
+ * One physical word through a processor's own address space. The
+ * processor must be named in the same request: each human-monitor-command
+ * gets its own monitor, so an "xp" after a separate "cpu" command reads
+ * processor zero and agrees with itself forever -- silently, which is why
+ * this does not use qtest_hmp().
  */
 static uint32_t cpu_view_word(QTestState *qts, unsigned int cpu, uint64_t phys)
 {
