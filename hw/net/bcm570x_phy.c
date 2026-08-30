@@ -67,13 +67,14 @@ static void bcm570x_phy_settle_done(void *opaque)
 }
 
 /*
- * Read status, arming the autonegotiation settle the first time the interface
- * looks at link. A real PHY negotiates on its own once autonegotiation is
- * enabled, which it is at reset; this models that as a delay started on the
- * first status read, so a driver that only polls gets its carrier without
- * writing anything.
+ * Arm the autonegotiation settle the first time the interface looks at link. A
+ * real PHY negotiates on its own once autonegotiation is enabled, which it is
+ * at reset; this models that as a delay started on the first link-status read,
+ * so a driver that only polls gets its carrier without writing anything. Shared
+ * by the basic status register and the auxiliary status summary, since a copper
+ * link-up may poll either for completion.
  */
-static uint16_t bcm570x_phy_status_read(Bcm570xPhyState *s)
+static void bcm570x_phy_arm_settle(Bcm570xPhyState *s)
 {
     if (!s->settle_armed && !s->autoneg_done &&
         (s->bmcr & BCM570X_PHY_BMCR_AUTOEN)) {
@@ -82,6 +83,11 @@ static uint16_t bcm570x_phy_status_read(Bcm570xPhyState *s)
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   BCM570X_PHY_AUTONEG_SETTLE_NS);
     }
+}
+
+static uint16_t bcm570x_phy_status_read(Bcm570xPhyState *s)
+{
+    bcm570x_phy_arm_settle(s);
     return bcm570x_phy_status(s);
 }
 
@@ -128,6 +134,20 @@ uint16_t bcm570x_phy_read(Bcm570xPhyState *s, int reg)
 
     case BCM570X_PHY_EXTSR:
         return BCM570X_PHY_EXTSR_1000TFDX | BCM570X_PHY_EXTSR_1000THDX;
+
+    case BCM570X_PHY_AUXSTS:
+        /*
+         * The auxiliary status summary a brgphy copper link-up reads for the
+         * settled result: autonegotiation complete (ACOMP), and the resolution
+         * 1000baseT full duplex in the highest-common-denominator field
+         * (matching the GTSR/EXTSR gigabit answer above). This is the register
+         * the driver gates the up-path on, so arm the settle here too -- a poll
+         * that reads only this register still brings the link up. Never the
+         * all-ones an absent PHY reads, even while negotiating, so the driver
+         * does not take it for a bad read.
+         */
+        bcm570x_phy_arm_settle(s);
+        return up ? (BCM570X_PHY_AUXSTS_ACOMP | BCM570X_PHY_AUXSTS_1000TFDX) : 0;
 
     default:
         /*
