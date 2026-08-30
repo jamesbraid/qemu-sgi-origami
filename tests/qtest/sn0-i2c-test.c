@@ -1,11 +1,8 @@
 /*
  * SGI Origin 200 -- the PCF8584 I2C-bus controller's own register contract.
  *
- * Everything here is testable with no traffic from the system-controller
- * responder: the register-selection matrix, the own-address liveness check
- * firmware's init sequence depends on, and the transaction machinery a
- * master transfer drives. docs/datasheets/pcf8584-elsc.md is the spec this
- * was built from.
+ * The register-selection matrix, the own-address liveness check and the
+ * master-transfer machinery, all testable with no responder traffic.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -63,11 +60,8 @@ static void test_register_selection_matrix(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x55);
 
     /*
-     * ESO=1 ES2=1: still the interrupt vector, not the data register. This
-     * is the row a model that treats "ESO set" as "this address is always
-     * the data register" gets wrong -- it would answer 0x55 here instead of
-     * the vector's own 0x33, and the two registers would in fact be the
-     * same storage rather than genuinely independent.
+     * ESO=1 ES2=1: still the vector -- the row a model treating "ESO set"
+     * as "always data" gets wrong.
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_ES2);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x33);
@@ -91,11 +85,7 @@ static void test_own_address_round_trip(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x7f);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x7f);
 
-    /*
-     * The slot-derived real address, which firmware writes but never reads
-     * back. Asserted anyway: a register that only ever answers a constant
-     * would still pass the placeholder half above.
-     */
+    /* A constant-answering register would still pass the half above. */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x0a);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x0a);
 
@@ -103,12 +93,8 @@ static void test_own_address_round_trip(const void *data)
 }
 
 /*
- * The programmed own address must make the chip answer as a slave, not
- * just read back: a transfer directed at it is acknowledged and the
- * status register reports AAS. The only master on this machine is the
- * chip itself, so this drives the chip's own master side at its own
- * slave address -- a loopback a real bus permits and QEMU's core
- * matches the same way as any other directed transfer.
+ * The programmed own address must be answered as a slave, not just read
+ * back; the chip's own master side drives it, a loopback real buses allow.
  */
 static void test_programmed_own_address_answers_as_slave(const void *data)
 {
@@ -147,12 +133,8 @@ static void test_programmed_own_address_answers_as_slave(const void *data)
 }
 
 /*
- * A byte sent after a refused start goes out on a wire nobody
- * acknowledged: the chip must keep reporting NAK rather than launder
- * the failure into an ACK. QEMU's i2c_send() over the bus's empty
- * matched-device list reports success -- the loop body never runs and
- * the accumulated return value stays zero -- so the model has to
- * remember the refusal instead of asking the core again.
+ * After a refused start the chip must keep reporting NAK: i2c_send() over
+ * an empty matched list reports success, so the refusal must be remembered.
  */
 static void test_send_after_refused_start_stays_nacked(const void *data)
 {
@@ -236,11 +218,7 @@ static void test_liveness_probe_silent_chip_is_stable(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /*
-     * The probe loop returns once two consecutive reads differ; asserting
-     * stability here tells a stable data register from writes leaking
-     * straight back out.
-     */
+    /* Stability tells a real register from writes leaking straight back. */
     uint64_t first = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, first);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, first);
@@ -249,13 +227,9 @@ static void test_liveness_probe_silent_chip_is_stable(const void *data)
 }
 
 /*
- * The closing invalid-address step, checked by identity rather than by
- * the ACK bit: an i2c-echo fixture at 0x7f must receive the specific
- * byte 0xfe, control write before address write. The ACK bit alone
- * false-passes -- i2c_send() over an empty matched list reads ACK 0 for
- * bug and no-bug alike -- so three known bytes are sent and read back,
- * which fails whenever the write half missed the device by any
- * mechanism. The payload is a fixture, not a protocol claim.
+ * The closing invalid-address step, checked by identity: the ACK bit alone
+ * reads 0 for bug and no-bug alike, so an i2c-echo fixture at 0x7f must
+ * hand back the bytes only this test sends.
  */
 static void test_closing_invalid_address_shift_and_order(const void *data)
 {
@@ -264,20 +238,14 @@ static void test_closing_invalid_address_shift_and_order(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
 
-    /* Open an ordinary transaction to some other, unanswered address, so a
-     * transfer is active -- the precondition every repeated start needs.
-     * 0x08 is the ELSC's own address now that it exists on the bus and
-     * would ACK, which would defeat this precondition, so this uses an
-     * address nothing on the machine answers. */
+    /* Open a transfer to an unanswered address (not 0x08: the ELSC ACKs). */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x12);        /* addr 0x09, write */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB, ==,
                     I2C_PCF_LRB);                    /* NAKed: empty */
 
-    /* The closing repeated start: control first, with PIN deliberately
-     * absent, then the address byte -- then three bytes only this test
-     * sends, to identify who actually received the start. */
+    /* Control first with PIN absent, then the address, then the payload. */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xfe);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xaa);
@@ -285,11 +253,7 @@ static void test_closing_invalid_address_shift_and_order(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xcc);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
 
-    /*
-     * One discard, then the three echoed bytes: the first read returns the
-     * chip's own stale data register, because the fetch attaches to the
-     * read rather than the start.
-     */
+    /* One discard first: the fetch attaches to the read, not the start. */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xff);        /* addr 0x7f, read */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
