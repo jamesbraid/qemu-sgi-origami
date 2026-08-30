@@ -56,6 +56,8 @@
 #define TI_GCR_EVENTCONS_IDX    0x628
 #define TI_GCR_CMDCONS_IDX      0x62c
 #define TI_GCR_MASK_INTRS       0x664
+#define TI_GCR_GLINK_STAT       0x668
+#define TI_GCR_LINK_STAT        0x66c
 #define TI_GCR_RXRETURNCONS_IDX 0x680
 #define TI_GCR_CMDRING          0x700
 
@@ -91,6 +93,18 @@
 #define TI_STD_RX_RING_CNT      512
 #define TI_TX_RING_CNT          512
 #define TI_EV_FIRMWARE_UP       0x01
+#define TI_EV_LINKSTAT_CHANGED  0x06
+#define TI_EV_CODE_GIG_LINK_UP  0x01
+
+/* Command opcode: the driver asks the firmware to negotiate the link. */
+#define TI_CMD_LINK_NEGOTIATION 0x0b
+
+/*
+ * Link status reported up as a modelled fact: gigabit, full duplex. The chip's
+ * own link-enable bit rides in LINK_STAT (if_tireg.h TI_LNK and TI_GLNK).
+ */
+#define TI_GLNK_STAT_UP         0x000c0000  /* 1000MB | full-duplex */
+#define TI_LNK_STAT_UP          0x400c0000  /* 1000MB | full-duplex | link-enb */
 
 /* Ring control block host-ring residency flag (if_tireg.h). */
 #define TI_RCB_FLAG_HOST_RING   0x0040
@@ -241,29 +255,6 @@ static void tigon_update_irq(TigonState *s)
 }
 
 /*
- * Re-derive the pending latch from the ring positions the guest acknowledges,
- * and drive the line. The Tigon 2 driver does not write a clear-interrupt bit
- * in its interrupt handler; it advances the event and receive-return consumer
- * indices, so the level line must drop once a consumer catches up to its
- * producer. Otherwise the firmware-up interrupt would re-assert forever, the
- * exact level-latch trap sgi-ioc3-eth.c documents at its own acknowledge path.
- *
- * Transmit completion has no host-written consumer index in the GCR block --
- * the driver reads the transmit consumer from host memory in the same handler
- * pass -- so it rides the shared line down when the event or return consumer it
- * services alongside catches up, rather than gating the line on its own.
- */
-static void tigon_recompute_irq(TigonState *s)
-{
-    bool pending =
-        s->event_prodidx != s->gcr[TIGON_GCR_IDX(TI_GCR_EVENTCONS_IDX)] ||
-        s->return_prodidx != s->gcr[TIGON_GCR_IDX(TI_GCR_RXRETURNCONS_IDX)];
-
-    s->irq_asserted = pending;
-    tigon_update_irq(s);
-}
-
-/*
  * Descriptor/GIB DMA byte order. The chip's own GCR OPMODE swap is a real,
  * guest-programmed feature: on a big-endian host the driver sets the
  * byte-swap-descriptor bit so the chip delivers host (big-endian) order, and
@@ -383,6 +374,67 @@ static void tigon_try_firmware_up(TigonState *s)
 }
 
 /*
+ * Report the port up as a modelled fact -- there is no SerDes and no
+ * negotiation. Post the link-state event and set the link-status registers the
+ * driver reads, in response to its link-negotiation request, so the event lands
+ * after the driver is waiting for it rather than before (datasheet, "Model vs
+ * hardware": link comes up when the interface is put into use).
+ */
+static void tigon_link_up(TigonState *s)
+{
+    s->gcr[TIGON_GCR_IDX(TI_GCR_GLINK_STAT)] = TI_GLNK_STAT_UP;
+    s->gcr[TIGON_GCR_IDX(TI_GCR_LINK_STAT)] = TI_LNK_STAT_UP;
+    tigon_post_event(s, TI_EV_LINKSTAT_CHANGED, TI_EV_CODE_GIG_LINK_UP, 0);
+}
+
+/* The firmware's asynchronous answer to a link-negotiation command. */
+static void tigon_link_timer(void *opaque)
+{
+    tigon_link_up((TigonState *)opaque);
+}
+
+/* A brief virtual delay stands in for link negotiation. */
+#define TIGON_LINK_DELAY_NS 50000000
+
+/*
+ * Command doorbell. The firmware drains the NIC-resident command ring and
+ * advances the command consumer index the driver polls after posting a
+ * command; without that advance the driver's post-command wait never returns.
+ * Most commands need no interpreting for basic traffic (readiness is
+ * firmware-up plus a posted receive buffer); the link-negotiation request is
+ * answered with a link-up event. The producer index is reduced into range so
+ * an out-of-range doorbell cannot loop.
+ */
+static void tigon_run_commands(TigonState *s, uint32_t prod)
+{
+    if (prod >= TIGON_CMD_RING_CNT) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: command producer index %u out of range\n", prod);
+        prod %= TIGON_CMD_RING_CNT;
+    }
+
+    while (s->cmd_considx != prod) {
+        uint32_t cmd = s->cmd_ring[s->cmd_considx];
+
+        if (s->firmware_up && (cmd >> 24) == TI_CMD_LINK_NEGOTIATION) {
+            timer_mod(s->link_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      TIGON_LINK_DELAY_NS);
+        }
+        s->cmd_considx = (s->cmd_considx + 1) % TIGON_CMD_RING_CNT;
+    }
+
+    /*
+     * Command completion is signalled only by advancing the consumer index the
+     * driver reads, never by an interrupt: commands have no host-memory ring the
+     * ISR could acknowledge, so raising the level-triggered line here would leave
+     * it asserted forever and storm the ISR. A command that must notify the host
+     * (a link-state change) posts its own event, which carries the interrupt.
+     */
+    s->gcr[TIGON_GCR_IDX(TI_GCR_CMDCONS_IDX)] = s->cmd_considx;
+}
+
+/*
  * Transmit doorbell. Walk the transmit ring from the saved consumer index to
  * the guest's producer index, assembling each frame from its descriptors'
  * fragments up to the end-of-frame flag, and hand it to the netdev. On Tigon 2
@@ -456,6 +508,9 @@ static void tigon_reset_state(TigonState *s)
      * not cleared: a guest resetting mid-download should not have to re-fetch
      * firmware it already wrote.
      */
+    if (s->link_timer) {
+        timer_del(s->link_timer);
+    }
     s->misc_host_ctl = 0;
     s->misc_local_ctl = 0;
     s->pci_state = 0;
@@ -595,7 +650,14 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         s->cpu_pc_b = val;
         return;
     case TI_MB_HOSTINTR:
+        /*
+         * The mailbox write is the driver's interrupt acknowledge (if_ti.c
+         * ti_intr: 1 = ack+mask, 0 = re-enable); IRIX's eg acks only with 0
+         * and never advances EVENTCONS_IDX. The value is the delivery mask
+         * (see tigon_irq_line).
+         */
         s->mb_hostintr = val & 1;
+        s->irq_asserted = false;
         tigon_update_irq(s);
         return;
     case TI_MB_SENDPROD_IDX:
@@ -611,10 +673,12 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         /* A frame refused before a buffer existed can now be delivered. */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
+    case TI_MB_CMDPROD_IDX:
+        tigon_run_commands(s, val);
+        return;
     case TI_WINDATA:
     case TI_SRAM_ADDR:
     case TI_SRAM_DATA:
-    case TI_MB_CMDPROD_IDX:
     case TI_MB_JUMBORXPROD_IDX:
     case TI_MB_MINIRXPROD_IDX:
         qemu_log_mask(LOG_UNIMP, "tigon: write 0x%08x to unimplemented "
@@ -633,10 +697,6 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                 s->gib_base = ((uint64_t)hi << 32) | (uint32_t)val;
                 s->gib_valid = val != 0;
                 tigon_try_firmware_up(s);
-            } else if (addr == TI_GCR_EVENTCONS_IDX ||
-                       addr == TI_GCR_RXRETURNCONS_IDX) {
-                /* The driver acknowledges by advancing these consumers. */
-                tigon_recompute_irq(s);
             }
             return;
         }
@@ -846,6 +906,7 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
     dev->config[PCI_INTERRUPT_PIN] = 0x01;   /* INTA */
 
     s->sram = g_malloc0(s->sram_size);
+    s->link_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tigon_link_timer, s);
 
     /*
      * One 16 KB non-prefetchable memory BAR (WINDATA, SRAM_DATA and the
@@ -873,6 +934,8 @@ static void tigon_exit(PCIDevice *dev)
     TigonState *s = TIGON(dev);
 
     qemu_del_nic(s->nic);
+    timer_free(s->link_timer);
+    s->link_timer = NULL;
     g_free(s->sram);
     s->sram = NULL;
 }

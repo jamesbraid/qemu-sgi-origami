@@ -15,6 +15,7 @@
 
 #include "hw/pci/pci_device.h"
 #include "net/net.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #define TYPE_TIGON "tigon"
@@ -117,6 +118,14 @@ struct TigonState {
 
     /* Internal pending-interrupt latch. */
     bool irq_asserted;
+
+    /*
+     * Link negotiation is asynchronous on real hardware: the firmware answers a
+     * link-negotiation command with a link-state event a short time later. A
+     * timer reproduces that delay so the event lands after the driver has begun
+     * waiting for it, rather than racing ahead of the wait.
+     */
+    QEMUTimer *link_timer;
 
     TigonEeprom eeprom;
 
