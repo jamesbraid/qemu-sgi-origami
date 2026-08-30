@@ -5,16 +5,9 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * A checksummed ASCII command/response channel, modelled from the
- * controller-and-ELSC datasheet in the Origami project tree. Each command
- * is one write-then-read I2C transaction: a length byte, the text, and a
- * checksum making the whole packet sum to zero modulo 256.
- *
- * "ver", "rsw", "get", "acp" and "pas" are answered; everything else gets
- * "err cmd" -- load-bearing, because the console-selection routine
- * tolerates a negative reply but not a stalled bus. The device also drives
- * the bus-arbitration broadcast rotation (elsc_arb_step()) and is the far
- * end of the AUX serial port (elsc_receive()).
+ * Checksummed ASCII command/response channel, bus-arbitration broadcaster
+ * and AUX serial endpoint. The protocol, vocabulary and arbitration rules
+ * are specified in docs/specs/sgi-elsc.rst.
  */
 
 #include "qemu/osdep.h"
@@ -28,10 +21,7 @@
 #include "qapi/type-helpers.h"
 #include "trace.h"
 
-/*
- * Firmware needs "ok" but ignores the version token; the first token plus
- * terminator must fit in eight bytes (black-box bring-up).
- */
+/* Firmware ignores the token but its first eight bytes must fit a buffer. */
 #define SGI_ELSC_VERSION "origami"
 QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION) > 8);
 
@@ -47,9 +37,8 @@ static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
 }
 
 /*
- * text_len must not exceed SGI_ELSC_MAX_TEXT: the firmware's transfer
- * tracking is unclamped and a longer frame overruns its buffer. A model
- * invariant, not guest-triggerable, so asserted rather than logged.
+ * A frame above SGI_ELSC_MAX_TEXT overruns the firmware's own buffer; a
+ * model invariant, not guest-triggerable, so asserted.
  */
 static void elsc_frame_response(SGIElscState *s, const char *text,
                                 unsigned text_len)
@@ -70,10 +59,8 @@ static void elsc_frame_response_str(SGIElscState *s, const char *text)
 }
 
 /*
- * "get": the console-input poll. The first six response bytes are "acp "
- * plus a selector digit plus a space; firmware checks the first four and
- * copies the payload from byte six, so the shape must be exact. Only
- * processor 0 is reachable, so the selector is always "0".
+ * "get": firmware checks four of the six header bytes and copies from byte
+ * six, so the shape must be exact; the selector is always "0".
  */
 static void elsc_handle_get(SGIElscState *s)
 {
@@ -104,11 +91,7 @@ static void elsc_handle_get(SGIElscState *s)
     }
 }
 
-/*
- * "acp <selector> <characters>": the console-output flush. Always answered
- * in the "ok <count>" form: a bare "ok" parses as zero accepted and
- * livelocks the firmware's output queue.
- */
+/* "acp": a bare "ok" parses as zero accepted and livelocks the firmware. */
 static void elsc_handle_acp_command(SGIElscState *s, const char *text,
                                     unsigned len)
 {
@@ -125,11 +108,7 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
         n = 86;   /* "at most 86 characters per transaction" */
     }
     trace_sgi_elsc_acp(n, text[4]);
-    /*
-     * Firmware redirects its console here after a failed power-on
-     * diagnostic, so a flush with no backend silently discards diagnostic
-     * output. Warn once; keep serving so the guest is only silent.
-     */
+    /* Post-diagnostic console output lands here; warn once if discarded. */
     if (n > 0 && !qemu_chr_fe_backend_connected(&s->chr) &&
         !s->aux_no_backend_warned) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -148,10 +127,7 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
     elsc_frame_response_str(s, resp);
 }
 
-/*
- * "pas <4 characters>": supervisor mode gate. Factory default password is
- * "none"; this model implements no way to change it.
- */
+/* "pas": supervisor gate; the factory default password is "none". */
 static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
 {
     if (len != 8 || text[3] != ' ') {
@@ -166,10 +142,6 @@ static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
     }
 }
 
-/*
- * Dispatch one fully-received, checksum- and length-checked request,
- * and frame its reply.
- */
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -197,10 +169,7 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
-        /*
-         * Exercises supervisor gating; whether "rst" is the real reset
-         * mnemonic is not established by the datasheet's sources.
-         */
+        /* Whether "rst" is the real mnemonic is not established. */
         if (!s->supervisor) {
             elsc_frame_response_str(s, "err perm");
             return;
@@ -214,18 +183,12 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response_str(s, "err cmd");
 }
 
-/*
- * The request is complete once the master switches direction to read the
- * response. Validate its framing and checksum, then dispatch it.
- */
+/* The direction switch to read marks the request complete. */
 static void elsc_request_complete(SGIElscState *s)
 {
     if (s->rxlen < 2 || s->rxlen != (uint32_t)s->rxbuf[0] + 2 ||
         elsc_checksum(s->rxbuf, s->rxlen) != 0) {
-        /*
-         * The protocol names no separate framing error: a malformed packet
-         * fails the same sums-to-zero test a corrupted checksum does.
-         */
+        /* The protocol names no framing error distinct from "err csum". */
         elsc_frame_response_str(s, "err csum");
         return;
     }
@@ -241,10 +204,7 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         s->rxlen = 0;
         break;
     case I2C_START_RECV:
-        /*
-         * The master switched to read: the request just written is
-         * complete.
-         */
+        /* Direction switch: the request just written is complete. */
         elsc_request_complete(s);
         break;
     case I2C_FINISH:
@@ -339,10 +299,7 @@ static uint8_t elsc_recv_internal(SGIElscState *s)
         return s->txbuf[s->txpos++];
     }
 
-    /*
-     * Past the end of a well-formed response the driver's own length byte
-     * already told it to stop reading; this is what it gets if it doesn't.
-     */
+    /* The driver's own length byte said stop; this is over-reading. */
     return 0xff;
 }
 
@@ -369,11 +326,8 @@ static uint8_t elsc_recv(I2CSlave *i2c)
 }
 
 /*
- * The processor code must fit in three bits: signal2 is signal1 with bit 3
- * set, so a code of eight or more collides with another processor's
- * signal1. Eight codes is also the protocol's addressable space -- four
- * node slots of two processors; the project-tree datasheet carries the
- * sources. All eight are offered in turn whether populated or not.
+ * Three-bit code: signal2 is signal1 with bit 3 set, so eight or more
+ * collides with another processor's signal1.
  */
 #define ELSC_SIGNAL_BASE       0xe0   /* 0x70 * 2 */
 #define ELSC_SIGNAL_CODE_COUNT 8      /* three-bit processor code */
@@ -385,11 +339,7 @@ static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
     return signal2 ? signal1 + 8 : signal1;
 }
 
-/*
- * One-shot broadcast: the byte appears in every PCF8584's data register,
- * which is all the arbitration protocol needs. An empty bus is a silent
- * no-op and the rotation still advances.
- */
+/* One-shot broadcast; an empty bus is a no-op and the rotation advances. */
 static void elsc_broadcast(SGIElscState *s, uint8_t value)
 {
     bool diagnostic = s->diagnostic != NULL;
@@ -410,20 +360,15 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
     }
 }
 
-/*
- * Model choices, not measured values: the gap need only be observable and
- * the hold need only clear the datasheet's 250us threshold with margin.
- */
+/* Model choices: observable gap, hold clearing the 250us threshold. */
 #define ELSC_ARB_GAP_US    50
 #define ELSC_ARB_HOLD_US   300
 #define ELSC_ARB_RETRY_US  20
 
 /*
- * Gap, then signal, then advance. The gap is required: the firmware's wait
- * loop must see its signal absent before it trusts an appearance of it.
- * A busy bus defers by short retry, not i2c_bus_master() queueing -- the
- * PCF8584 never calls i2c_bus_release(), so a queued deferral would wait
- * forever.
+ * The gap is required: firmware must see its signal absent before it
+ * trusts it. Deferral is by retry -- the PCF8584 never calls
+ * i2c_bus_release(), so queueing would wait forever.
  */
 static void elsc_arb_step(void *opaque)
 {
@@ -442,11 +387,7 @@ static void elsc_arb_step(void *opaque)
         return;
     }
 
-    /*
-     * signal2 tells the driver a "get" will find something, so it is
-     * withheld while the queue is empty. Only code 0 has a real queue;
-     * every other code always presents signal1.
-     */
+    /* signal2 promises a "get" will find something; withheld when empty. */
     {
         bool signal2 = s->arb_code == 0 && s->rx_queue_len > 0;
         uint8_t signal = elsc_signal_byte(s->arb_code, signal2);
@@ -460,10 +401,8 @@ static void elsc_arb_step(void *opaque)
 }
 
 /*
- * AUX multiplexing (Origin 200 Owner's Guide p.132): bytes after 0x14 are
- * the controller's own command, never queued for "get". Discarding through
- * the next line terminator is a model choice; nothing read states what
- * ends an escaped command.
+ * Bytes after 0x14 are the controller's own command (Owner's Guide p.132);
+ * discarding to the line terminator is a model choice.
  */
 static void elsc_receive(void *opaque, const uint8_t *buf, int size)
 {
@@ -611,10 +550,7 @@ static const TypeInfo sgi_elsc_types[] = {
 
 DEFINE_TYPES(sgi_elsc_types)
 
-/*
- * "info elsc": the console-input queue and presented arbitration signal,
- * live on the monitor with no sink or trace backend attached.
- */
+/* "info elsc": queue and arbitration state without any trace backend. */
 static void elsc_format_state(SGIElscState *s, GString *buf)
 {
     bool console_input = s->rx_queue_len > 0;
