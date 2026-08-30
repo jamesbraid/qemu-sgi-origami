@@ -97,8 +97,11 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_CPU_STATE        0x140
 
 /* Mailbox doorbells and descriptor flags. */
+#define TI_MB_HOSTINTR      0x504
 #define TI_MB_SENDPROD_IDX  0x514
 #define TI_MB_STDRXPROD_IDX 0x51c
+#define TI_MHC_CLEARINT     0x00000002
+#define TI_MHC_MASK_INTS    0x00000040
 #define TI_BDFLAG_END       0x0004
 #define TI_BDFLAG_UCAST_PKT 0x0020
 #define TI_BDFLAG_BCAST_PKT 0x0060
@@ -753,6 +756,38 @@ static void test_hang_guard(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The interrupt line the model exposes through the MISC_HOST_CTL state bit is
+ * gated by the interrupt-mailbox hold-off and the chip-level mask, and cleared
+ * by the clear-interrupt bit. Firmware-up leaves it asserted; walk it through
+ * each control.
+ */
+static void test_interrupt_mask_ack(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    go_operational(qts);
+    g_assert_true(irq_asserted(qts));
+
+    /* Hold-off drops the line without losing the pending state. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 1);
+    g_assert_false(irq_asserted(qts));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_true(irq_asserted(qts));
+
+    /* The chip-level mask suppresses delivery independently. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_MASK_INTS);
+    g_assert_false(irq_asserted(qts));
+    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, 0);
+    g_assert_true(irq_asserted(qts));
+
+    /* Clear-interrupt drops the pending latch for good. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_CLEARINT);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -780,6 +815,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-corrects", NULL,
                         test_byte_order_bridge_corrects);
     qtest_add_data_func("/sn0/tigon/hang-guard", NULL, test_hang_guard);
+    qtest_add_data_func("/sn0/tigon/interrupt-mask-ack", NULL,
+                        test_interrupt_mask_ack);
 
     return g_test_run();
 }
