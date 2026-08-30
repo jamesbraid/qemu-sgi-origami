@@ -5,23 +5,10 @@
  *
  * Copyright (c) 2026 Origami contributors
  *
- * The Origin 200 hangs one of these off its I/O controller's byte bus, where a
- * guest reads it once during boot to set the system clock. Everything below
- * the clock is ordinary storage, and that is not a detail: SGI's own driver
- * decides which of two possible clock parts is fitted by writing a byte into
- * that storage and reading it back, so a model answering only the clock
- * registers would be driven through a different part's register set entirely.
- *
- * This is a device of ours rather than an extension of QEMU's m48t59 model.
- * That model knows three parts, none of them this size, and writes their clock
- * offsets as literal cases rather than deriving them, so fitting this part
- * would mean threading a fourth model through both of its switch statements --
- * an edit to a shared upstream file, in a fork that is rebased onto master
- * indefinitely. It also carries an alarm block, a watchdog and an interrupt
- * output that this part does not have. The timekeeper datasheet in the
- * Origami project tree (docs/datasheets/timekeeper.md there, not in this
- * QEMU tree) carries the comparison and the sources behind every value
- * here.
+ * Sits on the Origin 200 I/O controller's byte bus. The storage below the
+ * clock must answer: SGI's driver probes which clock part is fitted by
+ * writing a byte there and reading it back. Sources for every value are in
+ * the Origami project tree's timekeeper datasheet.
  */
 
 #include "qemu/osdep.h"
@@ -39,9 +26,8 @@
 #include "trace.h"
 
 /*
- * The time a read of the clock should report: the frozen instant if software
- * has asked for one, and otherwise the live time. Both go through the same
- * offset, so freezing cannot make the clock jump when it is released.
+ * Frozen instant if requested, live time otherwise; both share the offset,
+ * so releasing a freeze cannot make the clock jump.
  */
 static void m48t35_now(M48T35State *s, struct tm *tm)
 {
@@ -69,12 +55,8 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
         return to_bcd(tm.tm_hour);
     case M48T35_WEEKDAY:
         /*
-         * What was last written, and zero until something writes it. Real
-         * hardware counts days in this register and this model does not, which
-         * no driver here can tell: the one that reads it discards the value,
-         * and its own comment records that the part leaves the register alone
-         * until software sets it non-zero -- so zero on a machine nobody has
-         * set the day on is the honest answer rather than a gap.
+         * Stored, not counted. The part leaves this register alone until
+         * software writes it, and no driver here reads the value back.
          */
         return s->cell[M48T35_WEEKDAY];
     case M48T35_DAY:
@@ -84,16 +66,8 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
         return to_bcd(tm.tm_mon + 1);
     case M48T35_YEAR:
         /*
-         * Two digits counted from 1970, which is what every driver adds back.
-         * The wrap is what happens on this part after 2069 and is the same
-         * thing the hardware does with two digits.
-         *
-         * The addition before the modulo is not decoration: a base earlier
-         * than 1970 gives a negative difference, and C's remainder keeps the
-         * sign, so the plain expression would hand to_bcd() a negative number
-         * and produce a byte that is not BCD at all. A clock started before
-         * its own epoch has no right answer -- this one wraps, as the two
-         * digits do at the other end.
+         * Two digits from 1970. The +100 guards the pre-epoch case: C's
+         * remainder keeps the sign, and to_bcd() of a negative is not BCD.
          */
         return to_bcd(((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100 + 100)
                       % 100);
@@ -103,13 +77,9 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
 }
 
 /*
- * Every write into a cell, including the two bytes in the clock block that
- * are genuine storage rather than derived from the running clock -- the
- * control register and the weekday. This is the one place that has to know
- * a drive is attached, so nothing else in the file does. A backing-store
- * failure is reported and otherwise ignored: the guest's write already
- * landed in s->cell, and a host-side write failure is not something the
- * guest did wrong.
+ * The one place that knows a drive is attached. A backing-store failure is
+ * reported but not surfaced to the guest: the write already landed in
+ * s->cell, and a host-side failure is not the guest's error.
  */
 static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
 {
@@ -122,10 +92,8 @@ static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
 static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
 {
     /*
-     * Fields arrive one at a time while the write bit is set, so they are
-     * collected and applied together when it clears. A model that applied each
-     * field as it arrived would move the clock six times through five
-     * inconsistent times on the way to the one the guest meant.
+     * Fields are collected while the write bit is set and applied together
+     * when it clears, so the clock moves once, to the time the guest meant.
      */
     switch (addr) {
     case M48T35_SECONDS:
@@ -138,14 +106,7 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
         s->staged_hour = from_bcd(val);
         break;
     case M48T35_WEEKDAY:
-        /*
-         * Kept rather than derived from the date. The register is writable and
-         * a model that dropped the write would be advertising storage it does
-         * not have -- invisible on every path we run, since OpenBSD writes it
-         * and never reads it, IRIX skips it, and Linux reads it and throws the
-         * value away, but a silent drop is not something to leave in a device
-         * because nobody currently looks.
-         */
+        /* The one writable clock byte that is storage on the part. */
         m48t35_store(s, M48T35_WEEKDAY, val);
         break;
     case M48T35_DAY:
@@ -163,9 +124,8 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
 }
 
 /*
- * The control register's two bits, acted on as they change rather than as they
- * are written, because a driver writes the whole register back each time and
- * only the transitions mean anything.
+ * Acted on as the bits change, not as they are written: drivers write the
+ * whole register back each time and only the transitions mean anything.
  */
 static void m48t35_write_control(M48T35State *s, uint8_t val)
 {
@@ -173,9 +133,8 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
 
     if ((val & M48T35_CSR_READ) && !(was & M48T35_CSR_READ)) {
         /*
-         * Freeze. The instant is captured now and every field read until the
-         * bit clears comes from it, so a driver's six reads describe one time
-         * even if a second passes between the first and the last.
+         * Freeze: every read until the bit clears reports this instant, so a
+         * driver's six reads describe one time.
          */
         struct tm tm;
 
@@ -211,20 +170,10 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
         struct tm now;
 
         /*
-         * The offset has to be measured against the same clock the read path
-         * applies it to, and qemu_timedate_diff() does not do that: it
-         * subtracts the *host* clock unconditionally, while qemu_get_timedate()
-         * reads whichever clock -rtc clock= selected. With the two agreeing --
-         * the default, where both are the host clock -- the difference is
-         * invisible. With them disagreeing, a guest that sets the time reads
-         * back something else, off by however far apart the two clocks were at
-         * the moment it set it.
-         *
-         * Taking the current time through qemu_get_timedate() with no offset
-         * and differencing against that keeps both ends on one clock, whichever
-         * one it is. Both operands go through the same conversion, so the base
-         * cancels; the one case it does not is a daylight-saving boundary
-         * falling between these two calls, which are microseconds apart.
+         * Not qemu_timedate_diff(): that subtracts the host clock
+         * unconditionally, while reads use whichever clock -rtc clock=
+         * selected. Differencing through qemu_get_timedate() keeps both
+         * ends on the same clock.
          */
         s->staging = false;
         qemu_get_timedate(&now, 0);
@@ -246,10 +195,8 @@ static uint64_t m48t35_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * The control register and everything below it read back as storage. That
-     * covers the bank of eight below the clock whose purpose no source we hold
-     * identifies -- treating it as cells is what lets a guest that writes there
-     * read back what it wrote, and nothing we run does either.
+     * Control and below read as storage, including the bank of eight below
+     * the clock that no source we hold identifies.
      */
     value = s->cell[addr];
     if (addr >= M48T35_CLOCK_FIRST) {
@@ -281,10 +228,8 @@ static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
             m48t35_write_clock(s, addr, val);
         } else {
             /*
-             * A clock field written without the write bit set. The hardware
-             * has nowhere to put it -- the counters are running -- so the
-             * write is dropped rather than stored somewhere a later read would
-             * find it.
+             * With the write bit clear the counters are running and the
+             * hardware has nowhere to put this; dropped.
              */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "m48t35: write of 0x%02x to clock register 0x%04x "
@@ -298,10 +243,8 @@ static void m48t35_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * Byte-wide, and declared so rather than inherited. The part is a flat block
- * of byte cells, which is exactly the shape that invites being mapped without
- * a thought about access width, and no guest on this machine reads it wide --
- * so a boot cannot catch the mistake and only this declaration prevents it.
+ * Byte-wide by declaration: no guest reads it wide, so nothing but this
+ * stops the core widening an access.
  */
 static const MemoryRegionOps m48t35_ops = {
     .read = m48t35_read,
@@ -318,12 +261,8 @@ static void m48t35_reset_hold(Object *obj, ResetType type)
     M48T35State *s = M48T35(obj);
 
     /*
-     * The cells are not cleared and the time is not moved. This part is
-     * battery-backed: a reset line does not empty memory, and what it holds
-     * afterwards is what it held before. What does not survive is a
-     * transaction a guest was in the middle of -- a freeze or a write it never
-     * completed -- because leaving those set would hand the next guest a clock
-     * that had stopped for reasons it could not see.
+     * Battery-backed: cells and time survive reset. An unfinished freeze or
+     * write transaction does not, or the next guest inherits a stopped clock.
      */
     s->frozen = false;
     s->staging = false;
@@ -337,11 +276,8 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
     s->cell = g_malloc0(M48T35_SIZE);
 
     /*
-     * The drive is optional, and the check is exact rather than a minimum:
-     * a file of any other length is not this part's content, not a partial
-     * write to grow later. Same contract hw/nvram/mac_nvram.c's blk-backed
-     * NVRAM uses for the same reason -- a size mismatch is a configuration
-     * mistake to report, not a size to adapt to.
+     * Exact size required, the same contract as hw/nvram/mac_nvram.c: a
+     * mismatch is a configuration mistake, not a size to adapt to.
      */
     if (s->blk) {
         int64_t len = blk_getlength(s->blk);
@@ -383,9 +319,8 @@ static void m48t35_unrealize(DeviceState *dev)
 }
 
 /*
- * The cell buffer moved from an embedded array to a pointer, and the
- * migration stream did not move with it: a uint8 array and a buffer
- * serialise to the same raw bytes, so version 1 streams load unchanged.
+ * The cell buffer is heap-allocated but a uint8 array and a buffer serialise
+ * identically, so version 1 streams load unchanged.
  */
 static const VMStateDescription vmstate_m48t35 = {
     .name = "m48t35",
