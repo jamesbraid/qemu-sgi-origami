@@ -42,6 +42,17 @@ struct SGIBridgeDMATestState {
     MemoryRegion mmio;
 
     /*
+     * A second BAR of 64-bit registers — a read-only constant and a writable
+     * scratch — put deliberately behind the Bridge's programmed-access
+     * correction, so a test can exercise a 64-bit device window: served one
+     * eight-byte cycle, mirrored whole on the slot's swap bit. A fixed value
+     * keeps the assertion about the Bridge's byte handling, not this device's
+     * storage.
+     */
+    MemoryRegion wide_mmio;
+    uint64_t wide_scratch;
+
+    /*
      * Where on the PCI side to write, how much, and what. The address is 64 bits
      * so a test can issue a 64-bit address cycle and exercise the Bridge's
      * 64-bit direct decode; a 32-bit register file cannot reach those addresses.
@@ -95,6 +106,15 @@ struct SGIBridgeDMATestState {
 /* What a write to REG_GO asks for. */
 #define GO_FILL         1      /* write the seeded pattern at REG_ADDRESS */
 #define GO_COPY         2      /* read REG_SOURCE, write REG_ADDRESS */
+
+/*
+ * The second BAR's registers. The fixed value is asymmetric end to end so a
+ * byte-lane-neutral constant cannot hide a wrong swap.
+ */
+#define WIDE_FIXED      0x00   /* read-only constant */
+#define WIDE_SCRATCH    0x08   /* read/write doubleword */
+#define WIDE_WINDOW     0x10   /* size of the 64-bit register block */
+#define WIDE_FIXED_VALUE 0x0123456789abcdefULL
 
 /*
  * What the device writes: a byte sequence a test can predict without this file
@@ -239,6 +259,46 @@ static const MemoryRegionOps sgi_bridge_dma_test_ops = {
     .impl.max_access_size = 4,
 };
 
+/*
+ * The 64-bit register window: a read-only constant and a writable scratch, each
+ * returning the size-byte little-endian slice at the accessed offset, so a split
+ * read reassembles the same value a one-cycle read gives. What differs is the
+ * Bridge's whole-doubleword swap, which is what a test reads to see. The
+ * eight-byte impl size lets a one-cycle doubleword reach the handler whole.
+ */
+static uint64_t sgi_bridge_dma_test_wide_read(void *opaque, hwaddr addr,
+                                              unsigned size)
+{
+    SGIBridgeDMATestState *s = opaque;
+    uint64_t reg = addr < WIDE_SCRATCH ? WIDE_FIXED_VALUE : s->wide_scratch;
+
+    return extract64(reg, (addr & 7) * 8, size * 8);
+}
+
+static void sgi_bridge_dma_test_wide_write(void *opaque, hwaddr addr,
+                                           uint64_t val, unsigned size)
+{
+    SGIBridgeDMATestState *s = opaque;
+
+    if (addr < WIDE_SCRATCH) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge-dma-test: write to the read-only 64-bit "
+                      "register 0x%" HWADDR_PRIx "\n", addr);
+        return;
+    }
+    s->wide_scratch = deposit64(s->wide_scratch, (addr & 7) * 8, size * 8, val);
+}
+
+static const MemoryRegionOps sgi_bridge_dma_test_wide_ops = {
+    .read = sgi_bridge_dma_test_wide_read,
+    .write = sgi_bridge_dma_test_wide_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 8,
+};
+
 static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
@@ -257,6 +317,11 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->mmio, OBJECT(s), &sgi_bridge_dma_test_ops, s,
                           "sgi-bridge-dma-test.mmio", REG_WINDOW);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+
+    memory_region_init_io(&s->wide_mmio, OBJECT(s),
+                          &sgi_bridge_dma_test_wide_ops, s,
+                          "sgi-bridge-dma-test.wide", WIDE_WINDOW);
+    pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->wide_mmio);
 }
 
 static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
@@ -267,18 +332,20 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->length = 0;
     s->seed = 0;
     s->source = 0;
+    s->wide_scratch = 0;
     s->interrupt = 0;
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIBridgeDMATestState),
         VMSTATE_UINT64(address, SGIBridgeDMATestState),
         VMSTATE_UINT64(source, SGIBridgeDMATestState),
+        VMSTATE_UINT64(wide_scratch, SGIBridgeDMATestState),
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),

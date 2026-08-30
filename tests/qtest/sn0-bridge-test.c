@@ -123,6 +123,8 @@
 
 #define DEV_ERROR_LOCK          (1u << 28)
 #define DEV_PAGE_CROSS_CHECK    (1u << 27)
+#define DEV_64BIT_DEVICE        (1u << 22)
+#define DEV_SWAP_PROGRAMMED     (1u << 13)
 #define DEV_MEMORY_SPACE        (1u << 12)
 #define DEV_WINDOW_BASE         0xfffu
 /*
@@ -1001,6 +1003,25 @@ static void test_translation_entries_reset_clear(const void *data)
 #define DMA_CARD_MMIO           CARD_MMIO(DMA_SLOT)
 
 /*
+ * The transfer source's second BAR, the 64-bit register window, put one
+ * megabyte above its first so the device-size window base (a 1 MB-granular
+ * field) names it cleanly. WIDE_FIXED is the read-only register's offset, and
+ * the two goldens are its constant read whole and read byte-reversed.
+ */
+#define WIDE_CARD_MMIO          (DMA_CARD_MMIO + 0x100000u)
+#define WIDE_FIXED              0x00
+#define WIDE_SCRATCH            0x08
+#define WIDE_ROUNDTRIP_VALUE    0xdeadbeefcafef00dULL
+#define WIDE_GOLDEN_UNCHANGED   0x0123456789abcdefULL
+#define WIDE_GOLDEN_MIRRORED    0xefcdab8967452301ULL
+/*
+ * The register read as a 32-bit device: the constant's two 32-bit halves
+ * exchanged (each word cycle assembled big-endian). The swap bit, a
+ * 64-bit-device rule, must not change it.
+ */
+#define WIDE_GOLDEN_SPLIT_32BIT 0x89abcdef01234567ULL
+
+/*
  * The translated window, and the two pages of it this test uses. A page is 4 KB
  * because the control register resets choosing that size.
  */
@@ -1782,6 +1803,69 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
     for (i = 0; i < DMA64_LEN; i++) {
         g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
     }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A 64-bit device window: with the device-size bit set the Bridge serves an
+ * eight-byte access as one cycle and mirrors the doubleword on the
+ * programmed-access swap bit. Read a fixed register whole under both settings
+ * (unchanged clear, byte-reversed set), confirm a 32-bit slot still splits and
+ * never mirrors, and round-trip the scratch through the write path.
+ */
+static void test_dma_device_window_64bit_doubleword(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+
+    /* Put the 64-bit register BAR where a device window can name it, and let
+     * the card decode memory. */
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_BAR1, WIDE_CARD_MMIO);
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+
+    /* 64-bit device, programmed-access swap clear: the doubleword is unchanged. */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
+                    WIDE_GOLDEN_UNCHANGED);
+
+    /* Same slot, programmed-access swap set: the doubleword is reversed end to
+     * end. */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | DEV_SWAP_PROGRAMMED |
+                 (WIDE_CARD_MMIO >> 20));
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
+                    WIDE_GOLDEN_MIRRORED);
+
+    /* Clear the device-size bit: a 32-bit slot still splits the doubleword into
+     * two word cycles and does not consult the programmed-access swap bit, so
+     * the read is the halves-exchanged value whether that bit is set or not. */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
+                    WIDE_GOLDEN_SPLIT_32BIT);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_SWAP_PROGRAMMED | (WIDE_CARD_MMIO >> 20));
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
+                    WIDE_GOLDEN_SPLIT_32BIT);
+
+    /*
+     * The write direction round-trips a doubleword to the scratch. The swap bit
+     * mirrors both directions, so the value returns unchanged either way; each
+     * setting confirms the eight-byte write reaches the device whole.
+     */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
+    qtest_writeq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH, WIDE_ROUNDTRIP_VALUE);
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
+                    WIDE_ROUNDTRIP_VALUE);
+
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | DEV_SWAP_PROGRAMMED |
+                 (WIDE_CARD_MMIO >> 20));
+    qtest_writeq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH, WIDE_ROUNDTRIP_VALUE);
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
+                    WIDE_ROUNDTRIP_VALUE);
 
     qtest_quit(qts);
 }
@@ -2970,6 +3054,8 @@ int main(int argc, char **argv)
                         NULL, test_dma_direct_window_reads_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-64bit-ignores-the-offset-step",
                         NULL, test_dma_direct_window_64bit_ignores_the_offset_step);
+    qtest_add_data_func("sn0/bridge/device-window-64bit-doubleword", NULL,
+                        test_dma_device_window_64bit_doubleword);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
 
