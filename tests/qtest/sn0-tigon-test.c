@@ -128,6 +128,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 #define TI_RCB_FLAG_HOST_RING   0x0040
 #define TI_EV_FIRMWARE_UP       0x01
+#define TI_BDTYPE_RECV_BD       0x0002
 
 /* Write a ring control block's 64-bit host address (two words, hi then lo). */
 static void write_rcb_addr(QTestState *qts, uint32_t rcb, uint32_t phys)
@@ -424,6 +425,28 @@ static size_t net_recv_frame(int fd, uint8_t *buf, size_t buf_size)
     return len;
 }
 
+static void net_send_frame(int fd, const uint8_t *buf, size_t len)
+{
+    uint32_t hdr = htonl((uint32_t)len);
+
+    g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
+}
+
+/* Give the main loop passes to read the socket and deliver a frame. */
+static uint32_t wait_return_prod(QTestState *qts)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (qtest_readl(qts, RETURN_PROD_PHYS) != 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    return qtest_readl(qts, RETURN_PROD_PHYS);
+}
+
 static QTestState *tigon_init_netdev(int guest_fd)
 {
     return qtest_initf("-M origin200,io-bridge=on "
@@ -515,6 +538,107 @@ static void test_transmit(const void *data)
     close(sv[0]);
 }
 
+/* A standard receive-buffer descriptor: address, index and length. */
+static void post_std_rx_buffer(QTestState *qts, unsigned slot, uint32_t phys,
+                               uint16_t idx, uint32_t bytes)
+{
+    uint32_t desc = STD_RX_RING_PHYS + slot * 32;
+
+    write_rcb_addr(qts, desc + 0, phys);
+    qtest_writel(qts, desc + 8, ((uint32_t)idx << 16) | (bytes & 0xffff));
+    qtest_writel(qts, desc + 12, (uint32_t)TI_BDTYPE_RECV_BD << 16);
+}
+
+static const uint8_t rx_frame_ours[64] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* dest = our MAC */
+    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,      /* source */
+    0x08, 0x00,                              /* ethertype IP */
+    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+};
+
+static const uint8_t rx_frame_other[64] = {
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x99,      /* dest = a different unicast */
+    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    0x08, 0x00,
+    0x99, 0x98, 0x97, 0x96,
+};
+
+static void test_receive(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[64];
+    uint32_t word2;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    /* The return producer index advances once the frame is delivered. */
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    /* Return descriptor names the buffer index and the received length. */
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 0);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
+
+    /* The frame landed in the posted buffer, byte for byte. */
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_receive_filters_other(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[64];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 1, RX_BUF_PHYS + 0x1000, 1, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
+
+    /*
+     * A frame for a different station, then one for us. Both are read from
+     * the backend in order; only the second may reach the ring. If the filter
+     * let the first through, the return producer would reach 2 and the buffer
+     * would hold the wrong frame.
+     */
+    net_send_frame(sv[0], rx_frame_other, sizeof(rx_frame_other));
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -534,6 +658,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
+    qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
+                        test_receive_filters_other);
 
     return g_test_run();
 }
