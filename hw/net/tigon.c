@@ -80,6 +80,34 @@
 #define TI_GCR_PAR0             0x600
 #define TI_GCR_PAR1             0x604
 
+/* GCR OPMODE: the descriptor/data DMA byte-swap control (if_tireg.h). */
+#define TI_OPMODE_BYTESWAP_BD   0x00000002
+#define TI_OPMODE_WORDSWAP_BD   0x00000004
+#define TI_OPMODE_BYTESWAP_DATA 0x00000010
+
+/* Ring sizes and the firmware-up event (if_tireg.h). */
+#define TI_EVENT_RING_CNT       256
+#define TI_RETURN_RING_CNT      2048
+#define TI_STD_RX_RING_CNT      512
+#define TI_TX_RING_CNT          512
+#define TI_EV_FIRMWARE_UP       0x01
+
+/* Ring control block host-ring residency flag (if_tireg.h). */
+#define TI_RCB_FLAG_HOST_RING   0x0040
+
+/*
+ * Field offsets inside the general information block (struct ti_gib): a 1 KB
+ * statistics area, then seven 16-byte ring control blocks, then four 8-byte
+ * host-memory producer/consumer pointers.
+ */
+#define TI_GIB_EV_RCB           0x400
+#define TI_GIB_TX_RCB           0x420
+#define TI_GIB_STD_RX_RCB       0x430
+#define TI_GIB_RETURN_RCB       0x460
+#define TI_GIB_EV_PRODIDX_PTR   0x470
+#define TI_GIB_RETURN_PRODIDX_PTR 0x478
+#define TI_GIB_TX_CONSIDX_PTR   0x480
+
 #define TIGON_GCR_IDX(off)      (((off) - TI_GCR_BASE) >> 2)
 
 /* Serial-EEPROM slave phases. */
@@ -199,6 +227,119 @@ static bool tigon_irq_line(TigonState *s)
 static void tigon_update_irq(TigonState *s)
 {
     pci_set_irq(PCI_DEVICE(s), tigon_irq_line(s));
+}
+
+/*
+ * Descriptor/GIB DMA byte order. The chip's own GCR OPMODE swap is a real,
+ * guest-programmed feature: on a big-endian host the driver sets the
+ * byte-swap-descriptor bit so the chip delivers host (big-endian) order, and
+ * the register header's descriptor structs change field order under the same
+ * condition. We honour it rather than assume a fixed order -- the swap bit
+ * selects big-endian PCI-DMA accessors, matching the "chip delivers
+ * big-endian, Bridge transparent" path. See docs/library/nic-on-bridge-
+ * conventions.md and docs/plans/tigon-model.md, "Byte-swap".
+ */
+static bool tigon_bd_bigendian(TigonState *s)
+{
+    return (s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)] & TI_OPMODE_BYTESWAP_BD) != 0;
+}
+
+static uint32_t tigon_dma_ld32(TigonState *s, uint64_t addr)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint32_t v = 0;
+
+    if (tigon_bd_bigendian(s)) {
+        ldl_be_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
+    } else {
+        ldl_le_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
+    }
+    return v;
+}
+
+static void tigon_dma_st32(TigonState *s, uint64_t addr, uint32_t v)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+
+    if (tigon_bd_bigendian(s)) {
+        stl_be_pci_dma(pci, addr, v, MEMTXATTRS_UNSPECIFIED);
+    } else {
+        stl_le_pci_dma(pci, addr, v, MEMTXATTRS_UNSPECIFIED);
+    }
+}
+
+/*
+ * A host DMA address in a descriptor or RCB is two 32-bit words, high then low
+ * (struct ti_hostaddr), so read and write it as two words rather than one
+ * 64-bit quantity -- the word order is fixed regardless of the swap setting.
+ */
+static uint64_t tigon_dma_ld_addr(TigonState *s, uint64_t addr)
+{
+    return ((uint64_t)tigon_dma_ld32(s, addr) << 32) |
+           tigon_dma_ld32(s, addr + 4);
+}
+
+/*
+ * Parse the general information block once it is complete. The RCBs and
+ * producer-pointer fields are filled by the driver in host DRAM before it
+ * releases the CPU, so this runs at firmware-up, when both preconditions hold,
+ * rather than at GENINFO_LO write time when the RCBs are not yet populated.
+ */
+static void tigon_parse_gib(TigonState *s)
+{
+    uint64_t g = s->gib_base;
+    uint64_t tx_rcb = g + TI_GIB_TX_RCB;
+    uint64_t ret_rcb = g + TI_GIB_RETURN_RCB;
+    uint32_t ret_word;
+
+    s->ev_ring_base = tigon_dma_ld_addr(s, g + TI_GIB_EV_RCB);
+    s->ev_prodidx_ptr = tigon_dma_ld_addr(s, g + TI_GIB_EV_PRODIDX_PTR);
+
+    s->tx_ring_base = tigon_dma_ld_addr(s, tx_rcb);
+    s->tx_host_ring =
+        (tigon_dma_ld32(s, tx_rcb + 8) & TI_RCB_FLAG_HOST_RING) != 0;
+
+    s->std_rx_ring_base = tigon_dma_ld_addr(s, g + TI_GIB_STD_RX_RCB);
+
+    s->return_ring_base = tigon_dma_ld_addr(s, ret_rcb);
+    ret_word = tigon_dma_ld32(s, ret_rcb + 8);
+    s->return_ring_max = ret_word >> 16;
+    if (s->return_ring_max == 0) {
+        s->return_ring_max = TI_RETURN_RING_CNT;   /* 0 means 2048 */
+    }
+    s->return_prodidx_ptr = tigon_dma_ld_addr(s, g + TI_GIB_RETURN_PRODIDX_PTR);
+    s->tx_considx_ptr = tigon_dma_ld_addr(s, g + TI_GIB_TX_CONSIDX_PTR);
+}
+
+static void tigon_post_event(TigonState *s, uint8_t event, uint16_t code,
+                             uint16_t idx)
+{
+    uint64_t slot = s->ev_ring_base + (uint64_t)s->event_prodidx * 8;
+    uint32_t eventx = ((uint32_t)event << 24) |
+                      ((uint32_t)(code & 0xfff) << 12) | (idx & 0xfff);
+
+    tigon_dma_st32(s, slot, eventx);
+    tigon_dma_st32(s, slot + 4, 0);   /* reserved word */
+    s->event_prodidx = (s->event_prodidx + 1) % TI_EVENT_RING_CNT;
+    tigon_dma_st32(s, s->ev_prodidx_ptr, s->event_prodidx);
+    s->irq_asserted = true;
+    tigon_update_irq(s);
+}
+
+/*
+ * Firmware-up fires only when both the CPU has been released and the GIB
+ * address has been published: the firmware-up event lands on the event ring,
+ * whose control block lives inside the GIB, so the model cannot post it until
+ * the GIB is reachable (docs/plans/tigon-model.md, review item 2).
+ */
+static void tigon_try_firmware_up(TigonState *s)
+{
+    if (s->firmware_up || !s->cpu_a_released || !s->gib_valid) {
+        return;
+    }
+    tigon_parse_gib(s);
+    s->firmware_up = true;
+    tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0);
 }
 
 static void tigon_reset_state(TigonState *s)
@@ -334,6 +475,11 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case TI_CPU_STATE:
         s->cpu_state_a = val;
+        /* Clearing the halt bit releases embedded CPU A (ti_gibinit). */
+        if (!(val & TI_CPUSTATE_HALT)) {
+            s->cpu_a_released = true;
+            tigon_try_firmware_up(s);
+        }
         return;
     case TI_CPU_PROGRAM_COUNTER:
         s->cpu_pc_a = val;
@@ -362,6 +508,16 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
     default:
         if (addr >= TI_GCR_BASE && addr <= TI_GCR_END) {
             s->gcr[TIGON_GCR_IDX(addr)] = val;
+            /*
+             * Writing GENINFO_LO hands the card the GIB address. GENINFO_HI is
+             * documented as always zero, so the low word decides validity.
+             */
+            if (addr == TI_GCR_GENINFO_LO) {
+                s->gib_base = ((uint64_t)s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)]
+                               << 32) | (uint32_t)val;
+                s->gib_valid = val != 0;
+                tigon_try_firmware_up(s);
+            }
             return;
         }
         if (addr >= TI_GCR_CMDRING &&

@@ -47,6 +47,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define PCI_INTR_LINE       0x3c
 
 #define PCI_COMMAND_MEMORY  0x0002
+#define PCI_COMMAND_MASTER  0x0004
 
 /* The Bridge's own per-slot device register, low half of its 8-byte slot. */
 #define REG_DATA            4
@@ -76,6 +77,54 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_MLC_EE_DOUT      0x00400000
 #define TI_MLC_EE_DIN       0x00800000
 #define TI_EE_MAC_OFFSET    0x8c
+
+/* Interrupt and CPU control. */
+#define TI_MHC_INTSTATE     0x00000001
+#define TI_CPU_STATE        0x140
+
+/* GCR registers exercised by the ring model. */
+#define TI_GCR_GENINFO_HI   0x608
+#define TI_GCR_GENINFO_LO   0x60c
+#define TI_GCR_OPMODE       0x618
+#define TI_OPMODE_BYTESWAP_BD   0x00000002
+#define TI_OPMODE_WORDSWAP_BD   0x00000004
+#define TI_OPMODE_BYTESWAP_DATA 0x00000010
+
+/*
+ * A general information block and its rings, laid out in low guest RAM. The
+ * Bridge carries a DMA address below its translated window straight through to
+ * system memory, so the card reaches these at the same address the test wrote
+ * them, with no address-translation setup.
+ */
+#define GIB_PHYS            0x00200000u
+#define GIB_EV_RCB          0x400
+#define GIB_TX_RCB          0x420
+#define GIB_STD_RX_RCB      0x430
+#define GIB_RETURN_RCB      0x460
+#define GIB_EV_PROD_PTR     0x470
+#define GIB_RETURN_PROD_PTR 0x478
+#define GIB_TX_CONS_PTR     0x480
+#define GIB_SIZE            0x490
+
+#define EVENT_RING_PHYS     0x00210000u
+#define EV_PROD_PHYS        0x00220000u
+#define TX_CONS_PHYS        0x00230000u
+#define RETURN_RING_PHYS    0x00240000u
+#define RETURN_PROD_PHYS    0x00250000u
+#define STD_RX_RING_PHYS    0x00260000u
+#define TX_RING_PHYS        0x00270000u
+#define RX_BUF_PHYS         0x00280000u
+#define TX_BUF_PHYS         0x00290000u
+
+#define TI_RCB_FLAG_HOST_RING   0x0040
+#define TI_EV_FIRMWARE_UP       0x01
+
+/* Write a ring control block's 64-bit host address (two words, hi then lo). */
+static void write_rcb_addr(QTestState *qts, uint32_t rcb, uint32_t phys)
+{
+    qtest_writel(qts, rcb + 0, 0);
+    qtest_writel(qts, rcb + 4, phys);
+}
 
 /*
  * A 4-byte access needs no byte-lane correction -- sgi_bridge_window_correct()
@@ -281,6 +330,97 @@ static void test_station_addr_eeprom(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Put the card in a state where its DMA lands big-endian in guest RAM: bus
+ * master enabled, and OPMODE's descriptor/data byte-swap bits set, which is
+ * what the driver programs on a big-endian host. The rings sit in low RAM the
+ * Bridge carries straight through, so no address-translation setup is needed.
+ */
+static void enable_dma_big_endian(QTestState *qts)
+{
+    aim_window_at_bar(qts);
+    qtest_writel(qts, CFG0(TIGON_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                 TI_OPMODE_BYTESWAP_DATA);
+}
+
+static void build_gib(QTestState *qts)
+{
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, EVENT_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, EV_PROD_PHYS, 0, 8);
+    qtest_memset(qts, TX_CONS_PHYS, 0, 8);
+    qtest_memset(qts, RETURN_RING_PHYS, 0, 0x4000);
+    qtest_memset(qts, RETURN_PROD_PHYS, 0, 8);
+    qtest_memset(qts, STD_RX_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, TX_RING_PHYS, 0, 0x800);
+
+    write_rcb_addr(qts, GIB_PHYS + GIB_EV_RCB, EVENT_RING_PHYS);
+    /* Tigon 2 puts the transmit ring in host DRAM (the host-ring flag). */
+    write_rcb_addr(qts, GIB_PHYS + GIB_TX_RCB, TX_RING_PHYS);
+    qtest_writel(qts, GIB_PHYS + GIB_TX_RCB + 8,
+                 (512u << 16) | TI_RCB_FLAG_HOST_RING);
+    write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, STD_RX_RING_PHYS);
+    write_rcb_addr(qts, GIB_PHYS + GIB_RETURN_RCB, RETURN_RING_PHYS);
+    qtest_writel(qts, GIB_PHYS + GIB_RETURN_RCB + 8, (2048u << 16));
+    write_rcb_addr(qts, GIB_PHYS + GIB_EV_PROD_PTR, EV_PROD_PHYS);
+    write_rcb_addr(qts, GIB_PHYS + GIB_RETURN_PROD_PTR, RETURN_PROD_PHYS);
+    write_rcb_addr(qts, GIB_PHYS + GIB_TX_CONS_PTR, TX_CONS_PHYS);
+}
+
+static void publish_gib(QTestState *qts)
+{
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+}
+
+static void release_cpu(QTestState *qts)
+{
+    qtest_writel(qts, WINDOW_TIGON + TI_CPU_STATE, 0);
+}
+
+static bool irq_asserted(QTestState *qts)
+{
+    return (qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
+            TI_MHC_INTSTATE) != 0;
+}
+
+static void test_firmware_up_requires_gib(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+
+    /* Releasing the CPU without publishing the GIB must not post firmware-up. */
+    release_cpu(qts);
+    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 0);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_quit(qts);
+}
+
+static void test_firmware_up_posts_event(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+    publish_gib(qts);
+    release_cpu(qts);
+
+    /* Both conditions met: a firmware-up event and the interrupt. */
+    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==,
+                    (uint32_t)TI_EV_FIRMWARE_UP << 24);
+    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 1);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -295,6 +435,10 @@ int main(int argc, char **argv)
                         test_station_addr_par);
     qtest_add_data_func("/sn0/tigon/station-addr-eeprom", NULL,
                         test_station_addr_eeprom);
+    qtest_add_data_func("/sn0/tigon/firmware-up-requires-gib", NULL,
+                        test_firmware_up_requires_gib);
+    qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
+                        test_firmware_up_posts_event);
 
     return g_test_run();
 }
