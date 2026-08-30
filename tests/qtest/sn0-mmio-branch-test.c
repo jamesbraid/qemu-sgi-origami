@@ -3,47 +3,22 @@
  *
  * A MIPS64 branch executed from an MMIO-backed code page.
  *
- * A page that no RAM block backs cannot hold a translation block: the
- * translator caps a block whose first page is MMIO at one instruction and
- * regenerates it on every execution.  A branch and its delay slot therefore
- * land in separate blocks, and the pending-branch state has to survive the
- * gap between them -- through the exiting block's hflags store, the next
- * lookup's tb->flags, and the slot block's decode.  The promdata-window
- * regression measured that state not surviving: a jr fell through to the
- * instruction after its delay slot.
+ * An MMIO-first page caps a translation block at one instruction, so a
+ * branch and its delay slot land in separate blocks and the pending-branch
+ * state must survive the gap.  The promdata-window regression measured it
+ * not surviving: a jr fell through past its delay slot.  Each case runs one
+ * branch from such a page and asks whether the target was reached -- a
+ * distinct word stored on each path, so the answer is a memory read, and
+ * neither path needs a second branch to report.  The window is the
+ * per-processor promdata filter, the one executable MMIO a qtest can reach
+ * here; two RAM controls ride the same resume path without MMIO.
  *
- * These cases execute one branch from such a page and ask a single question:
- * was the branch target reached.  A guest program stores a distinct word on
- * the taken path and another on the fall-through path, so the answer is a
- * memory read rather than an inference, and neither path needs a second
- * branch to report -- both end in a syscall the ROM handler catches.
- *
- * The MMIO page is the Origin 200's per-processor promdata filter, an I/O
- * region over physical 1 MiB that forwards to the node RAM beneath it.  It
- * is the only executable MMIO window a qtest can reach on any machine this
- * target builds, and it is the window the original failure was measured in.
- * Two controls run the same program from ordinary RAM: one from the middle
- * of a page, which the translator has no reason to split at all, and one
- * with the branch on the last word of a page and its delay slot on the next,
- * which ends a block between the two for a different reason and so rides the
- * same resume path.
- *
- * What these cases measure, as of the commit that adds them: the branch is
- * taken, every time, in every configuration below -- both immediate branch
- * forms and the jump to register, through the compatibility segment and the
- * 64-bit physical one, with and without CF_PARALLEL and block chaining, with
- * a timer interrupt landing in the gap thousands of times over, and with two
- * processors in the window at once.  The resume chain carries the pending
- * branch across the block boundary: the delay slot's block is entered with
- * MIPS_HFLAG_BR and MIPS_HFLAG_BDS32 in its flags.  So the drop the original
- * regression measured needs some further condition none of this reproduces,
- * and the one-shot path on its own is not it.
- *
- * The MMIO cases therefore report a drop with g_test_incomplete() rather
- * than failing, and they are a sentinel for a defect that is unpinned rather
- * than a demonstration of one: if the drop ever appears here, this is where
- * it will say so.  Any third outcome -- neither marker, or a fault -- is a
- * hard failure, because that is not the behaviour under study.
+ * Every configuration below takes the branch, so the drop needs a further
+ * condition none of this reproduces.  The MMIO cases are therefore a
+ * sentinel: a drop reports g_test_incomplete() rather than failing, since
+ * the mechanism is unpinned, while any third outcome -- neither marker, or
+ * a fault -- is a hard failure, because it is not the behaviour under
+ * study.
  */
 
 #include "qemu/osdep.h"
@@ -51,9 +26,8 @@
 #include "libqtest.h"
 
 /*
- * The filter covers 32 KiB at physical 1 MiB in the processor's own address
- * space.  The state words and the RAM controls sit well clear of it, and of
- * each other, in the 64 MiB the machine boots with.
+ * The filter covers 32 KiB at physical 1 MiB; state words and RAM controls
+ * sit clear of it and of each other.
  */
 #define WINDOW_PHYS         0x00100000
 #define WINDOW_KSEG1        0xa0100000
@@ -168,23 +142,16 @@
 #define STATUS_FPU_ON_HI    0x2400
 
 /*
- * The promdata filter answers from a private copy, rather than forwarding
- * to RAM, when FPR 0 carries the PROM's cache-as-RAM boot-status bit, the accessing
- * PC is inside the boot flash or the RAM PROM copy, and the access is a
- * cached one -- an uncached reference goes to the memory system on real
- * hardware, past the cache-resident data the filter stands in for, so it
- * always sees the RAM underneath.  The bit is 1 << 1 in the register's
- * 64-bit view.
+ * The filter answers from its private copy when FPR 0 carries this
+ * cache-as-RAM bit, the accessing PC is inside a PROM range, and the
+ * access is cached; an uncached reference always sees the RAM underneath.
  */
 #define PROM_BOOT_STATUS_CACHE_AS_RAM        0x2
 
 /*
- * The 64-bit physical segment at cache-coherency attribute 5, coherent
- * exclusive -- the window a Linux IP27 kernel reaches physical memory
- * through, and the one its own fetches from this region came out of.  The
- * attribute is not decoration here: target/mips derives MemTxAttrs's
- * mips_uncached from it, and the promdata filter's private-copy test reads
- * that attribute.  Attribute 2 would be the uncached window, 0x9000.
+ * XKPHYS at cache attribute 5, the window the kernel's own fetches used.
+ * The attribute is load-bearing: the filter's private-copy test reads the
+ * mips_uncached MemTxAttr derived from it.
  */
 #define XKPHYS_CACHED_HI    0xa800
 
@@ -395,34 +362,27 @@ static void emit_load_addr(CodeBuf *buf, int rt, uint32_t addr)
 }
 
 /*
- * The snippet the branch is executed from.  Fixed layout, so the branch word
- * is the only thing that changes between flavours and the target offset is
- * the same for all of them:
+ * The snippet, fixed layout so only the branch word changes per flavour:
  *
  *   +0x00  publish "entered"
  *   +0x08  the branch under test, target +0x40
  *   +0x0c  its delay slot
- *   +0x10  publish "fell through" -- reached only if the branch was dropped
+ *   +0x10  publish "fell through" -- reached only on a dropped branch
  *   +0x18  syscall
  *   +0x40  publish "target reached"
  *   +0x48  syscall
  *
- * Neither path branches to report.  A branch out of here would be the very
- * thing under test, and would leave a dropped one running off the end of the
- * window into whatever follows.
+ * Neither path branches to report: a reporting branch would itself be the
+ * thing under test.
  */
 #define SNIPPET_TARGET_OFF  0x40
 #define SNIPPET_MAX_WORDS   45
 
 /*
- * The looping form continues past the target: it counts the iteration,
- * publishes the count, and jumps back to the top.  That puts three branches
- * per iteration on an MMIO page instead of one, and it gives a timer
- * interrupt somewhere to land -- including in the gap between a branch and
- * its delay slot, which is the gap under study.  Each of the three has its
- * own signature if it is dropped: the first sets "fell through", losing the
- * exit test runs the counter past its limit, and losing the loop-back ends
- * the run early with a short count.
+ * The looping form runs three branches per iteration and gives a timer
+ * interrupt the branch-to-delay-slot gap to land in.  Each branch has its
+ * own dropped signature: "fell through", a counter past its limit, or a
+ * short count.
  */
 #define LOOP_EXIT_OFF       0x58
 #define LOOP_WAIT_IRQ_OFF   0x88
@@ -588,14 +548,10 @@ static void build_rom(uint8_t *image, const TestCase *tc)
 
     if (tc->cache_as_ram) {
         /*
-         * Set the bit that arms the filter's private copy, from code that
-         * is already inside the boot flash -- this ROM runs at physical
-         * 0x1fc00000, which is the first of the two PC ranges the filter's
-         * private test accepts.  Both halves of that test are therefore
-         * satisfied for this instant, and the only thing still deciding
-         * the answer is which PC the filter reads when the first fetch
-         * into the window happens: the address it is fetching, or the
-         * address of the code that jumped there.
+         * Arm the private copy from code already inside the boot flash:
+         * both halves of the filter's test are then satisfied, and the
+         * only open question is which PC the filter reads at the first
+         * fetch into the window -- the fetched address or the jumper's.
          */
         emit_mfc0(&buf, R_T1, CP0_STATUS);
         emit_lui(&buf, R_T7, STATUS_FPU_ON_HI);
@@ -610,16 +566,10 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_dmfc1(&buf, R_T7, 0);
         emit_sd(&buf, R_T7, R_T0, CACHE_AS_RAM_OFF);
         /*
-         * Then read the window as data, from here, still inside the flash,
-         * through both of the unmapped kernel segments.  The kseg1 read is
-         * uncached, so it carries the uncached attribute and the filter
-         * forwards it to the RAM underneath, which holds the snippet's
-         * first instruction.  The kseg0 read is cached, so with the cache-as-RAM bit
-         * armed and this PC inside the flash it must come back zero: the
-         * private copy is zeroed at reset, and only the cached read from a
-         * PROM PC sees it.  The zero here and a working fetch below are the
-         * same instant, the same bit and the same region resolving two
-         * different ways -- which is the whole question.
+         * Probe the window as data from inside the flash: the uncached
+         * kseg1 read must see the snippet in RAM, the cached kseg0 read
+         * must see the zeroed private copy.  Same instant, same bit, same
+         * region resolving two ways -- the whole question.
          */
         emit_load_addr(&buf, R_T1, tc->snippet_kseg1);
         emit_lw(&buf, R_T7, R_T1, 0);
@@ -700,10 +650,8 @@ static void report_state(QTestState *qts)
 }
 
 /*
- * The window has to be I/O-backed for any of this to mean anything.  A RAM
- * page would run the same program and reach the same target, and the case
- * would pass while measuring nothing.  Read it off the machine's own flat
- * view rather than assuming it.
+ * The window must be I/O-backed or the case passes while measuring
+ * nothing; read it off the machine's own flat view rather than assuming.
  */
 static void assert_window_is_mmio(QTestState *qts)
 {
@@ -812,13 +760,9 @@ static void run_case(const void *data)
 
     if (tc->cache_as_ram) {
         /*
-         * All three checks before reading anything into the case: the bit
-         * is really set; with it set the filter really does answer a
-         * cached read from a PROM PC out of the zeroed private copy; and
-         * an uncached read of the same word from the same PC goes past the
-         * private copy to the RAM underneath, which holds the snippet's
-         * first instruction.  If any of these fails, this case is not
-         * asking the question it claims to.
+         * Three preconditions, or the case is not asking its question:
+         * the bit is set, the cached PROM-PC read sees the zeroed private
+         * copy, and the uncached read sees the RAM underneath.
          */
         report_state(qts);
         g_assert_cmphex(state_word(qts, CACHE_AS_RAM_OFF), ==, PROM_BOOT_STATUS_CACHE_AS_RAM);
@@ -828,11 +772,9 @@ static void run_case(const void *data)
     }
 
     /*
-     * Reached only by fetching the window's first instruction.  Under an
-     * armed cache-as-RAM bit this is also the answer to whether the filter sees the
-     * fetch's own PC or the jumping code's: the latter would have handed
-     * back the zeroed private copy, and a zero word is a nop, so the marker
-     * would still be whatever the ROM left in the register.
+     * Reached only by fetching the window's first instruction; under an
+     * armed bit, a stale PC would have fetched the zeroed copy -- a nop --
+     * and this marker would never publish.
      */
     g_assert_cmphex(state_word(qts, ENTERED_OFF), ==, MARK_ENTERED);
 
@@ -849,15 +791,10 @@ static void run_case(const void *data)
         g_assert_cmphex(fell, ==, 0);
         if (tc->loop) {
             /*
-             * A short count means the loop-back jump was dropped once, which
-             * is the same defect at a different site.  Two processors share
-             * both counters, so neither total is a per-processor claim
-             * there -- what still holds is that a dropped branch, from
-             * either of them, publishes the fall-through word.
-             *
-             * MMIO loops wait at their exit branch until the timer handler
-             * publishes an interrupt.  RAM loops exit immediately and
-             * remain the no-interrupt control.
+             * A short count is a dropped loop-back jump.  With two
+             * processors the counters are sums, but a dropped branch from
+             * either still publishes the fall-through word.  MMIO loops
+             * wait for an interrupt; RAM loops are the control.
              */
             report_state(qts);
             if (!tc->racing) {
@@ -876,10 +813,8 @@ static void run_case(const void *data)
     report_state(qts);
     if (tc->mmio) {
         /*
-         * The drop this case watches for, which no configuration here has
-         * yet produced.  Reported rather than failed, because the mechanism
-         * is unpinned: a failure would claim this test knows what it is
-         * asserting about, and it does not.
+         * The watched-for drop, reported rather than failed: the mechanism
+         * is unpinned and a failure would overclaim.
          */
         g_test_incomplete("branch executed from MMIO-backed code was dropped");
         qtest_quit(qts);
@@ -931,19 +866,13 @@ static const TestCase cases[] = {
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
     }, {
-        /*
-         * The failure was measured with chaining off, which changes how a
-         * block reaches the next one: goto_ptr rather than goto_tb.
-         */
+        /* The measured failure had chaining off: goto_ptr, not goto_tb. */
         .name = "mmio-branch/mmio/jr-nochain",
         .kind = BRANCH_JR, .mmio = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE, .extra = "-d nochain",
     }, {
-        /*
-         * CF_PARALLEL, which MTTCG sets from maxcpus rather than from the
-         * number of processors actually running.
-         */
+        /* CF_PARALLEL: MTTCG sets it from maxcpus, not running count. */
         .name = "mmio-branch/mmio/jr-parallel",
         .kind = BRANCH_JR, .mmio = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
@@ -959,23 +888,16 @@ static const TestCase cases[] = {
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
     }, {
-        /*
-         * The address form the kernel's fetches used: the 64-bit physical
-         * segment rather than the 32-bit compatibility one.
-         */
+        /* The kernel's own address form: XKPHYS, not the 32-bit segment. */
         .name = "mmio-branch/mmio/jr-xkphys",
         .kind = BRANCH_JR, .mmio = true, .xkphys = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
     }, {
         /*
-         * The filter's private copy, armed.  If the PC the filter reads at
-         * the first fetch into the window were the jumping code's address
-         * rather than the window's, this case would take the private path
-         * once: the copy is zeroed at reset and never written outside the
-         * PROM's own phase, so the first instruction would read as all-zero
-         * -- a nop -- and the "entered" marker would never be published.
-         * It passing is the measurement that the PC is not stale.
+         * The private copy armed: a stale PC at the first window fetch
+         * would read the zeroed copy -- a nop -- and never publish
+         * "entered".  Passing measures that the PC is not stale.
          */
         .name = "mmio-branch/mmio/jr-cache-as-ram-armed",
         .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
@@ -983,11 +905,8 @@ static const TestCase cases[] = {
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
     }, {
         /*
-         * Both processors run the whole program, through the one window, at
-         * once -- which is the shape the original failure was measured in
-         * (three of four vCPUs walking the same pages).  They share the
-         * state words, so the counters are a sum rather than a per-processor
-         * total; the fall-through word is what this case is watching.
+         * Both processors in the window at once, the measured failure's
+         * shape; counters are sums, the fall-through word is the watch.
          */
         .name = "mmio-branch/mmio/loop-smp2",
         .kind = BRANCH_JR, .mmio = true, .loop = true, .racing = true,
@@ -999,10 +918,7 @@ static const TestCase cases[] = {
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PARALLEL, .accel = ACCEL_MULTI, .extra = "-d nochain",
     }, {
-        /*
-         * Every difference from the measured failure this test can carry, at
-         * once.
-         */
+        /* Every condition this test can carry, at once. */
         .name = "mmio-branch/mmio/loop-xkphys-smp2",
         .kind = BRANCH_JR, .mmio = true, .loop = true, .racing = true,
         .xkphys = true,
