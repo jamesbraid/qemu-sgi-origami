@@ -386,27 +386,27 @@ static const SN0ModelDevice sn0_model_devices[] = {
     },
     {
         "node0-ioc3", "IOC3",
-        "sgi-ioc3", "/machine/node0-ioc3",
+        "sgi-ioc3", "/machine/node0/ioc3",
     },
     {
         "node0-ioc3-eth", "IOC3 ethernet",
-        "sgi-ioc3-eth", "/machine/node0-ioc3/eth",
+        "sgi-ioc3-eth", "/machine/node0/ioc3/eth",
     },
     {
         "node0-enet-phy", "DP83840A",
-        "dp83840", "/machine/node0-ioc3/eth/phy",
+        "dp83840", "/machine/node0/ioc3/eth/phy",
     },
     {
         "node0-isp1040", "QLogic ISP1040",
-        "qlogic-isp1040", "/machine/node0-isp0",
+        "qlogic-isp1040", "/machine/node0/isp0",
     },
     {
         "node0-isp1040-1", "QLogic ISP1040",
-        "qlogic-isp1040", "/machine/node0-isp1",
+        "qlogic-isp1040", "/machine/node0/isp1",
     },
     {
         "node0-rtc", "MK48T35-class Timekeeper",
-        "m48t35", "/machine/node0-ioc3/rtc",
+        "m48t35", "/machine/node0/ioc3/rtc",
     },
     {
         "node0-pcf8584", "PCF8584",
@@ -430,27 +430,27 @@ static const SN0ModelDevice sn0_model_devices[] = {
     },
     {
         "node1-ioc3", "IOC3",
-        "sgi-ioc3", "/machine/node1-ioc3",
+        "sgi-ioc3", "/machine/node1/ioc3",
     },
     {
         "node1-ioc3-eth", "IOC3 ethernet",
-        "sgi-ioc3-eth", "/machine/node1-ioc3/eth",
+        "sgi-ioc3-eth", "/machine/node1/ioc3/eth",
     },
     {
         "node1-enet-phy", "DP83840A",
-        "dp83840", "/machine/node1-ioc3/eth/phy",
+        "dp83840", "/machine/node1/ioc3/eth/phy",
     },
     {
         "node1-isp1040", "QLogic ISP1040",
-        "qlogic-isp1040", "/machine/node1-isp0",
+        "qlogic-isp1040", "/machine/node1/isp0",
     },
     {
         "node1-isp1040-1", "QLogic ISP1040",
-        "qlogic-isp1040", "/machine/node1-isp1",
+        "qlogic-isp1040", "/machine/node1/isp1",
     },
     {
         "node1-rtc", "MK48T35-class Timekeeper",
-        "m48t35", "/machine/node1-ioc3/rtc",
+        "m48t35", "/machine/node1/ioc3/rtc",
     },
     {
         "node1-pcf8584", "PCF8584",
