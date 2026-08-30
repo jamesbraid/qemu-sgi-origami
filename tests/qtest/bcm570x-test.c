@@ -91,6 +91,24 @@ static const uint64_t window_offset[8] = {
 /* BAR0 layout: register file low, on-chip SRAM window at 0x8000. */
 #define BCM_SRAM_WINDOW         0x8000u
 
+/* Register-file offsets and bits Task 2 exercises. */
+#define BCM_MAC_MODE            0x0400u
+#define BCM_HCC_MODE            0x3c00u
+#define BCM_MISC_CFG            0x6804u
+#define BCM_MODE_RESET          0x00000001u
+#define BCM_HCC_ENABLE          0x00000002u
+#define BCM_MISCCFG_RESET       0x00000001u
+
+/* The firmware-ready handshake in on-chip SRAM. */
+#define BCM_SRAM_FW_MBOX        0x0b50u
+#define BCM_FW_MAGIC            0x4b657654u
+#define BCM_FW_HANDSHAKE_DONE   0xb49a89abu     /* ~BCM_FW_MAGIC */
+
+/* Config 0x68 (misc host control): bits 31:16 hold the chip id. */
+#define BCM_PCI_MISC_CTL        0x68
+#define BCM_CHIPID_BCM5701      0x0105u
+#define BCM_ASICREV_BCM5701     0x0u            /* chip id >> 12 */
+
 /*
  * The Bridge corrects a narrow (1- or 2-byte) device access by moving only the
  * low two address bits, `off ^ (4 - size)`, the same formula OpenBSD's
@@ -124,6 +142,31 @@ static void bcm570x_aim_window(QTestState *qts)
 static uint32_t bar_readl(QTestState *qts, uint32_t off)
 {
     return qtest_readl(qts, WINDOW(BCM_SLOT) + off);
+}
+
+static void bar_writel(QTestState *qts, uint32_t off, uint32_t val)
+{
+    qtest_writel(qts, WINDOW(BCM_SLOT) + off, val);
+}
+
+/* The indirect register window (config 0x78/0x80) into the register file. */
+static void ind_reg_writel(QTestState *qts, uint32_t off, uint32_t val)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_REG_BASEADDR, off);
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_REG_DATA, val);
+}
+
+/* The indirect memory window (config 0x7C/0x84) into on-chip SRAM. */
+static void ind_mem_writel(QTestState *qts, uint32_t off, uint32_t val)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_BASEADDR, off);
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_DATA, val);
+}
+
+static uint32_t ind_mem_readl(QTestState *qts, uint32_t off)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_BASEADDR, off);
+    return qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_DATA);
 }
 
 /*
@@ -230,6 +273,107 @@ static void test_indirect_memory_window(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The reset handshake completes when the reset is triggered through the BAR.
+ * The driver writes the magic to SRAM 0x0B50, triggers a global reset via
+ * MISC_CFG bit 0, and polls 0x0B50 for the complement the on-chip bootcode
+ * leaves once it is up.
+ */
+static void test_reset_handshake_via_bar(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    ind_mem_writel(qts, BCM_SRAM_FW_MBOX, BCM_FW_MAGIC);
+    g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==, BCM_FW_MAGIC);
+
+    bar_writel(qts, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+
+    g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==,
+                    BCM_FW_HANDSHAKE_DONE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same handshake, but the reset is triggered through the indirect register
+ * window (config 0x78/0x80) rather than the BAR -- the path the 5700/5701 take.
+ * No BAR mapping is needed: every step here is config space.
+ */
+static void test_reset_handshake_via_indirect(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    ind_mem_writel(qts, BCM_SRAM_FW_MBOX, BCM_FW_MAGIC);
+
+    ind_reg_writel(qts, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+
+    g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==,
+                    BCM_FW_HANDSHAKE_DONE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A *_MODE register's reset bit self-clears while the rest of the write
+ * persists -- the driver sets the bit and polls for it to read back clear.
+ */
+static void test_self_clearing_reset_bits(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    /* MAC_MODE: reset bit set alongside a port-mode bit that must survive. */
+    bar_writel(qts, BCM_MAC_MODE, BCM_MODE_RESET | 0x4);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_MODE) & BCM_MODE_RESET, ==, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_MODE) & 0x4, ==, 0x4);
+
+    /* HCC_MODE reset bit self-clears too. */
+    bar_writel(qts, BCM_HCC_MODE, BCM_MODE_RESET);
+    g_assert_cmphex(bar_readl(qts, BCM_HCC_MODE) & BCM_MODE_RESET, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * HCC_MODE stores and reads back faithfully: the driver's idle sequence writes
+ * ENABLE, then writes 0 and polls up to ~2000 times for ENABLE to read clear,
+ * aborting the attach if it never does.
+ */
+static void test_hcc_mode_idle_poll(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    g_assert_cmphex(bar_readl(qts, BCM_HCC_MODE) & BCM_HCC_ENABLE, ==,
+                    BCM_HCC_ENABLE);
+
+    bar_writel(qts, BCM_HCC_MODE, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_HCC_MODE) & BCM_HCC_ENABLE, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MISC_CTL[31:16] presents the chip id the driver reads its whole identity
+ * from. For the single-port default it must decode to BCM5701 (chip id 0x0105,
+ * ASIC revision chip-id >> 12 == 0), not merely non-zero.
+ */
+static void test_misc_ctl_asic_revision(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+    uint32_t misc_ctl = qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL);
+
+    g_assert_cmphex(misc_ctl >> 16, ==, BCM_CHIPID_BCM5701);
+    g_assert_cmphex((misc_ctl >> 16) >> 12, ==, BCM_ASICREV_BCM5701);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -239,6 +383,16 @@ int main(int argc, char **argv)
                         test_indirect_register_window);
     qtest_add_data_func("/bcm570x/indirect-memory-window", NULL,
                         test_indirect_memory_window);
+    qtest_add_data_func("/bcm570x/reset-handshake-via-bar", NULL,
+                        test_reset_handshake_via_bar);
+    qtest_add_data_func("/bcm570x/reset-handshake-via-indirect", NULL,
+                        test_reset_handshake_via_indirect);
+    qtest_add_data_func("/bcm570x/self-clearing-reset-bits", NULL,
+                        test_self_clearing_reset_bits);
+    qtest_add_data_func("/bcm570x/hcc-mode-idle-poll", NULL,
+                        test_hcc_mode_idle_poll);
+    qtest_add_data_func("/bcm570x/misc-ctl-asic-revision", NULL,
+                        test_misc_ctl_asic_revision);
 
     return g_test_run();
 }
