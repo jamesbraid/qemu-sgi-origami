@@ -66,10 +66,123 @@
 #define TI_MHC_MASK_INTS        0x00000040  /* mask interrupts */
 #define TI_MHC_CHIP_REV_MASK    0xf0000000  /* chip revision (read-only) */
 
+/* MISC_LOCAL_CTL: the bit-banged serial-EEPROM lines. */
+#define TI_MLC_EE_CLK           0x00100000
+#define TI_MLC_EE_TXEN          0x00200000  /* master drives the data line */
+#define TI_MLC_EE_DOUT          0x00400000  /* data out from host to EEPROM */
+#define TI_MLC_EE_DIN           0x00800000  /* data in from EEPROM to host */
+#define TI_EE_MAC_OFFSET        0x8c
+
 /* CPU state bits. */
 #define TI_CPUSTATE_HALT        0x00010000
 
+/* GCR registers reached by symbolic offset. */
+#define TI_GCR_PAR0             0x600
+#define TI_GCR_PAR1             0x604
+
 #define TIGON_GCR_IDX(off)      (((off) - TI_GCR_BASE) >> 2)
+
+/* Serial-EEPROM slave phases. */
+enum {
+    TIGON_EE_IDLE = 0,
+    TIGON_EE_RX,     /* shifting a byte in from the master */
+    TIGON_EE_READ,   /* shifting a byte out to the master */
+};
+
+/*
+ * The EEPROM byte source. The driver reads only the station address, which the
+ * public source pins at TI_EE_MAC_OFFSET + 2 (0x8e): the two bytes at 0x8c/0x8d
+ * are zero padding before the six MAC bytes (if_ti.c comment at the read call).
+ * Everything else reads zero.
+ */
+static uint8_t tigon_eeprom_byte(TigonState *s, uint16_t addr)
+{
+    if (addr >= TI_EE_MAC_OFFSET + 2 && addr < TI_EE_MAC_OFFSET + 2 + 6) {
+        return s->conf.macaddr.a[addr - (TI_EE_MAC_OFFSET + 2)];
+    }
+    return 0;
+}
+
+/*
+ * A 24Cxx serial EEPROM as an I2C slave, clocked by MISC_LOCAL_CTL writes. The
+ * driver reads the MAC through this path before firmware download, so a model
+ * that only served PAR0/PAR1 would return garbage for the driver's actual read.
+ * Start/stop are data-line transitions while the clock is high; bits are
+ * sampled on the rising edge and the slave presents read data and acknowledges
+ * on the falling edge.
+ */
+static void tigon_eeprom_step(TigonState *s, uint32_t val)
+{
+    TigonEeprom *e = &s->eeprom;
+    bool clk = val & TI_MLC_EE_CLK;
+    bool txen = val & TI_MLC_EE_TXEN;
+    bool sda = txen ? !!(val & TI_MLC_EE_DOUT) : true;
+
+    if (clk && e->last_clk) {
+        if (e->last_sda && !sda) {          /* data falling: START */
+            e->state = TIGON_EE_RX;
+            e->bitcnt = 0;
+            e->shift = 0;
+            e->bytenum = 0;
+            e->read_mode = false;
+            e->din = false;
+        } else if (!e->last_sda && sda) {   /* data rising: STOP */
+            e->state = TIGON_EE_IDLE;
+            e->din = false;
+        }
+    }
+
+    if (clk && !e->last_clk) {               /* rising edge */
+        if (e->state == TIGON_EE_RX) {
+            if (e->bitcnt < 8) {
+                e->shift = (e->shift << 1) | (sda ? 1 : 0);
+                e->bitcnt++;
+                if (e->bitcnt == 8) {
+                    switch (e->bytenum) {
+                    case 0:
+                        e->read_mode = e->shift & 1;  /* 0xA1 read, 0xA0 write */
+                        break;
+                    case 1:
+                        e->addr = (uint16_t)e->shift << 8;
+                        break;
+                    case 2:
+                        e->addr = (e->addr & 0xff00) | e->shift;
+                        break;
+                    }
+                    e->din = false;   /* acknowledge low */
+                }
+            } else if (e->bitcnt == 8) {
+                /* This is the acknowledge clock, one pulse after the byte. */
+                e->bitcnt = 9;
+            }
+        }
+    }
+
+    if (!clk && e->last_clk) {                /* falling edge */
+        if (e->state == TIGON_EE_RX && e->bitcnt == 9) {
+            /* End of the acknowledge clock: set up the next byte or read. */
+            if (e->read_mode) {
+                e->state = TIGON_EE_READ;
+                e->bitcnt = 0;
+                e->shift = tigon_eeprom_byte(s, e->addr);
+                e->din = (e->shift >> 7) & 1;
+            } else {
+                e->bytenum++;
+                e->bitcnt = 0;
+                e->shift = 0;
+            }
+        } else if (e->state == TIGON_EE_READ) {
+            e->bitcnt++;
+            if (e->bitcnt < 8) {
+                e->din = (e->shift >> (7 - e->bitcnt)) & 1;
+            }
+        }
+    }
+
+    e->last_clk = clk;
+    e->last_sda = sda;
+    s->misc_local_ctl = val & ~TI_MLC_EE_DIN;
+}
 
 static bool tigon_irq_line(TigonState *s)
 {
@@ -132,6 +245,19 @@ static void tigon_reset_state(TigonState *s)
     s->irq_asserted = false;
     memset(&s->eeprom, 0, sizeof(s->eeprom));
     s->eeprom.last_sda = true;   /* an idle serial line floats high */
+
+    /*
+     * Seed the MAC/station-address registers the firmware would present once
+     * running, in the driver's big-endian pair format (if_ti.c ti_init2): PAR0
+     * carries bytes 0-1, PAR1 carries bytes 2-5.
+     */
+    {
+        const uint8_t *m = s->conf.macaddr.a;
+        s->gcr[TIGON_GCR_IDX(TI_GCR_PAR0)] = ((uint32_t)m[0] << 8) | m[1];
+        s->gcr[TIGON_GCR_IDX(TI_GCR_PAR1)] = ((uint32_t)m[2] << 24) |
+                                             ((uint32_t)m[3] << 16) |
+                                             ((uint32_t)m[4] << 8) | m[5];
+    }
     tigon_update_irq(s);
 }
 
@@ -159,7 +285,7 @@ static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
         return ((uint32_t)s->chip_rev << 28) | s->misc_host_ctl |
                (tigon_irq_line(s) ? TI_MHC_INTSTATE : 0);
     case TI_MISC_LOCAL_CTL:
-        return s->misc_local_ctl;
+        return s->misc_local_ctl | (s->eeprom.din ? TI_MLC_EE_DIN : 0);
     case TI_PCI_STATE:
         return s->pci_state;
     case TI_WINBASE:
@@ -198,7 +324,7 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         tigon_misc_host_ctl_write(s, val);
         return;
     case TI_MISC_LOCAL_CTL:
-        s->misc_local_ctl = val;
+        tigon_eeprom_step(s, val);
         return;
     case TI_PCI_STATE:
         s->pci_state = val;
