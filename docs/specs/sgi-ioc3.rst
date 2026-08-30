@@ -49,7 +49,9 @@ The chip-control register's port-offset fields are stored, not acted
 on: real silicon multiplexes the ports through them, and every guest
 programs the two offsets the model implements.
 Ring entries are eight bytes; an index is exactly as wide as the
-ring is long.
+ring is long. The receive timer's reload is 12 bits, with the running
+count readable in bits 16-27; a pause request (control bit 29) is
+acknowledged in bit 30 while the walk is stopped.
 
 The console path never uses these engines: firmware and both guests
 drive the ports through the byte windows with ring DMA off. What
@@ -135,10 +137,27 @@ sits.
 Ethernet engine
 ===============
 
-A transmit ring of 128-byte inline descriptors and a receive ring of
-guest-supplied buffer addresses. All DMA goes through the chip's own
-PCI address space -- through the Bridge's translation, never the
-plain system space.
+A transmit ring of 128-byte inline descriptors (128 or 512 of them by
+the base register's low bit) and a receive ring of 512 guest-supplied
+buffer addresses indexed by byte offset. All DMA goes through the
+chip's own PCI address space -- through the Bridge's translation,
+never the plain system space.
+
+Descriptor geometry the drivers depend on: the inline data area is
+104 bytes at offset 24 with a 7-bit length field; the command word's
+total byte count is 11 bits and an over-count wraps as written; a
+buffer transfer may not cross a 16 KB boundary, which is why a
+descriptor carries two buffer pointers; pad-enable extends a short
+frame to 60 zero-padded bytes ahead of the FCS; insert-checksum
+completes a correct UDP checksum from the driver's pseudo-header
+partial. On receive, the frame begins 66 bytes (33 halfwords,
+OpenBSD's value) into the buffer; the received-count field is 11 bits
+and also arrives split across the error word (three low bits at 12,
+ten high at 16), and delivery truncates at 2040 bytes with the
+long-event and bad-packet bits set. The receive timer is 11 bits
+wide. The threshold source compares at-or-below the watermark:
+OpenBSD writes its whole available count as the mark and asks to be
+told when the count reaches it.
 
 Receive filtering happens before any memory is written: station
 address (from the guest-programmed MAC registers -- never the
@@ -224,4 +243,36 @@ PCI identity
 The chip's PCI Status register must read 0x0280 at reset (medium
 DEVSEL, fast back-to-back), both bits read-only: IRIX's
 configuration-space diagnostic compares the whole dword containing
-it and fails the slot on a zero Status half.
+it and fails the slot on a zero Status half. Chip-control bit 22 (PCI
+arbiter idle) is read-only and always reads set: the model has no
+serial-DMA engine driving PCI traffic, and a kernel's console setup
+does not complete until it reads idle.
+
+M48T35 timekeeper
+=================
+
+The timekeeper sits on the IOC3's byte bus (``hw/rtc/m48t35.c``):
+32 KB of battery-backed byte-wide cells with the clock in the top
+eight, a control byte first and the six fields after it. Everything
+below the clock must answer as storage, and it is probed: SGI's
+driver identifies the clock part by writing 0xff at offset 0x6 with
+offset 0xb zero and reading 0x6 back. The bank of eight just below
+the clock is unidentified by any source and reads as storage too.
+
+Control bit 6 freezes the clock so that six reads describe one
+instant; bit 7 arms a write, whose fields are collected and applied
+together when the bit clears. Both read paths share one offset from
+the host clock, so releasing a freeze cannot make the clock jump. A
+clock field written with the write bit clear is dropped: the
+counters are running and the hardware has nowhere to put it. The
+weekday register is stored, not counted; the part leaves it alone
+until software writes it.
+
+The two-digit year counts from 1970 and every driver adds it back;
+calendar digits instead would boot cleanly and report the mid-1990s.
+A guest-set time is kept as an offset differenced through the same
+clock the read path uses (whichever ``-rtc clock=`` selected), not
+through the host clock unconditionally. The optional battery is a
+drive of exactly 32 KB, the same contract as ``mac_nvram``; reset
+preserves cells and time but cancels an unfinished freeze or write
+transaction, or the next guest inherits a stopped clock.

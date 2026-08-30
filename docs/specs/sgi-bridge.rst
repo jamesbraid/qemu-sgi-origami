@@ -41,7 +41,28 @@ reset-interrupt-status register's group strobe for its group only.
 
 Reading the target-flush register is an operation, not a query: the
 read completes once every earlier programmed access to the widget
-has, and its value means nothing. It must never fault.
+has, and its value means nothing. It must never fault. The bus
+time-out register's retry hold is five bits at 20:16 -- a four-bit
+model would read a guest's value back with its top bit missing -- and
+the control register's two link-retry-counter strobes accept a write
+and read back zero.
+
+Widget 0 and the crossbar
+=========================
+
+An Origin 200 has no crossbar: the Hub's one crosstalk link ends at
+the Bridge, so every widget address the Hub emits reaches the same
+chip, and widget 0 -- the address a real Crossbow's own registers
+answer at -- is the Bridge answering a second time. Guests read
+widget 0's identification register first and decide the machine's
+shape from it, so the identity presented there is a machine
+property: an Origin 200 reports the Bridge's part and manufacturer,
+where a real Crossbow reports part 0 and manufacturer 0 as its true
+identity. The crossbar model (``hw/misc/sgi-xbow.c``) exists for
+machines that have one: its registers are crosstalk double-words at
+their slot's offset plus four, the slot's upper half faults, and it
+claims its whole widget space so an undecoded address is a reported
+error rather than an answer from whatever sits underneath.
 
 Device windows
 ==============

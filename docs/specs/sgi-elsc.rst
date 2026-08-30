@@ -123,6 +123,33 @@ power-on diagnostic. A guest flushing console output here with no
 character device attached is therefore losing diagnostic output; the
 model warns once and keeps serving the protocol.
 
+The PCF8584 controller
+======================
+
+Each node reaches this bus through a Philips PCF8584 embedded in its
+Hub (``hw/i2c/pcf8584.c``), which QEMU models against the Philips
+product specification. Two addresses, selected by the A0 pin, sit
+eight bytes apart the way the Hub wires them. Register selection is
+asymmetric: ESO chooses between the data register and the
+configuration registers, but ES2 keeps selecting either way -- with
+the serial interface enabled it still chooses between data and the
+interrupt vector, and only ES1 stops meaning anything. Reads of the
+data register advance the receive pipeline, and the firmware issues
+eight-byte accesses, so the register's implementation width is eight
+or the core would split one access into two side effects.
+
+The model's interaction with QEMU's I2C core carries three
+contracts. The core rescans for a slave only when none is matched,
+so a repeated start to a *different* address (the protocol's closing
+invalid-address step) must end the old match first; ending it
+unconditionally would deliver a finish to a slave still mid-command.
+A refused same-address repeated start is left open by the core for
+the caller to end, and held open it keeps the bus busy forever
+against the arbitration broadcast. And a send over the core's empty
+matched list reports success, so a refused start is remembered
+rather than asked again -- the firmware's closing step, addressed to
+0x7f with nothing there, must read back NAK.
+
 Monitor access
 ==============
 
