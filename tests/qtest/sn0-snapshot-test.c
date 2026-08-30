@@ -1,11 +1,6 @@
 /*
- * The savevm/quit/fresh-process/-loadvm round trip -- a different code
- * path from `migrate` (savevm.c's qcow2 snapshot storage, a cold second
- * process), so a defect in it never shows in the migration test. The
- * Bridge device-window case is reused deliberately: the windows' aim is
- * derived from the per-slot register on load, so carrying the register
- * bits is a weaker claim than the access through the window still
- * reaching the card, which is what this asserts.
+ * savevm/quit/cold -loadvm round trip: a different code path from
+ * `migrate`, so a defect in it never shows in the migration test.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -64,9 +59,8 @@ static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
 }
 
 /*
- * Aim a window at a card, savevm, quit, cold -loadvm, and require the
- * same access to still reach the card: without sgi_bridge_post_load()
- * re-deriving the window's aim, it comes up over the wrong PCI space.
+ * Without sgi_bridge_post_load() re-deriving the window's aim, a loaded
+ * machine comes up over the wrong PCI space.
  */
 static void test_a_device_window_survives_savevm_loadvm(const void *data)
 {
@@ -87,12 +81,7 @@ static void test_a_device_window_survives_savevm_loadvm(const void *data)
     tmpfs = g_dir_make_tmp("sn0-snapshot-test-XXXXXX", &err);
     g_assert(tmpfs);
     qcow2_path = g_strdup_printf("%s/state.qcow2", tmpfs);
-    /*
-     * Snapshot storage only -- never attached to any bus, so the guest
-     * (and the qtest accelerator, which runs no guest code at all) never
-     * sees it as a device. `savevm` just needs somewhere with internal
-     * snapshot support to write into.
-     */
+    /* Snapshot storage only, attached to no bus. */
     g_assert(mkimg(qcow2_path, "qcow2", 128));
     drive_arg = g_strdup_printf(" -drive file=%s,format=qcow2,if=none",
                                 qcow2_path);
@@ -108,32 +97,18 @@ static void test_a_device_window_survives_savevm_loadvm(const void *data)
     g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
 
-    /*
-     * qtest's own accelerator never runs guest code, so there is no
-     * "running" state to stop for consistency the way a live TCG guest
-     * would need -- `savevm` alone is the whole save step here.
-     */
+    /* No guest code runs, so savevm alone is the whole save step. */
     hmp_ret = qtest_hmp(qts, "savevm snaptest");
     g_free(hmp_ret);
 
-    /*
-     * The actual quit, not just dropping the handle: everything about the
-     * first process -- its memory, its device objects, its open sockets --
-     * is gone before the second one starts. Nothing can leak between them
-     * except through the qcow2 file, which is the point.
-     */
+    /* A real quit: nothing can leak but the qcow2 file, which is the point. */
     qtest_quit(qts);
 
     cmdline_restored = g_strdup_printf(MACHINE_WITH_BRIDGE PROBE_CARD
                                        "%s -loadvm snaptest", drive_arg);
     qts = qtest_init(cmdline_restored);
 
-    /*
-     * The actual claim: a fresh process, having only ever loaded the
-     * snapshot, reaches the same card through the same window -- which
-     * only holds if the window's derived state, not just the register a
-     * guest wrote, came back correct.
-     */
+    /* Holds only if the window's derived state came back, not just the bits. */
     g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
 
