@@ -143,12 +143,18 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
 static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 {
     PCIDevice *ioc3;
-    g_autofree char *ioc3_name = NULL;
     unsigned int slot;
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
-    ioc3_name = g_strdup_printf("node%u-ioc3", node_index);
-    object_property_add_child(OBJECT(s), ioc3_name, OBJECT(ioc3));
+    /*
+     * A child of the node, not of the machine. The base I/O board belongs to
+     * one node, the same as the processors and the Hub already parented here,
+     * so the object tree says which node owns it instead of encoding that in
+     * a name. Its own children -- the ethernet, the transceiver, the
+     * timekeeper -- follow it.
+     */
+    object_property_add_child(OBJECT(s->nodes[node_index]), "ioc3",
+                              OBJECT(ioc3));
     if (node_index == 0) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
                           serial_hd(SN0_IOC3_SERIAL_A_CHARDEV));
@@ -280,12 +286,13 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
          * it.
          */
         for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
-            g_autofree char *isp_name =
-                g_strdup_printf("node%u-isp%u", node_index, slot);
+            g_autofree char *isp_name = g_strdup_printf("isp%u", slot);
             PCIDevice *isp = pci_new(
                 PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
 
-            object_property_add_child(OBJECT(s), isp_name, OBJECT(isp));
+            /* Under the node that carries the board, as the controller is. */
+            object_property_add_child(OBJECT(s->nodes[node_index]), isp_name,
+                                      OBJECT(isp));
             pci_realize_and_unref(
                 isp, PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                 &error_fatal);
