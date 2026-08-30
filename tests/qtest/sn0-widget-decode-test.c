@@ -2,13 +2,10 @@
  * The I/O bridge answers at every non-zero crosstalk widget, not only at the
  * widget SGI's firmware picks for it.
  *
- * With no crossbar, every widget address the Hub emits reaches the bridge,
- * and firmware relies on it -- the IRIX 6.5.30 miniroot names widget 2 at a
- * bridge window, and a widget-8-only decode turns that load into a
- * data-bus-error storm. These assert the widened decode: widgets 2-7 and
- * 9-15 answer as one chip, widget 0 keeps its alias, widget 1 stays the
- * Hub. The widget-0 test's qtest limits hold here: "reaches the bridge" is
- * written as "reads what the bridge really holds".
+ * With no crossbar every widget address reaches the bridge, and the IRIX
+ * 6.5.30 miniroot relies on it (it names widget 2 at a bridge window).
+ * Widgets 2-7 and 9-15 answer as one chip; widget 0 keeps its alias;
+ * widget 1 stays the Hub.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -30,35 +27,19 @@
 /* Widget 1 is the Hub, reached through the same small-window layout. */
 #define HUB_WIDGET        1
 
-/*
- * Every register is 32 bits in the low half of an eight-byte slot, so on this
- * big-endian machine the data sits at the slot offset plus four.
- */
+/* Registers sit at their slot's offset plus four. */
 #define WIDGET_IDENTIFICATION  0x0000
 #define REG_DATA               4
 
-/*
- * A read/write register of the bridge's, used to show that two windows reach
- * one chip rather than two chips agreeing on a constant. The request-timeout
- * register holds a twenty-bit reload value and writing it does nothing
- * observable here.
- */
+/* A writable register safe to poke, to prove one chip behind the windows. */
 #define BRIDGE_REQUEST_TIMEOUT 0x0028
 #define REQUEST_TIMEOUT_MASK   0xfffffu
 
-/*
- * The exact address the storm faulted on: crosstalk widget 2, register offset
- * 0x400208 — the bridge's device-1 PIO window (0x400000) plus 0x208. The guest
- * issued it as an eight-byte load of virtual 0x9200000002400208, physical
- * 0x20002400208, which is SMALL_WINDOW(2) + this offset.
- */
+/* The exact address the miniroot's storm faulted on. */
 #define DEVICE1_PIO_WINDOW     0x400000
 #define STORM_OFFSET           (DEVICE1_PIO_WINDOW + 0x208)
 
-/*
- * Where the guest fragment writes its completion word, and the value, matching
- * the convention sn0-bridge-test.c uses for the same kind of check.
- */
+/* The completion word, sn0-bridge-test.c's convention. */
 #define GUEST_MARKER_ADDR      0x30000
 #define GUEST_MARKER           0x5a17c0deu
 
@@ -69,13 +50,7 @@
 #define BRIDGE_PART         0xc002
 #define BRIDGE_MANUFACTURER 0x036
 
-/*
- * PCI config space and device-window plumbing for the split-order test below,
- * mirroring sn0-bridge-test.c. A card is put in a free slot, its window aimed
- * at it, and a doubleword written through the widened widget 2. Registers are
- * 32 bits in the low half of an eight-byte slot, so a control write goes to the
- * offset plus four.
- */
+/* PCI plumbing for the split-order test, mirroring sn0-bridge-test.c. */
 #define BRIDGE_BASE            SMALL_WINDOW(BRIDGE_WIDGET)
 #define REG(off)               (BRIDGE_BASE + (off) + REG_DATA)
 #define BRIDGE_DEVICE(n)       (0x200 + 8 * (n))
@@ -89,11 +64,7 @@
 #define CARD_MMIO(slot)        (0x10000000u + (slot) * 0x1000000u)
 #define ORDER_SLOT             4          /* a free PCI slot for the scratch card */
 #define ORDER_WINDOW           0x800000   /* the device-4 window's widget offset */
-/*
- * Two adjacent 32-bit scratch registers in the lsi53c895a (SCRATCHB at 0x5c,
- * SCRATCHC at 0x60), both read/write with no side effect, so an eight-byte
- * access spans the pair and each half can be read back on its own.
- */
+/* lsi53c895a SCRATCHB/SCRATCHC: adjacent, side-effect-free, spannable. */
 #define LSI_SCRATCHB           0x5c
 
 /* The widgets the widen adds: every non-zero one but the Hub's and the
@@ -112,20 +83,12 @@ static void test_bridge_answers_at_every_widget(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /*
-     * Widget 8, the firmware's own choice, still answers — the widen adds the
-     * others and must not disturb it.
-     */
+    /* Widget 8 still answers; the widen must not disturb it. */
     uint32_t at8 = widget_identity(qts, BRIDGE_WIDGET);
     g_assert_cmphex(ID_PART(at8), ==, BRIDGE_PART);
     g_assert_cmphex(ID_MANUFACTURER(at8), ==, BRIDGE_MANUFACTURER);
 
-    /*
-     * And each net-new widget reads the same identity, which is the whole
-     * point: on a crossbar-less machine they are all the one bridge. The part
-     * alone would pass for a model reporting it beside a wrong manufacturer, so
-     * assert the pair.
-     */
+    /* Each net-new widget reads the same identity pair. */
     for (size_t i = 0; i < ARRAY_SIZE(new_widgets); i++) {
         uint32_t id = widget_identity(qts, new_widgets[i]);
 
@@ -141,21 +104,11 @@ static void test_new_widgets_are_one_bridge(const void *data)
     QTestState *qts = qtest_init("-M origin200");
     uint32_t reset, written;
 
-    /*
-     * Reading one identity through many windows cannot tell one chip from many
-     * configured alike. Writing a register through the firmware's widget and
-     * reading it back through each net-new widget can: state put in through one
-     * has to come out of the others only if they are the same chip.
-     */
+    /* Written state, not a shared constant, is what proves one chip. */
     reset = qtest_readl(qts, SMALL_WINDOW(BRIDGE_WIDGET) +
                         BRIDGE_REQUEST_TIMEOUT + REG_DATA);
 
-    /*
-     * A value that is not the reset value, so the reads below cannot pass by
-     * finding what was already there. Masked to the field's width because the
-     * register keeps only twenty bits and a wider write would read back
-     * truncated.
-     */
+    /* Not the reset value; masked so truncation cannot fail it wrongly. */
     written = (reset ^ 0x5a5a5u) & REQUEST_TIMEOUT_MASK;
     g_assert_cmphex(written, !=, reset);
 
@@ -252,11 +205,9 @@ static void test_other_widget_doubleword_load_completes(const void *data)
     uint32_t marker = 0;
 
     /*
-     * Must run a real instruction: a qtest wide read is chunked into legal
-     * four-byte accesses and passes even at a four-byte cap. Only a single
-     * ld issues the eight-byte dispatch that faults when either the widened
-     * decode or the doubleword width is missing -- both were watched go red
-     * by reverting each fix alone.
+     * Must run a real ld: a qtest wide read is chunked into legal four-byte
+     * accesses and passes even at a four-byte cap. Both dimensions were
+     * watched go red by reverting each fix alone.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
     qts = qtest_initf("-M origin200,io-bridge=on -smp 1 -kernel %s", kernel);
@@ -280,10 +231,8 @@ static void test_doubleword_split_order(const void *data)
     uint64_t at2 = SMALL_WINDOW(2) + ORDER_WINDOW + LSI_SCRATCHB;
 
     /*
-     * The split order alone: a doubleword becomes two 32-bit device cycles,
-     * high word at the lower offset. A qtest wide access honors byte order
-     * (though not width), so writing halves that differ and reading each
-     * back asserts the order -- reversed, the two reads would swap.
+     * The split order alone: high word at the lower offset. Reversed, the
+     * two half reads below would swap.
      */
     qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_BAR1, CARD_MMIO(ORDER_SLOT));
     qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
@@ -302,12 +251,7 @@ static void test_widget_1_stays_the_hub(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /*
-     * The Hub keeps widget 1. Its small window is where the widen would do
-     * harm if the loop reached too low, so require that widget 1 does not read
-     * as the bridge. The Hub answers here with its own registers, so this is a
-     * real read of a present device, not the zero of an absence.
-     */
+    /* Widget 1 must stay the Hub -- a real read, not the zero of absence. */
     g_assert_cmphex(ID_PART(widget_identity(qts, HUB_WIDGET)), !=, BRIDGE_PART);
 
     qtest_quit(qts);
