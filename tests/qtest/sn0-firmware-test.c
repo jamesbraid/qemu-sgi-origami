@@ -1,39 +1,14 @@
 /*
- * SGI SN0 synthesized firmware: the fields whose failure a boot cannot report.
- *
- * The machine writes the firmware structures a guest reads before it owns a
- * console: a configuration graph describing the boards and components, and a
- * global data area carrying the node table. Almost everything in them announces
- * its own failure, because a guest that cannot make sense of the graph stops
- * with a message. Four things do not, and those are what this file is for.
- *
- * The first is the console's serial-port base, which a guest splits with two
- * different masks that mean different things. The low twenty bits are the
- * register offset that has to reach hardware; only the low twelve decide which
- * generation of I/O controller it believes it has, and at 0x380 or above it
- * reads a configuration register this machine does not have. Both beliefs
- * produce output, so no line of a transcript distinguishes them. And because
- * 0x178 and 0x20178 share their low twelve bits, a value can pass the
- * generation check while reaching no register at all.
- *
- * The second is the console offset in the graph header, which is redundant with
- * the descriptor stored behind it. A guest reaches the descriptor by adding the
- * offset to the header's own address, so a wrong offset points it at the middle
- * of the header, where it finds a plausible address made of whichever fields it
- * landed on.
- *
- * The third is each component's enabled flag. Consumers skip a component that
- * does not have it, and skipping is silent. A skipped processor component
- * leaves the guest's clock at zero, which breaks the delay loop it calibrates
- * from that clock, and it dies with no message just after its last printed
- * line, a failure that looks like a hang in whatever ran next.
- *
- * The fourth is the pair of signatures. A consumer that does not find the one
- * it wants concludes the structure is absent and falls back, and the fallback
- * is quiet.
- *
- * The graph lives in memory, which this machine places at the base of its
- * address space, so a node offset is a physical address as it stands.
+ * SGI SN0 synthesized firmware: the fields whose failure a boot cannot
+ * report. Most of the configuration graph announces its own failure -- a
+ * guest that cannot parse it stops with a message. What cannot: the
+ * console base (both wrong values produce output), the console offset in
+ * the graph header (a wrong one points into the header, which yields a
+ * plausible address), each component's enabled flag (a disabled component
+ * is skipped silently, and a skipped processor kills the delay-loop
+ * calibration long after the last printed line), and the signatures (a
+ * missing one means a quiet fallback). Node offsets are physical
+ * addresses as they stand; memory sits at the base of the address space.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -87,19 +62,15 @@
 #define CONSOLE_WIDGET      8
 
 /*
- * The controller's type 0 PCI configuration window, which is a sibling of its
- * memory window in the bridge's widget space, not something inside it —
- * the bridge's type 0 base plus the device's own 4 KB slot. Written out whole
- * rather than composed from the two fields either side of it, because the
- * defect this covers was precisely that it had been composed from them.
+ * The controller's type 0 configuration window: a sibling of its memory
+ * window in the widget space, not something inside it. Written whole --
+ * composing it from the neighbouring fields is the defect it guards.
  */
 #define CONSOLE_CFG_IN_WIDGET   0x022000
 
 /*
- * Where each device on the base-I/O board sits on the Bridge's PCI bus, which
- * is also what the configuration graph reports as that component's physical
- * identifier. Named here rather than written as bare numbers so a device
- * moving on the bus fails this test rather than passing it quietly.
+ * Where each base-I/O device sits on the PCI bus, which the graph reports
+ * as the component's physical identifier.
  */
 #define SCSI_DEVICE0        0
 #define SCSI_DEVICE1        1
@@ -153,13 +124,10 @@
 #define PI_ERROR_SIZE        0x4000
 
 /*
- * The two call vectors and the trap page their stubs read through. The
- * private vector's stubs continue immediately where the firmware call
- * vector's own thirty-five leave off, in the same stub area and the same
- * trap page, so its first entry is checked against the main vector's last
- * one rather than against a hand-computed absolute address — the exact
- * relationship the builder creates, without duplicating its sign-extension
- * arithmetic in the test.
+ * The two call vectors and their trap page. The private vector's stubs
+ * continue where the main vector's thirty-five leave off, so its first
+ * entry is checked against the main vector's last one -- the builder's own
+ * relationship, without duplicating its arithmetic here.
  */
 #define ARCS_VECTOR          0x2800
 #define ARCS_ENTRIES         35
@@ -204,17 +172,12 @@ static void test_console_port_offset(const void *data)
     uint64_t in_widget = base & 0xffffff;
 
     /*
-     * Assert the composed address, then each mask the guest applies to it. Two
-     * wrong values have already been written into this field and every check
-     * short of the whole address accepted at least one of them.
-     *
-     * 0x178 alone is the generation discriminator and reaches no register.
-     * 0x20178 is the right register offset inside the controller but, without
-     * the bridge's device window above it, lands in the bridge's own PCI
-     * configuration space rather than at any device. Both keep 0x178 in the low
-     * twelve bits, the only part a guest announces a decision about, so both
-     * produce a machine that identifies its console correctly and then writes
-     * 8N1 to something that is not a serial port.
+     * The composed address, then each mask the guest applies. Every check
+     * short of the whole address accepts at least one known-wrong value:
+     * 0x178 and 0x20178 both keep 0x178 in the low twelve bits -- the only
+     * part a guest announces a decision about -- and both produce a
+     * machine that identifies its console and then writes 8N1 to something
+     * that is not a serial port.
      */
     g_assert_cmphex(in_widget, ==, CONSOLE_IN_WIDGET);
 
@@ -236,10 +199,8 @@ static void test_console_descriptor(const void *data)
     uint64_t console;
 
     /*
-     * The header's offset has to lead to the descriptor rather than into the
-     * header. Following it and finding the descriptor's own fields where they
-     * belong is what says the two agree; asserting the offset's value alone
-     * would pass just as happily if the descriptor moved.
+     * Followed, not just read: asserting the offset's value alone would
+     * pass if the descriptor moved.
      */
     g_assert_cmphex(qtest_readl(qts, CONFIG_GRAPH + 0x10), ==,
                     GRAPH_CONSOLE_OFF);
@@ -247,38 +208,18 @@ static void test_console_descriptor(const void *data)
     console = CONFIG_GRAPH + qtest_readl(qts, CONFIG_GRAPH + 0x10);
 
     /*
-     * The memory base is the field Linux reads, and it reads no other. It takes
-     * this as the base of the controller chip and adds the chip's own register
-     * offset itself, checking nothing. So it has to carry the bridge's device
-     * window, and be an address the processor can issue rather than a bare
-     * physical one. Wrong here, Linux takes a bus error or spins forever on a
-     * transmitter-empty bit that never sets, and both are a silent boot with
-     * no diagnostic to work from.
-     *
-     * Asserted as a relationship rather than as a constant, because the defect
-     * this catches is not a wrong address — it is the two fields disagreeing
-     * after one of them was corrected. The serial-port base already had the
-     * device window added and this one did not, which no assertion on either
-     * field alone would have noticed.
+     * The memory base is the one field Linux reads; wrong, the boot is
+     * silent. Asserted as a relationship because the failure to catch is
+     * the two fields disagreeing -- no assertion on either alone notices.
      */
     g_assert_cmphex(qtest_readq(qts, console + 0x10) + IOC3_SERIAL_A, ==,
                     qtest_readq(qts, console + 0x00));
 
     /*
-     * The configuration base, which the vendor kernel follows as a pointer
-     * into PCI configuration space. Asserted as a whole value rather than as a
-     * relationship, and that is the difference from the two fields above: they
-     * are offset from one another, so a relationship catches them drifting
-     * apart, while this one is a sibling of the memory window rather than
-     * anything inside it and has nothing to be offset from.
-     *
-     * The defect it covers is exactly the composition that could not express
-     * it. This field held the memory base — the same value as the field above
-     * — because all three shared a root that already included the device
-     * window, and the configuration window sits below that window rather than
-     * within it, so no value reachable from that root was right. A check
-     * relating it to either neighbour would have been satisfied by the wrong
-     * value it was written to replace.
+     * The configuration base, followed by the vendor kernel as a pointer.
+     * Asserted as a whole value: it is a sibling of the memory window with
+     * nothing to be offset from, and a check relating it to a neighbour is
+     * satisfied by exactly the wrong value it once held.
      */
     g_assert_cmphex(qtest_readq(qts, console + 0x08) & 0xffffff, ==,
                     CONSOLE_CFG_IN_WIDGET);
@@ -305,10 +246,9 @@ static void test_signatures(const void *data)
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * Without this the graph does not exist as far as a guest is concerned. It
-     * is an eight-byte field holding a value that fits in four, so it has to
-     * be read as a doubleword: reading the first four bytes finds the zero
-     * half, and would report a missing graph on a machine that has one.
+     * Read as a doubleword: the value fits in four bytes, so a four-byte
+     * read finds the zero half and reports a missing graph on a machine
+     * that has one.
      */
     g_assert_cmphex(qtest_readq(qts, CONFIG_GRAPH), ==, GRAPH_MAGIC);
 
@@ -317,17 +257,11 @@ static void test_signatures(const void *data)
     g_assert_cmphex(qtest_readw(qts, GDA + 0x04), ==, GDA_VERSION);
 
     /*
-     * The node table, read the way a guest reads it: signed sixteen-bit
-     * identifiers at a stride of two, skipped when negative. Node zero exists
-     * and is numbered zero, and every slot after it is all ones so that the
-     * guest's signed load sees a negative number and stops.
-     *
-     * The width is the assertion, not a detail of it. Written a byte per entry
-     * the table still looks right byte for byte, but the guest's halfword load
-     * on the first entry pairs node zero with the absent marker beside it and
-     * reads 0x00ff, a positive 255 that no negative test rejects, so the guest
-     * goes scanning a node numbered 255 and dies on the first address it forms
-     * there. Reading halfwords here is what makes this test able to see that.
+     * The node table, read the guest's way: signed halfwords, negative
+     * ends the walk. The width is the assertion -- a byte-per-entry table
+     * looks right byte for byte, but a halfword load pairs node zero with
+     * the marker beside it and reads a positive 255 the walk never
+     * rejects.
      */
     g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE), ==, 0);
     g_assert_cmphex(qtest_readw(qts, GDA + GDA_NODE_TABLE + 2), ==, 0xffff);
@@ -337,18 +271,12 @@ static void test_signatures(const void *data)
 }
 
 /*
- * The six hardware-directory entries the firmware fills, checked against the
- * datasheet's own table rather than against each other. The non-maskable-
- * interrupt entry is the one with a live consumer: OpenBSD reads its offset
- * during machine setup and stores through it directly, installing its own
- * handler address and a complement — a four-word write to wherever this
- * entry says, before the console exists and with nothing that could report
- * a wrong destination. A zeroed entry sends that write to node offset zero,
- * inside the exception-handler area; the fault was invisible only because
- * the kernel copies its own exception vectors over the same bytes later in
- * setup, which is an ordering accident and not a property of the design.
- * The other five have no consumer on any guest we boot, which is why they
- * are checked here rather than by anything a transcript would show.
+ * The hardware-directory entries, checked against the datasheet's table
+ * rather than each other. The NMI entry has a live consumer: OpenBSD
+ * stores its handler through it before the console exists, so a zeroed
+ * entry sends that write into the exception-handler area with nothing to
+ * report it. The rest have no consumer on any guest we boot, which is why
+ * they are checked here and nowhere else.
  */
 static void test_directory_entries(const void *data)
 {
@@ -409,10 +337,8 @@ static void test_directory_entries(const void *data)
     g_assert_cmphex(qtest_readq(qts, pi_error + HW_DIR_OFF_COUNT), ==, 1);
 
     /*
-     * The launch blocks themselves, not just the directory entry that points
-     * at them: both carry the launch signature. Nothing else in the block is
-     * asserted, because nothing else has a value yet — there is no second
-     * processor to launch.
+     * The launch blocks themselves, not just the entry pointing at them.
+     * Nothing else in a block has a value yet.
      */
     for (i = 0; i < LAUNCH_ENTRIES; i++) {
         g_assert_cmphex(qtest_readq(qts, LAUNCH_BLOCKS + i * LAUNCH_STRIDE),
@@ -423,13 +349,10 @@ static void test_directory_entries(const void *data)
 }
 
 /*
- * The Hub component's port descriptor names no crossbar link on this
- * machine, and the required value for that is the invalid marker in the
- * node-identifier bits, not zero. Zero is a live node identifier here: a
- * consumer that treats an unconnected port as a real link follows it into a
- * board lookup at this node's own hardware directory, which is exactly the
- * kind of silent failure this file exists to catch — nothing we boot reads
- * this field today, so a wrong value here has no other way to be noticed.
+ * An unconnected port must carry the invalid marker, not zero: zero is a
+ * live node identifier, and a consumer following it lands in a board
+ * lookup at this node's own directory. Nothing we boot reads the field,
+ * so a wrong value has no other way to be noticed.
  */
 static void test_hub_port_unconnected(const void *data)
 {
@@ -443,12 +366,10 @@ static void test_hub_port_unconnected(const void *data)
 }
 
 /*
- * The SGI-private call vector. IRIX and the SGI standalone shell need it;
- * the guests we boot never look at it, which is exactly why a broken vector
- * here would go unnoticed by every other test. Checked two ways, because a
- * range check alone proves memory safety and nothing about the vector's own
- * contract: a broken implementation that pointed all seventeen entries at
- * the same stub would still pass "every entry is non-null and in range."
+ * The SGI-private call vector, which no guest we boot reads -- the reason
+ * a broken one passes every other test. A range check alone is not the
+ * contract: all seventeen entries pointing at one stub still passes
+ * "non-null and in range".
  */
 static void test_private_vector(const void *data)
 {
@@ -461,19 +382,13 @@ static void test_private_vector(const void *data)
     for (i = 0; i < ARCS_PRIVATE_ENTRIES; i++) {
         uint64_t entry = qtest_readq(qts, ARCS_PRIVATE_VECTOR + i * 8);
 
-        /*
-         * Each entry is a distinct stub, one stride past the previous —
-         * exactly the arrangement the builder creates, and the property a
-         * "same stub everywhere" bug fails on directly.
-         */
+        /* Each entry a distinct stub, one stride past the previous. */
         g_assert_cmphex(entry, ==, expected_first + i * ARCS_STUB_SIZE);
     }
 
     /*
-     * The capability entry, invoked through the trap page rather than
-     * merely read out of the vector — the same memory access its stub would
-     * perform when a guest jumps to it and loads from its slot. This is the
-     * dispatcher actually running, not a value sitting in a table.
+     * The capability entry, read through the trap page the way its stub
+     * would: the dispatcher running, not a value sitting in a table.
      */
     g_assert_cmphex(qtest_readq(qts,
                                 ARCS_TRAP_LOCAL + ARCS_CAPABILITY_OP * 8),
@@ -499,8 +414,8 @@ static void test_components_enabled(const void *data)
 
         if (type == COMP_PROCESSOR) {
             /*
-             * The guest calibrates its delay loop from this. Zero here is the
-             * failure that looks like a hang somewhere else entirely.
+             * The delay-loop calibration source; zero is the failure that
+             * looks like a hang somewhere else entirely.
              */
             g_assert_cmpuint(qtest_readw(qts, c + COMP_CPU_CLOCK), >, 0);
             saw_processor = true;
@@ -512,22 +427,12 @@ static void test_components_enabled(const void *data)
 }
 
 /*
- * The memory component's layout is conditional on a Hub register, and nothing
- * about the structure says so. A guest reads the addressing mode from the Hub's
- * network-interface status register and parses the memory component differently
- * depending on the answer: in M mode eight bank sizes with the directory
- * attribute behind them, in N mode four bank sizes and a record eight bytes
- * shorter, so the mode does not merely change a count, it moves the attribute
- * and resizes the record. One guest has no runtime choice at all and is built
- * for eight.
- *
- * So the two have to be checked together or the pair can drift: the machine
- * could start reporting N mode and every assertion about the component would
- * still pass, and a guest would read the fifth bank's size where it expects the
- * attribute while separately computing every node-relative address with the
- * wrong shift. That bit has already been wrong once in this machine's history,
- * when the Hub was realized without a bus and never reset, so its reset value
- * read as N mode.
+ * The memory component's layout is conditional on the Hub's addressing
+ * mode, and nothing in the structure says so: M mode means eight bank
+ * sizes with the directory attribute behind them, N mode four and a
+ * shorter record. The register and the layout are checked together
+ * because separately both can pass while disagreeing -- the guest then
+ * reads a bank size where it expects the attribute.
  */
 static void test_memory_layout_matches_addressing_mode(const void *data)
 {
@@ -544,31 +449,20 @@ static void test_memory_layout_matches_addressing_mode(const void *data)
     g_assert_cmphex(qtest_readw(qts, mem + MEM_BANK_SIZES), ==, 256);
 
     /*
-     * Every bank slot after the first is zero, which bounds the damage if the
-     * mode bit ever disagrees with this layout after all: the slot an N-mode
-     * guest would read as the directory attribute is one of these, so it would
-     * read a zero attribute rather than a bank size wearing an attribute's
-     * clothes.
+     * Later bank slots are zero, which bounds the damage of a mode
+     * mismatch: an N-mode guest reads a zero attribute rather than a bank
+     * size wearing an attribute's clothes.
      */
     for (i = 1; i < MEM_BANKS; i++) {
         g_assert_cmphex(qtest_readw(qts, mem + MEM_BANK_SIZES + i * 2), ==, 0);
     }
 
     /*
-     * The same bit decides how far a guest walks the node table, which is the
-     * mode's third consequence and the reason this test covers two structures
-     * rather than one. A guest declares capacity for 128 entries and clamps to
-     * that first, then clamps again to 64 in M mode, and only the second clamp
-     * keeps it inside a table this size. In N mode it would read 64 entries
-     * past the end, and because the area beyond is zeroed every one of them
-     * reads as node zero rather than as the negative marker that ends the walk.
-     * So it would not fault. It would quietly scan node zero sixty-four more
-     * times.
-     *
-     * What this loop catches is a table shorter than the guest will read, the
-     * dangerous direction. It does not catch a longer one, since reading the
-     * first sixty-four finds them all correct, and a longer table is not a
-     * hazard anyway, only a departure from what real firmware writes.
+     * The same bit bounds the guest's node-table walk: in N mode it reads
+     * 64 entries past this table's end, all zeroed, so it quietly scans
+     * node zero sixty-four more times rather than faulting. This loop
+     * catches a table shorter than the guest will read -- the dangerous
+     * direction; a longer one is not a hazard.
      */
     for (i = 0; i < GDA_NODES; i++) {
         uint16_t entry = qtest_readw(qts, GDA + GDA_NODE_TABLE + i * 2);
@@ -588,25 +482,14 @@ static void test_base_io_components(const void *data)
     while (board != 0) {
         if (qtest_readb(qts, board + BOARD_TYPE) == BOARD_TYPE_BASE_IO) {
             /*
-             * Four components in this order — the I/O bridge, two disk
-             * controllers, then the I/O controller — matching a real
-             * Origin 200's own captured graph and hardware inventory
-             * (docs/library/boot-logs.md, docs/component-taxonomy.md).
-             *
-             * Every field each record carries is asserted rather than the
-             * one that motivated writing the check, because the defect this
-             * covers was one identifier being right while the identifier
-             * beside it in the same record was zero. A test that asserts
-             * only the field just corrected passes on exactly the machine
-             * that has the bug in its neighbour.
-             *
-             * The three identifiers mean three different things. The
-             * physical identifier is the widget number for the I/O bridge
-             * and the PCI device number for each controller — the vendor's
-             * own firmware reads that field, not the widget field, to learn
-             * which widget its bridge is. The widget identifier is the same
-             * for all four because they hang off one widget. The virtual
-             * identifier is the ordinal among components of that type.
+             * Four components in a real Origin 200's own captured order
+             * (project-tree boot logs). Every field of each record is
+             * asserted, because the defect covered was one identifier
+             * right beside another zeroed -- asserting only the corrected
+             * field passes on exactly the machine with the bug in its
+             * neighbour. Physical id is the widget number for the bridge
+             * and the PCI device for the controllers; widget id is shared;
+             * virtual id is the per-type ordinal.
              */
             static const struct {
                 uint8_t type;
@@ -652,11 +535,8 @@ static void test_board_list(const void *data)
     unsigned int boards = 0;
 
     /*
-     * The list is terminated only by a zero link, and a consumer reads a record
-     * before checking the link that led to it — so a stray link is a walk
-     * through whatever the memory held. Walking it here with a bound proves it
-     * ends, and the bound is what keeps a broken list from hanging this test
-     * instead of failing it.
+     * The list ends only at a zero link, so the walk is bounded here or a
+     * broken list hangs this test instead of failing it.
      */
     g_assert_cmphex(qtest_readl(qts, CONFIG_GRAPH + 0x14), ==, GRAPH_BOARDS);
 
@@ -671,13 +551,9 @@ static void test_board_list(const void *data)
         g_assert_cmphex(qtest_readb(qts, board + BOARD_KIND), ==, BOARD_LOCAL);
 
         /*
-         * The record version has an exact required value per board type,
-         * not a lower bound. IRIX's board-naming routine treats anything
-         * below two as unnamed regardless of what is above it, so a
-         * lower-bound check would pass the node board carrying the
-         * midplane's version, every board carrying the same wrong value, or
-         * a version far above what real firmware ever writes — none of
-         * which is the property that has to hold.
+         * An exact per-type version, not a lower bound: a lower bound
+         * passes a node board carrying the midplane's version, or every
+         * board carrying one wrong value.
          */
         {
             uint8_t type = qtest_readb(qts, board + BOARD_TYPE);
@@ -690,13 +566,9 @@ static void test_board_list(const void *data)
 
         components = qtest_readb(qts, board + BOARD_COMPONENTS);
         /*
-         * The declared count is exactly zero on the midplane and greater
-         * than zero on every other board — not "greater than zero"
-         * everywhere. Real firmware writes zero on the midplane on purpose,
-         * while still populating one component behind it, so a bound this
-         * test enforced unconditionally would reject the machine it is
-         * meant to model. Keeping the bound on every other board type means
-         * an accidentally zeroed count elsewhere still fails here.
+         * Exactly zero on the midplane, greater than zero elsewhere: real
+         * firmware writes the midplane's zero on purpose while populating
+         * one component behind it.
          */
         if (qtest_readb(qts, board + BOARD_TYPE) == BOARD_TYPE_MIDPLANE) {
             g_assert_cmpuint(components, ==, 0);
@@ -718,11 +590,9 @@ static void test_board_list(const void *data)
         }
 
         /*
-         * The midplane's declared count excludes its one real component from
-         * an ordinary walk, but the component is still there — one slot past
-         * the count, which is the exact slot real firmware's own consumer
-         * reads it back from. A test that only walked to the declared count
-         * would never look at this slot at all.
+         * The midplane's real component sits one slot past its declared
+         * count -- the slot real firmware's own consumer reads, which a
+         * walk to the count never looks at.
          */
         if (qtest_readb(qts, board + BOARD_TYPE) == BOARD_TYPE_MIDPLANE) {
             uint32_t off = qtest_readl(qts, board + BOARD_COMP_LIST +
