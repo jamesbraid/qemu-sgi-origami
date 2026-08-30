@@ -25,6 +25,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "hw/pci/pci_regs.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -163,6 +164,25 @@ static const uint64_t window_offset[8] = {
 #define BCM_RXBD_FLAGS          0x0e
 #define BCM_RXBDFLAG_END        0x0004u
 
+/* Interrupts (Task 6). */
+#define BCM_MBX_IRQ0_LO         0x0204u
+#define BCM_PCI_PCISTATE        0x70
+#define BCM_PCISTATE_INTR_NA    0x00000002u   /* INTR_NOT_ACTIVE */
+#define BCM_MISCCTL_MASK_INTR   0x00000002u   /* MISC_CTL.MASK_PCI_INTR */
+
+/*
+ * The Bridge's own interrupt status register lives at 0x100 in its widget
+ * window, and its low eight bits report each slot's pin live -- it is composed,
+ * never latched, so it follows the card's INTA level. The card's pin follows
+ * sgi_bridge_map_irq(): for INTA (an even pin) the bit is the slot number, so
+ * slot BCM_SLOT lands on bit BCM_SLOT. The same address sn0-ioc3-test.c reads
+ * it at, and like that test we never program the Bridge interrupt enable -- the
+ * status register reflects the level regardless, and leaving the enable clear
+ * keeps the Bridge from trying to send a packet to an unprogrammed destination.
+ */
+#define BRIDGE_INT_STATUS       REG(0x100)
+#define BCM_INT_PIN             (1u << BCM_SLOT)
+
 /* The Bridge's per-slot DMA swapper (direct window) and the direct map. */
 #define DEV_SWAP_DIRECT         (1u << 19)
 #define BRIDGE_DIRECT_MAP_REG   REG(0x080)
@@ -237,6 +257,13 @@ static void ind_reg_writel(QTestState *qts, uint32_t off, uint32_t val)
     qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_REG_DATA, val);
 }
 
+/* Read a register-file word back through the indirect window (no BAR needed). */
+static uint32_t ind_reg_readl(QTestState *qts, uint32_t off)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_REG_BASEADDR, off);
+    return qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_REG_DATA);
+}
+
 /* The indirect memory window (config 0x7C/0x84) into on-chip SRAM. */
 static void ind_mem_writel(QTestState *qts, uint32_t off, uint32_t val)
 {
@@ -304,6 +331,24 @@ static void bcm570x_setup_dma(QTestState *qts)
                  DEV_MEMORY_SPACE | DEV_SWAP_DIRECT |
                  (CARD_MMIO(BCM_SLOT) >> 20));
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+}
+
+/*
+ * The minimum plumbing for the chip to DMA a status block: bus mastering and
+ * the slot's DMA path, a send-ring control block with a ring length so a
+ * doorbell passes the range guard, and the status block's host address. The
+ * host-coalescing block is left disabled -- each test enables it when it wants
+ * a status update -- and the status region is zeroed. A doorbell of producer 0
+ * then drives a status-block DMA with no ring walk, which is all the interrupt
+ * and gating tests need (no descriptors, no frame).
+ */
+static void bcm570x_arm_status(QTestState *qts)
+{
+    bcm570x_setup_dma(qts);
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(qts, BCM_HCC_STATUSBLK_HI, STATUS_IOVA >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_LO, STATUS_IOVA & 0xffffffff);
+    qtest_memset(qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 }
 
 /* A connected socket backend, so the test reads the frame the engine sent. */
@@ -833,6 +878,184 @@ static void test_rx_producer_out_of_range(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The interrupt mailbox masks and re-enables the INTA line, and the global
+ * MISC_CTL mask suppresses it. The chip drives the line as a level the Bridge
+ * follows: it goes up when a status-block update is posted with interrupts
+ * unmasked and down when the driver acknowledges. Producer-0 doorbells stand in
+ * for real completions -- each drives a status-block DMA with no ring walk, so
+ * the test needs no descriptors or frame.
+ */
+static void test_interrupt_mailbox(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+    uint32_t misc;
+
+    bcm570x_arm_status(qts);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* Masked out of reset: an update posts, but the line stays down. */
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==, 0);
+
+    /* Enable interrupts (mailbox 0); the next update asserts the line. */
+    bar_writel(qts, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==,
+                    BCM_INT_PIN);
+    g_assert_cmphex(qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_PCISTATE) &
+                    BCM_PCISTATE_INTR_NA, ==, 0);
+
+    /* Write 1: masks and acknowledges. The line drops; INTR_NOT_ACTIVE reads. */
+    bar_writel(qts, BCM_MBX_IRQ0_LO, 1);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_PCISTATE) &
+                    BCM_PCISTATE_INTR_NA, ==, BCM_PCISTATE_INTR_NA);
+
+    /* Write 0 re-enables; the acknowledge cleared the latch, so the line stays
+     * down until a fresh update re-asserts it. */
+    bar_writel(qts, BCM_MBX_IRQ0_LO, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==, 0);
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==,
+                    BCM_INT_PIN);
+
+    /* The global mask in MISC_CTL suppresses the line while it is set, and the
+     * line returns when it clears -- the pending update was never taken. */
+    misc = qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL);
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL,
+                 misc | BCM_MISCCTL_MASK_INTR);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==, 0);
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL, misc);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==,
+                    BCM_INT_PIN);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The status-block DMA is gated by HCC_MODE.ENABLE. With the coalescing block
+ * disabled a doorbell posts nothing to host memory and raises no interrupt;
+ * enabling it lets the same doorbell DMA the status block out.
+ */
+static void test_status_block_gated_by_hcc(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
+
+    bcm570x_arm_status(qts);
+
+    /* Disabled: the status region stays zero and the line stays down. */
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 0);
+    qtest_memread(qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get32be(sb), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==, 0);
+
+    /* Enabled: the same doorbell now DMAs the status block, UPDATED set. */
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 0);
+    qtest_memread(qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get32be(sb) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
+
+    qtest_quit(qts);
+}
+
+/* Drive a migration between two connected qtest instances and block until it
+ * completes; `to` is already listening on `uri` via its -incoming. Modelled on
+ * tests/qtest/sn0-migration-test.c's migrate_stopped_vm. */
+static void bcm570x_migrate(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+/*
+ * The device's state round-trips across a migration. On the source, a
+ * register-file word (the status-block host address), an SRAM word, and an
+ * asserted interrupt are established, then the machine is migrated stopped. On
+ * the destination the register and SRAM words read back, and the interrupt is
+ * still live: toggling the global mask drops and re-raises the line with no new
+ * update, which holds only if the pending latch and the mailbox mask both
+ * crossed the migration -- the fields this task added to the VMState.
+ */
+static void test_state_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    const uint32_t sram_sentinel = 0x1a2b3c4d;
+    uint32_t misc;
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_initf(MACHINE_WITH_BRIDGE
+                       " -netdev user,id=n0"
+                       " -device bcm570x,addr=%02x.0,netdev=n0,"
+                       "mac=52:54:00:11:22:33", BCM_SLOT);
+    bcm570x_arm_status(from);
+    bar_writel(from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* An SRAM word reset does not touch, so its survival is unambiguous. */
+    ind_mem_writel(from, 0x0c1c, sram_sentinel);
+
+    /* Enable interrupts and leave the line asserted at the migration point. */
+    bar_writel(from, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(from, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_cmphex(qtest_readl(from, BRIDGE_INT_STATUS) & BCM_INT_PIN, ==,
+                    BCM_INT_PIN);
+    g_assert_cmphex(qtest_readl(from, CFG0(BCM_SLOT, 0) + BCM_PCI_PCISTATE) &
+                    BCM_PCISTATE_INTR_NA, ==, 0);
+
+    dest = g_strdup_printf(MACHINE_WITH_BRIDGE
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "mac=52:54:00:11:22:33 -incoming %s", BCM_SLOT, uri);
+    to = qtest_init(dest);
+    bcm570x_migrate(from, uri);
+
+    /* The register file (status-block host address) and SRAM word came across. */
+    g_assert_cmphex(ind_reg_readl(to, BCM_HCC_STATUSBLK_LO), ==,
+                    STATUS_IOVA & 0xffffffff);
+    g_assert_cmphex(ind_mem_readl(to, 0x0c1c), ==, sram_sentinel);
+
+    /* The interrupt config came across, line still asserted. */
+    g_assert_cmphex(qtest_readl(to, CFG0(BCM_SLOT, 0) + BCM_PCI_PCISTATE) &
+                    BCM_PCISTATE_INTR_NA, ==, 0);
+
+    /* The migrated latch and mask are live: mask then unmask the global mask
+     * and the line follows, without any fresh update to re-establish it. */
+    misc = qtest_readl(to, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL);
+    qtest_writel(to, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL,
+                 misc | BCM_MISCCTL_MASK_INTR);
+    g_assert_cmphex(qtest_readl(to, CFG0(BCM_SLOT, 0) + BCM_PCI_PCISTATE) &
+                    BCM_PCISTATE_INTR_NA, ==, BCM_PCISTATE_INTR_NA);
+    qtest_writel(to, CFG0(BCM_SLOT, 0) + BCM_PCI_MISC_CTL, misc);
+    g_assert_cmphex(qtest_readl(to, CFG0(BCM_SLOT, 0) + BCM_PCI_PCISTATE) &
+                    BCM_PCISTATE_INTR_NA, ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -863,6 +1086,12 @@ int main(int argc, char **argv)
                         test_receive_round_trip);
     qtest_add_data_func("/bcm570x/rx-producer-out-of-range", NULL,
                         test_rx_producer_out_of_range);
+    qtest_add_data_func("/bcm570x/interrupt-mailbox", NULL,
+                        test_interrupt_mailbox);
+    qtest_add_data_func("/bcm570x/status-block-gated-by-hcc", NULL,
+                        test_status_block_gated_by_hcc);
+    qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
+                        test_state_survives_migration);
 
     return g_test_run();
 }
