@@ -1,19 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * DP83840 ethernet transceiver, driven by the Origin 200's base I/O
- * controller.
- *
- * The part has no bus address: the controller reaches it through its
- * management registers, so this device is a pair of read/write functions
- * rather than a MemoryRegion (the lan9118-phy shape). Only what the guests'
- * drivers use is modelled; the DP83840 datasheet in the Origami project tree
- * (docs/datasheets/dp83840.md) covers the rest.
- *
- * Out of reset the link is down and autonegotiation incomplete, the state
- * SGI's power-on diagnostic expects. The link comes up a virtual-clock
- * settle after the first status read (Linux's phylib polls without ever
- * writing the control register), or at once when a driver forces it with a
- * control-register write (the PROM's network boot, OpenBSD).
+ * DP83840 ethernet transceiver, reached through the IOC3's management
+ * registers (the lan9118-phy shape). Out of reset the link is down; it
+ * comes up a settle after the first status read, or at once on a
+ * control-register write. See docs/specs/sgi-ioc3.rst.
  */
 
 #include "qemu/osdep.h"
@@ -25,19 +15,12 @@
 #include "migration/vmstate.h"
 #include "trace.h"
 
-/*
- * A choice, not a finding: nothing observed records what a real Origin 200
- * negotiates, so both ends offer everything (the datasheet marks this open).
- */
+/* Both ends offer everything; what a real machine negotiates is unrecorded. */
 #define DP83840_ADVERTISE_RESET (MII_ANAR_TXFD | MII_ANAR_TX | \
                                  MII_ANAR_10FD | MII_ANAR_10 | \
                                  MII_ANAR_CSMACD)
 
-/*
- * On real hardware the link bit latches low and drivers read the register
- * twice, taking the union. Reporting the live level satisfies that; latching
- * it set would make the second read report a link that is not there.
- */
+/* The link bit latches low on hardware; the live level satisfies both reads. */
 static uint16_t dp83840_status(DP83840State *s)
 {
     uint16_t status = MII_BMSR_EXTCAP | MII_BMSR_AUTONEG |
@@ -51,14 +34,12 @@ static uint16_t dp83840_status(DP83840State *s)
     return status;
 }
 
-/* Backend link state, handed in by the controller (lan9118_phy split). */
 void dp83840_update_link(DP83840State *s, bool link_down)
 {
     trace_dp83840_update_link(link_down ? "down" : "up");
     s->link_down = link_down;
 }
 
-/* The settle elapsed: autonegotiation has completed and the link is up. */
 static void dp83840_settle_done(void *opaque)
 {
     DP83840State *s = opaque;
@@ -67,11 +48,9 @@ static void dp83840_settle_done(void *opaque)
 }
 
 /*
- * The settle arms on the first status read, not at reset or on control
- * writes the way e1000 does it, and the departure is deliberate: a settle
- * armed at reset elapses long before SGI's diagnostic probes the reset
- * values (which must find the link down), and Linux's phylib never writes
- * the control register at all, so a write-armed settle never fires for it.
+ * The settle arms on the first status read: armed at reset it elapses
+ * before SGI's diagnostic probes (which must find the link down), and
+ * armed on control writes it never fires for Linux's phylib.
  */
 static uint16_t dp83840_status_read(DP83840State *s)
 {
@@ -94,7 +73,7 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
     case MII_BMSR:
         return dp83840_status_read(s);
 
-    /* The real identity binds OpenBSD's DP83840-specific driver. */
+    /* The identity binds OpenBSD's DP83840-specific driver. */
     case MII_PHYID1:
         return DP83840_PHYID1;
 
@@ -105,17 +84,10 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
         return s->advertise;
 
     case MII_ANLPAR:
-        /*
-         * The far end mirrors our advertisement so the driver's
-         * intersection yields a usable media; invalid until negotiated.
-         */
+        /* The far end mirrors our advertisement; invalid until negotiated. */
         return s->autoneg_done ? DP83840_ADVERTISE_RESET : 0;
 
     case MII_ANER:
-        /*
-         * The far end can autonegotiate; this bit picks the driver's
-         * trusted route to a media type. Same validity rule as ANLPAR.
-         */
         return s->autoneg_done ? MII_ANER_NWAY : 0;
 
     case DP83840_PCS_CONFIG:
@@ -128,11 +100,10 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
                                               : s->tenbt_config;
 
     case DP83840_ADDRESS_STATUS:
-        /* Unreached (our far end autonegotiates); answers anyway. */
         return s->addr;
 
     default:
-        /* Zero, not all-ones: all-ones reads as an absent transceiver. */
+        /* Zero: all-ones reads as an absent transceiver. */
         qemu_log_mask(LOG_UNIMP,
                       "dp83840: read of register %d which this model does not "
                       "implement\n", reg);
@@ -140,7 +111,6 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
     }
 }
 
-/* One trace point for every case above, derived answers included. */
 uint16_t dp83840_read(DP83840State *s, int reg)
 {
     uint16_t val = dp83840_read_impl(s, reg);
@@ -155,18 +125,13 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
 
     switch (reg) {
     case MII_BMCR:
-        /* Reset and restart self-clear, or the polling driver hangs. */
+        /* Reset and restart self-clear, or a polling driver hangs. */
         if (val & MII_BMCR_RESET) {
             dp83840_reset(s);
             return;
         }
 
-        /*
-         * Any other write is a guest configuring the link, and there is no
-         * cable to negotiate against, so it comes up at once (the PROM and
-         * OpenBSD path). Isolation takes it back down and lets the settle
-         * re-arm on the next status read.
-         */
+        /* No cable to negotiate against: a configuring write links at once. */
         if (val & MII_BMCR_ISOLATE) {
             s->autoneg_done = false;
             s->settle_armed = false;
@@ -215,10 +180,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
     }
 }
 
-/*
- * Three switches select loopback and the diagnostic uses more than one;
- * the controller sees the same frame come back whichever is set.
- */
+/* Three switches select loopback; the diagnostic uses more than one. */
 bool dp83840_in_loopback(DP83840State *s)
 {
     return (s->control & MII_BMCR_LOOPBACK) ||
@@ -230,13 +192,7 @@ void dp83840_reset(DP83840State *s)
 {
     trace_dp83840_reset();
 
-    /*
-     * The specification's reset values, with the link down: SGI's power-on
-     * diagnostic reads status, partner and expansion before driving the
-     * part and expects the not-yet-settled state (datasheet records the
-     * probes). The link comes up through dp83840_status_read()'s settle or
-     * a control-register write.
-     */
+    /* Link down: SGI's diagnostic probes the not-yet-settled state. */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
     s->pcs_config = DP83840_PCS_RESET_VALUE;
