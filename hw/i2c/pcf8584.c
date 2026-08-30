@@ -21,12 +21,9 @@
 
 /*
  * Which register the A0-low address selects. ESO picks between the working
- * data register and the three configuration registers, but ES2 keeps
- * selecting either way: with the serial interface enabled it still chooses
- * between the data register and the interrupt vector, and only ES1 stops
- * meaning anything. Getting that asymmetry wrong is invisible against
- * firmware that never sets ES2 while running, which is the reason to model it
- * rather than collapse it.
+ * data register and the configuration registers, but ES2 keeps selecting
+ * either way -- with the serial interface enabled it still chooses between
+ * data and the interrupt vector; only ES1 stops meaning anything.
  */
 typedef enum {
     PCF8584_REG_OWN_ADDRESS,
@@ -64,12 +61,7 @@ static PCF8584Reg pcf8584_selected(PCF8584State *s)
 
 static void pcf8584_update_irq(PCF8584State *s)
 {
-    /*
-     * The interrupt follows the pending-interrupt bit, which is active low in
-     * the chip's own naming: PIN clear means an operation completed. No
-     * firmware this machine runs enables it, so this exists to keep the line
-     * honest rather than because anything drives it today.
-     */
+    /* PIN is active low in the chip's naming: clear means completed. */
     bool level = (s->control & PCF8584_CTL_ENI) &&
                  !(s->status & PCF8584_STS_PIN);
 
@@ -115,23 +107,11 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
     s->start_address_staged = false;
 
     /*
-     * QEMU's I2C core only rescans the bus for a matching slave when no
-     * device is currently matched (hw/i2c/core.c's i2c_do_start_transfer):
-     * once a transfer is open, a repeated start delivers its event to
-     * whichever slave is already matched, on the assumption that a
-     * repeated start targets the same device and only changes direction --
-     * true for this protocol's own write-then-read commands, but not true
-     * of the closing invalid-address step, which is a repeated start to a
-     * genuinely different address. Left alone, that step does not get
-     * refused by an empty bus; it keeps talking to whichever real device
-     * the transfer was already open with, and that device answers,
-     * because from its own event handler's point of view nothing told it
-     * the address changed. Ending the old match explicitly whenever the
-     * address itself changes forces a real rescan for the new one; a
-     * same-address repeated start (ordinary direction changes) still
-     * leaves the current match alone, which existing transactions depend
-     * on -- ending unconditionally would deliver I2C_FINISH to a slave
-     * that is still mid-command.
+     * The I2C core rescans for a slave only when none is matched
+     * (i2c_do_start_transfer), so a repeated start to a different address
+     * would keep talking to the old device unless the match is ended here.
+     * Only on an address change: ending unconditionally would deliver
+     * I2C_FINISH to a slave still mid-command.
      */
     if (s->transfer && addr7 != s->cur_addr7) {
         i2c_end_transfer(s->bus);
@@ -145,10 +125,8 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
     rc = i2c_start_transfer(s->bus, addr7, recv);
     if (rc && s->transfer) {
         /*
-         * A same-address repeated start the matched slave refused. The
-         * core leaves such a transfer open for the caller to terminate
-         * (hw/i2c/core.c's contract), and holding it open would keep
-         * i2c_bus_busy() true against the arbitration broadcast forever.
+         * A refused same-address repeated start is left open by the core for
+         * the caller to end; held open it keeps i2c_bus_busy() true forever.
          */
         i2c_end_transfer(s->bus);
     }
@@ -157,23 +135,17 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
 
     if (rc) {
         /*
-         * Nobody answered. This is a normal outcome rather than an error: the
-         * firmware deliberately addresses an invalid address after every
-         * completed transaction, precisely to be refused.
+         * Normal, not an error: the firmware addresses an invalid address
+         * after every transaction precisely to be refused.
          */
         pcf8584_complete(s, true);
         return;
     }
 
     /*
-     * No fetch here even when recv is set. The Philips datasheet attaches
-     * the transfer to the *read* of the data register, not to the start:
-     * the driver's first read after a read-direction address returns
-     * whatever the register already holds -- the address-and-direction
-     * byte just written to generate this start -- and that read is what
-     * moves the first real byte in. pcf8584_read_data() already implements
-     * exactly that pattern (hold, then fetch); the register simply keeps
-     * its current value here rather than being written to.
+     * No fetch even for recv: the datasheet attaches the transfer to the
+     * read of the data register, not to the start. The first read returns
+     * what the register holds and moves the first real byte in.
      */
     pcf8584_complete(s, false);
 }
@@ -190,9 +162,8 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
 
     if (s->status & PCF8584_STS_BB) {
         /*
-         * Bus free -- no transaction is open. Not an error: this is the
-         * address byte being staged ahead of the control write that will
-         * generate the start.
+         * Bus free: the address byte staged ahead of the control write
+         * that will generate the start.
          */
         s->data = val;
         s->start_address_staged = true;
@@ -210,10 +181,8 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
         rc = i2c_send(s->bus, val);
     } else {
         /*
-         * The start was refused, so the byte goes out on a wire nobody
-         * acknowledges. i2c_send() over the core's empty matched list
-         * would report success -- the loop body never runs -- which is
-         * why the refusal is remembered rather than asked again.
+         * The start was refused. i2c_send() over the core's empty matched
+         * list would report success, so the refusal is remembered instead.
          */
         rc = -1;
     }
@@ -228,10 +197,8 @@ static uint8_t pcf8584_read_data(PCF8584State *s)
 
     if (s->transfer && s->recv) {
         /*
-         * Hand back the byte already held, then fetch the next one. A model
-         * that fetches first and returns the fetched byte is off by one for
-         * the whole packet, and the symptom reads as a protocol fault rather
-         * than an off-by-one.
+         * Hand back the held byte, then fetch: fetch-first is off by one
+         * for the whole packet.
          */
         if (!(s->control & PCF8584_CTL_ACK)) {
             /* ACK cleared means the driver wants this to be the last byte. */
@@ -254,10 +221,8 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
 
     if (val & PCF8584_CTL_PIN) {
         /*
-         * PIN set by the host is the reset and idle request: the chip reports
-         * itself busy until an operation completes. It is written on its own
-         * to select a configuration register, so it must not disturb a
-         * transfer by itself.
+         * PIN from the host is the idle request. It is also written alone to
+         * select a configuration register, so it must not disturb a transfer.
          */
         s->status |= PCF8584_STS_PIN;
         s->status &= ~(PCF8584_STS_BER | PCF8584_STS_LAB | PCF8584_STS_AAS);
@@ -295,10 +260,8 @@ static uint64_t pcf8584_read_internal(void *opaque, hwaddr addr,
 
     if (addr >= PCF8584_A0_STRIDE) {
         /*
-         * With the serial interface disabled this address is write-only in the
-         * chip's own documentation; real parts still answer a read with the
-         * control bits plus the pending-interrupt state, and answering is more
-         * useful to a guest than inventing a value.
+         * Write-only in the documentation with the serial interface off;
+         * real parts answer with the control bits plus the PIN state.
          */
         if (s->control & PCF8584_CTL_ESO) {
             return s->status;
@@ -333,9 +296,8 @@ static void pcf8584_write_internal(void *opaque, hwaddr addr, uint64_t val,
     switch (pcf8584_selected(s)) {
     case PCF8584_REG_OWN_ADDRESS:
         /*
-         * Seven bits, right-justified: the chip shifts this left by one onto
-         * the wire. Stored as written so that firmware's own read-back
-         * liveness check sees exactly what it wrote.
+         * Seven bits, right-justified; stored as written so the firmware's
+         * read-back liveness check sees what it wrote.
          */
         s->own_address = val & 0x7f;
         break;
@@ -398,11 +360,9 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * The data register's read has a side effect: it advances the receive
- * pipeline. So impl is declared rather than left to default, which would cap
- * it at four bytes and split the eight-byte accesses this machine's firmware
- * issues into two calls, running that side effect twice with nothing in the
- * result to show for it.
+ * Reading the data register advances the receive pipeline, so impl.max is 8:
+ * the default of 4 would split the firmware's eight-byte accesses and run
+ * that side effect twice.
  */
 static const MemoryRegionOps pcf8584_ops = {
     .read = pcf8584_read,
@@ -415,18 +375,11 @@ static const MemoryRegionOps pcf8584_ops = {
 };
 
 /*
- * The chip's slave half, as a helper device on its own bus. It catches
- * two kinds of transfer. The system controller reaches every node's chip
- * the way a real multi-master I2C bus has to -- it addresses nobody and
- * broadcasts -- and QEMU's I2C core delivers a broadcast to every child
- * of the bus regardless of address, so a receiver merely has to exist to
- * catch one. And a transfer directed at the address the guest programmed
- * into S0' is the chip being addressed as a slave, which it must
- * acknowledge and report through the AAS status bit. The helper carries
- * no state of its own to migrate -- the byte it captures is written
- * straight into the chip's data register, which is already part of the
- * chip's own vmstate, and the address it answers is read live from the
- * chip's own-address register.
+ * The chip's slave half, a helper device on its own bus: it catches the
+ * system controller's broadcasts and any transfer directed at the S0'
+ * address, reported through AAS. No state of its own to migrate -- the
+ * captured byte lands in the chip's data register and the address is read
+ * live from the own-address register.
  */
 #define TYPE_PCF8584_BCAST_RX "pcf8584-broadcast-rx"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584BcastRxState, PCF8584_BCAST_RX)
@@ -437,9 +390,8 @@ struct PCF8584BcastRxState {
 };
 
 /*
- * Consulting the chip's own-address register at match time, rather than
- * mirroring it into this device's address property, is what keeps reset
- * and migration from needing to copy it back.
+ * The own-address register is consulted at match time, so reset and
+ * migration never have to copy it into this device.
  */
 static bool pcf8584_bcast_rx_match_and_add(I2CSlave *candidate,
                                            uint8_t address, bool broadcast,
@@ -474,10 +426,9 @@ static int pcf8584_bcast_rx_send(I2CSlave *dev, uint8_t data)
     PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
 
     /*
-     * The synthetic receiver and the guest-visible transmit path share the
-     * modeled data register.  Once the guest has staged a first-start
-     * address, preserve it until START consumes it, or STOP or reset abandons
-     * it; otherwise a scheduler-delayed START can target an arbitration byte.
+     * The receiver and the transmit path share the data register: a staged
+     * first-start address is preserved until START consumes it, or a
+     * scheduler-delayed START would target an arbitration byte.
      */
     if (!rx->chip->start_address_staged) {
         rx->chip->data = data;
