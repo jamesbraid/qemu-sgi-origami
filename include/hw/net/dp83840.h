@@ -16,10 +16,8 @@
 OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 
 /*
- * The registers this part has beyond the standard management set. The
- * standard registers, their bits and this part's own two identifier words
- * are hw/net/mii.h's vocabulary (MII_BMCR and the rest, DP83840_PHYID1 and
- * DP83840_PHYID2); only what mii.h has no name for is defined here.
+ * Only what hw/net/mii.h has no name for: the standard registers, their
+ * bits and this part's identifier words are mii.h's vocabulary.
  */
 #define DP83840_PCS_CONFIG      0x17
 #define DP83840_LOOPBACK_BYPASS 0x18
@@ -27,17 +25,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83840_10BT_CONFIG     0x1c
 
 /*
- * Reset values, taken from the part's own published specification. SGI's
- * power-on transceiver test compares against the same numbers through its own
- * masks, so a public part specification and a vendor diagnostic agree on them
- * independently -- which is what makes them the part's values rather than one
- * reader's inference from one firmware.
- *
- * The control register comes up autonegotiating at a hundred megabits in full
- * duplex. The configuration register comes up with NRZI coding enabled and the
- * hundred-megabit good-link override in its normal position. The ten-megabit
- * configuration register comes up transmitting link pulses over twisted pair
- * with heartbeat and jabber enabled.
+ * Reset values from the part's published specification; SGI's power-on
+ * transceiver test compares the same numbers independently.
  */
 #define DP83840_CONTROL_RESET_VALUE  (MII_BMCR_SPEED100 | \
                                       MII_BMCR_AUTOEN | \
@@ -46,36 +35,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83840_10BT_RESET_VALUE     0x80b9
 
 /*
- * The loopback and bypass register's reset value. Four of its bits are latched
- * from package pins at reset rather than fixed, and this board's wiring for
- * them is not observed anywhere we can read -- so they are modelled as the
- * normal operating state, no bypass and no loopback, which is the only state a
- * working board can be in. The two bits that are fixed in the specification,
- * bad-start-of-stream detection and transmit-disable-during-loopback, are set.
+ * Four of this register's bits latch from package pins at reset and the
+ * board's wiring for them is unobserved; modelled as normal operation --
+ * no bypass, no loopback -- with the specification's two fixed bits set.
  */
 #define DP83840_LBREMR_RESET_VALUE   0x8020
 
 /*
- * The loopback selections in that register, which are separate from the
- * control register's own. Bits 9 and 8 choose a hundred-megabit loopback --
- * the setting that turns the frame round at the twisted-pair transceiver
- * beyond this part is one of them -- and bit 11 loops the ten-megabit encoder.
- * Any of them puts the station in loopback as far as the controller is
- * concerned, which is all the controller needs to know.
+ * Loopback selections separate from the control register's own: bits 9-8
+ * are the hundred-megabit loopbacks, bit 11 the ten-megabit encoder's.
+ * Any of them is loopback as far as the controller is concerned.
  */
 #define DP83840_LBREMR_LB_MASK       0x0300
 #define DP83840_LBREMR_10BT_LOOPBACK 0x0800
 
 /*
- * How long autonegotiation takes to settle once the interface starts looking
- * for a link. QEMU's e1000 models the same delay with a virtual-clock timer;
- * the DP83840's own datasheet gives roughly 1.5-2.3 seconds against a capable
- * partner, and two seconds is used here. Any value a polling driver's generous
- * timeout tolerates would serve it, but the choice also has to clear the
- * firmware diagnostic's reset-value sweep: that reads status, then the
- * link-partner and expansion registers about a tenth of a second of virtual
- * time later (measured), and all three must find the link still settling. Two
- * seconds leaves that a wide margin even when host load stretches the sweep.
+ * Autonegotiation settle delay: the part's specification gives 1.5-2.3
+ * seconds. Two seconds must also outlast the firmware diagnostic's
+ * reset-value sweep (~0.1 s of virtual time, measured), which needs to
+ * find the link still settling across all three registers it reads.
  */
 #define DP83840_AUTONEG_SETTLE_NS (2 * NANOSECONDS_PER_SECOND)
 
@@ -83,71 +61,45 @@ struct DP83840State {
     SysBusDevice parent_obj;
 
     /*
-     * The management address the part answers on, an "addr" property the
-     * controller asks for when it routes a request and the address-status
-     * register reports back. It defaults to 31, which is where the board
-     * wires it: both drivers walk all thirty-two management addresses and
-     * take the first that answers, so nothing forces this on the model --
-     * but every one of the thirty-one real Origin 200 captures in the
-     * boot-log library prints the transceiver at address 31, on the second
-     * controller as well as the first, so it is the board's wiring rather
-     * than one machine's accident. A model answering everywhere is found
-     * at zero, and the guest prints the address it found.
+     * Management address, default 31: every real Origin 200 capture prints
+     * the transceiver there. A model answering everywhere is found at zero.
      */
     uint8_t addr;
 
     /*
-     * The writable registers, held as the words a driver reads back. Everything
-     * else this part answers is either constant or derived, and deriving it on
-     * each read is what keeps the derived words from disagreeing with the state
-     * they are derived from.
+     * The writable registers; everything else is constant or derived on
+     * each read, so derived words cannot disagree with their sources.
      */
     uint16_t control;
     uint16_t advertise;
     uint16_t pcs_config;
 
     /*
-     * The two part-specific registers only SGI's power-on diagnostic reaches.
-     * Neither guest driver reads or writes either, so nothing but that
-     * diagnostic and the register suite sees them at all -- they are here
-     * because the firmware's transceiver test fails the board without them,
-     * not because a driver wanted them.
+     * Reached only by SGI's power-on diagnostic, which fails the board
+     * without them; no guest driver touches either.
      */
     uint16_t loopback_bypass;
     uint16_t tenbt_config;
 
     /*
-     * Whether a link has come up. False out of reset -- a cable-less board on
-     * a bench, which is exactly what SGI's power-on diagnostic reads before it
-     * has driven this part -- and gated on it are the link and completion bits
-     * in the status word and whether the partner and expansion registers answer
-     * non-zero. It goes true a settling delay after the interface first reads
-     * link status, or at once if a guest writes the control register to force
-     * the link up. See dp83840_read(), dp83840_write() and dp83840_reset().
+     * Whether negotiation has completed. False out of reset (the bench
+     * state the power-on diagnostic expects); gates the status word's link
+     * and completion bits and the partner/expansion registers.
      */
     bool autoneg_done;
 
     /*
-     * Whether the backend reports its link down -- the operator's set_link,
-     * the model's stand-in for the cable being pulled. Kept apart from
-     * autoneg_done because the two answer different questions: one is
-     * whether negotiation has run its course, the other whether there is a
-     * wire to negotiate over. The status word's link and completion bits
-     * need both.
+     * Backend link state (set_link, the pulled cable). Separate from
+     * autoneg_done: one is whether negotiation ran, the other whether
+     * there is a wire to negotiate over.
      */
     bool link_down;
 
     /*
-     * The autonegotiation settling clock and whether it has been started since
-     * reset. A real part negotiates on its own once autonegotiation is enabled,
-     * which it is at reset; this models that as a delay armed the first time
-     * the interface reads link status. Arming on the read rather than at reset
-     * is deliberate: our wall-clock device timing reaches SGI's power-on
-     * diagnostic tens of seconds of virtual time in, so a reset-armed timer
-     * would already have fired and the diagnostic's single reset-value probe
-     * would see a live link. Armed on the read, that one probe sees the link
-     * still settling -- the bench state it expects -- while a driver that polls
-     * waits the delay out and gets its carrier.
+     * The settle delay is armed on the first link-status read, not at
+     * reset: the power-on diagnostic runs tens of virtual seconds in, and
+     * a reset-armed timer would already have fired when its single probe
+     * expects a link still settling.
      */
     QEMUTimer *settle_timer;
     bool settle_armed;
