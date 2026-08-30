@@ -10,7 +10,9 @@
  * The registers are 64-bit and native little-endian; a host bridge that
  * corrects register byte order or access width (the Origin 200 Bridge) is that
  * bridge's concern, not this device's. The transmit descriptor/doorbell path
- * behind the TxP window is a follow-on slice and stays a LOG_UNIMP stub.
+ * behind the TxP window (BAR2) is modelled: a doorbell walks the FIFO's
+ * descriptor list, gathers the buffers, and emits the frame. The receive path
+ * is the follow-on slice.
  *
  * QOM/PCI-realize/BAR shape and the ResettablePhases reset wiring follow
  * hw/scsi/qlogic-isp.c, the fork's PCI-endpoint reference -- not
@@ -21,10 +23,12 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/xframe.h"
+#include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
@@ -118,6 +122,7 @@ static void xframe_soft_reset(XframeState *s)
     s->rmac_addr_data0 = 0;
     s->rmac_addr_data1 = 0;
     memset(s->mac_addr, 0, sizeof(s->mac_addr));
+    memset(s->txdl_par, 0, sizeof(s->txdl_par));
     xframe_load_factory_mac(s);
 }
 
@@ -257,28 +262,157 @@ static const MemoryRegionOps xframe_pif_ops = {
     },
 };
 
+/*
+ * TxP transmit window (BAR2): per-FIFO TxDL doorbell slots. Each slot is 16
+ * bytes -- the descriptor-list pointer (PAR) at +0 and the list control (LCR)
+ * at +8; writing LCR launches the list. The window is eight FIFOs at a
+ * 0x20000 stride, each an 8192-entry TxDL ring. Public OpenBSD if_xgereg.h
+ * names.
+ */
+#define XFRAME_TXP_FIFO_STRIDE      0x00020000
+#define XFRAME_TXDL_STRIDE          0x10
+#define XFRAME_TXDL_PAR             0x00
+#define XFRAME_TXDL_LCR             0x08
+
+/*
+ * A TxD is four 64-bit words: control1, control2, buffer pointer, host
+ * control. control1 carries ownership (bit 56, 0=host/1=card), the first/last
+ * gather-frame flags (41/40), and the 16-bit buffer length in bits 15:0
+ * (OpenBSD stores the segment length there; Linux TXD_BUFFER0_SIZE).
+ */
+#define XFRAME_TXD_SIZE             32
+#define XFRAME_TXD_OWN              (1ULL << 56)
+#define XFRAME_TXD_GCL              (1ULL << 40)
+#define XFRAME_TXD_BUF_LEN_MASK     0xffffULL
+
+/*
+ * Run a transmit descriptor list: fetch up to NUMTXD+1 descriptors from the
+ * FIFO's pending list pointer, gather their buffers into one frame, hand the
+ * first descriptor back to the host, and put the frame on the wire.
+ *
+ * Guest-driven hang safety: the walk count is the 8-bit NUMTXD field plus one,
+ * so at most 256 descriptors -- it cannot spin. A descriptor or buffer read
+ * that misses guest memory abandons the list with no progress rather than
+ * faulting, and the assembled frame is capped at the jumbo limit rather than
+ * copied unbounded. The frame is fully copied into s->tx_frame and the
+ * descriptor released before qemu_send_packet, so a receive that a loopback or
+ * hub backend re-enters synchronously finds consistent device state.
+ */
+/* Not gated on ADAPTER_EN: drivers enable the adapter before any doorbell. */
+static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
+{
+    PCIDevice *pdev = PCI_DEVICE(s);
+    uint64_t par = s->txdl_par[fifo];
+    unsigned count = ((lcr >> 56) & 0xff) + 1;   /* NUMTXD + 1, 1..256 */
+    uint64_t first_control1 = 0;
+    size_t frame_len = 0;
+    bool have_first = false;
+    unsigned i;
+
+    for (i = 0; i < count; i++) {
+        uint64_t txd_addr = par + (uint64_t)i * XFRAME_TXD_SIZE;
+        uint8_t raw[XFRAME_TXD_SIZE];
+        uint64_t control1, bufaddr;
+        unsigned seg_len;
+
+        if (pci_dma_read(pdev, txd_addr, raw, sizeof(raw)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: transmit descriptor read at 0x%" PRIx64
+                          " failed; list abandoned\n", txd_addr);
+            return;
+        }
+        control1 = ldq_le_p(raw);
+        bufaddr = ldq_le_p(raw + 16);
+        seg_len = control1 & XFRAME_TXD_BUF_LEN_MASK;
+
+        if (i == 0) {
+            if (!(control1 & XFRAME_TXD_OWN)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "xframe: transmit doorbell with a descriptor the "
+                              "card does not own; ignored\n");
+                return;
+            }
+            first_control1 = control1;
+            have_first = true;
+        }
+
+        if (seg_len > XFRAME_MAX_FRAME - frame_len) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: transmit frame exceeds %u bytes; truncated\n",
+                          XFRAME_MAX_FRAME);
+            seg_len = XFRAME_MAX_FRAME - frame_len;
+        }
+        if (seg_len > 0 &&
+            pci_dma_read(pdev, bufaddr, s->tx_frame + frame_len, seg_len)
+                != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: transmit buffer read at 0x%" PRIx64
+                          " failed; list abandoned\n", bufaddr);
+            return;
+        }
+        frame_len += seg_len;
+
+        if ((control1 & XFRAME_TXD_GCL) || frame_len >= XFRAME_MAX_FRAME) {
+            break;  /* last segment of this frame */
+        }
+    }
+
+    /* Release the first descriptor to the host (clear its ownership bit). */
+    if (have_first) {
+        uint8_t word[8];
+
+        stq_le_p(word, first_control1 & ~XFRAME_TXD_OWN);
+        pci_dma_write(pdev, par, word, sizeof(word));
+    }
+
+    if (frame_len > 0) {
+        qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
+    }
+}
+
+/* The TxP window is write-only (the doorbell); the drivers never read it. */
 static uint64_t xframe_txp_read(void *opaque, hwaddr addr, unsigned size)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "xframe: TxP window read at 0x%" PRIx64 " (size %u) -- "
-                  "the transmit doorbell is not modelled in this slice\n",
-                  addr, size);
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "xframe: read of the write-only TxP window at 0x%" PRIx64
+                  " (size %u)\n", addr, size);
     return 0;
 }
 
 static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
                              unsigned size)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "xframe: TxP window write at 0x%" PRIx64
-                  " = 0x%" PRIx64 " (size %u) -- the transmit doorbell is "
-                  "not modelled in this slice\n", addr, val, size);
+    XframeState *s = opaque;
+    /*
+     * Ring-index hygiene: the write carries a raw guest-supplied TxDL slot in
+     * its address. Reduce the FIFO index modulo the FIFO count before use so a
+     * doorbell can never index past the modelled ring (the sgi-ioc3-eth.c /
+     * qlogic-isp.c pattern); the BAR decode already bounds both the FIFO and
+     * the slot (the slot offset is confined to one FIFO stride). A write that
+     * is not on a TxDL pointer or control boundary is a guest error, not a
+     * walk.
+     */
+    unsigned fifo = (addr / XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXP_FIFOS;
+    unsigned field = (addr % XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXDL_STRIDE;
+
+    switch (field) {
+    case XFRAME_TXDL_PAR:
+        s->txdl_par[fifo] = val;
+        return;
+    case XFRAME_TXDL_LCR:
+        xframe_tx_doorbell(s, fifo, val);
+        return;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: TxP write at 0x%" PRIx64 " is not a TxDL "
+                      "pointer or control field; ignored\n", addr);
+        return;
+    }
 }
 
 /*
- * The TxP transmit descriptor/doorbell registers are 64-bit like the PIF
- * window's, so the widths match even though the window itself is still a stub:
- * the transmit path is a follow-on slice.
+ * The TxP transmit doorbell registers are 64-bit like the PIF window's, so the
+ * widths match.
  */
 static const MemoryRegionOps xframe_txp_ops = {
     .read = xframe_txp_read,
@@ -393,12 +527,13 @@ static void xframe_exit(PCIDevice *dev)
 /*
  * The migratable register state, per docs/datasheets/xframe.md's "VMState /
  * migration fields": the byte-swap and scratch registers, ADAPTER_CONTROL,
- * MAC_CFG and its unlock latch, and the whole MAC-address table (entry 0's
- * factory address plus any programmed entry -- whatever the guest wrote must
- * survive migration exactly). The netdev frontend's own state lives in NICConf,
- * which every NIC model leaves out of its VMState (see hw/net/sgi-ioc3-eth.c
- * and hw/net/rtl8139.c); PCI config space is covered by VMSTATE_PCI_DEVICE. The
- * transmit/receive ring bookkeeping joins this when that slice lands.
+ * MAC_CFG and its unlock latch, the whole MAC-address table (entry 0's factory
+ * address plus any programmed entry -- whatever the guest wrote must survive
+ * migration exactly), and the per-FIFO pending transmit list pointer. The
+ * netdev frontend's own state lives in NICConf, which every NIC model leaves
+ * out of its VMState (see hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI
+ * config space is covered by VMSTATE_PCI_DEVICE. The receive ring bookkeeping
+ * joins this when that slice lands.
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
@@ -416,6 +551,7 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(rmac_addr_data0, XframeState),
         VMSTATE_UINT64(rmac_addr_data1, XframeState),
         VMSTATE_UINT64_ARRAY(mac_addr, XframeState, XFRAME_MAC_TABLE_ENTRIES),
+        VMSTATE_UINT64_ARRAY(txdl_par, XframeState, XFRAME_TXP_FIFOS),
         VMSTATE_END_OF_LIST()
     }
 };

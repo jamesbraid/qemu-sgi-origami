@@ -33,6 +33,8 @@
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 /*
  * The card is instantiated with an explicit MAC so the factory-MAC read-back
@@ -104,6 +106,40 @@
  */
 #define MAC_CFG_PAYLOAD          0xc000000000000000ULL
 
+/*
+ * Transmit path (BAR2 TxP window + the TxD ring in guest memory), from
+ * docs/datasheets/xframe.md and public OpenBSD if_xgereg.h / Linux s2io.h.
+ * The doorbell is a per-FIFO TxDL slot of 16 bytes: the list pointer (PAR) at
+ * +0, the list control (LCR) at +8. Writing LCR launches the list.
+ */
+#define TXP_TXDL_PAR             0x00
+#define TXP_TXDL_LCR             0x08
+
+/*
+ * LCR fields: NUMTXD (descriptor count minus one) in bits 63:56, plus the
+ * first/last-list-gather flags.
+ */
+#define TXDL_NUMTXD(n)           ((uint64_t)(n) << 56)
+#define TXDL_LGC_FIRST           (1ULL << 49)
+#define TXDL_LGC_LAST            (1ULL << 48)
+
+/*
+ * A TxD is four 64-bit words: control1, control2, buffer pointer, host
+ * control. control1 carries the ownership bit (56, 0=host/1=card), the
+ * first/last gather-frame flags (41/40), and the 16-bit buffer length in bits
+ * 15:0 (OpenBSD stores the segment length there; Linux TXD_BUFFER0_SIZE).
+ */
+#define TXD_SIZE                 32
+#define TXD_OWN                  (1ULL << 56)
+#define TXD_GCF                  (1ULL << 41)
+#define TXD_GCL                  (1ULL << 40)
+
+/*
+ * Guest RAM the transmit tests use for descriptors and frame buffers: well
+ * above the first megabyte, in RAM nothing under qtest is using.
+ */
+#define TX_RAM_SCRATCH           0x02000000u
+
 static void save_fn(QPCIDevice *dev, int devfn, void *data)
 {
     QPCIDevice **pdev = (QPCIDevice **)data;
@@ -157,6 +193,132 @@ static uint64_t pif_readq(XframeTest *t, uint64_t off)
 static void pif_writeq(XframeTest *t, uint64_t off, uint64_t val)
 {
     qpci_io_writeq(t->dev, t->pif, off, val);
+}
+
+/*
+ * The device reads descriptors from guest memory in its own native
+ * little-endian order (DEVICE_LITTLE_ENDIAN), so a 64-bit descriptor word is
+ * written and read back as explicit little-endian bytes.
+ */
+static void dma_stq_le(QTestState *qts, uint64_t addr, uint64_t val)
+{
+    uint8_t b[8];
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        b[i] = val >> (8 * i);
+    }
+    qtest_memwrite(qts, addr, b, sizeof(b));
+}
+
+static uint64_t dma_ldq_le(QTestState *qts, uint64_t addr)
+{
+    uint8_t b[8];
+    uint64_t val = 0;
+    int i;
+
+    qtest_memread(qts, addr, b, sizeof(b));
+    for (i = 0; i < 8; i++) {
+        val |= (uint64_t)b[i] << (8 * i);
+    }
+    return val;
+}
+
+/*
+ * The socket backend frames each packet with a four-byte network-order length
+ * ahead of it, in both directions.
+ */
+static void net_socket_set_recv_timeout(int fd, int seconds)
+{
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
+                    ==, 0);
+}
+
+static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint32_t hdr;
+    size_t len;
+
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    len = ntohl(hdr);
+    g_assert_cmpuint(len, <=, buf_size);
+    g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
+    return len;
+}
+
+static void net_socket_expect_no_frame(int fd)
+{
+    uint32_t hdr;
+
+    net_socket_set_recv_timeout(fd, 1);
+    errno = 0;
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+/*
+ * A booted VM with the card wired to a socket backend, its BAR2 TxP window
+ * mapped and bus-mastering enabled. host_fd is the test's end of the pair; the
+ * device emits frames onto it, and the test reads them back.
+ */
+typedef struct {
+    QOSState *qs;
+    QPCIDevice *dev;
+    QPCIBar txp;
+    int host_fd;
+} XframeTx;
+
+static void xframe_tx_start(XframeTx *t)
+{
+    uint64_t barsize;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 5);
+    t->host_fd = sv[0];
+
+    t->qs = qtest_pc_boot("-netdev socket,fd=%d,id=n0 "
+                          "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC,
+                          sv[1]);
+    t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
+    g_assert(t->dev != NULL);
+
+    t->txp = qpci_iomap(t->dev, 2, &barsize);
+    g_assert_cmphex(barsize, ==, XFRAME_TXP_WINDOW_SIZE);
+
+    qpci_device_enable(t->dev);
+}
+
+static void xframe_tx_stop(XframeTx *t)
+{
+    g_free(t->dev);
+    qtest_shutdown(t->qs);
+    close(t->host_fd);
+}
+
+/*
+ * Program a single-segment TxD (first and last of a one-frame list) owned by
+ * the card, its buffer holding the frame.
+ */
+static void xframe_program_txd(XframeTx *t, uint64_t par, uint64_t buf,
+                               const uint8_t *frame, size_t len)
+{
+    qtest_memwrite(t->qs->qts, buf, frame, len);
+    dma_stq_le(t->qs->qts, par + 0,
+               (uint64_t)len | TXD_OWN | TXD_GCF | TXD_GCL);
+    dma_stq_le(t->qs->qts, par + 8, 0);
+    dma_stq_le(t->qs->qts, par + 16, buf);
+    dma_stq_le(t->qs->qts, par + 24, 0);
+}
+
+/* Ring the doorbell for a one-descriptor list at par. */
+static void xframe_ring_doorbell(XframeTx *t, uint64_t par)
+{
+    qpci_io_writeq(t->dev, t->txp, TXP_TXDL_PAR, par);
+    qpci_io_writeq(t->dev, t->txp, TXP_TXDL_LCR,
+                   TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
 }
 
 /*
@@ -399,6 +561,81 @@ static void test_factory_mac_readback(void)
     xframe_stop(&t);
 }
 
+/*
+ * Transmit: program a single-descriptor TxD list in guest memory, ring the
+ * doorbell, and assert the device consumes the descriptor (ownership bit
+ * cleared) and emits the exact frame onto the backend. A golden byte-for-byte
+ * assertion on what left the card, not a register round trip.
+ */
+static void test_transmit_emits_a_frame(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint64_t par = TX_RAM_SCRATCH;
+    uint64_t buf = TX_RAM_SCRATCH + 0x1000;
+    size_t len;
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+    memset(frame, 0xff, 6);  /* broadcast destination */
+
+    xframe_tx_start(&t);
+    xframe_program_txd(&t, par, buf, frame, sizeof(frame));
+    xframe_ring_doorbell(&t, par);
+
+    len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    /* The card released the descriptor: ownership handed back to the host. */
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, par) & TXD_OWN, ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Guest-driven hang class: a doorbell whose list pointer is far out of range
+ * must not walk off into nothing or wedge the device. It emits no frame and
+ * the device keeps working -- a valid transmit right after still goes out.
+ */
+static void test_transmit_out_of_range_pointer_is_safe(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint64_t good_par = TX_RAM_SCRATCH;
+    uint64_t buf = TX_RAM_SCRATCH + 0x1000;
+    size_t len;
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x40 + i);
+    }
+    memset(frame, 0xff, 6);
+
+    xframe_tx_start(&t);
+
+    /* Doorbell at a wildly out-of-range list pointer: no frame, no wedge. */
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, 0xffffffff00000000ULL);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
+                   TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+    net_socket_expect_no_frame(t.host_fd);
+
+    /* The device is still alive: a well-formed list transmits normally. */
+    net_socket_set_recv_timeout(t.host_fd, 5);
+    xframe_program_txd(&t, good_par, buf, frame, sizeof(frame));
+    xframe_ring_doorbell(&t, good_par);
+
+    len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    xframe_tx_stop(&t);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -430,6 +667,10 @@ int main(int argc, char **argv)
                    test_sw_reset_key_clears_state);
     qtest_add_func("xframe/mac-config-write-lock", test_mac_config_write_lock);
     qtest_add_func("xframe/factory-mac-readback", test_factory_mac_readback);
+    qtest_add_func("xframe/transmit-emits-a-frame",
+                   test_transmit_emits_a_frame);
+    qtest_add_func("xframe/transmit-out-of-range-pointer-is-safe",
+                   test_transmit_out_of_range_pointer_is_safe);
 
     return g_test_run();
 }
