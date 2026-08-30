@@ -241,6 +241,29 @@ static void tigon_update_irq(TigonState *s)
 }
 
 /*
+ * Re-derive the pending latch from the ring positions the guest acknowledges,
+ * and drive the line. The Tigon 2 driver does not write a clear-interrupt bit
+ * in its interrupt handler; it advances the event and receive-return consumer
+ * indices, so the level line must drop once a consumer catches up to its
+ * producer. Otherwise the firmware-up interrupt would re-assert forever, the
+ * exact level-latch trap sgi-ioc3-eth.c documents at its own acknowledge path.
+ *
+ * Transmit completion has no host-written consumer index in the GCR block --
+ * the driver reads the transmit consumer from host memory in the same handler
+ * pass -- so it rides the shared line down when the event or return consumer it
+ * services alongside catches up, rather than gating the line on its own.
+ */
+static void tigon_recompute_irq(TigonState *s)
+{
+    bool pending =
+        s->event_prodidx != s->gcr[TIGON_GCR_IDX(TI_GCR_EVENTCONS_IDX)] ||
+        s->return_prodidx != s->gcr[TIGON_GCR_IDX(TI_GCR_RXRETURNCONS_IDX)];
+
+    s->irq_asserted = pending;
+    tigon_update_irq(s);
+}
+
+/*
  * Descriptor/GIB DMA byte order. The chip's own GCR OPMODE swap is a real,
  * guest-programmed feature: on a big-endian host the driver sets the
  * byte-swap-descriptor bit so the chip delivers host (big-endian) order, and
@@ -603,6 +626,10 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                 s->gib_base = ((uint64_t)hi << 32) | (uint32_t)val;
                 s->gib_valid = val != 0;
                 tigon_try_firmware_up(s);
+            } else if (addr == TI_GCR_EVENTCONS_IDX ||
+                       addr == TI_GCR_RXRETURNCONS_IDX) {
+                /* The driver acknowledges by advancing these consumers. */
+                tigon_recompute_irq(s);
             }
             return;
         }
@@ -861,6 +888,16 @@ static const VMStateDescription vmstate_tigon_eeprom = {
 };
 
 /*
+ * Re-drive the interrupt line from the migrated pending latch and its gating
+ * bits, since the physical INTx level is not itself part of the stream.
+ */
+static int tigon_post_load(void *opaque, int version_id)
+{
+    tigon_update_irq(opaque);
+    return 0;
+}
+
+/*
  * The rings live in guest memory and migrate with it; only the model's own
  * indices into them, the parsed ring residency, and the firmware/interrupt
  * latches need saving. The SRAM backing array is deliberately not migrated:
@@ -870,6 +907,7 @@ static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, TigonState),
         VMSTATE_UINT32(misc_host_ctl, TigonState),
