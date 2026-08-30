@@ -26,9 +26,11 @@
  * producer advanced; and the INTA interrupt -- the 0x0204 mailbox
  * mask/acknowledge protocol, the MISC_CTL global mask, and
  * PCISTATE.INTR_NOT_ACTIVE, driven as a level through the Bridge when a
- * status-block update is posted with interrupts unmasked. The dual-port device
- * arrives in a later commit; a write to a register with no modelled behaviour
- * logs LOG_UNIMP and is stored so a read-back still round-trips.
+ * status-block update is posted with interrupts unmasked; and the dual-port
+ * BCM5704 -- one multifunction PCI device whose function 0 spawns an identical
+ * MAC at function 1 of the same slot, each function an independent instance of
+ * this same code. A write to a register with no modelled behaviour logs
+ * LOG_UNIMP and is stored so a read-back still round-trips.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -58,6 +60,14 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_DEVICE_ID           0x1645  /* BCM5701 */
 #define BCM570X_SUBSYS_VENDOR_ID    0x10a9  /* SGI */
 #define BCM570X_SUBSYS_ID           0x8010
+
+/*
+ * The dual-port BCM5704 copper four-tuple, the model=bcm5704 default. The
+ * SerDes variant is device 0x16a8 / subsystem 0x8014, selected by overriding
+ * device-id and subsystem-id explicitly.
+ */
+#define BCM570X_DEVICE_ID_BCM5704   0x1648
+#define BCM570X_SUBSYS_ID_BCM5704   0x8013
 
 /*
  * BAR0 is 64 KiB: a register file at 0x0000-0x7FFF and a 32 KiB window into
@@ -889,6 +899,22 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     }
 
     /*
+     * The model selects the identity. bcm5704 defaults to the copper dual-port
+     * four-tuple; a caller leaving the id properties at their bcm5701 defaults
+     * gets it, one wanting the SerDes variant overrides device-id and
+     * subsystem-id. This runs before the ids reach config space and before the
+     * chip id is derived from device-id below.
+     */
+    if (s->model && strcmp(s->model, "bcm5704") == 0) {
+        if (s->device_id == BCM570X_DEVICE_ID) {
+            s->device_id = BCM570X_DEVICE_ID_BCM5704;
+        }
+        if (s->subsystem_id == BCM570X_SUBSYS_ID) {
+            s->subsystem_id = BCM570X_SUBSYS_ID_BCM5704;
+        }
+    }
+
+    /*
      * The PCI four-tuple IRIX tg requires. The Broadcom primary vendor/device
      * sit at 0x00/0x02 and the SGI subsystem identity in the standard PCI
      * subsystem fields: subsystem vendor at 0x2C, subsystem id at 0x2E. (bge's
@@ -940,6 +966,44 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                           &ds->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
     bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
+
+    /*
+     * The dual-port BCM5704 is one multifunction PCI device presenting two MAC
+     * functions, not two devices and not a bridged card (datasheet: an
+     * inference from the public BCM5704 architecture and the driver supporting
+     * it). Model it as function 0 spawning an identical sibling at function 1 of
+     * the same slot -- both are this same type running the same per-function
+     * code, so the two share the implementation rather than forking it, and each
+     * gets its own register file, SRAM, PHY, ring engine, status block and
+     * interrupt. Only function 0 spawns, so the sibling at function 1 does not
+     * recurse.
+     *
+     * The PCI core ran pci_init_multifunction for this function before this
+     * realize, so set the multifunction capability and header bit by hand now:
+     * without the capability on function 0 the core rejects registering a
+     * function 1 as populating a single-function device. The sibling carries the
+     * full four-tuple so a SerDes override on function 0 reaches function 1 too.
+     */
+    if (s->model && strcmp(s->model, "bcm5704") == 0 &&
+        PCI_FUNC(dev->devfn) == 0) {
+        PCIBus *bus = pci_get_bus(dev);
+        PCIDevice *f1;
+
+        dev->cap_present |= QEMU_PCI_CAP_MULTIFUNCTION;
+        pci_conf[PCI_HEADER_TYPE] |= PCI_HEADER_TYPE_MULTI_FUNCTION;
+
+        f1 = pci_new_multifunction(PCI_DEVFN(PCI_SLOT(dev->devfn), 1),
+                                   TYPE_BCM570X);
+        qdev_prop_set_string(&f1->qdev, "model", "bcm5704");
+        qdev_prop_set_uint16(&f1->qdev, "vendor-id", s->vendor_id);
+        qdev_prop_set_uint16(&f1->qdev, "device-id", s->device_id);
+        qdev_prop_set_uint16(&f1->qdev, "subsystem-vendor-id",
+                             s->subsystem_vendor_id);
+        qdev_prop_set_uint16(&f1->qdev, "subsystem-id", s->subsystem_id);
+        if (!pci_realize_and_unref(f1, bus, errp)) {
+            return;
+        }
+    }
 }
 
 static void bcm570x_reset_hold(Object *obj, ResetType type)

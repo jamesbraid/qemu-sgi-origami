@@ -183,6 +183,15 @@ static const uint64_t window_offset[8] = {
 #define BRIDGE_INT_STATUS       REG(0x100)
 #define BCM_INT_PIN             (1u << BCM_SLOT)
 
+/* Dual-port BCM5704 (Task 7): copper four-tuple and the multifunction bit. */
+#define BCM_DEVICE_ID_BCM5704   0x1648u
+#define BCM_SUBSYS_ID_BCM5704   0x8013u
+#define BCM_HEADER_MULTIFUNC    0x80u          /* PCI_HEADER_TYPE multi bit */
+/* A second status-block host page, so function 1 DMAs somewhere function 0
+ * does not, proving the two engines are independent. */
+#define STATUS2_PHYS            0x00260000u
+#define STATUS2_IOVA            (DMA_PREFIX | STATUS2_PHYS)
+
 /* The Bridge's per-slot DMA swapper (direct window) and the direct map. */
 #define DEV_SWAP_DIRECT         (1u << 19)
 #define BRIDGE_DIRECT_MAP_REG   REG(0x080)
@@ -275,6 +284,31 @@ static uint32_t ind_mem_readl(QTestState *qts, uint32_t off)
 {
     qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_BASEADDR, off);
     return qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_DATA);
+}
+
+/*
+ * The same indirect windows but addressed at a chosen PCI function, so the
+ * dual-port test reaches each BCM5704 MAC function's own register file and SRAM
+ * through its own config space -- no BAR mapping needed.
+ */
+static void ind_reg_writel_fn(QTestState *qts, unsigned fn, uint32_t off,
+                              uint32_t val)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, fn) + BCM_PCI_REG_BASEADDR, off);
+    qtest_writel(qts, CFG0(BCM_SLOT, fn) + BCM_PCI_REG_DATA, val);
+}
+
+static uint32_t ind_mem_readl_fn(QTestState *qts, unsigned fn, uint32_t off)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, fn) + BCM_PCI_MEMWIN_BASEADDR, off);
+    return qtest_readl(qts, CFG0(BCM_SLOT, fn) + BCM_PCI_MEMWIN_DATA);
+}
+
+static void ind_mem_writel_fn(QTestState *qts, unsigned fn, uint32_t off,
+                              uint32_t val)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, fn) + BCM_PCI_MEMWIN_BASEADDR, off);
+    qtest_writel(qts, CFG0(BCM_SLOT, fn) + BCM_PCI_MEMWIN_DATA, val);
 }
 
 /* A PHY register read/write through the MAC's MI_COMM register (needs BAR0). */
@@ -1056,6 +1090,133 @@ static void test_state_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+/*
+ * Arm a BCM5704 function's status-block DMA entirely through its own config
+ * space: enable bus mastering, give its transmit ring a length so a doorbell
+ * passes the range guard, program the status block's host page, and enable the
+ * host-coalescing block. No BAR mapping is needed -- the indirect windows reach
+ * each function's register file and SRAM, so the two functions are configured
+ * independently at one slot.
+ */
+static void dual5704_arm(QTestState *qts, unsigned fn, uint64_t status_iova)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, fn) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    ind_mem_writel_fn(qts, fn, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    ind_reg_writel_fn(qts, fn, BCM_HCC_STATUSBLK_HI, status_iova >> 32);
+    ind_reg_writel_fn(qts, fn, BCM_HCC_STATUSBLK_LO, status_iova & 0xffffffff);
+    ind_reg_writel_fn(qts, fn, BCM_HCC_MODE, BCM_HCC_ENABLE);
+}
+
+/*
+ * The dual-port BCM5704 presents as one multifunction PCI device: function 0
+ * and function 1 at the same slot, each carrying the copper four-tuple, each
+ * with its own MAC identity, and each with an independent ring engine and
+ * status block. Driving one function's transmit doorbell moves that function's
+ * status block and leaves the other's untouched.
+ */
+static void test_dual_port_present_and_independent(const void *data)
+{
+    QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE
+                                  " -netdev user,id=n0"
+                                  " -device bcm570x,model=bcm5704,addr=%02x.0,"
+                                  "netdev=n0", BCM_SLOT);
+    uint8_t sb0[BCM_STATUS_BLK_SIZE], sb1[BCM_STATUS_BLK_SIZE];
+    unsigned fn;
+
+    /* Both functions present, each carrying the copper BCM5704 four-tuple. */
+    for (fn = 0; fn < 2; fn++) {
+        g_assert_cmphex(qtest_readl(qts, CFG0(BCM_SLOT, fn) + PCI_VENDOR_ID), ==,
+                        BCM_VENDOR_ID |
+                        ((uint32_t)BCM_DEVICE_ID_BCM5704 << 16));
+        g_assert_cmphex(qtest_readl(qts, CFG0(BCM_SLOT, fn) +
+                                    PCI_SUBSYSTEM_VENDOR_ID), ==,
+                        BCM_SUBSYS_VENDOR_ID |
+                        ((uint32_t)BCM_SUBSYS_ID_BCM5704 << 16));
+    }
+
+    /*
+     * Function 0 sets the PCI_HEADER_TYPE multifunction bit, so a guest
+     * enumerates function 1 at all. Read the dword at 0x0C (a 4-byte config
+     * access needs no byte-lane correction) and take the header-type byte.
+     */
+    g_assert_cmphex((qtest_readl(qts, CFG0(BCM_SLOT, 0) + 0x0c) >> 16) &
+                    BCM_HEADER_MULTIFUNC, ==, BCM_HEADER_MULTIFUNC);
+
+    /*
+     * Distinct MAC identity per function: both mailboxes carry the 0x484B tag,
+     * and the address bytes differ (each function took its own default MAC).
+     */
+    g_assert_cmphex(ind_mem_readl_fn(qts, 0, 0x0c14) >> 16, ==, 0x484b);
+    g_assert_cmphex(ind_mem_readl_fn(qts, 1, 0x0c14) >> 16, ==, 0x484b);
+    g_assert_cmphex(ind_mem_readl_fn(qts, 0, 0x0c18), !=,
+                    ind_mem_readl_fn(qts, 1, 0x0c18));
+
+    /* The per-slot Bridge DMA path (shared), then arm each function's engine. */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(BCM_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_SWAP_DIRECT | (CARD_MMIO(BCM_SLOT) >> 20));
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    dual5704_arm(qts, 0, STATUS_IOVA);
+    dual5704_arm(qts, 1, STATUS2_IOVA);
+    qtest_memset(qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    qtest_memset(qts, STATUS2_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    /* Drive function 0's doorbell only: its status block updates, function 1's
+     * stays zero -- the engines are independent. */
+    ind_reg_writel_fn(qts, 0, BCM_MBX_TX_PROD_LO, 0);
+    qtest_memread(qts, STATUS_PHYS, sb0, sizeof(sb0));
+    qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
+    g_assert_cmphex(get32be(sb0) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get32be(sb1), ==, 0);
+
+    /* And driving function 1 moves its own status block -- both work, apart. */
+    ind_reg_writel_fn(qts, 1, BCM_MBX_TX_PROD_LO, 0);
+    qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
+    g_assert_cmphex(get32be(sb1) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Both functions' per-function state migrates independently. Each function is a
+ * full PCI device with its own VMStateDescription at its own devfn, so no
+ * VMState change was needed for the dual-port device; this proves it by writing
+ * a distinct SRAM word to each function, migrating stopped, and reading both
+ * back on the destination.
+ */
+static void test_dual_port_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_initf(MACHINE_WITH_BRIDGE
+                       " -netdev user,id=n0"
+                       " -device bcm570x,model=bcm5704,addr=%02x.0,netdev=n0",
+                       BCM_SLOT);
+    ind_mem_writel_fn(from, 0, 0x0c1c, 0xaaaa0000);
+    ind_mem_writel_fn(from, 1, 0x0c1c, 0xbbbb1111);
+
+    dest = g_strdup_printf(MACHINE_WITH_BRIDGE
+                           " -netdev user,id=n0"
+                           " -device bcm570x,model=bcm5704,addr=%02x.0,netdev=n0"
+                           " -incoming %s", BCM_SLOT, uri);
+    to = qtest_init(dest);
+    bcm570x_migrate(from, uri);
+
+    g_assert_cmphex(ind_mem_readl_fn(to, 0, 0x0c1c), ==, 0xaaaa0000);
+    g_assert_cmphex(ind_mem_readl_fn(to, 1, 0x0c1c), ==, 0xbbbb1111);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1092,6 +1253,10 @@ int main(int argc, char **argv)
                         test_status_block_gated_by_hcc);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
+    qtest_add_data_func("/bcm570x/dual-port-present-and-independent", NULL,
+                        test_dual_port_present_and_independent);
+    qtest_add_data_func("/bcm570x/dual-port-survives-migration", NULL,
+                        test_dual_port_survives_migration);
 
     return g_test_run();
 }
