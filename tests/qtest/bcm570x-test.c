@@ -102,6 +102,17 @@ static const uint64_t window_offset[8] = {
 #define BCM_HCC_ENABLE          0x00000002u
 #define BCM_MISCCFG_RESET       0x00000001u
 
+/*
+ * The buffer-manager mode register (BUFMGR_MODE in tg3, BGE_BMAN_MODE in bge).
+ * ENABLE is the enable-request bit; ATTN_ENABLE arms its attention. The public
+ * drivers set ENABLE and poll for it to stay SET, but IRIX tg sets ENABLE and
+ * polls for it to CLEAR -- the chip acknowledges the request by dropping the
+ * bit -- so the model self-clears ENABLE while ATTN_ENABLE persists.
+ */
+#define BCM_BUFMGR_MODE         0x4400u
+#define BCM_BUFMGR_ENABLE       0x00000002u
+#define BCM_BUFMGR_ATTN         0x00000004u
+
 /* The firmware-ready handshake in on-chip SRAM. */
 #define BCM_SRAM_FW_MBOX        0x0b50u
 #define BCM_FW_MAGIC            0x4b657654u
@@ -137,6 +148,17 @@ static const uint64_t window_offset[8] = {
 #define MII_BMSR_LINK           0x0004u
 #define BCM_PHY_IDR1_VALUE      0x0020u
 #define BCM_PHY_IDR2_BCM5701    0x6110u
+
+/*
+ * The Broadcom auxiliary status summary register (BRGPHY_MII_AUXSTS, 0x19) the
+ * copper link-up path reads for speed and duplex. Its AN_RES field (0x0700)
+ * carries the negotiated result -- 0x0700 is 1000baseT full duplex -- alongside
+ * the autoneg-complete and link bits.
+ */
+#define BRGPHY_AUXSTS           0x19u
+#define BRGPHY_AUXSTS_ACOMP     0x8000u
+#define BRGPHY_AUXSTS_AN_RES    0x0700u
+#define BRGPHY_AUXSTS_1000TFDX  0x0700u
 
 /* Any PHY address answers: the integrated PHY is the only one on the bus. */
 #define BCM_PHY_ADDR            1u
@@ -681,6 +703,85 @@ static void test_hcc_mode_idle_poll(const void *data)
 }
 
 /*
+ * The buffer-manager enable handshake, where IRIX tg diverges from the public
+ * drivers. The driver sets ENABLE (0x2) alongside ATTN_ENABLE (0x4) and then
+ * polls ENABLE for CLEAR ("TG3_BM_ENA bit did not clear" on timeout) -- the
+ * opposite of tg3/bge, which poll it for SET. So a plain store-and-read-back
+ * would leave ENABLE set and hang the driver. The chip acknowledges the request
+ * by dropping ENABLE at once, while ATTN_ENABLE persists.
+ */
+static void test_bufmgr_enable_self_clears(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    bar_writel(qts, BCM_BUFMGR_MODE, BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+
+    /* ENABLE reads back clear for the driver's poll... */
+    g_assert_cmphex(bar_readl(qts, BCM_BUFMGR_MODE) & BCM_BUFMGR_ENABLE, ==, 0);
+    /* ...while ATTN_ENABLE, which the driver did not poll, persists. */
+    g_assert_cmphex(bar_readl(qts, BCM_BUFMGR_MODE) & BCM_BUFMGR_ATTN, ==,
+                    BCM_BUFMGR_ATTN);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The host-coalescing idle poll reads the WHOLE register for zero, not just the
+ * ENABLE bit ("Host Coalescing Mode Rgtr did not clear" on timeout). Write a
+ * value with several bits set, then write 0 and confirm every bit reads back
+ * clear, the state the driver waits for before it reprograms the block.
+ */
+static void test_hcc_mode_clears_to_zero(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    bar_writel(qts, BCM_HCC_MODE, 0x0000013e);
+    bar_writel(qts, BCM_HCC_MODE, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_HCC_MODE), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The MII BUSY handshake. The driver issues an MI command with START/BUSY
+ * (0x20000000) set and polls BUSY for CLEAR ("BUSY bit never cleared" on
+ * timeout); a read command must also leave the addressed PHY register's value
+ * in the low 16 bits. The chip completes the transaction at once. Reading the
+ * FULL command word back (not just its low half) proves BUSY is gone for the
+ * poll, for both a read and a write command.
+ */
+static void test_mi_busy_clears(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+    uint32_t comm;
+
+    bcm570x_aim_window(qts);
+
+    /* A read of the PHY identity: BUSY clears and the low 16 carry the value. */
+    bar_writel(qts, BCM_MI_COMM,
+               BCM_MICOMM_BUSY | BCM_MICMD_READ |
+               (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+               (MII_PHYIDR1 << BCM_MICOMM_REG_SHIFT));
+    comm = bar_readl(qts, BCM_MI_COMM);
+    g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+    g_assert_cmphex(comm & 0xffff, ==, BCM_PHY_IDR1_VALUE);
+
+    /* A write command: BUSY clears too, so the driver's poll returns. */
+    bar_writel(qts, BCM_MI_COMM,
+               BCM_MICOMM_BUSY | BCM_MICMD_WRITE |
+               (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+               (MII_BMCR << BCM_MICOMM_REG_SHIFT) |
+               (MII_BMCR_AUTOEN | MII_BMCR_STARTNEG));
+    g_assert_cmphex(bar_readl(qts, BCM_MI_COMM) & BCM_MICOMM_BUSY, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * MISC_CTL[31:16] presents the chip id the driver reads its whole identity
  * from. For the single-port default it must decode to BCM5701 (chip id 0x0105,
  * ASIC revision chip-id >> 12 == 0), not merely non-zero.
@@ -750,6 +851,41 @@ static void test_phy_readback(const void *data)
     /* The auto-poll link latch now reads the carrier too. */
     g_assert_cmphex(bar_readl(qts, BCM_MI_STS) & BCM_MISTS_LINK, ==,
                     BCM_MISTS_LINK);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The copper link-up gate. IRIX tg's negotiation (tg_neg_copper_link) exits
+ * only when the brgphy auxiliary status summary (PHY register 0x19) reads with
+ * ACOMP (0x8000) set and a valid highest-common-denominator speed/duplex in the
+ * AN_RES field (bits 10:8), and it treats an all-ones read as a PHY that is not
+ * responding. So before the link is up the register must answer with ACOMP
+ * clear and a real (non-0xffff) value, and once up it must present ACOMP with a
+ * settled resolution -- here 1000baseT full duplex, matching the gigabit answer
+ * the 1000baseT status register already gives.
+ */
+static void test_phy_aux_status_link_up(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+    uint16_t aux;
+
+    bcm570x_aim_window(qts);
+
+    /* Still negotiating: ACOMP clear, but a real value so it is not "no PHY". */
+    aux = mii_read(qts, BCM_PHY_ADDR, BRGPHY_AUXSTS);
+    g_assert_cmphex(aux & BRGPHY_AUXSTS_ACOMP, ==, 0);
+    g_assert_cmphex(aux, !=, 0xffff);
+
+    /* Configure the interface (restart autonegotiation): link comes up. */
+    mii_write(qts, BCM_PHY_ADDR, MII_BMCR,
+              MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
+
+    /* The gate the up-path waits on: ACOMP set, a valid HCD, not all-ones. */
+    aux = mii_read(qts, BCM_PHY_ADDR, BRGPHY_AUXSTS);
+    g_assert_cmphex(aux & BRGPHY_AUXSTS_ACOMP, ==, BRGPHY_AUXSTS_ACOMP);
+    g_assert_cmphex(aux & BRGPHY_AUXSTS_AN_RES, ==, BRGPHY_AUXSTS_1000TFDX);
+    g_assert_cmphex(aux, !=, 0xffff);
 
     qtest_quit(qts);
 }
@@ -1295,11 +1431,19 @@ int main(int argc, char **argv)
                         test_self_clearing_reset_bits);
     qtest_add_data_func("/bcm570x/hcc-mode-idle-poll", NULL,
                         test_hcc_mode_idle_poll);
+    qtest_add_data_func("/bcm570x/bufmgr-enable-self-clears", NULL,
+                        test_bufmgr_enable_self_clears);
+    qtest_add_data_func("/bcm570x/hcc-mode-clears-to-zero", NULL,
+                        test_hcc_mode_clears_to_zero);
+    qtest_add_data_func("/bcm570x/mi-busy-clears", NULL,
+                        test_mi_busy_clears);
     qtest_add_data_func("/bcm570x/misc-ctl-asic-revision", NULL,
                         test_misc_ctl_asic_revision);
     qtest_add_data_func("/bcm570x/mac-address-mailbox", NULL,
                         test_mac_address_mailbox);
     qtest_add_data_func("/bcm570x/phy-readback", NULL, test_phy_readback);
+    qtest_add_data_func("/bcm570x/phy-aux-status-link-up", NULL,
+                        test_phy_aux_status_link_up);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
     qtest_add_data_func("/bcm570x/tx-producer-out-of-range", NULL,

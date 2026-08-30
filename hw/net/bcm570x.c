@@ -17,8 +17,10 @@
  * indirect memory window through config 0x7C/0x84; the chip id in MISC_CTL; the
  * global reset with its on-chip firmware-ready handshake -- the SRAM 0x0B50
  * mailbox and the firmware-progress register at 0x5034 the driver polls; the
- * self-clearing *_MODE reset bits; the MII path to the integrated copper PHY
- * (a separate model) through the MI registers; the MAC-address mailbox in SRAM;
+ * self-clearing *_MODE reset bits, including the buffer-manager enable request
+ * the IRIX driver polls for clear rather than set; the MII path to the
+ * integrated copper PHY (a separate model) through the MI registers; the
+ * MAC-address mailbox in SRAM;
  * link status tied to the netdev; the transmit ring -- the send-ring RCB, the
  * producer mailbox, the descriptor/data DMA through the Bridge, and the status
  * block DMA'd to the host, with the DMA byte order settled here; and the receive
@@ -128,6 +130,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 /* Register-file offsets with modelled behaviour. */
 #define BCM570X_MAC_MODE            0x0400
 #define BCM570X_HCC_MODE            0x3c00
+#define BCM570X_BUFMGR_MODE         0x4400
 #define BCM570X_MISC_CFG            0x6804
 
 /*
@@ -137,6 +140,16 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  */
 #define BCM570X_MODE_RESET          0x00000001u
 #define BCM570X_MISCCFG_RESET_CORE_CLOCKS 0x00000001u
+
+/*
+ * The buffer-manager enable bit diverges from the public drivers. tg3 and bge
+ * set BUFMGR_MODE.ENABLE and poll for it to stay SET; IRIX tg sets it and polls
+ * for it to CLEAR ("TG3_BM_ENA bit did not clear" on timeout), reading the drop
+ * as the chip's acknowledgement that the buffer manager has started. So the
+ * model self-clears ENABLE -- an enable-request the chip completes at once --
+ * while ATTN_ENABLE and the rest of the write persist.
+ */
+#define BCM570X_BUFMGR_MODE_ENABLE  0x00000002u
 
 /*
  * The firmware-ready handshake. The driver writes the magic to on-chip SRAM
@@ -561,6 +574,14 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
     case BCM570X_HCC_MODE:
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
+        break;
+    case BCM570X_BUFMGR_MODE:
+        /*
+         * The reset bit self-clears like any *_MODE register, and so does the
+         * ENABLE request the IRIX driver polls for clear (its divergence from
+         * tg3/bge). ATTN_ENABLE and the rest persist for read-back.
+         */
+        val &= ~(BCM570X_MODE_RESET | BCM570X_BUFMGR_MODE_ENABLE);
         break;
     case BCM570X_MBX_IRQ0_LO:
         /*

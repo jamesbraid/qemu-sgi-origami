@@ -24,6 +24,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_GTCR        0x09    /* 1000baseT control */
 #define BCM570X_PHY_GTSR        0x0a    /* 1000baseT status */
 #define BCM570X_PHY_EXTSR       0x0f    /* extended status */
+#define BCM570X_PHY_AUXSTS      0x19    /* Broadcom auxiliary status summary */
 
 /*
  * The identity brgphy binds the BCM5701 on: the "xxBROADCOM" OUI 0x000818 and
@@ -71,6 +72,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_GTSR_LP_1000TFDX  0x0800
 #define BCM570X_PHY_EXTSR_1000TFDX    0x2000
 #define BCM570X_PHY_EXTSR_1000THDX    0x1000
+
+/*
+ * Auxiliary status summary (BRGPHY_MII_AUXSTS) bits. ACOMP is the driver's
+ * autonegotiation-complete gate; the AN_RES field holds the negotiated
+ * highest-common-denominator result, 0x0700 being 1000baseT full duplex. A
+ * brgphy copper link-up reads this register for the settled speed and duplex.
+ */
+#define BCM570X_PHY_AUXSTS_ACOMP      0x8000
+#define BCM570X_PHY_AUXSTS_1000TFDX   0x0700
 
 /* Reset values: autonegotiating, advertising 10/100 and 1000baseT full. */
 #define BCM570X_PHY_BMCR_RESET_VALUE (BCM570X_PHY_BMCR_AUTOEN | \
