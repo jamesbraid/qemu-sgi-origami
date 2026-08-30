@@ -1,22 +1,10 @@
 /*
- * Two behaviors the Bridge sanity diagnostic on the real-PROM path depends on,
- * both of which a model that bus-errors would fail:
- *
- *  - The external-SSRAM window completes reads rather than faulting. This board
- *    fits no external RAM, and the PROM sizes it with an unguarded probe loop
- *    that expects a completing access; a bus error faults the loop.
- *
- *  - An access to an undefined address inside the register window posts and is
- *    reported asynchronously as an invalid-address error (interrupt status bit
- *    24), rather than raising a synchronous bus error. The diagnostic provokes
- *    exactly this by storing to an undefined slot under a fault handler that
- *    fails on any processor exception.
- *
- * The "posts, does not fault" property is a CPU-dispatch fact a qtest access
- * cannot see — a refused access and one that returned look alike without a
- * processor — so the completion checks run a real instruction from a -kernel
- * fragment and watch for a RAM marker. The status-bit latch and its clearing
- * are plain register state and are checked over the qtest protocol.
+ * Two Bridge behaviors the PROM's sanity diagnostic depends on: the
+ * external-SSRAM window completes reads (an unguarded probe loop sizes
+ * it), and an undefined register-window access posts and latches the
+ * invalid-address error instead of bus-erroring. "Posts, not faults" is
+ * only visible to an executing processor, so those checks run a -kernel
+ * fragment and watch for a RAM marker.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -62,11 +50,8 @@
 #define GUEST_MARKER        0x5a17c0deu
 
 /*
- * A guest fragment that does the two accesses the diagnostic makes and would
- * fault a bus-erroring model on: a read of the SSRAM window, then a store to
- * the undefined register 0x7c. It writes a completion marker to RAM only if
- * both returned. If either bus-errors, the fragment takes an exception, the
- * marker never lands, and the test times out.
+ * The diagnostic's two accesses; the marker lands only if both returned,
+ * so a bus-erroring model times this out.
  */
 static char *write_invalid_access_guest(void)
 {
@@ -147,12 +132,8 @@ static void test_ssram_and_undefined_slot_post(const void *data)
     uint32_t marker = 0;
 
     /*
-     * A real instruction, because "the access posts rather than faulting" is a
-     * property only an executing processor can show: a qtest read cannot tell a
-     * refused access from one that returned. The fragment reads the SSRAM
-     * window and stores to the undefined register 0x7c; the marker lands only
-     * if neither bus-errored. Reverting either the SSRAM window or the
-     * invalid-address posting makes this time out.
+     * A real instruction: a qtest read cannot tell refused from returned.
+     * Reverting either fix makes this time out.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
     qts = qtest_initf("-M origin200,io-bridge=on -smp 1 -kernel %s", kernel);
@@ -174,11 +155,8 @@ static void test_invalid_address_latches_status(const void *data)
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
     /*
-     * The interrupt status bit is plain register state, so the qtest protocol
-     * can drive it. Store to the undefined slot 0x7c and the invalid-address
-     * bit latches; the register otherwise reads its device pins, all clear
-     * here. Writing the reset-interrupt-status register clears the bit — the
-     * step the diagnostic takes before it re-reads to confirm a clean state.
+     * Plain register state: the store latches the bit, the group strobe
+     * clears it -- the diagnostic's own sequence.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)) & INT_INVALID_ADDR,
                     ==, 0);
@@ -199,11 +177,8 @@ static void test_reset_strobe_clears_only_its_own_group(const void *data)
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
     /*
-     * Each group strobe clears only its own group's errors. The invalid-address
-     * bit is in the request-dispatch group, so a strobe for another group must
-     * leave it latched; only its own group's strobe clears it. The guests write
-     * all seven groups at once, so a strobe that cleared more than it names
-     * would pass unnoticed until a guest cleared a single group.
+     * Guests write all seven groups at once, so a strobe clearing more
+     * than it names passes unnoticed until someone clears a single group.
      */
     qtest_writel(qts, BRIDGE_BASE + UNDEFINED_REG, 0xdeadbeefu);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)) & INT_INVALID_ADDR,
