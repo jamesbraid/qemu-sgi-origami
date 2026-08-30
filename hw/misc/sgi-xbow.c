@@ -1,29 +1,15 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Crossbow — the crosstalk crossbar, as far as a guest has to see it.
+ * SGI Crossbow crosstalk crossbar.
  *
  * Copyright (c) 2026 Origami contributors
  *
- * The chip is an eight-port switch that routes crosstalk packets by the widget
- * number they name, and its own registers answer as widget 0. It translates
- * nothing and reorders nothing, so on a machine with one node board and one I/O
- * bridge it is a point-to-point link with a register file on it, and a guest
- * that never read those registers would not notice its absence.
- *
- * Except that both guests do read them, first, and decide what kind of machine
- * this is from the answer. That is the whole of what this model owes them
- * today: widget 0 has to answer its identification register, and answer with
- * the right identity. An Origin 200 does not report a crossbar there — it
- * reports the identity of the I/O bridge — and a guest reading a crossbar's
- * own part number instead takes a different probe path, consults the
- * configuration graph differently, and prints different things. So the
- * identity is a property the machine sets rather than a constant here, and
- * this file stays the Crossbow's, which is where the rest of the switch goes
- * when a machine that has one needs it.
- *
- * Everything not implemented raises a bus error rather than answering zero. A
- * register file that answers plausibly for registers nobody wrote is how a
- * missing mechanism stays invisible until a guest fails somewhere unrelated.
+ * An eight-port switch routing crosstalk packets by widget number, its own
+ * registers answering as widget 0. Only the identification register is
+ * implemented; guests read it first and decide the machine type from the
+ * answer. The identity is a machine property, not a constant: an Origin 200
+ * reports the I/O bridge's identity at widget 0, not a crossbar's.
+ * Unimplemented registers raise a bus error rather than answering zero.
  */
 
 #include "qemu/osdep.h"
@@ -35,10 +21,8 @@
 #include "migration/vmstate.h"
 
 /*
- * Every register in this chip is 32 bits sitting in the low half of an
- * eight-byte slot, so on this big-endian machine the data is at the slot's
- * offset plus four and that is the address the guests' own headers name. The
- * upper half of the slot reads zero.
+ * Registers are 32 bits in the low half of an eight-byte slot: the data sits
+ * at the slot's offset plus four, the address the guests' own headers name.
  */
 #define XBOW_IDENTIFICATION     0x0000
 #define XBOW_REG_DATA           4
@@ -58,17 +42,8 @@ static uint32_t sgi_xbow_identification(SGIXbowState *s)
 }
 
 /*
- * Which addresses this model answers. The chip has many more registers, and a
- * guest asking for one of those is asking a real question we have not answered,
- * so it is told rather than served a zero.
- *
- * The upper half of a register's eight-byte slot is not on this list, and
- * that is deliberate rather than an omission. It holds no register — the data
- * is in the low half — so a model returning zero there would be answering for
- * an address the chip has nothing at, which is the one thing a device here
- * may not do. It is also the address a reader gets by forgetting the
- * plus-four, so making it faulty rather than plausible is what turns that
- * mistake into a message instead of a zero.
+ * A slot's upper half holds no register, so it faults like any unimplemented
+ * address -- which also catches a reader who forgot the plus-four.
  */
 static bool sgi_xbow_implemented(hwaddr addr)
 {
@@ -104,22 +79,15 @@ static uint64_t sgi_xbow_read(void *opaque, hwaddr addr, unsigned size)
 static void sgi_xbow_write(void *opaque, hwaddr addr, uint64_t val,
                            unsigned size)
 {
-    /*
-     * The identification register is read-only, and this chip treats a write to
-     * a read-only register as an error condition rather than as something to
-     * ignore quietly.
-     */
+    /* The chip errors on a write to its read-only register. */
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-xbow: write of 0x%" PRIx64 " to the read-only "
                   "identification register at 0x%" HWADDR_PRIx "\n", val, addr);
 }
 
 /*
- * The chip's own rule, and it is stricter than a model would otherwise be:
- * every register is reached by a crosstalk double-word packet, so an access of
- * any other width is an error condition rather than an access to serve. Both
- * the maximum and the minimum are declared, because leaving either unset makes
- * the memory system reshape an access rather than reject it.
+ * Every register access is a crosstalk double-word; any other width is an
+ * error. Both bounds are declared so the core rejects instead of reshaping.
  */
 static const MemoryRegionOps sgi_xbow_ops = {
     .read = sgi_xbow_read,
@@ -147,11 +115,7 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
 }
 
-/*
- * Nothing in this model changes after reset, so there is no state to carry. The
- * description exists anyway, because a device without one silently drops out of
- * a snapshot and the next field added here would go missing without a word.
- */
+/* No state to carry yet; the description keeps the device in snapshots. */
 static const VMStateDescription vmstate_sgi_xbow = {
     .name = "sgi-xbow",
     .version_id = 1,
@@ -162,10 +126,8 @@ static const VMStateDescription vmstate_sgi_xbow = {
 };
 
 /*
- * The defaults are a real Crossbow's own identity, which is counter-intuitive
- * and correct: the chip reports part number zero and manufacturer zero, and a
- * model that invented a plausible non-zero part would be read as an unknown
- * widget. A machine whose widget 0 is not a Crossbow says so by setting these.
+ * A real Crossbow reports part 0, manufacturer 0: zero is the identity,
+ * not an unset default. Machines override these for a different widget 0.
  */
 static const Property sgi_xbow_properties[] = {
     DEFINE_PROP_UINT64("span", SGIXbowState, span, 0),
