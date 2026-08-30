@@ -679,13 +679,20 @@ static void test_flash_autoselect_survives_migration(const void *data)
     flash_command(from, FLASH_UNLOCK1, 0xaa);
     flash_command(from, FLASH_UNLOCK2, 0x55);
     flash_command(from, FLASH_UNLOCK1, 0x90);
-    g_assert_cmphex(qtest_readl(from, FLASH_HUB), ==, 0x01d5ffff);
+    /*
+     * Only the two identity bytes are pinned; what the chip answers past
+     * them follows the flash device model, the same narrowing
+     * test_flash_autoselect makes.
+     */
+    g_assert_cmphex(qtest_readb(from, FLASH_HUB), ==, 0x01);
+    g_assert_cmphex(qtest_readb(from, FLASH_HUB + 1), ==, 0xd5);
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
     migrate_stopped_vm(from, uri);
 
-    g_assert_cmphex(qtest_readl(to, FLASH_RESET), ==, 0x01d5ffff);
+    g_assert_cmphex(qtest_readb(to, FLASH_RESET), ==, 0x01);
+    g_assert_cmphex(qtest_readb(to, FLASH_RESET + 1), ==, 0xd5);
 
     qtest_quit(to);
     qtest_quit(from);

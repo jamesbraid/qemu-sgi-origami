@@ -333,9 +333,17 @@ static void test_flash_autoselect(const void *data)
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_UNLOCK1, 0x90);
 
-    /* Manufacturer 0x01 and device 0xd5 occupy logical bytes zero and one. */
-    g_assert_cmphex(qtest_readl(qts, FLASH_HUB), ==, 0x01d5ffff);
-    g_assert_cmphex(qtest_readl(qts, FLASH_REMOTE), ==, 0x01d5ffff);
+    /*
+     * Manufacturer 0x01 and device 0xd5 occupy logical bytes zero and one.
+     * Only those two identity bytes are asserted: what an Am29F080 answers
+     * for higher autoselect addresses (sector protection, then unspecified)
+     * is not something any source we hold pins, so the bytes beyond the ID
+     * follow the flash device model rather than an invented filler.
+     */
+    g_assert_cmphex(qtest_readb(qts, FLASH_HUB), ==, 0x01);
+    g_assert_cmphex(qtest_readb(qts, FLASH_HUB + 1), ==, 0xd5);
+    g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE), ==, 0x01);
+    g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE + 1), ==, 0xd5);
 
     flash_command(qts, 0, 0xf0);
     g_assert_cmphex(qtest_readl(qts, FLASH_HUB), ==, before);
@@ -350,15 +358,22 @@ static void test_flash_program_and_erase(const void *data)
 
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0xff);
 
+    /*
+     * A real Am29F080 takes program and erase time, and the device model
+     * keeps that: step the clock over each operation's completion timer
+     * before reading data back, the way the chip's own test does.
+     */
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_UNLOCK1, 0xa0);
     flash_command(qts, target, 0x5a);
+    qtest_clock_step_next(qts);
 
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_UNLOCK1, 0xa0);
     flash_command(qts, target + 1, 0xf0);
+    qtest_clock_step_next(qts);
 
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0x5a);
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target + 1), ==, 0xf0);
@@ -376,6 +391,13 @@ static void test_flash_program_and_erase(const void *data)
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_LOG_SECTOR, 0x30);
+    /*
+     * Step over the 50 us additional-sector window and then the erase time
+     * by explicit amounts: this machine keeps other timers armed, so
+     * stepping to the next deadline would advance those instead.
+     */
+    qtest_clock_step(qts, 100 * 1000 * 1000);
+    qtest_clock_step(qts, 100 * 1000 * 1000);
 
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0xff);
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + FLASH_LOG_SECTOR), ==,
