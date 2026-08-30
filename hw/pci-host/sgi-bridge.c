@@ -2509,32 +2509,41 @@ static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot
  *
  * These callbacks always target system memory, never the swapping space, so
  * there is no way back into themselves.
+ *
+ * The with-attrs form, so a transfer the fabric refuses is refused here
+ * too: the plain form has no way to answer with anything but bytes, and a
+ * device reading through this space was told its refused transfer
+ * succeeded and given zeroes for it.
  */
-static uint64_t sgi_bridge_lane_swap_read(void *opaque, hwaddr addr,
-                                          unsigned size)
+static MemTxResult sgi_bridge_lane_swap_read(void *opaque, hwaddr addr,
+                                             uint64_t *val, unsigned size,
+                                             MemTxAttrs attrs)
 {
     uint8_t bytes[8];
+    MemTxResult res;
 
-    address_space_read(&address_space_memory,
-                       sgi_bridge_window_correct(addr, size),
-                       MEMTXATTRS_UNSPECIFIED, bytes, size);
-    return ldn_be_p(bytes, size);
+    res = address_space_read(&address_space_memory,
+                             sgi_bridge_window_correct(addr, size),
+                             attrs, bytes, size);
+    *val = ldn_be_p(bytes, size);
+    return res;
 }
 
-static void sgi_bridge_lane_swap_write(void *opaque, hwaddr addr, uint64_t val,
-                                       unsigned size)
+static MemTxResult sgi_bridge_lane_swap_write(void *opaque, hwaddr addr,
+                                              uint64_t val, unsigned size,
+                                              MemTxAttrs attrs)
 {
     uint8_t bytes[8];
 
     stn_be_p(bytes, size, val);
-    address_space_write(&address_space_memory,
-                        sgi_bridge_window_correct(addr, size),
-                        MEMTXATTRS_UNSPECIFIED, bytes, size);
+    return address_space_write(&address_space_memory,
+                               sgi_bridge_window_correct(addr, size),
+                               attrs, bytes, size);
 }
 
 static const MemoryRegionOps sgi_bridge_lane_swap_ops = {
-    .read = sgi_bridge_lane_swap_read,
-    .write = sgi_bridge_lane_swap_write,
+    .read_with_attrs = sgi_bridge_lane_swap_read,
+    .write_with_attrs = sgi_bridge_lane_swap_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
