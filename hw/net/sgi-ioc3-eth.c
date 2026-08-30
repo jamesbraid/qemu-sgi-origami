@@ -3,13 +3,9 @@
  * SGI IOC3 base I/O controller: the ethernet MAC engine.
  *
  * Two descriptor rings and the register block that drives them: transmit
- * descriptors carried inline in the ring itself, and a receive ring of
- * buffer addresses a guest supplies. The IOC3 datasheet in the Origami
- * project tree (docs/datasheets/ioc3.md there, not in this QEMU tree)
- * gives the sequence this implements in its "Ethernet operation" and "Who
- * advances what, and when" sections, and its "DMA" section says why every
- * transfer here goes through this device's own address space rather than
- * the plain system one.
+ * descriptors carried inline in the ring, and a receive ring of buffer
+ * addresses the guest supplies. Written from the IOC3 datasheet in the
+ * origami project tree (docs/datasheets/ioc3.md there, not here).
  */
 
 #include "qemu/osdep.h"
@@ -35,13 +31,9 @@ static void sgi_ioc3_enet_set(SGIIOC3EthState *s, hwaddr off, uint32_t val)
 }
 
 /*
- * Whether the guest has asked for the buffer RAM's parity to be checked.
- *
- * The RAM itself is decoded by the parent chip, but the bit that turns
- * checking on is this block's, so the parent asks rather than reaching into a
- * register it does not own. SGI's power-on diagnostic sets this bit before it
- * touches the window at all and leaves it set through the size probe that
- * follows.
+ * The buffer RAM is the parent chip's, but the parity-enable bit is this
+ * block's, so the parent asks rather than reach into a register it does
+ * not own.
  */
 bool sgi_ioc3_eth_ram_parity_enabled(SGIIOC3EthState *s)
 {
@@ -49,12 +41,7 @@ bool sgi_ioc3_eth_ram_parity_enabled(SGIIOC3EthState *s)
            SGI_IOC3_ENET_MCR_RAM_PARITY;
 }
 
-/*
- * Read the collision and deferral counters and zero them in the same step,
- * which is what the hardware does and what makes reading them a way to clear
- * them. Separate from the read handler because the clearing is the part worth
- * naming: a caller that only wanted the value would be using the wrong verb.
- */
+/* Reading the collision and deferral counters clears them. */
 static uint32_t sgi_ioc3_take_counters(SGIIOC3EthState *s)
 {
     unsigned int index = (SGI_IOC3_ENET_COUNTERS - SGI_IOC3_ENET_BASE) / 4;
@@ -64,13 +51,7 @@ static uint32_t sgi_ioc3_take_counters(SGIIOC3EthState *s)
     return counters;
 }
 
-/*
- * This block's own interrupt line. It is level-driven from the intersection
- * of its status and enable registers, the same shape as the parent chip's
- * SuperIO line -- but unlike that one, this line is the chip's ordinary PCI
- * interrupt pin, reached through the GPIO output the parent connects to a
- * handler that raises it, rather than a wire this device owns end to end.
- */
+/* Level-driven from status & enable, out through the parent's GPIO. */
 static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
 {
     uint32_t status = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS);
@@ -81,25 +62,11 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
 }
 
 /*
- * Clear the block. `keep_rings` distinguishes the two resets that reach here,
- * which clear different amounts.
- *
- * The device's own reset clears everything: nothing has been programmed yet
- * and there is nothing to preserve.
- *
- * The MAC control register's reset bit resets the engine, not the addresses
- * the engine was given -- so the two ring base registers survive it. That is
- * SGI's power-on loopback diagnostic's requirement rather than a reading of
- * the datasheet: it programs both ring bases, then asserts the reset bit, then
- * programs only the four indices and starts the engine. It never writes either
- * base again, so a reset that cleared them leaves the engine fetching
- * descriptors from address zero, which is what it did here -- the diagnostic
- * reported ten packets sent and none received. Both guest drivers program the
- * bases after their reset rather than before, which is why no boot found this.
- *
- * What the reset does to everything else is unobserved. The diagnostic
- * rewrites the indices itself, so nothing here says whether hardware cleared
- * them, and clearing them is kept because it is what this model already did.
+ * Clear the block. The MAC control register's reset bit resets the engine
+ * but not the ring bases: SGI's power-on loopback diagnostic programs the
+ * bases, asserts the bit, then starts the engine without rewriting them.
+ * The device's own reset clears everything. What the engine reset does to
+ * the other registers is unobserved; clearing them is the kept default.
  */
 static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
 {
@@ -122,10 +89,8 @@ static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
 }
 
 /*
- * Whether a frame turns round inside the machine instead of reaching the wire.
- * Two independent switches select it -- the controller's own loopback bit, and
- * the transceiver's -- and SGI's power-on diagnostic exercises both in turn.
- * Either one disconnects the block from the backend in both directions.
+ * Two independent loopback switches -- the controller's bit and the
+ * transceiver's -- and either disconnects the block from the backend.
  */
 static bool sgi_ioc3_eth_mac_loopback(SGIIOC3EthState *s)
 {
@@ -139,11 +104,9 @@ static bool sgi_ioc3_eth_looping_back(SGIIOC3EthState *s)
 }
 
 /*
- * Whether the receive engine has anywhere to put a frame: the two enable
- * bits set and a buffer supplied that hardware has not already consumed.
- * Narrowed to the twelve bits the index registers own, because a guest is
- * not required to keep the bits above them clear and the arm-timer bit
- * shares a register with the produce index without being part of it.
+ * Enables set and a buffer available. The indices are narrowed to their
+ * twelve bits: the arm-timer bit shares the produce register without
+ * being part of the index.
  */
 static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
 {
@@ -156,11 +119,8 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
     }
 
     /*
-     * Loopback disconnects the block from the wire in both directions.
-     * Refusing here keeps the backend's traffic out of a diagnostic's ring:
-     * SGI's own loopback tests count and compare the frames they find there,
-     * so one arriving from outside shifts every comparison after it and
-     * reports a data miscompare on a frame the diagnostic never sent.
+     * Refusing wire traffic in loopback keeps the backend out of a
+     * diagnostic's ring, where an outside frame shifts every comparison.
      */
     if (sgi_ioc3_eth_looping_back(s)) {
         return false;
@@ -176,15 +136,8 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool looped);
 
 /*
- * The multicast hash-filter bit a destination address selects, replicating
- * the public Linux driver's ioc3_hash() (drivers/net/ethernet/sgi/ioc3-eth.c):
- * the low six bits of the standard reflected Ethernet CRC over the address,
- * with those six bits themselves bit-reversed. net_crc32_le computes the
- * same reflected, uninverted CRC-32 the kernel's own ether_crc_le() macro
- * names -- both seed 0xffffffff and never complement the result, since
- * nothing here needs a wire-format CRC, only a value both ends compute the
- * same way. Reproducing anything less than the driver's own bit-reversal
- * would select a different bit than the one it set.
+ * The multicast hash bit an address selects, matching Linux's ioc3_hash():
+ * the low six bits of the reflected Ethernet CRC, themselves bit-reversed.
  */
 static unsigned int sgi_ioc3_eth_mcast_hash(const uint8_t *addr)
 {
@@ -201,16 +154,9 @@ static unsigned int sgi_ioc3_eth_mcast_hash(const uint8_t *addr)
 }
 
 /*
- * Whether a frame off the wire should reach the ring at all. Real hardware
- * filters by destination address before a frame is ever written to buffer
- * RAM; a model that skips this step is effectively always promiscuous.
- *
- * The station address compared against comes from the guest-programmed MAC
- * address registers, never the backend NIC's own address -- see
- * sgi_ioc3_eth_realize's comment on why the backend's address has no
- * relation to what the guest's driver believes its own address is.
- * Filtering against the backend's address would drop every frame a guest
- * ever addressed to itself.
+ * Destination filtering, against the guest-programmed station address --
+ * never the backend NIC's, which has no relation to what the guest's
+ * driver believes its address is.
  */
 static bool sgi_ioc3_eth_rx_filter(SGIIOC3EthState *s, const uint8_t *buf,
                                    size_t size)
@@ -230,12 +176,9 @@ static bool sgi_ioc3_eth_rx_filter(SGIIOC3EthState *s, const uint8_t *buf,
     }
 
     /*
-     * The station address registers hold the six bytes the way the driver
-     * writes them -- see the ethernet register table in the Origami project
-     * tree's IOC3 datasheet (docs/datasheets/ioc3.md) and Linux's
-     * __ioc3_set_mac_address() (drivers/net/ethernet/sgi/ioc3-eth.c): the
-     * low register carries the first four octets, byte 0 in its low byte,
-     * and the high register's low sixteen bits carry the last two.
+     * The low register carries the first four octets, byte 0 in its low
+     * byte; the high register's low half carries the last two (Linux's
+     * __ioc3_set_mac_address()).
      */
     addr_hi = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_ADDR_HI);
     addr_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_ADDR_LO);
@@ -279,13 +222,8 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
 
     if (!sgi_ioc3_eth_rx_filter(s, buf, size)) {
         /*
-         * Address filtering, not flow control: nothing about this frame
-         * changes on a retry, so a real receiver simply never places it in
-         * a buffer. Reporting it consumed -- rather than 0, which asks the
-         * net queue to hold and redeliver the same packet once this device
-         * can receive again -- is what matters here: a 0 return would leave
-         * a frame no future retry can ever pass wedged at the head of the
-         * queue, blocking everything sent after it.
+         * Consumed, not 0: a 0 return asks the net queue to redeliver a
+         * frame no retry can ever pass, wedging the queue head.
          */
         trace_sgi_ioc3_eth_rx_filtered((uint32_t)size);
         return size;
@@ -295,16 +233,9 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
 }
 
 /*
- * Which receive sources a delivered frame raises, given the consume index it
- * has just advanced to. Two independent questions, neither of them "a frame
- * arrived": whether the timer is in service, and whether the buffers still
- * available to the engine have fallen to the watermark a driver asked to
- * hear about.
- *
- * The timer's reload is an idle timeout and the only value either driver
- * writes is zero, which is the one that needs no time to pass. A non-zero
- * reload would need a real timer, and nothing here has one, so it is
- * reported rather than silently treated as immediate.
+ * Which receive sources a delivered frame raises: the armed timer, and the
+ * available-buffer watermark. The only reload either driver writes is
+ * zero; a non-zero one would need a real timer, so it is reported instead.
  */
 static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
 {
@@ -328,15 +259,9 @@ static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
         }
     }
     /*
-     * At-or-below rather than strictly-below, because that is what the only
-     * driver programming this source asks for: OpenBSD writes its whole
-     * available count as the threshold, over its own comment "Interrupt as
-     * soon as available RX desc reach this limit" -- and "reach" is
-     * equality, which an at-or-below comparison honors on the frame that
-     * brings the count down to the limit where strictly-below is one frame
-     * late. The full argument, its evidence class and what stays unverified
-     * live in the Origami project tree's receive-contract notes
-     * (docs/library/iec-receive-contract.md there, not in this QEMU tree).
+     * At-or-below: OpenBSD writes its whole available count as the
+     * threshold and expects the interrupt when the count reaches it --
+     * strictly-below would be one frame late.
      */
     if (available <= threshold) {
         sources |= SGI_IOC3_ENET_INT_RX_THRESHOLD;
@@ -345,22 +270,11 @@ static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
 }
 
 /*
- * Put one frame into the receive ring. `short_circuit` says the frame turned
- * round inside the controller itself, ahead of the logic that appends a frame
- * check sequence and builds the receive status vector, so neither is present.
- *
- * The two loopbacks differ here and the firmware's own expectations are what
- * separate them. The controller's own loopback turns the frame round early:
- * SGI's diagnostic sends a byte count and requires exactly that count back,
- * with a status word of zero. The transceiver's loopback sends the frame the
- * whole way through the controller and back, so the same diagnostic requires
- * the count four higher -- the check sequence is really there -- and a status
- * word built as usual. Only the first is a short circuit.
- *
- * Split from the network client's receive callback because either loopback has
- * to reach it without going through that callback's refusal of wire traffic:
- * while looping back the block accepts nothing from the backend, and the frame
- * it accepts instead is its own.
+ * Put one frame into the receive ring. `short_circuit` marks a frame the
+ * controller's own loopback turned round ahead of the FCS append and the
+ * status vector, so neither is present; the transceiver's loopback goes
+ * the whole way through and gets both. Split from the receive callback so
+ * loopback frames bypass its refusal of wire traffic.
  */
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool short_circuit)
@@ -387,14 +301,9 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                 SGI_IOC3_ENET_RX_BASE_MASK);
 
     /*
-     * The entry is where every write below is aimed, so a fetch the fabric
-     * refuses leaves the delivery with no destination: the address holds
-     * whatever the failed read put there, and writing the header words and
-     * the frame against it tells the driver a good packet is waiting in a
-     * buffer nothing was written to. Drop the frame instead, which is what a
-     * transfer that did not happen amounts to. This block carries no status a
-     * driver reads for a transfer the fabric refused, so the log is where it
-     * is reported.
+     * A ring entry the fabric refuses leaves the delivery with no
+     * destination; the frame is dropped. The block has no error status for
+     * a refused transfer, so the log is where it is reported.
      */
     if (ldq_be_dma(&s->dma_as, ring_base + consume, &buf_addr,
                    MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
@@ -410,31 +319,10 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
              SGI_IOC3_ENET_MCR_RXOFF_SHIFT) * 2;
 
     /*
-     * Both guests read this length field as the wire length including the
-     * four-byte FCS a real MAC captures alongside the frame -- OpenBSD's
-     * iec_rxintr() checks it against ETHER_MIN_LEN before ever subtracting
-     * ETHER_CRC_LEN, and IRIX's own ethernet driver subtracts the same
-     * four-byte CRC length from the same field, independently. QEMU's net
-     * layer never delivers a trailing CRC -- there is no physical layer here
-     * to produce one -- so the length reported has to add the phantom bytes
-     * back to match what real hardware would say, even though only `size` bytes
-     * of real payload follow. Without this, any frame at or under the wire
-     * minimum reports four bytes short, fails the guest's own minimum-length
-     * check, and is silently dropped -- exactly the frames a DHCP exchange's
-     * short broadcast packets tend to be.
-     */
-    /*
-     * The four phantom bytes are compensation for something the wire path
-     * loses, so the loopback path must not add them. A frame off the backend
-     * arrives with the trailing FCS already stripped -- QEMU's net layer has
-     * no physical layer to have produced one -- and both guests read this
-     * field as the wire length including it, so the count has to put it back.
-     * A frame short-circuited inside the controller lost nothing, because the
-     * check sequence was never appended to it: SGI's loopback diagnostic
-     * transmits a byte count and requires the same number back, so adding four
-     * there reports a frame four bytes longer than the one it sent. A frame
-     * looped by the transceiver did go through the whole controller, and the
-     * same diagnostic requires the four counted.
+     * Both guests read the length as the wire length including the four
+     * FCS bytes the backend never delivers, so they are added back -- or a
+     * minimum-length frame reads four short and the guest drops it. A
+     * short-circuited frame never had an FCS appended, so nothing is added.
      */
     wire_len = (uint32_t)size + (short_circuit ? 0 : 4);
 
@@ -443,26 +331,11 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
             SGI_IOC3_ENET_RXH_BYTECNT_MASK);
 
     /*
-     * The receive checksum-offload partial in word0's low half. Real IOC3 sums
-     * the whole received packet -- MAC header through the trailing FCS -- as a
-     * 16-bit one's complement and leaves the folded sum here; Linux's
-     * ioc3_tcpudp_checksum() finishes the transport checksum from it and trusts
-     * the packet only when its reconstruction folds to 0xffff. A wrong non-zero
-     * value that happened to fold there would have the guest trust a corrupt
-     * packet unchecked, so this is exactly that sum and nothing approximate.
-     *
-     * The backend delivers no FCS, so the four phantom bytes the byte count
-     * accounts for are written as zero below and summed as zero here: the
-     * driver reads and subtracts those same four bytes, so the reconstruction
-     * is self-consistent whatever they hold, and zero adds nothing to the sum.
-     * net_checksum_add() pairs bytes big-endian from the frame start and pads a
-     * trailing odd byte into the high lane -- the same 16-bit grid the driver
-     * inverts -- so the folded result is the partial it expects for either
-     * parity. net_checksum_finish() is that fold complemented, and the
-     * register carries the uncomplemented partial, so the complement is
-     * inverted back. Short-circuit loopback appends no FCS and carries a
-     * zero status word, so Linux never runs the checksum on it; leave the
-     * field zero there.
+     * The receive checksum-offload partial: the one's-complement sum of the
+     * whole packet, uncomplemented. Linux's ioc3_tcpudp_checksum() finishes
+     * the transport checksum from it and trusts the packet only when the
+     * reconstruction folds to 0xffff, so it must be exact. The phantom FCS
+     * bytes are written and summed as zero, which is self-consistent.
      */
     if (!short_circuit) {
         uint32_t sum = net_checksum_add(size, (uint8_t *)buf);
@@ -476,11 +349,7 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
            (lenlo << SGI_IOC3_ENET_RXE_LEN_LO_SHIFT) |
            (lenhi << SGI_IOC3_ENET_RXE_LEN_HI_SHIFT);
     if (truncated) {
-        /*
-         * A cut frame says so where a driver looks. OpenBSD drops any frame
-         * wearing either bit and prints the word, which is the honest
-         * outcome for a frame this engine could not deliver whole.
-         */
+        /* A cut frame says so where a driver looks; OpenBSD drops it. */
         word1 |= SGI_IOC3_ENET_RXE_LONGEVENT | SGI_IOC3_ENET_RXE_BADPKT;
     }
     if (size >= 6 && buf[0] == 0xff && buf[1] == 0xff && buf[2] == 0xff &&
@@ -502,22 +371,16 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                             MEMTXATTRS_UNSPECIFIED);
     if (!short_circuit) {
         /*
-         * The four phantom FCS bytes the byte count above accounts for. Real
-         * hardware DMAs the frame's trailing FCS into the buffer; the backend
-         * strips it, so write a defined zero the receive checksum summed as
-         * zero and the driver subtracts back out. skb_put() trims them off the
-         * frame the stack sees, so their value never leaves the driver.
+         * The phantom FCS bytes, written as the defined zero they were
+         * summed as.
          */
         res |= stl_be_dma(&s->dma_as, buf_addr + offset + size, 0,
                           MEMTXATTRS_UNSPECIFIED);
     }
 
     /*
-     * Same reasoning as the entry fetch above: a buffer the transfer could
-     * not reach is not a delivered frame, so the index stays where it is and
-     * no receive interrupt claims one. Part of the frame may already have
-     * landed, which is also what a real transfer that failed part-way leaves
-     * behind; what must not happen is the buffer being announced as whole.
+     * A buffer the transfer could not reach is not a delivered frame: the
+     * index stays put and no interrupt announces it.
      */
     if (res != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -538,11 +401,7 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
     return size;
 }
 
-/*
- * The operator's set_link, relayed to the part that reports it: the link
- * bit a guest watches is the transceiver's, so the cable being pulled has
- * to reach the transceiver rather than any state of this block's own.
- */
+/* The link bit a guest watches is the transceiver's; relay to it. */
 static void sgi_ioc3_eth_set_link(NetClientState *nc)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
@@ -559,11 +418,9 @@ static NetClientInfo sgi_ioc3_eth_net_info = {
 };
 
 /*
- * Gather one frame from a transmit descriptor's inline data and up to two
- * out-of-line buffers, in that order -- the order the descriptor's own three
- * validity flags list them, and the order that lets a short frame go out
- * from the inline area alone. Returns how many bytes landed in the frame
- * buffer, capped at its size so a guest's own miscount cannot overrun it.
+ * Gather one frame: inline data, then up to two out-of-line buffers, the
+ * order the validity flags list. Capped at the frame buffer's size so a
+ * guest's miscount cannot overrun it.
  */
 static MemTxResult sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
                                           uint32_t bufcnt, uint64_t buf1,
@@ -578,11 +435,8 @@ static MemTxResult sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
     if (cmd & SGI_IOC3_ENET_TXD_DATA_VALID) {
         n = bufcnt & SGI_IOC3_ENET_TXD_DATA_LEN_MASK;
         /*
-         * The length field is seven bits wide and the area it measures holds
-         * 104 bytes, so a guest can name more inline data than exists. The
-         * cap below does not catch that -- the frame buffer it guards is
-         * twenty times larger than the area -- and without this the copy
-         * reads past the end of the caller's descriptor image.
+         * The seven-bit length can name more inline data than the 104-byte
+         * area holds; without this the copy reads past the descriptor image.
          */
         if (n > SGI_IOC3_ENET_TXD_DATA_SIZE) {
             n = SGI_IOC3_ENET_TXD_DATA_SIZE;
@@ -618,11 +472,7 @@ static MemTxResult sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
     return res;
 }
 
-/*
- * Whether the transmit engine is running. Both of its enables have to be set:
- * the DMA enable lets it fetch descriptors and the transmit enable lets it put
- * a frame on the wire, and the datasheet gives them as separate bits.
- */
+/* Both enables: DMA to fetch descriptors, transmit to send. */
 static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
 {
     return (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL) &
@@ -631,15 +481,9 @@ static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
 }
 
 /*
- * Walk the transmit ring from the consume index up to the produce index a
- * guest just wrote, sending one frame per descriptor and advancing the
- * consume index as each is sent -- "Transmitting, in order" in the
- * datasheet's behavioral contract. The consume index carries an idle flag in
- * the same word as its byte offset; it is set once the ring is drained to
- * the produce index this call was given, and cleared for as long as more
- * than one descriptor remains queued behind it (there never is more than
- * one, since this walks the whole batch before returning, but the flag is
- * still derived rather than assumed for the one descriptor in flight).
+ * Walk the transmit ring from the consume index to the produce index the
+ * guest wrote, one frame per descriptor. The consume word carries an idle
+ * flag beside the byte offset, set once the ring is drained.
  */
 static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 {
@@ -653,32 +497,19 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     uint32_t consume = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_CONSUME) &
                        SGI_IOC3_ENET_TX_CONSUME_MASK;
     /*
-     * The sources this walk raises, accumulated on their own rather than
-     * onto a copy of the interrupt status register taken here. Sending a
-     * frame below re-enters this device: a backend that answers -- QEMU's
-     * user-mode networking answers a request from inside the same call that
-     * sent it -- delivers the reply through this engine's own receive path
-     * several frames down the stack, and that path raises the receive
-     * source. A copy taken before the walk does not have it, so writing the
-     * copy back afterwards erases it, and a driver dispatching on the
-     * sources it can see never collects the frame that is already in its
-     * ring. Read the register once at the end and add to what it holds.
+     * Raised sources accumulate apart from the status register: sending
+     * re-enters this device (a backend can answer from inside the send),
+     * and writing back a copy taken before the walk would erase the
+     * receive source that reply raised.
      */
     bool loopback = sgi_ioc3_eth_looping_back(s);
     uint32_t raised = 0;
     bool completed_one = false;
 
     /*
-     * Both indices are byte offsets into the ring, and the datasheet gives
-     * both as a descriptor number shifted left by seven -- so the low seven
-     * bits are not part of either index and no value the engine can be given
-     * has them set. A guest can still write them, and the walk below steps by
-     * a whole descriptor and stops on equality, so a produce index the steps
-     * can never land on is a loop that never ends. That is reachable from a
-     * single unaligned register write, which makes it a guest hanging the
-     * emulator rather than a fidelity question. Reduce both into the ring and
-     * drop the bits that are not part of an index, so the walk terminates
-     * whatever it is handed.
+     * The walk steps by whole descriptors and stops on equality, so an
+     * unaligned or out-of-ring index the steps can never land on is an
+     * emulator hang from one register write. Reduce and align both.
      */
     if ((produce | consume) & (SGI_IOC3_ENET_TX_DESC_SIZE - 1)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -711,17 +542,9 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
                                MEMTXATTRS_UNSPECIFIED);
 
         /*
-         * Every field the walk works from came out of that fetch, so a refused
-         * one leaves the command bits, the counts, both addresses and the
-         * inline area holding whatever the failed reads put in them. Going on
-         * would assemble a frame from that and put it on the wire, which is
-         * the one outcome a driver has no way to detect. Stop the walk here
-         * instead, with the index still on this descriptor: the fetch is what
-         * failed, so nothing says the descriptor was processed, and a guest
-         * that repairs the address and rings again gets it sent. The refusal
-         * itself is the fabric's to report and the Bridge already does; this
-         * block has no error status of its own for a transfer that never
-         * happened.
+         * A descriptor the fabric refused must not become a frame on the
+         * wire. The walk stops with the index on it, so a guest that
+         * repairs the address and rings again gets it sent.
          */
         if (res != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -735,11 +558,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         res = sgi_ioc3_eth_tx_gather(s, cmd, bufcnt, buf1, buf2, inline_data,
                                      &len);
         if (res != MEMTX_OK) {
-            /*
-             * The same for the frame's own bytes: what the gather could not
-             * read is whatever the buffer held from the frame before, so
-             * sending it puts bytes on the wire no guest wrote.
-             */
+            /* The same for the frame's own bytes. */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-ioc3-eth: the frame for the transmit descriptor"
                           " at 0x%" PRIx64 " cannot be read; it is not sent\n",
@@ -749,30 +568,18 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         len = MIN(len, cmd & SGI_IOC3_ENET_TXD_BYTECNT_MASK);
 
         /*
-         * The descriptor can ask the engine to finish the frame's transport
-         * checksum: the driver pre-loads the pseudo-header partial and the
-         * hardware sums the whole frame and writes the fold at the descriptor's
-         * offset. Compute the finished TCP or UDP checksum directly -- the IP
-         * header checksum is the driver's own, so only the transport sum is
-         * inserted. Ignoring the bit ships the driver's partial value, and the
-         * far end (slirp, under user-mode networking) drops the frame.
+         * Transmit checksum offload: only the transport sum is inserted --
+         * the IP header checksum is the driver's own. Ignoring the bit
+         * ships the driver's partial and the far end drops the frame.
          */
         if (cmd & SGI_IOC3_ENET_TXD_DOCHECKSUM) {
             net_checksum_calculate(s->frame, len, CSUM_TCP | CSUM_UDP);
         }
 
         /*
-         * The engine pads any frame it assembles below the 802.3 sixty-byte
-         * minimum (before the frame check sequence) when the MAC control
-         * register's pad-enable bit is set -- "Padding a short frame" in the
-         * datasheet. Two of the three guest drivers pad in their own transmit
-         * path and leave the bit inert; the one that doesn't -- IRIX, in both
-         * its kernel and its netboot PROM -- relies on the engine to do it,
-         * so an unimplemented pad ships an ARP request or a bare
-         * acknowledgement at its true short length. This has to apply before
-         * both the loopback and wire paths below, since the engine pads
-         * regardless of where the frame is going. s->frame is far larger
-         * than sixty bytes, so the pad always fits.
+         * Pad to the 802.3 minimum when the enable bit asks. IRIX -- kernel
+         * and netboot PROM both -- relies on the engine for it; applied
+         * before both paths, since the engine pads wherever the frame goes.
          */
         if ((sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL) &
              SGI_IOC3_ENET_MCR_PAD_EN) && len < 60) {
@@ -784,14 +591,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 
         if (len > 0) {
             if (loopback) {
-                /*
-                 * Loopback: the frame turns round inside the machine and
-                 * never reaches the wire. Delivered straight into this
-                 * device's own receive path, which is what the bit selects --
-                 * a model that sent it to the backend instead would let a
-                 * diagnostic's traffic out onto a real network and would wait
-                 * for a reply that only a far end could send.
-                 */
+                /* Straight into the receive path, never to the backend. */
                 sgi_ioc3_eth_deliver(s, s->frame, len,
                                      sgi_ioc3_eth_mac_loopback(s));
             } else {
@@ -812,10 +612,9 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     }
 
     /*
-     * The idle flag says the ring is drained, which is true of every walk that
-     * reaches the produce index and false of one that stopped on a descriptor
-     * it could not read -- so it is derived from where the index ended rather
-     * than set because the loop returned.
+     * The idle flag is derived from where the index ended, not set because
+     * the loop returned: a walk that stopped on a refused descriptor is
+     * not a drained ring.
      */
     sgi_ioc3_enet_set(s, SGI_IOC3_ENET_TX_CONSUME,
                       consume | (consume == produce ?
@@ -833,39 +632,19 @@ static uint64_t sgi_ioc3_enet_read_impl(void *opaque, hwaddr addr,
 
     switch (SGI_IOC3_ENET_BASE + addr) {
     case SGI_IOC3_ENET_COUNTERS:
-        /*
-         * Collisions and deferrals, cleared by the act of reading them. Both
-         * guests read this once while resetting the block for no reason other
-         * than to zero it, so a model that returned the count without clearing
-         * would leave a driver's own counters climbing on a machine that has
-         * never sent a frame.
-         */
+        /* Cleared by the act of reading; both guests read once to zero. */
         return sgi_ioc3_take_counters(s);
 
     case SGI_IOC3_ENET_BUFFER_INDEX:
-        /*
-         * Where the block's own engines sit in the buffer memory. Nothing is
-         * moving, so every one of the four positions is zero, and this is read
-         * only rather than storage because software cannot place them.
-         */
+        /* The engines' positions in buffer memory; nothing is moving. */
         return 0;
 
     case SGI_IOC3_ENET_MII_CONTROL:
-        /*
-         * Never busy. The read a guest asked for finished before it could
-         * look, so the poll after it stops on the first pass.
-         */
+        /* Never busy: the request finished before the guest could look. */
         return s->enet_reg[index] & ~SGI_IOC3_ENET_MII_BUSY;
 
     case SGI_IOC3_ENET_MII_DATA_R:
-        /*
-         * The word the last read request fetched. Which transceiver answered
-         * is decided when the request is made rather than here, because that
-         * is when the guest names an address: a driver scanning for a
-         * transceiver writes each address in turn and reads this register
-         * after each, and an address with nothing on it has to read as
-         * all-ones or the scan stops at the first one it tries.
-         */
+        /* The word the last request fetched; who answered was decided then. */
         return s->mii_data;
 
     default:
@@ -873,12 +652,7 @@ static uint64_t sgi_ioc3_enet_read_impl(void *opaque, hwaddr addr,
     }
 }
 
-/*
- * A wrapper rather than a trace call at each of the read handler's returns:
- * several of them return something other than the stored register, and a
- * trace that misses one of those is worse than none, since a reader takes
- * the absence of a line as the absence of an access.
- */
+/* One trace point covering every return, the derived ones included. */
 static uint64_t sgi_ioc3_enet_read(void *opaque, hwaddr addr, unsigned size)
 {
     uint64_t val = sgi_ioc3_enet_read_impl(opaque, addr, size);
@@ -901,26 +675,10 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
     switch (SGI_IOC3_ENET_BASE + addr) {
     case SGI_IOC3_ENET_INT_STATUS:
         /*
-         * Written to acknowledge: a one clears the source it names rather than
-         * setting it. This is the same contract as the parent chip's SuperIO
-         * interrupt register, and the reason to state it twice is that
-         * modelling this one as ordinary storage produces the same failure on
-         * the ethernet line that it produced on the serial one -- a driver
-         * writes back the bits it just read, the write sets them instead of
-         * clearing them, and the source it was acknowledging never goes away.
-         *
-         * Clearing the register alone is not enough: the line this block
-         * drives is level-triggered from status & enable, computed in
-         * sgi_ioc3_enet_update_irq, and nothing else re-derives it. Skipping
-         * that call here would leave the line exactly as high as it was
-         * before the write -- correct for every register that does not gate
-         * the interrupt, and silently wrong for the one that does, since a
-         * guest's own acknowledge write would clear the bits it just read
-         * without ever lowering the line it read them because of. The next
-         * level-triggered assertion then finds an already-asserted line and
-         * the guest's interrupt dispatcher reports it unclaimed, forever,
-         * because by the time the handler reads the register again there is
-         * nothing left in it to explain the line still being high.
+         * Write-one-to-clear, the parent's SuperIO contract. The line must
+         * be re-derived here too: it is level-triggered from status &
+         * enable, and an acknowledge that cleared the bits without lowering
+         * the line leaves the next assertion unexplainable to the guest.
          */
         s->enet_reg[index] &= ~(uint32_t)val;
         sgi_ioc3_enet_update_irq(s);
@@ -928,17 +686,10 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
     case SGI_IOC3_ENET_INT_ENABLE:
         /*
-         * The line is level-driven from status & enable, so the enable
-         * register decides it as much as the status register does and has to
-         * re-derive it on every write. Plain storage here leaves a source
-         * that set while the enable was clear unable to raise the line when
-         * a guest later enables it, and the window is reachable on every
-         * bring-up: OpenBSD stops the interface by writing zero here, then
-         * writes the receive enables in the control register -- which is
-         * where this model flushes whatever the backend already had waiting
-         * -- and only then writes this register. A frame delivered in
-         * between sets its source against a clear enable and the line never
-         * follows.
+         * The enable decides the level line as much as status does: a
+         * source that set while its enable was clear must raise the line
+         * when the guest enables it, a window OpenBSD's bring-up order
+         * reaches on every boot.
          */
         s->enet_reg[index] = val;
         sgi_ioc3_enet_update_irq(s);
@@ -950,14 +701,9 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         unsigned int reg = val & SGI_IOC3_ENET_MII_REG_MASK;
 
         /*
-         * A management request. The read bit says which direction, and the
-         * data register on the write side has already been loaded by the time
-         * a write request arrives -- that is the order both drivers use.
-         *
-         * Only the address the transceiver is configured on answers. Every
-         * other address reads all-ones, which is what a scan takes as an
-         * empty address, and is why a model answering everywhere would be
-         * found at address zero and print a line no real machine prints.
+         * A management request; the write-side data register is already
+         * loaded. Only the configured address answers -- the rest read
+         * all-ones, or a scan finds a phantom transceiver at address zero.
          */
         if (val & SGI_IOC3_ENET_MII_READ) {
             s->mii_data = phy == s->phy.addr
@@ -970,10 +716,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
             /*
              * Clearing the transceiver's loopback re-opens the receive
-             * path, and a frame the backend offered while it was closed is
-             * queued rather than gone -- flush, or it waits for a later
-             * frame to prompt it. The controller's own loopback bit needs
-             * no equivalent: every MAC control write already flushes.
+             * path; a queued frame waits for this flush.
              */
             if (was_looping && !sgi_ioc3_eth_looping_back(s)) {
                 qemu_flush_queued_packets(qemu_get_queue(s->nic));
@@ -992,15 +735,8 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
     case SGI_IOC3_ENET_TX_PRODUCE:
         /*
-         * The doorbell: software has filled one or more descriptors and this
-         * write says how far. Walk the ring now rather than waiting to be
-         * asked -- nothing else polls an index without an interrupt to prompt
-         * it, so the interrupt this walk raises is the only prompt there is.
-         *
-         * It is not the only thing that starts a walk, though. Software may
-         * ring the doorbell while transmit is still switched off, and the
-         * write that switches it on is what starts the engine then. The MAC
-         * control register's own handler covers that.
+         * The doorbell. A doorbell rung while transmit is off is handled
+         * by the MAC control write that later switches it on.
          */
         s->enet_reg[index] = val;
         if (sgi_ioc3_eth_tx_enabled(s)) {
@@ -1020,20 +756,10 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
 
         /*
-         * Switching transmit on starts the engine on whatever the produce
-         * index already names. A real engine fetches descriptors whenever it
-         * is running and has not caught up with that index, so an enable that
-         * arrives after the doorbell still sends -- and SGI's power-on
-         * loopback diagnostic orders it exactly that way, queueing its
-         * descriptors and then enabling transmit. Neither guest driver does,
-         * which is why the doorbell alone looked like the whole trigger.
-         *
-         * Only on the transition, so that the further writes to this register
-         * that follow -- the diagnostic adds the receive enables in two more
-         * writes -- do not walk a ring that has already been walked. The walk
-         * itself would be harmless, since it stops immediately once the
-         * consume index has caught up, but a walk that found anything would
-         * send it twice.
+         * Enabling transmit starts the engine on whatever the produce index
+         * already names -- SGI's loopback diagnostic queues first and
+         * enables after. Only on the transition, or a later write to this
+         * register would send the same descriptors twice.
          */
         if (!was_enabled && sgi_ioc3_eth_tx_enabled(s)) {
             sgi_ioc3_eth_do_tx(s, sgi_ioc3_enet_get(s,
@@ -1043,22 +769,14 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
     case SGI_IOC3_ENET_RX_PRODUCE:
         /*
-         * Bit 31 puts the receive timer in service and the rest is the
-         * index. The two are kept apart because only one of them is
-         * storage: SGI's own driver writes the index bare from its
-         * interrupt path, and disarming the timer there would silence the
-         * source every driver dispatches its receive handler on.
+         * Bit 31 arms the timer and is a command, not storage: SGI's driver
+         * writes the index bare from its interrupt path, which must not
+         * disarm.
          */
         if (val & SGI_IOC3_ENET_RPIR_ARM) {
             s->rx_timer_armed = true;
         }
-        /*
-         * Either write can be the one that makes a buffer available: a fresh
-         * produce index, or the enable bits in the control register turning
-         * receive on after buffers were already queued. Flushing here lets a
-         * frame the backend already tried and was refused go out on the next
-         * attempt instead of waiting for one that happens to arrive after.
-         */
+        /* This write can be what makes a buffer available; flush. */
         s->enet_reg[index] = val;
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
@@ -1111,24 +829,16 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &s->mmio);
     sysbus_init_irq(sbd, &s->irq);
 
-    /*
-     * Realized as a system-bus device rather than a plain one because a
-     * plain device realized with no bus is never reset -- see the parent
-     * chip's own realize for the fuller account of why that matters.
-     */
+    /* A bus-less plain device is never reset, hence sysbus. */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->phy), errp)) {
         return;
     }
 
     /*
-     * The network backend. A guest learns its station address from the
-     * one-wire part behind the parent chip's MicroLAN engine, and that part
-     * answers with this address -- so an address nobody chose takes QEMU's
-     * generated suffix under SGI's OUI, the prefix the firmware expects a
-     * real part to carry before it starts the network loader. A -nic line
-     * without mac= arrives here already generated, which mac-generated
-     * reports -- the address bytes alone cannot, since mac= may name any
-     * value, the generator's own range included. An explicit mac= is a
+     * The one-wire part answers with this address and the firmware expects
+     * SGI's OUI on it, so an unset or generator-filled address is stamped.
+     * mac-generated carries the provenance the bytes cannot: mac= may name
+     * any value, the generator's range included, and an explicit mac= is a
      * replacement part's programmed identity and stays intact.
      */
     if (sgi_ioc3_eth_mac_unset(&s->conf.macaddr) || s->mac_generated) {
@@ -1154,11 +864,7 @@ static void sgi_ioc3_eth_unrealize(DeviceState *dev)
     SGIIOC3EthState *s = SGI_IOC3_ETH(dev);
 
     qemu_del_nic(s->nic);
-    /*
-     * The DMA view realize built. An address space stays on the global list
-     * and holds its root region until it is destroyed, so leaving it behind
-     * outlives the device the parent chip unrealizes on its own exit.
-     */
+    /* An address space left behind outlives the device on the global list. */
     address_space_destroy(&s->dma_as);
 }
 
@@ -1166,12 +872,7 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(obj);
 
-    /*
-     * The block resets to zero throughout, which the datasheet gives for
-     * every register in it. That matters most for the media access control
-     * register, whose transmit and receive enables sit in it: a block that
-     * came up enabled would be one no driver had asked to run.
-     */
+    /* Zero throughout; a block that came up enabled ran unasked. */
     sgi_ioc3_eth_reset_registers(s, false);
 }
 
@@ -1181,11 +882,7 @@ static void sgi_ioc3_eth_init(Object *obj)
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_DP83840);
 
-    /*
-     * The transceiver's management address, offered where a board would
-     * configure it. One copy: the alias keeps the address the controller
-     * routes by and the one the transceiver reports the same value.
-     */
+    /* One copy: the routing address and the reported one cannot differ. */
     object_property_add_alias(obj, "phy-addr", OBJECT(&s->phy), "addr");
 }
 
