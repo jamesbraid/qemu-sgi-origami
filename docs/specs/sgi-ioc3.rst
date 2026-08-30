@@ -31,6 +31,9 @@ and enable registers and drops when it empties; it is recomputed on
 every write and source change rather than raised per event. A serial
 port's bit is a pass-through of the 16550's own line -- no status
 write clears it; the guest's own register reads are what quiet it.
+The interrupt-enable and pin-control register pairs are set/clear
+aliases with a read asymmetry: the set alias reads back the live
+mask, the clear alias does not.
 This line is board wiring to a Bridge pin, not the chip's PCI
 interrupt pin; the PCI pin belongs to the ethernet block.
 
@@ -42,6 +45,9 @@ and a pair of memory rings. One base register places all four rings
 -- port A transmit, A receive, B transmit, B receive, in that order,
 each of the size the base register's low bit selects -- so a ring's
 address is derived from port and direction and is not readable back.
+The chip-control register's port-offset fields are stored, not acted
+on: real silicon multiplexes the ports through them, and every guest
+programs the two offsets the model implements.
 Ring entries are eight bytes; an index is exactly as wide as the
 ring is long.
 
@@ -70,7 +76,14 @@ Receive
     whose fullness is what stops the chardev feeding more. The
     receive timer counts idle time on the 16 kHz clock from the last
     delivery, is armed through bit 31 of the consume index, and on
-    expiry raises its source only while characters are waiting. The
+    expiry raises its source only while characters are waiting.
+    Re-arming it over a non-empty ring rewinds it, prompting the
+    driver again for the remainder -- a model choice no source
+    states. The model posts a short group when the engine goes idle
+    rather than on expiry; the interrupt still waits for the timer,
+    so an interrupt-driven driver sees datasheet timing while an
+    index-polling guest sees a short entry earlier than silicon
+    shows one. The
     high-water source is a *level* in characters (not entries),
     recomputed wherever the waiting count moves: a latched raise
     storms a guest whose service loop cannot clear it, which is
@@ -162,7 +175,10 @@ The MAC-control reset bit resets the engine but not the ring base
 registers: SGI's power-on diagnostic programs the bases, asserts
 reset, rewrites only the indices, and never writes the bases again.
 A receive descriptor fetch the fabric refuses drops the frame -- the
-block carries no status a driver reads for a refused transfer.
+block carries no status a driver reads for a refused transfer. The
+receive-timer arm bit is a command and the MII busy bit derived,
+neither storage: a bare index write must not disarm the timer, and
+busy never reads set because requests complete inside the write.
 
 A default-generated MAC address takes SGI's OUI (08:00:69), since
 the firmware reads the station address from the one-wire part and
@@ -173,7 +189,11 @@ The PHY is a DP83840 modelled at address 31 with mii.h register
 names; its autonegotiation completes on a settle window timed so the
 firmware diagnostic's probe lands inside it, its link-status bit
 latches low, and backend link state drives it the way lan9118's PHY
-models the same thing.
+models the same thing. Its LBREMR pin-latched bits reflect board
+wiring nothing observed, modelled as normal operation, and the
+settle window has a second constraint besides the diagnostic probe:
+the firmware's reset-value sweep spends about a tenth of a second of
+virtual time, which the settle must outlast.
 
 Buffer RAM
 ==========
@@ -194,7 +214,9 @@ PS/2 ports
 Nothing is plugged in. The receive registers read zero -- every
 per-byte valid flag clear, a port that has received nothing -- and
 transmit writes are accepted and dropped, because a completing write
-is what a driver needs from an unplugged port.
+is what a driver needs from an unplugged port. The block is a
+bit-level engine on the real chip, not an 8042 clone: there is no
+command protocol to model.
 
 PCI identity
 ============
