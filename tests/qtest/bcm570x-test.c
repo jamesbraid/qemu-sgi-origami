@@ -109,6 +109,31 @@ static const uint64_t window_offset[8] = {
 #define BCM_CHIPID_BCM5701      0x0105u
 #define BCM_ASICREV_BCM5701     0x0u            /* chip id >> 12 */
 
+/* The MII management registers and the PHY-access command bits (Task 3). */
+#define BCM_MI_COMM             0x044cu
+#define BCM_MI_STS              0x0450u
+#define BCM_MICOMM_BUSY         0x20000000u
+#define BCM_MICMD_READ          0x08000000u
+#define BCM_MICMD_WRITE         0x04000000u
+#define BCM_MICOMM_REG_SHIFT    16
+#define BCM_MICOMM_PHY_SHIFT    21
+#define BCM_MISTS_LINK          0x00000001u
+
+/* Standard MII register numbers and the bits this test reads. */
+#define MII_BMCR                0x00u
+#define MII_BMSR                0x01u
+#define MII_PHYIDR1             0x02u
+#define MII_PHYIDR2             0x03u
+#define MII_BMCR_AUTOEN         0x1000u
+#define MII_BMCR_STARTNEG       0x0200u
+#define MII_BMSR_ANEGDONE       0x0020u
+#define MII_BMSR_LINK           0x0004u
+#define BCM_PHY_IDR1_VALUE      0x0020u
+#define BCM_PHY_IDR2_BCM5701    0x6110u
+
+/* Any PHY address answers: the integrated PHY is the only one on the bus. */
+#define BCM_PHY_ADDR            1u
+
 /*
  * The Bridge corrects a narrow (1- or 2-byte) device access by moving only the
  * low two address bits, `off ^ (4 - size)`, the same formula OpenBSD's
@@ -167,6 +192,23 @@ static uint32_t ind_mem_readl(QTestState *qts, uint32_t off)
 {
     qtest_writel(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_BASEADDR, off);
     return qtest_readl(qts, CFG0(BCM_SLOT, 0) + BCM_PCI_MEMWIN_DATA);
+}
+
+/* A PHY register read/write through the MAC's MI_COMM register (needs BAR0). */
+static uint16_t mii_read(QTestState *qts, unsigned phy, unsigned reg)
+{
+    bar_writel(qts, BCM_MI_COMM,
+               BCM_MICOMM_BUSY | BCM_MICMD_READ |
+               (phy << BCM_MICOMM_PHY_SHIFT) | (reg << BCM_MICOMM_REG_SHIFT));
+    return bar_readl(qts, BCM_MI_COMM) & 0xffff;
+}
+
+static void mii_write(QTestState *qts, unsigned phy, unsigned reg, uint16_t val)
+{
+    bar_writel(qts, BCM_MI_COMM,
+               BCM_MICOMM_BUSY | BCM_MICMD_WRITE |
+               (phy << BCM_MICOMM_PHY_SHIFT) | (reg << BCM_MICOMM_REG_SHIFT) |
+               val);
 }
 
 /*
@@ -374,6 +416,64 @@ static void test_misc_ctl_asic_revision(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The MAC-address mailbox is honoured. The model presents the six bytes of the
+ * -device mac= in SRAM 0x0C14/0x0C18 with the tag 0x484B in the high half of
+ * 0x0C14, the path bge_attach reads before it falls back to an EEPROM.
+ */
+static void test_mac_address_mailbox(const void *data)
+{
+    QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE
+                                  " -netdev user,id=n0"
+                                  " -device bcm570x,addr=%02x.0,netdev=n0,"
+                                  "mac=52:54:00:ab:cd:ef", BCM_SLOT);
+
+    /* Tag plus the first two address bytes in the high mailbox word. */
+    g_assert_cmphex(ind_mem_readl(qts, 0x0c14), ==, 0x484b5254u);
+    /* The remaining four address bytes in the low word. */
+    g_assert_cmphex(ind_mem_readl(qts, 0x0c18), ==, 0x00abcdefu);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The PHY answers through MI_COMM with the identity brgphy binds on, and its
+ * link comes up when the guest configures the interface -- the load-bearing
+ * link/autoneg result. MI_STS, the auto-poll link latch, follows the carrier.
+ */
+static void test_phy_readback(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    /* The Broadcom BCM5701 identity. */
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR2), ==,
+                    BCM_PHY_IDR2_BCM5701);
+
+    /* Out of reset the link is still negotiating: down, incomplete. */
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
+                    ==, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_MI_STS) & BCM_MISTS_LINK, ==, 0);
+
+    /* Configure the interface (restart autonegotiation): link comes up. */
+    mii_write(qts, BCM_PHY_ADDR, MII_BMCR,
+              MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
+
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
+                    ==, MII_BMSR_LINK);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_ANEGDONE,
+                    ==, MII_BMSR_ANEGDONE);
+
+    /* The auto-poll link latch now reads the carrier too. */
+    g_assert_cmphex(bar_readl(qts, BCM_MI_STS) & BCM_MISTS_LINK, ==,
+                    BCM_MISTS_LINK);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -393,6 +493,9 @@ int main(int argc, char **argv)
                         test_hcc_mode_idle_poll);
     qtest_add_data_func("/bcm570x/misc-ctl-asic-revision", NULL,
                         test_misc_ctl_asic_revision);
+    qtest_add_data_func("/bcm570x/mac-address-mailbox", NULL,
+                        test_mac_address_mailbox);
+    qtest_add_data_func("/bcm570x/phy-readback", NULL, test_phy_readback);
 
     return g_test_run();
 }

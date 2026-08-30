@@ -15,11 +15,13 @@
  * 0x8000-0xFFFF); the three ways the driver reaches chip state -- the BAR
  * directly, an indirect register window through PCI config 0x78/0x80, and an
  * indirect memory window through config 0x7C/0x84; the chip id in MISC_CTL; the
- * global reset with its on-chip firmware-ready handshake at SRAM 0x0B50; and the
- * self-clearing *_MODE reset bits. The MII/PHY path, the ring engines,
- * interrupts and the dual-port device arrive in later commits; a write to a
- * register with no modelled behaviour logs LOG_UNIMP and is stored so a
- * read-back still round-trips.
+ * global reset with its on-chip firmware-ready handshake at SRAM 0x0B50; the
+ * self-clearing *_MODE reset bits; the MII path to the integrated copper PHY
+ * (a separate model) through the MI registers; the MAC-address mailbox in SRAM;
+ * and link status tied to the netdev. The ring engines, interrupts and the
+ * dual-port device arrive in later commits; a write to a register with no
+ * modelled behaviour logs LOG_UNIMP and is stored so a read-back still
+ * round-trips.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -31,7 +33,9 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/pci/pci_device.h"
+#include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/net/bcm570x_phy.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "qapi/error.h"
@@ -103,6 +107,33 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_FW_MAGIC            0x4b657654u
 #define BCM570X_FW_HANDSHAKE_DONE   (~BCM570X_FW_MAGIC)     /* 0xB49A89AB */
 
+/*
+ * The MII management registers, the only path to the integrated PHY. MI_COMM
+ * carries a command: a READ or WRITE, the PHY address, the register number and
+ * (for a write) the data; the chip clears BUSY when done and, for a read,
+ * leaves the value in the low 16 bits. MI_STS is the auto-poll link latch and
+ * MI_MODE (plain storage in the register file) carries the AUTOPOLL enable.
+ */
+#define BCM570X_MI_COMM             0x044c
+#define BCM570X_MI_STS              0x0450
+#define BCM570X_MICOMM_DATA         0x0000ffffu
+#define BCM570X_MICOMM_REG          0x001f0000u     /* bits 20:16 */
+#define BCM570X_MICOMM_REG_SHIFT    16
+#define BCM570X_MICMD_WRITE         0x04000000u
+#define BCM570X_MICMD_READ          0x08000000u
+#define BCM570X_MICOMM_BUSY         0x20000000u
+#define BCM570X_MISTS_LINK          0x00000001u
+
+/*
+ * The MAC-address mailbox in on-chip SRAM. When the high half of 0x0C14 reads
+ * the tag 0x484B the driver takes the six address bytes from these two words,
+ * which is the path bge_attach reads before it falls back to the EEPROM. The
+ * on-chip bootcode leaves them there, so a reset re-populates them.
+ */
+#define BCM570X_SRAM_MAC_HI         0x0c14
+#define BCM570X_SRAM_MAC_LO         0x0c18
+#define BCM570X_MAC_TAG             0x484b
+
 struct Bcm570xState {
     PCIDevice parent_obj;
 
@@ -125,6 +156,9 @@ struct Bcm570xState {
     /* Backing storage for the register file and the on-chip SRAM. */
     uint32_t regfile[BCM570X_REG_FILE_WORDS];
     uint32_t sram[BCM570X_SRAM_WORDS];
+
+    /* The integrated copper PHY, reached through the MI registers. */
+    Bcm570xPhyState phy;
 };
 
 static uint32_t bcm570x_regfile_read(Bcm570xState *s, uint32_t off)
@@ -160,18 +194,36 @@ static uint16_t bcm570x_chip_id(Bcm570xState *s)
 }
 
 /*
+ * Present the station address in the SRAM mailbox the driver reads first, with
+ * the tag in the high half of 0x0C14. The on-chip bootcode leaves it there, so
+ * every reset re-populates it.
+ */
+static void bcm570x_load_mac_mailbox(Bcm570xState *s)
+{
+    const uint8_t *m = s->conf.macaddr.a;
+
+    bcm570x_sram_write(s, BCM570X_SRAM_MAC_HI,
+                       ((uint32_t)BCM570X_MAC_TAG << 16) |
+                       ((uint32_t)m[0] << 8) | m[1]);
+    bcm570x_sram_write(s, BCM570X_SRAM_MAC_LO,
+                       ((uint32_t)m[2] << 24) | ((uint32_t)m[3] << 16) |
+                       ((uint32_t)m[4] << 8) | m[5]);
+}
+
+/*
  * A global reset (the driver's write of MISC_CFG.RESET_CORE_CLOCKS, by either
  * access path) returns the register file and the on-chip SRAM to their reset
- * values and leaves the firmware-ready complement in the SRAM handshake
- * mailbox, which is how the on-chip bootcode signals the driver it is up. The
- * PCI config the driver saves and restores by hand -- the chip id in MISC_CTL
- * among it -- is untouched.
+ * values, leaves the firmware-ready complement in the SRAM handshake mailbox --
+ * how the on-chip bootcode signals the driver it is up -- and re-populates the
+ * MAC-address mailbox the bootcode also owns. The PCI config the driver saves
+ * and restores by hand, the chip id in MISC_CTL among it, is untouched.
  */
 static void bcm570x_global_reset(Bcm570xState *s)
 {
     memset(s->regfile, 0, sizeof(s->regfile));
     memset(s->sram, 0, sizeof(s->sram));
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_HANDSHAKE_DONE);
+    bcm570x_load_mac_mailbox(s);
 }
 
 /*
@@ -195,6 +247,28 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
         break;
+    case BCM570X_MI_COMM: {
+        /*
+         * A PHY management access. The integrated PHY answers at any address
+         * -- it is the only one on the internal bus and the driver reads a
+         * fixed address -- so the address field is not decoded. A read leaves
+         * the value in the low 16 bits with BUSY clear; a write forwards the
+         * data. Either way the chip completes at once, so a poll for BUSY
+         * clear succeeds on the first read.
+         */
+        unsigned reg = (val & BCM570X_MICOMM_REG) >> BCM570X_MICOMM_REG_SHIFT;
+
+        if (val & BCM570X_MICMD_READ) {
+            val = bcm570x_phy_read(&s->phy, reg);
+        } else {
+            if (val & BCM570X_MICMD_WRITE) {
+                bcm570x_phy_write(&s->phy, reg, val & BCM570X_MICOMM_DATA);
+            }
+            val &= ~BCM570X_MICOMM_BUSY;
+        }
+        bcm570x_regfile_write(s, off, val);
+        return;
+    }
     default:
         qemu_log_mask(LOG_UNIMP,
                       "bcm570x: write 0x%08x to register 0x%04x has no "
@@ -202,6 +276,21 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         break;
     }
     bcm570x_regfile_write(s, off, val);
+}
+
+/*
+ * Register-file reads, reached identically from the BAR and the indirect
+ * window. Most registers read back their stored value; MI_STS is derived from
+ * the PHY's live link so the driver's auto-poll path sees the carrier.
+ */
+static uint32_t bcm570x_reg_read(Bcm570xState *s, uint32_t off)
+{
+    switch (off & (BCM570X_REG_FILE_SIZE - 1)) {
+    case BCM570X_MI_STS:
+        return bcm570x_phy_link_up(&s->phy) ? BCM570X_MISTS_LINK : 0;
+    default:
+        return bcm570x_regfile_read(s, off);
+    }
 }
 
 /* SRAM offset the BAR0 window at 0x8000 exposes for a given BAR address. */
@@ -217,7 +306,7 @@ static uint64_t bcm570x_bar0_read(void *opaque, hwaddr addr, unsigned size)
     Bcm570xState *s = opaque;
 
     if (addr < BCM570X_REG_FILE_SIZE) {
-        return bcm570x_regfile_read(s, addr);
+        return bcm570x_reg_read(s, addr);
     }
     return bcm570x_sram_read(s, bcm570x_window_sram_off(s, addr));
 }
@@ -298,7 +387,7 @@ static uint32_t bcm570x_config_read(PCIDevice *dev, uint32_t addr, int len)
         case BCM570X_PCI_MEMWIN_BASEADDR:
             return s->mem_win_base;
         case BCM570X_PCI_REG_DATA:
-            return bcm570x_regfile_read(s, s->reg_win_base);
+            return bcm570x_reg_read(s, s->reg_win_base);
         case BCM570X_PCI_MEMWIN_DATA:
             return bcm570x_sram_read(s, s->mem_win_base);
         }
@@ -322,11 +411,20 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     return size;
 }
 
+/* Tie the PHY's carrier to the netdev: a backend that goes down drops link. */
+static void bcm570x_set_link_status(NetClientState *nc)
+{
+    Bcm570xState *s = qemu_get_nic_opaque(nc);
+
+    bcm570x_phy_set_link_down(&s->phy, nc->link_down);
+}
+
 static NetClientInfo net_bcm570x_info = {
     .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .can_receive = bcm570x_can_receive,
     .receive = bcm570x_receive,
+    .link_status_changed = bcm570x_set_link_status,
 };
 
 static void bcm570x_realize(PCIDevice *dev, Error **errp)
@@ -370,11 +468,20 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                           "bcm570x-bar0", BCM570X_BAR0_SIZE);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
 
+    /*
+     * Realize the PHY as a system-bus device so machine reset reaches it: a
+     * bus-less device is never reset (see sgi-ioc3-eth.c for the same note).
+     */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->phy), errp)) {
+        return;
+    }
+
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(&net_bcm570x_info, &s->conf,
                           object_get_typename(OBJECT(dev)), ds->id,
                           &ds->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
+    bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
 }
 
 static void bcm570x_reset_hold(Object *obj, ResetType type)
@@ -392,6 +499,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     memset(s->sram, 0, sizeof(s->sram));
     s->reg_win_base = 0;
     s->mem_win_base = 0;
+    bcm570x_load_mac_mailbox(s);
 }
 
 static const VMStateDescription vmstate_bcm570x = {
@@ -421,6 +529,13 @@ static const Property bcm570x_properties[] = {
     DEFINE_NIC_PROPERTIES(Bcm570xState, conf),
 };
 
+static void bcm570x_init(Object *obj)
+{
+    Bcm570xState *s = BCM570X(obj);
+
+    object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
+}
+
 static void bcm570x_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -447,6 +562,7 @@ static const TypeInfo bcm570x_types[] = {
         .name = TYPE_BCM570X,
         .parent = TYPE_PCI_DEVICE,
         .instance_size = sizeof(Bcm570xState),
+        .instance_init = bcm570x_init,
         .class_init = bcm570x_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
