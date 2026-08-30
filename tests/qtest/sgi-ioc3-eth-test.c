@@ -1,24 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * QTest for the SGI IOC3's ethernet engine on a machine with none of the SGI
- * fabric under it.
- *
- * Every other result this device has is entangled with the Bridge, the
- * crosstalk fabric, the Hub and our own address map, so a defect found there
- * has to be argued into place. This plugs the same chip into a plain PCI
- * machine, where none of that exists, and drives the rings and the DMA from
- * outside. What it buys is attribution: a behaviour reproduced here belongs
- * to the device, and one that does not reproduce here belongs to the fabric.
- * It is the discipline that settled the SCSI adapter's defects, which were
- * reproduced on this same machine with no guest running at all.
- *
- * What this cannot prove, stated plainly because the test is ours and so is
- * the device: a test we wrote exercising a model we wrote is weaker evidence
- * than a real driver. The honest claim is that the fabric is excluded, not
- * that the engine is correct. The one assertion here that does not depend on
- * our own understanding is the backend's reply -- user-mode networking parses
- * what the engine transmitted and answers it, or does not, and it has no
- * opinion about what we meant.
+ * The IOC3 ethernet engine on a plain PCI machine, with none of the SGI
+ * fabric under it. What that buys is attribution: a behaviour reproduced
+ * here belongs to the device, one that does not belongs to the fabric.
+ * The honest claim is that the fabric is excluded, not that the engine is
+ * correct -- the one assertion independent of our own understanding is
+ * the backend's reply, which parses what the engine transmitted and has
+ * no opinion about what we meant.
  */
 
 #include "qemu/osdep.h"
@@ -191,14 +179,9 @@
 #define RX_DELIVER_MAX    2040
 
 /*
- * The good-packet bit in a receive buffer's error word, from the drivers
- * rather than from our header, on the same footing as the offsets above.
- * Linux declares it as ERXBUF_GOODPKT 0x40000000 and gates every delivered
- * frame on it, dropping the frame without it; OpenBSD declares the same value
- * as IEC_RXERR_GOODPACKET and never reads it, testing the error bits beside it
- * instead. A test carrying an untraceable copy of a constant is how the
- * transmit data offset stayed wrong in two files at once, each agreeing with
- * the other and neither with the hardware.
+ * The good-packet bit, from the drivers rather than our header: Linux
+ * gates every delivered frame on ERXBUF_GOODPKT 0x40000000. An
+ * untraceable copy of a constant is how two files stay wrong together.
  */
 #define RXE_GOODPKT       0x40000000u
 
@@ -275,19 +258,11 @@ static void pci_cfg_writel(QTestState *qts, uint8_t slot, uint8_t offset,
  * both drivers write.
  */
 /*
- * Everything after the machine exists: place the window, let the chip decode
- * and master, and leave the engine in the state a driver leaves it in. Shared
- * by both attachments below, because which backend is on the other side must
- * be the only thing that differs between them.
- *
- * Promiscuous, unlike a real driver: this file's own address-filter
- * consideration is out of its scope (the IOC3 datasheet in the Origami
- * project tree, docs/datasheets/ioc3.md, covers the filter contract, and
- * tests/qtest/sn0-ioc3-test.c is where it is exercised). Several tests here
- * address a frame with an arbitrary byte pattern to probe gather and
- * DMA-boundary mechanics rather than a station address at all, so without
- * this bit the filter this device now applies would drop them for a reason
- * that has nothing to do with what they test.
+ * Bring-up shared by both attachments, so the backend is the only thing
+ * that differs. Promiscuous, unlike a real driver: several tests address
+ * frames with arbitrary byte patterns to probe DMA mechanics, and the
+ * filter (exercised in tests/qtest/sn0-ioc3-test.c) would drop them for
+ * a reason unrelated to what they test.
  */
 static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
                           unsigned int buffers)
@@ -604,9 +579,8 @@ static size_t send_and_capture(QTestState *qts, int host_fd,
  * bits, so a guest can name 127 of an area that has 104. Either side of the
  * area's own size, then the two lengths that exceed it, all on the wire.
  *
- * These are the sizes nothing else here uses: the existing tests pick round
- * numbers well clear of the edge, which is how a defect lived in this path for
- * a session while every one of them passed.
+ * These are the sizes nothing else here uses: the existing tests pick
+ * round numbers well clear of the edge.
  */
 static void test_the_inline_area_boundary(const void *data)
 {
@@ -932,14 +906,10 @@ static void wait_for_rx_consume(QTestState *qts, uint32_t want)
 }
 
 /*
- * Drive the receive ring right round three times. One lap proves the index
- * returns to zero; three prove it keeps doing it, which is a different claim
- * and the one a wrap defect off by a single entry survives.
- *
- * The ring holds 512 entries and the buffers behind them are reused, exactly
- * as OpenBSD does -- it fills all 512 pointer slots from a smaller pool with
- * `i & (sc_nrxdesc - 1)`. So this exercises the index arithmetic rather than
- * anyone's memory footprint.
+ * Three full laps of the receive ring: one proves the index returns to
+ * zero, three prove it keeps doing it -- the claim an off-by-one wrap
+ * defect survives. Buffers are reused from a small pool as OpenBSD does,
+ * so this exercises index arithmetic, not memory footprint.
  */
 static void test_the_receive_ring_wraps_three_times(const void *data)
 {
@@ -1006,15 +976,9 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
 }
 
 /*
- * The receive ring running out, and coming back. When the engine has consumed
- * everything software supplied it must stop taking frames rather than
- * overwrite a buffer it has already filled -- and when software supplies more,
- * the frames the backend has been holding must go in without another arriving
- * to prompt it.
- *
- * This case was found by accident: a six-frame test against a four-buffer ring
- * stopped dead at four. An accident that reproduces on purpose is a better
- * starting point than a case somebody imagined, so it is asserted here.
+ * The receive ring running out and coming back: a consumed ring must stop
+ * taking frames rather than overwrite, and new buffers must drain what
+ * the backend held without another frame arriving to prompt it.
  */
 static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
 {
@@ -1143,18 +1107,11 @@ static void test_a_burst_behind_one_doorbell(const void *data)
 }
 
 /*
- * A transmit descriptor that cannot be read. Every field the walk needs comes
- * out of that fetch -- the command bits, the byte counts, both buffer
- * addresses and the inline area -- so an engine that reads it without looking
- * at the result assembles a frame out of whatever the failed reads left on its
- * stack, sends it, and steps the consume index over a descriptor it never saw.
- * The frame is what makes this worth a test: the wire carries something no
- * driver asked for.
- *
- * The walk stops on the descriptor instead, and the index stays on it: the
- * fetch is what failed, so there is nothing to say the descriptor was
- * processed. A guest that repairs the address and rings again gets it sent,
- * which is the second half below.
+ * A transmit descriptor that cannot be read: an engine ignoring the fetch
+ * result sends a frame assembled from its own stack and steps the index
+ * over a descriptor it never saw. The walk must stop with the index on
+ * the descriptor; a guest that repairs the address and rings again gets
+ * it sent -- the second half below.
  */
 static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
 {
@@ -1350,23 +1307,13 @@ static void test_the_ring_select_bit_moves_the_wrap(const void *data)
 }
 
 /*
- * The interleaving the whole engine was rewritten for: a frame arriving while
- * the transmit walk is still running. One test covers it, at one size, on a
- * frame the backend happens to answer -- so the size at which a reply can be
- * lost is untested everywhere except that one point.
- *
- * User-mode networking answers a hand-built echo request synchronously, inside
- * the same call that sent it, and its reply is the same length as the request.
- * That gives the receive size freely, which the ARP the other test uses cannot:
- * an ARP reply is one fixed length.
- *
- * A TRAP THAT LOOKS LIKE A PASSING TEST. The backend learns a station address
- * from ARP input only, so an IP conversation with no ARP in front of it makes
- * it ask who we are first. What comes back then is its own ARP request -- a
- * delivered frame, a valid buffer header, a plausible byte count, every field
- * a test would check looking right, and none of it the reply being tested.
- * The exchange below is completed before any size is measured, for that reason
- * and no other.
+ * A frame arriving while the transmit walk is still running. The echo
+ * request gives the receive size freely -- the backend answers it
+ * synchronously at request length, where an ARP reply is one fixed size.
+ * The trap: without ARP in front, the backend's first answer is its own
+ * ARP request -- a delivered frame with every field looking right and
+ * none of it the reply under test -- so the ARP exchange completes before
+ * any size is measured.
  */
 static uint16_t ones_complement_sum(const uint8_t *data, size_t len)
 {
@@ -1645,21 +1592,12 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
 }
 
 /*
- * A frame whose receive ring entry cannot be read. That entry carries the
- * address every write the delivery makes is aimed at -- both header words,
- * the payload, and the phantom check sequence -- so a fetch that fails
- * leaves the engine with no destination at all. Continuing past it writes
- * those five kilobytes wherever the failed read left the address variable
- * pointing, advances the consume index and raises the receive interrupt:
- * the driver is told a good packet is waiting in a buffer nothing was
- * written to, and takes whatever the buffer held before. Dropping the frame
- * is the honest outcome, since the transfer never happened and this block
- * has no status a driver reads for one the fabric refused.
- *
- * The ring is moved above every address the machine answers rather than
- * unmapped underneath it, so the failure is the memory system's own. MAC
- * loopback turns the transmit round inside the block, which puts the whole
- * delivery inside the doorbell write and leaves nothing to wait for.
+ * A receive ring entry that cannot be read leaves the delivery with no
+ * destination; continuing would advance the index and raise the interrupt
+ * over a buffer nothing was written to. The drop is asserted. The ring
+ * sits above every answering address so the refusal is the memory
+ * system's own, and MAC loopback puts the whole delivery inside the
+ * doorbell write.
  */
 static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
 {
@@ -1704,16 +1642,9 @@ static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
 }
 
 /*
- * The complement, standing alone for the reason set out in the origin200
- * version of this case: an assertion about an absence should not inherit a
- * wait. Nothing is asked for here, so nothing can come back, and the absence
- * holds by construction rather than because a window expired.
- *
- * Two routes could bring a frame back and only one is the backend. Loopback
- * returns a transmit into this device's own receive path whenever either
- * selection is set. Both are clear out of reset and neither is set here, so
- * the silence holds -- but on a state this case would otherwise never
- * mention, which is why the MAC control write is spelled out in full.
+ * The absence case stands alone so it inherits no wait. Loopback is the
+ * second route a frame could come back by, so the MAC control write is
+ * spelled out in full to pin both selections clear.
  */
 static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 {
