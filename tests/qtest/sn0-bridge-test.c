@@ -1,41 +1,15 @@
 /*
- * The I/O bridge's register face: where its registers are, and what they hold
- * before anything writes them.
+ * The I/O bridge's register face: where its registers are, and what they
+ * hold before anything writes them. Whole registers are compared rather
+ * than the field a guest branches on, because the field-only check passes
+ * a model that got the rest wrong; expected values are built from named
+ * fields so a missing term changes the total.
  *
- * Both halves of that are worth a test for the same reason — each has a wrong
- * answer that looks right. A model serving a register at both halves of its
- * eight-byte slot satisfies every guest we boot and is wrong about where the
- * registers are, which surfaces only when something composes an address from
- * one. And a model resetting the chip to zeros comes up reporting widget 0 and
- * little-endian byte order on a big-endian machine, which surfaces a long way
- * from the register that carries it.
- *
- * Where a whole register is compared rather than a field of it, that is
- * deliberate. Most of these registers have one field a guest branches on and
- * several it does not, and asserting the branch-on field is the check that
- * passes for a model that got the rest wrong. Comparing the word leaves nothing
- * weaker to pass: the expected value is built here from the same named fields
- * the chip's specification names, so a reader can see what it is made of, and
- * a term going missing changes the total.
- *
- * These run against the machine with its I/O bridge option turned on, which is
- * off by default because the bridge cannot yet carry the base I/O controller on
- * its PCI bus. One test below asserts the default is genuinely unchanged, so
- * that the option cannot quietly become the machine.
- *
- * Two limits, stated because they look testable and are not, and both are the
- * crossbar test's limits for the same reasons. There is no processor executing
- * in a qtest, so a refused access and an access that returned zero look
- * identical from here — every assertion meaning "this must not answer" is
- * written as "this must not answer *with the thing that is really there*",
- * which catches a model decoding to the wrong place and does not catch a model
- * answering zero instead of faulting. The `-d unimp` log is what shows that
- * difference, and reading it is a step a person takes. And the chip refuses an
- * access wider than a crosstalk double-word, which cannot be shown from here
- * either: a qtest's 64-bit read goes through the address space, which clamps
- * the length to the region's declared maximum and issues two legal 4-byte
- * accesses instead, so the value comes back and the test would fail against a
- * correct model.
+ * Two limits that look testable and are not: a refused access and one that
+ * answered zero are indistinguishable without a processor, so "must not
+ * answer" is asserted as "must not answer with the thing that is really
+ * there"; and the chip's own too-wide refusal cannot be reached, because
+ * the address space splits a qtest's wide read into legal accesses first.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -152,16 +126,9 @@
 #define DEV_MEMORY_SPACE        (1u << 12)
 #define DEV_WINDOW_BASE         0xfffu
 /*
- * What each device register holds at reset, as the firmware's own sanity
- * diagnostic states it: that diagnostic prints the value it expected beside the
- * value it read, for each of the eight devices in turn, and these are the eight
- * it expects.
- *
- * Written out as literals on purpose. The model computes them from a rule --
- * two megabytes of window each for the first two devices and one for the rest,
- * laid end to end -- and a test recomputing that rule would assert the formula
- * against itself and pass whatever both were changed to. These are the numbers
- * a real firmware asked for.
+ * The eight reset values the firmware's sanity diagnostic states, as
+ * literals on purpose: the model computes them from a rule, and a test
+ * recomputing the rule asserts the formula against itself.
  */
 static const uint32_t device_reset[8] = {
     0x18001000, 0x18001002, 0x18001004, 0x18001005,
@@ -194,30 +161,15 @@ static const uint32_t device_reset[8] = {
                                  (function) * CFG0_FUNCTION_STRIDE)
 
 /*
- * A card to probe with. Which card does not matter — these tests are about
- * the window rather than what is behind it — so this is an in-tree device
- * needing no backing file and no network.
- *
- * Its identity double-word is 0x00121000, whose four bytes are 0x00, 0x10,
- * 0x12 and 0x00 from the least significant up. Two of them are the same and
- * carry nothing, so the byte-lane assertions below rest on the two that differ
- * and on the two halfword reads, where the vendor and the device identifier
- * have no digits in common at all. Said out loud because "assert all four
- * bytes" reads like four independent checks and is two.
+ * A card to probe with; which card does not matter. Its identity dword
+ * 0x00121000 repeats two of its four bytes, so the byte-lane assertions
+ * rest on the two that differ and on the halfword reads -- "assert all
+ * four bytes" reads like four independent checks and is two.
  */
 /*
- * Which PCI devices these tests put their cards in, and why they are named
- * rather than left to the allocator.
- *
- * The machine fits two SCSI adapters at devices 0 and 1, because the base I/O
- * board carries two, so those devices are never free. That is the occasion for
- * naming the slots but not the reason: a test that lets the allocator choose
- * and then reads device 0 is asserting where the allocator puts things, which
- * is not this chip's behaviour and was one machine change away from breaking
- * whatever that change happened to be. Every card below says where it goes.
- *
- * The slot each test uses is its own, because every test starts its own
- * machine — a device in one test's slot 7 says nothing about another test's.
+ * Every card names its slot: a test that lets the allocator choose and
+ * then reads device 0 asserts allocator behaviour, not this chip's.
+ * Devices 0 and 1 hold the machine's own adapters and are never free.
  */
 #define PROBE_SLOT              4  /* the card most tests read */
 #define PROBE_SLOT_ABOVE        5  /* the next device up, for the 4 KB stride */
@@ -432,7 +384,7 @@ static void test_reset_state(const void *data)
 
     /*
      * The chip's reset state is far more non-zero than a reader would guess,
-     * and knowing two exceptions is not enough — the control register alone
+     * and knowing two exceptions is not enough -- the control register alone
      * comes up with seven fields set. Each of these compares the whole word so
      * that a field this test did not think to name still has to be right.
      */
@@ -469,40 +421,21 @@ static void test_reset_state(const void *data)
 }
 
 /*
- * The base I/O controller's slot and the two SCSI adapters'. Firmware assigns
- * each of them PCI resources and aims its window at them after every reset,
- * so these are the slots whose register does not stay at the raw hardware
- * reset value once the machine has actually reset — see the exclusion below.
- *
- * The two adapters were not always in this list. An earlier version of this
- * firmware aimed only the controller's window, on the theory that a guest's
- * own driver aims the other two when it attaches — true of OpenBSD's qlw,
- * which manages the Bridge's per-device window itself, and false of Linux's
- * driver pair for this hardware, whose PCI core trusts firmware to have
- * already placed a reachable value in the BAR and never touches the window
- * register that makes it reachable. A guest of the second kind enumerated
- * the bus, read back an identity that looked right, and then found nothing
- * behind either adapter's BAR — the two mechanisms are that separate. See
- * hw/mips/sn0.h for the full account.
+ * The slots firmware assigns after every reset -- the controller and both
+ * SCSI adapters -- whose registers therefore never show the raw reset
+ * value. All three matter: Linux's PCI core trusts firmware to have aimed
+ * a window and never touches the register itself (hw/mips/sn0.h has the
+ * account).
  */
 #define IOC3_SLOT 2
 #define SCSI0_SLOT 0
 #define SCSI1_SLOT 1
 
 /*
- * Where firmware places each device's memory BAR — SN0_PCI_IOC3_MEM and
- * friends in hw/mips/sn0.h, restated here because this file does not include
- * machine headers. Not a hardware fact; see those constants' own comments
- * for why none of them is zero, and see them for why each is the console
- * widget's own base plus that device's window offset rather than an
- * arbitrary low address: OpenBSD's own platform code expects a PCI address
- * inside the bus resource window it declares, not merely a non-zero one, and
- * this is the value that satisfies it. Written as the sum of those two named
- * parts, not folded into one number, so a change to either announces itself
- * here instead of leaving a restated constant silently wrong — which is
- * exactly what a bare 0x100000 did the first time this was written, caught
- * only by this file's own reset-value test failing against a real,
- * live-built machine.
+ * Where firmware places each device's memory BAR, restated from
+ * hw/mips/sn0.h since this file includes no machine headers. Written as
+ * the sum of the two named parts, not one number, so a change to either
+ * announces itself here.
  */
 #define IOC3_PCI_MEM ((8 << 24) + 0x600000)
 #define SCSI0_PCI_MEM ((8 << 24) + 0x200000)
@@ -515,30 +448,12 @@ static void test_each_slot_resets_to_its_own_window(const void *data)
 
     /*
      * Three bits set and not two: the memory-or-I/O select at bit 12 is the
-     * third, so a slot comes up pointing at PCI memory space rather than I/O
-     * space. All eight are checked rather than the first, because a table
-     * written out by hand is where one row goes missing.
-     *
-     * The twelve-bit window base has no power-up value in the specification --
-     * its register table refers to a mapping chapter instead of giving one --
-     * so the value asserted here comes from the firmware, which states all
-     * eight and rejects a Bridge holding anything else.
-     *
-     * Only five of the eight can be checked here, and that is a real gap rather
-     * than a choice: the three slots below are assigned a window by firmware
-     * immediately after this same reset, so by the time a qtest can read them
-     * the register already holds the assignment and the reset value it briefly
-     * had is not observable from here. Their expected values are in the table
-     * above for the record, and the assertions for what they become instead are
-     * the reassignment tests further down.
-     *
-     * These three slots are skipped here on purpose, not missed: firmware
-     * assigns each of them a window immediately after this same reset, so by
-     * the time a qtest can read anything the register already reflects that
-     * assignment rather than the raw hardware default every other slot still
-     * shows. test_ioc3_slot_is_reassigned_after_reset and
-     * test_scsi_slots_are_reassigned_after_reset below are the assertions
-     * for what they become instead.
+     * third. All eight rows are checked because a hand-written table is
+     * where one row goes missing; the window-base values come from the
+     * firmware, which states all eight (the specification gives none).
+     * Firmware-assigned slots are skipped -- their brief reset value is not
+     * observable from a qtest, and the reassignment tests below assert what
+     * they become instead.
      */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
         if (n == IOC3_SLOT || n == SCSI0_SLOT || n == SCSI1_SLOT) {
@@ -556,14 +471,10 @@ static void test_ioc3_slot_is_reassigned_after_reset(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     /*
-     * The other half of the exclusion above. Firmware's assignment is a
-     * masked read-modify-write of the base and space-select fields only —
-     * the same shape a guest's own write to this register gets — so the
-     * error-lock and page-cross-check bits every other slot resets with
-     * survive here too, and only the base and space-select fields carry the
-     * assignment. A model that overwrote the whole register instead would
-     * pass a test asserting only the base field and silently clear those two
-     * bits, which is why the whole word is compared rather than a part of it.
+     * Firmware's assignment is a masked read-modify-write of base and
+     * space-select only, so the reset bits survive it; the whole word is
+     * compared because a whole-register overwrite passes a base-only check
+     * while silently clearing them.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
                     DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
@@ -573,16 +484,11 @@ static void test_ioc3_slot_is_reassigned_after_reset(const void *data)
 }
 
 /*
- * The two adapters' half of the same exclusion, checked together rather than
- * as two copies of the same test: a loop that assigns one slot's address to
- * both, or the second slot's address to neither, produces two rows that look
- * individually plausible and only disagree with each other. Both the device
- * window and the memory BAR it should now answer at are checked for each
- * slot, the same pair the IOC3 test above checks, because firmware's job
- * here is the same two writes for a fixable reason rather than an accident
- * of what the loop happened to do: an aimed window with no assigned BAR
- * behind it decodes to nothing, and an assigned BAR with no aimed window is
- * exactly the defect this test exists to catch a regression of.
+ * Both adapters checked together: a loop assigning one slot's address to
+ * both produces rows that look plausible alone and only disagree with
+ * each other. Window and BAR are both checked per slot -- an aimed window
+ * with no BAR decodes to nothing, and a BAR with no aimed window is the
+ * defect this test exists to catch.
  */
 static void test_scsi_slots_are_reassigned_after_reset(const void *data)
 {
@@ -612,30 +518,11 @@ static void test_scsi_slots_are_reassigned_after_reset(const void *data)
 }
 
 /*
- * The question the codex review raised at the gate: the assignment above is
- * a legacy reset handler (sn0_assign_pci_resources), registered once from the
- * machine-init-done notifier, and that registration says nothing on its own
- * about whether it keeps running after the PCI devices' own resets on every
- * future reset, or only happened to on this first one.
- *
- * It does not need a second reset path to trust: qemu_system_reset() is the
- * only caller of qemu_devices_reset(), and hw/core/machine.c calls that exact
- * function for the machine's own first reset, immediately after registration
- * finishes and before the guest runs a single instruction. A `system_reset`
- * issued later from the monitor walks the identical, singleton reset
- * container in the identical, append-only order — nothing in this machine
- * ever unregisters a reset handler or hot-plugs a device, so the order this
- * test observes on the second reset is the same order the boot-time
- * assignment above already depends on, not a distinct claim about the
- * future. This test is what turns that reading of the reset code into an
- * observation instead of an inference the datasheet comment would otherwise
- * be making unchecked.
- *
- * Both the bridge's device-window register and the controller's own BAR are
- * checked, because firmware's job after a reset is two writes, not one: the
- * bridge has to be aimed and the device has to answer at the address it is
- * aimed at. A model that reasserted only one of them would still fail a
- * guest's post-reset console write.
+ * The firmware assignment must recur on every reset, not only the first:
+ * this observes it on a second, monitor-issued reset rather than inferring
+ * it from reset-handler ordering. Both the window register and the BAR are
+ * checked -- firmware's post-reset job is two writes, and a model
+ * reasserting only one still fails a guest's post-reset console write.
  */
 static void test_ioc3_slot_survives_a_later_reset(const void *data)
 {
@@ -649,16 +536,9 @@ static void test_ioc3_slot_survives_a_later_reset(const void *data)
     g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_BAR0), ==,
                     IOC3_PCI_MEM);
     /*
-     * A full-word read, not a halfword one, and that is deliberate: a 16-bit
-     * access to a big-endian config-space dword lands on the byte lanes the
-     * *other* half occupies unless the offset is exclusive-ored with two
-     * first (test_configuration_byte_lanes above is the proof of that, and
-     * this file's own header explains why). Command and status share one
-     * dword at this offset, so reading the whole thing and masking to the
-     * command half sidesteps the byte-lane question rather than getting it
-     * wrong a second time in this same file — the command write firmware
-     * issues elsewhere in this codebase uses the identical whole-word shape
-     * for the identical reason.
+     * A full-word read, deliberately: a 16-bit config-space access lands
+     * on the other half's byte lanes without the offset correction, so
+     * reading the dword and masking sidesteps the question.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_COMMAND) &
                     0xffff, ==, PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
@@ -688,23 +568,17 @@ static void test_fields_are_the_width_they_should_be(const void *data)
      * The type 1 configuration register carries a bus number and a device
      * number and nothing else. This model gave it a whole writable word until
      * its fields were checked against the chip's own register table, on the
-     * strength of a claim that our sources gave no width — they did.
+     * strength of a claim that our sources gave no width -- they did.
      */
     qtest_writel(qts, REG(BRIDGE_PCI_TYPE1_CONFIG), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_PCI_TYPE1_CONFIG)), ==,
                     TYPE1_WRITABLE);
 
     /*
-     * The one-wire master's two timing fields are its writable part, and the
-     * two status bits below them are not — they are what the model answers
-     * with, recomputed on every write because a write runs a bit slot. So the
-     * comparison masks them out rather than expecting them clear: they are
-     * legitimately set here, by the slot this write just ran.
-     *
-     * This register reached the sweep late. A one-wire test asserted the same
-     * property and could not fail — the slot sets both status bits after the
-     * writable mask is applied, so it passed whether the mask worked or not —
-     * and removing it left the mask with no coverage at all until here.
+     * The timing fields are writable; the two status bits are answers,
+     * recomputed because every write runs a slot -- masked out here,
+     * legitimately set by the slot this write just ran. This is the
+     * writable mask's only coverage.
      */
     qtest_writel(qts, REG(BRIDGE_NIC), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_NIC)) & ~(NIC_LEVEL | NIC_DONE),
@@ -737,7 +611,7 @@ static void test_a_device_window_base_survives(const void *data)
     /*
      * A slot's window base and its memory-or-I/O select are the two fields a
      * guest programs here, and the I/O choice is the one written by clearing a
-     * bit that reset set — so this writes the register without bit 12 and
+     * bit that reset set -- so this writes the register without bit 12 and
      * checks the bit actually cleared, which a model holding a reset value
      * behind a mask would fail.
      */
@@ -803,21 +677,9 @@ static void test_the_default_machine_has_the_bridge(const void *data)
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * The machine with nothing said about it, which is now the machine with
-     * the bridge fitted. Every other test here asks for it explicitly, so this
-     * is the only one that would notice the default going back.
-     *
-     * This assertion used to run the other way, guarding the option from
-     * quietly becoming the default while the bridge was being built. It is
-     * inverted rather than deleted because the risk did not go away, it
-     * reversed: what would now be silent is the machine losing the bus every
-     * device on it hangs off, and the suite staying green because every other
-     * test names the option.
-     *
-     * It is also a stronger assertion inverted than it was before. Reading the
-     * identity as the bridge's own whole word can only happen if the chip is
-     * there; the old form could only say the address did not answer with that
-     * word, which a refused access and a zero both satisfy.
+     * The default machine must carry the bridge: every other test names the
+     * option, so this is the only one that would notice the default going
+     * back -- silently losing the bus everything hangs off.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
@@ -845,17 +707,10 @@ static void test_configuration_byte_lanes(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
 
     /*
-     * A narrow access reaches the byte lanes of the containing double-word,
-     * which on a big-endian machine puts the double-word's least significant
-     * byte at the highest of its four addresses. Linux aims at exactly those
-     * addresses — it exclusive-ors the register offset with four minus the
-     * width — so a model that ignored the width and returned the byte at the
-     * offset it was given would hand Linux the wrong end of every identifier
-     * it reads a byte or a halfword of.
-     *
-     * The halfwords are the assertions with real teeth here: the vendor and
-     * the device identifier share no digits, so reading the wrong one cannot
-     * pass.
+     * A narrow access reaches the containing double-word's byte lanes;
+     * Linux aims by exclusive-oring the offset with (4 - width). The
+     * halfword assertions carry the teeth: vendor and device identifiers
+     * share no digits, so the wrong one cannot pass.
      */
     g_assert_cmphex(qtest_readw(qts, CFG0(PROBE_SLOT, 0) + 2), ==, PROBE_VENDOR);
     g_assert_cmphex(qtest_readw(qts, CFG0(PROBE_SLOT, 0) + 0), ==, PROBE_DEVICE);
@@ -880,7 +735,7 @@ static void test_configuration_space_is_laid_out_right(const void *data)
 
     /*
      * And a function's is 256 bytes above the one below it. This card has one
-     * function, so the assertion is that its function 1 is *empty* —
+     * function, so the assertion is that its function 1 is *empty* --
      * which is what says the function field decodes at all. A model ignoring
      * it would alias every function onto function 0 and answer with the card's
      * identity eight times over, and no test that only reads function 0 could
@@ -896,28 +751,12 @@ static void test_configuration_space_is_laid_out_right(const void *data)
 }
 
 /*
- * Which window each card is reached through, and why those are two separate
- * things.
- *
- * A window belongs to a PCI slot, but what it points at is a PCI address that
- * slot's register supplies, and any card decoding that address answers. So the
- * window a test drives and the slot its card sits in are independent, and this
- * table aims a window at a card somewhere else on purpose.
- *
- * That independence is what keeps the two large windows covered. The layout is
- * two 2 MB windows then six 1 MB ones, and devices 0 and 1 are the large
- * pair — where the machine's own SCSI adapters sit, so no test card can go
- * there.
- * Reaching those windows through cards elsewhere tests them anyway. An earlier
- * version of this table could not, because it read "the window belongs to the
- * slot" as "the window reaches the slot" and so gave the two large windows up.
- *
- * These five pin the whole eight-window table. Both large windows are here
- * because a wrong size shows up in them first. Windows 2, 3 and 7 are here
- * because their offsets encode the sizes of every window below them: window 3
- * sits at 0x700000 and window 7 at 0xb00000 only if windows 0 and 1 are 2 MB
- * and window 2 is 1 MB, so a model with evenly spaced windows puts both of them
- * somewhere else.
+ * A window belongs to a slot but reaches whatever decodes the PCI address
+ * its register supplies, so a test can drive the two large windows (whose
+ * slots the machine's own adapters occupy) through cards placed elsewhere.
+ * These five rows pin the whole eight-window table: windows 3 and 7 sit at
+ * 0x700000 and 0xb00000 only if the sizes below them are right, so evenly
+ * spaced windows put both somewhere else.
  */
 static const struct {
     int window;
@@ -1000,8 +839,8 @@ static void test_a_window_goes_where_its_base_says(const void *data)
 
     /*
      * Move the window a megabyte up and the card is no longer under it.
-     * Without this, a model that ignored the base field entirely — mapping
-     * every window onto whatever the card's address happened to be — would
+     * Without this, a model that ignored the base field entirely -- mapping
+     * every window onto whatever the card's address happened to be -- would
      * pass everything above, because every card is aimed where it lives.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(PROBE_SLOT)),
@@ -1044,17 +883,10 @@ static void test_translation_entries_are_written_whole(const void *data)
     unsigned int i;
 
     /*
-     * An entry is written as one 64-bit quantity and read back in halves from
-     * two different places: the upper half four bytes into the entry's own
-     * slot, and the lower half through a second region that exists for nothing
-     * else. Both halves of every entry are checked, because a model decoding
-     * only the first region would leave the second dead and a driver reading an
-     * entry back would get nothing.
-     *
-     * All four entries are written before any is read, which is what makes this
-     * a test of an indexed table rather than of one register: a model ignoring
-     * the index would pass a write-then-read-immediately check on every entry
-     * and fail here on all but the last.
+     * An entry writes whole and reads back in halves from two places; both
+     * are checked or the second region can be dead. All four entries are
+     * written before any is read -- a model ignoring the index passes
+     * write-then-read-immediately on every entry and fails here.
      */
     for (i = 0; i < ARRAY_SIZE(entries); i++) {
         qtest_writeq(qts, ATE(entries[i]),
@@ -1176,13 +1008,9 @@ static void test_translation_entries_reset_clear(const void *data)
 #define PAGE_SIZE_4K            0x1000u
 
 /*
- * The two places the two pages are translated to, and the point of the whole
- * test: they are NOT adjacent. A model translating once per transfer instead of
- * once per page puts the tail of a straddling transfer in the page physically
- * after the first one, which is right only when the two happen to be
- * consecutive — so a test whose two pages are consecutive cannot tell the two
- * models apart, and is the test that was missing from a neighbouring emulator
- * for years.
+ * The two pages translate to non-adjacent places -- the point of the
+ * test: a translate-once-per-transfer model is right whenever the pages
+ * happen to be consecutive, so consecutive pages cannot tell it apart.
  */
 #define TARGET_PAGE_A           0x00100000u
 #define TARGET_PAGE_B           0x00200000u
@@ -1231,7 +1059,7 @@ static void test_a_transfer_straddling_a_page(const void *data)
      * Two entries differing in nothing but the page they name. They target the
      * same widget deliberately, so that what this test asserts stays true
      * however the machine ends up composing a widget and an offset into a
-     * fabric address — the question that composition answers is not this
+     * fabric address -- the question that composition answers is not this
      * test's.
      */
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
@@ -1251,16 +1079,9 @@ static void test_a_transfer_straddling_a_page(const void *data)
     qtest_memread(qts, TARGET_PAGE_AFTER_A, after, sizeof(after));
 
     /*
-     * The head is in the page the first entry names.
-     *
-     * The exclusive-or is the byte-lane permutation, not this test's subject.
-     * The transfer source's swap bits are clear at reset and it transfers
-     * through the page-mapped window, so the Bridge reverses the bytes of each
-     * aligned word on the way past: the byte written at word offset i arrives
-     * at word offset i-exclusive-or-three. The transfer starts word-aligned,
-     * so that is the whole of it. What this test is actually about survives
-     * unchanged, because the permutation cannot move a byte out of its own
-     * four-byte word and therefore cannot move one across the page boundary.
+     * The head lands in the page the first entry names. The exclusive-or
+     * is the byte-lane permutation, not the subject: it cannot move a byte
+     * out of its four-byte word, so it cannot cross the page boundary.
      */
     for (i = 0; i < STRADDLE_HEAD; i++) {
         g_assert_cmpuint(head[i], ==, (uint8_t)(STRADDLE_SEED + (i ^ 3)));
@@ -1326,18 +1147,12 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
 
 
 /*
- * The DMA byte-lane swap.
- *
- * Patterns here are at least eight bytes and never palindromic, so that a
- * whole-buffer reversal, an eight-byte-group reversal and the per-word one this
- * chip performs are all distinguishable from each other. Memory is read with
- * qtest_memread rather than a word accessor, because the value accessors apply
- * their own target-versus-host correction and would manufacture exactly the
- * difference under test.
- *
- * Every assertion that bytes are UNCHANGED is made over memory pre-filled with
- * a sentinel, because unchanged is also what a transfer that never happened
- * produces, and a test that cannot tell those apart is not testing anything.
+ * The DMA byte-lane swap. Patterns are eight-plus bytes and never
+ * palindromic, so whole-buffer, eight-byte-group and per-word reversals
+ * all differ; memory is read with qtest_memread because the value
+ * accessors would manufacture exactly the difference under test. Every
+ * bytes-unchanged assertion runs over sentinel-filled memory, since
+ * unchanged is also what a transfer that never happened produces.
  */
 #define DEV_SWAP_TRANSLATED     (1u << 20)
 #define DEV_SWAP_DIRECT         (1u << 19)
@@ -1555,15 +1370,10 @@ static void test_dma_swap_bits_reset_clear(const void *data)
 
 
 /*
- * The exemption, set as a per-slot board property rather than probed by
- * identity.
- *
- * The Bridge exempts a slot from the DMA correction when the board's
- * byte-lane-exempt bitmask carries that slot's bit. The test puts one plain
- * device in the slot and exempts it with -global, then runs the same device in
- * the same slot unexempted -- the non-exempt twin is what makes the exempt
- * result mean something, since bytes-identical is also what a test that never
- * wrote the swap bit, or a transfer that never happened, would produce.
+ * The exemption is a per-slot board property. The same device runs
+ * exempted and unexempted -- the non-exempt twin is what makes
+ * bytes-identical mean something, since that is also what a transfer that
+ * never happened produces.
  */
 #define MASQ_SLOT               7
 #define MASQ_CARD               " -device sgi-bridge-dma-test,addr=" \
@@ -1655,18 +1465,10 @@ static void test_dma_unexempt_slot_is_swapped(const void *data)
 
 
 /*
- * The one configuration this model does not reproduce, and the message that
- * says so.
- *
- * A guest enabling the DMA swap for a device this model exempts is asking for
- * something the model will not do, so it says so once, on the register write,
- * where the guest's own action is in hand. No guest we boot creates it.
- *
- * The two negatives are the test. A model that logged on every device-register
- * write, or on every write that set any bit, would satisfy the positive alone
- * and be useless -- so the same message must be absent when a non-exempt
- * device gets the same bits, and absent when the exempt device gets a write
- * with those bits clear.
+ * The one configuration the model does not reproduce logs once, on the
+ * register write. The two negatives are the test: the message must be
+ * absent for a non-exempt device with the same bits and for the exempt
+ * device without them, or a log-on-every-write model passes the positive.
  */
 #define UNIMP_FRAGMENT  "exempts from the DMA byte swap"
 
@@ -1787,23 +1589,12 @@ static void test_dma_direct_window_swap_set(const void *data)
 }
 
 /*
- * THE ONE THAT MATTERS MOST. One device, one setting of its register, two
- * transfers -- one through each window -- coming out in OPPOSITE orders.
- *
- * Three tests here catch a model reading a single swap bit for the whole
- * device -- this one and the two page-mapped tests that name a bit. Measured
- * by building that model rather than reasoned about, after an earlier draft of
- * this comment claimed to be the only one and was wrong.
- *
- * It is still the sharpest of the three, because it is the only one where both
- * orders come out of ONE device under ONE register setting, so it cannot be
- * satisfied by a model that is merely inconsistent between runs. It is also the
- * shape Linux presents, which sets the direct bit and never the page-mapped
- * one.
- *
- * A red here means the model does not match the chip, and is worth stopping
- * for -- but it is not a guest regression, because nothing that boots drives
- * the page-mapped window.
+ * One device, one register setting, two transfers through the two windows
+ * coming out in opposite orders -- the one shape a model reading a single
+ * swap bit for the whole device cannot satisfy, and the shape Linux
+ * presents (direct bit set, page-mapped never). A red here is a model
+ * mismatch, not a guest regression: nothing that boots drives the
+ * page-mapped window.
  */
 static void test_dma_the_two_swap_bits_are_independent(const void *data)
 {
@@ -1877,9 +1668,9 @@ static void test_dma_local_space_is_never_swapped(const void *data)
  * node 0's bridge to a node-1 address above 4 GiB must land in node 1's RAM.
  * Bit 32 of the crosstalk address is the NASID; the 32-bit direct path keeps
  * only bits 0-30 and drops it, collapsing a node-1 target into node 0's RAM.
- * For a write that is silent corruption of another node's memory, so this
- * asserts both that node 1 received the bytes and that node 0's low RAM — where
- * the dropped bit would have put them — is untouched.
+ * For a write that is silent corruption of another node's memory, so
+ * this asserts both that node 1 received the bytes and that node 0's low
+ * RAM -- where the dropped bit would have put them -- is untouched.
  */
 static void test_dma_direct_window_reaches_the_second_node(const void *data)
 {
@@ -2009,7 +1800,7 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
  * crosstalk write to the destination Hub's interrupt-modify register; the Hub
  * sets or clears the named bit in its pending bank. The delivery tests program
  * a pin to route to node 0 with a number in the guest range, then read the
- * pending bank back through the Hub's local window — the same window the Hub's
+ * pending bank back through the Hub's local window -- the same window the Hub's
  * own tests read pending through.
  */
 #define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
@@ -2020,30 +1811,18 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
 
 /*
  * The pin the tests drive. A slot's first interrupt pin goes to the chip pin of
- * the same number, so a source in slot 3 drives pin 3 — which is also the pin
+ * the same number, so a source in slot 3 drives pin 3 -- which is also the pin
  * the real machine's base I/O controller uses for its second interrupt, so the
  * test exercises the one that matters rather than the convenient one.
  */
 #define INT_TEST_SLOT           3
 
 /*
- * A write to the timings runs a bit slot, and the slot has finished by the
- * time the write returns. What the slot then answers with depends on where the
- * conversation has got to; this asserts only that it ran and reported itself
- * finished.
- *
- * That ordering is the whole contract for a driver, and getting it wrong is
- * not a wrong value but a hang: every path in the guest's master writes the
- * timings and then spins reading this register until the finished flag
- * appears, so a model that decodes the register and never sets that flag
- * leaves the guest in a loop with nothing to report. An undecoded register
- * would at least fault and say so.
- *
- * The level is not asserted here at all, and that is the division of labour
- * between this test and the ones below it: what the part answers with is their
- * subject, and this one's is only that a slot ran and said so. An earlier
- * version did assert the level, from when nothing was on the bus and the idle
- * high was the whole answer.
+ * A timing write runs a bit slot that has finished by the time the write
+ * returns. Getting this wrong is a hang, not a wrong value: the guest
+ * spins on the finished flag, and a model that decodes the register but
+ * never sets it leaves the guest looping with nothing to report. The
+ * level is the later tests' subject, not this one's.
  */
 static void test_a_write_runs_a_bit_slot(const void *data)
 {
@@ -2064,24 +1843,16 @@ static void test_a_write_runs_a_bit_slot(const void *data)
 }
 
 /*
- * A reset finds the part, and a bit slot does not.
- *
- * This is the assertion that says something is on the bus at all: the wire is
- * open-drain and idles high, so a slot reads one unless the part pulls it
- * down, and the part answers a reset by doing exactly that. A guest reads that
- * zero as presence and will not talk to a bus that does not give it.
- *
- * The two slots are asserted together and that is the point of the test. Each
- * alone is satisfied by a model that answers every slot the same way — one
- * that always reads zero looks like a part answering a reset, and one that
- * always reads one looks like an empty bus. Only the difference between them
- * says the model is reading the timings rather than returning a constant.
+ * A reset finds the part and a bit slot does not. The two are asserted
+ * together because each alone passes a constant-answering model -- always
+ * zero looks like a reset answered, always one like an empty bus; only
+ * the difference says the timings are being read.
  */
 /*
  * One slot on the identity bus, and what the wire read. The widths are the
  * ones mainline uses: a long hold resets, a short one writes a one or reads,
  * and a middling one writes a zero. A read and a written one are the same slot
- * — the guest lets the wire go and samples what is there — which is why one
+ * -- the guest lets the wire go and samples what is there -- which is why one
  * helper serves both.
  */
 static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
@@ -2096,14 +1867,9 @@ static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
 #define NIC_WRITE_ZERO(q) nic_slot((q), 80, 30)
 
 /*
- * Drive a whole search and read the part's identity out of it.
- *
- * This is the exchange a guest performs before it will talk to the part at
- * all, and it is asserted here rather than left to the boot because the boot
- * proves it works on one guest with one kernel configuration. The identity
- * that comes back is compared whole: the family code is what a guest matches
- * on to decide the part is a memory it can read, and asserting only that would
- * pass a model that answered the family and then anything at all.
+ * Drive a whole search and read the identity out of it, compared whole:
+ * asserting only the family code passes a model that answers the family
+ * and then anything at all.
  */
 static void test_a_search_returns_the_identity(const void *data)
 {
@@ -2189,23 +1955,12 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
 #define NIC_CRC_RESIDUE 0xb001
 
 /*
- * Read a page the way a guest does, and check it every way a guest does.
- *
- * There are three residue checks and a model can pass some while failing
- * others, so all three are asserted. The first covers the request together
- * with the part's redirection answer, catching a part that answered a page
- * nobody asked for. The second covers the block plus the two framing bytes the
- * read protocol appends, which is what the one-wire slave driver validates as
- * it caches the page. The third covers the thirty-two stored bytes alone: the
- * block carries its own check in its last two bytes, and this is the check the
- * board-identity reader runs over the stored bytes before it will trust the
- * part number. The second passes whatever those last two stored bytes hold, so
- * only the third proves the block carries the embedded check a part-number read
- * needs — the case a page of plain data with correct framing silently fails,
- * which is what left the real guest unable to read the part number. Each check
- * requires a fixed residue rather than a value, which is what makes the part
- * send its check bytes inverted — sending them plain lands on a different
- * residue and a guest rejects the page.
+ * Read a page the way a guest does and run all three residue checks a
+ * guest runs -- request+redirection, block+framing, and the stored bytes
+ * alone. Only the third proves the embedded check a part-number read
+ * needs: the framing check passes whatever the last two stored bytes
+ * hold, which is exactly how a page of plain data satisfies the read and
+ * still fails the guest.
  */
 /*
  * Assemble the part number the way the positional reader does: two fixed
@@ -2264,7 +2019,7 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
     g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
 
     /*
-     * The thirty-two stored bytes on their own — the residue the part-number
+     * The thirty-two stored bytes on their own -- the residue the part-number
      * reader requires. A block of plain data with no embedded check still
      * passes the framing check above, so this is the assertion that catches a
      * part number a guest could read framing-correct but never validate.
@@ -2273,7 +2028,7 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
 
     /*
      * The page has two readers and each is asserted separately, because a
-     * layout can satisfy one and be invisible to the other — which is the
+     * layout can satisfy one and be invisible to the other -- which is the
      * state this page was in.
      *
      * The positional reader spans both pages, so its derivation is reproduced
@@ -2442,21 +2197,11 @@ static void nic_read_first_page(QTestState *qts)
 }
 
 /*
- * The whole exchange real firmware performs, end to end: find the part, name
- * it, and read its page.
- *
- * The page read this asserts is the same one the skip-addressed test asserts,
- * and that is deliberate rather than duplication — the two differ only in how
- * the part was selected, and selecting it the other way is what the firmware
- * does and what this model did not answer. A suite holding only the
- * skip-addressed read establishes that a page can be read when the part is
- * addressed without being named, which is true and weaker than the property
- * that has to hold.
- *
- * The identity fed to the match is the one the search just returned rather
- * than a literal, so this also asserts the two halves agree: a model that
- * offered one identity to a search and accepted a different one from a match
- * would pass each of them separately.
+ * The exchange real firmware performs end to end: search, match, read.
+ * Same page as the skip-addressed test on purpose -- only the selection
+ * differs, and that is the half a skip-only suite leaves untested. The
+ * match is fed the identity the search returned, not a literal, so a
+ * model offering one identity and accepting another fails here.
  */
 static void test_a_named_part_reads_back_its_page(const void *data)
 {
@@ -2477,15 +2222,9 @@ static void test_a_named_part_reads_back_its_page(const void *data)
 }
 
 /*
- * Naming an identity that is not this part's leaves it deselected until the
- * next reset.
- *
- * This is what stops the test above from passing a model that never compares
- * the sixty-four bits at all and selects whatever names it. That model reads
- * back a correct page here too, so the pair is what carries the property and
- * neither half does alone. The check is that the wire idles high for the
- * function byte and every byte after it, which is what an unselected part
- * leaves behind.
+ * A wrong Match ROM deselects the part until reset -- the half that stops
+ * the test above passing a model that selects whatever names it. The
+ * check is the wire idling high from the function byte on.
  */
 static void test_naming_another_part_deselects_this_one(const void *data)
 {
@@ -2516,20 +2255,11 @@ static void test_naming_another_part_deselects_this_one(const void *data)
 }
 
 /*
- * Read the part's status memory, which is the first thing real firmware asks
- * this part for and is a separate memory from the one holding the part number.
- *
- * Every byte of it reads as unprogrammed, so the bytes alone would pass
- * against a model that ignored the address entirely and against one that put
- * the page boundary in the wrong place. What separates those is the check
- * pair, and it is asserted twice for two different reasons.
- *
- * The read starts partway into a page, so the first check covers four bytes
- * and not eight -- a model ending the page anywhere else lands on a different
- * residue. And the first check covers the command and both address bytes as
- * well as the data while the second covers its page's data alone, because the
- * part clears its check generator at each page boundary. A model using one
- * basis for both fails whichever of the two it did not choose.
+ * The status memory reads all-unprogrammed, so the bytes alone pass a
+ * model that ignores the address; the check pairs are the test. The read
+ * starts mid-page, so the first check covers four bytes and includes the
+ * command and address while the second covers its page's data alone -- a
+ * model using one basis for both fails whichever it did not choose.
  */
 static void test_the_status_memory_reads_back_by_the_page(const void *data)
 {
@@ -2622,37 +2352,17 @@ static void nic_extended_page(QTestState *qts, uint16_t offset, uint8_t *out)
 }
 
 /*
- * The unframed read returns the same bytes the framed one does.
- *
- * This is the property, and it is asserted as whole pages rather than as
- * something about them, because every weaker version of it was already true of
- * a model that got it wrong. The check each page carries in its own last two
- * bytes is what a board-identity reader validates before trusting a part
- * number, and it belongs to the stored data: the framed command wraps the page
- * in a redirection byte and a check pair, the unframed one sends the bytes and
- * nothing else, and a page's embedded check has to survive both. A model
- * producing that check while framing an answer satisfies the framed read
- * completely and hands the unframed read the raw text with holes where the
- * check belongs.
- *
- * Both pages are compared because the part number spans the first and the
- * second page carries the rest of the assembled string, and because reading
- * straight from one page into the next is what proves the unframed stream puts
- * nothing between them.
+ * The unframed read returns the same bytes the framed one does, asserted
+ * as whole pages: a model producing the embedded check while framing an
+ * answer satisfies the framed read completely and hands the unframed one
+ * text with holes where the check belongs. Reading straight across the
+ * page boundary proves the stream puts nothing between pages.
  */
 /*
- * The scanning reader's own loop, transcribed rather than described: compare a
- * field name at the current position, and on a miss skip past the next
- * semicolon and compare again, until the page runs out.
- *
- * THIS IS THE ASSERTION THE BYTE COMPARISONS CANNOT MAKE, and the page shipped
- * broken for exactly that reason. Every other check here asks whether the right
- * characters are at the right offsets, and they all passed on a page whose
- * field name was unreachable: the first miss at position zero skipped past
- * the terminator at twenty-three and resumed at twenty-four, so offset six
- * was never compared and the lookup returned nothing. A check on where a
- * thing sits cannot express whether the consumer can walk to it, because
- * that depends on what comes before it.
+ * The scanning reader's own loop, transcribed: compare at the position,
+ * on a miss skip past the next semicolon, repeat. This is the assertion
+ * byte comparisons cannot make -- a page can hold every character at the
+ * right offset while the walk never reaches the field name at all.
  */
 static bool page_field(const uint8_t *page, unsigned int len,
                        const char *name, char *out)
@@ -2724,22 +2434,11 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     g_assert_cmphex(plain[0], ==, 0x01);
 
     /*
-     * And what both commands return satisfies both of the page's readers.
-     *
-     * The positional reader is reproduced rather than described: its two fixed
-     * ranges, its dropped spaces, and the prefix it compares. Running the
-     * derivation is what makes this a test of the value a guest arrives at
-     * rather than of bytes sitting where somebody expected them, and the two
-     * ranges span both pages, which is why it is asserted here.
-     *
-     * SAID PLAINLY BECAUSE IT WAS TRIED: this assertion has never been watched
-     * failing. Every corruption that would trip it — a displaced part number,
-     * a wrong byte within it, a field string moved to the start of the page —
-     * trips one of the byte comparisons above or in the page-read test first,
-     * and the suite stops there. So it is not the tripwire for this layout and
-     * should not be read as one. It earns its place by expressing the guest's
-     * own computation, which stays correct if the layout is ever rearranged,
-     * where a byte-offset comparison would quietly need rewriting to match.
+     * The positional reader reproduced -- its two ranges, dropped spaces
+     * and compared prefix -- so this asserts the value a guest arrives at.
+     * Never watched failing: every corruption trips a byte comparison
+     * first. It earns its place by surviving a layout rearrangement that
+     * would quietly invalidate the offset checks.
      */
     partnum_from_page(plain, partnum);
     g_assert_true(g_str_has_prefix(partnum, "030-1244-"));
@@ -2841,15 +2540,10 @@ static void test_the_status_register_follows_the_level(const void *data)
                     1u << INT_TEST_SLOT);
 
     /*
-     * THE assertion this chip's datasheet leads with. The guest re-arms
-     * interrupts in software: at the end of every interrupt it services it
-     * re-reads this register, and acts on its own pin still being set. So the
-     * bit must survive being read, and read again, and read again — a model
-     * that latched it and cleared it on service would tell the guest a device
-     * with a second condition pending had gone quiet, and that device would
-     * never be serviced again. Such a model passes a single read and then
-     * hangs a machine, so the repetition here is the test itself rather than
-     * belt and braces.
+     * The pin bit must survive repeated reads: guests re-arm in software
+     * by re-reading this register, and a latch-and-clear-on-service model
+     * passes a single read and then hangs a machine. The repetition is
+     * the test.
      */
     for (i = 0; i < 4; i++) {
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
@@ -2875,7 +2569,7 @@ static void test_the_status_register_follows_the_level(const void *data)
 /*
  * The same pin can carry two sources on this machine: a PCI function's INTx
  * routed by the core, and a directly wired line the machine drives through
- * the chip's GPIO inputs — the base I/O controller's second interrupt travels
+ * the chip's GPIO inputs -- the base I/O controller's second interrupt travels
  * that way. Each source must hold the pin on its own. A model that kept one
  * level word and let the last writer win would drop a held PCI level the
  * moment the wire beside it fell, and the guest would never service the
@@ -2955,8 +2649,8 @@ static void test_an_enabled_pin_edge_reaches_the_hub(const void *data)
 /*
  * The enable bit gates delivery. A pin that is routed but whose enable bit is
  * clear sends no packet, however hard the device asserts. This is the state
- * Linux leaves a pin in when it disables it — it clears the enable bit and
- * leaves the host-address register programmed — so a still-asserting device
+ * Linux leaves a pin in when it disables it -- it clears the enable bit and
+ * leaves the host-address register programmed -- so a still-asserting device
  * must not keep setting the Hub's pending bit behind the guest's back.
  */
 static void test_a_disabled_pin_edge_sends_no_packet(const void *data)
@@ -3041,15 +2735,10 @@ static void test_mode_and_device_keep_what_was_written(const void *data)
     unsigned int n;
 
     /*
-     * The guest read-modify-writes both of these when it establishes an
-     * interrupt: it reads the current value, sets the bits for the pin it is
-     * attaching, and writes it back. A model whose read gave zero rather than
-     * the last value written would wipe every previously configured pin each
-     * time, so only the most recently attached device would work — and the
-     * failure would look like a driver bug in whichever attached first.
-     *
-     * So this establishes all eight pins one at a time, the way a guest does,
-     * and checks the accumulated value at the end rather than after each.
+     * Guests read-modify-write these when establishing a pin, so all eight
+     * are established one at a time and the accumulated value checked at
+     * the end: a read-as-zero model wipes every earlier pin and only the
+     * last-attached device works.
      */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
         uint32_t mode = qtest_readl(qts, REG(BRIDGE_INT_MODE));
@@ -3103,21 +2792,11 @@ static void test_the_per_pin_host_registers(const void *data)
 }
 
 /*
- * The fold from a slot's four bus interrupt pins onto the chip's eight.
- *
- * Pins A and C reach the chip pin numbered as the slot; pins B and D reach that
- * number with bit two flipped. Both guests compute this rather than reading it,
- * and they agree: one folds the five legal pin values through a switch onto a
- * two-entry table holding the slot and the slot exclusive-ored with four, the
- * other tests the pin's low bit and picks between the same two. Neither shares
- * code with the other, which is what makes it a fact about the hardware rather
- * than one project's convention.
- *
- * Nothing on this board asserts B or C — the disk controllers use pin A only,
- * and the I/O controller's second interrupt does not travel as a bus interrupt
- * at all — so a model folding every pin onto the slot passes every boot this
- * fork runs. It is still wrong, and a card that used pin B would deliver to the
- * pin its neighbour four slots away owns.
+ * The fold from four bus pins onto eight chip pins: A and C reach the pin
+ * numbered as the slot, B and D that number with bit two flipped -- both
+ * guests compute this independently. Nothing that boots asserts B or C,
+ * so a model folding every pin onto the slot passes every boot and is
+ * still wrong for any card using pin B.
  */
 static void test_the_interrupt_pins_fold(const void *data)
 {
