@@ -45,3 +45,5 @@ guest hardware that is specific to QEMU.
    s390x-secure-ipl
    sgi-bridge
    sgi-elsc
+   sgi-ioc3
+   sgi-qlogic-isp
