@@ -83,8 +83,20 @@ static void mips_store_status(CPUMIPSState *env, target_ulong val)
     env->CP0_Status = (old & ~mask) | (val & mask);
 #if defined(TARGET_MIPS64)
     if ((env->CP0_Status ^ old) & (old & (7 << CP0St_UX))) {
-        /* Access to at least one of the 64-bit segments has been disabled */
-        tlb_flush(env_cpu(env));
+        /*
+         * Access to at least one of the 64-bit segments has been disabled.
+         *
+         * The flush cannot be narrowed to the mode the disabled bit names.
+         * A segment's reachability is not a property of the mode that
+         * cached it: an xuseg reference needs UX whichever mode makes it,
+         * so a kernel-mode translation of a user address is invalidated by
+         * a UX write and lives under the kernel index; xsseg needs SX from
+         * both supervisor and kernel; and an xkphys segment takes whichever
+         * of the three its access mode names. So a disabled bit can strand
+         * entries under any index, and only the guard below is safe to
+         * apply.
+         */
+        cpu_mips_qemu_tlb_flush(env);
     }
 #endif
     if (ase_mt_available(env)) {
