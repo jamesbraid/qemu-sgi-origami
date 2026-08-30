@@ -18,10 +18,8 @@
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 
 /*
- * The chip presents two addresses, selected by its A0 pin. Hosts wire A0 to
- * some address bit of their own; this model spaces the two eight bytes apart,
- * which is how the SGI Origin 200's Hub ASIC wires it, and answers accesses of
- * any width up to that spacing.
+ * Two addresses selected by the A0 pin, spaced eight bytes apart the way the
+ * Origin 200's Hub wires it.
  */
 #define PCF8584_A0_STRIDE   8
 #define PCF8584_MMIO_SIZE   (2 * PCF8584_A0_STRIDE)
@@ -54,10 +52,8 @@ struct PCF8584State {
     DeviceDiagnosticSink *diagnostic;
 
     /*
-     * One address selects one of four registers, chosen by ESO together with
-     * ES1 and ES2. Kept as four fields rather than an array indexed by the
-     * select bits, so that a wrong select cannot silently read a plausible
-     * value out of a neighbouring slot.
+     * Four registers behind one address, chosen by ESO/ES1/ES2. Separate
+     * fields so a wrong select cannot read a plausible neighbour.
      */
     uint8_t own_address;        /* S0', seven bits, right-justified */
     uint8_t clock;              /* S2, oscillator divider and bus speed */
@@ -68,12 +64,9 @@ struct PCF8584State {
     uint8_t status;             /* S1 read side */
 
     /*
-     * The I2C core accepted the start: a slave matched, and the open core
-     * transfer must be ended. The chip-level state -- a transaction is
-     * open between a start condition and a stop, acknowledged or not --
-     * is the BB status bit, and it is what tells a first start from a
-     * repeated one: the firmware writes the address before the control
-     * register for a first start, and after it for a repeated start.
+     * The core accepted the start and the open transfer must be ended.
+     * Chip-level open-transaction state is the BB status bit, which is
+     * what tells a first start from a repeated one.
      */
     bool transfer;
     bool recv;                  /* current direction is slave-to-master */
@@ -82,12 +75,9 @@ struct PCF8584State {
     bool start_address_staged;
 
     /*
-     * The 7-bit address the open transfer is matched against, valid only
-     * while transfer is set. Tracked so a repeated start can tell whether
-     * it targets the same device (an ordinary direction change) or a
-     * different one (the protocol's own closing invalid-address step),
-     * which QEMU's I2C core cannot distinguish on its own once a transfer
-     * is already open -- see pcf8584_start() in hw/i2c/pcf8584.c.
+     * The matched 7-bit address, valid while transfer is set: how a
+     * repeated start tells a direction change from a new target, which
+     * the I2C core cannot (pcf8584_start()).
      */
     uint8_t cur_addr7;
 };

@@ -16,17 +16,12 @@
 OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 
 /*
- * Thirty-two kilobytes of byte-wide cells. All but the last sixteen are
- * ordinary storage; the last eight are the clock, and the eight between them
- * are a bank no source we hold identifies and no driver we run touches.
+ * 32 KB of byte-wide cells: storage, then an unidentified bank of eight,
+ * then the clock in the top eight.
  */
 #define M48T35_SIZE         0x8000
 
-/*
- * The clock, at the top of the window. The control register comes first and
- * the six fields a driver reads follow it, which is the order SGI's own driver
- * for this machine uses and the order OpenBSD reads.
- */
+/* The clock: control first, then the six fields, the order drivers read. */
 #define M48T35_CONTROL      0x7ff8
 #define M48T35_SECONDS      0x7ff9
 #define M48T35_MINUTES      0x7ffa
@@ -47,12 +42,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 #define M48T35_CSR_WRITE    0x80
 
 /*
- * The two-digit year is counted from 1970 on this machine. Every driver adds
- * it back: SGI's own subtracts a constant its comment gives as 1970, OpenBSD
- * adds POSIX_BASE_YEAR for an IP27, and mainline Linux subtracts 1970 when it
- * writes. A model that presented the calendar year's last two digits instead
- * would have a guest report the mid-1990s, and nothing in a boot would look
- * wrong -- which is why the epoch has a test rather than a comment alone.
+ * The two-digit year counts from 1970; every driver adds it back. Calendar
+ * digits instead would boot cleanly and report the mid-1990s.
  */
 #define M48T35_YEAR_BASE    1970
 
@@ -62,44 +53,29 @@ struct M48T35State {
     MemoryRegion iomem;
 
     /*
-     * The cells, allocated at realize: 32 KiB by value would travel with
-     * every state that embeds this one. The clock's eight bytes are not
-     * kept here -- they are answered from the host's time and this
-     * buffer's entries for them are unused -- because storage that
-     * shadowed a running clock would have two places to be wrong.
+     * Allocated at realize. The clock's entries are unused: it answers
+     * from time, and storage shadowing a running clock has two places to
+     * be wrong.
      */
     uint8_t *cell;
 
     /*
-     * The battery, optional. Unset, a fresh process starts from zeroed
-     * cells exactly as it always has; given a drive of exactly M48T35_SIZE
-     * bytes, the cells are loaded from it on realize and every write goes
-     * back to it, so content outlives the process the way the real part's
-     * content outlives the host machine being off.
+     * The battery, optional: a drive of exactly M48T35_SIZE bytes that
+     * cells load from at realize and every write goes back to.
      */
     BlockBackend *blk;
 
-    /*
-     * What the clock reads relative to the host's, in seconds. A guest that
-     * sets the time moves this rather than stopping anything, so the clock
-     * keeps running at the rate the host's does.
-     */
+    /* Guest-set time as an offset from the host clock, in seconds. */
     int64_t time_offset;
 
     /*
-     * The frozen instant, valid while the freeze bit is set. One number rather
-     * than six register values, so the fields a driver reads out of it cannot
-     * disagree with each other -- which is the whole point of the freeze.
+     * The frozen instant, one number so the six fields read from it cannot
+     * disagree -- the point of the freeze.
      */
     bool frozen;
     int64_t frozen_epoch;
 
-    /*
-     * The time a guest is assembling while the write bit is set, applied when
-     * it clears. A driver writes the fields one at a time, so the set is
-     * incomplete until the last one lands, and applying them as they arrive
-     * would move the clock through five times nobody asked for.
-     */
+    /* Fields staged while the write bit is set, applied when it clears. */
     bool staging;
     int32_t staged_sec;
     int32_t staged_min;

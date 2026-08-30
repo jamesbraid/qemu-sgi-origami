@@ -25,25 +25,11 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
 
 /*
- * Which -serial line each of the machine's character devices comes from,
- * named rather than written as bare indices at the call sites, because the
- * collision this numbering exists to prevent is invisible at any one of them:
- * a device takes an index in one file and only a second device taking the
- * same index in another file is the defect, so no single site reads wrong.
- * Defined here, in the header both the machine and the Hub include, so the
- * whole assignment sits in one place -- two of the four backends are wired by
- * the Hub rather than by the machine, and a split definition would be exactly
- * the cross-file collision the naming exists to prevent.
- *
- * The three shipped rear-panel connectors come first: index 0 and 1 are the
- * base I/O controller's ports A and B (port A is also the synthesized
- * firmware's console), and index 2 is the system controller's AUX port --
- * where the firmware redirects its console after a failed power-on diagnostic
- * (the IRIX console, console=d, is index 0, not this port). Index 3 is the
- * bring-up port, which no shipped machine has and which is off unless asked
- * for, so the
- * optional part carries the highest index and the numbering of the shipped
- * ports does not move when the option is used.
+ * The whole -serial assignment in one place: an index collision between two
+ * files is invisible at either call site. The three shipped connectors come
+ * first (port A is the firmware console; the AUX port is where firmware
+ * redirects after a failed diagnostic); the optional bring-up port takes
+ * the highest index so the shipped numbering never moves.
  */
 #define SN0_IOC3_SERIAL_A_CHARDEV  0
 #define SN0_IOC3_SERIAL_B_CHARDEV  1
@@ -63,14 +49,8 @@ typedef struct SGIHubCounterLine {
 #define SGI_HUB_WINDOW_SIZE (8 * MiB)
 
 /*
- * The seven big windows. Each is 512 MB of the node's crosstalk window aimed at
- * a slice of some widget's crosstalk space by one entry of the Hub's I/O
- * interface translation table, and programming those entries is how firmware
- * makes a widget reachable at all.
- *
- * They belong to the Hub rather than to the machine because the table does: a
- * second node's Hub has its own seven windows onto the same crosstalk space,
- * pointed wherever that node's firmware pointed them.
+ * The seven big windows: 512 MB each, aimed by the Hub's own translation
+ * table entries -- how firmware makes a widget reachable at all.
  */
 /* Processor sockets a node has, which is what makes every A/B register a pair. */
 #define SGI_HUB_PROCESSORS  2
@@ -96,13 +76,8 @@ struct SGIHubState {
     DeviceDiagnosticSink *diagnostic;
 
     /*
-     * The real PCF8584 I2C-bus controller, mapped over this window's I2C
-     * data/control-status addresses at a higher priority than sgi_hub_ops
-     * answers directly -- see sgi_hub_realize() and
-     * docs/datasheets/pcf8584-elsc.md. Embedded rather than reached through
-     * the machine, because the bus it masters (the ELSC, the identity
-     * EEPROM) belongs to this node and nothing outside the Hub needs to
-     * name it.
+     * The PCF8584, mapped over this window's I2C addresses; embedded
+     * because the bus it masters belongs to this node alone.
      */
     PCF8584State i2c;
 
@@ -115,24 +90,17 @@ struct SGIHubState {
     MemoryRegion bwin_empty;
 
     /*
-     * The crosstalk space the windows translate into, and how far apart the
-     * widgets sit in it. Both are the machine's to define — a real crossbar
-     * routes on a widget number rather than decoding an address bit, so the
-     * stride exists only in the model — and the Hub is told rather than
-     * assuming, because a wrong stride would decode silently onto the wrong
-     * widget.
+     * The crosstalk space and widget stride, both the machine's to define:
+     * the stride exists only in the model, and a wrong one decodes silently
+     * onto the wrong widget.
      */
     MemoryRegion *xtalk;
     uint32_t xtalk_widget_shift;
 
     /*
-     * The memory the block transfer engines copy through: the machine's
-     * node-local view, in which an address carrying no node number names
-     * this Hub's own node, exactly as it does for the node's processors.
-     * Handed in rather than derived because under real firmware the Hub's
-     * programmed node number reads zero on every node, so the Hub cannot
-     * tell which node's memory a node-less address means -- only the
-     * machine, which placed the memory, can.
+     * The BTEs' node-local memory view, handed in: the programmed node
+     * number reads zero on every node, so only the machine can say which
+     * memory a node-less address means.
      */
     MemoryRegion *memory;
     AddressSpace bte_as;
@@ -173,10 +141,8 @@ struct SGIHubState {
     uint32_t cpu_base;
 
     /*
-     * The manufacturer this Hub claims in its widget identification. A
-     * candidate value rather than a constant: the two sources that name it
-     * disagree, and nothing on any path we boot reads it, so this is a choice
-     * the machine description makes rather than a fact anyone established.
+     * The claimed widget manufacturer: the two sources disagree and nothing
+     * we boot reads it, so the machine chooses.
      */
     uint32_t manufacturer;
 
@@ -262,12 +228,8 @@ struct SGIHubState {
      * fit a word: the upper timing phase reaches bit 33.
      */
     /*
-     * The two error-spool address registers, one per processor. Kept here
-     * because the firmware uses processor B's as scratch that outlives a
-     * reset: it parks a marker there, triggers the reset, and reads it back to
-     * learn which pass it is on. On a single-processor machine that register
-     * belongs to a processor which does not exist, which is presumably why it
-     * was chosen.
+     * Error-spool addresses. Firmware parks a marker in processor B's
+     * across a reset to learn which pass it is on.
      */
     uint64_t pi_err_spool[SGI_HUB_PROCESSORS];
     uint32_t pi_err_mask[SGI_HUB_PROCESSORS];
@@ -277,24 +239,16 @@ struct SGIHubState {
     uint64_t md_onewire;
 
     /*
-     * The bit slot a write to the one-wire master starts. A slot takes time on
-     * a real bus, and completion must not be reported from inside the write:
-     * a model that finishes instantly satisfies any test that only checks
-     * completion eventually, which is precisely the check the datasheet warns
-     * is too weak.
+     * A one-wire slot must not complete inside the write that starts it;
+     * instant completion passes exactly the too-weak check the datasheet
+     * warns about.
      */
     QEMUTimer *md_onewire_timer;
 
     /*
-     * The junk-bus UART: a real NS16550-compatible serial interface in this
-     * unit's own register space that a shipped Origin 200 does not have —
-     * SGI fits one only for manufacturing and bring-up. origami can fit one
-     * on purpose, off by default, because its presence probe is the one
-     * console candidate that needs no other device working: real firmware
-     * treats it as the highest-priority candidate and stops probing at the
-     * first one that answers, so fitting it unasked would hide the two real
-     * candidates behind it. Unfitted, the range it would occupy answers the
-     * same unimplemented default as the rest of this register group.
+     * The bring-up UART, off by default: firmware probes it as the
+     * highest-priority console candidate, so fitting it unasked hides the
+     * real ones.
      */
     bool junk_uart_present;
     Chardev *junk_uart_chr;
