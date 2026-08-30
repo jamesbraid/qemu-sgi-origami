@@ -37,6 +37,14 @@ static void cpu_mips_irq_request(void *opaque, int irq, int level)
 
     BQL_LOCK_GUARD();
 
+    /*
+     * Composed, not read-modify-written. The lock above orders this against
+     * other devices, but the processor writes BD, CE and the software
+     * interrupt bits from its own thread without taking it, so storing back
+     * a word read here would drop whatever it set meanwhile. No test covers
+     * this: the loss needs both writers at once, and a plain assignment
+     * still passes the suite.
+     */
     if (level) {
         cp0_cause_update(env, 0, 1 << (irq + CP0Ca_IP));
     } else {
