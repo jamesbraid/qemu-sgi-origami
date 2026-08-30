@@ -59,6 +59,11 @@ config VMXNET3_PCI
     default y if PCI_DEVICES
     depends on PCI
 
+config XFRAME_PCI
+    bool
+    default y if PCI_DEVICES
+    depends on PCI
+
 config SMC91C111
     bool
 
