@@ -15,92 +15,51 @@
 #define TYPE_DP83840 "dp83840"
 OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 
-/*
- * Only what hw/net/mii.h has no name for: the standard registers, their
- * bits and this part's identifier words are mii.h's vocabulary.
- */
+/* Only what hw/net/mii.h has no name for. */
 #define DP83840_PCS_CONFIG      0x17
 #define DP83840_LOOPBACK_BYPASS 0x18
 #define DP83840_ADDRESS_STATUS  0x19
 #define DP83840_10BT_CONFIG     0x1c
 
-/*
- * Reset values from the part's published specification; SGI's power-on
- * transceiver test compares the same numbers independently.
- */
+/* The specification's reset values; SGI's transceiver test compares them. */
 #define DP83840_CONTROL_RESET_VALUE  (MII_BMCR_SPEED100 | \
                                       MII_BMCR_AUTOEN | \
                                       MII_BMCR_FD)
 #define DP83840_PCS_RESET_VALUE      0x8040
 #define DP83840_10BT_RESET_VALUE     0x80b9
 
-/*
- * Four of this register's bits latch from package pins at reset and the
- * board's wiring for them is unobserved; modelled as normal operation --
- * no bypass, no loopback -- with the specification's two fixed bits set.
- */
+/* Pin-latched bits unobserved; modelled as normal operation. */
 #define DP83840_LBREMR_RESET_VALUE   0x8020
 
-/*
- * Loopback selections separate from the control register's own: bits 9-8
- * are the hundred-megabit loopbacks, bit 11 the ten-megabit encoder's.
- * Any of them is loopback as far as the controller is concerned.
- */
+/* Loopback selections apart from the control register's own bit. */
 #define DP83840_LBREMR_LB_MASK       0x0300
 #define DP83840_LBREMR_10BT_LOOPBACK 0x0800
 
 /*
- * Autonegotiation settle delay: the part's specification gives 1.5-2.3
- * seconds. Two seconds must also outlast the firmware diagnostic's
- * reset-value sweep (~0.1 s of virtual time, measured), which needs to
- * find the link still settling across all three registers it reads.
+ * In the specification's 1.5-2.3 s range, and long enough that the
+ * firmware diagnostic's sweep still finds the link settling.
  */
 #define DP83840_AUTONEG_SETTLE_NS (2 * NANOSECONDS_PER_SECOND)
 
 struct DP83840State {
     SysBusDevice parent_obj;
 
-    /*
-     * Management address, default 31: every real Origin 200 capture prints
-     * the transceiver there. A model answering everywhere is found at zero.
-     */
+    /* Default 31, where every real capture prints the transceiver. */
     uint8_t addr;
 
-    /*
-     * The writable registers; everything else is constant or derived on
-     * each read, so derived words cannot disagree with their sources.
-     */
     uint16_t control;
     uint16_t advertise;
     uint16_t pcs_config;
 
-    /*
-     * Reached only by SGI's power-on diagnostic, which fails the board
-     * without them; no guest driver touches either.
-     */
+    /* Only SGI's power-on diagnostic reaches these; it fails without them. */
     uint16_t loopback_bypass;
     uint16_t tenbt_config;
 
-    /*
-     * Whether negotiation has completed. False out of reset (the bench
-     * state the power-on diagnostic expects); gates the status word's link
-     * and completion bits and the partner/expansion registers.
-     */
     bool autoneg_done;
 
-    /*
-     * Backend link state (set_link, the pulled cable). Separate from
-     * autoneg_done: one is whether negotiation ran, the other whether
-     * there is a wire to negotiate over.
-     */
-    bool link_down;
+    bool link_down;     /* the cable, apart from the negotiation */
 
-    /*
-     * The settle delay is armed on the first link-status read, not at
-     * reset: the power-on diagnostic runs tens of virtual seconds in, and
-     * a reset-armed timer would already have fired when its single probe
-     * expects a link still settling.
-     */
+    /* Armed on the first status read; see dp83840_status_read(). */
     QEMUTimer *settle_timer;
     bool settle_armed;
 };
