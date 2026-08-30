@@ -4,11 +4,9 @@
  *
  * Copyright (c) 2026 Origami contributors
  *
- * An eight-port switch whose own register block answers as crosstalk widget 0.
- * The identity it reports there is what a guest decides the shape of the
- * machine from, so it is a property rather than a constant: an Origin 200
- * presents something other than a crossbar's own identity at widget 0, and
- * which machine that is belongs in the machine description.
+ * An eight-port switch whose register block answers as crosstalk widget 0.
+ * The identity reported there is a machine property, not a constant: guests
+ * decide the machine's shape from it.
  */
 
 #ifndef HW_MISC_SGI_XBOW_H
@@ -22,13 +20,9 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXbowState, SGI_XBOW)
 
 /*
- * The chip's register file is the widget 0 block followed by eight per-link
- * register sets of 0x40 each from 0x0100, ending at 0x300. It claims more than
- * that: the whole of its widget's crosstalk space, which the machine gives it,
- * because the widget's space is the chip's whether or not the chip decodes an
- * address in it. Anything it does not decode is an error condition it reports,
- * and claiming the space is what lets it report rather than leaving the answer
- * to whatever the machine happens to have underneath.
+ * The chip claims its widget's whole crosstalk space, not just the registers
+ * it decodes: an undecoded address is an error it reports, not an answer the
+ * machine underneath should give.
  */
 struct SGIXbowState {
     SysBusDevice parent_obj;
