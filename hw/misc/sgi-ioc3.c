@@ -2,14 +2,9 @@
 /*
  * SGI IOC3 base I/O controller.
  *
- * One PCI device, one BAR covering everything: two 16550 serial ports and
- * their DMA engines, the ethernet block and its buffer RAM, a PS/2
- * controller, a one-wire ethernet-address part, and the byte bus's
- * timekeeper. The SuperIO window at 0x20000 holds byte-wide registers one
- * byte apart where the chip's other blocks are 32 bits wide.
- *
- * Unimplemented parts of the window are holes, not zeroes: an access there
- * reaches no device and is reported.
+ * One PCI device, one BAR: two 16550s and their DMA engines, the ethernet
+ * block and its buffer RAM, PS/2, a one-wire ethernet-address part, and
+ * the byte bus's timekeeper. See docs/specs/sgi-ioc3.rst.
  */
 
 #include "qemu/osdep.h"
@@ -26,12 +21,7 @@
 #include "net/net.h"
 #include "trace.h"
 
-/*
- * The 16550 windows: byte-wide registers one byte apart. An access wider
- * than a byte is refused -- no source documents one, and the datasheet
- * records refusal as a choice. Both guests place their own byte lanes, so
- * no lane arithmetic may be added here.
- */
+/* Byte-wide only; both guests place their own byte lanes -- add none here. */
 static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
 {
     return serial_io_ops.read(opaque, addr, 1);
@@ -53,19 +43,11 @@ static const MemoryRegionOps sgi_ioc3_serial_ops = {
     .impl.max_access_size = 1,
 };
 
-/*
- * The SuperIO line is a level: status AND enable, recomputed on every write
- * to either register and on every source change, never latched.
- */
 static void sgi_ioc3_update_irq(SGIIOC3State *s)
 {
     qemu_set_irq(s->superio_irq, !!(s->int_status & s->int_enable));
 }
 
-/*
- * A port's status bit follows the 16550's own line rather than latching;
- * only the guest's register read quiets it.
- */
 static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port);
 
 static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
@@ -77,18 +59,13 @@ static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
     sgi_ioc3_update_irq(s);
 
     /*
-     * Run the DMA engine on every level, not on assertion alone: a masked
-     * 16550 still delivers characters here with level 0, and IRIX's
-     * DMA-ring console receives with the 16550 disabled entirely. With
-     * ring DMA off the run is a no-op.
+     * On every level, not assertion alone: IRIX's DMA-ring console
+     * receives with the 16550 interrupts disabled entirely.
      */
     sgi_ioc3_sdma_run(s, port);
 }
 
-/*
- * The ethernet child has no PCI identity of its own; its GPIO level becomes
- * this chip's PCI interrupt pin.
- */
+/* The ethernet child's GPIO level becomes this chip's PCI interrupt pin. */
 static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 {
     SGIIOC3State *s = opaque;
@@ -97,17 +74,11 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 }
 
 /*
- * The one-wire ethernet-address part behind the MicroLAN engine: reset, ROM
- * selection, function command, two-byte target address, answer shifted out
- * bit by bit. Protocol per docs/datasheets/ioc3.md, "The ethernet-address
- * part's read protocol". OpenBSD's owmac selects by Match ROM, so selection
- * compares a real identifier.
+ * The one-wire ethernet-address part behind the MicroLAN engine; protocol
+ * per docs/datasheets/ioc3.md.
  */
 
-/*
- * The standard one-wire CRC-8: reflected polynomial 0x8c, seed zero, sent
- * as computed (not inverted, unlike the CRC-16 below).
- */
+/* Standard one-wire CRC-8, sent as computed -- unlike the CRC-16 below. */
 static uint8_t sgi_ioc3_onewire_crc8(uint8_t crc, const uint8_t *data,
                                      unsigned int len)
 {
@@ -122,10 +93,7 @@ static uint8_t sgi_ioc3_onewire_crc8(uint8_t crc, const uint8_t *data,
     return crc;
 }
 
-/*
- * The standard one-wire CRC-16: reflected polynomial 0xa001, seed zero.
- * Linux's ioc3eth_get_mac_addr() checks the fixed residue 0xb001.
- */
+/* Standard one-wire CRC-16; stored inverted for the 0xb001 residue. */
 static uint16_t sgi_ioc3_onewire_crc16(uint16_t crc, const uint8_t *data,
                                        unsigned int len)
 {
@@ -140,11 +108,6 @@ static uint16_t sgi_ioc3_onewire_crc16(uint16_t crc, const uint8_t *data,
     return crc;
 }
 
-/*
- * The 64-bit ROM identifier: family 0x91, serial top twelve bits 0x5e7
- * (both required -- see the datasheet section named above), CRC-8 over the
- * seven bytes.
- */
 static uint64_t sgi_ioc3_onewire_rom_id(uint64_t serial)
 {
     uint8_t rom[7];
@@ -177,10 +140,7 @@ static void sgi_ioc3_onewire_answer(SGIIOC3State *s)
     s->onewire_out[0] = sgi_ioc3_onewire_crc8(0, echo, sizeof(echo));
 
     if (s->onewire_command == SGI_IOC3_ONEWIRE_FN_READ_STATUS) {
-        /*
-         * No page is ever redirected: status bytes of 0xff are what stop
-         * owmem_redirect()'s loop on its first look.
-         */
+        /* 0xff status bytes stop owmem_redirect()'s loop on its first look. */
         memset(&s->onewire_out[1], 0xff, SGI_IOC3_ONEWIRE_STATUS_SIZE);
         s->onewire_out_len = 1 + SGI_IOC3_ONEWIRE_STATUS_SIZE;
         s->onewire_outbit = 0;
@@ -208,21 +168,14 @@ static void sgi_ioc3_onewire_answer(SGIIOC3State *s)
     s->onewire_phase = SGI_IOC3_ONEWIRE_ANSWER;
 }
 
-/*
- * Run one bit slot and leave its answer in the level bit. The pulse field
- * (bits 10 up) tells a reset from an ordinary slot; phase transitions
- * follow the slot sequence, not its timing -- a driver cannot tell instant
- * completion from the real microseconds.
- */
+/* One bit slot; phases follow the slot sequence, never its timing. */
 static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
 {
     uint32_t pulse = val >> SGI_IOC3_ONEWIRE_PULSE_SHIFT;
     bool level = true;
 
     if (pulse >= SGI_IOC3_ONEWIRE_PULSE_RESET) {
-        /* A reset. The part holds the wire down, which a guest reads as
-         * presence, and forgets whatever conversation was in progress.
-         */
+        /* Reset: the part pulls the wire low and forgets the conversation. */
         s->onewire_phase = SGI_IOC3_ONEWIRE_COMMAND;
         s->onewire_bit = 0;
         s->onewire_command = 0;
@@ -256,9 +209,8 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
         }
     } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_SEARCH) {
         /*
-         * Three slots per identity bit: the bit, its complement, the
-         * guest's choice. The part stays selected afterwards; SGI's PROM
-         * relies on that and sends no second ROM command.
+         * Three slots per identity bit. The part stays selected after the
+         * search; SGI's PROM sends no second ROM command.
          */
         unsigned int step = s->onewire_bit % 3;
         unsigned int index = s->onewire_bit / 3;
@@ -276,10 +228,7 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
             s->onewire_phase = SGI_IOC3_ONEWIRE_FUNCTION;
         }
     } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_MATCH) {
-        /*
-         * Match ROM, LSB first; a part that does not match stops
-         * answering until the next reset.
-         */
+        /* A part that does not match stops answering until the next reset. */
         if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
             s->onewire_match |= 1ULL << s->onewire_bit;
         }
@@ -356,16 +305,11 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         /* The set alias reads back the live mask; the clear alias does not. */
         return s->int_enable;
     case SGI_IOC3_CHIP_CONTROL:
-        /*
-         * Bit 22 is the read-only arbiter-idle status; the kernel's serial
-         * console setup polls it, and this model's arbiter is always idle.
-         */
+        /* Bit 22: arbiter idle, polled by the kernel's console setup. */
         return s->chip_control | SGI_IOC3_CHIP_CTRL_ARB_IDLE;
     case SGI_IOC3_MICROLAN_CONTROL:
         return s->microlan_control;
     case SGI_IOC3_PIN_CONTROL_SET:
-        /* Same shape as the interrupt-enable pair: the set alias reads back
-         * the live mask, the clear alias does not. */
         return s->pin_control;
     case SGI_IOC3_PIN_DATA:
         return s->pin_data;
@@ -393,11 +337,7 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
 
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
-        /*
-         * Write-one-to-clear for latched sources. The pass-through and
-         * receive high-water bits are levels and ignore the write: clearing
-         * a still-asserted level would drop an interrupt never raised again.
-         */
+        /* Write-one-to-clear; the level-driven bits ignore the write. */
         s->int_status &= ~(val & ~(SGI_IOC3_INT_PASSTHROUGH |
                                    SGI_IOC3_INT_RX_HIGH_WATER_LEVEL));
         sgi_ioc3_update_irq(s);
@@ -411,17 +351,10 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         sgi_ioc3_update_irq(s);
         break;
     case SGI_IOC3_CHIP_CONTROL:
-        /*
-         * Stored, not acted on: every guest programs the port-offset fields
-         * to the two offsets this chip already implements.
-         */
+        /* Stored: every guest programs the offsets already implemented. */
         s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
         break;
     case SGI_IOC3_MICROLAN_CONTROL:
-        /*
-         * One one-wire time slot, performed synchronously: the timing is
-         * not observable from a driver's read-after-write polling.
-         */
         sgi_ioc3_onewire_slot(s, (uint32_t)val);
         break;
     case SGI_IOC3_PIN_CONTROL_SET:
@@ -458,18 +391,12 @@ static uint64_t sgi_ioc3_kbc_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (SGI_IOC3_KBC_BASE + addr) {
     case SGI_IOC3_KBC_CONTROL:
-        /*
-         * Held as written; the hardware-owned busy bits are never set, so
-         * a driver polling for idle reads idle at once.
-         */
+        /* The hardware-owned busy bits are never set: idle at once. */
         return s->kbc_control;
 
     case SGI_IOC3_KBC_KBD_RECEIVE:
     case SGI_IOC3_KBC_AUX_RECEIVE:
-        /*
-         * Nothing is plugged in. Zero clears every per-byte valid flag, so
-         * this reads as a port that received nothing, not three zero bytes.
-         */
+        /* Zero clears every valid flag: nothing received, not zero bytes. */
         return 0;
 
     default:
@@ -513,18 +440,13 @@ static const MemoryRegionOps sgi_ioc3_kbc_ops = {
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
 };
-/*
- * The serial DMA engines. One base register covers all four rings -- port A
- * transmit, port A receive, port B transmit, port B receive, in that fixed
- * order, each of the size the base register's low bit selects -- so a
- * ring's address comes from its port and direction and no register reads
- * it back.
- */
 
 /*
- * The 16550's published register layout; hw/char/serial.c's own
- * definitions are private to it.
+ * The serial DMA engines. A ring's address is derived from its port and
+ * direction; no register reads it back.
  */
+
+/* The 16550's published layout; hw/char/serial.c's macros are private. */
 #define UART_RBR_THR    0
 #define UART_MCR        4
 #define UART_LSR        5
@@ -547,10 +469,6 @@ static const MemoryRegionOps sgi_ioc3_kbc_ops = {
 #define UART_MSR_CTS    0x10
 #define UART_MSR_DCD    0x80
 
-/*
- * Split an offset into port and per-port register. The shared ring base
- * pair sits below port A's base and belongs to neither port.
- */
 static bool sgi_ioc3_sdma_port_offset(hwaddr reg, unsigned int *port,
                                       hwaddr *offset)
 {
@@ -567,7 +485,6 @@ static bool sgi_ioc3_sdma_port_offset(hwaddr reg, unsigned int *port,
     return false;
 }
 
-/* Where one of a port's seven registers lives in the block's storage. */
 static uint32_t *sgi_ioc3_sdma_port_reg(SGIIOC3State *s, unsigned int port,
                                         hwaddr offset)
 {
@@ -582,10 +499,7 @@ static uint32_t sgi_ioc3_sdma_control(SGIIOC3State *s, unsigned int port)
     return *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_CONTROL);
 }
 
-/*
- * The selected ring size is also every index register's pointer width: an
- * index addresses the ring in eight-byte units and cannot leave it.
- */
+/* The selected ring size is also every index register's pointer width. */
 static uint32_t sgi_ioc3_sdma_ring_size(SGIIOC3State *s)
 {
     uint32_t lo = s->sdma_reg[(SGI_IOC3_SDMA_RING_LO - SGI_IOC3_SDMA_BASE) / 4];
@@ -599,10 +513,7 @@ static uint32_t sgi_ioc3_sdma_pointer_mask(SGIIOC3State *s)
     return (sgi_ioc3_sdma_ring_size(s) - 1) & ~(SGI_IOC3_SDMA_ENTRY_SIZE - 1);
 }
 
-/*
- * One ring's address. The size-select bit lives inside the base register
- * but outside the address; unmasked, every ring lands one byte off.
- */
+/* The size-select bit is not address: unmasked, every ring is a byte off. */
 static uint64_t sgi_ioc3_sdma_ring(SGIIOC3State *s, unsigned int port,
                                    unsigned int direction)
 {
@@ -615,9 +526,8 @@ static uint64_t sgi_ioc3_sdma_ring(SGIIOC3State *s, unsigned int port,
 }
 
 /*
- * OR into the live register, never write back a snapshot: a transmit walk
- * in loopback delivers to this chip's own receiver before returning, and a
- * pre-walk snapshot would destroy any source raised inside the walk.
+ * OR into the live register: a loopback transmit walk re-enters the
+ * receiver, and writing back a pre-walk snapshot would lose its sources.
  */
 static void sgi_ioc3_raise_serial_source(SGIIOC3State *s, unsigned int port,
                                          unsigned int source)
@@ -626,7 +536,6 @@ static void sgi_ioc3_raise_serial_source(SGIIOC3State *s, unsigned int port,
     sgi_ioc3_update_irq(s);
 }
 
-/* A level source: set or cleared to match a condition, never latched. */
 static void sgi_ioc3_set_serial_source(SGIIOC3State *s, unsigned int port,
                                        unsigned int source, bool level)
 {
@@ -636,7 +545,6 @@ static void sgi_ioc3_set_serial_source(SGIIOC3State *s, unsigned int port,
     sgi_ioc3_update_irq(s);
 }
 
-/* Whether the port's engine may move anything at all right now. */
 static bool sgi_ioc3_sdma_running(SGIIOC3State *s, unsigned int port)
 {
     uint32_t control = sgi_ioc3_sdma_control(s, port);
@@ -645,10 +553,7 @@ static bool sgi_ioc3_sdma_running(SGIIOC3State *s, unsigned int port)
            !(control & SGI_IOC3_SDMA_PAUSE);
 }
 
-/*
- * Post the packer as one receive-ring entry. Unfilled slots carry neither
- * validity flag, so a short entry says so.
- */
+/* Post the packer as one entry; unfilled slots carry no validity flags. */
 static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
                                uint32_t *produce, uint32_t *consume,
                                uint32_t mask)
@@ -656,19 +561,13 @@ static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
     uint64_t ring = sgi_ioc3_sdma_ring(s, port, SGI_IOC3_SDMA_RING_RX);
     uint32_t next = (*produce + SGI_IOC3_SDMA_ENTRY_SIZE) & mask;
 
-    /*
-     * Full ring: refuse rather than overwrite an unconsumed entry. The
-     * characters keep, in the packer and behind it the port's FIFO.
-     */
+    /* Full: refuse; the characters keep in the packer and the FIFO. */
     if (next == (*consume & mask)) {
         sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_RING_FULL);
         return false;
     }
 
-    /*
-     * A refused fabric write must not advance the index: an index past an
-     * entry that never reached memory points the driver at garbage.
-     */
+    /* A refused write must not advance the index past a missing entry. */
     if (dma_memory_write(s->dma_as, ring + (*produce & mask),
                          s->sdma_packer[port], SGI_IOC3_SDMA_ENTRY_SIZE,
                          MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
@@ -682,11 +581,7 @@ static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
     return true;
 }
 
-/*
- * Wind the receive timer: the programmed reload in 16 kHz ticks from now,
- * so it expires after that much receive idleness (the datasheet's account
- * of the reload).
- */
+/* The reload is receive idleness, in 16 kHz ticks from the last delivery. */
 static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port)
 {
     uint32_t reload = *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_TIMER)
@@ -697,10 +592,7 @@ static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port)
               (int64_t)reload * SGI_IOC3_SDMA_TIMER_TICK_NS);
 }
 
-/*
- * Receive idleness ran out. A drained ring expires into silence: the
- * interrupt only means something while characters wait.
- */
+/* A drained ring expires into silence. */
 static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
 {
     SGIIOC3SerialAlias *handle = opaque;
@@ -712,10 +604,7 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
                                                SGI_IOC3_SDMA_RX_CONSUME);
     uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
 
-    /*
-     * A partial entry still packed means the ring was full; expiry is
-     * another moment software may have made room by.
-     */
+    /* A still-packed entry means the ring was full; retry now. */
     if (s->sdma_packed[port] &&
         sgi_ioc3_sdma_post(s, port, produce, consume, mask)) {
         s->sdma_delivered[port] = false;
@@ -728,11 +617,8 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
 }
 
 /*
- * The high-water source is a level, recomputed wherever the waiting count
- * moves: a latched raise storms IRIX's ring console, which never writes an
- * acknowledgement. The mark is in characters, not entries -- the firmware
- * programs 511 against 1 KB rings of four-character entries -- so waiting
- * is counted as published entries times four.
+ * A level, recomputed wherever the waiting count moves: a latched raise
+ * storms IRIX's ring console. The mark counts characters, not entries.
  */
 static void sgi_ioc3_sdma_update_high_water(SGIIOC3State *s, unsigned int port)
 {
@@ -751,11 +637,8 @@ static void sgi_ioc3_sdma_update_high_water(SGIIOC3State *s, unsigned int port)
 }
 
 /*
- * End of burst: post any short group now rather than waiting out the
- * receive timer -- this model's substitution; a guest polling the produce
- * index sees a short entry earlier than silicon would show one. The
- * interrupt is not hurried: delivery winds the timer and the timer's
- * expiry raises the source, the timing the datasheet describes.
+ * End of burst: a short group posts now rather than on timer expiry; the
+ * interrupt still waits for the timer, the timing drivers observe.
  */
 static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
 {
@@ -795,11 +678,7 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
         uint8_t msr;
         uint8_t status;
 
-        /*
-         * A full packer goes to memory first; on refusal the drain stops
-         * without dropping -- the characters keep in the packer and the
-         * FIFO until software makes room.
-         */
+        /* On refusal the drain stops without dropping anything. */
         if (s->sdma_packed[port] == SGI_IOC3_SDMA_ENTRY_CHARS &&
             !sgi_ioc3_sdma_post(s, port, produce, consume, mask)) {
             break;
@@ -810,20 +689,11 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
             break;
         }
 
-        /*
-         * Reading LSR clears its error latches, so it is read before the
-         * character it describes -- the other order reports the previous
-         * character's errors against this one.
-         */
+        /* LSR before RBR: reading LSR clears the latches it describes. */
         s->sdma_packer[port][s->sdma_packed[port]] =
             serial_io_ops.read(serial, UART_RBR_THR, 1);
         msr = serial_io_ops.read(serial, UART_MSR, 1);
 
-        /*
-         * Two separate validity flags: data-and-errors, modem-and-overrun.
-         * Unfilled slots carry neither, which is how a driver reading a
-         * whole entry knows where the characters stop.
-         */
         status = SGI_IOC3_SDMA_RX_DATA_OK | SGI_IOC3_SDMA_RX_MODEM_OK;
         if (lsr & UART_LSR_OE) {
             status |= SGI_IOC3_SDMA_RX_OVERRUN;
@@ -846,19 +716,13 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
         s->sdma_packer[port][SGI_IOC3_SDMA_ENTRY_CHARS +
                              s->sdma_packed[port]] = status;
 
-        /*
-         * An entry goes to memory at four characters, not before; the next
-         * pass's post or the end-of-burst flush writes it.
-         */
         ++s->sdma_packed[port];
     }
 }
 
 /*
- * Walk the transmit ring as far as software has handed over. Each control
- * byte types its data byte: character, modem-control write, or delay; the
- * type with both bits clear ends the entry, and sending past it puts
- * memory garbage on the wire after every short write.
+ * Each control byte types its data byte; the empty type ends the entry,
+ * and sending past it puts memory garbage on the wire.
  */
 static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 {
@@ -876,10 +740,7 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
         uint8_t entry[SGI_IOC3_SDMA_ENTRY_SIZE];
         unsigned int i;
 
-        /*
-         * A refused fetch stops the walk where it is: the stack bytes are
-         * not an entry.
-         */
+        /* A refused fetch stops the walk: the stack bytes are not an entry. */
         if (dma_memory_read(s->dma_as, ring + (*consume & mask), entry,
                             sizeof(entry), MEMTXATTRS_UNSPECIFIED) !=
             MEMTX_OK) {
@@ -892,22 +753,16 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 
             switch (control & SGI_IOC3_SDMA_TX_TYPE) {
             case SGI_IOC3_SDMA_TX_NOTHING:
-                /* The entry ends here, and so does this slot's interrupt. */
                 continue;
             case SGI_IOC3_SDMA_TX_CHARACTER:
                 serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
-                /*
-                 * In loopback the sent character sits in this port's own
-                 * 16-byte receive FIFO; draining per character is what
-                 * stops a 500-character ring overrunning it.
-                 */
+                /* Drain per character or loopback overruns the 16-byte FIFO. */
                 sgi_ioc3_sdma_receive(s, port);
                 break;
             case SGI_IOC3_SDMA_TX_MODEM:
                 serial_io_ops.write(serial, UART_MCR, entry[i], 1);
                 break;
             case SGI_IOC3_SDMA_TX_DELAY:
-                /* Nothing to pace against: the transmitter is instant. */
                 break;
             }
 
@@ -920,10 +775,7 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
         walked = true;
     }
 
-    /*
-     * Raised on reaching the end of a walk, not on every idle engine, so
-     * an empty ring does not raise it forever.
-     */
+    /* On reaching the end of a walk, not on every idle engine. */
     if (walked && (*consume & mask) == (*produce & mask)) {
         sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_TX_RING_EMPTY);
     }
@@ -931,11 +783,7 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 
 static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
 {
-    /*
-     * One walk per port at a time: loopback re-enters through the port's
-     * own interrupt, and a second walk would post the packer's half-filled
-     * entry mid-burst.
-     */
+    /* Loopback re-enters; a second walk would post a half-filled entry. */
     if (s->sdma_busy[port]) {
         return;
     }
@@ -948,11 +796,7 @@ static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
     s->sdma_busy[port] = false;
 }
 
-/*
- * The control register's reset bit is an action, not a setting: stored, it
- * would hold a driver's engine in reset for good. It resets the four
- * indices and nothing else -- the watermark and timer reload survive.
- */
+/* Resets the four indices and nothing else; the settings survive. */
 static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
 {
     unsigned int reg;
@@ -962,21 +806,16 @@ static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
         *sgi_ioc3_sdma_port_reg(s, port, reg) = 0;
     }
 
-    /* And the characters the packer was holding for an entry it never wrote. */
     s->sdma_packed[port] = 0;
     memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
     s->sdma_delivered[port] = false;
 
-    /* Zeroing the consume index disarmed the receive timer, so it stops. */
     timer_del(s->sdma_rx_timer[port]);
 }
 
 /*
- * The 16550 shadow: a passive mirror of the port's status and modem lines,
- * assembled from the register file's fields directly -- the byte-wide read
- * ops clear the delta and error latches and this view must not. The
- * DMA-side console driver reads carrier from here; a shadow of zero hangs
- * the console at open.
+ * A passive mirror read from the register file's fields: the byte-wide
+ * read ops clear the latches and this view must not.
  */
 static uint32_t sgi_ioc3_sdma_shadow(SGIIOC3State *s, unsigned int port)
 {
@@ -986,17 +825,13 @@ static uint32_t sgi_ioc3_sdma_shadow(SGIIOC3State *s, unsigned int port)
     uint8_t msr;
     uint32_t shadow;
 
-    /*
-     * In loopback the modem-control outputs wire back to the status
-     * inputs, the same derivation the byte-wide modem-status read makes.
-     */
+    /* In loopback the modem-control outputs wire back to status. */
     if (mcr & UART_MCR_LOOP) {
         msr = ((mcr & 0x0c) << 4) | ((mcr & 0x02) << 3) | ((mcr & 0x01) << 5);
     } else {
         msr = serial->msr;
     }
 
-    /* The low byte mirrors the line-status register one for one. */
     shadow = lsr & SGI_IOC3_SHADOW_LSR_MASK;
 
     if (msr & UART_MSR_DCTS) {
@@ -1044,18 +879,12 @@ static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
         val |= SGI_IOC3_SDMA_PAUSED;
     }
 
-    /*
-     * The produce index also reports how many characters the packer holds
-     * for the entry it has not written yet.
-     */
+    /* The produce index also reports the packer's held count. */
     if (offset == SGI_IOC3_SDMA_RX_PRODUCE) {
         val |= (uint32_t)s->sdma_packed[port] << SGI_IOC3_SDMA_HELD_SHIFT;
     }
 
-    /*
-     * The count field reads back the ticks left while the timer runs; an
-     * idle timer's count is stated by no source, and zero is the choice.
-     */
+    /* Ticks left while running; an idle timer's count reads zero. */
     if (offset == SGI_IOC3_SDMA_RX_TIMER &&
         timer_pending(s->sdma_rx_timer[port])) {
         int64_t left = timer_expire_time_ns(s->sdma_rx_timer[port]) -
@@ -1069,7 +898,6 @@ static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
     return val;
 }
 
-/* Write one port register; none of them keeps a whole word. */
 static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
                                      hwaddr offset, uint32_t val)
 {
@@ -1082,16 +910,12 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         if (val & SGI_IOC3_SDMA_RESET) {
             sgi_ioc3_sdma_reset_port(s, port);
         }
-        /* A disabled engine delivers nothing for the timer to announce. */
         if (!(val & SGI_IOC3_SDMA_ENABLE)) {
             timer_del(s->sdma_rx_timer[port]);
         }
         /*
-         * The drain bit (27) is a command, not stored: IRIX polls the
-         * register until it reads clear, and a stuck bit is the reading no
-         * driver survives. Enabling is also a start -- the firmware hands
-         * the transmit ring over before it enables the engine, so a walk
-         * only on produce-index writes would never happen here.
+         * The drain bit is a command IRIX polls to zero, and enabling is a
+         * start: the firmware hands the ring over before enabling.
          */
         sgi_ioc3_sdma_run(s, port);
         return;
@@ -1108,11 +932,7 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         *consume = val & (mask | SGI_IOC3_SDMA_ARM_RX_TIMER);
         sgi_ioc3_sdma_run(s, port);
 
-        /*
-         * Bit 31 arms the receive timer. Re-arming over a non-empty ring
-         * winds it again -- a choice, stated by no source; prompting again
-         * is the reading a driver can only be helped by.
-         */
+        /* Bit 31 arms the timer; re-arming over a non-empty ring rewinds. */
         produce = sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_PRODUCE);
         if (!(*consume & SGI_IOC3_SDMA_ARM_RX_TIMER)) {
             timer_del(s->sdma_rx_timer[port]);
@@ -1128,20 +948,12 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         return;
 
     case SGI_IOC3_SDMA_SHADOW:
-        /*
-         * Discarded, and not logged: OpenBSD writes zero here on every
-         * stock boot, and the chip's shadow is recomputed regardless.
-         */
+        /* Discarded silently: OpenBSD writes zero here on every boot. */
         return;
 
     case SGI_IOC3_SDMA_TX_CONSUME:
     case SGI_IOC3_SDMA_RX_PRODUCE:
-        /*
-         * The engine's side of the ring. Refused and traced, not a guest
-         * error: the firmware writes both, zero, on every stock boot. The
-         * datasheet records refusal as a hedge -- only a non-zero write
-         * could tell refusing from accepting.
-         */
+        /* The engine's side; refused and traced -- firmware writes zeroes. */
         trace_sgi_ioc3_sdma_write_refused(
             (uint32_t)(SGI_IOC3_SDMA_PORT_A +
                        port * SGI_IOC3_SDMA_PORT_STRIDE + offset),
@@ -1196,11 +1008,7 @@ static const MemoryRegionOps sgi_ioc3_sdma_ops = {
     .impl.max_access_size = 4,
 };
 
-/*
- * The alias pages: a second view of one port's seven registers, so a
- * privileged process can map one engine into user space without the rest
- * of the chip.
- */
+/* A per-port page mapping one engine into user space. */
 static uint64_t sgi_ioc3_sdma_alias_read(void *opaque, hwaddr addr,
                                          unsigned size)
 {
@@ -1242,21 +1050,16 @@ static const MemoryRegionOps sgi_ioc3_sdma_alias_ops = {
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
 };
+
 /*
- * The ethernet buffer RAM: 17 bits stored per slot, 16 of data plus the
- * parity bit beside them. The window's halves are separate storage --
- * a midpoint alias would fail the driver's size probe -- and parity is
- * stored, not computed, so a diagnostic can place a wrong one.
+ * The ethernet buffer RAM: 17 stored bits per slot, parity included, so a
+ * diagnostic can place a wrong parity bit deliberately.
  */
 static uint64_t sgi_ioc3_ssram_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
     uint32_t word = s->ssram_word[addr / 4];
 
-    /*
-     * Even parity across the seventeen stored bits is correct; an odd
-     * count reports the error when checking is enabled.
-     */
     if (sgi_ioc3_eth_ram_parity_enabled(&s->eth) && (ctpop32(word) & 1)) {
         word |= SGI_IOC3_SSRAM_PARITY_ERROR;
     }
@@ -1303,24 +1106,15 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
 
-    /* Only 48 bits fit the ROM identity; more would truncate silently. */
     if (s->onewire_serial & ~SGI_IOC3_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "onewire-serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
         return;
     }
 
-    /*
-     * The PCI interrupt pin belongs to the ethernet block; the SuperIO
-     * line is separate, directly wired -- see superio_irq below.
-     */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
-    /*
-     * PCI Status must reset to 0x0280 (medium DEVSEL, fast back-to-back):
-     * IRIX's io_config_space diagnostic compares the whole dword and fails
-     * the slot on a zero Status half. See docs/datasheets/ioc3.md.
-     */
+    /* IRIX's configuration diagnostic fails the slot on a zero Status. */
     pci_set_word(dev->config + PCI_STATUS,
                  PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_FAST_BACK);
 
@@ -1334,14 +1128,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
             return;
         }
 
-        /* Eight byte-wide registers, so an eight-byte region. */
         memory_region_init_io(&s->serial_io[i], OBJECT(dev),
                               &sgi_ioc3_serial_ops, serial,
                               sgi_ioc3_serial_name[i], 8);
         memory_region_add_subregion(&s->bar, sgi_ioc3_serial_base[i],
                                     &s->serial_io[i]);
 
-        /* Both ports' interrupts leave the chip on the one SuperIO line. */
         serial->irq = qdev_get_gpio_in(DEVICE(dev), i);
     }
 
@@ -1349,20 +1141,11 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.main", SGI_IOC3_MAIN_SIZE);
     memory_region_add_subregion(&s->bar, 0, &s->main);
 
-    /*
-     * The ethernet child's DMA must go through this function's bus-master
-     * view to reach the Bridge's translation (docs/datasheets/ioc3.md,
-     * "DMA"), so the view is handed down before the child realizes.
-     */
+    /* All child DMA goes through this function's bus-master view. */
     object_property_set_link(OBJECT(&s->eth), "dma-memory",
                              OBJECT(&dev->bus_master_container_region),
                              &error_abort);
-    /* The serial engines' rings go through the same space. */
     s->dma_as = pci_get_address_space(dev);
-    /*
-     * The backend is claimed here: the child carries the NIC properties
-     * and nothing outside can name it on a command line.
-     */
     qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->eth), errp)) {
         return;
@@ -1373,20 +1156,14 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
                        qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
 
-    /* The PS/2 controller, below the serial DMA block. */
     memory_region_init_io(&s->kbc, OBJECT(dev), &sgi_ioc3_kbc_ops, s,
                           "sgi-ioc3.kbc", SGI_IOC3_KBC_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE, &s->kbc);
 
-    /* The serial DMA block, immediately below the ethernet one. */
     memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
                           "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
 
-    /*
-     * The alias pages reach the same accessors; each page's port travels
-     * in its opaque, since handlers cannot tell which region reached them.
-     */
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         s->sdma_alias_port[i].chip = s;
         s->sdma_alias_port[i].port = i;
@@ -1398,25 +1175,16 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         memory_region_add_subregion(&s->bar, sgi_ioc3_sdma_alias_base[i],
                                     &s->sdma_alias[i]);
 
-        /*
-         * The receive timer counts guest time: receive idleness stops
-         * with the machine and migrates with it.
-         */
         s->sdma_rx_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                            sgi_ioc3_sdma_rx_timer_expired,
                                            &s->sdma_alias_port[i]);
     }
 
-    /* An Origin 200 populates the whole buffer-RAM window. */
     memory_region_init_io(&s->ssram, OBJECT(dev), &sgi_ioc3_ssram_ops, s,
                           "sgi-ioc3.ssram", SGI_IOC3_SSRAM_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SSRAM_BASE, &s->ssram);
 
-    /*
-     * The byte bus's first device select: the timekeeper's own region. A
-     * sysbus child rather than a bus-less plain device, which is never
-     * reset; the same holds for the ethernet block and its transceiver.
-     */
+    /* Sysbus children: a bus-less plain device is never reset. */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->rtc), errp)) {
         return;
     }
@@ -1426,10 +1194,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
-    /*
-     * The SuperIO line is board wiring, not the PCI pin: a plain GPIO
-     * output the machine connects to the Bridge pin the board wires.
-     */
+    /* The SuperIO line is board wiring, not the PCI pin. */
     qdev_init_gpio_out(DEVICE(dev), &s->superio_irq, 1);
 }
 
@@ -1438,10 +1203,7 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
 
-    /*
-     * Unrealize the children: their reset handlers would otherwise point
-     * at freed state after unplug.
-     */
+    /* Unrealize children or their reset handlers point at freed state. */
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         qdev_unrealize(DEVICE(&s->serial[i]));
         timer_free(s->sdma_rx_timer[i]);
@@ -1459,10 +1221,6 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->int_enable = 0;
     sgi_ioc3_update_irq(s);
 
-    /*
-     * The serial DMA block resets to zero throughout; a zeroed consume
-     * index is a disarmed receive timer, so both timers stop.
-     */
     memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         timer_del(s->sdma_rx_timer[i]);
@@ -1473,17 +1231,12 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
 
     s->kbc_control = 0;
 
-    /*
-     * The buffer RAM is memory, not registers: a reset line does not
-     * empty it, so it is deliberately not cleared here. Everything else
-     * resets to zero, per SGI's own register diagnostic.
-     */
+    /* The buffer RAM is memory: reset does not clear it. */
     s->microlan_control = 0;
     s->pin_control = 0;
     s->pin_data = 0;
     s->chip_control = 0;
 
-    /* A reset mid-answer must not leave stale bits shifting out. */
     s->onewire_phase = 0;
     s->onewire_bit = 0;
     s->onewire_command = 0;
@@ -1516,10 +1269,6 @@ static void sgi_ioc3_init(Object *obj)
 
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_IOC3_ETH);
 
-    /*
-     * Aliases let any machine name the children's backends; a real IOC3
-     * is also sold as a plain PCI card, so pluggable is what the part is.
-     */
     object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
 
@@ -1528,7 +1277,6 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
 }
 
-/* The interrupt line is derived state: re-drive it after load. */
 static int sgi_ioc3_post_load(void *opaque, int version_id)
 {
     SGIIOC3State *s = opaque;
