@@ -2,25 +2,13 @@
  * The I/O bridge answers at every non-zero crosstalk widget, not only at the
  * widget SGI's firmware picks for it.
  *
- * An Origin 200 has no crossbar. The Hub's one crosstalk link ends at the
- * bridge, and with nothing in between to route by widget number, every widget
- * address the Hub emits reaches the same chip. Firmware relies on this: it is
- * free to stamp a device pointer with whichever widget it likes, and the IRIX
- * 6.5.30 miniroot holds one naming widget 2 at the bridge's device-1 PIO
- * window. A model that decodes the bridge at widget 8 alone answers that load
- * with a bus error, and the miniroot's exception handler resumes the same load
- * forever — the data-bus-error storm this decode was widened to end.
- *
- * These assert the widened decode: the bridge answers at the net-new widgets
- * 2 through 7 and 9 through 15, at the same registers, as one chip, while
- * widget 0 keeps its own alias, widget 1 stays the Hub, and widget 8 is
- * unchanged.
- *
- * The limits the widget-0 test records hold here too. A qtest has no executing
- * processor, so a refused access and an access that returned zero look alike
- * from here: every "reaches the bridge" assertion below is written as "reads
- * what the bridge really holds" — a non-zero identity, or a value first written
- * through a window known to work — which catches a decode that lands nowhere.
+ * With no crossbar, every widget address the Hub emits reaches the bridge,
+ * and firmware relies on it -- the IRIX 6.5.30 miniroot names widget 2 at a
+ * bridge window, and a widget-8-only decode turns that load into a
+ * data-bus-error storm. These assert the widened decode: widgets 2-7 and
+ * 9-15 answer as one chip, widget 0 keeps its alias, widget 1 stays the
+ * Hub. The widget-0 test's qtest limits hold here: "reaches the bridge" is
+ * written as "reads what the bridge really holds".
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -189,14 +177,9 @@ static void test_new_widgets_are_one_bridge(const void *data)
 }
 
 /*
- * A guest fragment that issues an eight-byte load of the device-1 window at
- * offset 0x400208 through net-new widget 0xa, and writes a completion marker
- * to RAM only if the load returned. If the decode does not reach the widget,
- * or the window refuses the doubleword,
- * the load raises a bus error, the marker never lands, and the test times out.
- * The addresses are built in registers because they do not fit an immediate:
- * 0x920000000a400208 is an uncached (0x92) widget window. Widget 2 at this
- * offset is the PROM's deliberate PI error probe and is tested separately.
+ * An eight-byte load through net-new widget 0xa; the marker lands only if
+ * it returned. Widget 2 at this offset is the PROM's deliberate PI error
+ * probe, tested separately.
  */
 static char *write_doubleword_load_guest(void)
 {
@@ -269,25 +252,11 @@ static void test_other_widget_doubleword_load_completes(const void *data)
     uint32_t marker = 0;
 
     /*
-     * This width check must run a real instruction. The decode has to reach
-     * widget 0xa and the device window has to accept a doubleword. A qtest
-     * wide read cannot test the second — qtest_readq goes through
-     * address_space_read, which
-     * chunks a wide read into four-byte accesses and so passes even at
-     * valid.max = 4, the same chunking sn0-widget0-test.c documents. Only a
-     * single ld issues the one eight-byte dispatch that faults when either
-     * dimension is missing, so the load has to come from an executing
-     * processor. The marker lands only if the doubleword load at widget 0xa
-     * returned; a bus error leaves it absent and this times out. The 32-bit
-     * identity reads above are breadth, not this — they are the
-     * weaker property the first draft of this test mistook for the check.
-     *
-     * Both dimensions were watched go red. Removing the access-width fix (the
-     * device windows back at a four-byte cap) makes this fragment time out —
-     * the doubleword bus-errors and the marker never lands. Removing the widen
-     * (widget 0xa unmapped) makes the identity check above fail first,
-     * at widget 2 reading zero; either way the wide load has no device to
-     * reach. Neither fix alone leaves this green.
+     * Must run a real instruction: a qtest wide read is chunked into legal
+     * four-byte accesses and passes even at a four-byte cap. Only a single
+     * ld issues the eight-byte dispatch that faults when either the widened
+     * decode or the doubleword width is missing -- both were watched go red
+     * by reverting each fix alone.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
     qts = qtest_initf("-M origin200,io-bridge=on -smp 1 -kernel %s", kernel);
@@ -311,20 +280,10 @@ static void test_doubleword_split_order(const void *data)
     uint64_t at2 = SMALL_WINDOW(2) + ORDER_WINDOW + LSI_SCRATCHB;
 
     /*
-     * The big-endian split order is the genuinely-new behavior on the write
-     * path — an eight-byte doubleword to a device window becomes two 32-bit
-     * device cycles, the high word at the lower offset — and it is otherwise
-     * only exercised end to end by the live boot. A qtest wide access cannot
-     * test the width (it chunks through address_space and would pass even at a
-     * four-byte cap, which is what the fragment above is for), but it does honor
-     * the region's byte order, so it is the right tool for the order alone.
-     *
-     * Put a card in a free slot, aim its window at it, then write a doubleword
-     * whose halves differ through the widened widget 2 and read each half back.
-     * The high word must land at the lower offset; if the split were reversed
-     * the two reads below would swap, so this asserts the order, not merely that
-     * two reads agree. The bridge's per-cycle byte-lane correction cancels
-     * across the write and the read, so each half round-trips its own value.
+     * The split order alone: a doubleword becomes two 32-bit device cycles,
+     * high word at the lower offset. A qtest wide access honors byte order
+     * (though not width), so writing halves that differ and reading each
+     * back asserts the order -- reversed, the two reads would swap.
      */
     qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_BAR1, CARD_MMIO(ORDER_SLOT));
     qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
