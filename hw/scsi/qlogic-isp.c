@@ -2,45 +2,18 @@
 /*
  * QLogic ISP1020 family Fast/Wide SCSI host adapter.
  *
- * The adapter is not a register-level SCSI sequencer. It is an intelligent
- * controller running vendor microcode on an internal RISC processor: the host
- * hands it whole SCSI commands as descriptors in a memory ring and it performs
- * selection, message and data phases itself, posting completions into a second
- * ring. This model implements what that microcode does — the mailbox command
- * set and the two descriptor rings — and never executes vendor code, the same
- * way QEMU's other intelligent storage controllers implement a message
- * interface rather than running firmware. Guests download microcode at every
- * attach, so the model accepts that download and answers it; no vendor firmware
- * is present or required.
+ * An intelligent controller running vendor microcode on an internal RISC
+ * processor: the host hands it whole SCSI commands through a request ring
+ * and it posts completions into a response ring. This model implements the
+ * mailbox command set and the rings; the microcode download is accepted and
+ * answered, never executed, so no vendor firmware is present or required.
  *
- * One PCI device identification answers for every member of the family, from
- * the ISP1020 through the ISP1040C, and the configuration-space revision byte
- * is what selects the part. That is why this file is named for the family while
- * the QOM type names a part.
+ * One PCI identification answers for the whole family; the revision byte
+ * selects the part, hence the family file name and the per-part QOM type.
  *
- * A guest reads a revision from two different places and they are numbered from
- * different origins, which is the trap this device sets. OpenBSD and IRIX read
- * the PCI configuration-space byte, and OpenBSD derives the adapter's transfer
- * clock from it — 40 MHz below revision 2 and 60 MHz at revision 2 and above —
- * so a model reporting the wrong value there negotiates every synchronous
- * transfer against a reference it does not have. Linux instead reads the low
- * four bits of bus configuration 0, a field that runs one ahead of the PCI byte
- * across the whole family. The two are therefore written here as one value and
- * its derivation rather than as two constants that have to be kept in step.
- *
- * Registers the model does not implement log the access and answer, rather than
- * raising a bus error. Most of this window is registers later commits fill in,
- * and the ones the adapter genuinely does not use — the GPIO pair carrying
- * termination control on later parts of the family — are ones a guest may touch
- * without meaning anything by it.
- *
- * Written from the reviewed datasheet at docs/datasheets/isp1040.md in the
- * origami project tree — the checkout this fork is developed inside, not
- * this repository. Its register contract is driver-sourced because no
- * vendor programming manual for this part exists: a Linux qla1280 against
- * NetBSD isp cross-check for the map, and OpenBSD 7.9's qlw for the
- * behaviour. We read those to learn the facts and wrote our own code; no
- * vendor or driver code, comments or file structure is reproduced.
+ * Written from docs/datasheets/isp1040.md in the origami project tree,
+ * itself driver-sourced (Linux qla1280 cross-checked against NetBSD isp,
+ * OpenBSD 7.9 qlw for behaviour); no vendor or driver code is reproduced.
  */
 
 #include "qemu/osdep.h"
@@ -65,20 +38,14 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define QLOGIC_ISP_DEVICE_ID    0x1020
 
 /*
- * Revision 5 is the ISP1040C, the fastest member and the one modelled here.
- * This is the one value in the file with a real machine behind it rather
- * than driver source alone: OpenBSD 7.9 prints "rev 0x05" attaching this
- * adapter on a captured Origin 200 boot, and the firmware's own hardware
- * inventory on that machine names the same adapters revision 5.
+ * Revision 5 is the ISP1040C: OpenBSD 7.9 prints "rev 0x05" attaching this
+ * adapter on a captured Origin 200 boot.
  */
 #define QLOGIC_ISP_REVISION     0x05
 
 /*
- * The whole register window is 0x100 bytes and every register in it is 16 bits
- * wide. The adapter presents the window through two base address registers that
- * reach the same registers: an I/O window at configuration offset 0x10 and a
- * memory window at 0x14. OpenBSD tries the memory window first and falls
- * back to the I/O window, so both must decode.
+ * A 0x100-byte window of 16-bit registers, presented through both an I/O BAR
+ * and a memory BAR; OpenBSD tries the memory window first, so both decode.
  */
 #define QLOGIC_ISP_REG_WINDOW_SIZE  0x100
 
@@ -98,35 +65,15 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_HOST_CMD    0xc0    /* RW: command in, RISC state flags out. */
 
 /*
- * Bus configuration 0's hardware-revision field, derived rather than written
- * down, because it and the configuration-space revision byte are two encodings
- * of one fact and a model that states them separately can state them
- * inconsistently. They run one apart across every member of the family, so
- * revision 5 in configuration space is field value 6 here.
- *
- * Linux is the only guest that reads the field, in three lines that compare it
- * against the ISP1040A's value and store nothing: it decides one thing, whether
- * to suppress a FIFO-threshold write as a workaround for that part's broken
- * FIFO. Six is correct, since it names the part modelled, and safe, since any
- * value but the ISP1040A's four takes the ordinary path.
- *
- * The one-apart relationship is the datasheet's, and the datasheet marks it as
- * cross-checked between drivers but unverified against hardware.
+ * Bus configuration 0's hardware-revision field runs one ahead of the PCI
+ * revision byte across the family, so it is derived rather than stated twice.
+ * Linux reads it only to detect the ISP1040A's broken FIFO.
  */
 #define ISP_BUS_CFG0_HWREV      (QLOGIC_ISP_REVISION + 1)
 
 /*
- * The bits bus configuration 1 owns on the PCI variant: a FIFO threshold field,
- * a global burst enable, and the select that swaps which register bank the
- * window at 0x80 presents. Writes keep these and drop the rest, so a guest
- * reading the register back sees only what this part implements.
- *
- * The later ISP1080 generation puts a DMA bank select in this register too and
- * OpenBSD read-modify-writes it, but only down a path it takes for that
- * generation; on this part it programs the DMA blocks at their own offsets
- * instead. Dropping those bits here is therefore right for the part modelled
- * rather than a gap, which is worth saying because the register's field list
- * looks incomplete beside the driver's header.
+ * Bus configuration 1 on the PCI variant: FIFO threshold, burst enable, and
+ * the select for which bank the window at 0x80 presents. Writes drop the rest.
  */
 #define ISP_BUS_CFG1_FIFO_MASK      0x0070
 #define ISP_BUS_CFG1_BANK_SELECT    0x0008
@@ -136,33 +83,17 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
                                      ISP_BUS_CFG1_BURST_ENABLE)
 
 /*
- * The command and data DMA blocks' config registers, at the base of each
- * block. Everything else either block carries -- control, status, FIFO
- * status, transfer count, address -- has no guest on origami's path that
- * reads or writes it, so only the config register is named and stored; the
- * rest still falls through to the unimplemented-register logger.
- *
- * The one field that matters here is the same burst enable bus
- * configuration 1 already has a copy of for the SBus variant of this part:
- * OpenBSD's attach sequence read-modify-writes this bit into both blocks'
- * config registers whenever the FIFO/burst configuration it already wrote
- * to bus configuration 1 asked for bursts. Before this register was named,
- * that read-modify-write's read half always saw zero (the unimplemented
- * default) rather than a value reflecting what had actually been written,
- * so a guest that ever reads this register back to check what it set would
- * see something this device never actually stored -- a gap the OpenBSD
- * boot path does not depend on, since it never re-reads what it wrote, but
- * a stricter guest could.
+ * Each DMA block's config register, stored because OpenBSD read-modify-writes
+ * the burst enable there and a readback must reflect what was written. The
+ * blocks' other registers fall through to the unimplemented logger.
  */
 #define ISP_DMA_CFG_BURST_ENABLE    0x0002
 #define ISP_DMA_CFG_WRITE_MASK      ISP_DMA_CFG_BURST_ENABLE
 
 /*
- * Bus interface control. Bit 0 is a soft reset that the adapter clears when it
- * completes, and the other two are interrupt enables the guest sets together.
- * The soft reset is a trigger rather than stored state: the guest polls this
- * register up to a thousand times waiting for the bit to read back clear and
- * fails the attach if it never does.
+ * Bus interface control: a soft-reset trigger that must read back clear
+ * (the guest polls for it and fails the attach otherwise), and two
+ * interrupt enables.
  */
 #define ISP_BUS_CTRL_SOFT_RESET     0x0001
 #define ISP_BUS_CTRL_INT_ENABLE     0x0002
@@ -175,30 +106,18 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_BUS_STATUS_RISC_INT_REQ 0x0004
 
 /*
- * The semaphore. The adapter takes the lock when it posts a mailbox result or
- * an asynchronous event, and the guest releases it by writing the register
- * back to zero. Taking it is the mailbox engine's business; this commit
- * implements the register the guest reads and clears.
+ * The adapter takes the semaphore lock when it posts a mailbox result; the
+ * guest releases it by writing the register back to zero.
  */
 #define ISP_SEMAPHORE_LOCK      0x0001
 #define ISP_SEMAPHORE_STATUS    0x0002
 #define ISP_SEMAPHORE_MASK      (ISP_SEMAPHORE_LOCK | ISP_SEMAPHORE_STATUS)
 
 /*
- * The NVRAM interface bit-bangs a 128-byte serial EEPROM: the host toggles
- * clock and chip select and shifts data out on these same three bits, and
- * the part is supposed to shift data back on the fourth. This model never
- * asserts that fourth bit, so every bit-banged read the guest performs comes
- * back as the same fixed pattern regardless of what command or address the
- * guest thought it was shifting out — indistinguishable, from the guest's
- * side, from an EEPROM that answers but whose contents fail validation, and
- * that is deliberate: the datasheet's own recommendation for this register
- * is to leave data-in low and let the guest's own fallback path handle it,
- * which OpenBSD does cleanly by printing that the NVRAM is corrupt and
- * proceeding on built-in defaults. Implementing the shift register and a
- * plausible 128 bytes behind it would let us set values a real Origin 200's
- * EEPROM contents were never sourced for; this device does not need to
- * answer to be correct, only to fail the way real silence would.
+ * Bit-banged serial EEPROM interface. Data-in is never asserted, so every
+ * read fails contents validation and the guest falls back to built-in
+ * defaults (OpenBSD prints the NVRAM corrupt and proceeds). Deliberate: no
+ * source exists for a real Origin 200's EEPROM contents.
  */
 #define ISP_NVRAM_CLOCK      0x0001
 #define ISP_NVRAM_CHIP_SEL   0x0002
@@ -208,36 +127,17 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
                               ISP_NVRAM_DATA_OUT)
 
 /*
- * Eight 16-bit mailboxes. Mailbox 0 carries a command in and its result out;
- * the rest are arguments and returns selected by per-command bit masks.
+ * Eight 16-bit mailboxes: mailbox 0 carries a command in and its result out,
+ * the rest are per-command arguments and returns.
  *
- * Mailboxes 4 and 5 are also the queue pointers. The driver names four of them
- * — request in and out, response in and out — at two addresses, because each
- * address means the host's pointer when written and the adapter's when read.
- *
- * The request side really is plain storage: the guest publishes its producer
- * count by writing mailbox 4, and the adapter is the only reader, so a read
- * of that address answering back whatever was last written is correct — it
- * always is what was last written, by the only writer there is.
- *
- * The response side is not symmetric and is not plain storage. Mailbox 5 is
- * the adapter's producer count when read and the guest's consumer
- * acknowledgement when written, and the datasheet is explicit that a guest's
- * ack write must never be able to overwrite the adapter's own published
- * count: the two land at the same address only because one direction is the
- * read and the other the write, not because they share one number. A read of
- * this address answers from the adapter's own producer state directly; a
- * write to it records the guest's consumer position and never touches that
- * state. See the response-queue handling in qlogic_isp_reg_read(),
- * qlogic_isp_reg_write() and qlogic_isp_post_status() below.
- *
- * All of that applies only while a queue exists. Both addresses are ordinary
- * mailboxes until the guest initialises the queue behind them, and both have
- * to be: the firmware's mailbox register test writes a walking pattern across
- * mailboxes 1 through 7 and reads it back, long before it initialises
- * anything, and a queue pointer answered there instead of the pattern fails
- * that test. Each read and the response side's write are gated on the queue's
- * own length for exactly that reason.
+ * Mailboxes 4 and 5 double as the queue pointers, each address meaning the
+ * host's pointer when written and the adapter's when read. The request side
+ * is plain storage (the guest is the only writer). The response side is not:
+ * a read answers the adapter's own producer count and a write records the
+ * guest's consumer position, never overwriting that count. Both addresses
+ * stay ordinary mailboxes until their queue is initialised -- the firmware's
+ * register test writes a pattern through them before any queue exists -- so
+ * every queue-pointer path below is gated on the queue's length.
  */
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX_COUNT       8
@@ -250,32 +150,10 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_RESPONSE_QUEUE  (ISP_REG_MAILBOX_BASE + 0x0a)
 
 /*
- * After reset the adapter presents an ASCII signature "IS", "P " and two
- * spaces in mailboxes 1, 2 and 3, plus a fourth, non-ASCII word in mailbox
- * 4. This was previously documented here as a fact about OpenBSD's driver;
- * it is not. The pinned OpenBSD/sgi tree's qlw_softreset() never reads
- * mailboxes 1 through 4 as an identity check at all -- it resets, zeroes
- * state, and goes straight to a no-op mailbox liveness check. Presenting
- * this signature is harmless to OpenBSD, which never looks, but it is not
- * what OpenBSD requires.
- *
- * What actually requires it, fatally, is Linux's qla1280 driver:
- * qla1280_chip_diag() reads mailboxes 1 through 4 immediately after reset,
- * before any mailbox command is issued, and compares them against
- * PROD_ID_1 through PROD_ID_4 (drivers/scsi/qla1280.h) -- 0x4953, 0x0000 or
- * 0x5020, 0x2020 and 0x0001. A mismatch on any of the four aborts the
- * adapter's attach outright ("Wrong product ID"). 86Box's ql_reset_asic
- * reproduces the identical four values in a second, unrelated
- * implementation, which is corroboration this is a real hardware fact
- * about the ISP1040 family rather than one driver's idiosyncrasy.
- *
- * It is also the observable that proves reset ran at all. A PCI device is
- * reset through its bus, and a device whose registers decode perfectly
- * while its reset was never called reads every register at its
- * zero-initialised value, which for most registers here is also the reset
- * value and so says nothing. These four do not read zero, so the qtest
- * asserting them is what distinguishes a device that was reset from one
- * that merely answers.
+ * The product-ID signature reset leaves in mailboxes 1 through 4. Linux's
+ * qla1280_chip_diag() compares them against PROD_ID_1..4 (qla1280.h) before
+ * any mailbox command and aborts the attach on a mismatch; 86Box presents
+ * the same four values.
  */
 #define ISP_MAILBOX1_SIGNATURE  0x4953
 #define ISP_MAILBOX2_SIGNATURE  0x5020
@@ -326,43 +204,17 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_CMD_PARAM_ERROR    0x4006
 
 /*
- * The adapter runs QLogic microcode on an internal RISC processor, and the
- * guest downloads that microcode at every attach — OpenBSD 7.9's qlw always
- * does, since the build option that would skip it is set only for some Alpha
- * RAMDISK configurations and never for GENERIC-IP27, the kernel this fork
- * boots. This model does not run that microcode and must not try: it accepts
- * the download and answers it, the same way QEMU's other intelligent storage
- * controllers implement a message interface rather than executing vendor
- * firmware. Nothing here requires QLogic firmware to be present, distributed
- * or decoded, which is what makes accept-and-answer the only acceptable
- * design — the fork ships no vendor firmware.
- *
- * The download is one mailbox command per 16-bit word, so it runs thousands
- * of times per attach; the storage backing it has to be plain and cheap. A
- * flat array sized to the full 16-bit address space a mailbox argument can
- * name means every address a guest writes is valid by construction, with no
- * bounds check needed and no error path for an address a real adapter would
- * also have to accept.
- *
- * This retains what the guest downloads and computes checksums honestly over
- * it, rather than discarding words and answering success unconditionally.
- * The download is never executed either way; retaining it buys one thing —
- * a verify-checksum answered honestly catches a guest that sent a corrupt
- * image, which an unconditional success cannot. That is a recorded decision
- * from this device's design review, not a re-derivation of the datasheet's
- * own text, which frames discarding as the simpler default and retaining as
- * the fallback if a guest is ever seen to need it.
+ * Adapter memory for the microcode download the guest performs on every
+ * attach. Sized to the full 16-bit address space a mailbox argument can
+ * name, so every address is valid by construction. The contents are
+ * retained, never executed: keeping them is what lets verify-checksum
+ * answer honestly about a corrupt image.
  */
 #define ISP_RISC_RAM_WORDS      0x10000
 
 /*
- * The request count a guest sizes its command queues from. The datasheet
- * calls this an open question with no source stating a real adapter's
- * number, and 512 is chosen because it is the driver's own cap — OpenBSD
- * clamps whatever this command reports to 512 immediately after reading it,
- * so reporting a larger number changes nothing the guest does, while 512
- * exercises the ring arithmetic at its actual ceiling instead of leaving
- * headroom untested.
+ * The request count a guest sizes its queues from. No source states a real
+ * adapter's number; 512 is OpenBSD's own clamp on whatever is reported.
  */
 #define ISP_FIRMWARE_STATUS_MAX_REQUESTS 512
 
@@ -389,26 +241,10 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_RISC_FLAG_EXTERNAL      0x0010
 
 /*
- * The SXP and RISC register blocks share the window from 0x80 up to the host
- * command register at 0xc0, and bus configuration 1 bit 3 chooses which one
- * answers there. No guest on origami's path reads either block — NetBSD's
- * driver does, and NetBSD is a cross-check source rather than a target guest
- * here — so no individual register in either block is named or decoded.
- *
- * The datasheet is explicit that the select still has to be implemented,
- * because a model that ignored it and always presented one bank would
- * mislead anyone who later needs the other. That means the two blocks need
- * real, separate storage rather than a bit that is stored but never acted
- * on: the observable a guest — or a qtest — has of the select working is
- * that the same offset holds two different values depending on it, and a
- * bit that only gates a log message could not show that.
- *
- * The trap the datasheet names is a model that wires bit 0 instead of bit 3,
- * inherited from a driver header that defines that constant but never
- * exercises it. Bit 0 already cannot reach this select: bus configuration
- * 1's write mask only stores bit 3 among the low four bits, so a guest
- * setting bit 0 changes nothing this device tracks, and the two-bank storage
- * here makes that a testable fact rather than an assertion about a mask.
+ * The SXP and RISC register blocks share the window from 0x80 to 0xc0; bus
+ * configuration 1 bit 3 -- not bit 0, a decoy constant in driver headers --
+ * selects which answers. Two real storage banks, so the select is
+ * observable; no individual register is decoded.
  */
 #define ISP_REG_SXP_RISC_BASE   0x80
 #define ISP_REG_SXP_RISC_END    0xc0
@@ -416,18 +252,9 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
     ((ISP_REG_SXP_RISC_END - ISP_REG_SXP_RISC_BASE) / 2)
 
 /*
- * Initialising a queue is a mailbox command like any other, but its address
- * argument is unusual: mailbox 1 is the entry count, and the queue's base
- * address is a 64-bit host address split across mailboxes 2, 3, 6 and 7
- * rather than the low pair alone. OpenBSD's own driver always sends this
- * split form — never the separate 64-bit-only command variant the datasheet
- * also names — so that is the only form this model needs to answer.
- *
- * Zero is rejected for either the address or the count. No guest on this
- * device's path sends either, so the check is unexercised by construction,
- * but it costs nothing and 86Box's model makes the same check, which is
- * evidence about the approach worth keeping even where it cannot be watched
- * failing here.
+ * A queue-init command's base address is a 64-bit host address split across
+ * mailboxes 2, 3, 6 and 7 (qlw_mbox_putaddr()'s order); mailbox 1 is the
+ * entry count. Zero for either is rejected, as 86Box also does.
  */
 #define ISP_MBOX_ADDR_LOW(mb)   ((uint64_t)(mb)[3])
 #define ISP_MBOX_ADDR_MID(mb)   ((uint64_t)(mb)[2] << 16)
@@ -435,11 +262,8 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_MBOX_ADDR_TOP(mb)   ((uint64_t)(mb)[6] << 48)
 
 /*
- * Queue entries are 64 bytes and every offset below is a byte offset into
- * one entry. Confirmed against OpenBSD's own packed struct declarations for
- * each entry kind, which leave no compiler padding to second-guess: a
- * request entry, its continuations, a status entry and a marker all total
- * exactly 64 bytes this way.
+ * Queue entries are 64 bytes; the offsets below are confirmed against
+ * OpenBSD's packed struct declarations for each entry kind.
  */
 #define ISP_QUEUE_ENTRY_SIZE    64
 
@@ -453,11 +277,8 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_ENTRY_TYPE_MARKER       0x04
 
 /*
- * A request entry. The device field packs bus, target and lun into one
- * 16-bit word rather than three separate bytes — confirmed from how
- * OpenBSD's driver builds the value it writes, (((bus << 7) | target) << 8)
- * | lun, not from the header's field layout alone, which only names the
- * field and does not spell out which bits mean what.
+ * A request entry. The device word packs bus, target and lun -- the bit
+ * layout is how OpenBSD's driver builds it: (((bus << 7) | target) << 8) | lun.
  */
 #define ISP_REQ_OFF_HANDLE      4
 #define ISP_REQ_OFF_DEVICE      8
@@ -474,10 +295,8 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_DEVICE_BUS(dev)     (((dev) >> 15) & 0x1)
 
 /*
- * Wide SCSI: sixteen targets, 0 through 15, and eight luns, 0 through 7.
- * The SCSI core's realize check is inclusive — a device with an id equal
- * to max_target realizes — so what these carry is the largest usable
- * address, not the count.
+ * Wide SCSI. The SCSI core's realize check is inclusive, so these are the
+ * largest usable addresses, not counts.
  */
 #define ISP_MAX_TARGET_ID   15
 #define ISP_MAX_LUN         7
@@ -490,16 +309,10 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_SEG_SIZE            8
 
 /*
- * The 64-bit addressing pair, Linux's only request format (datasheet's "64-bit
- * addressing entries" section). Confirmed directly against qla1280.h: offsets
- * 0-31 of cmd_a64_entry_t -- header, handle, the device word, cdb_len,
- * control_flags, reserved, timeout, dseg_count, and the 12-byte CDB -- are
- * byte-identical to the type-0 format's struct cmd_entry, field for field.
- * ISP_REQ_OFF_HANDLE/_DEVICE/_CDBLEN/_SEGCOUNT/_CDB above are reused as-is;
- * this is the same header both formats share, not a coincidence of two
- * formats independently landing on the same numbers. Only the segment area
- * from offset 32 on differs, because A64 needs the extra room a 64-bit
- * address costs.
+ * The 64-bit addressing pair, Linux's only request format. Offsets 0-31 are
+ * byte-identical to the type-0 format (qla1280.h's cmd_a64_entry_t against
+ * cmd_entry), so the header constants above are shared; only the segment
+ * area from offset 32 differs.
  */
 #define ISP_A64_ENTRY_TYPE_COMMAND    0x09
 #define ISP_A64_ENTRY_TYPE_CONTINUE   0x0a
@@ -508,31 +321,22 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_A64_REQ_SEGS_INLINE     2
 
 /*
- * A 64-bit segment: a 64-bit address as two 32-bit words, low half first
- * (confirmed from qla1280_64bit_start_scsi()'s own write order --
- * lower_32_bits() before upper_32_bits(), the same convention this file's
- * A64 mailbox address macros already use), then a 32-bit length.
+ * A 64-bit segment: the address as two 32-bit words, low half first
+ * (qla1280_64bit_start_scsi()'s write order), then a 32-bit length.
  */
 #define ISP_A64_SEG_SIZE            12
 
 /*
- * A64 continuation entry: no handle, no reserved gap -- five wider segments
- * start immediately at offset 4, where a command entry's handle would be.
- * Reading this offset as a handle is what made an unrecognized-entry
- * continuation dangerous rather than merely incomplete (task #106/#74
- * adversarial review): it is the low half of a DMA buffer address here, not
- * an identifier, so a continuation entry must never be dispatched on its
- * own -- entry_count always steps the ring walker past it as part of the
- * command that owns it, the same mechanism that already skips type-0
- * continuation entries.
+ * A64 continuation entry: no handle -- offset 4 holds the low half of a DMA
+ * address, so a continuation must never be dispatched on its own. The
+ * entry_count advance steps the ring walker past it.
  */
 #define ISP_A64_CONT_OFF_SEGS        4
 #define ISP_A64_CONT_SEGS            5
 
 /*
- * A status entry, written by the adapter. Sense data validity rides in the
- * SCSI status word's own bit 9 rather than a separate flag, which is easy to
- * miss because nothing about the field's name says so.
+ * A status entry, written by the adapter. Sense validity rides in the SCSI
+ * status word's own bit 9, not a separate flag.
  */
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
@@ -552,24 +356,11 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_IOCB_DATA_UNDERRUN       0x0015
 
 /*
- * State flags: which phases of the transaction the adapter actually
- * reached, read by OpenBSD's and Linux's drivers alike only when the
- * completion code is incomplete, to decide what kind of failure this was
- * rather than treat every incomplete command the same way. Confirmed
- * byte-identical (offset 12, this bit layout) against both qlwreg.h's
- * struct qlw_iocb_status and qla1280.h's struct response -- two
- * independent drivers agreeing on the wire format of a part neither
- * vendor documented for us. Linux's qla1280_return_status() walks this
- * ladder top to bottom on an incomplete completion: no bus reached is
- * DID_NO_CONNECT, bus reached but no target is DID_BAD_TARGET, target
- * reached but the CDB, transfer, status or sense phase failed is
- * DID_ERROR. A model that leaves this field unwritten hands back
- * whatever a previous occupant of the ring slot left, so an incomplete
- * completion is misreported as whichever failure those stale bits
- * happen to spell -- this device's only current incomplete completion
- * (no SCSI device at the requested target/lun) reported as a plausible
- * but wrong reason instead of DID_BAD_TARGET, the one that is actually
- * true.
+ * State flags: which phases the command reached, read by the drivers only
+ * on an incomplete completion to classify the failure -- Linux's
+ * qla1280_return_status() ladder turns them into DID_NO_CONNECT,
+ * DID_BAD_TARGET or DID_ERROR. Layout confirmed against both qlwreg.h and
+ * qla1280.h.
  */
 #define ISP_STATE_FLAG_GOT_BUS            0x0100
 #define ISP_STATE_FLAG_GOT_TARGET         0x0200
@@ -587,25 +378,17 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
                                      ISP_STATE_FLAG_TRANSFER_COMPLETE)
 
 /*
- * status_flags (offset 14) is a field distinct from state_flags: it reports
- * conditions about the completion rather than which phases the command
- * reached. IRIX reads its timeout bit to accept an incomplete completion as a
- * benign selection timeout -- a stricter check than the four public parallel-
- * SCSI ISP drivers, which key only on state_flags. The bit value is NetBSD
- * ispmbox.h's RQSTF_TIMEOUT; qla1280.h and qlwreg.h carry the field but
- * enumerate none of its bits, consistent with a reader they do not model.
+ * status_flags reports conditions about the completion, not phases. IRIX
+ * reads the timeout bit to accept an incomplete completion as a benign
+ * selection timeout; the value is NetBSD ispmbox.h's RQSTF_TIMEOUT.
  */
 #define ISP_STATUS_FLAG_TIMEOUT           0x0040
 
 /*
  * A status entry the response ring had no room for. Real hardware never
- * builds this list — the datasheet's own words are that it never reaches the
- * full case — but a model with no bus latency can, and dropping a completion
- * on the floor there would only relocate the same lost-completion bug onto
- * whichever command lost the race. Queued here, it waits for
- * qlogic_isp_drain_pending() to post it once the guest's next acknowledgement
- * frees a slot; nothing about the SCSI request itself needs to stay alive for
- * that, since the backend has already finished it by the time this is built.
+ * reaches the full case, but a model with no bus latency can; the entry is
+ * held until the guest's next acknowledgement frees a slot. The SCSIRequest
+ * is already finished by the time this is built.
  */
 typedef struct QLogicISPPendingStatus {
     QTAILQ_ENTRY(QLogicISPPendingStatus) next;
@@ -649,28 +432,16 @@ struct QLogicISPState {
     uint16_t resp_cons;    /* Next response slot the guest has acknowledged. */
 
     /*
-     * Completions the response ring had no room for when they were ready to
-     * post. Not covered by vmstate: a migration landing while this is
-     * non-empty loses the queued completions, and the condition these
-     * exist for is one the datasheet itself says real hardware never
-     * reaches.
+     * Held completions, not migrated: a migration landing while this is
+     * non-empty loses them, and real hardware never reaches the condition.
      */
     QTAILQ_HEAD(, QLogicISPPendingStatus) pending_status;
 
-    /*
-     * Every request handed to the SCSI core and not yet completed or
-     * cancelled: the device's own account of what is in flight, which
-     * the guest-reset and migration paths need.
-     */
+    /* In-flight requests, for the guest-reset and migration paths. */
     QTAILQ_HEAD(, QLogicISPRequest) requests;
 };
 
-/*
- * State for one in-flight SCSI command, from the request entry that started
- * it to the status entry its completion posts. hba_private on the SCSIRequest
- * is how QEMU's generic SCSI layer hands this back on completion or
- * cancellation, the same mechanism every SCSI HBA model in the tree uses.
- */
+/* One in-flight command, handed back through sreq->hba_private. */
 struct QLogicISPRequest {
     QLogicISPState *dev;
     SCSIRequest *sreq;
@@ -680,26 +451,10 @@ struct QLogicISPRequest {
 };
 
 /*
- * The adapter presents one PCI interrupt line and it is a level, so the line
- * is recomputed from scratch on every change rather than tracked
- * incrementally: whatever changed — bus interface status, the enables in bus
- * interface control, or a reset zeroing both — funnels through here, and the
- * line is exactly what this function says it should be afterwards.
- *
- * Only the RISC interrupt request bit and its own enable matter to the
- * physical line, not the plain interrupt request bit alongside it or the
- * global enable bit next to that. 86Box's model masks the computed level down
- * to the RISC bit alone before checking it, with a comment stating outright
- * that unmasking the other status bit does nothing on real hardware; the
- * datasheet documents a global enable bit without saying what it does, which
- * is consistent with 86Box's reading that it does nothing observable either.
- * A source that says a bit is inert is worth as much as one that says what a
- * bit does, and is why this model does not condition the line on it.
- */
-/*
- * The single AND below works only because the RISC interrupt enable in bus
- * interface control and the RISC interrupt request in bus interface status
- * are the same bit position in their two registers.
+ * One level interrupt line, recomputed from scratch on every change. Only
+ * the RISC request bit and its enable drive it: per 86Box, the global
+ * enable does nothing observable on real hardware. The single AND works
+ * only because enable and request share a bit position.
  */
 QEMU_BUILD_BUG_ON(ISP_BUS_CTRL_RISC_INT_ENABLE != ISP_BUS_STATUS_RISC_INT_REQ);
 
@@ -712,13 +467,7 @@ static void qlogic_isp_update_irq(QLogicISPState *s)
     pci_set_irq(PCI_DEVICE(s), level);
 }
 
-/*
- * Frees every completion still waiting for response-ring room, without
- * posting them. Shared by the two places that re-initialise the response
- * queue's state from under a non-empty list — a chip reset and the
- * mailbox command that re-initialises the response queue on its own — so
- * neither has to duplicate the walk.
- */
+/* Frees every held completion without posting it. */
 static void qlogic_isp_drop_pending_status(QLogicISPState *s)
 {
     QLogicISPPendingStatus *pending;
@@ -730,48 +479,11 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
 }
 
 /*
- * The state a power-on or a soft reset both land on. The guest's soft reset is
- * a full re-initialisation of the chip rather than a narrower clear, so it and
- * the bus reset share this function instead of each clearing its own list of
- * registers and drifting apart.
- *
- * Mailboxes 4 and 5 are the queue pointers, and this is a place an earlier
- * decision here was wrong and is now corrected against a source that settles
- * it. 86Box's ql_reset_asic sets them to 1 and 7 after reset. That was
- * previously rejected in favor of zero, reasoning that OpenBSD's own reset
- * sequence explicitly zeroes all four queue-pointer names with dedicated
- * writes and that the datasheet's qtest checklist stated the same thing
- * independently -- but those two were never independent: the datasheet's
- * claim was written from watching OpenBSD's driver-side zero-write, not from
- * a source that observes the raw hardware default, so "OpenBSD does this"
- * and "the datasheet says this" were one source counted twice. Linux's
- * qla1280 broke the tie: qla1280_chip_diag() reads mailbox 4 as part of a
- * fatal product-ID check immediately after reset, before any driver write
- * reaches it, and requires exactly the value 86Box set. OpenBSD is
- * unaffected either way, since qlw_softreset() overwrites this register with
- * its own zero before ever treating it as a live pointer.
- *
- * Mailbox 4's signature lives in s->mailbox[4], where the register test can
- * also reach it. A read of that address answers this adapter's own consumer
- * position only once a request queue is live; before then it answers the
- * array, which is both what the product-ID check wants and what the mailbox
- * register test's echo needs.
- *
- * Mailbox 5 keeps its zero. Nothing we have observed needs 86Box's 7 there:
- * no guest this fork targets checks it as an identity field the way mailbox
- * 4 turned out to be, and zero is what the register test writes over. A raw
- * mailbox[5] reset value would only matter if some future guest read this
- * offset by its mailbox name before ever touching it as a queue pointer, and
- * no source we hold shows one doing that.
- *
- * Every other register this function zeroes — bus configuration 1, bus
- * interface control and status, the semaphore, the RISC flags, mailbox 0 and
- * 6/7, and both SXP/RISC banks — is doing so under the datasheet's own
- * standard for a value nothing confirms: no vendor register table exists for
- * this part, so zero stands because no driver source contradicts it, not
- * because a specification states it. The mailbox signature above is the
- * exception in this function, being driver-confirmed rather than merely
- * uncontradicted.
+ * The state a power-on and a guest soft reset both land on. Mailboxes 1-4
+ * get the product-ID signature Linux's post-reset check requires; mailbox
+ * 4's copy lives in the array so the register test's echo still works
+ * before a request queue exists. Everything else zeroes as an
+ * uncontradicted default -- no vendor register table exists for this part.
  */
 static void qlogic_isp_reset_state(QLogicISPState *s)
 {
@@ -793,64 +505,31 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
 
-    /*
-     * The guest re-downloads firmware from scratch after every reset — it is
-     * part of the same attach sequence that follows a soft reset, never
-     * skipped — so nothing depends on RAM surviving one, and zeroing it here
-     * is the same uncontradicted-default choice as every other register this
-     * function clears.
-     */
+    /* The guest re-downloads firmware after every reset. */
     memset(s->risc_ram, 0, sizeof(s->risc_ram));
 
     /*
-     * The driver re-initialises both queues after every reset, as part of
-     * the same attach sequence that re-downloads firmware, so a stale base
-     * address or length from before the reset is never acted on — but
-     * zeroing them here means this device cannot act on one either, rather
-     * than relying on the driver's ordering to keep it safe.
+     * Zeroed so this device cannot act on a stale ring, whatever the
+     * driver's own re-initialisation ordering.
      */
     s->rqst_base = 0;
     s->resp_base = 0;
     s->rqst_len = 0;
     s->resp_len = 0;
-    /*
-     * A real consumer position, zero. It is only what a read of mailbox 4
-     * answers once a request queue exists; before that the mailbox array
-     * answers, carrying the identity value Linux's product-ID check reads.
-     */
     s->rqst_cons = 0;
     s->resp_prod = 0;
     s->resp_cons = 0;
 
-    /*
-     * Same reasoning as the queue state above: the driver re-initialises the
-     * response queue after every reset, so nothing queued from before it is
-     * ever going to be acted on.
-     */
     qlogic_isp_drop_pending_status(s);
 
     qlogic_isp_update_irq(s);
 }
 
 /*
- * Moves a block of the adapter's own memory to or from host memory, which is
- * what the load-RAM and dump-RAM mailbox commands each ask for in one
- * direction. Mailbox 1 is the word offset within the adapter, mailbox 4 the
- * word count, and mailboxes 2 and 3 the host address high half first — the
- * same four the command rings already reassemble, so the address macros are
- * shared rather than restated and a 64-bit host address costs nothing extra.
- *
- * The offset advances as a uint16_t so it wraps within the adapter's own
- * memory rather than running past the end of it, the same reasoning the
- * checksum command's walk of the same storage already records. Every offset a
- * uint16_t can name indexes storage sized to that range, so there is nothing
- * to validate; the host address is the guest's business and the DMA layer's.
- *
- * Through the PCI DMA accessors, never cpu_physical_memory_*, so the transfer
- * is translated by the Bridge the adapter sits behind exactly as the command
- * rings are. Little-endian, matching those rings: this is a little-endian PCI
- * device, and the Bridge translates addresses without swapping DMA payload, so
- * the accessor chosen here is the byte order that lands in guest memory.
+ * The load-RAM and dump-RAM block transfers: mailbox 1 is the word offset
+ * within the adapter, mailbox 4 the word count, and the host address is the
+ * usual four-mailbox split. The offset advances as a uint16_t so it wraps
+ * within storage sized to that range; little-endian PCI DMA, like the rings.
  */
 static void qlogic_isp_ram_block_dma(QLogicISPState *s, bool to_adapter)
 {
@@ -881,24 +560,9 @@ static void qlogic_isp_ram_block_dma(QLogicISPState *s, bool to_adapter)
 }
 
 /*
- * Runs a mailbox command. The host writes mailbox 0 and sets the host
- * interrupt to mean "a command is ready", which is what calls this; the
- * adapter answers by writing a result into mailbox 0, taking the semaphore
- * lock, posting an interrupt, and letting the line reflect that.
- *
- * Every command implemented here is one OpenBSD's own attach sequence
- * actually issues, from the liveness check through firmware download and
- * bring-up. Everything else still answers invalid, which is accurate today
- * — the mailbox protocol has no way to leave a command pending — and will
- * need revisiting one command at a time as later commits give the adapter
- * more to do, not a placeholder that happens to work because nothing yet
- * asks for anything else.
- *
- * Processing synchronously, inside the register write that triggers it,
- * matches how QEMU's other message-interface storage controllers handle a
- * command that does not touch guest memory, and keeps a qtest deterministic:
- * the result is present the instant the write that requested it returns,
- * with no timer or scheduled callback to wait on.
+ * Runs a mailbox command: result into mailbox 0, semaphore lock taken,
+ * interrupt posted. Synchronous, inside the register write that triggers
+ * it -- the protocol has no way to leave a command pending.
  */
 static void qlogic_isp_mailbox_command(QLogicISPState *s)
 {
@@ -912,10 +576,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * The guest sends one of these per 16-bit word of the firmware image, so
-     * this path runs thousands of times per attach. Mailbox 1 is the address,
-     * mailbox 2 the data; every address a uint16_t can name is a valid index
-     * into storage sized to the same range, so there is nothing to validate.
+     * One per 16-bit word of the firmware image: mailbox 1 the address,
+     * mailbox 2 the data. Every address indexes storage sized to the range.
      */
     case ISP_MBOX_CMD_WRITE_RAM_WORD:
         s->risc_ram[s->mailbox[1]] = s->mailbox[2];
@@ -923,17 +585,10 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * The mirror of the write above, and the same absence of validation for
-     * the same reason. No OS driver issues this — Linux declares the opcode
-     * and never sends it — but the SGI firmware's power-on SCSI diagnostic
-     * writes a word and reads it back, and answering it with invalid is what
-     * failed that test and cost the machine its disks.
-     *
-     * Mailbox 3 is answered too, and answered zero. No driver source shows
-     * this command's outputs, but 86Box's model of the same chip declares
-     * both mailboxes outputs and clears the second, and that model had to
-     * satisfy real firmware. Leaving mailbox 3 alone hands back whatever the
-     * previous command left there -- a value this command never wrote.
+     * Issued by the SGI firmware's power-on diagnostic (write a word, read
+     * it back), not by any OS driver. Mailbox 3 is answered zero as well:
+     * 86Box declares both mailboxes outputs, and leaving it alone would
+     * hand back a previous command's value.
      */
     case ISP_MBOX_CMD_READ_RAM_WORD:
         s->mailbox[2] = s->risc_ram[s->mailbox[1]];
@@ -942,11 +597,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * The block forms of the same two directions, which the firmware's
-     * diagnostic uses to push a pattern through the adapter's memory and read
-     * it back over DMA. A driver would reach for load-RAM to download firmware
-     * in one transfer instead of a mailbox command per word; ours never does,
-     * which is why neither appeared until the firmware was traced.
+     * Block forms of the two directions; the firmware's diagnostic pushes a
+     * pattern through the adapter's memory and reads it back over DMA.
      */
     case ISP_MBOX_CMD_LOAD_RAM:
         qlogic_isp_ram_block_dma(s, true);
@@ -959,33 +611,17 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * A wraparound self-test: whatever the guest writes into mailboxes 1
-     * through 7 along with this command is expected back unchanged, proving
-     * the mailbox path round-trips before the guest trusts anything else
-     * over it. Linux's qla1280_chip_diag() issues this unconditionally,
-     * immediately after the product-ID check and before firmware download,
-     * with a fixed walking pattern (0xAAAA, 0x5555, 0xAA55, 0x55AA, 0xA5A5,
-     * 0x5A5A, 0x2525) and treats a mismatch as a dead adapter. There is
-     * nothing to compute: the values are already sitting in s->mailbox[] by
-     * the time this command runs, so completing without touching them is
-     * the whole implementation.
+     * Echo test: mailboxes 1-7 are expected back unchanged. The values are
+     * already in s->mailbox[], so completing untouched is the implementation.
      */
     case ISP_MBOX_CMD_MAILBOX_REG_TEST:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
     /*
-     * Mailbox 1 is the base address; the word at base+3 is the image's own
-     * length in words, which is also what the guest's own download loop uses
-     * to know when it has sent the last word — so reading it back here rather
-     * than being told the length separately is what the guest's own protocol
-     * already relies on. The sum is over exactly that many words, wrapping
-     * within the storage rather than erroring on an out-of-range address,
-     * because every address is in range by construction.
-     *
-     * A real ISP1040 firmware image is built so this sum is zero; answering
-     * honestly is what lets a guest that sent a corrupt image see a failure
-     * instead of an unconditional success papering over it.
+     * The word at base+3 is the image's own length in words -- the same
+     * value the guest's download loop uses. A real image sums to zero;
+     * answering honestly lets a corrupt download fail visibly.
      */
     case ISP_MBOX_CMD_VERIFY_CHECKSUM: {
         uint16_t start = s->mailbox[1];
@@ -998,12 +634,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         }
 
         /*
-         * The sum is answered in mailbox 2 as well as mailbox 1. NetBSD's
-         * mask for this command makes both outputs, and the SGI firmware
-         * reads the one 86Box's model does not write: left alone, mailbox 2
-         * still holds whatever the previous command put there, and the
-         * firmware compares that against its own sum and reports a mismatch
-         * against a value this command never produced.
+         * Answered in mailbox 2 as well (NetBSD's output mask); the SGI
+         * firmware reads that one.
          */
         s->mailbox[1] = sum;
         s->mailbox[2] = sum;
@@ -1011,26 +643,14 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
     }
 
-    /*
-     * The download is accepted and answered, never executed — this is the
-     * command after which the guest trusts the mailbox set below is live,
-     * which for this model was already true from reset. Nothing distinguishes
-     * "before" and "after" here because nothing here needs the distinction.
-     */
+    /* Accepted, never executed; the mailbox set was live from reset. */
     case ISP_MBOX_CMD_EXEC_FIRMWARE:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
     /*
-     * The driver prints this triple and aborts if the command fails, so it
-     * must succeed; the values themselves do not have to match any real
-     * QLogic release; OpenBSD's own attach code only ever prints them; it
-     * does not branch on them for this part. A fixed, plainly synthetic
-     * version costs nothing OpenBSD would notice, against the real cost of
-     * parsing a version string out of the downloaded image the way 86Box
-     * does — worth naming as the road not taken, since it is a deliberate
-     * simplification rather than a gap: 86Box's approach is nicer when the
-     * guest inspects the answer, and this guest does not.
+     * A synthetic version triple: OpenBSD prints it and never branches on
+     * it, so the command only has to succeed.
      */
     case ISP_MBOX_CMD_ABOUT_FIRMWARE:
         s->mailbox[1] = 1;
@@ -1040,10 +660,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    /*
-     * Sizes every queue the guest allocates and its command budget — see
-     * the constant's own comment for why 512 is what is reported.
-     */
+    /* Sizes the guest's queues and command budget. */
     case ISP_MBOX_CMD_GET_FIRMWARE_STATUS:
         s->mailbox[1] = 0;
         s->mailbox[2] = ISP_FIRMWARE_STATUS_MAX_REQUESTS;
@@ -1052,12 +669,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * Read back a target's negotiated transfer parameters (the target is in
-     * mailbox 1). Linux's qla1280 issues it once per enumerated target. This
-     * model negotiates nothing, so it reports every target asynchronous and
-     * narrow with no options -- mailbox 2 the parameter flags, mailbox 3 the
-     * period and offset, both zero -- the true state of a bus it does not
-     * negotiate, and what set-target-parameters (0x38) would have written.
+     * Reports every target asynchronous and narrow -- the true state of a
+     * bus this model does not negotiate.
      */
     case ISP_MBOX_CMD_GET_TARGET_PARAMETERS:
         s->mailbox[2] = 0;
@@ -1066,23 +679,9 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * The "config setters" the datasheet's own bring-up section names in
-     * order: firmware features, clock rate, retry count, async data setup,
-     * active negation, tag age limit and selection timeout for the adapter
-     * as a whole, then initiator ID per bus and target parameters and
-     * per-LUN queue depth per target. OpenBSD's qlw_attach() treats every
-     * one of these as fatal: a single command answering invalid aborts the
-     * whole attach before the SCSI bus is ever created. A real boot found
-     * exactly that gap — this model answered every earlier command
-     * correctly and then went silent here, so qlw0 attached but never grew
-     * a scsibus and no disk behind it was ever enumerated.
-     *
-     * None of these carries behavior this model tracks: they configure
-     * negotiation and timing parameters for a bus this model does not
-     * negotiate and a target it does not throttle, and nothing later in
-     * the boot path reads any of them back. The same reasoning already
-     * used for bus reset applies to all of them — the only contract is
-     * that the command completes.
+     * Config setters for negotiation and timing this model does not track,
+     * and nothing reads back. OpenBSD's qlw_attach() treats any of them
+     * answering invalid as fatal, so the contract is that they complete.
      */
     case ISP_MBOX_CMD_SET_FIRMWARE_FEATURES:
     case ISP_MBOX_CMD_SET_CLOCK_RATE:
@@ -1097,31 +696,14 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    /*
-     * IRIX programs the SCSI bus-reset delay during adapter init. Like the
-     * setters above it configures timing this model does not track, so the
-     * only contract is that it completes.
-     */
+    /* IRIX's bus-reset delay setter; same contract as the group above. */
     case ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
     /*
-     * Three more config setters, issued only by Linux's qla1280_nvram_config()
-     * (PCI DMA burst enables, the ISP parameter word, and the SCSI-bus-reset
-     * data-overrun recovery mode) and previously unmodelled, which fell into
-     * the default case below and answered invalid. Unlike the group above,
-     * an invalid answer here cannot be load-bearing for either guest: OpenBSD's
-     * qlwreg.h defines all three of these opcodes but qlw.c never issues any of
-     * them (confirmed by an exhaustive grep of the file, not a name search that
-     * merely failed to find a call site), and Linux's own caller,
-     * qla1280_initialize_adapter(), calls qla1280_nvram_config() and discards
-     * its returned status outright -- the OR of every mailbox result inside it,
-     * including these three, is never assigned to anything the adapter-init
-     * path checks. Answering invalid was pure noise: harmless to both drivers,
-     * logged as an error nonetheless. Treating them the same as the group
-     * above -- accepted, nothing tracked -- matches what both guests already
-     * demonstrate about their own indifference to the result.
+     * Linux-only setters from qla1280_nvram_config(), whose caller discards
+     * the result; accepted like the group above.
      */
     case ISP_MBOX_CMD_SET_PCI_CONTROL:
     case ISP_MBOX_CMD_SET_SYSTEM_PARAMETER:
@@ -1130,15 +712,9 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * The plain opcode and its A64 counterpart are two numbers for the same
-     * operation on this hardware, not two protocols: OpenBSD's qlw_attach()
-     * issues QLW_MBOX_INIT_REQ_QUEUE (0x10) and composes the queue's base
-     * address across mailboxes 2, 3, 6 and 7 with qlw_mbox_putaddr(); Linux's
-     * qla1280_init_rings() issues MBC_INIT_REQUEST_QUEUE_A64 (0x52) instead
-     * -- its own source comments out the plain opcode rather than using it --
-     * and composes the identical 64-bit address across the identical four
-     * mailboxes. Only the opcode number differs between the two guests, so
-     * both fall into this one case rather than needing separate logic.
+     * The plain and A64 opcodes are one operation: OpenBSD sends 0x10 and
+     * Linux 0x52, both composing the same 64-bit address across the same
+     * four mailboxes.
      */
     case ISP_MBOX_CMD_INIT_REQ_QUEUE:
     case ISP_MBOX_CMD_INIT_REQ_QUEUE_A64: {
@@ -1178,10 +754,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->resp_prod = 0;
         s->resp_cons = 0;
         /*
-         * No write to mailbox[ISP_MAILBOX_RESPONSE_QUEUE] here: from this
-         * point the queue is live, so a read of that address answers from
-         * resp_prod and the plain storage behind it is not consulted again
-         * until a reset clears the queue.
+         * From here the queue is live: reads of the pointer address answer
+         * resp_prod, not the mailbox array.
          */
         qlogic_isp_drop_pending_status(s);
         trace_qlogic_isp_queue_init("response", addr, s->resp_len);
@@ -1190,12 +764,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     }
 
     /*
-     * A SCSI bus reset, and since the rings landed this adapter can
-     * genuinely have commands in flight, so the reset must reach them.
-     * Cold-resetting the SCSI bus cancels every outstanding request
-     * through the core and leaves each device carrying the unit
-     * attention a real bus reset provokes. The chip's own state — the
-     * rings included — survives, as it does on hardware: this resets
+     * Cold-resetting the SCSI bus cancels in-flight requests and arms each
+     * device's unit attention. The chip's own state survives: this resets
      * the bus, not the adapter.
      */
     case ISP_MBOX_CMD_BUS_RESET:
@@ -1228,17 +798,7 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
     case ISP_HOST_CMD_NOP:
         break;
 
-    /*
-     * Resetting the RISC replaces every flag rather than adding one, which
-     * this model did not originally do: an earlier version only set the
-     * reset flag and left a pending host interrupt or a paused flag standing
-     * alongside it. 86Box's state machine — evidence about behaviour, which
-     * the datasheet marks as this model's own and worth reading, as distinct
-     * from its register definitions, which are inherited from elsewhere —
-     * treats a RISC reset as replacing the whole flag set with reset alone,
-     * consistent with the flags being separate bits of one processor-state
-     * latch bank that a reset pulse would clear together.
-     */
+    /* A RISC reset replaces the whole flag set (86Box's state machine). */
     case ISP_HOST_CMD_RESET_RISC:
         s->risc_flags = ISP_RISC_FLAG_RESET;
         break;
@@ -1248,48 +808,28 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
         break;
 
     /*
-     * Releasing the RISC clears the paused flag, which the datasheet states,
-     * and the reset flag, which it does not. The guest resets the processor and
-     * then releases it as consecutive steps of its attach, so a release that
-     * left the reset flag standing would report a processor held in reset for
-     * the rest of the machine's life. That was this model's own reading before
-     * it was corroborated: 86Box's independent state machine clears exactly
-     * these two flags and no others on release, which is the second,
-     * unrelated implementation this reading needed to move from inference to
-     * observation.
+     * Release clears reset as well as paused (86Box agrees): the guest
+     * resets then releases, and a standing reset flag would report a
+     * processor held in reset forever.
      */
     case ISP_HOST_CMD_RELEASE_RISC:
         s->risc_flags &= ~(ISP_RISC_FLAG_PAUSED | ISP_RISC_FLAG_RESET);
         break;
 
-    /*
-     * Setting the host interrupt is how the driver tells the adapter a
-     * mailbox command is ready, so it is also what triggers processing one.
-     */
+    /* "A mailbox command is ready" -- the trigger to process one. */
     case ISP_HOST_CMD_SET_HOST_INT:
         s->risc_flags |= ISP_RISC_FLAG_HOST_INT;
         qlogic_isp_mailbox_command(s);
         break;
 
-    /*
-     * This command does nothing on real hardware. 86Box's model says so
-     * outright, from its own reverse-engineering notes rather than from
-     * register-map inheritance; neither qla1280 nor OpenBSD's qlw, the two
-     * drivers whose behaviour this file otherwise leans on, ever issues it.
-     * An earlier version of this model cleared the host-interrupt flag here,
-     * which was invented rather than sourced — the flag is cleared by
-     * clearing the RISC interrupt instead, once that command is implemented.
-     */
+    /* Does nothing on real hardware (86Box); neither driver issues it. */
     case ISP_HOST_CMD_CLEAR_HOST_INT:
         break;
 
     /*
-     * Clearing the RISC interrupt is the first half of every interrupt
-     * acknowledgement, and 86Box's model clears exactly the host-interrupt
-     * flag and the whole of bus interface status here — nothing else. For a
-     * mailbox completion the driver also writes zero to the semaphore
-     * separately, which is what actually releases the lock; this command
-     * does not touch it.
+     * First half of every interrupt acknowledgement: clears the host-int
+     * flag and bus status (86Box). The semaphore is released by the
+     * driver's separate zero write, not here.
      */
     case ISP_HOST_CMD_CLEAR_RISC_INT:
         s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
@@ -1318,11 +858,8 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
 }
 
 /*
- * Bus configuration 1 bit 3 picks which of the two storage arrays the window
- * from 0x80 to 0xbf resolves to. Reading the bit fresh out of bus_cfg1 rather
- * than caching a selection is what makes a write to bus configuration 1 take
- * effect on the very next access to the window, which is the order NetBSD's
- * own access pattern relies on: select the bank, then touch the window.
+ * Read fresh from bus_cfg1 so a bank-select write takes effect on the very
+ * next window access -- the order NetBSD's access pattern relies on.
  */
 static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
 {
@@ -1331,19 +868,11 @@ static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
 }
 
 /*
- * Descriptor reads.
- *
- * Plain little-endian, matching the rings the guest builds. Any byte-lane
- * permutation this machine needs happens in the Bridge, on the strength of the
- * requesting slot's own swap bits, so nothing here has to know which mapping
- * window the ring sits in or what the guest programmed.
- *
- * A read the fabric refuses answers zero, deliberately: a zeroed entry type
- * takes the fail-visibly default in the ring walk, and a zeroed segment is a
- * transfer of nothing. The two transfers where that defined zero is not
- * enough — the CDB, where it would stand in for a command the guest never
- * wrote, and the status write, where it would lie about a completion being
- * stored — check their results at their own call sites.
+ * Descriptor reads: plain little-endian, any byte-lane permutation is the
+ * Bridge's. A read the fabric refuses answers zero, deliberately -- a
+ * zeroed entry type takes the fail-visibly default and a zeroed segment
+ * transfers nothing. The CDB read and the status write, where a defined
+ * zero would lie, check their results at their own call sites.
  */
 static uint32_t qlogic_isp_desc_ld32(PCIDevice *pci, hwaddr addr)
 {
@@ -1380,14 +909,9 @@ static hwaddr qlogic_isp_resp_entry_addr(QLogicISPState *s, uint16_t index)
 }
 
 /*
- * Whether the response ring has room for one more entry without the
- * producer catching up to the consumer. Reserve one slot so producer equal
- * to consumer always means empty, never full — the datasheet's own
- * requirement: a ring that reserves nothing cannot tell the two apart, and a
- * full ring left indistinguishable from an empty one is exactly how a
- * completion goes missing without the guest or the adapter doing anything
- * wrong. A response queue nobody has initialised yet (resp_len == 0) has no
- * room by construction, checked here rather than left to divide by zero.
+ * One slot is reserved so producer equal to consumer always means empty,
+ * never full. An uninitialised queue (resp_len == 0) has no room, checked
+ * here rather than left to divide by zero.
  */
 static bool qlogic_isp_resp_has_room(QLogicISPState *s)
 {
@@ -1398,30 +922,12 @@ static bool qlogic_isp_resp_has_room(QLogicISPState *s)
 }
 
 /*
- * Writes one status entry into the ring and raises the interrupt that tells
- * the host it is there. Unlike a mailbox result, an I/O completion does not
- * take the semaphore lock — the driver's own decode order depends on that,
- * reading the semaphore first and only falling through to bus interface
- * status when it finds the lock clear — so this sets only the status bits,
- * never the semaphore.
- *
- * Only called once the caller has confirmed a slot is free
- * (qlogic_isp_resp_has_room()): this is the write, not the decision of
- * whether it is safe to make.
- *
- * The whole 64-byte slot is zeroed before anything is written into it. This
- * ring is reused, and a slot's previous occupant leaves real bytes behind at
- * every offset this function does not explicitly overwrite. Response length
- * (offset 16, "time" in Linux's own struct and "rsp_len" in OpenBSD's — the
- * two names disagree, but neither driver reads this offset anywhere in
- * either source, so it is written zero along with everything else rather
- * than guessed) and the eight FCP-response/reserved bytes at offset 24 are
- * two fields with no confirmed reader; zeroing the whole slot first covers
- * them, so a future guest that does read one of them sees a defined value
- * rather than a previous command's leftovers, without this function needing
- * to know what that value should be. sense_len, state_flags and status_flags
- * are the fields a confirmed reader exists for — Linux's driver for the first
- * two, IRIX for the status_flags timeout bit — so each is written explicitly.
+ * Writes one status entry and raises the interrupt. An I/O completion never
+ * takes the semaphore lock -- the driver reads the semaphore first and only
+ * falls through to bus status when it finds the lock clear. The caller has
+ * already confirmed a slot is free. The whole slot is zeroed first: the
+ * ring is reused, and fields with no confirmed reader stay defined rather
+ * than inheriting a previous occupant's bytes.
  */
 static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
                                        uint16_t scsi_status,
@@ -1436,12 +942,7 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
     uint16_t clamped_sense_len = sense_len > 0
                                   ? MIN(sense_len, ISP_STATUS_SENSE_MAX) : 0;
 
-    /*
-     * Built whole, little-endian-canonical, then corrected to the ring's own
-     * byte order and written once. Assembling it in a buffer rather than as a
-     * run of stores is what lets one rule cover every field, the sub-word ones
-     * included, and it also stops the slot ever being visible half-written.
-     */
+    /* Built whole and written once, so the slot is never half-visible. */
     trace_qlogic_isp_status_post(handle, scsi_status, completion,
                                  state_flags, status_flags, resid);
 
@@ -1480,11 +981,8 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
 }
 
 /*
- * Posts every completion still waiting for room, oldest first, until either
- * none are left or the ring is full again. The only event that can turn a
- * full ring back into one with room is the guest's own acknowledgement, so
- * this is called from the response-queue register's write handler and
- * nowhere else.
+ * Posts held completions, oldest first, while room lasts. Only the guest's
+ * acknowledgement can free room, so only that write handler calls this.
  */
 static void qlogic_isp_drain_pending_status(QLogicISPState *s)
 {
@@ -1504,15 +1002,9 @@ static void qlogic_isp_drain_pending_status(QLogicISPState *s)
 }
 
 /*
- * Posts a status entry, unless the response ring has no room for it right
- * now. Real hardware never reaches that case — it completes one command at
- * a time with real bus latency between them — but a model with no such
- * latency can post more completions than the guest has acknowledged, and
- * the datasheet's own requirement is to hold the surplus rather than let a
- * new completion overwrite one the guest has not consumed yet or drop it on
- * the floor: either loses the completion exactly the way this whole bug
- * report started. Held completions post as soon as
- * qlogic_isp_drain_pending_status() sees room again.
+ * Posts a status entry, holding it if the ring is full. Real hardware never
+ * reaches the full case, but a model with no bus latency can outrun the
+ * guest's acknowledgements, and the surplus must be held, not dropped.
  */
 static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
                                    uint16_t scsi_status, uint16_t completion,
@@ -1531,13 +1023,8 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
         QLogicISPPendingStatus *pending = g_new0(QLogicISPPendingStatus, 1);
 
         /*
-         * Real hardware never reaches this — the datasheet's own words —
-         * so a driver that gets here is either far outrunning the
-         * acknowledgement pace any real adapter's bus latency would allow,
-         * or the guest's own request pacing has a bug. Loud on purpose:
-         * this path is unreachable under any driver this model currently
-         * boots, and holding the completion rather than dropping it must
-         * not also make the condition invisible if it ever does fire.
+         * Loud on purpose: holding the completion must not also make the
+         * condition invisible.
          */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "qlogic-isp: response queue full, holding handle "
@@ -1566,11 +1053,8 @@ static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
 }
 
 /*
- * The SCSIRequest can outlive this device's bookkeeping for it — the SCSI
- * core and the backing block layer hold references of their own — so the
- * request is detached from sreq->hba_private before the unref, the shape
- * mptsas_free_request() uses. Freeing while that pointer still aims here
- * leaves any later core path that consults it reading freed memory.
+ * The SCSIRequest can outlive this bookkeeping, so it is detached from
+ * hba_private before the unref -- mptsas_free_request()'s shape.
  */
 static void qlogic_isp_free_request(QLogicISPRequest *req)
 {
@@ -1601,15 +1085,8 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     completion = resid ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
 
     /*
-     * state_flags is only read by either guest driver when the completion
-     * code is incomplete (see the constants' own comment); this path never
-     * produces that code, so the exact value here is unobserved either way.
-     * The full set of phase bits is written anyway, since it is the true
-     * record of what happened -- every phase this model has, this command
-     * actually went through -- rather than an arbitrary placeholder chosen
-     * because nothing currently reads it. status_flags is likewise a
-     * no-error path here: the timeout bit belongs to the missing-target
-     * completion, not to a command that reached its target, so it is zero.
+     * The full phase set is the true record for a command that completed;
+     * the timeout bit belongs to the missing-target answer alone.
      */
     qlogic_isp_post_status(s, req->handle, scsi_status, completion,
                            ISP_STATE_FLAGS_ALL_PHASES, 0, resid, sense,
@@ -1627,17 +1104,9 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
 }
 
 /*
- * Handing the SCSI layer this request's already-built scatter-gather list
- * is what makes a data phase happen at all. Without it, every command that
- * carries data — which a bare liveness check like TEST_UNIT_READY never
- * does, and INQUIRY, the very first thing a real driver's target probe
- * issues, always does — reaches scsi_req_data() with no sg list attached,
- * and that function's fallback path is an unconditional call through
- * bus->info->transfer_data(), which this model has never defined. A real
- * OpenBSD boot found this the only way it could: the guest attached qlw0,
- * created its scsibus, and crashed the emulator itself on the first
- * INQUIRY of the first probed target, because nothing before that point in
- * this model's own test suite ever sent a command with a data phase.
+ * Without this, a data-carrying command reaches scsi_req_data() with no sg
+ * list and the core's fallback calls bus->info->transfer_data(), which
+ * this model does not define.
  */
 static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
 {
@@ -1647,14 +1116,9 @@ static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
 }
 
 /*
- * Migration of a device with commands in flight. The SCSI core saves each
- * device's request queue and recreates every SCSIRequest on the
- * destination, but hba_private on a recreated request stays NULL until
- * the HBA restores its own half — without these callbacks the restarted
- * request reaches qlogic_isp_get_sg_list() or the completion callback
- * with nothing behind that pointer and the destination dereferences
- * NULL. The handle and the scatter-gather layout are the whole HBA half;
- * the shape is mptsas's.
+ * The SCSI core recreates every in-flight SCSIRequest on the destination;
+ * these callbacks restore the HBA half behind hba_private -- the handle
+ * and the scatter-gather layout. The shape is mptsas's.
  */
 static void qlogic_isp_save_request(QEMUFile *f, SCSIRequest *sreq)
 {
@@ -1696,15 +1160,10 @@ static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
 
     /*
-     * The count is the stream's word, not the device's: no saved request can
-     * exceed the entry format's ceiling, so allocate nothing on a claim above
-     * it. Rejecting the count also leaves its segment records unread, and
-     * everything after them would then be decoded from the middle of this
-     * request, so the stream has to be failed rather than merely not
-     * followed. The callback has no failure return — the SCSI bus interface
-     * offers none, which is why mptsas asserts here instead — so the file is
-     * marked failed directly and the loader stops on it. The wrapper is
-     * already on the device's list and consistent for teardown.
+     * No saved request can exceed the entry format's ceiling, so allocate
+     * nothing on a claim above it. The callback has no failure return
+     * (mptsas asserts here instead), so the stream is marked failed
+     * directly; the wrapper is already consistent for teardown.
      */
     n = qemu_get_be32(f);
     if (n < 0 || n > ISP_MIGRATE_SEGS_MAX || qemu_file_get_error(f)) {
@@ -1733,11 +1192,8 @@ static const struct SCSIBusInfo qlogic_isp_scsi_info = {
 };
 
 /*
- * Reads the segments a command entry carries — four inline, then seven per
- * continuation entry, in the order OpenBSD's own driver writes them, until
- * seg_count segments have been read or the entry_count the header declared
- * is exhausted. A command needing no continuation reads only the inline
- * four and touches nothing past the request entry itself.
+ * Reads a command entry's segments: four inline, then seven per
+ * continuation, until seg_count or the header's entry_count runs out.
  */
 static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
                                      hwaddr rqst_addr, uint8_t entry_count,
@@ -1779,20 +1235,11 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
 }
 
 /*
- * Dispatches one request entry: finds the target the device field names,
- * builds the scatter-gather list its segments describe, and hands both to
- * QEMU's generic SCSI layer. A target or lun nothing answers to is not this
- * model's error to report loudly — it is exactly what a real adapter would
- * meet issuing the same command to empty hardware — so it is answered with
- * an incomplete status entry rather than logged, the same outcome the
- * datasheet names for a request that cannot be carried out.
- *
- * Returns false when the fabric refused the entry's CDB, and the walk must
- * stop with the consume index still on the entry: cdb[] then holds nothing
- * meaningful, and acting on it would put invented bytes — possibly a
- * write — on the bus. No status is posted for the drop, because the part
- * documents none for a transfer the fabric refused and the Bridge reports
- * the refusal on its own error path.
+ * Dispatches one request entry to the SCSI layer; an empty target answers
+ * with an incomplete status entry, as on real hardware. Returns false when
+ * the fabric refused the CDB read: the walk stops with the consume index
+ * on the entry, and nothing is posted -- the part documents no status for
+ * a refused transfer, and the Bridge reports it on its own error path.
  */
 static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
                                       uint8_t entry_count)
@@ -1827,11 +1274,8 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     trace_qlogic_isp_request(handle, target, lun, cdb[0], seg_count);
 
     /*
-     * One SCSI bus on this part. A request naming the second one must
-     * not execute on bus 0 — the same target and lun that answer there
-     * are not the device the guest named — so it is answered incomplete
-     * with no phase reached, which Linux's failure ladder reads as a bus
-     * that never answered.
+     * One SCSI bus on this part: a request naming the second one is
+     * answered incomplete with no phase reached, never executed on bus 0.
      */
     if (ISP_DEVICE_BUS(device) != 0) {
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
@@ -1842,25 +1286,10 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     sdev = scsi_device_find(&s->bus, 0, target, lun);
     if (!sdev) {
         /*
-         * The one call site in this file that produces an incomplete
-         * completion, which is exactly the code the guest drivers read the
-         * flag words to interpret. What actually happened here is that this
-         * adapter looked for a device at the requested target and lun and
-         * found none -- it reached the bus, so ISP_STATE_FLAG_GOT_BUS is
-         * true, but got no further, so nothing past it is. Linux's own
-         * qla1280_return_status() walks exactly this ladder and reports
-         * DID_BAD_TARGET for precisely this state_flags pattern, which is
-         * the correct reason and not the plausible-but-wrong one a previous
-         * ring slot's leftover bits would have produced.
-         *
-         * state_flags alone satisfies the Linux, OpenBSD and NetBSD/FreeBSD
-         * drivers, which read no further on an incomplete completion. IRIX
-         * is stricter: it also checks status_flags and treats a missing
-         * target as a benign empty slot only when the selection-timeout bit
-         * is set there, faulting the probe otherwise. Both words therefore
-         * must tell the same story -- reached the bus, selected nothing,
-         * timed out -- so the timeout bit is set here alongside GOT_BUS.
-         * This is what lets IRIX walk an ISP1040 bus with empty targets.
+         * Reached the bus, selected nothing, timed out. GOT_BUS alone is
+         * Linux's DID_BAD_TARGET; the timeout bit alongside it is what
+         * lets IRIX, which also checks status_flags, treat the empty slot
+         * as benign rather than fault the probe.
          */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
@@ -1873,9 +1302,8 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     req->handle = handle;
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
     /*
-     * A size hint only — the list grows as segments are added — so it must
-     * not be the guest's raw seg_count, which reserves sixteen bytes per
-     * claimed segment up front: a claimed 65535 is a megabyte per request.
+     * A size hint only, never the guest's raw seg_count: a claimed 65535
+     * would reserve a megabyte per request.
      */
     pci_dma_sglist_init(&req->qsg, pci, ISP_REQ_SEGS_INLINE);
     qlogic_isp_read_segments(s, &req->qsg, addr, entry_count, seg_count);
@@ -1889,13 +1317,9 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
 }
 
 /*
- * The A64 counterpart of qlogic_isp_read_segments(): two inline segments
- * instead of four, five per continuation instead of seven, each one 12
- * bytes instead of 8 because it carries a 64-bit address. The two 32-bit
- * words composing that address are combined low half first, matching
- * qla1280_64bit_start_scsi()'s own write order (confirmed in the datasheet's
- * "64-bit addressing entries" section) -- the same convention this file's
- * A64 mailbox address macros already use for queue-init addresses.
+ * The A64 counterpart of qlogic_isp_read_segments(): two inline, five per
+ * continuation, 12 bytes each; address words low half first, matching
+ * qla1280_64bit_start_scsi()'s write order.
  */
 static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
                                          hwaddr rqst_addr, uint8_t entry_count,
@@ -1941,13 +1365,8 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
 }
 
 /*
- * The A64 counterpart of qlogic_isp_handle_request(): same dispatch, same
- * incomplete-on-no-device answer, and the same header fields at the same
- * offsets (handle, device, cdb_len, seg_count, cdb) -- confirmed
- * byte-identical to the type-0 format through offset 31, so this reuses
- * the type-0 offset constants directly rather than a parallel set that
- * would just repeat the same numbers under new names. Only the segment
- * area past offset 31 needs A64-specific handling.
+ * The A64 counterpart of qlogic_isp_handle_request(): the header is
+ * byte-identical through offset 31, so only the segment area differs.
  */
 static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
                                           uint8_t entry_count)
@@ -1991,14 +1410,7 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
 
     sdev = scsi_device_find(&s->bus, 0, target, lun);
     if (!sdev) {
-        /*
-         * The 64-bit-addressing request path's own missing-target case,
-         * identical in meaning to the 32-bit one: the adapter reached the
-         * bus and selected nothing. GOT_BUS in state_flags and the
-         * selection-timeout bit in status_flags together make an empty
-         * target a benign no-device slot for every guest driver, IRIX's
-         * stricter status_flags check included.
-         */
+        /* The same missing-target answer as the 32-bit path. */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
                                0, NULL, 0);
@@ -2022,33 +1434,13 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
 }
 
 /*
- * Walks every new entry between where this device last stopped reading and
- * the request-in index the host just wrote, which is what a write to that
- * register means: process everything posted since the last time. A marker
- * is consumed and produces nothing; a request entry is dispatched and its
- * continuations are skipped over here because reading segments already
- * walked them.
- *
- * The request-in value is whatever the guest last wrote to a plain 16-bit
- * register — nothing here validated it on the way in. A real driver always
- * wraps it modulo the queue length before writing (OpenBSD's own
- * sc_next_req_id does exactly that), so in real traffic it is already in
- * range. But rqst_cons, this device's own read cursor, is *always* kept
- * wrapped, and comparing a wrapped cursor against an unwrapped guest value
- * is a check with a gap: any prod at or above rqst_len — a guest bug, a
- * fuzzer, a malicious guest, or simply a future guest that does not share
- * this wrapping convention — makes rqst_cons != prod true forever, since
- * rqst_cons can never leave [0, rqst_len). That is an infinite loop in the
- * emulator itself, driven entirely by guest-supplied data. Wrapping prod
- * closes that gap but is not enough on its own: the cursor advances by
- * each entry's own entry_count, also guest-supplied, so an exact-equality
- * exit still never fires when entry_count shares a factor with the ring
- * length and prod sits at an index the cursor never lands on — rqst_len
- * 512, cons 0, prod 1, every entry_count 2 steps over it forever. So the
- * walk is driven by the count of published entries instead: a budget the
- * loop decrements and each entry's claimed slot count is clamped to,
- * which terminates for every guest-supplied combination and stops an
- * entry claiming slots the guest never published.
+ * Walks every entry between the last stop and the request-in index the
+ * host just wrote. Both the index and each entry's entry_count are
+ * guest-supplied, and no exact-equality exit terminates for every
+ * combination of them -- an unwrapped index, or a stride sharing a factor
+ * with the ring length, loops forever. So the walk is budgeted by the
+ * count of published entries, and each entry's claimed slot count is
+ * clamped to what remains.
  */
 static void qlogic_isp_process_requests(QLogicISPState *s)
 {
@@ -2085,14 +1477,9 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
             break;
 
         /*
-         * Linux/IP27's only request format (task #114, datasheet's "64-bit
-         * addressing entries" section) -- COMMAND_A64_TYPE is entry type 9.
-         * Real hardware and this model agree that its continuation entries
-         * (CONTINUE_A64_TYPE, 0xA) are never dispatched independently: the
-         * entry_count advance below steps the ring walker past them, the
-         * same mechanism that already skips the type-0 pair's continuation
-         * entries, and qlogic_isp_read_segments_a64() is what actually
-         * visits them.
+         * A64 continuations are never dispatched on their own: the
+         * entry_count advance below steps the walker past them, and
+         * reading segments is what visits them.
          */
         case ISP_A64_ENTRY_TYPE_COMMAND:
             if (!qlogic_isp_handle_request_a64(s, addr, entry_count)) {
@@ -2104,14 +1491,9 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
             break;
 
         /*
-         * An entry type this model does not implement. Answered incomplete
-         * with the handle read at the offset every entry type carrying one
-         * uses (offset 4) rather than consumed silently -- the fail-visibly
-         * fix from adversarial review task #74/#97 finding #2/#4, which
-         * this default case existed to cover before COMMAND_A64_TYPE got a
-         * real implementation above. A CONTINUE_A64_TYPE entry never reaches
-         * here on its own (see the comment on the command case), so offset 4
-         * is safe to read as a handle for whatever unimplemented type does.
+         * An unimplemented entry type is answered incomplete with the
+         * handle at the offset every handle-carrying type shares, rather
+         * than consumed silently.
          */
         default:
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -2140,20 +1522,12 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
     QLogicISPState *s = opaque;
 
     /*
-     * The response-in value must always be this adapter's own current
-     * producer count, never whatever a guest last wrote to this address —
-     * the datasheet is explicit that plain storage shared with the guest's
-     * ack write reproduces the exact aliasing reserve-one-slot exists to
-     * prevent. resp_prod is that count; it is answered directly rather than
-     * through s->mailbox[], which this address no longer backs.
+     * The response-in read must answer this adapter's own producer count,
+     * never the guest's last write to the shared address. Until a queue
+     * exists the address is a plain mailbox -- the register test's pattern
+     * must echo.
      */
     if (addr == ISP_REG_RESPONSE_QUEUE) {
-        /*
-         * Only once a response queue exists does this address carry a queue
-         * pointer. Before that it is a plain mailbox, which is what the
-         * firmware's mailbox register test writes a pattern into and reads
-         * back -- a test that runs long before any queue is initialised.
-         */
         if (s->resp_len == 0) {
             return s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE];
         }
@@ -2161,31 +1535,12 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * The request queue has the identical in-and-out-share-one-address shape
-     * as the response queue, with the two directions swapped: the guest is
-     * the producer here, and a read must answer this adapter's own consumer
-     * position, never the guest's own last write. Linux recomputes its free
-     * request-ring space from exactly this read (qla1280_start_scsi(),
-     * qla1280.c) as `cnt - ha->req_ring_index`, where ha->req_ring_index is
-     * the driver's own locally-tracked producer and cnt is what this read
-     * returns -- if a read answered back the guest's own write instead, the
-     * two would be equal on every recalculation and the driver would compute
-     * a free-space boundary that reflects nothing this adapter has actually
-     * consumed. rqst_cons is this adapter's consumer position; answered
-     * directly rather than through s->mailbox[], which qlogic_isp_process_
-     * requests() still reads for the guest's producer value on the way in.
-     *
-     * This was the one queue direction the original response-queue fix did
-     * not carry over, because that fix was written against the response-
-     * queue failure that had actually been observed. It stayed masked here
-     * because completions are normally consumed eagerly enough that producer
-     * and consumer read as equal regardless of which one this returned;
-     * the backpressure that fix introduced -- holding a completion when the
-     * response ring has no room -- is what finally makes the two differ
-     * often enough for a real guest to notice.
+     * The same shape with the directions swapped: a read answers this
+     * adapter's consumer position. Linux computes its free request-ring
+     * space from exactly this read (qla1280_start_scsi()), so answering
+     * the guest's own write back would break that arithmetic.
      */
     if (addr == ISP_REG_REQUEST_QUEUE) {
-        /* The same gate, and the same reason, as the response queue above. */
         if (s->rqst_len == 0) {
             return s->mailbox[ISP_MAILBOX_REQUEST_QUEUE];
         }
@@ -2197,10 +1552,8 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * Not LOG_UNIMP: the bank select and the storage behind it are
-     * implemented, the individual registers are just not decoded. A trace
-     * event records the access without flooding the unimp log on every
-     * boot that touches the window.
+     * Traced, not LOG_UNIMP: the bank select is implemented, the individual
+     * registers are just not decoded.
      */
     if (addr >= ISP_REG_SXP_RISC_BASE && addr < ISP_REG_SXP_RISC_END) {
         uint16_t val =
@@ -2249,22 +1602,12 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
     QLogicISPState *s = opaque;
 
     /*
-     * The guest's write here is its acknowledgement of everything up to the
-     * value it read, not a courtesy the adapter can ignore or a value it can
-     * store over its own published producer count — the two share this
-     * address only because one direction is the read and the other the
-     * write. Recorded into resp_cons, never into s->mailbox[], which this
-     * address no longer backs. Wrapped defensively the same way the
-     * request-in value is, since nothing here can assume a guest write is
-     * already a valid ring index.
+     * The guest's consumer acknowledgement, recorded into resp_cons and
+     * never over the adapter's own producer count; wrapped defensively
+     * since a guest write need not be a valid ring index. Until a queue
+     * exists it is the mailbox store it looks like.
      */
     if (addr == ISP_REG_RESPONSE_QUEUE) {
-        /*
-         * With no queue there is no acknowledgement to record and nothing to
-         * drain, so the write is what it looks like: a mailbox store. Letting
-         * it fall through to the array is what lets the register test read
-         * its own pattern back.
-         */
         if (s->resp_len == 0) {
             s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE] = val;
             return;
@@ -2277,12 +1620,7 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
         s->mailbox[(addr - ISP_REG_MAILBOX_BASE) / 2] = val;
-        /*
-         * Writing the request-in pointer is the trigger, not a host command:
-         * the datasheet's own steady-state protocol has the host advance
-         * this register and the adapter start consuming from it, with
-         * nothing else in between.
-         */
+        /* Writing the request-in pointer is itself the trigger. */
         if (addr == ISP_REG_REQUEST_QUEUE) {
             qlogic_isp_process_requests(s);
         }
@@ -2304,25 +1642,18 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
         break;
 
     /*
-     * A soft reset takes effect immediately and leaves its own bit clear, so
-     * the guest's poll for the bit to clear succeeds on its first read. It is
-     * applied after the enables are stored so that the reset wins, which is
-     * the order the write itself implies. The interrupt line is recomputed
-     * either way, since the enables this register owns are half of what
-     * decides it and changing them can raise or lower the line on their own,
-     * with nothing else about the write signalling that it should.
+     * The soft reset takes effect immediately and reads back clear; it is
+     * applied after the enables are stored so the reset wins. The line is
+     * recomputed either way, since the enables are half of what decides it.
      */
     case ISP_REG_BUS_CTRL:
         s->bus_ctrl = val & ISP_BUS_CTRL_WRITE_MASK;
         if (val & ISP_BUS_CTRL_SOFT_RESET) {
             qlogic_isp_reset_state(s);
             /*
-             * Requests the SCSI core still holds must not complete into
-             * rings the reset just dissolved: cancel them by cold-resetting
-             * the bus, which also arms each device's reset unit attention.
-             * Only here and not in qlogic_isp_reset_state(), because the
-             * device's own reset phase reaches the child bus through the
-             * qdev tree already.
+             * In-flight requests must not complete into rings the reset
+             * dissolved. Only here, not in reset_state(): the device's own
+             * reset phase reaches the child bus through the qdev tree.
              */
             bus_cold_reset(BUS(&s->bus));
         }
@@ -2334,11 +1665,8 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
         break;
 
     /*
-     * Data-in is never part of the write mask, so it can never be stored —
-     * which is what makes a plain readback of this register always show it
-     * clear, without a separate mask on the read path. The guest is only
-     * ever writing what it thinks it is shifting out; nothing here shifts
-     * anything back.
+     * Data-in is outside the write mask, so a readback always shows it
+     * clear; nothing shifts anything back.
      */
     case ISP_REG_NVRAM:
         s->nvram = val & ISP_NVRAM_WRITE_MASK;
@@ -2353,15 +1681,9 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
         break;
 
     /*
-     * Each block's control register, which quiesces the engine and drops its
-     * pending interrupt. The SGI firmware's power-on SCSI diagnostic writes
-     * both once per adapter and never reads either back, and neither bit names
-     * anything this model has: there is no transfer in flight to stop, because
-     * every transfer here completes inside the write that started it, and no
-     * interrupt of the block's own to clear. So the write is accepted and
-     * nothing is kept — recognised rather than left to the unimplemented
-     * default, which otherwise reports a register the firmware is entitled to
-     * write as a gap in the model on every boot.
+     * Quiesce-engine writes from the firmware's diagnostic. Every transfer
+     * here completes inside the write that started it, so there is nothing
+     * to stop; recognised to keep the unimplemented log honest.
      */
     case ISP_REG_DMA_CMD_CTRL:
     case ISP_REG_DMA_DATA_CTRL:
@@ -2389,18 +1711,9 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * The registers are little-endian on the bus, so the window says so and the
- * memory core performs whatever swap a given target needs. Nothing here swaps
- * by hand.
- *
- * The hardware accepts 16-bit accesses only, and impl is declared alongside
- * valid rather than left to its defaults because the two defaults fail in
- * opposite directions: an undeclared maximum is 4, which would chop a wider
- * access into repeated calls to a handler that now has side effects, and an
- * undeclared minimum is 1. Pinning both ends to two bytes makes one guest
- * access reach the handler exactly once, which matters here because a write to
- * the host command register and a write that soft-resets the chip both act
- * rather than store.
+ * Little-endian 16-bit registers. impl is pinned alongside valid because
+ * the defaults would chop or widen accesses into repeated handler calls,
+ * and several writes here act rather than store.
  */
 static const MemoryRegionOps qlogic_isp_reg_ops = {
     .read = qlogic_isp_reg_read,
@@ -2431,21 +1744,15 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
     /*
-     * PCI Status reset value: config 0x04 must read back Status 0x0200
-     * (bit 9, medium DEVSEL) so a 32-bit read at reset returns 0x02000000.
-     * The single-CPU IRIX miniroot's io_config_space diagnostic compares
-     * this whole dword and fails the I/O slot on a zero Status half. The
-     * bit is read-only -- pci_init_wmask leaves wmask[PCI_STATUS] clear and
-     * only the error latches are write-one-to-clear -- so it survives the
-     * reset that clears the writable and w1c bits. See the datasheet at
-     * docs/datasheets/isp1040.md in the origami project tree.
+     * IRIX's io_config_space diagnostic fails the slot unless the Status
+     * half of the command/status dword reads medium DEVSEL. The bit is
+     * read-only, so it survives reset.
      */
     pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
 
     /*
-     * One register file behind two windows: the memory window is an alias
-     * of the I/O window rather than a second region over the same ops, so
-     * the two cannot drift apart. test_window pins that both answer.
+     * One register file behind two windows: the memory BAR is an alias of
+     * the I/O BAR, so the two cannot drift apart.
      */
     memory_region_init_io(&s->io, OBJECT(s), &qlogic_isp_reg_ops, s,
                           "qlogic-isp-io", QLOGIC_ISP_REG_WINDOW_SIZE);
@@ -2484,21 +1791,10 @@ static void qlogic_isp_exit(PCIDevice *dev)
 }
 
 /*
- * Version 7 adds resp_cons: before this fix the response-queue register was
- * plain storage shared with the guest's ack write, so nothing tracked the
- * guest's consumer position separately and there was no field for it to
- * migrate. A stream from an older version has no value to give it; it is
- * accepted anyway, at 0, because a freshly-migrated guest that has not yet
- * acknowledged anything is exactly what resp_cons == 0 already means, and
- * demanding version 7 to migrate this device at all would be a much larger
- * cost for the same outcome.
- *
- * Pending completions queued for lack of ring room (QLogicISPPendingStatus)
- * are not migrated. A migration landing while that list is non-empty loses
- * them — the condition that fills the list is one the datasheet itself
- * says real hardware never reaches. In-flight SCSI requests do migrate:
- * the core saves them with each device and qlogic_isp_load_request()
- * restores the HBA half.
+ * Version 7 added resp_cons; an older stream is accepted with it at 0,
+ * which is exactly what an unacknowledged guest means. Held completions
+ * are not migrated (real hardware never reaches the condition); in-flight
+ * requests migrate through the save/load callbacks.
  */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
