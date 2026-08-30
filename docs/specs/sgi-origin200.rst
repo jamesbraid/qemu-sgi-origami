@@ -23,13 +23,23 @@ The Hub's single crosstalk link ends at the Bridge, with nothing in
 between to route by widget number, so every widget address the Hub
 emits reaches the same chip. SGI's own firmware exploits this: a
 directly connected Bridge may be given whichever widget number the
-firmware chooses, and it chooses 8, avoiding 0. The machine therefore
+firmware chooses, and it chooses 8, avoiding 0 because SGI's own
+firmware cites an error-handling problem at widget 0 -- an account
+never shown to be the same defect as any this tree has found. The machine therefore
 maps the Bridge's whole widget face at widget 8, aliases it onto
 widgets 2-7 and 9-15 (the IRIX miniroot stamps a device pointer with
 widget 2), and aliases it at widget 0 unconditionally -- OpenBSD
 panics if widget 0's identification register does not read, so the
 ``io-bridge`` machine option gates only the Bridge's own widget, never
-widget 0. Widget 1 is the Hub.
+widget 0. Widget 1 is the Hub. One vocabulary trap spans the
+sources: the Hub translation entry's bit 12 selects what Linux and
+IRIX call "I/O space" and OpenBSD calls "device space", while the
+Bridge's own "device space" is a third, unrelated usage.
+
+The firmware enables PCI bus mastering on the adapters, which is
+currently redundant rather than proven load-bearing: both guests
+self-enable mastering, and no DMA has been observed to depend on the
+firmware's write in this configuration.
 
 Memory
 ======
@@ -38,7 +48,10 @@ The IP29 board has four banks, each a matched DIMM pair of 64, 128,
 256 or 512 MB; bank zero must be present. The machine derives a
 deterministic population from ``-m``, preferring larger banks and
 fewer partially populated pairs, and rejects totals it cannot
-express. Bank zero is held at 256 MB or less: a 512 MB bank zero
+express. IRIX decodes faulting addresses through the 512 MB bank
+shift and mainline Linux indexes bank sizes by slot over four at a
+128 MB stride, which is what sources the slot layout. Bank zero is
+held at 256 MB or less: a 512 MB bank zero
 would fill all four of its slots, including the fixed boot-flash and
 firmware addresses at the top of the stride -- a model limitation,
 not an IP29 rule.
@@ -79,6 +92,56 @@ a bus to realize onto -- and the ``io-bridge`` option decides only
 whether its register window is mapped. A snapshot from before the
 Bridge and IOC3 were always-present QOM devices cannot be loaded
 either way; their state was absent from it.
+
+Boot flash
+==========
+
+Each node's boot flash is a standard AMD-command NOR device -- an
+Am29F080, 1 MB in sixteen 64 KB sectors, byte-wide -- modelled by
+QEMU's ``pflash_cfi02`` with no backing drive; the firmware builder
+seeds the synthesized image after realize. Its region is never
+mapped directly. Every guest-visible view goes through the Hub's
+flash controller decode between the 64-bit junk bus and the
+byte-wide chip: reads pack the chip 1:1, image byte *N* at bus
+offset *N*, and the Hub does not address-error decode the upper
+boot-space bits, so the 1 MB image repeats across the 256 MB LBOOT
+and RBOOT windows -- guest code genuinely lands on offsets past the
+first repeat. Command writes present the chip's byte-wide command
+port on 64-bit cycles only, low byte used, chip byte *N* at bus
+offset 8\ *N*, the mapping the vendor flash programmer states
+directly.
+
+Where code executes -- each node's own LBOOT window -- a direct romd
+alias of the chip overlays the decode, because the PROM fetches its
+relocated code there and an I/O region cannot back translated code.
+The remote node's RBOOT window is only ever a maintenance read and
+write path, never a fetch path, so it carries no overlay. The reset
+vector view is an alias of the megabyte of Hub space at the flash
+base, reached through the compatibility space: it overlaps RAM and
+wins.
+
+The chip migrates its own state through the qdev tree. The machine's
+own flash descriptor keeps its wire name and a placeholder for the
+bytes the retired state machine occupied, so earlier streams still
+load; their legacy state is discarded rather than translated -- a
+stream captured inside a flash command sequence would wake in
+read-array mode with the sequence forgotten, a window a handful of
+guest stores wide that no retained snapshot sits inside.
+
+Cache-as-RAM boot phase
+=======================
+
+Before memory is configured, the PROM runs with the 32 KB at the
+1 MB mark held dirty-exclusive in each R10000's data cache as its
+stack. The model marks the phase in FPR 0 bit 1 -- the PROM's own
+software convention -- disables the RAM overlay for the window
+one-way, and migration reapplies the phase progress. The firmware's
+memory sizing then probes through the back door: a pattern write and
+zero read-back classifies an absent bank, the back-door address is
+the physical address shifted right two so quarter-span aliasing
+sizes a bank, the premium directory format keeps six bytes per line
+where plain keeps two, and the probe's restore step writes all eight
+bytes back.
 
 Configuration graph (KLCONFIG)
 ==============================
@@ -155,7 +218,10 @@ private vector share one stub area and one trap page, told apart by
 op number. The trap page sits in the compatibility segment because a
 two-instruction stub reaches only sign-extended addresses.
 
-The trap page is accessed in eight-byte units, implemented at that
+The GDA's node table carries 64 entries -- the family kernel's
+build-time count; the 128-entry variant belongs to the top-of-line
+machine's own firmware image. The trap page is accessed in eight-byte
+units, implemented at that
 width: an unstated implementation width would let the memory core
 split a doubleword load into two word accesses and call a routine
 twice, visible only as every line of early output appearing twice. A
@@ -171,7 +237,9 @@ itself; the reset it performs is queued as a safe-run-on-CPU
 operation so no peer's lock-free read of CPU state overlaps it.
 Identification and environment lookups return null, which the guests
 handle (the console rate falls back to 9600); the private vector's
-capability level is three.
+capability level is three, because the SGI standalone shell is a
+relocatable object with no program headers, and a lower answer could
+not load it.
 
 Kernel hand-off
 ===============
