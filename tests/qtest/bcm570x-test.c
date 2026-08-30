@@ -107,6 +107,10 @@ static const uint64_t window_offset[8] = {
 #define BCM_FW_MAGIC            0x4b657654u
 #define BCM_FW_HANDSHAKE_DONE   0xb49a89abu     /* ~BCM_FW_MAGIC */
 
+/* The firmware-progress register the IRIX driver polls after reset. */
+#define BCM_FW_PROGRESS         0x5034u
+#define BCM_FW_PROGRESS_INIT    0xffffffffu
+
 /* Config 0x68 (misc host control): bits 31:16 hold the chip id. */
 #define BCM_PCI_MISC_CTL        0x68
 #define BCM_CHIPID_BCM5701      0x0105u
@@ -540,9 +544,10 @@ static void test_indirect_memory_window(const void *data)
 
 /*
  * The reset handshake completes when the reset is triggered through the BAR.
- * The driver writes the magic to SRAM 0x0B50, triggers a global reset via
- * MISC_CFG bit 0, and polls 0x0B50 for the complement the on-chip bootcode
- * leaves once it is up.
+ * The mailbox stands in for the on-chip bootcode: it reads back the one's-
+ * complement of the last value written, so the driver's magic reads as the
+ * ready value at once. This covers the bge ordering, where the magic is written
+ * before the reset; the reset re-arms the mailbox and self-clears its trigger.
  */
 static void test_reset_handshake_via_bar(const void *data)
 {
@@ -551,12 +556,64 @@ static void test_reset_handshake_via_bar(const void *data)
     bcm570x_aim_window(qts);
 
     ind_mem_writel(qts, BCM_SRAM_FW_MBOX, BCM_FW_MAGIC);
-    g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==, BCM_FW_MAGIC);
+    g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==,
+                    BCM_FW_HANDSHAKE_DONE);
 
     bar_writel(qts, BCM_MISC_CFG, BCM_MISCCFG_RESET);
 
+    /* The reset trigger self-clears; the driver polls MISC_CFG bit 0 for it. */
+    g_assert_cmphex(bar_readl(qts, BCM_MISC_CFG) & BCM_MISCCFG_RESET, ==, 0);
+
+    /* The reset leaves the mailbox reading ready for the post-reset poll. */
     g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==,
                     BCM_FW_HANDSHAKE_DONE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The IRIX ordering: the driver resets the chip first, then writes the magic to
+ * the firmware mailbox and polls it. Because the mailbox returns the one's-
+ * complement of the last value written, the magic reads back ready without any
+ * static value having been arranged during the reset -- the case a mailbox that
+ * only latched a complement on reset would time out on, the driver's magic
+ * write having overwritten it.
+ */
+static void test_reset_handshake_magic_after_reset(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    bar_writel(qts, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+
+    ind_mem_writel(qts, BCM_SRAM_FW_MBOX, BCM_FW_MAGIC);
+    g_assert_cmphex(ind_mem_readl(qts, BCM_SRAM_FW_MBOX), ==,
+                    BCM_FW_HANDSHAKE_DONE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The firmware-progress register (0x5034) the IRIX driver polls after reset. It
+ * aborts the moment the register changes from its all-ones init to a value it
+ * does not recognise, and a bare zero reads as exactly such a value (the boot
+ * failure "Progress code=0x0"). The chip holds it at the all-ones "no progress
+ * yet" sentinel -- out of reset and after a global reset -- so the driver reads
+ * "unchanged" and keeps polling the mailbox instead of failing.
+ */
+static void test_firmware_progress_register(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_aim_window(qts);
+
+    g_assert_cmphex(bar_readl(qts, BCM_FW_PROGRESS), ==, BCM_FW_PROGRESS_INIT);
+    g_assert_cmphex(ind_reg_readl(qts, BCM_FW_PROGRESS), ==,
+                    BCM_FW_PROGRESS_INIT);
+
+    bar_writel(qts, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(bar_readl(qts, BCM_FW_PROGRESS), ==, BCM_FW_PROGRESS_INIT);
 
     qtest_quit(qts);
 }
@@ -1228,6 +1285,10 @@ int main(int argc, char **argv)
                         test_indirect_memory_window);
     qtest_add_data_func("/bcm570x/reset-handshake-via-bar", NULL,
                         test_reset_handshake_via_bar);
+    qtest_add_data_func("/bcm570x/reset-handshake-magic-after-reset", NULL,
+                        test_reset_handshake_magic_after_reset);
+    qtest_add_data_func("/bcm570x/firmware-progress-register", NULL,
+                        test_firmware_progress_register);
     qtest_add_data_func("/bcm570x/reset-handshake-via-indirect", NULL,
                         test_reset_handshake_via_indirect);
     qtest_add_data_func("/bcm570x/self-clearing-reset-bits", NULL,

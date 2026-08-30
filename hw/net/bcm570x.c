@@ -15,7 +15,8 @@
  * 0x8000-0xFFFF); the three ways the driver reaches chip state -- the BAR
  * directly, an indirect register window through PCI config 0x78/0x80, and an
  * indirect memory window through config 0x7C/0x84; the chip id in MISC_CTL; the
- * global reset with its on-chip firmware-ready handshake at SRAM 0x0B50; the
+ * global reset with its on-chip firmware-ready handshake -- the SRAM 0x0B50
+ * mailbox and the firmware-progress register at 0x5034 the driver polls; the
  * self-clearing *_MODE reset bits; the MII path to the integrated copper PHY
  * (a separate model) through the MI registers; the MAC-address mailbox in SRAM;
  * link status tied to the netdev; the transmit ring -- the send-ring RCB, the
@@ -139,12 +140,25 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 /*
  * The firmware-ready handshake. The driver writes the magic to on-chip SRAM
- * 0x0B50 before a global reset and polls there afterwards for its complement,
- * which is how the on-chip bootcode signals initialisation complete.
+ * 0x0B50 and polls there for its complement, which is how the on-chip bootcode
+ * signals initialisation complete. The mailbox returns the complement of the
+ * last value written, so the magic reads back ready whether the driver writes
+ * it before the reset (bge/tg3) or after it (IRIX tg).
  */
 #define BCM570X_SRAM_FW_MBOX        0x0b50
 #define BCM570X_FW_MAGIC            0x4b657654u
 #define BCM570X_FW_HANDSHAKE_DONE   (~BCM570X_FW_MAGIC)     /* 0xB49A89AB */
+
+/*
+ * The firmware-progress register (RX RISC block; RX_CPU_HWBKPT at 0x5034 in
+ * the public tg3 names). The IRIX driver polls it after a reset and fails the
+ * moment it changes from the all-ones init to a value it does not recognise; a
+ * bare zero reads as such a value. The chip holds it at the all-ones "no
+ * progress yet" sentinel so the driver reads "unchanged" and keeps polling the
+ * mailbox.
+ */
+#define BCM570X_FW_PROGRESS         0x5034
+#define BCM570X_FW_PROGRESS_INIT    0xffffffffu
 
 /*
  * The MII management registers, the only path to the integrated PHY. MI_COMM
@@ -304,7 +318,16 @@ static uint32_t bcm570x_sram_read(Bcm570xState *s, uint32_t off)
 
 static void bcm570x_sram_write(Bcm570xState *s, uint32_t off, uint32_t val)
 {
-    s->sram[(off & (BCM570X_SRAM_SIZE - 1)) >> 2] = val;
+    off &= (BCM570X_SRAM_SIZE - 1);
+    /*
+     * The firmware mailbox stands in for the on-chip bootcode: it reads
+     * back the one's-complement of whatever was last written, so the
+     * driver's magic reads as the ready value at once, no bootcode to run.
+     */
+    if (off == BCM570X_SRAM_FW_MBOX) {
+        val = ~val;
+    }
+    s->sram[off >> 2] = val;
 }
 
 /* The chip id MISC_CTL[31:16] presents, from which the driver reads the part. */
@@ -371,10 +394,14 @@ static void bcm570x_load_mac_mailbox(Bcm570xState *s)
 /*
  * A global reset (the driver's write of MISC_CFG.RESET_CORE_CLOCKS, by either
  * access path) returns the register file and the on-chip SRAM to their reset
- * values, leaves the firmware-ready complement in the SRAM handshake mailbox --
- * how the on-chip bootcode signals the driver it is up -- and re-populates the
- * MAC-address mailbox the bootcode also owns. The PCI config the driver saves
- * and restores by hand, the chip id in MISC_CTL among it, is untouched.
+ * values, re-arms the SRAM handshake mailbox to the firmware-ready complement
+ * -- how the on-chip bootcode signals the driver it is up -- and re-populates
+ * the MAC-address mailbox the bootcode also owns. Writing the magic through the
+ * complementing mailbox leaves the ready value, so a driver that wrote the
+ * magic before the reset (bge/tg3) still reads ready afterwards. The trigger
+ * bit is not written back, so MISC_CFG bit 0 self-clears for the driver's poll.
+ * The PCI config the driver saves and restores by hand, the chip id in MISC_CTL
+ * among it, is untouched.
  */
 static void bcm570x_global_reset(Bcm570xState *s)
 {
@@ -386,7 +413,7 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->rx_std_cons = 0;
     s->irq_masked = true;
     s->irq_pending = false;
-    bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_HANDSHAKE_DONE);
+    bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_MAGIC);
     bcm570x_load_mac_mailbox(s);
     bcm570x_update_irq(s);
 }
@@ -627,6 +654,8 @@ static uint32_t bcm570x_reg_read(Bcm570xState *s, uint32_t off)
     switch (off & (BCM570X_REG_FILE_SIZE - 1)) {
     case BCM570X_MI_STS:
         return bcm570x_phy_link_up(&s->phy) ? BCM570X_MISTS_LINK : 0;
+    case BCM570X_FW_PROGRESS:
+        return BCM570X_FW_PROGRESS_INIT;
     default:
         return bcm570x_regfile_read(s, off);
     }
