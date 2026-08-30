@@ -18,10 +18,12 @@
  * global reset with its on-chip firmware-ready handshake at SRAM 0x0B50; the
  * self-clearing *_MODE reset bits; the MII path to the integrated copper PHY
  * (a separate model) through the MI registers; the MAC-address mailbox in SRAM;
- * and link status tied to the netdev. The ring engines, interrupts and the
- * dual-port device arrive in later commits; a write to a register with no
- * modelled behaviour logs LOG_UNIMP and is stored so a read-back still
- * round-trips.
+ * link status tied to the netdev; and the transmit ring -- the send-ring RCB,
+ * the producer mailbox, the descriptor/data DMA through the Bridge, and the
+ * status block DMA'd to the host, with the DMA byte order settled here. The
+ * receive ring, interrupts and the dual-port device arrive in later commits; a
+ * write to a register with no modelled behaviour logs LOG_UNIMP and is stored
+ * so a read-back still round-trips.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -30,6 +32,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/pci/pci_device.h"
@@ -134,6 +137,45 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_SRAM_MAC_LO         0x0c18
 #define BCM570X_MAC_TAG             0x484b
 
+/*
+ * The transmit ring. The driver writes the send-ring control block to on-chip
+ * SRAM 0x0100 -- the ring's host-memory base as a 64-bit address, then a
+ * max-length/flags word whose top half is the ring length in descriptors --
+ * and rings the doorbell by writing the new producer descriptor index to the
+ * mailbox at 0x0304. Each descriptor is 16 bytes: a 64-bit host buffer address,
+ * a 16-bit length, and 16-bit flags whose END bit marks the last descriptor of
+ * a frame.
+ */
+#define BCM570X_MBX_TX_PROD_LO      0x0304
+#define BCM570X_SRAM_SEND_RING_RCB  0x0100
+#define BCM570X_RCB_HOSTADDR_HI     0x00    /* offsets within the RCB */
+#define BCM570X_RCB_HOSTADDR_LO     0x04
+#define BCM570X_RCB_MAXLEN_FLAGS    0x08
+#define BCM570X_TXBD_SIZE           16
+#define BCM570X_TXBD_ADDR_HI        0x00    /* offsets within a tx descriptor */
+#define BCM570X_TXBD_ADDR_LO        0x04
+#define BCM570X_TXBD_LEN            0x08
+#define BCM570X_TXBD_FLAGS          0x0a
+#define BCM570X_TXBDFLAG_END        0x0004
+
+/*
+ * The host coalescing block DMAs the status block to the host address the
+ * driver programs, only while it is enabled. The status block reports transmit
+ * and receive progress the driver reads instead of a register: the transmit
+ * consumer index sits at offset 16 and the receive producer index at 18, both
+ * in the first of the sixteen index pairs.
+ */
+#define BCM570X_HCC_MODE_ENABLE     0x00000002u
+#define BCM570X_HCC_STATUSBLK_ADDR_HI 0x3c38
+#define BCM570X_HCC_STATUSBLK_ADDR_LO 0x3c3c
+#define BCM570X_STATUS_BLK_SIZE     0x50
+#define BCM570X_STATFLAG_UPDATED    0x00000001u
+#define BCM570X_STATUS_TX_CONS_OFF  16
+#define BCM570X_STATUS_RX_PROD_OFF  18
+
+/* The largest frame the transmit engine assembles across descriptors. */
+#define BCM570X_MAX_FRAME           2048
+
 struct Bcm570xState {
     PCIDevice parent_obj;
 
@@ -156,6 +198,12 @@ struct Bcm570xState {
     /* Backing storage for the register file and the on-chip SRAM. */
     uint32_t regfile[BCM570X_REG_FILE_WORDS];
     uint32_t sram[BCM570X_SRAM_WORDS];
+
+    /* Transmit-ring engine and the status block it reports through. */
+    uint16_t tx_cons;           /* the chip's send-ring consumer */
+    uint16_t status_tx_cons;    /* what the status block reports (TX) */
+    uint16_t status_rx_prod;    /* what the status block reports (RX) */
+    bool tx_busy;               /* guards the send against netdev re-entrancy */
 
     /* The integrated copper PHY, reached through the MI registers. */
     Bcm570xPhyState phy;
@@ -222,8 +270,126 @@ static void bcm570x_global_reset(Bcm570xState *s)
 {
     memset(s->regfile, 0, sizeof(s->regfile));
     memset(s->sram, 0, sizeof(s->sram));
+    s->tx_cons = 0;
+    s->status_tx_cons = 0;
+    s->status_rx_prod = 0;
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_HANDSHAKE_DONE);
     bcm570x_load_mac_mailbox(s);
+}
+
+/*
+ * DMA the status block to the host address the driver programmed through the
+ * host-coalescing block, but only while that block is enabled -- the driver
+ * gates it and reads the transmit/receive progress from there rather than a
+ * register. The chip owns the block, so the model builds it whole each time.
+ *
+ * Byte order (settled here against the transmit round-trip qtest, per the
+ * NIC-on-Bridge convention): the device delivers big-endian, and the Bridge is
+ * a no-op for this slot's DMA (its DEV_SWAP bit set), the same shape the
+ * in-tree IOC3 NIC uses. So the block is encoded big-endian and lands
+ * big-endian in guest memory. The MODE_CTL DMA-swap and MISC_CTL word-swap the
+ * driver programs are stored for read-back but applied as no-ops on this
+ * big-endian target -- each swap layer modelled once, never doubled.
+ */
+static void bcm570x_dma_status_block(Bcm570xState *s)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint8_t blk[BCM570X_STATUS_BLK_SIZE];
+    uint64_t base;
+
+    if (!(bcm570x_regfile_read(s, BCM570X_HCC_MODE) & BCM570X_HCC_MODE_ENABLE)) {
+        return;
+    }
+
+    base = ((uint64_t)bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_HI)
+            << 32) | bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_LO);
+
+    memset(blk, 0, sizeof(blk));
+    stl_be_p(blk, BCM570X_STATFLAG_UPDATED);
+    stw_be_p(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
+    stw_be_p(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
+    pci_dma_write(pci, base, blk, sizeof(blk));
+}
+
+/*
+ * Ring the transmit doorbell: send every descriptor from the chip's consumer up
+ * to the producer index the driver just wrote, then report the new consumer
+ * through the status block.
+ *
+ * The producer is a descriptor index the driver reduces modulo the ring length
+ * itself (the ring holds 512 descriptors), so it is inherently descriptor-
+ * aligned; the failure mode is an index past the ring, which -- left unguarded
+ * -- makes the walk chase a consumer it never reaches and the mailbox write
+ * never return. That is the IOC3 ethernet review's first finding, so an out-of-
+ * range index logs a guest error and returns, and the walk is bounded by the
+ * ring length regardless. A re-entrancy flag holds across the send so a peer
+ * that calls synchronously back into the ring cannot corrupt its state.
+ */
+static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t prod = prod_raw & 0xffff;
+    uint32_t maxlen_flags =
+        bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
+                          BCM570X_RCB_MAXLEN_FLAGS);
+    uint16_t ring_len = maxlen_flags >> 16;
+    uint64_t ring_base;
+    uint8_t frame[BCM570X_MAX_FRAME];
+    unsigned int frame_len = 0;
+    unsigned int walked = 0;
+
+    if (ring_len == 0 || prod >= ring_len) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: transmit producer %u out of range "
+                      "(ring length %u)\n", prod, ring_len);
+        return;
+    }
+    if (s->tx_busy) {
+        return;
+    }
+
+    ring_base = ((uint64_t)bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
+                                             BCM570X_RCB_HOSTADDR_HI) << 32) |
+                bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
+                                  BCM570X_RCB_HOSTADDR_LO);
+
+    s->tx_busy = true;
+    while (s->tx_cons != prod && walked < ring_len) {
+        uint8_t bd[BCM570X_TXBD_SIZE];
+        uint64_t buf_addr;
+        uint16_t len, flags;
+
+        pci_dma_read(pci, ring_base + (uint64_t)s->tx_cons * BCM570X_TXBD_SIZE,
+                     bd, sizeof(bd));
+        buf_addr = ((uint64_t)ldl_be_p(bd + BCM570X_TXBD_ADDR_HI) << 32) |
+                   ldl_be_p(bd + BCM570X_TXBD_ADDR_LO);
+        len = lduw_be_p(bd + BCM570X_TXBD_LEN);
+        flags = lduw_be_p(bd + BCM570X_TXBD_FLAGS);
+
+        if (frame_len + len <= sizeof(frame)) {
+            pci_dma_read(pci, buf_addr, frame + frame_len, len);
+            frame_len += len;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: transmit frame exceeds %u bytes, dropped\n",
+                          (unsigned int)sizeof(frame));
+            frame_len = 0;
+        }
+
+        if (flags & BCM570X_TXBDFLAG_END) {
+            if (frame_len) {
+                qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
+            }
+            frame_len = 0;
+        }
+
+        s->tx_cons = (s->tx_cons + 1) % ring_len;
+        walked++;
+    }
+    s->tx_busy = false;
+
+    s->status_tx_cons = prod;
+    bcm570x_dma_status_block(s);
 }
 
 /*
@@ -247,6 +413,11 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
         break;
+    case BCM570X_MBX_TX_PROD_LO:
+        /* Store the producer for read-back, then send up to it. */
+        bcm570x_regfile_write(s, off, val);
+        bcm570x_tx_kick(s, val);
+        return;
     case BCM570X_MI_COMM: {
         /*
          * A PHY management access. The integrated PHY answers at any address
@@ -327,10 +498,14 @@ static void bcm570x_bar0_write(void *opaque, hwaddr addr, uint64_t val,
  * The register file and the SRAM are 32-bit-accessed. impl.min/max pin the
  * width so the memory core never chops a wide access into repeated calls
  * (which would run a register's side effects twice) nor widens a narrow one.
- * The declared endianness is the working default (DEVICE_LITTLE_ENDIAN, the
- * ISP1040 precedent for these little-endian-native controllers behind the
- * Bridge); it is pinned against the byte-order round-trip qtest in a later
- * commit, not settled here.
+ *
+ * The declared endianness is DEVICE_LITTLE_ENDIAN, the ISP1040 precedent for
+ * these little-endian-native controllers behind the Bridge, now settled against
+ * the transmit round-trip qtest. Register MMIO correction is the Bridge's and
+ * is independent of the DMA DEV_SWAP path (a separate Layer-A concern): a guest
+ * dword read of a register returns the value written, proven by the Task-1
+ * round-trips. The DMA byte order is settled separately in bcm570x_tx_kick /
+ * bcm570x_dma_status_block.
  */
 static const MemoryRegionOps bcm570x_bar0_ops = {
     .read = bcm570x_bar0_read,
@@ -499,6 +674,10 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     memset(s->sram, 0, sizeof(s->sram));
     s->reg_win_base = 0;
     s->mem_win_base = 0;
+    s->tx_cons = 0;
+    s->status_tx_cons = 0;
+    s->status_rx_prod = 0;
+    s->tx_busy = false;
     bcm570x_load_mac_mailbox(s);
 }
 
@@ -512,6 +691,9 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT32_ARRAY(sram, Bcm570xState, BCM570X_SRAM_WORDS),
         VMSTATE_UINT32(reg_win_base, Bcm570xState),
         VMSTATE_UINT32(mem_win_base, Bcm570xState),
+        VMSTATE_UINT16(tx_cons, Bcm570xState),
+        VMSTATE_UINT16(status_tx_cons, Bcm570xState),
+        VMSTATE_UINT16(status_rx_prod, Bcm570xState),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -26,6 +26,8 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "hw/pci/pci_regs.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 /* Crosstalk space and the Bridge's own widget window inside it. */
 #define SPACE_XTALK             0x20000000000ULL
@@ -134,6 +136,39 @@ static const uint64_t window_offset[8] = {
 /* Any PHY address answers: the integrated PHY is the only one on the bus. */
 #define BCM_PHY_ADDR            1u
 
+/* Transmit ring, status block, and DMA plumbing (Task 4). */
+#define BCM_MBX_TX_PROD_LO      0x0304u
+#define BCM_HCC_MODE            0x3c00u
+#define BCM_HCC_STATUSBLK_HI    0x3c38u
+#define BCM_HCC_STATUSBLK_LO    0x3c3cu
+#define BCM_MODE_CTL            0x6800u
+#define BCM_DMA_SWAP_OPTIONS    0x36u          /* the big-endian MODE_CTL arm */
+#define BCM_SRAM_SEND_RING_RCB  0x0100u
+#define BCM_TXBDFLAG_END        0x0004u
+#define BCM_STATFLAG_UPDATED    0x00000001u
+#define BCM_STATUS_BLK_SIZE     0x50
+#define BCM_STATUS_TX_CONS_OFF  16
+
+/* The Bridge's per-slot DMA swapper (direct window) and the direct map. */
+#define DEV_SWAP_DIRECT         (1u << 19)
+#define BRIDGE_DIRECT_MAP_REG   REG(0x080)
+
+/*
+ * Guest-physical DMA scratch and the 64-bit IOVAs the device is handed for it.
+ * The Bridge's direct map (programmed to 0) keeps the low bits, so an IOVA with
+ * this widget prefix lands at the matching physical address, the same way
+ * sn0-qlogic-isp-test.c reaches guest memory. The scratch sits well above the
+ * first megabyte, in RAM nothing else uses under qtest.
+ */
+#define DMA_PREFIX              0xa500000000000000ULL
+#define TX_RING_PHYS            0x00200000u
+#define TX_BUF_PHYS             0x00210000u
+#define STATUS_PHYS             0x00220000u
+#define TX_RING_IOVA            (DMA_PREFIX | TX_RING_PHYS)
+#define TX_BUF_IOVA             (DMA_PREFIX | TX_BUF_PHYS)
+#define STATUS_IOVA             (DMA_PREFIX | STATUS_PHYS)
+#define TX_RING_LEN             4u             /* descriptors in the test ring */
+
 /*
  * The Bridge corrects a narrow (1- or 2-byte) device access by moving only the
  * low two address bits, `off ^ (4 - size)`, the same formula OpenBSD's
@@ -209,6 +244,66 @@ static void mii_write(QTestState *qts, unsigned phy, unsigned reg, uint16_t val)
                BCM_MICOMM_BUSY | BCM_MICMD_WRITE |
                (phy << BCM_MICOMM_PHY_SHIFT) | (reg << BCM_MICOMM_REG_SHIFT) |
                val);
+}
+
+/* Big-endian field access, since the device's DMA is defined big-endian. */
+static void put32be(uint8_t *b, uint32_t v)
+{
+    b[0] = v >> 24; b[1] = v >> 16; b[2] = v >> 8; b[3] = v;
+}
+
+static void put16be(uint8_t *b, uint16_t v)
+{
+    b[0] = v >> 8; b[1] = v;
+}
+
+static uint32_t get32be(const uint8_t *b)
+{
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | b[3];
+}
+
+static uint16_t get16be(const uint8_t *b)
+{
+    return (b[0] << 8) | b[1];
+}
+
+/*
+ * Enable bus mastering, aim the slot window, and set the slot's DMA swapper so
+ * the device delivers big-endian and the Bridge is a no-op (DEV_SWAP set). The
+ * direct map keeps the low IOVA bits, so the device's DMA reaches guest memory.
+ */
+static void bcm570x_setup_dma(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + PCI_BASE_ADDRESS_0,
+                 CARD_MMIO(BCM_SLOT));
+    qtest_writel(qts, CFG0(BCM_SLOT, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(BCM_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_SWAP_DIRECT |
+                 (CARD_MMIO(BCM_SLOT) >> 20));
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+}
+
+/* A connected socket backend, so the test reads the frame the engine sent. */
+static void net_socket_set_recv_timeout(int fd, int seconds)
+{
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
+                    ==, 0);
+}
+
+static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint32_t hdr;
+    size_t len;
+
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    len = ntohl(hdr);
+    g_assert_cmpint(len, <=, buf_size);
+    g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
+    return len;
 }
 
 /*
@@ -474,6 +569,109 @@ static void test_phy_readback(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The load-bearing byte-order test. With the slot's DMA swapper set as the real
+ * system programs it and the driver's swap options written, a transmit
+ * descriptor and its buffer are DMA'd through the Bridge, the frame reaches the
+ * backend byte-for-byte, and the status block the chip writes back lands
+ * big-endian in guest memory with its transmit consumer advanced. The frame
+ * pattern has every byte distinct so a swap anywhere on the path shows.
+ */
+static void test_transmit_round_trip(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[60];
+    uint8_t bd[16];
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
+    uint8_t got[128];
+    unsigned int i;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -netdev socket,fd=%d,id=n0"
+                      " -device bcm570x,addr=%02x.0,netdev=n0", sv[1], BCM_SLOT);
+
+    bcm570x_setup_dma(qts);
+
+    /* The driver's byte-swap programming: stored for read-back, no live swap. */
+    ind_reg_writel(qts, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
+
+    /* The send-ring control block in on-chip SRAM: host base and ring length. */
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_IOVA >> 32);
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_IOVA & 0xffffffff);
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+
+    /* The status block's host address, and enable the coalescing block. */
+    bar_writel(qts, BCM_HCC_STATUSBLK_HI, STATUS_IOVA >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_LO, STATUS_IOVA & 0xffffffff);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* One transmit descriptor at ring index 0, built big-endian. */
+    memset(bd, 0, sizeof(bd));
+    put32be(bd + 0, TX_BUF_IOVA >> 32);
+    put32be(bd + 4, TX_BUF_IOVA & 0xffffffff);
+    put16be(bd + 8, sizeof(frame));
+    put16be(bd + 10, BCM_TXBDFLAG_END);
+    qtest_memwrite(qts, TX_RING_PHYS, bd, sizeof(bd));
+    qtest_memwrite(qts, TX_BUF_PHYS, frame, sizeof(frame));
+    qtest_memset(qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    /* Ring the doorbell: one descriptor produced. */
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 1);
+
+    /* The frame reached the backend unchanged. */
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    /* The status block landed big-endian with the transmit consumer advanced. */
+    qtest_memread(qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get32be(sb + 0), ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get16be(sb + BCM_STATUS_TX_CONS_OFF), ==, 1);
+    /* Raw bytes prove the order: big-endian 1 is {0x00, 0x01}, not {0x01, 0x00}. */
+    g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF + 1], ==, 0x01);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A producer index past the ring must not hang the mailbox write. The ring
+ * holds TX_RING_LEN descriptors, so an index at or beyond it is out of range;
+ * the write logs a guest error and returns rather than chasing a consumer it
+ * never reaches (the IOC3 ethernet review's first finding). The MMIO access
+ * after each proves the write returned.
+ */
+static void test_tx_producer_out_of_range(const void *data)
+{
+    QTestState *qts = bcm570x_start();
+
+    bcm570x_setup_dma(qts);
+
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_IOVA >> 32);
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_IOVA & 0xffffffff);
+    ind_mem_writel(qts, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+
+    /* Just past the ring, and far past it: each write must return. */
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, TX_RING_LEN);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+
+    bar_writel(qts, BCM_MBX_TX_PROD_LO, 0xffff);
+    g_assert_cmphex(mii_read(qts, BCM_PHY_ADDR, MII_PHYIDR1), ==,
+                    BCM_PHY_IDR1_VALUE);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -496,6 +694,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/mac-address-mailbox", NULL,
                         test_mac_address_mailbox);
     qtest_add_data_func("/bcm570x/phy-readback", NULL, test_phy_readback);
+    qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
+                        test_transmit_round_trip);
+    qtest_add_data_func("/bcm570x/tx-producer-out-of-range", NULL,
+                        test_tx_producer_out_of_range);
 
     return g_test_run();
 }
