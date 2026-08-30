@@ -77,6 +77,7 @@ qtests_i386 = \
   (slirp.found() ? ['pxe-test'] : []) + \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   qtests_filter + \
   (config_all_devices.has_key('CONFIG_ACPI_VMGENID') ? ['vmgenid-test'] : []) +             \
   (config_all_devices.has_key('CONFIG_AHCI_ICH9') and have_tools ? ['ahci-test'] : []) +    \
@@ -224,9 +225,7 @@ qtests_mips64 = \
                                                    'sn0-smp-test',
                                                    'sn0-migration-test',
                                                    'sn0-snapshot-test',
-                                                   'sn0-debug-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') and
-   config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : [])
+                                                   'sn0-debug-test'] : [])
 
 qtests_mips64el = qtests_mips
 
