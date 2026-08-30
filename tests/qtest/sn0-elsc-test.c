@@ -39,12 +39,7 @@
  * emit. */
 #define RESP_CAP 96
 
-/*
- * The ELSC AUX port is serial_hd(2): indices 0 and 1 are the two IOC3 rear
- * ports (hw/misc/sgi-hub.h, SN0_ELSC_CHARDEV). So two placeholder serial
- * lines come before the chardev standing in for the AUX cable, putting it on
- * the index the model reads for this device.
- */
+/* Two placeholder serial lines put the AUX chardev at serial_hd(2). */
 #define ELSC_AUX_LEADING_SERIALS "-serial none -serial none "
 
 static uint8_t frame_checksum(const uint8_t *buf, unsigned len)
@@ -71,10 +66,8 @@ static unsigned build_request(uint8_t *buf, const char *text)
 }
 
 /*
- * One combined write-then-read ELSC transaction over the real PCF8584.
- * The read side discards one byte first: the chip's own stale data
- * register, which the first read after a direction change always returns
- * (hw/i2c/pcf8584.c).
+ * One combined transaction; the read discards the chip's stale data
+ * register first (hw/i2c/pcf8584.c).
  */
 static unsigned elsc_transact_at(QTestState *qts, uint64_t hub,
                                  const uint8_t *req, unsigned req_len,
@@ -297,10 +290,8 @@ static void arb_assert_held(QTestState *qts, uint8_t value, int64_t hold_ns)
 }
 
 /*
- * The three-loop wait as firmware drives it: absence before a signal is
- * trusted, then the signal held past the threshold. Deliberately not
- * synchronised to the rotation's phase, which is what makes loop 1 a real
- * assertion.
+ * Firmware's three-loop wait, deliberately unsynchronised to the
+ * rotation's phase -- that is what makes loop 1 a real assertion.
  */
 static void test_arbitration_three_loop_wait(const void *data)
 {
@@ -342,10 +333,8 @@ static void test_arbitration_repeats(const void *data)
 }
 
 /*
- * The rotation must visit more than one code: the tests above pass a
- * model stuck on code 0. Code 1's pair is checked concretely rather than
- * "anything else", so a regression swapping one wrong fixed code for
- * another still fails.
+ * The tests above pass a model stuck on code 0; code 1 is checked
+ * concretely so a wrong fixed code still fails.
  */
 static void test_arbitration_visits_other_processor_codes(const void *data)
 {
@@ -375,12 +364,8 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
 }
 
 /*
- * Once firmware has observed and held its arbitration signal, it stages the
- * first address byte in the PCF8584 before asserting START.  The controller's
- * free-running broadcast must not replace that staged byte if its nominal
- * hold expires between the two MMIO writes.  Advancing past the remainder of
- * the modeled hold makes that boundary deterministic rather than relying on
- * host scheduling to happen to split the writes.
+ * The broadcast must not replace a staged address byte between the two
+ * MMIO writes; advancing past the hold makes that boundary deterministic.
  */
 static void test_arbitration_preserves_staged_start(const void *data)
 {
@@ -555,12 +540,7 @@ static void test_two_towers_take_two_aux_backends(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * With no chardev on the AUX port an "acp" flush must still answer
- * "ok <count>" rather than stall the bus: the log line is unobservable
- * from qtest, so what this pins is that a dark console does not also
- * wedge the guest.
- */
+/* A dark console must not also wedge the guest: "ok <count>" regardless. */
 static void test_acp_with_no_backend_still_answers(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -632,12 +612,10 @@ static void aux_write(int fd, const char *text)
 }
 
 /*
- * Wait until written bytes have reached the receive queue before scoring
- * any arbitration signal: the socket write arrives in host time while the
- * scoring runs in virtual time, and under load a still-empty queue
- * legitimately presents signal1 where signal2 was expected. The monitor
- * dump reports queue depth independent of rotation phase; bounded so a
- * model that never queues fails rather than spins.
+ * Score no signal until the bytes reached the queue: the write lands in
+ * host time, the scoring runs in virtual time, and an empty queue
+ * legitimately presents signal1. Bounded so a model that never queues
+ * fails rather than spins.
  */
 static void aux_wait_for_queued(QTestState *qts, unsigned len)
 {
@@ -692,11 +670,8 @@ static void test_get_returns_queued_console_input(const void *data)
 }
 
 /*
- * The escape split: a byte sequence beginning 0x14 is a controller
- * command and is discarded through the next line terminator, never
- * reaching "get"; everything else is queued and does. Asserting only the
- * positive half -- that typed text reaches "get" -- would pass a model
- * that never implements the escape at all, so this checks both.
+ * Both halves of the escape split: the positive half alone passes a
+ * model with no escape at all.
  */
 static void test_escape_byte_is_not_queued(const void *data)
 {
