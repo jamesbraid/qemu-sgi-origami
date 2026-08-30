@@ -1,14 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A test-only PCI device for two Bridge assertions: per-page translation
- * (only a transfer straddling a page boundary onto non-adjacent physical
- * pages can catch translate-once-per-transfer) and a held interrupt level
- * (a status register that must follow, not latch, cannot be told apart by
- * a pulse). It differs from iommu-testdev in a seeded byte pattern, the
- * held level, and a settable PCI identity for the byte-lane policy;
- * retiring it onto an extended iommu-testdev is recorded follow-up work.
- * No machine instantiates it, and its transfers go through the PCI DMA
- * helpers so the Bridge's translation is honoured.
+ * Test-only PCI device for the Bridge qtests: page-straddling DMA with a
+ * seeded pattern, a held interrupt level, and a settable PCI identity.
+ * Like pci-testdev, no machine instantiates it. Retiring it onto an
+ * extended iommu-testdev is recorded follow-up work.
  */
 
 #include "qemu/osdep.h"
@@ -21,18 +16,10 @@
 #define TYPE_SGI_BRIDGE_DMA_TEST "sgi-bridge-dma-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeDMATestState, SGI_BRIDGE_DMA_TEST)
 
-/*
- * The longest transfer this device will issue. It only has to be longer than a
- * translation page is not, which is the opposite requirement from a real
- * device's: the transfer must be short enough to straddle a boundary by a few
- * bytes so that the assertion names two pages rather than a range.
- */
+/* Short on purpose: a straddle should cross a boundary by a few bytes. */
 #define SGI_BRIDGE_DMA_TEST_MAX 256
 
-/*
- * The identity every QEMU-internal test device wears: an allocated Red Hat
- * id rather than a made-up number that could collide with a real vendor.
- */
+/* The allocated Red Hat test-device identity. */
 #define SGI_BRIDGE_DMA_TEST_VENDOR PCI_VENDOR_ID_REDHAT
 #define SGI_BRIDGE_DMA_TEST_DEVICE PCI_DEVICE_ID_REDHAT_TEST
 
@@ -52,19 +39,12 @@ struct SGIBridgeDMATestState {
     MemoryRegion wide_mmio;
     uint64_t wide_scratch;
 
-    /*
-     * Where on the PCI side to write, how much, and what. The address is 64 bits
-     * so a test can issue a 64-bit address cycle and exercise the Bridge's
-     * 64-bit direct decode; a 32-bit register file cannot reach those addresses.
-     */
+    /* 64-bit so a test can exercise the Bridge's 64-bit direct decode. */
     uint64_t address;
     uint32_t length;
     uint32_t seed;
 
-    /*
-     * A copy tests the read direction: exposing the buffer through a
-     * register window would put a second transform in the path.
-     */
+    /* A copy tests the read direction without a second transform. */
     uint64_t source;
 
     /* The level this device is holding its interrupt pin at. */
@@ -74,10 +54,7 @@ struct SGIBridgeDMATestState {
     uint16_t vendor_id;
     uint16_t device_id;
 
-    /*
-     * Settable where silicon is fixed: the four-onto-eight pin fold is
-     * what is under test, and one pin cannot show it.
-     */
+    /* Settable: the four-onto-eight pin fold needs more than one pin. */
     uint8_t interrupt_pin;
 };
 
@@ -86,19 +63,12 @@ struct SGIBridgeDMATestState {
 #define REG_SEED        0x08
 #define REG_GO          0x0c
 /*
- * Writing here drives this device's first interrupt pin to the level written,
- * and holds it there. It is a level and not a pulse deliberately: what the
- * bridge above has to get right is that its status register follows the level
- * and never latches, and a source that could only pulse could not tell a model
- * that follows from one that latches — both would show the bit set.
+ * Drives and holds the pin at the level written: a pulse could not tell a
+ * status register that follows from one that latches.
  */
 #define REG_INTERRUPT   0x10
 #define REG_SOURCE      0x14
-/*
- * The high 32 bits of the destination and source addresses. Each address is set
- * with two 32-bit writes — the low register, then the high register — because
- * the register window is reached with 32-bit accesses.
- */
+/* Address high halves; the window is reached with 32-bit accesses. */
 #define REG_ADDRESS_HI  0x18
 #define REG_SOURCE_HI   0x1c
 #define REG_WINDOW      0x20   /* size of the register block */
@@ -116,11 +86,7 @@ struct SGIBridgeDMATestState {
 #define WIDE_WINDOW     0x10   /* size of the 64-bit register block */
 #define WIDE_FIXED_VALUE 0x0123456789abcdefULL
 
-/*
- * What the device writes: a byte sequence a test can predict without this file
- * telling it, so that an assertion about where the bytes landed does not also
- * depend on agreeing what the bytes were.
- */
+/* A pattern a test can predict without this file telling it. */
 static uint8_t sgi_bridge_dma_test_byte(uint32_t seed, unsigned int i)
 {
     return (uint8_t)(seed + i);
@@ -142,20 +108,13 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
         buf[i] = sgi_bridge_dma_test_byte(s->seed, i);
     }
 
-    /*
-     * One call for the whole transfer, which is the part that matters. A host
-     * bridge translating once per transfer and one translating once per page
-     * differ only here, and only when this call spans a page boundary.
-     */
+    /* One call for the whole transfer: the per-page distinction lives here. */
     pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
 }
 
 /*
- * Read one place and write another, both through the bridge. With the same
- * settings at both ends this is a pure copy and any difference is a bug; with
- * different settings at the two ends exactly one transform sits in the path,
- * which is what lets a test assert the read direction without a second
- * correction cancelling the first.
+ * With different settings at the two ends exactly one transform sits in
+ * the path, so the read direction is assertable on its own.
  */
 static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
 {
@@ -243,12 +202,7 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
     }
 }
 
-/*
- * The register block is reached through a host bridge's device window, and this
- * machine is big-endian, so a value written through that window arrives here as
- * the number it was written as. Both access sizes are declared because this
- * handler is written for 32-bit accesses and nothing else.
- */
+/* 32-bit accesses only; both bounds declared so the core enforces it. */
 static const MemoryRegionOps sgi_bridge_dma_test_ops = {
     .read = sgi_bridge_dma_test_read,
     .write = sgi_bridge_dma_test_write,
@@ -306,11 +260,7 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
     /* Say in configuration space which pin this device uses. */
     pci_config_set_interrupt_pin(dev->config, s->interrupt_pin);
 
-    /*
-     * And which part it is claiming to be. The class supplies the default;
-     * a test overrides it to stand in for a device the bridge treats
-     * differently, without needing that device to exist.
-     */
+    /* The claimed identity; a test overrides it to stand in for a part. */
     pci_config_set_vendor_id(dev->config, s->vendor_id);
     pci_config_set_device_id(dev->config, s->device_id);
 
@@ -355,12 +305,7 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
 
 static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_UINT8("interrupt-pin", SGIBridgeDMATestState, interrupt_pin, 1),
-    /*
-     * So a test can make this device wear another part's identity. The bridge
-     * decides which devices are exempt from its byte-lane correction by PCI
-     * vendor and device id, and a test that proved the exemption by moving a
-     * real part into a slot would be testing the slot as much as the rule.
-     */
+    /* The byte-lane exemption keys on PCI identity; make it wearable. */
     DEFINE_PROP_UINT16("vendor-id", SGIBridgeDMATestState, vendor_id,
                        SGI_BRIDGE_DMA_TEST_VENDOR),
     DEFINE_PROP_UINT16("device-id", SGIBridgeDMATestState, device_id,
