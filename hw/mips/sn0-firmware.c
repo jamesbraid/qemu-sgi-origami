@@ -1,16 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 200/2000 ("SN0", IP27) synthesized firmware.
- *
- * What a real IP27 PROM leaves behind for a guest, built by the machine when
- * it is asked to present firmware of its own: the programmed boot flash and
- * its configuration block, the ARCS call vectors and the routines behind
- * them, the KLCONFIG configuration graph and the other low-memory structures,
- * and the reset-time device state real firmware sets up -- PCI resources and
- * the widget-0 window redirection. The direct -kernel and sashARCS loaders
- * live here too, because loading a guest and handing it control is the
- * firmware's job. The flash chip itself is modelled in sn0.c; this file owns
- * only its contents.
+ * SGI Origin 200/2000 ("SN0", IP27) synthesized firmware: what a real IP27
+ * PROM leaves behind for a guest, plus the direct -kernel and sashARCS
+ * loaders. The flash chip is modelled in sn0.c; this file owns its contents.
  */
 
 #include "qemu/osdep.h"
@@ -31,20 +23,11 @@
 #include "cpu.h"
 #include "sn0.h"
 
-/*
- * Where the argument vector handed to a kernel goes. Low memory below the
- * firmware structures and above the exception vectors a kernel installs. The
- * structure work owns the final layout of this region; this is the one address
- * in it that exists so far.
- */
+/* The kernel argument vector, below the firmware structures. */
 #define SN0_ARGV_ADDR   0x800
 #define SN0_ARGV_STRING (SN0_ARGV_ADDR + 0x40)
 
-/*
- * Scratch layout for a direct-loaded sashARCS's argv/envp/stack: computed
- * from the image's own extent, never a fixed address, since the two IRIX
- * releases this project holds ship differently sized images.
- */
+/* Computed from the image's extent; IRIX releases ship different sizes. */
 #define SN0_SASH_SCRATCH_GAP  (1 * MiB)
 #define SN0_SASH_STACK_SIZE   (64 * KiB)
 
@@ -60,15 +43,7 @@
 #define SN0_CONFIG_CHECKSUM_OFFSET 0x34
 #define SN0_CONFIG_FPROM_WR_OFFSET 0x3c
 
-/*
- * A component's port descriptor: a sixteen-bit node identifier, an eight-bit
- * flag byte, eight bits of padding, and a thirty-two-bit offset, packed into
- * one big-endian eight-byte field. Zero is a live node identifier on this
- * machine, not a safe default — the invalid marker is all ones in the node-
- * identifier bits and nothing else, with the rest of the descriptor zero for
- * a port that names no link, which every port on this machine does: the Hub
- * sits at a fixed widget with no crossbar component modelled.
- */
+/* Zero is a live node identifier; a no-link port carries all ones. */
 #define SN0_PORT_NODE_INVALID   0xffffULL
 #define SN0_PORT_UNCONNECTED    (SN0_PORT_NODE_INVALID << 48)
 
@@ -81,28 +56,8 @@ typedef struct SN0LaunchData {
 
 
 /*
- * Build what a programmed flash would hold at the addresses a guest reaches
- * before any firmware runs: the entry points it calls by address, and the
- * configuration block it reads the machine's identity and clocks out of.
- *
- * The entry points are branches. A guest calls nine of them expecting to come
- * back, so each returns; the tenth is the reset vector, which the processor
- * enters rather than calls, and which stops here because there is no firmware
- * to run yet. The firmware that fills these arrives with the boot structure
- * work.
- */
-/*
- * Where an address in a kernel's headers puts its bytes. A kernel is linked
- * into the unmapped 64-bit window and its headers carry that address as both
- * the virtual and the physical one, so taking the physical address at face
- * value would place the image far outside any memory the machine has —
- * silently, and the guest then executes whatever the untouched memory at its
- * entry point holds.
- *
- * The translation is the processor's own: the physical address is the low forty
- * bits, and the cache algorithm above them is not part of it. An uncached
- * window keeps its attribute, so a kernel linked into one lands in that space
- * rather than in memory, for the same reason a processor reference to it would.
+ * Kernel headers name the unmapped 64-bit window as both virtual and
+ * physical: take the low forty bits; an uncached window keeps its attribute.
  */
 static uint64_t sn0_elf_to_phys(void *opaque, uint64_t addr)
 {
@@ -125,23 +80,8 @@ static uint64_t sn0_elf_to_phys(void *opaque, uint64_t addr)
 }
 
 /*
- * Hand a loaded kernel control with the convention it expects: the argument
- * count in the first argument register and the vector in the second. A real
- * firmware reaches this point after all its own work; ours has none yet, so the
- * reset entry jumps straight here.
- *
- * The jump at the reset entry has to be two instructions, which is all the
- * eight bytes between entry points allow, so it is a region-relative jump
- * rather than an absolute one. Both addresses are in the same region of the
- * flash, so that reaches.
- */
-/*
- * Point the real reset vector at the bootloader stub in fw. Every handoff
- * this machine builds shares this: whichever one wrote the stub, this is
- * what makes the CPU reach it out of reset. The jump has to be two
- * instructions, which is all the eight bytes between flash entry points
- * allow, so it is region-relative rather than absolute -- both addresses
- * are in the same region of the flash, so that reaches.
+ * The reset-entry jump must be two instructions -- all the eight bytes
+ * between flash entry points allow -- so it is region-relative.
  */
 static void sn0_flash_jump_to_bootloader(uint8_t *flash, hwaddr fw_vaddr)
 {
@@ -168,18 +108,7 @@ static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
 
     sn0_flash_jump_to_bootloader(flash, fw_vaddr);
 
-    /*
-     * Hand over in 64-bit kernel mode. A kernel is linked into the unmapped
-     * 64-bit window, so the jump to its entry point is itself a 64-bit
-     * reference and takes an address error unless extended kernel addressing is
-     * on, which it is not out of reset. Clearing error level at the same time
-     * puts the user segment back under the translation buffer, and clearing the
-     * boot-exception-vector bit points exceptions at the addresses a kernel is
-     * about to install handlers at rather than into this flash.
-     *
-     * The register used is one the architecture reserves for kernel scratch, so
-     * nothing a kernel expects on entry is disturbed.
-     */
+    /* Enter in 64-bit kernel mode; only kernel scratch is disturbed. */
     stl_be_p(p, 0x341a0000 | (1 << CP0St_KX));  /* ori k0, zero, KX */
     p = (uint8_t *)p + 4;
     stl_be_p(p, 0x409a6000);                    /* mtc0 k0, CP0_Status */
@@ -195,24 +124,8 @@ static void sn0_build_kernel_handoff(uint8_t *flash, uint8_t *fw,
 }
 
 /*
- * Which of the two loaders a -kernel file needs. An OpenBSD or Linux kernel
- * is ELF64; sashARCS is the one other format this machine loads directly,
- * told apart by its own file-format magic in the first two bytes.
- */
-/*
- * Hand a directly-loaded sashARCS the same registers the real ARCS
- * client_start routine hands a standalone program: argc/argv/environ in
- * a0-a2, a fresh stack in sp. Unlike sn0_build_kernel_handoff, this leaves
- * CP0 Status untouched -- the real handoff chain never sets it either, so
- * the CPU keeps whatever addressing mode it has out of reset, which is
- * unmapped kuseg: exactly what a 32-bit link address like sashARCS's needs
- * with no TLB entry at all. See
- * docs/library/irix-sash-direct-load-proposal.md.
- *
- * gp is not part of that handoff convention, but a 32-bit o32 ABI program
- * needs it correct before its first gp-relative load -- which its own
- * startup code makes with nothing else set up yet -- so it is loaded here
- * explicitly, from the value the image's own header carries.
+ * The real ARCS client_start convention, with CP0 Status left at reset:
+ * a 32-bit link address needs unmapped kuseg and no TLB entry.
  */
 static void sn0_build_sash_handoff(uint8_t *flash, uint8_t *fw,
                                    hwaddr fw_vaddr, uint64_t entry,
@@ -253,12 +166,7 @@ static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash)
         stl_be_p(entry + 4, 0);                    /* the delay slot */
     }
 
-    /*
-     * The field order and widths are the IP27 firmware's. The release image is
-     * built with Origin 2000 defaults because a real flasher preserves the
-     * running node's configuration; this synthesized image instead carries
-     * this product's Origin 200 values directly.
-     */
+    /* The field order and widths are the IP27 firmware's. */
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
     stl_be_p(config + 0x04, smc->cpu_module.mode_bits);
     stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
@@ -275,12 +183,7 @@ static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash)
     stl_be_p(config + 0x44, 11);                   /* firmware revision */
     stl_be_p(config + 0x48, 0);                    /* configuration flags */
 
-    /*
-     * A board leaves the factory with an empty, initialized environment log.
-     * It is retained state outside the firmware payload; a complete 1 MiB
-     * image supplied with -bios can still replace it along with everything
-     * else. An erased first entry is the log's end marker.
-     */
+    /* The factory-fresh environment log; an erased first entry ends it. */
     config = flash + SN0_PROMLOG_SECTOR * SN0_FLASH_SECTOR_SIZE;
     stl_be_p(config + 0x10, SN0_PROMLOG_MAGIC);
     stl_be_p(config + 0x14, SN0_PROMLOG_VERSION);
@@ -299,19 +202,8 @@ static uint8_t sn0_config_byte_sum(const uint8_t *config)
 }
 
 /*
- * Install the product-specific part of an IP27 PROM configuration block.
- *
- * SGI ships a generic release image with Origin 2000 defaults. Its flasher
- * copies the running node's configuration into the new image and adjusts one
- * byte so the replacement block has the same byte sum as the original. QEMU
- * has no preceding physical PROM to preserve, but the concrete machine class
- * supplies the same three values: the machine-type word and the two flash
- * timings.
- *
- * Preserve every other field supplied by the image, including clocks, CPU
- * mode, version, and flash count. Preserve the old block sum too, following
- * the flasher's observable contract. A diagnostic ROM without an IP27 config
- * signature remains byte-for-byte untouched.
+ * The flasher's contract: the three product values in, every other field
+ * and the old block sum preserved; no IP27 signature, no touch.
  */
 static void sn0_configure_flash(SN0MachineClass *smc, uint8_t *flash)
 {
@@ -333,23 +225,13 @@ static void sn0_configure_flash(SN0MachineClass *smc, uint8_t *flash)
              (uint8_t)(old_sum - new_sum));
 }
 
-/*
- * The firmware routines a guest calls. A stub in the flash performs one load
- * from the trap region and returns; this is what that load does, and its return
- * value is what the guest finds in its return register, because the translator
- * puts a loaded value there through the ordinary path. Reaching into the
- * processor state to leave a result instead would be writing behind the
- * translator's back, which it does not reload for.
- */
+/* A stub's load from the trap region is the call, the value the result. */
 enum {
     ARCS_ESUCCESS = 0,
     ARCS_EINVAL = 21,
 };
 
-/*
- * ARCS Write(handle, buffer, length, count) — the routine all early output
- * uses.
- */
+/* ARCS Write(handle, buffer, length, count): all early output. */
 static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
 {
     uint64_t buffer = env->active_tc.gpr[5];
@@ -358,24 +240,12 @@ static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
     uint64_t written = 0;
     uint8_t chunk[256];
 
-    /*
-     * The count reported back is a 32-bit field, so cap the operation at
-     * what that field can express. The cap is also what bounds this loop:
-     * a guest length just under 2^64 with a mapped buffer would otherwise
-     * keep this MMIO callback busy for an unbounded time -- and with a
-     * narrower counter than the length's own type it never terminated at
-     * all, the comparison staying true forever once the counter wrapped.
-     */
+    /* The 32-bit count field caps the operation and bounds a hostile length. */
     length = MIN(length, UINT32_MAX);
     while (written < length) {
         unsigned int n = MIN(sizeof(chunk), length - written);
 
-        /*
-         * The buffer is a guest virtual address, so it goes through the
-         * processor's own translation rather than being taken apart here: a
-         * pointer into a translated page would otherwise be decoded wrongly and
-         * silently.
-         */
+        /* A guest virtual address: the processor's own translation applies. */
         if (cpu_memory_rw_debug(env_cpu(env), buffer + written, chunk, n,
                                 false) < 0) {
             break;
@@ -386,9 +256,7 @@ static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
         written += n;
     }
 
-    /*
-     * The guest is told how much went out, whether or not anyone was listening.
-     */
+    /* Report the count whether or not anyone was listening. */
     if (count_ptr) {
         uint32_t be = cpu_to_be32(written);
 
@@ -399,19 +267,9 @@ static uint64_t sn0_arcs_write(SN0MachineState *s, CPUMIPSState *env)
 }
 
 /*
- * The memory descriptors a guest walks to learn what memory it has. Two things
- * about this list are load-bearing and neither is obvious.
- *
- * The base page of the first free entry is how a guest tells this machine from
- * its successor. At or above page 0x20 it silently decides it is the later
- * machine and takes a different path for the rest of the boot, with no message,
- * so first free memory has to start below that. Ours starts at page 0x19, which
- * is where a real machine of this generation puts it.
- *
- * The walk stops at the first firmware-permanent entry and the guest rewrites
- * that entry to reach the 32 MB mark, so nothing after it is ever read. The
- * shape here follows a real machine's: pages 2 through 0x18 are described by
- * nothing at all, which is what the real list does.
+ * First free memory must start below page 0x20, where a guest silently
+ * decides it is the successor machine; the walk stops at the first
+ * firmware-permanent entry.
  */
 enum {
     SN0_MEM_EXCEPTION_BLOCK = 0,
@@ -433,12 +291,7 @@ struct sn0_mem_descriptor {
     uint64_t pages;
 };
 
-/*
- * ARCS GetMemoryDescriptor(previous) — called first with nothing and then
- * with each descriptor it returned, so it walks a list. The list is built once
- * and lives in the trap region's own storage, because a guest holds the pointer
- * we hand back and reads through it.
- */
+/* ARCS GetMemoryDescriptor(previous): the guest walks a list. */
 static uint64_t sn0_arcs_get_memory(SN0MachineState *s, CPUMIPSState *env)
 {
     uint64_t previous = env->active_tc.gpr[4];
@@ -466,13 +319,7 @@ static uint64_t sn0_arcs_get_memory(SN0MachineState *s, CPUMIPSState *env)
     return s->nodes[0]->mem_addr + next * sizeof(struct sn0_mem_descriptor);
 }
 
-/*
- * Enter a processor that the synthesized firmware kept in its slave loop.
- * The real PROM changes to 64-bit kernel addressing before calling the
- * requested routine. Start at our equivalent trampoline so the target makes
- * that architectural transition itself rather than having QEMU alter CP0
- * state behind its back.
- */
+/* Start at the trampoline so the target makes the transition itself. */
 static void sn0_launch_cpu(CPUState *cs, run_on_cpu_data data)
 {
     SN0LaunchData *launch = data.host_ptr;
@@ -531,19 +378,8 @@ static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
     launch->gp_addr = env->active_tc.gpr[9];
 
     /*
-     * async_safe_run_on_cpu(), not async_run_on_cpu(): sn0_launch_cpu()
-     * calls cpu_reset(), which bulk-rewrites the target's architectural
-     * CPU state. Queueing that under async_safe_run_on_cpu() runs it
-     * inside start_exclusive()'s quiescent section, which upstream
-     * relies on to keep a live peer's BQL-free read of that state (see
-     * mips_vp_active()/mips_vpe_active() in target/mips/cpu.c) from
-     * overlapping the reset. R10000 carries none of the CP0 Config bits
-     * those readers require, so no peer on this machine reaches them
-     * today -- but the target CPU state cpu_reset() rewrites is not
-     * scoped to what happens to be reachable here, and async_run_on_cpu()
-     * would leave the same class of race live in this dispatch that
-     * "hw/misc/mips_cpc: quiesce peers for the VP-run reset" closed in
-     * the CPC's.
+     * async_safe_run_on_cpu(): the quiescent section keeps a peer's
+     * BQL-free read of CPU state from overlapping cpu_reset().
      */
     async_safe_run_on_cpu(target, sn0_launch_cpu,
                           RUN_ON_CPU_HOST_PTR(launch));
@@ -558,22 +394,13 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
 
     *val = ARCS_EINVAL;
 
-    /*
-     * A debugger examining memory must not make a firmware call happen as a
-     * side effect of looking at it.
-     */
+    /* A debugger's read must not make a firmware call happen. */
     if (attrs.debug) {
         *val = 0;
         return MEMTX_OK;
     }
 
-    /*
-     * Only the two routines below this point read the calling processor's
-     * registers, so only they need a processor to exist — "no processor at
-     * all" is a state a test harness can produce, and every other routine
-     * here answers the same constant regardless of who is asking, so there
-     * is no reason to fail those too.
-     */
+    /* Only these three read the caller's registers; the rest are constant. */
     switch (op) {
     case SN0_ARCS_WRITE:
     case SN0_ARCS_GET_MEMORY:
@@ -593,35 +420,19 @@ static MemTxResult sn0_arcs_read(void *opaque, hwaddr addr, uint64_t *val,
         }
         break;
     case SN0_ARCS_GET_CHILD:
-        /*
-         * Null, which a guest handles: it falls back to the hardware
-         * directory's configuration-graph signature to identify the machine,
-         * and that path needs no component tree at all.
-         */
+        /* Null; a guest falls back to the hardware directory's signature. */
         *val = 0;
         break;
     case SN0_ARCS_GET_SYSTEM_ID:
-        /*
-         * Null too. A guest reads the vendor and product strings out of this
-         * only if identification has already failed, and on our path it does
-         * not.
-         */
+        /* Null; read only after identification has already failed. */
         *val = 0;
         break;
     case SN0_ARCS_GET_ENV:
-        /*
-         * Null for every variable. A guest checks each result before using it,
-         * and the one that matters — the console rate — falls back to 9600.
-         */
+        /* Null for every variable; the console rate falls back to 9600. */
         *val = 0;
         break;
     case SN0_ARCS_CAPABILITY_OP:
-        /*
-         * Level three: the firmware can load a relocatable object. Not on
-         * the banner path — the guests we boot never call the private
-         * vector at all — but a caller that does must not be told a lower
-         * level and silently take a different, unsupported path.
-         */
+        /* A lower level sends a caller down an unsupported path. */
         *val = SN0_ARCS_CAPABILITY_LEVEL;
         break;
     default:
@@ -649,14 +460,7 @@ static const MemoryRegionOps sn0_arcs_ops = {
     .read_with_attrs = sn0_arcs_read,
     .write_with_attrs = sn0_arcs_write_mmio,
     .endianness = DEVICE_BIG_ENDIAN,
-    /*
-     * Eight bytes exactly, both as what a guest may ask for and as what this
-     * implements. Leaving the implementation width unstated would let the
-     * memory system split a doubleword load into two word accesses and call the
-     * routine twice — which is invisible to the caller, because the second
-     * call overwrites the first's result with the same value, and shows up only
-     * as every line of a guest's early output appearing twice.
-     */
+    /* Eight bytes, valid and impl: a split load would call a routine twice. */
     .valid.min_access_size = 8,
     .valid.max_access_size = 8,
     .impl.min_access_size = 8,
@@ -664,30 +468,12 @@ static const MemoryRegionOps sn0_arcs_ops = {
 };
 
 /*
- * One stub per vector entry, and the vector that points at them. A stub forms
- * the address of its own slot in the trap region, loads from it, and returns;
- * the assembler temporary carries the address because it is reserved and cannot
- * be live across a call, and it is clear of the registers holding the arguments
- * the routine is about to read.
- *
- * `stub_index` is where in the shared stub area this vector's stubs start,
- * and `op_base` is the trap-page slot — and so the dispatcher's op number —
- * the first entry lands on. The firmware call vector and the private vector
- * share one stub area and one trap page, each continuing where the other
- * leaves off, so the two never collide and the dispatcher tells them apart
- * by op number alone.
+ * One stub per vector entry: form the slot address, load, return. The two
+ * vectors share one stub area and one trap page, told apart by op number.
  */
 static void sn0_build_trap_stub(uint8_t *stub, uint64_t slot)
 {
-    /*
-     * Two instructions are enough only because the trap page sits in the
-     * compatibility segment: lui sign-extends on a 64-bit processor, so this
-     * pair addresses 0xffffffff_xxxx_xxxx and nothing else, and the load's
-     * displacement is signed. Both hold for the page this machine places at
-     * kseg1, and a page moved into one of the machine's 64-bit windows would
-     * silently load from the wrong address instead -- so the reach is
-     * asserted here rather than left for a guest to discover.
-     */
+    /* Two instructions reach only sign-extended addresses; assert the reach. */
     assert(slot == (uint64_t)(int64_t)(int32_t)slot);
     assert((slot & 0xffff) < 0x8000);
 
@@ -716,34 +502,9 @@ static void sn0_build_arcs(uint8_t *fw, hwaddr fw_vaddr, hwaddr trap_vaddr,
 }
 
 /*
- * One component record, with the fields every kind of component shares.
- *
- * `index` is the component's position in the flat graph array, which is
- * where its record physically lives and has to be unique and sequential
- * across every type. `virtual_id` is a different thing that today happens to
- * take the same values by coincidence: IRIX requires a processor
- * component's virtual identifier to be its processor number specifically,
- * checked for range and uniqueness on every boot, and no consumer has been
- * found that reads it for any other type — but numbering every component by
- * its ordinal among components of its own type is one rule rather than a
- * type-by-type list of exceptions, and it is what writing the flat index
- * was standing in for as long as each type had exactly one member appearing
- * first. Add a second processor, or a second component of any type, and the
- * two numbers stop agreeing.
- *
- * `physical_id` is a third identifier again, and it is a parameter rather than
- * something a caller may add afterwards because leaving it out is exactly the
- * defect this signature exists to prevent. Real firmware writes it for every
- * component type and each type means something different by it: a processor's
- * is its processor index, a Hub's is its node identifier, a memory bank's is
- * its bank index, the I/O bridge's is its widget number, and a disk or I/O
- * controller's is its PCI device number. It shares a record with `widget`,
- * which for most types is a different number for a different purpose, so a
- * model that writes only one of the two is wrong in a way that reads as
- * plausible: the guest that skips a component and the guest that addresses the
- * wrong widget both look like ordinary machines. The vendor's own firmware
- * reads this field and not `widget` to learn which widget the I/O bridge is,
- * and a zero there sends it to widget zero.
+ * `index` is the flat array slot, `virtual_id` the ordinal within the
+ * type, `physical_id` the per-type physical position -- the field vendor
+ * firmware reads, not `widget`, to find the I/O bridge.
  */
 static void sn0_component(uint8_t *graph, unsigned int index,
                           unsigned int virtual_id, uint8_t type,
@@ -762,20 +523,9 @@ static void sn0_component(uint8_t *graph, unsigned int index,
     c[0x20] = widget;
     stw_be_p(c + 0x22, nasid);
     stl_be_p(c + 0x1c, virtual_id);
-    /*
-     * Padding in the reference declaration, but OpenBSD declares a bitfield
-     * across these two bytes holding an Origin 3000 controller port, a PCI bus
-     * number, a multifunction flag and a PCI function number. Leaving them to
-     * whatever the buffer held would have an OpenBSD guest read invented PCI
-     * routing out of a machine that has none, so they are zeroed on purpose
-     * rather than by luck.
-     */
+    /* Padding upstream, but an OpenBSD PCI-routing bitfield: zeroed. */
     stw_be_p(c + 0x24, 0);
-    /*
-     * The back-pointer to a matching firmware component is read for every
-     * component a guest visits, so it is zero rather than left as whatever the
-     * buffer held.
-     */
+    /* The firmware back-pointer is read for every component; zero it. */
     stq_be_p(c + 0x28, 0);
 }
 
@@ -786,18 +536,8 @@ static uint8_t *sn0_component_at(uint8_t *graph, unsigned int index)
 }
 
 /*
- * One board record, linked to the next. The list is terminated only by a zero
- * next-board offset: a consumer reads the record first and checks afterwards,
- * so there is no escape from a bad link. A board without the local-board kind
- * is skipped entirely, components and all.
- *
- * The declared count and the number of components actually populated in the
- * array are separate parameters rather than one, because real firmware makes
- * them disagree on this machine's midplane: it populates one component and
- * declares a count of zero, on purpose, so that a consumer walking the array
- * to the declared count never visits it. `components` is how many entries
- * this call populates; `declared_count` is what the count field says. Every
- * board but the midplane wants them equal, which is what the callers do.
+ * `components` is how many entries are populated, `declared_count` what
+ * the count field says; real firmware makes them disagree on the midplane.
  */
 static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
                       uint8_t version, unsigned int next,
@@ -813,12 +553,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
     b[0x05] = type;
     b[0x06] = version;
     b[0x17] = declared_count;
-    /*
-     * A board's components are addressed relative to the board's own node
-     * identifier rather than the node whose list is being walked, and that
-     * field also indexes a table with no bounds check, so it has to be right
-     * and in range on every board even here.
-     */
+    /* The board's own node, and an unchecked table index: keep it right. */
     stw_be_p(b + 0x20, nasid);
     for (i = 0; i < components; i++) {
         stl_be_p(b + 0x24 + i * 4,
@@ -827,16 +562,7 @@ static void sn0_board(uint8_t *graph, unsigned int index, uint8_t type,
     }
 }
 
-/*
- * The configuration graph: a header carrying the console descriptor inline,
- * then the three board records a single-node Origin 200 emits.
- *
- * The board list follows what a real machine of this generation emits rather
- * than what would be tidiest. Its midplane board carries no crossbar component
- * at all — just a module serial number — which is why a guest falling back
- * to assuming the Hub sits at a fixed widget is the normal path on this machine
- * and not a degraded one.
- */
+/* The console descriptor inline in the header, then three board records. */
 static void sn0_build_graph(MachineState *machine, unsigned int node_index)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -863,87 +589,29 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     /* The structure version, which real firmware writes as zero. */
     stl_be_p(graph + 0x08, 0);
     stl_be_p(graph + 0x0c, 0x48);               /* allocation arenas */
-    /*
-     * Redundant with the descriptor embedded below and it has to agree with it:
-     * a guest reaches the descriptor by adding this to the header's own
-     * address, so anything else points the console into the middle of the
-     * header.
-     */
+    /* Must agree with the descriptor embedded below. */
     stl_be_p(graph + 0x10, SN0_GRAPH_CONSOLE_OFF);
     stl_be_p(graph + 0x14, SN0_GRAPH_BOARDS);
 
     /*
-     * The console descriptor. The port offset is the trap: a guest picks which
-     * generation of I/O controller this is from the low twelve bits of the
-     * serial-port base, and which register a write lands on from the low
-     * twenty. Those are not the same field, and a value that satisfies the
-     * first while wrong for the second gives a guest that identifies its
-     * console correctly and then drives an address that answers nothing.
-     *
-     * All three base fields share one root rather than being composed
-     * separately, because composing them separately is how the device window
-     * came to be present in one of them and missing from the other two. The
-     * three are read by different guests for different purposes, so a
-     * correction applied to one does not announce itself to the others.
-     *
-     * **The root is the widget, not the device window, and that is the whole
-     * of this arrangement.** Two of the three fields do live inside the
-     * controller's own window on the bus; the configuration base does not. It
-     * is a *sibling* of that window in the bridge's widget space, at a lower
-     * offset. Rooted at the device window, the correct configuration address
-     * is not merely unwritten — it is unreachable, and every value the code
-     * could express is wrong. Rooted at the widget, each field names its own
-     * offset and the shared terms still have one source, so a correction to
-     * the widget number or the space base reaches all three.
+     * All three base fields are rooted at the widget, not the device
+     * window: the configuration base is a sibling of that window.
      */
     widget = 0x9200000000000000ULL | SN0_PCI_WIDGET_BASE;
 
-    /*
-     * Every term is a compile-time constant, so the composition is checked
-     * where a wrong one cannot be built rather than only where it can be
-     * caught. That is worth more here than a test would be: the three fields
-     * are read by different guests and one of them by no guest we boot, so a
-     * test can only fail for whichever field somebody thought to cover.
-     *
-     * The serial-port base is the term with a capture behind it, and the whole
-     * width is compared. Its low twelve bits alone are the controller's
-     * generation and its low twenty the register offset, so a check on either
-     * accepts values wrong in the part it does not look at — which is
-     * how two wrong values reached this field before.
-     */
+    /* Full width: a partial check accepts values wrong where it looks away. */
     QEMU_BUILD_BUG_ON((0x9200000000000000ULL | SN0_PCI_WIDGET_BASE |
                        SN0_CONSOLE_PORT_OFFSET) != 0x9200000008620178ULL);
 
-    /*
-     * The serial-port base, which OpenBSD splits into a bus and a register
-     * offset. This is the field carrying the generation trap in its low twelve
-     * bits.
-     */
+    /* The serial-port base; the generation is in its low twelve bits. */
     stq_be_p(console + 0x00, widget | SN0_CONSOLE_PORT_OFFSET);
 
-    /*
-     * The configuration base: the controller's type 0 PCI configuration
-     * window, which the vendor kernel's own controller-reset path follows as a
-     * pointer into configuration space. Not the chip's memory base, which is
-     * what this field held until the two were told apart — the same value as
-     * the field below it, and wrong by the whole device window.
-     *
-     * Still derived rather than captured: nothing has been observed in this
-     * field on real hardware. What makes the derivation checkable without one
-     * is that the geometry is public — mainline Linux gives the bridge's type
-     * 0 base and its per-device stride in arch/mips/include/asm/pci/bridge.h,
-     * with a macro composing them exactly as the bridge's header here does.
-     */
+    /* The type 0 window the vendor kernel follows; derived, not captured. */
     stq_be_p(console + 0x08, widget | SGI_BRIDGE_CFG0_DEVICE(SN0_IOC3_DEVICE));
 
     /*
-     * The memory base, the one field in this descriptor Linux reads. It takes
-     * this as the base of the controller chip and adds the chip's own register
-     * offset itself, validating nothing — no null check, no signature, no
-     * timeout. So it needs the device window the serial-port base carries, and
-     * it needs to be an address the processor can issue rather than a bare
-     * physical one. Wrong here, Linux takes a bus error or spins forever on a
-     * transmitter-empty bit that never sets, and both look like a silent boot.
+     * The one field Linux reads: it adds the register offset itself and
+     * validates nothing, so it must be processor-issuable.
      */
     stq_be_p(console + 0x10, widget | SN0_BRIDGE_DEVICE2);
     stw_be_p(console + 0x18, SN0_CONSOLE_BAUD);
@@ -956,11 +624,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     sn0_board(graph, 0, SN0_BOARD_NODE, SN0_BOARD_VERSION_NODE,
               SN0_GRAPH_BOARDS + SN0_GRAPH_BOARD_SIZE, 0, cpu_count + 2,
               cpu_count + 2, node_state->nasid);
-    /*
-     * These physical identifiers name different things: a processor's slice,
-     * the Hub's node, and the memory component's first bank. Only the latter
-     * two remain zero when slice B is populated.
-     */
+    /* Physical identifiers here: a slice, the Hub's node, a first bank. */
     for (i = 0; i < cpu_count; i++) {
         sn0_component(graph, i, node_index * SN0_CPUS_PER_NODE + i,
                       SN0_COMP_PROCESSOR, SN0_COMP_REV_UNKNOWN, i, 0,
@@ -972,19 +636,11 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     sn0_component(graph, memory_component, 0, SN0_COMP_MEMORY,
                   SN0_COMP_REV_UNKNOWN, 0, 0, node_state->nasid);
 
-    /*
-     * The processor's own fields, which are the only source a guest has for its
-     * clock and cache: with none readable its clock stays zero, which breaks
-     * its delay loop, and it dies just after its last printed line. The
-     * identification field is sixteen bits, so it carries the low half of the
-     * processor identification register and not the whole of it.
-     */
+    /* The only source for the guest's clock; zero breaks its delay loop. */
     for (i = 0; i < cpu_count; i++) {
         cpu = sn0_component_at(graph, i);
         stw_be_p(cpu + 0x38, 0x0926);           /* identification, low half */
-        /*
-         * The floating-point unit is on the same die but reports revision zero.
-         */
+        /* The on-die floating-point unit reports revision zero. */
         stw_be_p(cpu + 0x3a, 0x0900);
         stw_be_p(cpu + 0x3c, smc->cpu_module.clock_hz / 1000000); /* clock in MHz */
         stw_be_p(cpu + 0x3e, 1);                /* secondary cache, megabytes */
@@ -992,30 +648,13 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     }
 
     hub = sn0_component_at(graph, hub_component);
-    /*
-     * The port descriptor at 0x3c: this Hub names no crossbar link, so the
-     * node-identifier bits must read as the invalid marker rather than the
-     * zero the buffer starts with. A consumer that treats zero as a real
-     * node follows it into a board lookup at this node's own hardware
-     * directory and fails to recognise it as a board.
-     */
+    /* No crossbar link: the node bits must read invalid, not zero. */
     stq_be_p(hub + 0x3c, SN0_PORT_UNCONNECTED);
     stq_be_p(hub + 0x58, smc->hub_hz);          /* Hub clock in hertz */
 
     /*
-     * The memory bank, in the eight-bank layout the addressing mode this
-     * machine reports calls for. The mode is not just a count: the other
-     * mode's record is eight bytes shorter, so it moves the directory
-     * attribute too, and a guest reading four bank sizes out of a record
-     * holding eight takes the fifth bank's size for the attribute while
-     * separately computing every node-relative address with the wrong shift.
-     * One guest cannot even adapt, its bank count being fixed when the kernel
-     * is built.
-     *
-     * The guest reads the mode from the Hub's network-interface status
-     * register, which makes this layout conditional on that register rather
-     * than on anything visible here. The firmware test asserts the two
-     * together so neither can be changed alone.
+     * The eight-bank layout the reported addressing mode calls for; the
+     * firmware test asserts mode and layout together.
      */
     mem = sn0_component_at(graph, memory_component);
     stw_be_p(mem + 0x38, total_mb);             /* total in megabytes */
@@ -1025,19 +664,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     }
 
     /*
-     * Board 1: the midplane record, carrying a module serial number and
-     * nothing else, which is what a real Origin 200 emits.
-     *
-     * Real firmware populates that one component and declares a count of
-     * zero — deliberately, not by omission. OpenBSD's enumeration loop runs
-     * to the declared count rather than to the end of the array, so on real
-     * hardware the serial-number component is present and never visited.
-     * There is a mechanism behind the number, not only a captured value to
-     * follow: real firmware adds the component and then decrements the
-     * count by one on purpose, and its own consumer for that component reads
-     * it back at the index *equal to* the (decremented) count — exactly the
-     * slot the decrement excludes from an ordinary walk. A count of one
-     * would put the component one slot away from where that consumer looks.
+     * Board 1: the midplane. Real firmware populates one component and
+     * declares a count of zero; its consumer reads the excluded slot.
      */
     sn0_board(graph, 1, SN0_BOARD_MIDPLANE, SN0_BOARD_VERSION,
               SN0_GRAPH_BOARDS + 2 * SN0_GRAPH_BOARD_SIZE,
@@ -1046,31 +674,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                   SN0_COMP_REV_UNKNOWN, 0, 0, node_state->nasid);
 
     /*
-     * Board 2: the base-I/O record, and the end of the list. Nothing on the
-     * path to the console switch reads it; it is here because the graph has to
-     * describe the machine that was actually built, and because the moment a
-     * console works this is what a guest walks looking for one.
-     *
-     * Four components in this order — the I/O bridge, two disk controllers,
-     * then the I/O controller — matching a real Origin 200's own captured
-     * graph and hardware inventory (docs/component-taxonomy.md's captured
-     * `hinv` output, docs/library/boot-logs.md). Every component on this board
-     * hangs off the same widget and each carries a different physical
-     * identifier, which is what makes the two fields easy to confuse and worth
-     * stating together here.
-     *
-     * The I/O bridge's physical identifier is its widget number. The vendor's
-     * own firmware reads that field, not the widget field beside it, to learn
-     * which widget its bridge is, and then addresses the bridge's error
-     * registers through whatever it finds — so a zero here sends the firmware
-     * to widget zero and it faults there.
-     *
-     * Each disk and I/O controller's physical identifier is its PCI device
-     * number, and its virtual identifier is its controller number. A guest's
-     * boot-device walk compares both against what the Bridge's own PCI probe
-     * finds. These are the same SN0_SCSI_DEVICE0/1 and SN0_IOC3_DEVICE
-     * constants that place those devices on the bus above, not values asserted
-     * separately that merely happen to agree with them.
+     * Board 2: bridge, two disk controllers, then the I/O controller, as
+     * captured. The bridge's physical identifier is its widget number; a
+     * zero sends the vendor firmware's error path to widget 0.
      */
     base_io_component = midplane_component + 1;
     sn0_board(graph, 2, SN0_BOARD_BASE_IO, SN0_BOARD_VERSION, 0,
@@ -1098,12 +704,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     g_free(graph);
 }
 
-/*
- * The structures a guest reads out of low memory before it has a console. Each
- * is written where the boot structures datasheet puts it, and each carries
- * every field rather than only the ones a guest currently reads: a block that
- * is right only where somebody looks is a trap for whoever comes next.
- */
+/* Each block carries every field, not only the ones a guest reads today. */
 static void sn0_build_structures(MachineState *machine,
                                  unsigned int node_index,
                                  uint64_t kernel_page, uint64_t kernel_pages)
@@ -1120,12 +721,8 @@ static void sn0_build_structures(MachineState *machine,
     int i;
 
     /*
-     * The parameter block. Two things about the signature are fatal to get
-     * wrong: it is a numeric constant rather than the four characters it looks
-     * like, and it has to sit in the second four bytes of a 64-bit field. A
-     * guest tests the 32-bit form first by reading the first four bytes, so a
-     * constant written there makes it conclude the firmware is 32-bit and read
-     * every pointer at half its real offset.
+     * The signature sits in the second four bytes: a guest tests the
+     * 32-bit form first, then reads every pointer at half its offset.
      */
     stq_be_p(param + 0x00, SN0_PARAM_SIGNATURE);
     stq_be_p(param + 0x08, 0x60);                   /* length of this block */
@@ -1138,13 +735,7 @@ static void sn0_build_structures(MachineState *machine,
     rom_add_blob_fixed("sn0.param", param, sizeof(param),
                        node + SN0_PARAM_BLOCK);
 
-    /*
-     * The hardware directory. Its index assignments are permanent, and on the
-     * path a guest takes when it finds no component tree the
-     * configuration-graph entry's signature is the whole of the machine
-     * identification — so that entry being right is what stops the guest
-     * halting with an unrecognised system.
-     */
+    /* The graph entry's signature is the whole machine identification. */
     for (i = 0; i < SN0_HW_DIR_ENTRIES; i++) {
         uint8_t *e = dir + i * SN0_HW_DIR_ENTRY_SIZE;
 
@@ -1171,14 +762,8 @@ static void sn0_build_structures(MachineState *machine,
             break;
         case SN0_HW_DIR_NMI:
             /*
-             * OpenBSD reads this entry's offset during machine setup and
-             * stores its own handler address and complement straight through
-             * it, before the console exists and with nothing that could
-             * report a wrong destination. A zeroed entry sends that write to
-             * node offset zero — the exception-handler area — invisibly,
-             * because the kernel's own exception vectors are copied over the
-             * same bytes later in setup and paper over the stray write. That
-             * is an ordering accident, not a property worth relying on.
+             * OpenBSD stores its handler address through this entry; a
+             * zeroed one sends that write somewhere invisible.
              */
             stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
             stq_be_p(e + 0x08, SN0_NMI_BLOCKS);
@@ -1211,13 +796,7 @@ static void sn0_build_structures(MachineState *machine,
     }
     rom_add_blob_fixed("sn0.hwdir", dir, sizeof(dir), node + SN0_HW_DIRECTORY);
 
-    /*
-     * The launch blocks. Not on the banner path — they matter when a second
-     * processor starts — but the directory advertises them from the start,
-     * so they are written from the start: both blocks carry the launch
-     * signature and are otherwise zeroed, since there is no second processor
-     * to launch yet.
-     */
+    /* Advertised from the start, so written from the start. */
     {
         uint8_t launch[SN0_LAUNCH_ENTRIES][SN0_LAUNCH_STRIDE] = { };
         int j;
@@ -1230,17 +809,8 @@ static void sn0_build_structures(MachineState *machine,
     }
 
     /*
-     * The global data area. The node table is the only enumeration of nodes
-     * either guest has: one walks it from entry zero and stops at the first
-     * negative entry with no fallback, so entry zero has to be this node and
-     * entry one has to be negative already.
-     *
-     * The entries are signed sixteen-bit identifiers. A guest reads each one
-     * with a signed halfword load and skips it when it is negative, so absent
-     * has to be all ones across both bytes: a single 0xff byte pairs with its
-     * neighbour and reads as a positive 255, which nothing rejects, and the
-     * guest then computes addresses on a node numbered 255 and faults on the
-     * first one it forms.
+     * The only node enumeration a guest has; absent is all ones across
+     * both bytes, or a stray 0xff reads as a positive node number.
      */
     stl_be_p(gda + 0x00, SN0_GDA_SIGNATURE);
     stw_be_p(gda + 0x04, SN0_GDA_VERSION);
@@ -1262,10 +832,7 @@ static void sn0_build_structures(MachineState *machine,
     mem[n].base_page = 1;
     mem[n++].pages = 1;
 
-    /*
-     * The load-bearing one: below page 0x20, or the guest silently becomes
-     * another machine.
-     */
+    /* Below page 0x20, or the guest silently becomes another machine. */
     mem[n].type = SN0_MEM_FREE;
     mem[n].base_page = SN0_MEM_FIRST_FREE_PAGE;
     mem[n++].pages = (kernel_pages ? kernel_page : SN0_MEM_PERMANENT_PAGE) -
@@ -1300,48 +867,9 @@ static void sn0_build_structures(MachineState *machine,
 }
 
 /*
- * The one piece of firmware state that is a register rather than a structure in
- * memory. Small window 0 is unreliable through a defect on the Hub's
- * processor-interface side, so a real firmware redirects widget 0 onto the last
- * big window and points all software at that; both guests carry the workaround
- * with a comment saying so, and each expects to find the redirection already
- * done. Ours does it here.
- *
- * **It changes nothing, and that is worth knowing rather than discovering.**
- * The entry resets to widget zero, first slice, memory space, which is field
- * for field the value the redirection writes — so all seven windows already
- * point at widget zero before any firmware runs, and removing this call would
- * not move the boot by a line. Nor is that an artifact of our model: it follows
- * from the reset value and the field layout, so a real firmware's write is the
- * same belt-and-braces on any machine whose I/O bridge sits behind widget zero.
- * Ours is kept for being what a real firmware does, and it stops being a no-op
- * the moment the entry, the widget or the reset value differs.
- *
- * The consequence for anyone reading a green boot: reaching widget zero proves
- * the translation mechanism and the reset value, and proves nothing whatever
- * about this write.
- *
- * **What does not make it dispensable is a guest doing it instead, and that
- * reason circulates.** OpenBSD programs translation entries — but the *other*
- * ones. Its large-window allocator skips this entry by a hard-coded index and
- * then reads through it as though it were small window zero, so the guest
- * depends on this entry being right and never writes it. A firmware that
- * omitted the redirection would not be rescued by the guest.
- *
- * The distinction matters because the two reasons have different reach. The
- * coincidence above is a property of a machine whose I/O bridge sits behind
- * widget zero; on a machine where the redirect named anything else, this write
- * would be doing real work, and an implementer carrying the guest-does-it
- * version would drop it there too.
- *
- * It has to run at reset rather than at machine creation, because the Hub
- * resets its translation table and would undo it — the same reason the firmware
- * structures in memory are loaded by the ROM loader at reset rather than
- * written once. And it has to run *after* the Hub's own reset, which is what
- * registering it from the machine-init-done notifier buys: reset handlers run
- * in registration order, and the bus everything hangs off is registered when
- * board init has finished, so a handler registered during board init would run
- * first and be overwritten.
+ * Real firmware redirects widget 0 onto the last big window; guests never
+ * write the entry themselves. The write matches the reset value, so a
+ * green boot proves nothing about it. Run after the Hub's own reset.
  */
 void sn0_firmware_reset(void *opaque)
 {
@@ -1354,56 +882,9 @@ void sn0_firmware_reset(void *opaque)
 }
 
 /*
- * The PCI resources real ARCS PROM assigns at POST (task #43): a BAR for
- * each attached device, and the I/O bridge's own per-device window pre-aimed
- * at the base I/O controller's, so a guest can reach its console before it
- * has run any code of its own that could aim a window itself.
- *
- * This has to run at reset for the same reason sn0_firmware_reset above
- * does, and it is the same bug in a new place if it does not: a PCI
- * device's config space and the bridge's own device-window registers both
- * reset along with everything else, so an assignment made once at board
- * init is exactly the state their own reset handlers clear. Registering
- * this from the machine-init-done notifier, the same as that function, puts
- * it after the devices whose reset would otherwise undo it.
- *
- * Every device's window is pre-aimed, not only the controller's; see sn0.h
- * for why an earlier version of this function left the two adapters with
- * resources assigned but no window aimed, and for the guest that premise
- * did not hold for.
- *
- * Every device gets PCI_COMMAND_MASTER along with its space-decode bits.
- * This is neither pure fidelity nor a functional requirement proven on this
- * machine — both claims have been made and retracted once already, and the
- * honest position sits between them.
- *
- * The mechanism is real: PCI_COMMAND_MASTER gates the qlogic-isp1040's
- * bus_master_as through the generic PCI core's bus_master_enable_region, so
- * a device this firmware left without it genuinely could not DMA. There is
- * no SeaBIOS-equivalent anywhere on this machine — nothing else assigns PCI
- * resources before a guest runs — so firmware setting it is the only place
- * mastering could come from for a guest that does not set it itself, the
- * same standard way real ARCS PROM sets it at POST alongside the space-
- * decode bits.
- *
- * But every guest this fork actually runs sets it itself, so the bit is
- * currently redundant rather than load-bearing. OpenBSD's qlw driver maps
- * its BARs through pci_mapreg_map() (sys/dev/pci/pci_map.c), whose internal
- * pci_mapreg_assign() unconditionally ORs PCI_COMMAND_MASTER_ENABLE into
- * the command register as part of mapping any BAR, before the driver's own
- * attach code ever touches PCI_COMMAND_STATUS_REG directly. Linux's ISP1040
- * driver does the equivalent explicitly: pci_set_master(pdev) in probe,
- * immediately after pci_enable_device() (drivers/scsi/qla1280.c). Neither
- * guest is depending on this machine to have done it first.
- *
- * And no DMA transfer has actually been observed succeeding on this Origin
- * 200 configuration regardless: the ISP1040's mailbox does not come up past
- * reset here yet (task #44), so this fix is unexercised by anything this
- * fork currently boots. Keep it because it is what real firmware does and
- * because a guest that does not self-enable mastering — none we run today,
- * but not a closed set — would need it; do not read its presence as
- * evidence the machine has been proven to DMA correctly, and do not read
- * its absence-until-now as evidence it did not matter.
+ * What real ARCS PROM assigns at POST, so a guest reaches its console
+ * before running code of its own. At reset, registered after the devices
+ * whose own reset would undo it; MASTER follows real firmware.
  */
 static void sn0_assign_node_pci_resources(SN0MachineState *s,
                                           unsigned int node_index)
@@ -1451,18 +932,7 @@ void sn0_assign_pci_resources(void *opaque)
     }
 }
 
-/*
- * Everything the machine's firmware side contributes at construction: the
- * flash contents, the call vectors and their trap region, a directly loaded
- * kernel or sashARCS, and the low-memory structures that describe both.
- * Runs after every node's memory and boot storage exist.
- */
-/*
- * argv/envp/stack for a directly-loaded sashARCS, in its own node-local
- * address space, placed a fixed gap above wherever this image's own
- * sections ended -- never a hard-coded address, since the two IRIX
- * releases this project holds ship differently sized sashARCS images.
- */
+/* A fixed gap above the image's own end; releases ship different sizes. */
 static void sn0_hand_off_sash(MachineState *machine, uint8_t *flash,
                               uint8_t *fw, hwaddr fw_vaddr, hwaddr node,
                               uint64_t entry, uint64_t gp_value,
@@ -1492,11 +962,7 @@ static void sn0_hand_off_sash(MachineState *machine, uint8_t *flash,
                            argv_array, envp_array, sp);
 }
 
-/*
- * One argument, the kernel's own name, which is what a firmware that
- * loaded it by name would pass. Nothing on the path to a console reads
- * it, but the count and the vector are both read, so both are real.
- */
+/* One argument, the kernel's own name; the count and vector are read. */
 static void sn0_hand_off_elf_kernel(MachineState *machine, uint8_t *flash,
                                     uint8_t *fw, hwaddr fw_vaddr,
                                     hwaddr node, uint64_t entry)
@@ -1526,13 +992,7 @@ void sn0_firmware_init(MachineState *machine)
     uint64_t kernel_low = 0, kernel_high = 0;
     unsigned int node_index;
 
-    /*
-     * A firmware image, if one was supplied, replaces what this file would
-     * otherwise synthesize. Both go into the same buffer and reach the flash as
-     * one blob, so there is never a question of which of two writers lands
-     * last. An image shorter than the flash leaves the synthesized bytes behind
-     * it, which is what a partly programmed flash looks like.
-     */
+    /* A -bios image replaces this buffer; a short one leaves bytes behind. */
     flash = g_malloc0(SN0_FLASH_SIZE);
     sn0_build_flash(smc, flash);
 
@@ -1550,12 +1010,7 @@ void sn0_firmware_init(MachineState *machine)
     }
     sn0_configure_flash(smc, flash);
 
-    /*
-     * The firmware this machine presents, unless it was told to stand aside for
-     * a real image. The trap region, the stubs the vector entries point at, and
-     * the vector itself go together: any subset of them is a half-firmware that
-     * is worse than either state.
-     */
+    /* Trap region, stubs and vector go together; any subset is worse. */
     fw = g_malloc0(SN0_FW_TEXT_SIZE);
     fw_vaddr = (hwaddr)(int32_t)(0xa0000000 + SN0_FW_TEXT_LOCAL);
 
@@ -1569,14 +1024,7 @@ void sn0_firmware_init(MachineState *machine)
         sn0_build_arcs(fw, fw_vaddr, trap_vaddr, vector, SN0_ARCS_ENTRIES,
                        0, 0);
 
-        /*
-         * The SGI-private call vector. IRIX and the SGI standalone shell
-         * need it; the guests we boot never look at it. Every entry not
-         * separately dispatched falls to the shared trap handler's default
-         * case, which logs an unimplemented call rather than jumping to
-         * garbage — the same treatment the main vector's own unimplemented
-         * entries get.
-         */
+        /* The SGI-private vector; unimplemented entries hit the default. */
         sn0_build_arcs(fw, fw_vaddr, trap_vaddr, private_vector,
                        SN0_ARCS_PRIVATE_ENTRIES, SN0_ARCS_ENTRIES,
                        SN0_ARCS_PRIVATE_BASE_OP);
@@ -1609,10 +1057,8 @@ void sn0_firmware_init(MachineState *machine)
             sn0_build_trap_stub(fw + SN0_FW_LAUNCH_STUB,
                                trap_vaddr + SN0_FIRMWARE_LAUNCH_OP * 8);
             /*
-             * Remote slaves can execute the kernel's 64-bit FPU loads before
-             * its per-node exception vectors are live. Match the execution
-             * mode supplied by PROM for that transition; Linux replaces the
-             * status word in setup_c0_status_sec immediately afterwards.
+             * Slaves can run the kernel's 64-bit FPU loads before its
+             * vectors are live; match PROM's execution mode.
              */
             stl_be_p(secondary, 0x3c1a3400); /* lui k0, CU0|CU1|FR */
             stl_be_p(secondary + 4,
@@ -1626,11 +1072,7 @@ void sn0_firmware_init(MachineState *machine)
         }
     }
 
-    /*
-     * A kernel, loaded straight from an ELF image, which is the boot path every
-     * test and every guest we care about uses. Booting from a disk is the
-     * firmware's job and arrives with the disk.
-     */
+    /* The direct load path every test and guest we boot uses. */
     if (machine->kernel_filename) {
         uint64_t entry, low, high, gp_value = 0;
         ssize_t elf_size = load_elf(machine->kernel_filename, NULL,
@@ -1661,16 +1103,8 @@ void sn0_firmware_init(MachineState *machine)
             bool elf_is_64 = false;
 
             /*
-             * IRIX kernels link as 32-bit ELF although they run in 64-bit
-             * mode, and the loader zero-extends a 32-bit entry point. A
-             * kseg address in the low word is the compatibility segment's
-             * address with its upper word all ones, so sign-extend it.
-             *
-             * The file's own class decides that, not the shape of the entry.
-             * A 64-bit ELF carries its upper word already, and one declaring
-             * an entry with that word clear means it; guessing from the value
-             * sends such an image to an address it never asked for. Reading
-             * the class costs one header read of a file already open once.
+             * IRIX links as 32-bit ELF; sign-extend its kseg entry, keyed
+             * on the file's class rather than the entry's shape.
              */
             if (load_elf_hdr(machine->kernel_filename, NULL, &elf_is_64,
                              NULL) && !elf_is_64 && (entry & 0x80000000)) {
@@ -1686,10 +1120,7 @@ void sn0_firmware_init(MachineState *machine)
         kernel_pages = DIV_ROUND_UP(kernel_high - kernel_low, 0x1000);
     }
 
-    /*
-     * The structures go in last, because the memory descriptors have to say
-     * where the kernel landed and how much of memory it took.
-     */
+    /* Last: the memory descriptors must say where the kernel landed. */
     if (s->synthesized_firmware) {
         for (node_index = 0; node_index < node_count; node_index++) {
             sn0_build_structures(machine, node_index,
@@ -1698,11 +1129,7 @@ void sn0_firmware_init(MachineState *machine)
         }
     }
 
-    /*
-     * Initialize the chip once. rom_add_blob_fixed() would register the
-     * contents as a ROM and copy them back on every machine reset, erasing
-     * environment changes the PROM deliberately retains across that reset.
-     */
+    /* Not rom_add_blob_fixed(): reset copy-back would erase retained state. */
     for (node_index = 0; node_index < node_count; node_index++) {
         MemoryRegion *chip = sysbus_mmio_get_region(
             SYS_BUS_DEVICE(s->nodes[node_index]->flash), 0);
@@ -1712,11 +1139,7 @@ void sn0_firmware_init(MachineState *machine)
     }
     g_free(flash);
 
-    /*
-     * The firmware's own instructions, in a region of the machine's rather than
-     * in the flash, so that whatever image the flash holds keeps every byte of
-     * it. Read-only, like the flash, because nothing should be writing here.
-     */
+    /* Outside the flash, so any -bios image keeps every byte of it. */
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node_state = s->nodes[node_index];
         hwaddr node_base = SN0_NODE_BASE(node_state->nasid);
