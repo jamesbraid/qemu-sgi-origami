@@ -1,0 +1,506 @@
+/*
+ * Alteon Tigon 2 Gigabit Ethernet controller (the SGI IRIS "eg" board).
+ *
+ * The card does almost nothing at power-on: the host driver downloads firmware
+ * into on-card SRAM, releases the embedded CPU, and thereafter talks to the
+ * running firmware through a shared-memory producer/consumer ring interface in
+ * host DRAM poked by a few mailbox doorbells. We do not execute the downloaded
+ * firmware; we model what the operational firmware does as the driver observes
+ * it (docs/datasheets/tigon.md, docs/plans/tigon-model.md).
+ *
+ * Register offsets, ring/descriptor layouts and the init sequence come from the
+ * public NetBSD "ti" driver (refs/netbsd-src/sys/dev/pci/if_ti.c, if_tireg.h),
+ * which implements the same published Tigon host interface the SGI eg driver is
+ * built to. This is a clean-room implementation: no SGI/IRIX source was read.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/log.h"
+#include "qemu/module.h"
+#include "qemu/units.h"
+#include "qapi/error.h"
+#include "hw/net/tigon.h"
+#include "hw/pci/pci.h"
+#include "hw/core/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "net/net.h"
+
+#define TIGON_PCI_VENDOR_ID     0x10a9   /* Silicon Graphics */
+#define TIGON_PCI_DEVICE_ID     0x0009   /* SGI Tigon */
+
+/* Register offsets inside the BAR (if_tireg.h). */
+#define TI_MISC_HOST_CTL        0x040
+#define TI_MISC_LOCAL_CTL       0x044
+#define TI_PCI_STATE            0x05c
+#define TI_WINBASE              0x068
+#define TI_WINDATA              0x06c
+#define TI_CPU_STATE            0x140
+#define TI_CPU_PROGRAM_COUNTER  0x144
+#define TI_SRAM_ADDR            0x154
+#define TI_SRAM_DATA            0x158
+#define TI_CPU_CTL_B            0x240
+#define TI_CPU_PROGRAM_COUNTER_B 0x244
+#define TI_MB_HOSTINTR          0x504
+#define TI_MB_CMDPROD_IDX       0x50c
+#define TI_MB_SENDPROD_IDX      0x514
+#define TI_MB_STDRXPROD_IDX     0x51c
+#define TI_MB_JUMBORXPROD_IDX   0x524
+#define TI_MB_MINIRXPROD_IDX    0x52c
+#define TI_GCR_BASE             0x600
+#define TI_GCR_END              0x6fc
+#define TI_GCR_GENINFO_HI       0x608
+#define TI_GCR_GENINFO_LO       0x60c
+#define TI_GCR_OPMODE           0x618
+#define TI_GCR_EVENTCONS_IDX    0x628
+#define TI_GCR_CMDCONS_IDX      0x62c
+#define TI_GCR_MASK_INTRS       0x664
+#define TI_GCR_RXRETURNCONS_IDX 0x680
+#define TI_GCR_CMDRING          0x700
+
+/* MISC_HOST_CTL bits. */
+#define TI_MHC_INTSTATE         0x00000001  /* interrupt state (read-only) */
+#define TI_MHC_CLEARINT         0x00000002  /* write to clear the interrupt */
+#define TI_MHC_RESET            0x00000008  /* write to reset the chip */
+#define TI_MHC_MASK_INTS        0x00000040  /* mask interrupts */
+#define TI_MHC_CHIP_REV_MASK    0xf0000000  /* chip revision (read-only) */
+
+/* CPU state bits. */
+#define TI_CPUSTATE_HALT        0x00010000
+
+#define TIGON_GCR_IDX(off)      (((off) - TI_GCR_BASE) >> 2)
+
+static bool tigon_irq_line(TigonState *s)
+{
+    /*
+     * One level-triggered INTA. There is no per-cause status register: the
+     * "status" is the set of producer indices the firmware wrote into host
+     * memory, so the model keeps an internal pending latch and gates delivery
+     * on the interrupt-mailbox hold-off and the MISC_HOST_CTL mask bit.
+     */
+    return s->irq_asserted && s->mb_hostintr == 0 &&
+           !(s->misc_host_ctl & TI_MHC_MASK_INTS);
+}
+
+static void tigon_update_irq(TigonState *s)
+{
+    pci_set_irq(PCI_DEVICE(s), tigon_irq_line(s));
+}
+
+static void tigon_reset_state(TigonState *s)
+{
+    /*
+     * Modeled defaults, not confirmed silicon power-on-reset values: the
+     * mailboxes and GCR indices are producer/consumer positions the driver
+     * always re-initialises, and the embedded CPUs come up halted (datasheet
+     * "On the concrete reset entries"). The SRAM backing store is deliberately
+     * not cleared: a guest resetting mid-download should not have to re-fetch
+     * firmware it already wrote.
+     */
+    s->misc_host_ctl = 0;
+    s->misc_local_ctl = 0;
+    s->pci_state = 0;
+    s->win_base = 0;
+    s->cpu_state_a = TI_CPUSTATE_HALT;
+    s->cpu_pc_a = 0;
+    s->cpu_ctl_b = TI_CPUSTATE_HALT;
+    s->cpu_pc_b = 0;
+    s->mb_hostintr = 0;
+    memset(s->gcr, 0, sizeof(s->gcr));
+    memset(s->cmd_ring, 0, sizeof(s->cmd_ring));
+    s->cpu_a_released = false;
+    s->gib_valid = false;
+    s->firmware_up = false;
+    s->promisc = false;
+    s->gib_base = 0;
+    s->ev_ring_base = 0;
+    s->ev_prodidx_ptr = 0;
+    s->tx_ring_base = 0;
+    s->tx_host_ring = false;
+    s->std_rx_ring_base = 0;
+    s->return_ring_base = 0;
+    s->return_ring_max = 0;
+    s->return_prodidx_ptr = 0;
+    s->tx_considx_ptr = 0;
+    s->event_prodidx = 0;
+    s->return_prodidx = 0;
+    s->tx_considx = 0;
+    s->std_rx_considx = 0;
+    s->std_rx_prodidx = 0;
+    s->cmd_considx = 0;
+    s->irq_asserted = false;
+    memset(&s->eeprom, 0, sizeof(s->eeprom));
+    s->eeprom.last_sda = true;   /* an idle serial line floats high */
+    tigon_update_irq(s);
+}
+
+static void tigon_misc_host_ctl_write(TigonState *s, uint32_t val)
+{
+    if (val & TI_MHC_RESET) {
+        tigon_reset_state(s);
+        return;
+    }
+    if (val & TI_MHC_CLEARINT) {
+        s->irq_asserted = false;
+    }
+    /* The chip-revision nibble and interrupt-state bit are read-only. */
+    s->misc_host_ctl = val & ~(TI_MHC_CHIP_REV_MASK | TI_MHC_INTSTATE |
+                               TI_MHC_RESET | TI_MHC_CLEARINT);
+    tigon_update_irq(s);
+}
+
+static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
+{
+    TigonState *s = opaque;
+
+    switch (addr) {
+    case TI_MISC_HOST_CTL:
+        return ((uint32_t)s->chip_rev << 28) | s->misc_host_ctl |
+               (tigon_irq_line(s) ? TI_MHC_INTSTATE : 0);
+    case TI_MISC_LOCAL_CTL:
+        return s->misc_local_ctl;
+    case TI_PCI_STATE:
+        return s->pci_state;
+    case TI_WINBASE:
+        return s->win_base;
+    case TI_CPU_STATE:
+        return s->cpu_state_a;
+    case TI_CPU_PROGRAM_COUNTER:
+        return s->cpu_pc_a;
+    case TI_CPU_CTL_B:
+        return s->cpu_ctl_b;
+    case TI_CPU_PROGRAM_COUNTER_B:
+        return s->cpu_pc_b;
+    case TI_MB_HOSTINTR:
+        return s->mb_hostintr;
+    default:
+        if (addr >= TI_GCR_BASE && addr <= TI_GCR_END) {
+            return s->gcr[TIGON_GCR_IDX(addr)];
+        }
+        if (addr >= TI_GCR_CMDRING &&
+            addr < TI_GCR_CMDRING + TIGON_CMD_RING_CNT * 4) {
+            return s->cmd_ring[(addr - TI_GCR_CMDRING) >> 2];
+        }
+        qemu_log_mask(LOG_UNIMP, "tigon: read from unimplemented register "
+                      "0x%03" HWADDR_PRIx "\n", addr);
+        return 0;
+    }
+}
+
+static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
+                            unsigned size)
+{
+    TigonState *s = opaque;
+
+    switch (addr) {
+    case TI_MISC_HOST_CTL:
+        tigon_misc_host_ctl_write(s, val);
+        return;
+    case TI_MISC_LOCAL_CTL:
+        s->misc_local_ctl = val;
+        return;
+    case TI_PCI_STATE:
+        s->pci_state = val;
+        return;
+    case TI_WINBASE:
+        s->win_base = val;
+        return;
+    case TI_CPU_STATE:
+        s->cpu_state_a = val;
+        return;
+    case TI_CPU_PROGRAM_COUNTER:
+        s->cpu_pc_a = val;
+        return;
+    case TI_CPU_CTL_B:
+        s->cpu_ctl_b = val;
+        return;
+    case TI_CPU_PROGRAM_COUNTER_B:
+        s->cpu_pc_b = val;
+        return;
+    case TI_MB_HOSTINTR:
+        s->mb_hostintr = val & 1;
+        tigon_update_irq(s);
+        return;
+    case TI_WINDATA:
+    case TI_SRAM_ADDR:
+    case TI_SRAM_DATA:
+    case TI_MB_CMDPROD_IDX:
+    case TI_MB_SENDPROD_IDX:
+    case TI_MB_STDRXPROD_IDX:
+    case TI_MB_JUMBORXPROD_IDX:
+    case TI_MB_MINIRXPROD_IDX:
+        qemu_log_mask(LOG_UNIMP, "tigon: write 0x%08x to unimplemented "
+                      "register 0x%03" HWADDR_PRIx "\n", (uint32_t)val, addr);
+        return;
+    default:
+        if (addr >= TI_GCR_BASE && addr <= TI_GCR_END) {
+            s->gcr[TIGON_GCR_IDX(addr)] = val;
+            return;
+        }
+        if (addr >= TI_GCR_CMDRING &&
+            addr < TI_GCR_CMDRING + TIGON_CMD_RING_CNT * 4) {
+            s->cmd_ring[(addr - TI_GCR_CMDRING) >> 2] = val;
+            return;
+        }
+        qemu_log_mask(LOG_UNIMP, "tigon: write 0x%08x to unimplemented "
+                      "register 0x%03" HWADDR_PRIx "\n", (uint32_t)val, addr);
+        return;
+    }
+}
+
+/*
+ * The register file is little-endian on the PCI bus (the ISP1040 precedent for
+ * a merchant LE-native controller behind this same Bridge); the memory core
+ * and the Bridge's own register-space correction carry the byte order. Each
+ * register is 32 bits: impl is pinned alongside valid because an undeclared
+ * min of 1 would let a byte access reach a side-effecting doorbell or the
+ * MISC_HOST_CTL reset/swap bits through a partial-word path.
+ */
+static const MemoryRegionOps tigon_reg_ops = {
+    .read = tigon_reg_read,
+    .write = tigon_reg_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+/*
+ * The 2 KB SRAM window at 0x800, positioned over card SRAM by WINBASE. The
+ * downloaded firmware lands here and is read back but never executed. Byte and
+ * halfword accesses are allowed since a download or diagnostic read may be
+ * narrower than the register block's strict 32-bit rule.
+ */
+static uint64_t tigon_sram_read(void *opaque, hwaddr addr, unsigned size)
+{
+    TigonState *s = opaque;
+    uint32_t off = (s->win_base + addr) % s->sram_size;
+
+    if (off + size > s->sram_size) {
+        return 0;
+    }
+    return ldn_le_p(s->sram + off, size);
+}
+
+static void tigon_sram_write(void *opaque, hwaddr addr, uint64_t val,
+                             unsigned size)
+{
+    TigonState *s = opaque;
+    uint32_t off = (s->win_base + addr) % s->sram_size;
+
+    if (off + size > s->sram_size) {
+        return;
+    }
+    stn_le_p(s->sram + off, size, val);
+}
+
+static const MemoryRegionOps tigon_sram_ops = {
+    .read = tigon_sram_read,
+    .write = tigon_sram_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
+static bool tigon_can_receive(NetClientState *nc)
+{
+    /* Filled in once the receive path lands; nothing to receive yet. */
+    return false;
+}
+
+static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
+                             size_t size)
+{
+    return size;
+}
+
+static void tigon_net_cleanup(NetClientState *nc)
+{
+    TigonState *s = qemu_get_nic_opaque(nc);
+
+    s->nic = NULL;
+}
+
+static NetClientInfo tigon_net_info = {
+    .type = NET_CLIENT_DRIVER_NIC,
+    .size = sizeof(NICState),
+    .can_receive = tigon_can_receive,
+    .receive = tigon_receive,
+    .cleanup = tigon_net_cleanup,
+};
+
+static void tigon_reset_hold(Object *obj, ResetType type)
+{
+    TigonState *s = TIGON(obj);
+
+    tigon_reset_state(s);
+}
+
+static void tigon_realize(PCIDevice *dev, Error **errp)
+{
+    TigonState *s = TIGON(dev);
+
+    if (s->sram_size == 0) {
+        error_setg(errp, "tigon: sram-size must be non-zero");
+        return;
+    }
+
+    /*
+     * PCI identity comes from instance properties rather than class-level
+     * constants, so the SGI board is one property instantiation of the generic
+     * Alteon part (hw/misc/sgi-bridge-dma-test.c uses the same pattern).
+     */
+    pci_config_set_vendor_id(dev->config, s->vendor_id);
+    pci_config_set_device_id(dev->config, s->device_id);
+    pci_config_set_revision(dev->config, s->revision);
+    pci_config_set_class(dev->config, PCI_CLASS_NETWORK_ETHERNET);
+    pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID, s->subsystem_vendor_id);
+    pci_set_word(dev->config + PCI_SUBSYSTEM_ID, s->subsystem_id);
+    dev->config[PCI_INTERRUPT_PIN] = 0x01;   /* INTA */
+
+    s->sram = g_malloc0(s->sram_size);
+
+    /*
+     * One 16 KB non-prefetchable memory BAR (WINDATA, SRAM_DATA and the
+     * mailboxes have read side effects). The register block is the first 2 KB;
+     * the 2 KB SRAM window sits at 0x800 as its own sub-region.
+     */
+    memory_region_init(&s->bar, OBJECT(s), "tigon", TIGON_BAR_SIZE);
+    memory_region_init_io(&s->reg, OBJECT(s), &tigon_reg_ops, s,
+                          "tigon-regs", TIGON_REG_SIZE);
+    memory_region_init_io(&s->sram_win, OBJECT(s), &tigon_sram_ops, s,
+                          "tigon-sram-window", TIGON_SRAM_WIN_SIZE);
+    memory_region_add_subregion(&s->bar, 0, &s->reg);
+    memory_region_add_subregion(&s->bar, TIGON_SRAM_WINDOW, &s->sram_win);
+    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
+
+    qemu_macaddr_default_if_unset(&s->conf.macaddr);
+    s->nic = qemu_new_nic(&tigon_net_info, &s->conf,
+                          object_get_typename(OBJECT(dev)), DEVICE(dev)->id,
+                          &DEVICE(dev)->mem_reentrancy_guard, s);
+    qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
+}
+
+static void tigon_exit(PCIDevice *dev)
+{
+    TigonState *s = TIGON(dev);
+
+    qemu_del_nic(s->nic);
+    g_free(s->sram);
+    s->sram = NULL;
+}
+
+static const VMStateDescription vmstate_tigon_eeprom = {
+    .name = "tigon/eeprom",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(last_clk, TigonEeprom),
+        VMSTATE_BOOL(last_sda, TigonEeprom),
+        VMSTATE_UINT8(state, TigonEeprom),
+        VMSTATE_UINT8(bitcnt, TigonEeprom),
+        VMSTATE_UINT8(shift, TigonEeprom),
+        VMSTATE_UINT8(bytenum, TigonEeprom),
+        VMSTATE_BOOL(read_mode, TigonEeprom),
+        VMSTATE_UINT16(addr, TigonEeprom),
+        VMSTATE_BOOL(din, TigonEeprom),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * The rings live in guest memory and migrate with it; only the model's own
+ * indices into them, the parsed ring residency, and the firmware/interrupt
+ * latches need saving. The SRAM backing array is deliberately not migrated:
+ * it holds a never-executed firmware image a fresh download reproduces.
+ */
+static const VMStateDescription vmstate_tigon = {
+    .name = "tigon",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_PCI_DEVICE(parent_obj, TigonState),
+        VMSTATE_UINT32(misc_host_ctl, TigonState),
+        VMSTATE_UINT32(misc_local_ctl, TigonState),
+        VMSTATE_UINT32(pci_state, TigonState),
+        VMSTATE_UINT32(win_base, TigonState),
+        VMSTATE_UINT32(cpu_state_a, TigonState),
+        VMSTATE_UINT32(cpu_pc_a, TigonState),
+        VMSTATE_UINT32(cpu_ctl_b, TigonState),
+        VMSTATE_UINT32(cpu_pc_b, TigonState),
+        VMSTATE_UINT32(mb_hostintr, TigonState),
+        VMSTATE_UINT32_ARRAY(gcr, TigonState, TIGON_GCR_REGS),
+        VMSTATE_UINT32_ARRAY(cmd_ring, TigonState, TIGON_CMD_RING_CNT),
+        VMSTATE_BOOL(cpu_a_released, TigonState),
+        VMSTATE_BOOL(gib_valid, TigonState),
+        VMSTATE_BOOL(firmware_up, TigonState),
+        VMSTATE_BOOL(promisc, TigonState),
+        VMSTATE_UINT64(gib_base, TigonState),
+        VMSTATE_UINT64(ev_ring_base, TigonState),
+        VMSTATE_UINT64(ev_prodidx_ptr, TigonState),
+        VMSTATE_UINT64(tx_ring_base, TigonState),
+        VMSTATE_BOOL(tx_host_ring, TigonState),
+        VMSTATE_UINT64(std_rx_ring_base, TigonState),
+        VMSTATE_UINT64(return_ring_base, TigonState),
+        VMSTATE_UINT32(return_ring_max, TigonState),
+        VMSTATE_UINT64(return_prodidx_ptr, TigonState),
+        VMSTATE_UINT64(tx_considx_ptr, TigonState),
+        VMSTATE_UINT32(event_prodidx, TigonState),
+        VMSTATE_UINT32(return_prodidx, TigonState),
+        VMSTATE_UINT32(tx_considx, TigonState),
+        VMSTATE_UINT32(std_rx_considx, TigonState),
+        VMSTATE_UINT32(std_rx_prodidx, TigonState),
+        VMSTATE_UINT32(cmd_considx, TigonState),
+        VMSTATE_BOOL(irq_asserted, TigonState),
+        VMSTATE_STRUCT(eeprom, TigonState, 1, vmstate_tigon_eeprom,
+                       TigonEeprom),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const Property tigon_properties[] = {
+    DEFINE_NIC_PROPERTIES(TigonState, conf),
+    DEFINE_PROP_UINT16("vendor-id", TigonState, vendor_id, TIGON_PCI_VENDOR_ID),
+    DEFINE_PROP_UINT16("device-id", TigonState, device_id, TIGON_PCI_DEVICE_ID),
+    DEFINE_PROP_UINT16("subsystem-vendor-id", TigonState,
+                       subsystem_vendor_id, 0),
+    DEFINE_PROP_UINT16("subsystem-id", TigonState, subsystem_id, 0),
+    DEFINE_PROP_UINT8("revision", TigonState, revision, 0),
+    DEFINE_PROP_UINT8("chip-rev", TigonState, chip_rev, 0x6),
+    DEFINE_PROP_UINT8("port-count", TigonState, port_count, 1),
+    DEFINE_PROP_STRING("media", TigonState, media),
+    DEFINE_PROP_SIZE32("sram-size", TigonState, sram_size, 1 * MiB),
+};
+
+static void tigon_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
+
+    pc->realize = tigon_realize;
+    pc->exit = tigon_exit;
+    pc->vendor_id = TIGON_PCI_VENDOR_ID;
+    pc->device_id = TIGON_PCI_DEVICE_ID;
+    pc->class_id = PCI_CLASS_NETWORK_ETHERNET;
+    rc->phases.hold = tigon_reset_hold;
+    dc->vmsd = &vmstate_tigon;
+    dc->desc = "Alteon Tigon 2 Gigabit Ethernet (SGI eg)";
+    device_class_set_props(dc, tigon_properties);
+    set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
+}
+
+static const TypeInfo tigon_types[] = {
+    {
+        .name = TYPE_TIGON,
+        .parent = TYPE_PCI_DEVICE,
+        .instance_size = sizeof(TigonState),
+        .class_init = tigon_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { },
+        },
+    },
+};
+
+DEFINE_TYPES(tigon_types)

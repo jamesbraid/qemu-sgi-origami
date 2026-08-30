@@ -52,6 +52,7 @@ config SGI_SN0
     select SGI_IOC3
     select SGI_IOC3_ETH
     select SGI_XBOW
+    select TIGON
 
 config FULOONG
     bool
