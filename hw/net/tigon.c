@@ -95,11 +95,12 @@
 /* Ring control block host-ring residency flag (if_tireg.h). */
 #define TI_RCB_FLAG_HOST_RING   0x0040
 
-/* Buffer-descriptor flags (if_tireg.h). */
+/* Buffer-descriptor flags and type (if_tireg.h). */
 #define TI_BDFLAG_END           0x0004
 #define TI_BDFLAG_UCAST_PKT     0x0020
 #define TI_BDFLAG_MCAST_PKT     0x0040
 #define TI_BDFLAG_BCAST_PKT     0x0060
+#define TI_BDTYPE_RECV_BD       0x0002
 
 /* Largest frame the model assembles (jumbo, with slack). */
 #define TIGON_MAX_FRAME_SIZE    9600
@@ -286,6 +287,12 @@ static uint64_t tigon_dma_ld_addr(TigonState *s, uint64_t addr)
 {
     return ((uint64_t)tigon_dma_ld32(s, addr) << 32) |
            tigon_dma_ld32(s, addr + 4);
+}
+
+static void tigon_dma_st_addr(TigonState *s, uint64_t addr, uint64_t v)
+{
+    tigon_dma_st32(s, addr, v >> 32);
+    tigon_dma_st32(s, addr + 4, v & 0xffffffff);
 }
 
 /*
@@ -563,11 +570,20 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
     case TI_MB_SENDPROD_IDX:
         tigon_tx(s, val);
         return;
+    case TI_MB_STDRXPROD_IDX:
+        if (val >= TI_STD_RX_RING_CNT) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "tigon: standard-rx producer index %u out of "
+                          "range\n", (uint32_t)val);
+        }
+        s->std_rx_prodidx = val % TI_STD_RX_RING_CNT;
+        /* A frame refused before a buffer existed can now be delivered. */
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        return;
     case TI_WINDATA:
     case TI_SRAM_ADDR:
     case TI_SRAM_DATA:
     case TI_MB_CMDPROD_IDX:
-    case TI_MB_STDRXPROD_IDX:
     case TI_MB_JUMBORXPROD_IDX:
     case TI_MB_MINIRXPROD_IDX:
         qemu_log_mask(LOG_UNIMP, "tigon: write 0x%08x to unimplemented "
@@ -654,13 +670,84 @@ static const MemoryRegionOps tigon_sram_ops = {
 
 static bool tigon_can_receive(NetClientState *nc)
 {
-    /* Filled in once the receive path lands; nothing to receive yet. */
+    TigonState *s = TIGON(qemu_get_nic_opaque(nc));
+
+    /* Operational, and at least one standard receive buffer is posted. */
+    return s->firmware_up && s->std_rx_considx != s->std_rx_prodidx;
+}
+
+/*
+ * Accept a frame for our unicast address or broadcast, or anything in
+ * promiscuous mode. Multicast hash filtering is not modelled yet; the return
+ * value says whether to keep the frame and sets the cast flag for its return
+ * descriptor.
+ */
+static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, uint16_t *flags)
+{
+    static const uint8_t broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+
+    if (memcmp(dest, broadcast, 6) == 0) {
+        *flags = TI_BDFLAG_BCAST_PKT;
+        return true;
+    }
+    if (memcmp(dest, s->conf.macaddr.a, 6) == 0) {
+        *flags = TI_BDFLAG_UCAST_PKT;
+        return true;
+    }
+    if (s->promisc) {
+        *flags = (dest[0] & 1) ? TI_BDFLAG_MCAST_PKT : TI_BDFLAG_UCAST_PKT;
+        return true;
+    }
     return false;
 }
 
 static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
                              size_t size)
 {
+    TigonState *s = TIGON(qemu_get_nic_opaque(nc));
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t flags = 0;
+    uint64_t rx_desc, buf_addr, ret_desc;
+    uint16_t buf_idx;
+
+    if (!s->firmware_up) {
+        return size;   /* not operational: consumed, not queued */
+    }
+    if (!tigon_rx_filter(s, buf, &flags)) {
+        /*
+         * Filtered frames are consumed, never returned as 0: a 0 would wedge
+         * the backend's queue head behind a frame no retry can ever pass.
+         */
+        return size;
+    }
+    if (s->std_rx_considx == s->std_rx_prodidx) {
+        return 0;      /* genuine no-buffer flow control */
+    }
+
+    /* Take the next posted standard receive buffer. */
+    rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
+    buf_addr = tigon_dma_ld_addr(s, rx_desc);
+    buf_idx = tigon_dma_ld32(s, rx_desc + 8) >> 16;   /* big-endian: index high */
+    s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
+
+    pci_dma_write(pci, buf_addr, buf, size);
+
+    /* Post a receive-return descriptor naming the buffer and the length. */
+    ret_desc = s->return_ring_base + (uint64_t)s->return_prodidx * 32;
+    tigon_dma_st_addr(s, ret_desc, buf_addr);
+    tigon_dma_st32(s, ret_desc + 8, ((uint32_t)buf_idx << 16) | (size & 0xffff));
+    tigon_dma_st32(s, ret_desc + 12,
+                   ((uint32_t)TI_BDTYPE_RECV_BD << 16) | flags);
+    tigon_dma_st32(s, ret_desc + 16, 0);   /* ip / tcp-udp checksum */
+    tigon_dma_st32(s, ret_desc + 20, 0);   /* error flags / vlan tag */
+    tigon_dma_st32(s, ret_desc + 24, 0);   /* reserved */
+    tigon_dma_st32(s, ret_desc + 28, 0);   /* opaque cookie */
+
+    s->return_prodidx = (s->return_prodidx + 1) % s->return_ring_max;
+    tigon_dma_st32(s, s->return_prodidx_ptr, s->return_prodidx);
+    s->irq_asserted = true;
+    tigon_update_irq(s);
+
     return size;
 }
 
