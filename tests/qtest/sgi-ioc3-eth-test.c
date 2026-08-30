@@ -1,12 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The IOC3 ethernet engine on a plain PCI machine, with none of the SGI
- * fabric under it. What that buys is attribution: a behaviour reproduced
- * here belongs to the device, one that does not belongs to the fabric.
- * The honest claim is that the fabric is excluded, not that the engine is
- * correct -- the one assertion independent of our own understanding is
- * the backend's reply, which parses what the engine transmitted and has
- * no opinion about what we meant.
+ * The IOC3 ethernet engine on a plain PCI machine: a behaviour reproduced
+ * here belongs to the device, not the SGI fabric. The backend's reply is
+ * the one assertion independent of our own understanding.
  */
 
 #include "qemu/osdep.h"
@@ -15,12 +11,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-/*
- * Where this test puts the chip's register window and its own scratch memory.
- * The window sits in the machine's PCI hole and the scratch well above the
- * first megabyte, in RAM nothing on this machine is using: no firmware runs
- * under qtest, so there is nothing to collide with.
- */
+/* The chip's window in the PCI hole; scratch in RAM nothing uses. */
 #define IOC3_BAR_ADDR   0xc0000000u
 #define RAM_SCRATCH     0x02000000u
 
@@ -58,20 +49,12 @@
 #define ENET_INT_TX_COMPLETE  (1u << 22)
 #define RPIR_ARM          (1u << 31)
 
-/*
- * A management request: the register number in the low five bits, the
- * transceiver address above it, and a bit that asks for a read. The board
- * wires its one transceiver at address 31 -- every real Origin 200 capture
- * in the boot-log library prints it there.
- */
+/* Management requests; the transceiver is at 31 on every real capture. */
 #define MII_CTL_READ      (1u << 10)
 #define MII_PHY_SHIFT     5
 #define PHY_ADDRESS       31
 
-/*
- * The transceiver registers and bits this file drives, numbered by the
- * 802.3 management register set rather than by our own header.
- */
+/* Transceiver registers, numbered by the 802.3 management set. */
 #define PHY_BMCR          0
 #define PHY_BMSR          1
 #define BMCR_LOOPBACK     0x4000
@@ -87,122 +70,69 @@
 #define TXD_BUF1_LEN_SHIFT 8
 #define TXD_BUF2_LEN_SHIFT 20
 
-/*
- * The descriptor's inline data area, from the drivers rather than from our
- * own header: OpenBSD's struct iec_txdesc puts its buffer after two words and
- * two eight-byte pointers, and Linux's struct ioc3_etxd declares data[104]
- * after the same four fields. A defect lived in this offset for a whole
- * session while every test that could have caught it used our number.
- */
+/* The inline area's offset, from both drivers' structs, not our header. */
 #define TXD_DATA_OFFSET   24
 
 /*
- * How much of the descriptor the inline area actually is, and how much the
- * field that measures it can name. OpenBSD computes IEC_TXD_BUFSIZE as
- * IEC_TXDESCSIZE - IEC_TXD_BUFOFFSET = 104, and Linux declares data[104]
- * outright. The length field beside it is seven bits in both -- OpenBSD's
- * IECTX_BUF0_LEN_MASK and Linux's ETXD_D0CNT_MASK are each 0x7f -- so a guest
- * can legally name 127 bytes of an area that holds 104. The two numbers
- * disagreeing is the boundary, not either number alone.
+ * The area holds 104 bytes (both drivers) and its length field seven bits,
+ * so a guest can legally name 127 of 104: the disagreement is the boundary.
  */
 #define TXD_DATA_SIZE     104
 #define TXD_DATA_LEN_MAX  127
 
-/*
- * The assembled frame's own limit, and it disagrees with the buffer by one.
- * The command word's total byte count is eleven bits in both drivers --
- * OpenBSD's IEC_TXCMD_DATALEN and Linux's ETXD_BYTECNT_MASK, each 0x7ff, so
- * 2047 -- while the engine assembles into 2048 bytes. A test that only ever
- * used round numbers would never see which of the two governs.
- */
+/* The command word's total count: eleven bits in both drivers. */
 #define TXD_BYTECNT_MAX   2047
 
 /*
- * The sixteen-kilobyte boundary a transfer may not cross, which is why a
- * descriptor carries two buffer pointers at all rather than one. OpenBSD names
- * it IEC_DMA_BOUNDARY and splits at it explicitly: "The chip DMA engine can
- * not cross 16KB boundaries. If our mbuf doesn't fit, use the second pointer."
- * This is the only boundary here that comes from a hardware constraint rather
- * than from the width of a field.
+ * The 16 KB boundary a transfer may not cross (OpenBSD's IEC_DMA_BOUNDARY)
+ * -- the one limit here from hardware rather than a field width.
  */
 #define TX_DMA_BOUNDARY   0x4000u
 
-/*
- * Where a receive buffer's frame starts, past the two header words the
- * engine writes and the alignment padding OpenBSD's own descriptor keeps.
- */
+/* Frame start: past the header words and OpenBSD's alignment padding. */
 #define RXD_BUF_OFFSET    66
 #define RXH_VALID         0x80000000u
 #define RXH_BYTECNT_SHIFT 16
 
-/*
- * The received byte count's field, eleven bits in both drivers -- OpenBSD's
- * IEC_RXSTAT_LEN_MASK and Linux's ERXBUF_BYTECNT_MASK are each 0x07ff0000 --
- * so the largest count the engine can report at all is 2047, and a frame of
- * more than 2043 bytes could not be described.
- */
+/* The received count's field: eleven bits in both drivers. */
 #define RXH_BYTECNT_MASK  0x07ff0000u
 #define RXH_BYTECNT_MAX   2047
 
 /*
- * The split length field in the error word, which the same count arrives in a
- * second time: three low bits at 12 and ten high bits at 16, reassembled as
- * the high part shifted left three. Both drivers carry it and neither reads
- * it, so it is the field most likely to rot unnoticed.
+ * The count's second arrival, split across the error word; neither driver
+ * reads it, so it is the field most likely to rot unnoticed.
  */
 #define RXE_LEN_LO_SHIFT  12
 #define RXE_LEN_HI_SHIFT  16
 
-/*
- * What a real MAC captures alongside the frame and QEMU's network layer never
- * produces, so the engine adds it back into the count it reports. OpenBSD's
- * ETHER_CRC_LEN, and Linux subtracts the same four in its own receive path.
- */
+/* The FCS QEMU's net layer never delivers; the engine adds it back. */
 #define ETHER_FCS_LEN     4
 
 /*
- * Where the guests' own length gates fall, from OpenBSD's if_ether.h: a frame
- * is dropped below ETHER_MIN_LEN or above ETHER_MAX_LEN, both counted with the
- * CRC included -- which is the count this engine reports rather than the
- * payload it delivered. So the interesting delivered sizes are four less.
+ * The guests' length gates, counted with the CRC included, so the
+ * interesting delivered sizes are four less.
  */
 #define ETHER_MIN_LEN     64
 #define ETHER_MAX_LEN     1518
 
 /*
- * The engine's own truncation point, and this one is ours rather than the
- * drivers'. It assembles into 2048 bytes and reserves eight, so a delivery is
- * cut at 2040 -- three below what the count field could still describe. No
- * legal Ethernet frame comes near either number, so the two limits have never
- * had to be reconciled; the test asserts the model's own and says which it is.
+ * The truncation point is the model's own (2048 assembled minus eight
+ * reserved), three below what the count field could describe.
  */
 #define RX_DELIVER_MAX    2040
 
-/*
- * The good-packet bit, from the drivers rather than our header: Linux
- * gates every delivered frame on ERXBUF_GOODPKT 0x40000000. An
- * untraceable copy of a constant is how two files stay wrong together.
- */
+/* Linux gates every delivered frame on ERXBUF_GOODPKT. */
 #define RXE_GOODPKT       0x40000000u
 
 /*
- * The long-event and bad-packet bits beside it, again from a driver rather
- * than from our header: OpenBSD's if_iecreg.h names them IEC_RXERR_LONGEVENT
- * 0x10000000 and IEC_RXERR_BADPACKET 0x20000000, and its iec_rxintr drops
- * any frame wearing either. The engine sets both when it truncates a
- * delivery, so what a guest sees of a frame too long to represent is a drop
- * with a printed reason rather than a silently shortened frame.
+ * OpenBSD drops any frame wearing either bit; the engine sets both on a
+ * truncated delivery, so an over-long frame is a printed drop, not a
+ * silently shortened one.
  */
 #define RXE_LONGEVENT     0x10000000u
 #define RXE_BADPKT        0x20000000u
 
-/*
- * The register window is declared little-endian, like this machine, so the
- * memory system hands the device the value a test writes without swapping it.
- * Every access still goes through these two rather than qtest_readl/writel
- * directly, so the window's byte order lives in one place: a window that
- * changed endianness again would reintroduce a swap here and nowhere else.
- */
+/* The window's byte order lives here and nowhere else. */
 static void ioc3_writel(QTestState *qts, uint64_t addr, uint32_t val)
 {
     qtest_writel(qts, addr, val);
@@ -213,11 +143,7 @@ static uint32_t ioc3_readl(QTestState *qts, uint64_t addr)
     return qtest_readl(qts, addr);
 }
 
-/*
- * The rings and descriptors are read by the device with explicit big-endian
- * accessors wherever it runs, so they are written here as bytes rather than
- * through a target-endian store.
- */
+/* The device reads rings big-endian everywhere: write them as bytes. */
 static void dma_stl_be(QTestState *qts, uint64_t addr, uint32_t val)
 {
     uint8_t b[4] = { val >> 24, val >> 16, val >> 8, val };
@@ -234,10 +160,7 @@ static uint32_t dma_ldl_be(QTestState *qts, uint64_t addr)
            ((uint32_t)b[2] << 8) | b[3];
 }
 
-/*
- * Configuration space through the machine's own address and data ports,
- * which is all a machine with no firmware run offers.
- */
+/* Configuration space through the ports; no firmware ran. */
 static uint32_t pci_cfg_addr(uint8_t slot, uint8_t offset)
 {
     return 0x80000000u | ((uint32_t)slot << 11) | (offset & 0xfcu);
@@ -251,18 +174,9 @@ static void pci_cfg_writel(QTestState *qts, uint8_t slot, uint8_t offset,
 }
 
 /*
- * Bring the chip up on this machine: place its window, let it decode and
- * master, and put the ethernet engine in the state a driver leaves it in --
- * both directions enabled, the frame offset OpenBSD programs, four receive
- * buffers supplied, and the receive timer armed with the immediate reload
- * both drivers write.
- */
-/*
- * Bring-up shared by both attachments, so the backend is the only thing
- * that differs. Promiscuous, unlike a real driver: several tests address
- * frames with arbitrary byte patterns to probe DMA mechanics, and the
- * filter (exercised in tests/qtest/sn0-ioc3-test.c) would drop them for
- * a reason unrelated to what they test.
+ * Driver-shaped bring-up shared by both attachments. Promiscuous, unlike a
+ * real driver: the DMA-mechanics frames would otherwise be filtered for a
+ * reason unrelated to what they test.
  */
 static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
                           unsigned int buffers)
@@ -276,12 +190,7 @@ static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
     pci_cfg_writel(qts, IOC3_PCI_SLOT, PCI_COMMAND,
                    PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
-    /*
-     * A read that proves the window is decoding and the byte order above is
-     * right in one go. The management data register answers all-ones for the
-     * absent transceiver at reset, which is the one reset value in this block
-     * that is not the same forwards and backwards.
-     */
+    /* The one reset value that is not the same forwards and backwards. */
     g_assert_cmphex(ioc3_readl(qts, ENET_MII_DATA_R), ==, 0xffff);
 
     ioc3_writel(qts, ENET_MAC_CONTROL, MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
@@ -302,11 +211,7 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf,
 {
     QTestState *qts;
 
-    /*
-     * An explicit netdev rather than -nic, because this machine creates its
-     * own default network device during machine init and would claim a -nic
-     * before a -device is realized at all.
-     */
+    /* -nic would be claimed by the machine's own default device. */
     qts = qtest_initf("-M pc -display none "
                       "-netdev user,id=n0 "
                       "-device sgi-ioc3,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
@@ -315,12 +220,8 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf,
 }
 
 /*
- * The other attachment: a connected socket pair rather than user-mode
- * networking. What it buys is that the test chooses every byte in both
- * directions, which user-mode networking cannot give -- it answers what it
- * understands and nothing else, so it cannot carry an arbitrary length or an
- * arbitrary payload. Size boundaries need exactly that, so they use this and
- * the interleaving tests use the other.
+ * The socket-pair attachment chooses every byte in both directions, which
+ * size boundaries need and user-mode networking cannot give.
  */
 static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
 {
@@ -334,12 +235,7 @@ static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
     return qts;
 }
 
-/*
- * A bound on how long the test's end of the pair will block for a frame that
- * is late rather than never coming: delivery to a socket backend is not
- * guaranteed to have reached it by the time the register write that caused it
- * returns.
- */
+/* Bounds the wait for a late frame; delivery may follow the write. */
 static void net_socket_set_recv_timeout(int fd, int seconds)
 {
     struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
@@ -348,10 +244,7 @@ static void net_socket_set_recv_timeout(int fd, int seconds)
                     ==, 0);
 }
 
-/*
- * The framing the socket backend uses: a four-byte network-order length ahead
- * of each frame, in both directions.
- */
+/* The socket backend's framing: a network-order length per frame. */
 static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
 {
     uint32_t hdr = htonl((uint32_t)len);
@@ -372,11 +265,7 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
     return len;
 }
 
-/*
- * Nothing may arrive. The engine transmits during the produce write, so a
- * frame it did send is already buffered by the time this runs; a short
- * timeout only bounds the wait for the expected silence.
- */
+/* A sent frame is already buffered by now; the timeout bounds silence. */
 static void net_socket_expect_no_frame(int fd)
 {
     uint32_t hdr;
@@ -388,11 +277,8 @@ static void net_socket_expect_no_frame(int fd)
 }
 
 /*
- * An ARP request for the address user-mode networking answers on. Padded to
- * whatever length the caller wants, because a longer frame is still a valid
- * request -- the backend reads the first forty-two bytes and ignores the
- * rest -- and length is what decides which of the two transmit paths a real
- * driver would use.
+ * An ARP request for the backend's gateway, padded to order: length decides
+ * which transmit path a real driver would use.
  */
 static void build_arp_request(uint8_t *frame, size_t len)
 {
@@ -410,12 +296,7 @@ static void build_arp_request(uint8_t *frame, size_t len)
     memcpy(frame, head, sizeof(head));
 }
 
-/*
- * What a transmitted frame earns: the backend parses it and replies, the
- * engine delivers the reply into the ring, and the receive timer source is
- * raised. Every one of those is a step the SGI fabric plays no part in on
- * this machine.
- */
+/* Backend parses, replies; engine delivers; timer source raises. */
 static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
 {
     uint8_t landed[42];
@@ -423,11 +304,7 @@ static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 8);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
 
-    /*
-     * Reported good. Linux gates every delivered frame on this bit and drops
-     * the frame without it, while OpenBSD reads the error bits beside it and
-     * never looks at this one -- a field only one of the two guests can miss.
-     */
+    /* Linux gates delivery on this bit; OpenBSD never reads it. */
     g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4) & RXE_GOODPKT, ==, RXE_GOODPKT);
 
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
@@ -452,12 +329,7 @@ static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
                     ==, ENET_INT_RX_TIMER);
 }
 
-/*
- * A frame small enough for the descriptor's own inline area, which is the
- * path a driver takes for anything at or under 104 bytes. This is the path
- * that shipped broken for a session while every passing test used the other
- * one, so it is the one worth having on a machine that cannot be blamed.
- */
+/* The inline path, for anything at or under 104 bytes. */
 static void test_the_inline_path_off_the_fabric(const void *data)
 {
     QTestState *qts;
@@ -481,11 +353,7 @@ static void test_the_inline_path_off_the_fabric(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * A frame too large for the inline area, carried through the two out-of-line
- * pointers and split across both of them -- the shape a driver produces when
- * its buffer would cross the sixteen-kilobyte boundary the engine cannot.
- */
+/* The pointer path, split across both buffers. */
 static void test_the_pointer_path_off_the_fabric(const void *data)
 {
     QTestState *qts;
@@ -523,11 +391,8 @@ static void test_the_pointer_path_off_the_fabric(const void *data)
 }
 
 /*
- * Send one frame and return what the backend received, so a size boundary is
- * asserted on the bytes that left the machine rather than on a register the
- * engine wrote for itself. The caller picks the path: inline for anything the
- * area can hold, the out-of-line pointers otherwise, split across both if it
- * is told where.
+ * Send one frame and return what the backend received: boundaries are
+ * asserted on the bytes that left the machine, not on a register.
  */
 static void send_descriptor(QTestState *qts, const uint8_t *frame,
                             uint32_t claimed_len, uint32_t actual_len,
@@ -542,11 +407,7 @@ static void send_descriptor(QTestState *qts, const uint8_t *frame,
         dma_stl_be(qts, desc + 0, claimed_len | TXD_DATA_VALID);
         dma_stl_be(qts, desc + 4, claimed_len);
     } else {
-        /*
-         * Buffer one ends exactly on the boundary and buffer two starts on
-         * it, which is the split OpenBSD's own transmit path produces when an
-         * mbuf would cross it. Nothing else in this suite makes that shape.
-         */
+        /* The split OpenBSD produces when an mbuf would cross the boundary. */
         qtest_memwrite(qts, buf1, frame, split);
         qtest_memwrite(qts, buf2, frame + split, actual_len - split);
         dma_stl_be(qts, desc + 0,
@@ -574,14 +435,7 @@ static size_t send_and_capture(QTestState *qts, int host_fd,
     return net_socket_recv_frame(host_fd, got, got_size);
 }
 
-/*
- * The inline area holds 104 bytes and the field that measures it holds seven
- * bits, so a guest can name 127 of an area that has 104. Either side of the
- * area's own size, then the two lengths that exceed it, all on the wire.
- *
- * These are the sizes nothing else here uses: the existing tests pick
- * round numbers well clear of the edge.
- */
+/* Either side of the area's size, then the lengths that exceed it. */
 static void test_the_inline_area_boundary(const void *data)
 {
     static const uint32_t claimed[] = { 103, 104, 105, TXD_DATA_LEN_MAX };
@@ -608,10 +462,8 @@ static void test_the_inline_area_boundary(const void *data)
                                got, sizeof(got));
 
         /*
-         * At or under the area, every byte named arrives. Over it, the frame
-         * stops at the area's end rather than at the field's value -- an
-         * engine trusting the field sends bytes from past its own copy of the
-         * descriptor, and they would be whatever followed it in memory.
+         * Over the area the frame stops at the area's end: trusting the
+         * field sends bytes from past the descriptor copy.
          */
         g_assert_cmpint(len, ==, expect);
         g_assert_cmpmem(got, len, frame, expect);
@@ -622,13 +474,8 @@ static void test_the_inline_area_boundary(const void *data)
 }
 
 /*
- * The command word's byte count is eleven bits and is what the engine sends:
- * the segment lengths say where the bytes live, the count says how many
- * leave. Either side of the count's own maximum and totals past it, built
- * from both pointers so the total is what is being tested rather than any
- * one buffer's length. A total past the field wraps in the descriptor the
- * guest actually wrote -- one past the maximum carries a count of zero and
- * puts nothing on the wire, and 3000 carries its low eleven bits, 952.
+ * The count says how many bytes leave; a total past the field wraps in the
+ * descriptor as written -- 2048 carries zero, 3000 carries 952.
  */
 static void test_the_assembled_frame_limit(const void *data)
 {
@@ -669,13 +516,7 @@ static void test_the_assembled_frame_limit(const void *data)
     }
 }
 
-/*
- * A frame split exactly on the sixteen-kilobyte boundary the engine may not
- * cross. This is the shape a real driver produces -- OpenBSD computes the
- * distance to the next boundary and puts the remainder in the second pointer
- * for that reason and no other -- and it is the only boundary in this file
- * that comes from a hardware constraint rather than a field width.
- */
+/* Split exactly on the 16 KB boundary, the shape OpenBSD produces. */
 static void test_a_frame_split_on_the_dma_boundary(const void *data)
 {
     int sv[2];
@@ -693,12 +534,7 @@ static void test_a_frame_split_on_the_dma_boundary(const void *data)
     net_socket_set_recv_timeout(sv[0], 10);
     qts = ioc3_attach_socket(sv[1], 8);
 
-    /*
-     * 250 bytes before the boundary and 350 after it, so buffer one ends on
-     * it exactly. A gather that ignored the second pointer, or read both from
-     * one region, produces a frame of the wrong length or the wrong bytes and
-     * either shows here.
-     */
+    /* Buffer one ends exactly on the boundary. */
     len = send_and_capture(qts, sv[0], frame, sizeof(frame), sizeof(frame),
                            250, got, sizeof(got));
 
@@ -709,10 +545,7 @@ static void test_a_frame_split_on_the_dma_boundary(const void *data)
     close(sv[0]);
 }
 
-/*
- * Deliver one frame from the backend and read back everything the engine wrote
- * about it. Returns the reported byte count; the caller checks the rest.
- */
+/* Deliver one frame; return the reported count. */
 static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
                                     const uint8_t *frame, size_t len,
                                     uint32_t rxbuf, uint32_t slot,
@@ -724,12 +557,7 @@ static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
 
     net_socket_send_frame(host_fd, frame, len);
 
-    /*
-     * A socket backend delivers on a later pass of the main loop, so the
-     * consume index is polled rather than read once. The interleaving tests
-     * elsewhere need the opposite and use a backend that answers inside the
-     * call; here the delay is harmless and the size control is what matters.
-     */
+    /* A socket backend delivers on a later main-loop pass: poll. */
     for (attempt = 0; attempt < 200; attempt++) {
         if (ioc3_readl(qts, ENET_RX_CONSUME) != slot * 8) {
             break;
@@ -746,11 +574,7 @@ static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
 
     count = (word0 & RXH_BYTECNT_MASK) >> RXH_BYTECNT_SHIFT;
 
-    /*
-     * The same count arrives a second time in the split field, and the two
-     * must agree. Neither driver reads the split one, so nothing else in the
-     * system would notice it drifting.
-     */
+    /* The split field's copy must agree; nothing else would notice drift. */
     split = (((word1 >> RXE_LEN_HI_SHIFT) & 0x3ff) << 3) |
             ((word1 >> RXE_LEN_LO_SHIFT) & 0x7);
     g_assert_cmpuint(split, ==, count);
@@ -765,13 +589,8 @@ static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
 }
 
 /*
- * The reported count against the delivered size, at the sizes where something
- * changes. Two of these are the guests' own gates -- a frame is dropped below
- * ETHER_MIN_LEN and above ETHER_MAX_LEN, both counted with the CRC the engine
- * adds back -- so 60 bytes delivered reports exactly the minimum and 59
- * reports one short of it, while 1514 reports exactly the maximum and 1515
- * reports one over. A model that dropped the four-byte addition would put
- * every one of those on the wrong side of the guest's comparison.
+ * The reported count at the guests' own gates: dropping the four-byte
+ * addition puts every one on the wrong side of the comparison.
  */
 static void test_the_reported_count_at_the_guest_gates(const void *data)
 {
@@ -810,13 +629,7 @@ static void test_the_reported_count_at_the_guest_gates(const void *data)
     close(sv[0]);
 }
 
-/*
- * Where the engine stops. It assembles into 2048 bytes and reserves eight, so
- * a delivery is cut at 2040 -- and the count field could still describe three
- * more, which is the tell that this limit is the model's own rather than the
- * hardware's. Either side of it and one past, with the truncated case required
- * to report the truncated length rather than what arrived.
- */
+/* Either side of the truncation point and one past. */
 static void test_the_delivery_truncation_point(const void *data)
 {
     static const uint32_t sizes[] = { RX_DELIVER_MAX - 1, RX_DELIVER_MAX,
@@ -844,19 +657,11 @@ static void test_the_delivery_truncation_point(const void *data)
         uint32_t word1 = dma_ldl_be(qts, RAM_SCRATCH + 0xc000 + n * 0x1000
                                     + 4);
 
-        /*
-         * The count describes what was kept, not what was offered. Reporting
-         * the offered length would send a driver reading past the bytes that
-         * actually arrived.
-         */
+        /* The count describes what was kept, not what was offered. */
         g_assert_cmpuint(count, ==, kept + ETHER_FCS_LEN);
         g_assert_cmpmem(landed, kept, frame, kept);
 
-        /*
-         * And a truncated delivery says so where a driver looks: the long
-         * and bad bits OpenBSD drops on, on the one size that was cut and
-         * on neither of its neighbours.
-         */
+        /* The long and bad bits, on the cut size and neither neighbour. */
         g_assert_cmphex(word1 & (RXE_LONGEVENT | RXE_BADPKT), ==,
                         kept == sizes[n] ? 0
                                          : RXE_LONGEVENT | RXE_BADPKT);
@@ -866,21 +671,12 @@ static void test_the_delivery_truncation_point(const void *data)
     close(sv[0]);
 }
 
-/*
- * The receive ring's size and the index that walks it, from the drivers:
- * OpenBSD's IEC_NRXDESC_MAX is 512 and Linux sizes its own ring the same way,
- * and both indices are byte offsets rather than entry numbers -- twelve bits,
- * stepping eight per entry, so they run 0 to 4088 and wrap.
- */
+/* 512 entries in both drivers; indices are byte offsets and wrap. */
 #define RX_RING_ENTRIES   512
 #define RX_RING_STRIDE    8
 #define RX_INDEX_WRAP     (RX_RING_ENTRIES * RX_RING_STRIDE)
 
-/*
- * The transmit ring, which comes in two sizes chosen by the low bit of the
- * base register. OpenBSD's IEC_NTXDESC_MAX is 128 descriptors of
- * IEC_TXDESCSIZE, and the larger arrangement is four times that.
- */
+/* Two transmit ring sizes, chosen by the base register's low bit. */
 #define TX_DESC_SIZE      128
 #define TX_RING_SMALL     128
 #define TX_RING_LARGE     512
@@ -888,10 +684,7 @@ static void test_the_delivery_truncation_point(const void *data)
 #define TX_CONSUME_IDLE   (1u << 31)
 #define TX_CONSUME_MASK   0xffffu
 
-/*
- * Wait for the consume index to reach a value, since a socket backend
- * delivers on a later pass of the main loop rather than inside the write.
- */
+/* A socket backend delivers on a later main-loop pass. */
 static void wait_for_rx_consume(QTestState *qts, uint32_t want)
 {
     int attempt;
@@ -905,12 +698,7 @@ static void wait_for_rx_consume(QTestState *qts, uint32_t want)
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, want);
 }
 
-/*
- * Three full laps of the receive ring: one proves the index returns to
- * zero, three prove it keeps doing it -- the claim an off-by-one wrap
- * defect survives. Buffers are reused from a small pool as OpenBSD does,
- * so this exercises index arithmetic, not memory footprint.
- */
+/* Three laps: one proves the wrap, three prove it keeps happening. */
 static void test_the_receive_ring_wraps_three_times(const void *data)
 {
     enum { BUFFERS = 8, LAPS = 3 };
@@ -939,10 +727,7 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
     }
 
     for (sent = 0; sent < RX_RING_ENTRIES * LAPS; sent++) {
-        /*
-         * Keep the engine supplied the way a driver does, refilling well
-         * ahead of where it is consuming rather than one entry at a time.
-         */
+        /* Refill well ahead, the way a driver does. */
         if (sent % 64 == 0) {
             uint32_t ahead = (sent + 256) % RX_RING_ENTRIES;
 
@@ -955,19 +740,12 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
     }
 
     /*
-     * Three whole laps land exactly back on zero. On its own that is a weak
-     * thing to assert -- an engine that delivered nothing at all would also
-     * finish at zero -- so what carries this test is the check inside the
-     * loop, which names the exact expected index after every one of the
-     * 1536 deliveries. The two together say the index visited every value
-     * and came home, rather than merely ending where it started.
+     * Weak alone -- no deliveries also ends at zero -- but the loop named
+     * the exact index after each of the 1536 deliveries.
      */
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
-    /*
-     * And the last lap really wrote a frame, rather than the ring turning
-     * over an engine that had stopped delivering.
-     */
+    /* And the last lap really wrote a frame. */
     g_assert_cmphex(dma_ldl_be(qts, rxbuf + ((RX_RING_ENTRIES - 1) % BUFFERS) *
                                0x1000) & RXH_VALID, ==, RXH_VALID);
 
@@ -976,9 +754,8 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
 }
 
 /*
- * The receive ring running out and coming back: a consumed ring must stop
- * taking frames rather than overwrite, and new buffers must drain what
- * the backend held without another frame arriving to prompt it.
+ * A consumed ring must stop, and new buffers must drain what the backend
+ * held without another frame to prompt it.
  */
 static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
 {
@@ -1008,11 +785,7 @@ static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                     BUFFERS * RX_RING_STRIDE);
 
-    /*
-     * Supplying buffers is what releases them. Nothing else happens here --
-     * no further frame arrives -- so an engine that only looked at its ring
-     * when something new turned up would sit on these forever.
-     */
+    /* Nothing else happens here: only the new buffers can release these. */
     for (i = 0; i < EXTRA; i++) {
         uint32_t slot = BUFFERS + i;
 
@@ -1033,10 +806,7 @@ static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
     close(sv[0]);
 }
 
-/*
- * Fill a run of transmit descriptors, each carrying its own index so the
- * frames can be told apart on the wire, and ring the doorbell once.
- */
+/* Descriptors carrying their own index, one doorbell for the run. */
 static void queue_tx_run(QTestState *qts, uint32_t base, uint32_t first,
                          uint32_t count, uint32_t ring_bytes, size_t len)
 {
@@ -1061,11 +831,8 @@ static void queue_tx_run(QTestState *qts, uint32_t base, uint32_t first,
 }
 
 /*
- * A whole batch behind one doorbell. Neither driver rings once per descriptor
- * -- OpenBSD queues everything ifq_dequeue gives it and writes the produce
- * index once at the end -- so an engine that sent only the first descriptor of
- * a batch would stall every driver we have, and would look fine to any test
- * that queued one frame at a time.
+ * Neither driver rings per descriptor, so an engine sending only the first
+ * of a batch stalls every driver and passes any one-frame test.
  */
 static void test_a_burst_behind_one_doorbell(const void *data)
 {
@@ -1091,10 +858,6 @@ static void test_a_burst_behind_one_doorbell(const void *data)
         size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
 
         g_assert_cmpint(len, ==, LEN);
-        /*
-         * In order, and all of them: the index each descriptor carries says
-         * which it was.
-         */
         g_assert_cmphex(got[14], ==, (uint8_t)(n >> 8));
         g_assert_cmphex(got[15], ==, (uint8_t)n);
     }
@@ -1107,11 +870,8 @@ static void test_a_burst_behind_one_doorbell(const void *data)
 }
 
 /*
- * A transmit descriptor that cannot be read: an engine ignoring the fetch
- * result sends a frame assembled from its own stack and steps the index
- * over a descriptor it never saw. The walk must stop with the index on
- * the descriptor; a guest that repairs the address and rings again gets
- * it sent -- the second half below.
+ * A fetch the fabric refuses stops the walk with the index on the
+ * descriptor; repairing the address and ringing again sends it.
  */
 static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
 {
@@ -1148,12 +908,8 @@ static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
 }
 
 /*
- * The same for the frame's own bytes rather than its descriptor. A pointer
- * descriptor names memory the engine gathers the frame from, and a gather that
- * fails leaves the frame buffer holding whatever it held before -- the frame
- * before this one, or nothing at all. Sending that is the worst version of
- * this fault, because it puts bytes on the wire that no guest ever wrote and
- * tells the driver the transmit succeeded.
+ * The same for the gather: a failed buffer read must not put stale bytes
+ * on the wire and call the transmit a success.
  */
 static void test_a_transmit_buffer_that_cannot_be_read(const void *data)
 {
@@ -1202,11 +958,7 @@ static void test_a_transmit_buffer_that_cannot_be_read(const void *data)
     close(sv[0]);
 }
 
-/*
- * The transmit ring right round three times, on the smaller of the two
- * arrangements. As with the receive ring, one lap proves the index returns and
- * three prove it keeps doing so.
- */
+/* Three laps of the small transmit ring. */
 static void test_the_transmit_ring_wraps_three_times(const void *data)
 {
     enum { LAPS = 3, CHUNK = 16, LEN = 64 };
@@ -1241,11 +993,7 @@ static void test_the_transmit_ring_wraps_three_times(const void *data)
         sent += CHUNK;
     }
 
-    /*
-     * Three whole laps, so the index is back where it started. The frames
-     * checked above are what makes that mean something: an engine that
-     * stopped sending would also finish at zero.
-     */
+    /* The checked frames are what make ending at zero mean something. */
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK,
                     ==, 0);
 
@@ -1254,12 +1002,8 @@ static void test_the_transmit_ring_wraps_three_times(const void *data)
 }
 
 /*
- * Which arrangement the low bit of the base register selects, asserted where
- * the two differ: at descriptor 128. On the small ring that index is the
- * start of the second lap; on the large one it is an ordinary descriptor a
- * long way from the end. Sending 129 and reading where the consume index came
- * to rest tells the two apart, and nothing else in this file does -- every
- * other transmit test stays inside the first 128 either way.
+ * Asserted where the two ring sizes differ: descriptor 128. Nothing else
+ * here leaves the first 128 either way.
  */
 static void test_the_ring_select_bit_moves_the_wrap(const void *data)
 {
@@ -1294,11 +1038,7 @@ static void test_the_ring_select_bit_moves_the_wrap(const void *data)
         sent += run;
     }
 
-    /*
-     * On the large ring the index is simply 129 descriptors in. An engine
-     * ignoring the select bit would have wrapped at 128 and be sitting on
-     * one.
-     */
+    /* Ignoring the select bit wraps at 128 and sits on one. */
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK,
                     ==, COUNT * TX_DESC_SIZE);
 
@@ -1307,13 +1047,8 @@ static void test_the_ring_select_bit_moves_the_wrap(const void *data)
 }
 
 /*
- * A frame arriving while the transmit walk is still running. The echo
- * request gives the receive size freely -- the backend answers it
- * synchronously at request length, where an ARP reply is one fixed size.
- * The trap: without ARP in front, the backend's first answer is its own
- * ARP request -- a delivered frame with every field looking right and
- * none of it the reply under test -- so the ARP exchange completes before
- * any size is measured.
+ * An echo request sets the receive size freely; the ARP exchange completes
+ * first, or the backend's own ARP question masquerades as the reply.
  */
 static uint16_t ones_complement_sum(const uint8_t *data, size_t len)
 {
@@ -1332,10 +1067,7 @@ static uint16_t ones_complement_sum(const uint8_t *data, size_t len)
     return (uint16_t)~sum;
 }
 
-/*
- * Our own address and the one user-mode networking answers on, which are its
- * documented defaults rather than anything this model chooses.
- */
+/* User-mode networking's documented defaults. */
 static const uint8_t guest_mac[6] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
 static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
 static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
@@ -1375,11 +1107,7 @@ static void build_icmp_echo(uint8_t *f, size_t total, const uint8_t *dst_mac)
     f[37] = (uint8_t)sum;
 }
 
-/*
- * Queue one frame and ring the doorbell, taking the next descriptor each
- * time: the walk runs from the consume index to the produce index, so a
- * second doorbell against the first slot sends a descriptor nobody wrote.
- */
+/* Next descriptor each time: re-ringing slot 0 sends one nobody wrote. */
 static void tx_one(QTestState *qts, uint32_t base, uint32_t slot,
                    const uint8_t *frame, size_t len)
 {
@@ -1403,13 +1131,8 @@ static void tx_one(QTestState *qts, uint32_t base, uint32_t slot,
 }
 
 /*
- * One size per test case rather than a loop over all of them, and that is not
- * a stylistic choice. The mutation these exist to fail against is the original
- * defect -- the transmit walk snapshotting the interrupt status at entry and
- * writing it back at exit -- and a single case aborts on the first size that
- * fails, which says nothing about the rest. Split, every size reports its own
- * verdict, so "it fails" becomes "it fails at all seven" and a size that
- * quietly does not exercise the interleaving cannot hide behind one that does.
+ * One size per case so each reports its own verdict against the
+ * snapshot-and-write-back defect these exist to fail on.
  */
 static void test_a_reply_inside_the_walk_at_one_size(const void *data)
 {
@@ -1425,10 +1148,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
     ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
 
-    /*
-     * The prelude. Its own reply is the backend's ARP answer, and taking it
-     * here is what stops it being mistaken for the first size's echo.
-     */
+    /* Take the ARP answer here so it is not mistaken for the echo. */
     build_arp_request(frame, 42);
     tx_one(qts, base, 0, frame, 42);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, RX_RING_STRIDE);
@@ -1447,12 +1167,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         build_icmp_echo(frame, size, gw_mac);
         tx_one(qts, base, slot, frame, size);
 
-        /*
-         * No polling anywhere in this loop, deliberately. The reply is
-         * delivered inside the doorbell write, and a test that waited for it
-         * would also pass on a delivery arriving afterwards -- which is the
-         * case the engine has always got right and not the one that broke.
-         */
+        /* No polling: a wait would also pass on a late delivery. */
         g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                         (slot + 1) * RX_RING_STRIDE);
 
@@ -1461,10 +1176,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         g_assert_cmphex(word0 & RXH_VALID, ==, RXH_VALID);
         g_assert_cmphex(word1 & RXE_GOODPKT, ==, RXE_GOODPKT);
 
-        /*
-         * The reply mirrors the request, so the count is the size under test
-         * plus the CRC the engine adds back.
-         */
+        /* The reply mirrors the request, plus the CRC added back. */
         g_assert_cmpuint((word0 & RXH_BYTECNT_MASK) >> RXH_BYTECNT_SHIFT,
                          ==, size + ETHER_FCS_LEN);
 
@@ -1474,11 +1186,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         g_assert_cmphex(landed[13], ==, 0x00);
         g_assert_cmphex(landed[34], ==, 0x00);
 
-        /*
-         * And the receive source survived the walk that carried it. This is
-         * the assertion the milestone turns on, now made at seven sizes
-         * rather than one.
-         */
+        /* The receive source survived the walk that carried it. */
         status = ioc3_readl(qts, ENET_INT_STATUS);
         g_assert_cmphex(status & ENET_INT_RX_TIMER, ==, ENET_INT_RX_TIMER);
         ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
@@ -1491,11 +1199,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
 static const uint32_t walk_sizes[] = { 74, 104, 105, 170, 554, 1042,
                                        ETHER_MAX_LEN - ETHER_FCS_LEN };
 
-/*
- * The two halves of a management transfer, in the order both drivers use:
- * a read is a request naming an address and register, answered in the data
- * register; a write loads the data register first.
- */
+/* Management transfers, in the order both drivers use. */
 static uint16_t mii_read(QTestState *qts, unsigned int reg)
 {
     ioc3_writel(qts, ENET_MII_CONTROL,
@@ -1510,12 +1214,8 @@ static void mii_write(QTestState *qts, unsigned int reg, uint16_t val)
 }
 
 /*
- * The backend's link state, read back through the transceiver's status
- * word. Out of the box the backend's link is up, so the status register
- * reports a link once negotiation is forced closed -- and set_link is the
- * cable being pulled: the link and completion bits must drop while it is
- * out and return when it is back, or a guest that watches its carrier
- * keeps trusting an interface the operator disconnected.
+ * set_link is the cable being pulled: the link and completion bits must
+ * drop and return, or a carrier-watching guest trusts a dead interface.
  */
 static void test_the_backend_link_reaches_the_status_word(const void *data)
 {
@@ -1525,10 +1225,7 @@ static void test_the_backend_link_reaches_the_status_word(const void *data)
 
     qts = ioc3_start(ring, rxbuf, 2);
 
-    /*
-     * Force the link up the way the PROM's network boot does: a control
-     * write that is not a reset closes negotiation at once.
-     */
+    /* A control write that is not a reset closes negotiation at once. */
     mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     g_assert_cmphex(mii_read(qts, PHY_BMSR) & (BMSR_LINK | BMSR_AN_COMP),
                     ==, BMSR_LINK | BMSR_AN_COMP);
@@ -1547,13 +1244,9 @@ static void test_the_backend_link_reaches_the_status_word(const void *data)
 }
 
 /*
- * A frame held back by transceiver loopback goes in when the loopback
- * clears. While either loopback is selected the block refuses the backend's
- * traffic, and the refusal queues the frame rather than dropping it -- so
- * clearing the loopback must deliver what was queued without another frame
- * arriving to prompt it. SGI's power-on diagnostic is the reason this edge
- * exists at all: it walks the transceiver's loopback selects while the
- * backend is free to have traffic waiting.
+ * Loopback queues refused backend traffic rather than dropping it, so
+ * clearing it must deliver the queue unprompted -- the diagnostic walks
+ * the loopback selects with traffic free to be waiting.
  */
 static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
 {
@@ -1579,10 +1272,7 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
     g_usleep(200000);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
-    /*
-     * Nothing arrives after this write. Only the flush it triggers can
-     * deliver the queued frame.
-     */
+    /* Only the flush this write triggers can deliver the queued frame. */
     mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     wait_for_rx_consume(qts, RX_RING_STRIDE);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
@@ -1592,12 +1282,8 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
 }
 
 /*
- * A receive ring entry that cannot be read leaves the delivery with no
- * destination; continuing would advance the index and raise the interrupt
- * over a buffer nothing was written to. The drop is asserted. The ring
- * sits above every answering address so the refusal is the memory
- * system's own, and MAC loopback puts the whole delivery inside the
- * doorbell write.
+ * An unreadable ring entry drops the frame: advancing would point the
+ * driver at a buffer nothing wrote.
  */
 static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
 {
@@ -1625,11 +1311,7 @@ static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
                     (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==, 0);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, 0);
 
-    /*
-     * The drop costs the engine nothing else. With the ring back where
-     * memory answers, the next frame takes the slot the dropped one left
-     * alone, which is also what says the index never moved for it.
-     */
+    /* The next frame takes the slot the dropped one left alone. */
     ioc3_writel(qts, ENET_RX_RING_HI, 0);
     tx_one(qts, base, 1, frame, sizeof(frame));
 
@@ -1642,9 +1324,8 @@ static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
 }
 
 /*
- * The absence case stands alone so it inherits no wait. Loopback is the
- * second route a frame could come back by, so the MAC control write is
- * spelled out in full to pin both selections clear.
+ * Stands alone so it inherits no wait; the MAC control write is spelled
+ * out to pin both loopback selections clear.
  */
 static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 {
@@ -1665,10 +1346,7 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
     quiet[13] = 0xb5;
     tx_one(qts, base, 0, quiet, sizeof(quiet));
 
-    /*
-     * A buffer is free and the index has not moved, so nothing arrived --
-     * which is what makes the next line a statement about the source.
-     */
+    /* Nothing arrived, so the next line is a statement about the source. */
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
     status = ioc3_readl(qts, ENET_INT_STATUS);
     g_assert_cmphex(status & (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD),
@@ -1684,11 +1362,7 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    /*
-     * Either side of the descriptor's inline area, then sizes that can only
-     * go through the pointers, up to the largest frame a guest accepts. The
-     * transmit path changes at 104 and the receive size changes at each.
-     */
+    /* The transmit path changes at 104; the receive size at each. */
     qtest_add_data_func("sgi-ioc3-eth/no-reply-raises-nothing", NULL,
                         test_a_transmit_with_no_reply_raises_nothing);
     qtest_add_data_func("sgi-ioc3-eth/backend-link-reaches-status", NULL,
