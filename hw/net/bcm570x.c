@@ -22,13 +22,13 @@
  * integrated copper PHY (a separate model) through the MI registers; the
  * MAC-address mailbox in SRAM;
  * link status tied to the netdev; the transmit ring -- the send-ring RCB, the
- * producer mailbox, the descriptor/data DMA through the Bridge, and the status
+ * producer mailbox, the descriptor/data DMA to host memory, and the status
  * block DMA'd to the host, with the DMA byte order settled here; and the receive
  * ring -- posted standard-ring buffers, the frame DMA'd in, a completed
  * descriptor written to the return ring, and the status block's receive
  * producer advanced; and the INTA interrupt -- the 0x0204 mailbox
  * mask/acknowledge protocol, the MISC_CTL global mask, and
- * PCISTATE.INTR_NOT_ACTIVE, driven as a level through the Bridge when a
+ * PCISTATE.INTR_NOT_ACTIVE, driven as an INTA level when a
  * status-block update is posted with interrupts unmasked; and the dual-port
  * BCM5704 -- one multifunction PCI device whose function 0 spawns an identical
  * MAC at function 1 of the same slot, each function an independent instance of
@@ -437,13 +437,14 @@ static void bcm570x_global_reset(Bcm570xState *s)
  * gates it and reads the transmit/receive progress from there rather than a
  * register. The chip owns the block, so the model builds it whole each time.
  *
- * Byte order (settled here against the transmit round-trip qtest, per the
- * NIC-on-Bridge convention): the device delivers big-endian, and the Bridge is
- * a no-op for this slot's DMA (its DEV_SWAP bit set), the same shape the
- * in-tree IOC3 NIC uses. So the block is encoded big-endian and lands
- * big-endian in guest memory. The MODE_CTL DMA-swap and MISC_CTL word-swap the
- * driver programs are stored for read-back but applied as no-ops on this
- * big-endian target -- each swap layer modelled once, never doubled.
+ * Byte order: this is a little-endian PCI part, so it delivers its DMA integers
+ * in native little-endian (stl_le_p / stw_le_p), consistent with its
+ * DEVICE_LITTLE_ENDIAN register file. The device makes no assumption about the
+ * host bridge: a little-endian host reads the block back directly, while on a
+ * big-endian host any byte-swap correction is the host bridge's concern, not
+ * this device's. The MODE_CTL DMA-swap and MISC_CTL word-swap controls the
+ * driver programs are accepted and stored for read-back; the model's DMA is
+ * byte-addressed, so each byte-swap layer is modelled once and never doubled.
  */
 static void bcm570x_dma_status_block(Bcm570xState *s)
 {
@@ -459,9 +460,9 @@ static void bcm570x_dma_status_block(Bcm570xState *s)
             << 32) | bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_LO);
 
     memset(blk, 0, sizeof(blk));
-    stl_be_p(blk, BCM570X_STATFLAG_UPDATED);
-    stw_be_p(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
-    stw_be_p(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
+    stl_le_p(blk, BCM570X_STATFLAG_UPDATED);
+    stw_le_p(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
+    stw_le_p(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
     pci_dma_write(pci, base, blk, sizeof(blk));
 
     /*
@@ -523,10 +524,10 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 
         pci_dma_read(pci, ring_base + (uint64_t)s->tx_cons * BCM570X_TXBD_SIZE,
                      bd, sizeof(bd));
-        buf_addr = ((uint64_t)ldl_be_p(bd + BCM570X_TXBD_ADDR_HI) << 32) |
-                   ldl_be_p(bd + BCM570X_TXBD_ADDR_LO);
-        len = lduw_be_p(bd + BCM570X_TXBD_LEN);
-        flags = lduw_be_p(bd + BCM570X_TXBD_FLAGS);
+        buf_addr = ((uint64_t)ldl_le_p(bd + BCM570X_TXBD_ADDR_HI) << 32) |
+                   ldl_le_p(bd + BCM570X_TXBD_ADDR_LO);
+        len = lduw_le_p(bd + BCM570X_TXBD_LEN);
+        flags = lduw_le_p(bd + BCM570X_TXBD_FLAGS);
 
         if (frame_len + len <= sizeof(frame)) {
             pci_dma_read(pci, buf_addr, frame + frame_len, len);
@@ -717,12 +718,12 @@ static void bcm570x_bar0_write(void *opaque, hwaddr addr, uint64_t val,
  * width so the memory core never chops a wide access into repeated calls
  * (which would run a register's side effects twice) nor widens a narrow one.
  *
- * The declared endianness is DEVICE_LITTLE_ENDIAN, the ISP1040 precedent for
- * these little-endian-native controllers behind the Bridge, now settled against
- * the transmit round-trip qtest. Register MMIO correction is the Bridge's and
- * is independent of the DMA DEV_SWAP path (a separate Layer-A concern): a guest
- * dword read of a register returns the value written, proven by the Task-1
- * round-trips. The DMA byte order is settled separately in bcm570x_tx_kick /
+ * The declared endianness is DEVICE_LITTLE_ENDIAN: the part is little-endian
+ * native (the ISP1040 precedent for these controllers), so the register file
+ * presents its native order and any host bridge composes the endianness for
+ * the guest. A guest dword read of a register returns the value written,
+ * pinned by the device's golden byte-layout qtest on a generic host. The DMA
+ * byte order is handled separately in bcm570x_tx_kick and
  * bcm570x_dma_status_block.
  */
 static const MemoryRegionOps bcm570x_bar0_ops = {
@@ -859,7 +860,8 @@ static bool bcm570x_frame_accepted(Bcm570xState *s, const uint8_t *buf,
  * DMA'd into the next posted standard-ring buffer, a completed descriptor is
  * written into the return ring, the receive producer advances, and the status
  * block reports it. The byte order reuses the transmit path's exactly:
- * descriptors big-endian, the payload a raw byte stream, the Bridge a no-op.
+ * descriptors native little-endian, the payload a raw byte stream copied
+ * verbatim.
  */
 static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                size_t size)
@@ -897,18 +899,18 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     /* The posted buffer's host address, from the standard-ring descriptor. */
     pci_dma_read(pci, std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
                  std_bd, sizeof(std_bd));
-    buf_addr = ((uint64_t)ldl_be_p(std_bd + BCM570X_RXBD_ADDR_HI) << 32) |
-               ldl_be_p(std_bd + BCM570X_RXBD_ADDR_LO);
+    buf_addr = ((uint64_t)ldl_le_p(std_bd + BCM570X_RXBD_ADDR_HI) << 32) |
+               ldl_le_p(std_bd + BCM570X_RXBD_ADDR_LO);
 
     pci_dma_write(pci, buf_addr, buf, size);
 
-    /* The completed descriptor into the return ring, big-endian. */
+    /* The completed descriptor into the return ring, native little-endian. */
     memset(ret_bd, 0, sizeof(ret_bd));
-    stl_be_p(ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
-    stl_be_p(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
-    stw_be_p(ret_bd + BCM570X_RXBD_IDX, idx);
-    stw_be_p(ret_bd + BCM570X_RXBD_LEN, size);
-    stw_be_p(ret_bd + BCM570X_RXBD_FLAGS, BCM570X_RXBDFLAG_END);
+    stl_le_p(ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
+    stl_le_p(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
+    stw_le_p(ret_bd + BCM570X_RXBD_IDX, idx);
+    stw_le_p(ret_bd + BCM570X_RXBD_LEN, size);
+    stw_le_p(ret_bd + BCM570X_RXBD_FLAGS, BCM570X_RXBDFLAG_END);
     pci_dma_write(pci, ret_base + (uint64_t)s->status_rx_prod *
                   BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
 
