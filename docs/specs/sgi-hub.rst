@@ -58,7 +58,25 @@ accept a write at reset with no unlock step.
 The widget status register always reads zero: this model retries
 nothing, completes every request before it returns, and never fails
 its link. Bit 4 reads zero because SGI's own table records it as
-undefined, preserved rather than resolved.
+undefined, preserved rather than resolved; the firmware's one
+power-on write of zero to it is logged as unimplemented, not as a
+guest error. The I/O interface's two scratch registers are 36-bit
+words of four packed sub-fields, everything above bit 35 reading
+zero -- the layout SGI's own table and Linux agree on -- and the
+firmware uses register 0 as private boot state (a measured 234 reads
+against 6 writes per boot). Of the incoming-crosstalk request buffer
+array (fifteen slots of four sub-registers), only slots 7-14's C
+sub-register is decoded, matching the firmware's measured diagnostic
+sweep; every field a real slot would hold is zero in a model that
+has never tracked an incoming transaction, and the firmware's early
+zero write to all eight is a generic range clear, logged
+unimplemented.
+
+Writes to the processor-number register are a documented vendor
+convention aimed at a logic analyzer or RTL simulation -- the
+standalone firmware's Hub header and IRIX's own drivers store marker
+values there, nothing ever read back -- and log as unimplemented, not
+as guest misbehavior.
 
 Processor interface
 ===================
@@ -89,12 +107,28 @@ would be silent for a 114-year revolution, while an immediate match
 costs a guarded writer one early tick and shows a livelock loudly.
 Only a guest-programmed deadline counts as passed -- moving the
 counter under a reset-zero comparator is a change of origin, not two
-unrequested interrupts. A matched comparator is not re-armed; guests
-rewrite it from every handler.
+unrequested interrupts. The modular space is split at half a
+revolution, which puts every deadline a guest programs (milliseconds)
+on the future side and accepts that an arm asking for the longest
+possible interval matches at once. A matched comparator is not
+re-armed, and its timer is deleted so the wrap deadline cannot pend
+a second time; guests rewrite it from every handler. An unpopulated
+slice never arms a timer. Of the clock-control register, bits 7:1
+(maximum count) and bit 0 (network-clock enable) are writable; bit
+15 and bits 14:8 observe the network-wide clock and read zero.
+
+Each processor's error-status record is modelled to its first
+doubleword; the second pair reads zero. The plain registers refuse
+writes; the clear alias accepts only a full-width store of zero as a
+clear, so a nonzero store cannot clear what its own bits assert. A
+guest clears a timed-out request buffer by writing it, which is
+accepted with nothing to clear.
 
 Processor enable is a behavior, not stored state: clearing a
 processor's bit removes it, which is how the firmware's halt routine
-never returns on real hardware. The error-spool address registers
+never returns on real hardware; the halt is requested rather than
+forced because it runs inside a memory write, the idiom MIPS's own
+power controller uses. The error-spool address registers
 survive reset deliberately -- the firmware parks a marker in
 processor B's across its own reset to learn which pass it is on.
 Timed-out-request-buffer registers read zero: nothing times out in a
@@ -103,9 +137,13 @@ model that completes every request instantly.
 The port reset register carries three resets and only bit 0, the
 local Hub reset, is this machine's; it is tested alone because the
 three consumers write different companion bits (Linux 0x81, OpenBSD
-0x03, the PROM's own self-reset 0x81). The protection register is
-deliberately not consulted: OpenBSD arms it before resetting and
-Linux does not.
+0x03, the PROM's own self-reset 0x81, measured on both PROM images).
+The link-reset and warm-reset-out bits are accepted and dropped. The
+protection register is deliberately not consulted: OpenBSD arms it
+before resetting and Linux does not. The error-spool addresses keep
+bits 31:3, start at zero from construction (the datasheet's power-on
+value), and survive reset for the marker the firmware parks in
+processor B's.
 
 Interrupts
 ==========
@@ -147,17 +185,31 @@ it.
 Memory and directory
 ====================
 
-The memory configuration register is masked storage whose reset
-value is the fact that matters: eight bank descriptors, a
-reply-guarantee count at full, the directory-format bit set, the
-error-correction-ignore bit set -- a model zeroing it misreports all
-of them at once. The four error registers and their clear aliases
-always read zero; the firmware's memory test reads every alias and
-aborts on any valid bit. The per-DIMM mode-initialisation registers
-are write-only in both public sources and the firmware writes each
-sixteen times, one per slot. Performance counter 0 is storage that
-never advances: nothing here tracks bus activity for it to count,
-and inventing an increment would fabricate a measurement.
+The memory configuration register is masked storage -- eight bank
+descriptors, a reply-guarantee count, the directory-format and
+error-correction-ignore bits, an arbitration bit, an I/O-protection
+enable, a module select and two timing-field pairs, dual-sourced
+against SGI's composite reset constant -- whose reset value is the
+fact that matters: the count at full, directory-format set,
+error-correction-ignore set, and a model zeroing it misreports all of
+them at once. The four error registers and their clear aliases,
+evenly strided eight bytes apart from 0x200050, always read zero; the
+firmware's memory test reads every alias and aborts on any valid
+bit. The aliases are inferred, not proven, to clear on read; writes
+to any of the eight are accepted and logged unimplemented. The
+per-DIMM mode-initialisation registers (DIMM_SELECT at bits 35:32,
+DIMM_MODE at 11:0) are write-only in both public sources and the
+firmware writes each sixteen times, stepping the select through
+every slot. Performance counter 0 is a 20-bit event counter kept as
+storage that never advances: nothing here tracks bus activity for it
+to count, inventing an increment would fabricate a measurement, and
+its selecting sibling register is not implemented.
+
+The slot-identity and microcontroller status register samples board
+signals: the machine supplies the master/slave sense and the XIO
+jumper; the bus-fault line and processor-speed strap read clear. The
+table declares no reset value for any of its fields, so what the
+absent signals read is this machine's decision.
 
 The node's one-wire bus master register is 34 bits wide, and that
 width is a correctness requirement: the upper timing phase occupies
@@ -165,11 +217,35 @@ bits 33:27, so truncating to 32 bits rewrites that field from 44 to
 12 with every field below it intact. Starting a slot clears the
 completion bit, so the disputed reset value of that bit does not
 matter; the slot must not complete inside the write that starts it.
-Nothing is attached to this bus, deliberately: an open-drain line
-nothing pulls down samples one every slot, and modelling an invented
-identity part would turn a visible absence into a plausible identity
-nothing downstream could tell was invented. The firmware manual says
-every board carries a part; which part is not established.
+A write cannot set the register's two status bits. The two documents
+describing the register disagree, unsourced both ways, on whether
+completion resets set or clear; the reset phase constant is taken
+from the memory/directory page because the one-wire page -- the
+authority on the fields -- does not carry it while asking for an
+exact assertion, a discrepancy reported rather than papered over. A
+slot's duration is nominal and chosen: what the timing encodings mean
+in real time is not established, and the contract needs only that a
+slot not complete inside the write. A slot armed before a reset must
+not complete after it. Nothing is attached to this bus, deliberately:
+an open-drain line nothing pulls down samples one every slot, and
+modelling an invented identity part would turn a visible absence into
+a plausible identity nothing downstream could tell was invented. The
+firmware manual says every board carries a part; which part is not
+established.
+
+The PCF8584 is mapped as a subregion of the Hub's own register region
+at higher priority, so both of the machine's mappings of the window
+reach it; it has no interrupt line, since the port is polled. The
+optional bring-up UART takes its 16550 clock argument as the
+oscillator divided by sixteen. The character-device assignment is
+fixed in one place: IOC3 ports A and B at 0 and 1, the system
+controller's AUX port at 2, the bring-up UART at 3 -- the IRIX
+console (``console=d``) is IOC3 serial A, not the AUX port. The
+system controller's 2 KB NVRAM answers eight consecutive I2C
+addresses of one 256-byte page each (one part or several is not
+established and invisible on the wire); page 7 is the
+controller-reserved page the PROM reads before probing a console,
+and only its validity marker has a required value.
 
 I/O interface
 =============
@@ -177,7 +253,9 @@ I/O interface
 The seven big windows are 512 MB each, aimed by a thirteen-bit
 translation entry naming a widget, one of its two address spaces and
 a 512 MB slice. There is no valid bit: a window is disabled by naming
-a widget that is not there, which is what both guests do. Every entry
+a widget that is not there, which is what both guests do. Bits 7:5
+of an entry are inside its width and named by no source, so they are
+stored rather than dropped. Every entry
 resets to zero, and that zero is load-bearing twice over -- a guest
 looking for a spare entry calls zero free, and zero spells widget 0
 in memory space, which is OpenBSD's only route to widget 0 (it
@@ -185,10 +263,13 @@ redirects every widget-0 access onto the last big window and never
 programs the entry). A disabled window must not fault: guests disable
 windows deliberately, so the model floors the windows with a region
 that answers zero and logs -- a choice, not the hardware's behavior,
-which no source gives. A window asking for a widget's I/O space is
-reported and left reaching nothing rather than aimed at memory space;
-the redirection's space bit is settled at memory by IRIX's own
-programming.
+which no source gives; the floor logs the window number, since an
+offset alone does not say which of the seven was disabled, and it
+covers the big windows only -- a crossbar port with no widget is an
+unmodelled device, not a disabled window, and keeps faulting. A
+window asking for a widget's I/O space is reported and left reaching
+nothing rather than aimed at memory space; the redirection's space
+bit is settled at memory by IRIX's own programming.
 
 The block transfer engines (BTE0, BTE1) copy or zero-fill ranges of
 128-byte cache lines through the node-local memory view the machine
@@ -210,15 +291,47 @@ than issuing a call per 128-byte line, with the line-at-a-time
 engine's register-visible contract unchanged: the transfer completes
 inside the launching store, a failed chunk is retried line by line so
 the count of lines that never moved is exact, and overlapping source
-and destination keep the line-at-a-time propagation order.
+and destination keep the line-at-a-time propagation order. A chunk
+is 4096 lines (512 KB), so the diagnostic's transfer is one call
+each way and the 8 MB maximum takes sixteen. Several launch shapes
+are stated-open choices: a zero-length armed launch (never
+programmed by any observed driver) completes as zero lines; whether
+zero-fill reads its source is open, and the model does not; a
+control store with busy clear does nothing, the datasheet's own
+proposal; what a control/terminate load returns is unobserved and
+answered with the written bits; poison mode launches, but the
+directory state it would poison belongs to the unmodelled directory.
+The notification is exactly eight bytes in guest byte order --
+whether hardware writes more of the line is unobserved -- and in
+interrupt mode the node field names a processor interface on this
+Hub or its direct peer, the only two. On hardware a failed transfer
+surfaces through the Hub's error machinery, not a completion signal;
+a notification write on error is not established, so neither
+completion path runs, and the Hub error interrupt is not modelled.
+The engine enable mask stays unimplemented: the sense of its bits is
+open and nothing writes them before first use.
 
 The deallocation, queue-depth and CRB registers read zero because
 nothing is ever in flight; for the two deallocation registers the
 clear read is required, since a guest polls a written pending bit to
-clear. The link-status register's state field has a counter-intuitive
+clear. The queue-depth register has no write case -- the datasheet's
+one conditional rewrite never fires because the register always
+reads below its threshold; the arbitration register is not decoded
+(no guest path reads it); the per-widget response buffers are
+excluded because their credit field resets to one. Which visible bits
+the I/O error-clear register touches is open in the datasheet; the
+engines' error bits are the only latches this model has, and the
+firmware writes it three times per boot on its normal error path. The link-status register's state field has a counter-intuitive
 encoding -- 0 failed, 1 never came up, 2 and 3 working -- so testing
 the field's high bit answers "is the link up", which is the test
-Linux performs. The link comes up reporting itself up, a knowing
+Linux performs; reporting 2 rather than 3 is a choice, nothing
+distinguishing them. The link-enable bit is left clear at reset:
+firmware operates it itself with a load-modify-store once it has
+identified a part, and presetting it would model that write. Burst,
+retry count and null-packet timeout are writable configuration, the
+warm-reset trigger a one-shot the model accepts and drops; the state
+field and eight-bit mode are read-only, since a guest that could
+write the state could tell the machine its own link was down. The link comes up reporting itself up, a knowing
 departure from the documented reset value: a link that reads down
 makes Linux return before it identifies anything, and this machine's
 link is permanently connected to something always present. That
@@ -227,30 +340,42 @@ departure is a ratified machine-contract decision.
 Network interface
 =================
 
-The status register stays in M mode; the node field resets to zero
-and is programmed by firmware (synthesized firmware may supply it
-through the nasid property); the region-size bit resets set. The
+The status register stays in M mode; the node field and region size
+are the writable fields, programmed by firmware (synthesized firmware
+may supply the node through the nasid property), while the link state
+and chip identity are read-only; the region-size bit resets set and
+link-up reports whether the product wires a peer. The
 vector PIO reaches only the directly connected peer chassis: a null
 route names that peer, and non-null routes fail with the hardware's
 address-error response, so the direct topology never pretends it can
 route an Origin 2000 network. With no peer fitted the model latches
 nothing and lets the requester's poll time out -- the datasheet's
 no-response proposal for its open no-peer question, not an observed
-silicon behavior.
+silicon behavior. A remote vector write decodes through the peer
+Hub's pure store, never its write hook, so it has no local side
+effects; the peer pointer is serialised only by BQL MMIO dispatch,
+which the launch path asserts before the first dereference.
 
 Diagnostic indicators and the boot-status word
 ==============================================
 
 The indicator register is write-only; every write is traced, decoded
 against the firmware's own progress and failure enumerations when it
-matches one and flagged undecoded otherwise. The boot-status word the
+matches one and flagged undecoded otherwise -- a run with the event
+armed and no output means no write reached the register. Values
+outside 0x00-0x60 and 0x81-0xb5 are not in the enumeration, and the
+pattern the firmware flashes while waiting for a character is 0x80
+XORed with a per-device bit pattern, so an undecoded value is not a
+fault. The boot-status word the
 firmware keeps is a *software convention held in FPR0*, not a
 hardware register of this chip.
 
 Migration
 =========
 
-The big-window aim is re-derived from the restored table entries;
+The big-window table field is version-gated, so a stream from before
+the table existed loads with the windows at their reset aim. The
+big-window aim is re-derived from the restored table entries;
 the BTE registers are the whole of an engine's state, so nothing is
 in flight to carry. The interrupt outputs are re-driven on load,
 which is sound here because each drives an idempotent level input on
