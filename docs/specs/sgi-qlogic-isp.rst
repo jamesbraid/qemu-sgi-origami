@@ -11,7 +11,11 @@ the mailbox command set and the two rings -- and never executes
 vendor code: guests download microcode at every attach, and the
 model accepts the download, retains it, and answers checksum
 verification honestly over what was actually sent. No vendor
-firmware is present or required.
+firmware is present or required. Load-RAM and dump-RAM take the word
+offset within the adapter in mailbox 1 and the word count in mailbox
+4, with the host address in the usual four-mailbox split; the offset
+advances as a 16-bit quantity and wraps within storage sized to that
+range.
 
 The register contract is driver-sourced -- no vendor programming
 manual for this part exists. The Origami project tree's ISP1040
@@ -30,7 +34,8 @@ numbered from different origins: OpenBSD and IRIX read the PCI byte
 configuration 0's low four bits, which run one ahead across the
 family -- so revision 5 in configuration space is field value 6
 there. The model derives one from the other rather than stating two
-constants.
+constants. Linux reads the bus-configuration-0 field for exactly one
+decision -- detecting the ISP1040A's broken FIFO -- and stores nothing.
 
 The 0x100-byte window of 16-bit registers decodes behind both BARs
 -- OpenBSD tries the memory window first and falls back to I/O.
@@ -63,7 +68,13 @@ count directly, and the guest's acknowledgement write records the
 consumer position without ever touching that count -- the aliasing
 is exactly the reserve-one-slot hazard the datasheet warns about.
 Before a queue is initialised both addresses are ordinary mailboxes,
-which the firmware's walking-pattern register test requires.
+which the firmware's walking-pattern register test requires. Queue
+initialisation takes the entry count in mailbox 1 and a 64-bit base
+split across mailboxes 2, 3, 6 and 7 -- OpenBSD's opcode 0x10 and
+Linux's A64 opcode 0x52 are one operation -- and rejects a zero base
+or count. The Linux-only parameter setters issued from
+``qla1280_nvram_config()`` are accepted; their caller discards the
+result.
 
 After reset, mailboxes 1-4 present the product signature ("IS",
 "P ", two spaces, and 0x0001). Linux's ``qla1280_chip_diag()`` reads
