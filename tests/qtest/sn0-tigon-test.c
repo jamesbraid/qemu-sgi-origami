@@ -806,9 +806,11 @@ static void test_hang_guard(const void *data)
 
 /*
  * The interrupt line the model exposes through the MISC_HOST_CTL state bit is
- * gated by the interrupt-mailbox hold-off and the chip-level mask, and cleared
- * by the clear-interrupt bit. Firmware-up leaves it asserted; walk it through
- * each control.
+ * gated by the chip-level mask and cleared either by the mailbox write (the
+ * driver's acknowledge, see tigon.c's TI_MB_HOSTINTR handler) or the
+ * clear-interrupt bit. Firmware-up leaves it asserted; walk it through each
+ * control, checking the mask before the ack so it still has a pending latch
+ * to gate.
  */
 static void test_interrupt_mask_ack(const void *data)
 {
@@ -817,19 +819,17 @@ static void test_interrupt_mask_ack(const void *data)
     go_operational(qts);
     g_assert_true(irq_asserted(qts));
 
-    /* Hold-off drops the line without losing the pending state. */
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 1);
-    g_assert_false(irq_asserted(qts));
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
-    g_assert_true(irq_asserted(qts));
-
-    /* The chip-level mask suppresses delivery independently. */
+    /* The chip-level mask suppresses delivery without touching the latch. */
     qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_MASK_INTS);
     g_assert_false(irq_asserted(qts));
     qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, 0);
     g_assert_true(irq_asserted(qts));
 
-    /* Clear-interrupt drops the pending latch for good. */
+    /* The mailbox write is the acknowledge: either value drops the latch. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 1);
+    g_assert_false(irq_asserted(qts));
+
+    /* Clear-interrupt still drops a still-pending latch directly. */
     qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_CLEARINT);
     g_assert_false(irq_asserted(qts));
 
@@ -837,23 +837,82 @@ static void test_interrupt_mask_ack(const void *data)
 }
 
 /*
- * The real Tigon 2 driver acknowledges by advancing the GCR consumer indices,
- * not by writing a clear-interrupt bit, so the level line has to drop when a
- * consumer index catches up to its producer. Without that the firmware-up
- * interrupt would re-assert forever on a full boot.
+ * The real acknowledge is the mailbox write, not GCR consumer-index
+ * catch-up: IRIX's "eg" driver, observed live, never writes
+ * TI_GCR_EVENTCONS_IDX or TI_GCR_RXRETURNCONS_IDX at all, so a model gated on
+ * those consumers left the line stuck asserted forever against it. Pin both
+ * halves of that: advancing the consumer index alone does nothing, and the
+ * mailbox write -- with the value eg actually uses, 0 -- is what lowers the
+ * line.
  */
-static void test_interrupt_consumer_catchup(const void *data)
+static void test_interrupt_hostintr_ack(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     go_operational(qts);
     g_assert_true(irq_asserted(qts));
 
-    /* Consuming the firmware-up event lowers the line. */
+    /* Advancing the consumer index no longer has any effect on the line. */
     qtest_writel(qts, WINDOW_TIGON + TI_GCR_EVENTCONS_IDX, 1);
+    g_assert_true(irq_asserted(qts));
+
+    /* IRIX's eg writes only 0 here -- that alone must ack. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
     g_assert_false(irq_asserted(qts));
 
     qtest_quit(qts);
+}
+
+/*
+ * The IRIX "eg" driver's actual acknowledge protocol, observed live across a
+ * 33 million line trace: it never writes TI_GCR_EVENTCONS_IDX or
+ * TI_GCR_RXRETURNCONS_IDX, and it writes TI_MB_HOSTINTR only with 0, never
+ * the public NetBSD "ti" driver's mask-at-ISR-entry value 1 (if_ti.c
+ * ti_intr()). Against the old consumer-index-catch-up model that left the
+ * line stuck asserted forever: `eg` spins on the write, INTA never drops,
+ * and `ifconfig` never returns. The mailbox write alone must ack, and a
+ * later genuine completion must still raise the line again.
+ */
+static void test_interrupt_irix_ack_protocol(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+    g_assert_true(irq_asserted(qts));   /* the firmware-up event */
+
+    /* One receive completion, landing in the return ring. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    g_assert_true(irq_asserted(qts));
+
+    /* The driver's ISR: eg never touches the GCR consumers, only the mailbox. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    /* The line must drop from that write alone. */
+    g_assert_false(irq_asserted(qts));
+
+    /* A second, later completion still has to raise the line. */
+    post_std_rx_buffer(qts, 1, RX_BUF_PHYS + 0x1000, 1, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 2);
+    g_assert_true(irq_asserted(qts));
+
+    /* And the same ack-with-zero protocol quiets it again. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
 }
 
 /*
@@ -917,8 +976,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/hang-guard", NULL, test_hang_guard);
     qtest_add_data_func("/sn0/tigon/interrupt-mask-ack", NULL,
                         test_interrupt_mask_ack);
-    qtest_add_data_func("/sn0/tigon/interrupt-consumer-catchup", NULL,
-                        test_interrupt_consumer_catchup);
+    qtest_add_data_func("/sn0/tigon/interrupt-hostintr-ack", NULL,
+                        test_interrupt_hostintr_ack);
+    qtest_add_data_func("/sn0/tigon/interrupt-irix-ack-protocol", NULL,
+                        test_interrupt_irix_ack_protocol);
     qtest_add_data_func("/sn0/tigon/register-config-roundtrip", NULL,
                         test_register_config_roundtrip);
 
