@@ -726,41 +726,109 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
  * declaration against the big-endian packing below: one swap at the
  * window boundary, independent of the host's own endianness.
  */
-static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
-                                       AddressSpace *space, hwaddr addr,
-                                       unsigned int size)
+/*
+ * One device-window cycle of up to four bytes, corrected if the slot needs it:
+ * a byte, halfword or word, and each half of a 32-bit device's split
+ * doubleword. impl.max caps size at four here; the assert makes that bound
+ * visible to the compiler's array-bounds check, the eight-byte doubleword being
+ * the caller's.
+ */
+static uint64_t sgi_bridge_window_read_word(SGIBridgeState *s,
+                                            unsigned int slot,
+                                            AddressSpace *space, hwaddr addr,
+                                            unsigned int size)
 {
     hwaddr offset = sgi_bridge_slot_needs_correction(s, slot) ?
                     sgi_bridge_window_correct(addr, size) : addr;
     hwaddr target = s->device_window_base[slot] + offset;
     uint8_t bytes[4] = { 0 };
-    uint64_t val;
 
-    /*
-     * impl.max_access_size caps size at four; the assert makes the bound
-     * visible to the compiler's array-bounds check.
-     */
     assert(size <= sizeof(bytes));
-
     address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
-    val = ldn_be_p(bytes, size);
-    return val;
+    return ldn_be_p(bytes, size);
 }
 
-static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
-                                    AddressSpace *space, hwaddr addr,
-                                    uint64_t val, unsigned int size)
+/*
+ * A device-window read. The slot's device-size bit picks how a doubleword is
+ * served: a 32-bit device gets two word cycles (big-endian high word at the
+ * lower offset, each corrected), a 64-bit device one eight-byte cycle with no
+ * narrow correction, mirrored end to end on the programmed-access swap bit.
+ * The window is DEVICE_LITTLE_ENDIAN, so reading the buffer big-endian nets to
+ * the doubleword unchanged and little-endian to the mirror. A byte, halfword or
+ * word is one corrected cycle.
+ */
+static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
+                                       AddressSpace *space, hwaddr addr,
+                                       unsigned int size)
+{
+    uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+
+    if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
+        uint8_t bytes[8] = { 0 };
+
+        address_space_read(space, s->device_window_base[slot] + addr,
+                           MEMTXATTRS_UNSPECIFIED, bytes, 8);
+        return (dev & DEV_SWAP_PROGRAMMED) ? ldq_le_p(bytes) : ldq_be_p(bytes);
+    }
+
+    if (size == 8) {
+        uint64_t word0 = sgi_bridge_window_read_word(s, slot, space, addr, 4);
+        uint64_t word1 = sgi_bridge_window_read_word(s, slot, space,
+                                                     addr + 4, 4);
+
+        return word0 | (word1 << 32);
+    }
+
+    return sgi_bridge_window_read_word(s, slot, space, addr, size);
+}
+
+/* One device-window write cycle of up to four bytes, the counterpart of
+ * sgi_bridge_window_read_word. */
+static void sgi_bridge_window_write_word(SGIBridgeState *s, unsigned int slot,
+                                         AddressSpace *space, hwaddr addr,
+                                         uint64_t val, unsigned int size)
 {
     hwaddr offset = sgi_bridge_slot_needs_correction(s, slot) ?
                     sgi_bridge_window_correct(addr, size) : addr;
     hwaddr target = s->device_window_base[slot] + offset;
     uint8_t bytes[4];
 
-    /* The same four-byte implementation cap the read path relies on. */
     assert(size <= sizeof(bytes));
-
     stn_be_p(bytes, size, val);
     address_space_write(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
+}
+
+/*
+ * The write counterpart of sgi_bridge_window_read: the device-size bit picks the
+ * same split or single cycle and the swap bit mirrors a 64-bit doubleword, so a
+ * value round-trips through a 64-bit window under either swap setting.
+ */
+static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
+                                    AddressSpace *space, hwaddr addr,
+                                    uint64_t val, unsigned int size)
+{
+    uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+
+    if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
+        uint8_t bytes[8];
+
+        if (dev & DEV_SWAP_PROGRAMMED) {
+            stq_le_p(bytes, val);
+        } else {
+            stq_be_p(bytes, val);
+        }
+        address_space_write(space, s->device_window_base[slot] + addr,
+                            MEMTXATTRS_UNSPECIFIED, bytes, 8);
+        return;
+    }
+
+    if (size == 8) {
+        sgi_bridge_window_write_word(s, slot, space, addr, val, 4);
+        sgi_bridge_window_write_word(s, slot, space, addr + 4, val >> 32, 4);
+        return;
+    }
+
+    sgi_bridge_window_write_word(s, slot, space, addr, val, size);
 }
 
 static uint64_t sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
@@ -801,9 +869,10 @@ static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
 
 /*
  * A doubleword is a native access here (the firmware's device-pointer
- * dereference is one), served as two 32-bit cycles: valid up to eight with
- * impl capped at four makes the core do exactly that split, and the
- * byte-lane correction sees each four-byte cycle in its own right.
+ * dereference is one). Both maxima are eight so it reaches the handlers whole:
+ * a 64-bit device is served one cycle, a 32-bit device the two four-byte cycles
+ * the handler now splits itself, since impl past four stops the core doing it.
+ * The byte-lane correction still sees each four-byte cycle in its own right.
  */
 static const MemoryRegionOps sgi_bridge_window_mem_ops = {
     .read = sgi_bridge_window_mem_read,
@@ -812,7 +881,7 @@ static const MemoryRegionOps sgi_bridge_window_mem_ops = {
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
+    .impl.max_access_size = 8,
 };
 
 static const MemoryRegionOps sgi_bridge_window_io_ops = {
@@ -822,7 +891,7 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
+    .impl.max_access_size = 8,
 };
 
 /* A write to a per-device register re-aims that slot's window. */
