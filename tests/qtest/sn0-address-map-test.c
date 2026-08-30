@@ -42,10 +42,8 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 }
 
 /*
- * The directory and error-correction back doors. Real firmware's own memory
- * and directory diagnostic writes a pattern through here and reads it back
- * to test for stuck bits; nothing about coherence or ECC is modelled, so the
- * only property that has to hold is the round trip itself.
+ * The directory/ECC back doors: nothing about coherence is modelled, so
+ * the property is the diagnostic's own round trip.
  */
 #define BACKDOOR_ECC    (SPACE_HUB + NODE0 + 0x80000000ULL)
 #define BACKDOOR_DIR    (SPACE_HUB + NODE0 + 0xc0000000ULL)
@@ -139,11 +137,9 @@ static uint8_t config_byte_sum(const uint8_t *config)
 }
 
 /*
- * SGI ships one generic IP27 PROM image and preserves the running node's
- * configuration block when it flashes that image. Reproduce the externally
- * visible half of that operation: a release image carrying the SN0 defaults
- * must describe the concrete Origin 200 machine after QEMU installs it, while
- * retaining the configuration block's original byte sum.
+ * A generic release image must describe the concrete machine after QEMU
+ * installs it, keeping the configuration block's byte sum -- the visible
+ * half of SGI's own reflash.
  */
 static void test_supplied_prom_gets_origin200_config(const void *data)
 {
@@ -220,11 +216,8 @@ static void test_flash_three_views(const void *data)
 }
 
 /*
- * Each Hub-special view of the flash is 256 MB decoding a 1 MB chip. Real
- * firmware reaches its own code through offsets in these windows well past the
- * flash's real size, and a real chip-select ignores the extra bits and repeats.
- * This is the case test_flash_three_views cannot reach, since offset zero would
- * pass even with a window sized to the flash alone.
+ * 256 MB views of a 1 MB chip repeat: firmware fetches past the real
+ * size, and offset zero alone cannot show the repeat.
  */
 static void test_boot_windows_mirror_the_flash(const void *data)
 {
@@ -256,13 +249,9 @@ static void test_boot_windows_mirror_the_flash(const void *data)
 }
 
 /*
- * The real PROM relocates and runs its own code through the flash's base in
- * Hub space (0x1fc00000 with the Hub window above it), not through the reset
- * view. Fetching instructions from an I/O region translates one instruction
- * per block and never caches them, so that copy step crawls. This base must
- * therefore be a direct (romd) view of the chip. Read the type off the
- * machine's own flat view rather than assuming it: before the fast view exists
- * the whole window is one I/O range and no flat line starts at this base.
+ * The PROM runs its own code through this base, and an I/O region
+ * executes one instruction per block: the base must be a direct (romd)
+ * view, read off the machine's own flat view rather than assumed.
  */
 static void test_flash_hub_local_is_fast(const void *data)
 {
@@ -526,10 +515,8 @@ static void test_512m_memory(const void *data)
 }
 
 /*
- * Hub-special offset zero is a 256 MiB view of the reading processor's local
- * node memory.  It must preserve the fitted bank's sparse slot layout rather
- * than turn the whole window into RAM.  The first address is the physical page
- * to which the real PROM maps its uncached post-relocation instruction stream.
+ * A 256 MiB view of local node memory that must preserve the sparse bank
+ * layout rather than turn the whole window into RAM.
  */
 static void test_hub_local_memory_alias(const void *data)
 {
@@ -585,11 +572,8 @@ static void test_invalid_memory_size(const void *data)
 #define BACKDOOR_PATTERN_LOW48 0x0000555555555555ULL
 
 /*
- * Storage is only as wide as the directory format: the low sixteen bits
- * round-trip, the rest do not survive. Checked at base, middle and last
- * entry -- a region sized wrong at its top is a different bug from one
- * that never held state -- with the pattern folded with the bank index so
- * two banks cannot pass by aliasing onto each other.
+ * Only the format's sixteen bits survive; checked at base, middle and
+ * top, folded with the bank index so banks cannot alias.
  */
 static void check_backdoor_entry(QTestState *qts, uint64_t base,
                                  unsigned int bank)
@@ -612,12 +596,7 @@ static void check_backdoor_entry(QTestState *qts, uint64_t base,
     }
 }
 
-/*
- * The probe against a populated bank must classify standard format (SGI's
- * manual: no premium directory memory on an Origin 200). Assert the
- * classification, not the value: the low sixteen bits are fixed, the rest
- * only has to disagree with the wide mask.
- */
+/* Assert the classification, not the value the model chose. */
 static void check_backdoor_standard_format(QTestState *qts, uint64_t addr)
 {
     uint64_t readback;
@@ -630,12 +609,7 @@ static void check_backdoor_standard_format(QTestState *qts, uint64_t addr)
     g_assert_cmphex(readback & 0xffffffffffffULL, !=, BACKDOOR_PATTERN_LOW48);
 }
 
-/*
- * The probe against an unpopulated bank must classify absent: the low
- * sixteen bits must not survive. Assert the classification, not what the
- * location reads as -- that value is the model's own choice, and pinning
- * it would freeze a modelling choice as a contract.
- */
+/* Absent classifies absent; pinning the read value would freeze a choice. */
 static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 {
     uint64_t readback;
@@ -648,10 +622,8 @@ static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 }
 
 /*
- * The back door is the ordinary memory address shifted right by two.  A
- * populated bank therefore has one quarter as much unique directory or ECC
- * storage as ordinary memory, repeated across its fixed 128 MiB share of the
- * back-door window.  Firmware relies on this aliasing to size the bank.
+ * The back door is the memory address shifted right by two; firmware
+ * relies on the quarter-size aliasing to size the bank.
  */
 static void check_backdoor_bank_span(QTestState *qts, uint64_t base,
                                      unsigned int bank, uint64_t span)
@@ -737,10 +709,8 @@ static void test_ecc_backdoor(const void *data)
 }
 
 /*
- * Proof the back door tracks how many banks exist rather than hard-coding
- * bank 0: bank 1's share must round-trip here though it does not on the
- * default machine, and bank 0's pattern must survive bank 1 being written
- * -- which a model aliasing all populated banks together would not show.
+ * Bank 1 must round-trip and bank 0 must survive it: a model aliasing
+ * the banks together shows neither.
  */
 static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
 {
@@ -773,17 +743,11 @@ static void test_backdoor_tracks_populated_banks(const void *data)
 }
 
 /*
- * The promdata window holds the same bytes for every processor. Under
- * synthesized firmware a NASID-less address names node zero's memory,
- * which is what lets one loaded kernel serve every processor. A
- * per-processor filter over the 32 KiB at 1 MiB that forwards to a base
- * derived from its own node's NASID disagrees with that alias on every
- * node but zero -- the kernel reads back as zeroes there, and zeroes are
- * nops. No such filter exists in this configuration today; the case is a
- * sentinel for whoever restores one. Node one's memory is planted with a
- * distinct word so a failure names what it read, and reads go through
- * each processor's own address space, which the global space -- filter-
- * free and always correct -- cannot substitute for.
+ * The promdata window must hold the same bytes for every processor; a
+ * NASID-derived per-processor filter disagrees on every node but zero and
+ * a loaded kernel reads back as nops. A sentinel for whoever restores
+ * such a filter; reads go through each processor's own address space,
+ * which the always-correct global space cannot substitute for.
  */
 
 #define NUMA_NODE1_BASE     0x100000000ULL
