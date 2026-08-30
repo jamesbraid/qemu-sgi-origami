@@ -424,6 +424,13 @@ static void tigon_tx(TigonState *s, uint32_t prod)
         if (len > sizeof(frame) - frame_len) {
             len = sizeof(frame) - frame_len;
         }
+        /*
+         * Frame bytes are copied as a raw stream: byte order is a property of
+         * the descriptor fields above, not of the payload. This is correct on
+         * the path the qtests exercise; whether the Bridge-corrects path needs
+         * the payload made swap-aware is deferred to the end-to-end IRIX boot,
+         * where the real DEV_SWAP path shows itself.
+         */
         pci_dma_read(pci, buf, frame + frame_len, len);
         frame_len += len;
         s->tx_considx = (s->tx_considx + 1) % TI_TX_RING_CNT;
@@ -758,7 +765,7 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     /* Take the next posted standard receive buffer. */
     rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
     buf_addr = tigon_dma_ld_addr(s, rx_desc);
-    /* Big-endian layout: index in the high half of the word, length in the low. */
+    /* Big-endian word: buffer index in the high half, length in the low. */
     rx_word = tigon_dma_ld32(s, rx_desc + 8);
     buf_idx = rx_word >> 16;
     buf_len = rx_word & 0xffff;
@@ -771,6 +778,7 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
      * this guards a guest that posts a short one.
      */
     landed = MIN(size, buf_len);
+    /* Payload copied raw; see the transmit path on the deferred swap. */
     pci_dma_write(pci, buf_addr, buf, landed);
 
     /* Post a receive-return descriptor naming the buffer and the length. */
@@ -962,6 +970,17 @@ static const Property tigon_properties[] = {
     DEFINE_PROP_SIZE32("sram-size", TigonState, sram_size, 1 * MiB),
 };
 
+static void tigon_instance_init(Object *obj)
+{
+    TigonState *s = TIGON(obj);
+
+    /*
+     * A board-identity default the property may override; the model serves one
+     * media variant and does not negotiate, so this only labels the card.
+     */
+    s->media = g_strdup("copper");
+}
+
 static void tigon_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -985,6 +1004,7 @@ static const TypeInfo tigon_types[] = {
         .name = TYPE_TIGON,
         .parent = TYPE_PCI_DEVICE,
         .instance_size = sizeof(TigonState),
+        .instance_init = tigon_instance_init,
         .class_init = tigon_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
