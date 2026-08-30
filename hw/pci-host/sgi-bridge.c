@@ -2,17 +2,11 @@
 /*
  * SGI Bridge crosstalk-to-PCI host bridge.
  *
- * A crosstalk widget on one side, a PCI host bridge on the other: the local
- * register block, the per-slot device windows, configuration space, the
- * address translation table, the interrupt path and the board identity part.
- *
- * Registers are 32 bits in data bits 31:0 of an eight-byte slot, so the data
- * sits at the slot's offset plus four. Linux's header names that address;
- * OpenBSD names the slot and folds the four in -- the same registers, not
- * four bytes apart. Reset state is heavily non-zero (the control register
- * alone comes up with seven fields set), so decode, reset value and writable
- * mask all come from one table. An access the chip does not define is posted
- * and flagged as an invalid-address error, the way the real chip does it.
+ * Registers are 32 bits in the upper word of an eight-byte slot -- the data
+ * sits at the slot's offset plus four -- and the reset state is heavily
+ * non-zero, so decode, reset value and writable mask all come from one
+ * table. See docs/specs/sgi-bridge.rst for the register, translation,
+ * byte-lane and board-identity contracts.
  */
 
 #include "qemu/osdep.h"
@@ -53,12 +47,7 @@
 #define BRIDGE_TEST_PIN_CONTROL 0x070
 #define BRIDGE_DIRECT_MAP       0x080
 
-/*
- * The one-wire bus master to the board identity part. Bit 0 is the sampled
- * level, bit 1 the finished flag; writing the two timing fields starts a
- * slot. The whole protocol arrives through this register a bit at a time,
- * so the slot kind is recovered from the timings.
- */
+/* The one-wire master: writing the timing fields runs one bit slot. */
 #define BRIDGE_NIC              0x0b0
 #define NIC_LEVEL               (1u << 0)
 #define NIC_DONE                (1u << 1)
@@ -68,16 +57,10 @@
 #define NIC_PULSE_MASK          (0x3ffu << NIC_PULSE_SHIFT)
 #define NIC_WRITABLE            (NIC_SAMPLE_MASK | NIC_PULSE_MASK)
 
-/*
- * Thresholds, not exact values: Linux resets with a 520 us pulse where
- * OpenBSD uses 500, and both must land the same side of the line.
- */
+/* Thresholds, not exact values: guests disagree on the microseconds. */
 #define NIC_PULSE_IS_RESET      400
 
-/*
- * A read uses the same short slot as a written one, so timing cannot tell
- * them apart; the part answers whatever the conversation expects next.
- */
+/* A read and a written one share a slot shape; context tells them apart. */
 #define NIC_PULSE_IS_ZERO       40
 
 /* Conversation state, surviving between the per-bit register writes. */
@@ -91,10 +74,6 @@
 #define NIC_PHASE_STATUS        7   /* shifting the status memory back out */
 #define NIC_PHASE_READ          8   /* streaming the data memory, unframed */
 
-/*
- * Both addressing forms are answered: real firmware searches the bus,
- * resets, and then names the identity the search handed back.
- */
 #define NIC_CMD_SEARCH_ROM      0xf0
 #define NIC_CMD_MATCH_ROM       0x55
 #define NIC_CMD_SKIP_ROM        0xcc
@@ -102,40 +81,22 @@
 #define NIC_CMD_READ_PLAIN      0xf0
 #define NIC_CMD_READ_STATUS     0xaa
 
-/*
- * Two commands read the same data memory with different framing, so a
- * page's embedded check is stored in its last two bytes rather than
- * manufactured on the way out. Sixty-four pages matches the sixty-four
- * redirection bytes the status memory answers.
- */
+/* Two commands frame this memory differently; the check is stored. */
 #define NIC_DATA_PAGES          64
 #define NIC_DATA_SIZE           (NIC_DATA_PAGES * NIC_PAGE_SIZE)
 #define NIC_UNPROGRAMMED        0xff
 
-/*
- * The status memory, read with its own command: protection bits and the
- * per-page redirection bytes. EPROM leaves unwritten bits set, so every
- * byte of ours reads 0xff -- which in a redirection byte means the page is
- * valid where it sits, exactly what this part needs to say.
- */
+/* EPROM reads unwritten bits set: 0xff redirection means page-in-place. */
 #define NIC_STATUS_UNPROGRAMMED 0xff
 #define NIC_STATUS_PAGE         8
 #define NIC_STATUS_LAST         0x13f
 
-/*
- * One page's answer: a redirection byte, a check pair over the request and
- * that byte, the page, and a check pair over the page.
- */
 #define NIC_PAGE_SIZE           32
 #define NIC_PAGES               2
 #define NIC_NOT_REDIRECTED      0xff
 #define NIC_ANSWER_SIZE         (3 + NIC_PAGE_SIZE + 2)
 
-/*
- * The ROM identity: family code, six serial bytes, a check byte. Guests
- * match on the family code; the wrong one means found and ignored. The
- * serial is the machine's to supply.
- */
+/* Guests match on the family code; the serial is the machine's. */
 #define NIC_ROM_FAMILY          0x0b
 #define NIC_ROM_SERIAL_DEFAULT  0x060504030201ULL
 #define NIC_ROM_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
@@ -149,10 +110,7 @@
 #define BRIDGE_PCI_ERR_UPPER    0x0d0
 #define BRIDGE_PCI_ERR_LOWER    0x0d8
 
-/*
- * Interrupt registers, confirmed against the chip's register table field
- * for field; the multiple-error flag at bit 31 has no enable bit.
- */
+/* The multiple-error flag at bit 31 has no enable bit. */
 #define BRIDGE_INT_STATUS       0x100
 #define BRIDGE_INT_ENABLE       0x108
 #define BRIDGE_INT_RESET        0x110
@@ -192,12 +150,7 @@
 #define BRIDGE_DEVICE(n)        (0x200 + SGI_BRIDGE_REG_SLOT * (n))
 #define BRIDGE_DEVICE_FLUSH(n)  (0x240 + SGI_BRIDGE_REG_SLOT * (n))
 
-/*
- * The translation table, at two addresses: entries are written whole as
- * 64-bit quantities (the exception to the 32-bit rule), only the upper half
- * reads back at the entry's offset plus four, and the second region serves
- * the lower halves as 128 read-only words.
- */
+/* Entries write whole as 64 bits; the second region reads the low halves. */
 #define BRIDGE_ATE_BASE         0x010000
 #define BRIDGE_ATE_ENTRY_SIZE   8
 #define BRIDGE_ATE_SIZE         (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_ENTRY_SIZE)
@@ -209,10 +162,7 @@
 #define BRIDGE_SSRAM_SIZE       (512 * KiB)
 #define BRIDGE_ATE_LOW_SIZE     (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_LOW_STRIDE)
 
-/*
- * The remote map field keeps its full sixteen bits: the direct map mode bit
- * decides whether a device fills eight or all of them.
- */
+/* Full sixteen bits: the direct-map mode bit decides how many fill. */
 #define ATE_REMOTE_MAP          MAKE_64BIT_MASK(48, 16)
 #define ATE_ADDRESS             MAKE_64BIT_MASK(12, 36)
 #define ATE_TARGET_WIDGET       MAKE_64BIT_MASK(8, 4)
@@ -222,10 +172,6 @@
 #define ATE_COHERENT            BIT_ULL(1)
 #define ATE_VALID               BIT_ULL(0)
 
-/*
- * The top two PCI address bits split the space: first gigabyte local, the
- * second through the table, the upper two the direct window.
- */
 #define BRIDGE_PCI_TRANSLATED   0x40000000u
 #define BRIDGE_PCI_DIRECT       0x80000000u
 
@@ -233,38 +179,22 @@
 #define BRIDGE_PAGE_SHIFT_4K    12
 #define BRIDGE_PAGE_SHIFT_16K   14
 
-/*
- * Direct window: the offset field supplies crosstalk bits 47:31, the low 31
- * PCI bits pass through, and the add-512MB bit (reset set) steps over the
- * processor's low compatibility segments when the offset field is zero.
- */
 #define BRIDGE_DIRECT_SHIFT     31
 #define BRIDGE_DIRECT_PASS      MAKE_64BIT_MASK(0, 31)
 #define BRIDGE_DIRECT_512MB     (512 * MiB)
 
-/*
- * A 64-bit DMA cycle: bits 47:0 are the crosstalk address, 63:60 the
- * target widget; the offset registers are bypassed so the NASID survives.
- */
 #define BRIDGE_PCI_64BIT        (1ULL << 32)
 #define BRIDGE_XTALK_PASS       MAKE_64BIT_MASK(0, 48)
 #define BRIDGE_DIRECT64_WIDGET_SHIFT 60
 
-/*
- * Type 0 configuration space: eight devices 4 KB apart, eight functions
- * 256 bytes apart. The public geometry lives in the header because the
- * machine names configuration windows too; only the decode is private.
- */
+/* The geometry is public in the header: the machine names windows too. */
 #define BRIDGE_CFG0_SIZE        (SGI_BRIDGE_DEVICES * \
                                  SGI_BRIDGE_CFG0_DEVICE_SIZE)
 #define BRIDGE_CFG0_DEVICE(a)   (((a) >> 12) & 7)
 #define BRIDGE_CFG0_FUNCTION(a) (((a) >> 8) & 7)
 #define BRIDGE_CFG0_REGISTER    0xff
 
-/*
- * Per-slot windows: the first two are 2 MB, the remaining six 1 MB, so they
- * are not evenly spaced. Derived rather than written as eight constants.
- */
+/* The first two windows are 2 MB, the rest 1 MB: not evenly spaced. */
 #define BRIDGE_WINDOW_BASE      0x200000
 #define BRIDGE_WINDOW_LARGE     (2 * MiB)
 #define BRIDGE_WINDOW_SMALL     (1 * MiB)
@@ -289,11 +219,7 @@
 #define STATUS_FLASH_SELECT     BIT(6)
 #define STATUS_PCI_MODE         BIT(5)
 
-/*
- * Control. Seven fields reset set (specification only -- the public headers
- * carry no power-up values), summed from named fields so a missing term
- * shows.
- */
+/* Seven fields reset set, summed from names so a missing term shows. */
 #define CONTROL_FLASH_WRITE_EN  BIT(31)
 #define CONTROL_CLOCK_50MHZ     BIT(30)
 #define CONTROL_CLOCK_40MHZ     BIT(29)
@@ -348,10 +274,7 @@
 #define LINK_CONFIG_WRITABLE    (LINK_MAX_RETRY | LINK_NULL_TIMEOUT | \
                                  LINK_MAX_BURST)
 
-/*
- * The add-512MB bit resets set; clearing it at reset would silently move
- * every direct-window transfer half a gigabyte down.
- */
+/* Resets set: cleared, every direct transfer moves half a gigabyte down. */
 #define DIRECT_WIDGET_SHIFT     20
 #define DIRECT_WIDGET           (0xfu << DIRECT_WIDGET_SHIFT)
 #define DIRECT_REMOTE_MAP_MODE  BIT(18)
@@ -392,11 +315,7 @@
 #define TYPE1_DEVICE_NUMBER     (0x1fu << 11)
 #define TYPE1_WRITABLE          (TYPE1_BUS_NUMBER | TYPE1_DEVICE_NUMBER)
 
-/*
- * Per-slot device register. Three bits reset set, the memory-or-I/O select
- * at bit 12 included. The specification and Linux name the page-cross bit
- * oppositely (enable vs disable) while describing it identically.
- */
+/* Three bits reset set, the memory-or-I/O select included. */
 #define DEV_ERROR_LOCK          BIT(28)
 #define DEV_PAGE_CROSS_CHECK    BIT(27)
 #define DEV_FORCE_PCI_PARITY    BIT(26)
@@ -416,12 +335,7 @@
 #define DEV_MEMORY_SPACE        BIT(12)
 #define DEV_WINDOW_BASE         0xfffu
 
-/*
- * The window base field supplies PCI address bits 31:20; windows lie end to
- * end, 2n MB for the first two slots and n+2 for the rest. The reset value
- * comes from the firmware, whose sanity diagnostic asserts all eight -- the
- * specification gives this field no power-up value.
- */
+/* Firmware-sourced reset: its sanity diagnostic asserts all eight. */
 #define DEVICE_WINDOW_RESET(n)  ((n) < 2 ? 2 * (n) : (n) + 2)
 #define DEVICE_RESET(n)         (DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | \
                                  DEV_MEMORY_SPACE | DEVICE_WINDOW_RESET(n))
@@ -435,10 +349,7 @@
                                  DEV_SWAP_PROGRAMMED | DEV_MEMORY_SPACE | \
                                  DEV_WINDOW_BASE)
 
-/*
- * Kept apart because a write to a read-only register is a guest bug worth
- * reporting, while a write to a strobe is the chip used correctly.
- */
+/* A read-only write is a guest bug; a strobe write is correct use. */
 typedef enum {
     SGI_BRIDGE_RO,      /* writes are a guest error and are reported */
     SGI_BRIDGE_RW,      /* the writable mask says which bits a guest may set */
@@ -447,12 +358,9 @@ typedef enum {
 } SGIBridgeRegAccess;
 
 /*
- * One row per defined register: a decode cannot exist without a reset value
- * and writable mask. Deliberately not hw/core/register.h's
- * RegisterAccessInfo, which builds its own region at a four-byte stride and
- * cannot post undefined addresses. Non-zero reset values come from the
- * chip's specification (the public headers carry none); a zero is either
- * the specification's or, where marked, this model's choice.
+ * One row per defined register: a decode cannot exist without a reset
+ * value and writable mask. Non-zero resets come from the specification;
+ * a zero is either the specification's or, where marked, this model's.
  */
 typedef struct SGIBridgeReg {
     const char *name;
@@ -485,14 +393,10 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
     [SGI_BRIDGE_SLOT(BRIDGE_STATUS)] = {
         "status", SGI_BRIDGE_RO, STATUS_PCI_MODE, 0 },
 
-    /*
-     * The timing fields are the writable part; the level and finished flag
-     * are answers the model writes when a slot runs.
-     */
+    /* The level and finished flag are answers, outside the mask. */
     [SGI_BRIDGE_SLOT(BRIDGE_NIC)] = {
         "one-wire bus master", SGI_BRIDGE_RW, 0, NIC_WRITABLE },
 
-    /* No error has been logged, so the error registers read zero. */
     [SGI_BRIDGE_SLOT(BRIDGE_ERR_UPPER)] = {
         "error address upper", SGI_BRIDGE_RO, 0, 0 },
     [SGI_BRIDGE_SLOT(BRIDGE_ERR_LOWER)] = {
@@ -516,10 +420,7 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         "link configuration", SGI_BRIDGE_RW, LINK_CONFIG_RESET,
         LINK_CONFIG_WRITABLE },
 
-    /*
-     * Reading it is the operation; the answer means nothing. The one thing
-     * this register must never do is fault.
-     */
+    /* Reading it is the operation; it must never fault. */
     [SGI_BRIDGE_SLOT(BRIDGE_TARGET_FLUSH)] = {
         "target flush", SGI_BRIDGE_RO, 0, 0 },
 
@@ -530,14 +431,13 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
     [SGI_BRIDGE_SLOT(BRIDGE_RESP_ERR_LOWER)] = {
         "response buffer error address lower", SGI_BRIDGE_RO, 0, 0 },
 
-    /* Manufacturing test only; storage, and no power-up value is given. */
+    /* No specified power-up value; zero is this model's choice. */
     [SGI_BRIDGE_SLOT(BRIDGE_TEST_PIN_CONTROL)] = {
         "test pin control", SGI_BRIDGE_RW, 0, 0xffffffffu },
 
     [SGI_BRIDGE_SLOT(BRIDGE_DIRECT_MAP)] = {
         "direct map", SGI_BRIDGE_RW, DIRECT_MAP_RESET, DIRECT_MAP_WRITABLE },
 
-    /* There is no external static RAM here, so no parity failure to record. */
     [SGI_BRIDGE_SLOT(BRIDGE_SSRAM_PARITY_ERR)] = {
         "static RAM parity error", SGI_BRIDGE_RO, 0, 0 },
 
@@ -547,7 +447,6 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         "bus time-out", SGI_BRIDGE_RW, BUS_TIMEOUT_RESET,
         BUS_TIMEOUT_WRITABLE },
 
-    /* The type 1 window is not modelled; the register is storage. */
     [SGI_BRIDGE_SLOT(BRIDGE_PCI_TYPE1_CONFIG)] = {
         "PCI type 1 configuration", SGI_BRIDGE_RW, 0, TYPE1_WRITABLE },
 
@@ -557,11 +456,9 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
         "PCI error address lower", SGI_BRIDGE_RO, 0, 0 },
 
     /*
-     * The pin bits must follow the level and never latch: the guest re-arms
-     * by re-reading this register after each interrupt it services, and a
-     * latched bit would report a device with a second condition pending as
-     * quiet, never to be serviced again. So the pins are composed on every
-     * read (LIVE) and only the error bits latch.
+     * The pin bits must follow the level and never latch -- a latched bit
+     * reports a device with a second condition pending as quiet, forever.
+     * Composed on every read (LIVE); only the error bits latch.
      */
     [SGI_BRIDGE_SLOT(BRIDGE_INT_STATUS)] = {
         "interrupt status", SGI_BRIDGE_LIVE, 0, 0 },
@@ -569,17 +466,11 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
     [SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] = {
         "interrupt enable", SGI_BRIDGE_RW, 0, INT_ENABLE_WRITABLE },
 
-    /*
-     * A one in a group bit clears that group's latched errors; the register
-     * itself is a strobe, not storage.
-     */
+    /* A strobe: a one in a group bit clears that group's errors. */
     [SGI_BRIDGE_SLOT(BRIDGE_INT_RESET)] = {
         "reset interrupt status", SGI_BRIDGE_WO, 0, INT_RESET_GROUPS },
 
-    /*
-     * Read-modify-written by the guest; a read answering zero would wipe
-     * every previously configured pin on each new establishment.
-     */
+    /* RMW by the guest: a zero read would wipe every configured pin. */
     [SGI_BRIDGE_SLOT(BRIDGE_INT_MODE)] = {
         "interrupt mode", SGI_BRIDGE_RW, 0, INT_MODE_WRITABLE },
     [SGI_BRIDGE_SLOT(BRIDGE_INT_DEVICE)] = {
@@ -616,10 +507,7 @@ static const SGIBridgeReg sgi_bridge_regs[SGI_BRIDGE_REG_SLOTS] = {
     SGI_BRIDGE_DEVICE_FLUSH_ROW(6),
     SGI_BRIDGE_DEVICE_FLUSH_ROW(7),
 
-    /*
-     * Storage: this model completes every read before it returns, so the
-     * buffer allocation has no observable effect.
-     */
+    /* Storage: every read completes before returning, so unobservable. */
     [SGI_BRIDGE_SLOT(BRIDGE_RRB_EVEN)] = {
         "even read response buffers", SGI_BRIDGE_RW, 0, 0xffffffffu },
     [SGI_BRIDGE_SLOT(BRIDGE_RRB_ODD)] = {
@@ -646,10 +534,9 @@ static hwaddr sgi_bridge_window_offset(unsigned int slot)
 }
 
 /*
- * Aim a slot's window where its register says. For a 2 MB window bit 20
- * arrives from both the base and the offset; adding them is OpenBSD's own
- * arithmetic. A region's target space cannot change once it exists, so each
- * slot has two windows and exactly one is enabled.
+ * For a 2 MB window bit 20 arrives from both base and offset; adding them
+ * is OpenBSD's own arithmetic. A region's target space cannot change, so
+ * each slot has two windows and exactly one is enabled.
  */
 static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
 {
@@ -663,10 +550,7 @@ static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
     memory_region_set_enabled(&s->device_window_io[slot], !memory);
 }
 
-/*
- * Used by both reset and post_load: the windows are derived from the
- * per-slot registers, so only the registers travel in the stream.
- */
+/* Shared by reset and post_load: windows derive from the registers. */
 static void sgi_bridge_aim_all_windows(SGIBridgeState *s)
 {
     unsigned int slot;
@@ -684,23 +568,17 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
     uint32_t base = (uint32_t)(pci_base >> BRIDGE_WINDOW_BASE_SHIFT) &
                     DEV_WINDOW_BASE;
 
-    /*
-     * Masked like a guest's own write: a plain overwrite would silently
-     * clear the error-lock and page-cross-check bits.
-     */
+    /* Masked like a guest write, or two unrelated bits clear silently. */
     *held = (*held & ~assigned) | (base | (memory_space ? DEV_MEMORY_SPACE
                                                         : 0));
     sgi_bridge_aim_window(s, slot);
 }
 
 /*
- * Two callers with different needs: the programmed-access windows, because
- * the specification's byte-lane tables (Appendix A, Tables 65 and 73) land
- * a narrow access reversed within its word with DEV_SWAP_PROGRAMMED
- * disabled -- its reset state, and neither guest ever sets it; and the DMA
- * path, because the IOC3 is big-endian and both drivers clear its swap
- * bits. Which slots are exempt is board policy handed down as
- * byte_lane_exempt -- real silicon cannot read a PCI vendor ID.
+ * Two callers: the programmed-access windows (the byte-lane tables land a
+ * narrow access reversed with swap disabled, the state both guests run
+ * in) and the DMA path. Exemption is board policy handed down per slot --
+ * real silicon cannot read a PCI vendor ID.
  */
 static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
                                              unsigned int slot)
@@ -708,10 +586,7 @@ static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
     return !(s->byte_lane_exempt & (1u << slot));
 }
 
-/*
- * Only the low two bits move: a transfer never crosses the 32-bit word its
- * lanes are defined within.
- */
+/* Only the low two bits move: lanes are defined within one word. */
 static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 {
     return (offset & ~3u) | ((offset & 3u) ^ (4u - size));
@@ -719,12 +594,9 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 
 
 /*
- * A device-window access, corrected if the slot needs it, delivered into
- * the selected PCI space. The containers have no ops of their own, so this
- * goes through address_space_read/write -- which move raw bytes, so the
- * only byte order in play is this window's DEVICE_LITTLE_ENDIAN
- * declaration against the big-endian packing below: one swap at the
- * window boundary, independent of the host's own endianness.
+ * address_space_read/write move raw bytes, so the only byte order in play
+ * is this window's LE declaration against the BE packing below: one swap
+ * at the window boundary, independent of the host's endianness.
  */
 /*
  * One device-window cycle of up to four bytes, corrected if the slot needs it:
@@ -872,8 +744,7 @@ static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
  * dereference is one). Both maxima are eight so it reaches the handlers whole:
  * a 64-bit device is served one cycle, a 32-bit device the two four-byte cycles
  * the handler now splits itself, since impl past four stops the core doing it.
- * The byte-lane correction still sees each four-byte cycle in its own right.
- */
+ * The byte-lane correction still sees each four-byte cycle in its own right. */
 static const MemoryRegionOps sgi_bridge_window_mem_ops = {
     .read = sgi_bridge_window_mem_read,
     .write = sgi_bridge_window_mem_write,
@@ -929,10 +800,8 @@ static uint32_t sgi_bridge_identification(SGIBridgeState *s)
 }
 
 /*
- * The real chip posts an undefined register access and flags it
- * asynchronously through interrupt status bit 24 -- a firmware self-test
- * provokes one deliberately and fails on any synchronous exception. Still
- * logged: a genuine probe and a coverage gap look alike from here.
+ * Posted and flagged, never faulted: a firmware self-test provokes one
+ * deliberately and fails on any synchronous exception.
  */
 static void sgi_bridge_raise_host_error(SGIBridgeState *s);
 
@@ -983,11 +852,7 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
-/*
- * The CRC the guest runs over the exchange: reflected polynomial from zero,
- * and the part sends the result INVERTED -- the guest checks for a fixed
- * residue over the whole exchange, and an uninverted check lands elsewhere.
- */
+/* The part sends this CRC INVERTED; the guest checks a fixed residue. */
 static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
                                        unsigned int len)
 {
@@ -1023,15 +888,10 @@ static uint64_t sgi_bridge_onewire_rom_id(uint64_t serial)
 }
 
 /*
- * One page, two readers. One guest takes offsets 11-29 and 32-37
- * positionally as the part number; the other scans for name:value; fields.
- * Placing the five-byte field name at offsets 6-10 puts its value at 11,
- * satisfying both. The part number is the one a real Origin 200 reports.
- *
- * Byte 0 must be 1 or the PROM rejects the page. Byte 5's semicolon is
- * LOAD-BEARING: the scanner skips past a semicolon on a miss, and without
- * this one it overshoots the field name at 6 and the lookup silently
- * returns empty.
+ * One page, two readers: one positional from offset 11, one scanning for
+ * name:value; fields -- the field name at 6-10 puts its value at 11 for
+ * both. Byte 5's semicolon is LOAD-BEARING: without it the scanner
+ * overshoots the field name and the lookup silently returns empty.
  */
 static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
     [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
@@ -1041,12 +901,6 @@ static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
     [32] = ' ', ' ', ' ', ' ', ' ', ' ',
 };
 
-/*
- * The stored image: programmed text plus each page's check in its own last
- * two bytes, stored rather than manufactured because two commands read the
- * same memory with different framing. Past the programmed pages, EPROM
- * reads unprogrammed.
- */
 static void sgi_bridge_onewire_build_rom(SGIBridgeState *s)
 {
     unsigned int page;
@@ -1071,10 +925,6 @@ static uint8_t sgi_bridge_onewire_data(SGIBridgeState *s, unsigned int at)
                                        : NIC_UNPROGRAMMED;
 }
 
-/*
- * A plain read sends stored bytes to the end of the data memory with one
- * check at the very end, worked out here in one pass.
- */
 static void sgi_bridge_onewire_plain_answer(SGIBridgeState *s)
 {
     unsigned int at = s->onewire_args[0] | (s->onewire_args[1] << 8);
@@ -1108,11 +958,7 @@ static void sgi_bridge_onewire_plain_answer(SGIBridgeState *s)
     s->onewire_phase = NIC_PHASE_READ;
 }
 
-/*
- * One status page plus its check pair. Only the first page's check covers
- * the request; later pages are checked over their data alone -- the part's
- * own asymmetry, since this memory is programmable after the fact.
- */
+/* Only the first page's check covers the request: the part's asymmetry. */
 static void sgi_bridge_onewire_status_page(SGIBridgeState *s, bool first)
 {
     unsigned int end = s->onewire_status | (NIC_STATUS_PAGE - 1);
@@ -1156,10 +1002,6 @@ static void sgi_bridge_onewire_status_answer(SGIBridgeState *s)
     s->onewire_phase = NIC_PHASE_STATUS;
 }
 
-/*
- * One page's whole answer, built in one go: the checks span the request,
- * so nothing is known until its last byte arrives.
- */
 static void sgi_bridge_onewire_answer(SGIBridgeState *s)
 {
     unsigned int offset = s->onewire_args[0] | (s->onewire_args[1] << 8);
@@ -1185,11 +1027,7 @@ static void sgi_bridge_onewire_answer(SGIBridgeState *s)
 
     memcpy(&s->onewire_out[3], &s->onewire_rom[offset], NIC_PAGE_SIZE);
 
-    /*
-     * The page's embedded check is already inside the stored block; this
-     * framing pair covers the whole thirty-two bytes, embedded check
-     * included, and is a different check a page can fail independently.
-     */
+    /* The framing pair is a different check from the embedded one. */
     crc = ~sgi_bridge_onewire_crc(0, &s->onewire_out[3], NIC_PAGE_SIZE);
     s->onewire_out[3 + NIC_PAGE_SIZE] = crc & 0xff;
     s->onewire_out[4 + NIC_PAGE_SIZE] = crc >> 8;
@@ -1233,10 +1071,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
                 s->onewire_phase = NIC_PHASE_FUNCTION;
                 break;
             default:
-                /*
-                 * The wire idles high, so the guest cannot tell an
-                 * unimplemented command from an absent part; say so here.
-                 */
+                /* Indistinguishable from absence for the guest; say so. */
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-bridge: one-wire rom command 0x%02x is not "
                               "answered by the board identity part\n",
@@ -1246,11 +1081,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             }
         }
     } else if (s->onewire_phase == NIC_PHASE_SEARCH) {
-        /*
-         * Three slots per identity bit: the bit, its complement, the
-         * guest's choice. With one part on the bus the choice always
-         * matches, so the third slot is ignored.
-         */
+        /* Bit, complement, choice; with one part the choice always matches. */
         unsigned int step = s->onewire_bit % 3;
         unsigned int index = s->onewire_bit / 3;
         bool bit = (s->onewire_identity >> index) & 1;
@@ -1267,11 +1098,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             trace_sgi_bridge_onewire_search_done(s->onewire_identity);
         }
     } else if (s->onewire_phase == NIC_PHASE_MATCH) {
-        /*
-         * The named identity, least-significant bit first. A mismatched
-         * part goes silent until reset -- indistinguishable from absence,
-         * so the mismatch is reported.
-         */
+        /* A mismatch goes silent until reset, so it is reported here. */
         if (pulse < NIC_PULSE_IS_ZERO) {
             s->onewire_match |= 1ULL << s->onewire_bit;
         }
@@ -1334,10 +1161,7 @@ static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
             }
         }
     } else if (s->onewire_phase == NIC_PHASE_READ) {
-        /*
-         * Stored bytes with no framing; the two bytes past the end are the
-         * check over everything sent, and past those the part goes quiet.
-         */
+        /* No framing; the check follows the last stored byte. */
         unsigned int at = s->onewire_read + s->onewire_outbit / 8;
         unsigned int bit = s->onewire_outbit % 8;
         uint8_t byte;
@@ -1408,11 +1232,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
                       "register at 0x%" HWADDR_PRIx "\n", val, reg->name, addr);
         return;
     case SGI_BRIDGE_WO:
-        /*
-         * A strobe. The one with an effect clears latched errors by group:
-         * the invalid-address bit is in the request-dispatch group, so only
-         * that group's strobe clears it.
-         */
+        /* Only the request-dispatch group's strobe clears our one error. */
         if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_INT_RESET &&
             ((uint32_t)val & INT_RESET_REQ_DSP_GRP)) {
             s->int_error &= ~INT_INVALID_ADDR;
@@ -1421,10 +1241,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_BRIDGE_RW:
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
         if (sgi_bridge_is_device_register(addr, &slot)) {
-            /*
-             * A guest enabling swap on an exempt slot asks for something
-             * the model does not reproduce; say so at the write.
-             */
+            /* Swap on an exempt slot is not reproduced; say so. */
             if ((*held & (DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED)) &&
                 !sgi_bridge_slot_needs_correction(s, slot)) {
                 qemu_log_mask(LOG_UNIMP,
@@ -1443,10 +1260,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     g_assert_not_reached();
 }
 
-/*
- * Every register access is a crosstalk double-word; any other width is an
- * error. Both bounds are declared so the core rejects instead of reshaping.
- */
+/* Both bounds declared so the core rejects instead of reshaping. */
 static const MemoryRegionOps sgi_bridge_reg_ops = {
     .read = sgi_bridge_read,
     .write = sgi_bridge_write,
@@ -1499,10 +1313,8 @@ static const MemoryRegionOps sgi_bridge_reserved_data_half_ops = {
 };
 
 /*
- * The external-SSRAM window, unpopulated on this board. The PROM sizes it
- * with an unguarded write-and-read-back probe, so accesses must complete
- * and reads must float high: all-ones differs from any probe pattern and
- * the size probes as zero.
+ * Unpopulated SSRAM must complete accesses and float reads high: the PROM
+ * sizes it with an unguarded probe, and all-ones probes as zero.
  */
 static uint64_t sgi_bridge_ssram_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1525,9 +1337,8 @@ static const MemoryRegionOps sgi_bridge_ssram_ops = {
 };
 
 /*
- * Only two shapes are accepted: a 64-bit write at an entry's offset and a
- * 32-bit read four bytes above it. A 32-bit write would leave half an
- * entry behind.
+ * 64-bit write or 32-bit upper-half read only; a 32-bit write would
+ * leave half an entry behind.
  */
 static bool sgi_bridge_ate_accepts(void *opaque, hwaddr addr, unsigned size,
                                    bool is_write, MemTxAttrs attrs)
@@ -1617,11 +1428,8 @@ static const MemoryRegionOps sgi_bridge_ate_low_ops = {
 };
 
 /*
- * A narrow configuration access aims at the window address whose byte
- * lanes hold the bytes it wants -- Linux exclusive-ors the register offset
- * with four minus the width -- and undoing that here is what makes a byte
- * read of a vendor ID return the vendor's low byte. OpenBSD reads in
- * 32-bit units only, where the correction is zero.
+ * Undoes the guest's byte-lane aim (offset xor (4 - width)): what makes a
+ * byte read of a vendor ID return the vendor's low byte.
  */
 static uint32_t sgi_bridge_config_address(hwaddr addr, unsigned size)
 {
@@ -1638,10 +1446,7 @@ static uint64_t sgi_bridge_config_read(void *opaque, hwaddr addr, unsigned size)
 {
     PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
 
-    /*
-     * An empty slot answers all ones -- the value OpenBSD substitutes
-     * itself on a faulting load; zero would be a real device.
-     */
+    /* All ones: what an empty slot reads as; zero would be a device. */
     trace_sgi_bridge_config_read(addr, size);
     return pci_data_read(phb->bus, sgi_bridge_config_address(addr, size), size);
 }
@@ -1655,10 +1460,7 @@ static void sgi_bridge_config_write(void *opaque, hwaddr addr, uint64_t val,
     pci_data_write(phb->bus, sgi_bridge_config_address(addr, size), val, size);
 }
 
-/*
- * Both bounds declared: the width the guest issued is a term in the
- * byte-lane correction, so a reshaped access would read the wrong byte.
- */
+/* The issued width is a term in the correction; no reshaping allowed. */
 static const MemoryRegionOps sgi_bridge_config_ops = {
     .read = sgi_bridge_config_read,
     .write = sgi_bridge_config_write,
@@ -1670,11 +1472,8 @@ static const MemoryRegionOps sgi_bridge_config_ops = {
 };
 
 /*
- * INTx folding: pins A and C reach the pin numbered as the slot, B and D
- * that number with bit two flipped -- the arithmetic both guests compute
- * for themselves (Linux's table, OpenBSD's low-bit test). The base I/O
- * controller's second interrupt is not a PCI interrupt at all; the machine
- * wires it straight to a chip pin and nothing here covers it.
+ * Pins A and C reach the pin numbered as the slot, B and D that number
+ * with bit two flipped -- the arithmetic both guests compute themselves.
  */
 static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 {
@@ -1684,10 +1483,8 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 }
 
 /*
- * A pin's interrupt-address register holds its destination compressed:
- * bits 17:8 are crosstalk address bits 47:38 (the top bit, then the node),
- * bits 7:0 the interrupt number. SGI's mask, OpenBSD's and Linux's
- * arithmetic all agree.
+ * The destination, compressed: bits 17:8 are crosstalk address bits
+ * 47:38, bits 7:0 the interrupt number.
  */
 #define INT_HOST_ADDR_SHIFT     8
 #define XTALK_NODE_SHIFT        38
@@ -1697,11 +1494,7 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 #define HUB_INT_MODIFY          0x90
 #define HUB_INT_MODIFY_SET      0x100
 
-/*
- * An interrupt packet: a write to the Hub's interrupt-modify register,
- * data bit 8 selecting raise over lower. The fabric is addressed the
- * machine's way, which is why its constants come from the machine.
- */
+/* A write to the Hub's interrupt-modify register; bit 8 selects raise. */
 static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, unsigned int node,
                                          uint64_t offset, unsigned int bit,
                                          bool set)
@@ -1714,12 +1507,6 @@ static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, unsigned int node,
                       NULL);
 }
 
-/*
- * A device pin's transition takes its destination and its host bit from that
- * pin's own interrupt-address register. Bits 17:8 of that register are crosstalk
- * address bits 47:38, which name the destination node; the Hub's window and its
- * interrupt-modify register complete the offset.
- */
 static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
 {
     uint64_t addr = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
@@ -1738,10 +1525,7 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
                                  addr & INT_HOST_FIELD, set);
 }
 
-/*
- * The chip's own errors go to the host bit in the host-error field, at the
- * full crosstalk address in the widget interrupt-destination pair.
- */
+/* Chip errors go to the host-error bit at the widget destination pair. */
 static void sgi_bridge_raise_host_error(SGIBridgeState *s)
 {
     unsigned int number = s->reg[SGI_BRIDGE_SLOT(BRIDGE_HOST_ERR_FIELD)] &
@@ -1812,10 +1596,8 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
 }
 
 /*
- * The seam between this chip and the machine's fabric representation,
- * which is not settled: until it is, the offset is the address and the
- * widget is carried but not applied -- right for a machine where the only
- * named target is the node's own memory.
+ * The unsettled seam with the machine's fabric representation: the offset
+ * is the address and the widget is carried but not applied.
  */
 static hwaddr sgi_bridge_compose_xtalk(SGIBridgeState *s,
                                        unsigned int target_widget,
@@ -1825,9 +1607,9 @@ static hwaddr sgi_bridge_compose_xtalk(SGIBridgeState *s,
 }
 
 /*
- * Note the inversion: the chip's swap bits enable a swapper that
- * straightens the crossed wiring, and a byte-addressed model is straight
- * through already -- so it is the disabled case that needs work here.
+ * Note the inversion: the swap bits enable a swapper that straightens the
+ * crossed wiring, and a byte-addressed model is straight through already
+ * -- so the disabled case is the one that needs work.
  */
 static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot,
                                             hwaddr pci_addr)
@@ -1837,18 +1619,11 @@ static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot
     if (!sgi_bridge_slot_needs_correction(s, slot)) {
         return false;
     }
-    /*
-     * Local space is not carried to crosstalk at all, so there is no swapper
-     * in its path. That this model passes it through to system memory anyway
-     * is a separate fidelity gap, and the swap rule must not paper over it.
-     */
+    /* Local space never crosses the swapper. */
     if (pci_addr < BRIDGE_PCI_TRANSLATED) {
         return false;
     }
-    /*
-     * Specification Tables 48, 49 and 50: both direct windows take the
-     * direct-mapped bit and the page-mapped window takes its own.
-     */
+    /* Both direct windows take one bit, the page-mapped window its own. */
     return !(dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
                                                  : DEV_SWAP_DIRECT));
 }
@@ -2000,21 +1775,14 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     return entry;
 }
 
-/*
- * One table for the whole bus; what is per-device is the swap attribute in
- * the requesting slot's own register, so the requester must be known at
- * translate time.
- */
+/* One table for the bus; the swap attribute is the requesting slot's. */
 static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
                                                      int devfn)
 {
     SGIBridgeState *s = opaque;
     unsigned int slot = PCI_SLOT(devfn);
 
-    /*
-     * Unreachable from a guest; a device wired outside the chip's slots
-     * would silently inherit another slot's swap bits, so it is logged.
-     */
+    /* Unreachable by guests; logged so a mis-wired machine shows. */
     if (slot >= SGI_BRIDGE_DEVICES) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-bridge: device at slot %u is outside the eight this "
@@ -2133,11 +1901,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     address_space_init(&s->pci_mmio_as, &s->pci_mmio, "sgi-bridge.pci-mmio");
     address_space_init(&s->pci_io_as, &s->pci_io, "sgi-bridge.pci-io");
 
-    /*
-     * Two windows per slot, one enabled; plain I/O regions rather than
-     * aliases because an alias has nowhere to carry the byte-lane
-     * correction, which needs the access width and the slot.
-     */
+    /* Not aliases: an alias cannot carry the byte-lane correction. */
     for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
         g_autofree char *mem_name =
             g_strdup_printf("sgi-bridge.window%u.mem", slot);
@@ -2180,9 +1944,8 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     pci_bus_set_slot_reserved_mask(phb->bus, ~((1u << SGI_BRIDGE_PINS) - 1));
 
     /*
-     * The same pins, directly wired (the base I/O controller's second
-     * interrupt). The wire lines keep their own level word beside the PCI
-     * core's: both domains can drive one pin, each holding it on its own.
+     * The same pins, directly wired: both domains can drive one pin, so
+     * the wire lines keep their own level word beside the PCI core's.
      */
     qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_wire_irq, s, NULL,
                                         SGI_BRIDGE_PINS);
@@ -2195,11 +1958,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->lane_swap, obj, &sgi_bridge_lane_swap_ops, s,
                           "sgi-bridge.lane-swap", UINT64_MAX);
     /*
-     * The re-entrancy guard is per OWNING DEVICE and this chip owns both
-     * ends of an ordinary transfer, so normal DMA would trip it; these
-     * callbacks never target this region, so there is no recursion to
-     * catch. Regions reached through this one still apply their own
-     * guards.
+     * The re-entrancy guard is per owning device and this chip owns both
+     * ends of an ordinary transfer, so normal DMA would trip it; regions
+     * reached through this one still apply their own guards.
      */
     s->lane_swap.disable_reentrancy_guard = true;
     address_space_init(&s->lane_swap_as, &s->lane_swap,
@@ -2230,11 +1991,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s->widget, BRIDGE_ATE_LOW_BASE, &s->ate_low);
 }
 
-/*
- * The windows are derived from the per-slot registers the stream carries,
- * so post_load re-aims them the way reset does -- without it a resumed
- * guest reaches wherever the destination's windows happened to point.
- */
+/* post_load re-aims the windows from the restored registers. */
 static int sgi_bridge_post_load(void *opaque, int version_id)
 {
     SGIBridgeState *s = opaque;
@@ -2264,11 +2021,7 @@ static const VMStateDescription vmstate_sgi_bridge = {
         VMSTATE_UINT32_V(int_error, SGIBridgeState, 4),
         VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
                                SGI_BRIDGE_ATE_ENTRIES, 2),
-        /*
-         * The one-wire conversation lives between register accesses. The
-         * stored image is absent by design: reset rebuilds it identically
-         * on the destination.
-         */
+        /* The stored image is absent: reset rebuilds it identically. */
         VMSTATE_UINT8_V(onewire_phase, SGIBridgeState, 3),
         VMSTATE_UINT8_V(onewire_bit, SGIBridgeState, 3),
         VMSTATE_UINT8_V(onewire_command, SGIBridgeState, 3),
