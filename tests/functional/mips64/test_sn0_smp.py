@@ -85,8 +85,7 @@ RT_TICK_FUTURE_TICKS = 0x7000
 # slice B through PI_INT_MODIFY, each side bounded-polling PI_INT_PEND1
 # for the other's edge, with further bank-1 bits pending across every
 # poll.  Node one's pair does not participate; its CPUs prove that the
-# rendezvous neither leaks slices to them mid-exchange nor starves them
-# across repeated rounds.
+# rendezvous does not starve them across repeated rounds.
 PEND_READ_STATE = 0x100033000
 PEND_READ_ROUND = 0x00       # round armed by slice B
 PEND_READ_WINDOW_B = 0x08    # nonzero while B's bounded pending poll runs
@@ -95,7 +94,6 @@ PEND_READ_SET_A = 0x18       # A has published the bit and entered its poll
 PEND_READ_DONE_B = 0x20      # rounds B has completed
 PEND_READ_DONE_A = 0x28      # rounds A has completed
 PEND_READ_TIMEOUT = 0x30     # a bounded pending poll expired
-PEND_READ_VIOLATION = 0x38   # 4 words
 PEND_READ_FAIR = 0x58        # 4 words
 PEND_READ_STATE_WORDS = 15
 PEND_READ_ROUNDS = 8
@@ -141,23 +139,6 @@ REMOTE_SCRATCH_ARMED = 0x31
 REMOTE_SCRATCH_GO = 0x32
 REMOTE_SCRATCH_DONE = 0x33
 REMOTE_SCRATCH_TIMEOUT = 0x3f
-
-RR_HANDOFF_TEST_STATE = 0x100050000
-RR_HANDOFF_PAGE = 0x0005
-RR_HANDOFF_READY = 0x00       # 4 words
-RR_HANDOFF_GO = 0x20
-RR_HANDOFF_ACK = 0x28
-RR_HANDOFF_VIOLATION = 0x30   # 4 words
-RR_HANDOFF_FAIR = 0x50        # 4 words
-RR_HANDOFF_INITIATOR_DONE = 0x70
-RR_HANDOFF_WRAP_GO = 0x78
-RR_HANDOFF_WRAP_ACK = 0x80
-RR_HANDOFF_WRAP_FAIR = 0x88   # 4 words
-RR_HANDOFF_RETURN = 0xa8
-RR_HANDOFF_CHAIN_GO = 0xb0
-RR_HANDOFF_CHAIN_VIOLATION = 0xb8
-RR_HANDOFF_CHAIN_DONE = 0xc0
-RR_HANDOFF_STATE_WORDS = 25
 
 HUB_BY_NODE = 0x20001800000
 HUB_NODE_STRIDE = 0x100000000
@@ -831,25 +812,20 @@ def build_pending_read_rendezvous():
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
     select_b = program.branch(0x04, R_S1, R_T0)
 
-    # CPUs 2 and 3 observe from node one.  Inside either poll window the
-    # ordered handoff must run the rendezvous pair alone -- an ordinary RR
-    # rotation would run these CPUs instead and trip the violation marker.
-    # Outside the windows they must keep running: their fairness counters
-    # advance from the first armed round until the last round completes,
-    # so a rendezvous that monopolises node zero's pair leaves them zero.
+    # CPUs 2 and 3 observe from node one.  They must keep running while the
+    # rendezvous proceeds: their fairness counters advance from the first
+    # armed round until the last round completes, so a rendezvous that
+    # monopolises node zero's pair leaves them zero.  A processor gives its
+    # slice up to the rotation rather than handing it to a named peer, so
+    # these two are scheduled inside the poll windows as well; what the
+    # rendezvous needs is that its own rounds still finish inside their
+    # budget, which the timeout word asserts.
     program.emit(mips_r(R_S0, R_S2, R_S3, 0, 0x2d))  # daddu s3, s0, s2
     emit_wait_for_flag(program, R_S0, PEND_READ_ROUND, want_set=True)
     observe = len(program.instructions)
     program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_DONE_A))
     program.emit(mips_i(0x0b, R_T0, R_T1, PEND_READ_ROUNDS))  # sltiu
     parked = program.branch(0x04, R_T1, R_ZERO)
-    program.emit(mips_i(0x37, R_S0, R_T0, PEND_READ_WINDOW_B))
-    program.emit(mips_i(0x37, R_S0, R_T1, PEND_READ_WINDOW_A))
-    program.emit(mips_r(R_T0, R_T1, R_T0, 0, 0x25))
-    outside = program.branch(0x04, R_T0, R_ZERO)
-    program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
-    program.emit(mips_i(0x3f, R_S3, R_T1, PEND_READ_VIOLATION))
-    program.patch(outside, len(program.instructions))
     program.emit(mips_i(0x37, R_S3, R_T0, PEND_READ_FAIR))
     program.emit(mips_i(0x19, R_T0, R_T0, 1))
     program.emit(mips_i(0x3f, R_S3, R_T0, PEND_READ_FAIR))
@@ -1276,160 +1252,6 @@ def build_remote_scratch_notification():
     program.emit(0x42000020)  # wait
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, park)
-    return program
-
-
-def build_local_hub_handoff_ordering():
-    program = MipsProgram()
-
-    # Enter the same 64-bit kernel mode selected by the real PROM.
-    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
-    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
-    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
-    program.emit(0)
-
-    # s1 is global CPU index (NASID * 2 + slice), s2 its byte offset.
-    emit_local_hub_address(program, R_S3, 0)
-    program.emit(mips_i(0x37, R_S3, R_S2, 0x20))
-    emit_local_hub_address(program, R_T0, HUB_NI_STATUS)
-    program.emit(mips_i(0x37, R_T0, R_T0, 0))
-    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))
-    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
-    program.emit(mips_r(R_ZERO, R_T0, R_T0, 1, 0x38))
-    program.emit(mips_r(R_T0, R_S2, R_S1, 0, 0x25))
-    program.emit(mips_r(R_ZERO, R_S1, R_S2, 3, 0x38))
-
-    # Shared uncached node-one RAM at 0x9000000100050000.
-    program.address_prefix(R_S0, 0x9000)
-    program.emit(mips_i(0x0f, R_ZERO, R_AT, 1))
-    program.emit(mips_r(R_ZERO, R_AT, R_AT, 16, 0x38))
-    program.emit(mips_i(0x0f, R_ZERO, R_T0, RR_HANDOFF_PAGE))
-    program.emit(mips_r(R_AT, R_T0, R_AT, 0, 0x25))
-    program.emit(mips_r(R_S0, R_AT, R_S0, 0, 0x25))
-
-    # s3 is this CPU's node-local PI_INT_MODIFY register.
-    emit_local_hub_address(program, R_S3, HUB_PI_INT_MODIFY)
-
-    program.emit(mips_i(0x19, R_S1, R_T0, 1))
-    store_cpu_word(program, RR_HANDOFF_READY, R_T0)
-    ready = emit_wait_for_words(program, RR_HANDOFF_READY,
-                                FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
-    emit_unreachable(program)
-    program.patch(ready, len(program.instructions))
-
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 0))
-    cpu0 = program.branch(0x04, R_S1, R_T0)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    cpu1 = program.branch(0x04, R_S1, R_T0)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 2))
-    cpu2 = program.branch(0x04, R_S1, R_T0)
-
-    def emit_observer():
-        emit_wait_for_flag(program, R_S0, RR_HANDOFF_GO, want_set=True)
-        program.emit(mips_i(0x37, R_S0, R_T0, RR_HANDOFF_ACK))
-        acknowledged = program.branch(0x05, R_T0, R_ZERO)
-        program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
-        store_cpu_word(program, RR_HANDOFF_VIOLATION, R_T1)
-        program.patch(acknowledged, len(program.instructions))
-        emit_wait_for_flag(program, R_S0, RR_HANDOFF_ACK, want_set=True)
-        program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
-        store_cpu_word(program, RR_HANDOFF_FAIR, R_T1)
-
-    # CPU3 falls through. After the first handoff, it repeatedly requests
-    # CPU2 from the end of the RR list until the wrapped successor, CPU0,
-    # proves that it ran. This catches a lost CPU3 -> CPU0 wraparound.
-    emit_observer()
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_WRAP_GO))
-    program.emit(0x0000000f)  # sync
-    wrap_request = len(program.instructions)
-    program.emit(mips_i(0x37, R_S0, R_T0, RR_HANDOFF_WRAP_FAIR))
-    wrap_done = program.branch(0x05, R_T0, R_ZERO)
-    program.emit(mips_i(0x19, R_ZERO, R_T0,
-                        PI_INT_MODIFY_SET | PI_INT_MAILBOX))
-    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
-    branch = program.branch(0x04, R_ZERO, R_ZERO)
-    program.patch(branch, wrap_request)
-    program.patch(wrap_done, len(program.instructions))
-    cpu3_spin = len(program.instructions)
-    branch = program.branch(0x04, R_ZERO, R_ZERO)
-    program.patch(branch, cpu3_spin)
-
-    # CPU2 acknowledges the end-of-list request but does not issue another
-    # Hub write. The scheduler must resume CPU0 after CPU2's one-shot slice.
-    program.patch(cpu2, len(program.instructions))
-    emit_observer()
-    wrap_pending = emit_wait_for_mailbox(program, True,
-                                         FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
-    emit_unreachable(program)
-    program.patch(wrap_pending, len(program.instructions))
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_WRAP_ACK))
-    cpu2_spin = len(program.instructions)
-    branch = program.branch(0x04, R_ZERO, R_ZERO)
-    program.patch(branch, cpu2_spin)
-
-    # CPU1 publishes GO, then its node-local Hub write requests CPU0.
-    # CPU0 returns the request to CPU1 before either unrelated node may run;
-    # only CPU1 publishes ACK. This distinguishes a nested causal handoff
-    # from resuming the successor displaced by the first request.
-    program.patch(cpu1, len(program.instructions))
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_GO))
-    program.emit(0x0000000f)  # sync
-    program.emit(mips_i(0x19, R_ZERO, R_T0,
-                        PI_INT_MODIFY_SET | PI_INT_MAILBOX))
-    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_RETURN, want_set=True)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_ACK))
-    program.emit(mips_i(0x3f, R_S0, R_T0,
-                        RR_HANDOFF_INITIATOR_DONE))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_CHAIN_GO))
-    program.emit(0x0000000f)  # sync
-    program.emit(mips_i(0x19, R_ZERO, R_T0,
-                        PI_INT_MODIFY_SET | PI_INT_MAILBOX))
-    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_CHAIN_DONE, want_set=True)
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_GO, want_set=True)
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_ACK, want_set=True)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    store_cpu_word(program, RR_HANDOFF_WRAP_FAIR, R_T0)
-    cpu1_spin = len(program.instructions)
-    branch = program.branch(0x04, R_ZERO, R_ZERO)
-    program.patch(branch, cpu1_spin)
-
-    # CPU0 records its response, then the mailbox clear requests CPU1.
-    program.patch(cpu0, len(program.instructions))
-    pending = emit_wait_for_mailbox(program, True,
-                                    FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
-    emit_unreachable(program)
-    program.patch(pending, len(program.instructions))
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_RETURN))
-    program.emit(0x0000000f)  # sync
-    program.emit(mips_i(0x19, R_ZERO, R_T0, PI_INT_MAILBOX))
-    program.emit(mips_i(0x3f, R_S3, R_T0, 0))
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_CHAIN_GO, want_set=True)
-    pending = emit_wait_for_mailbox(program, True,
-                                    FOUR_CPU_WAIT_LIMIT_UNBOUNDED)
-    emit_unreachable(program)
-    program.patch(pending, len(program.instructions))
-    program.emit(mips_i(0x37, R_S0, R_T0, RR_HANDOFF_FAIR + 16))
-    fair = program.branch(0x05, R_T0, R_ZERO)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0,
-                        RR_HANDOFF_CHAIN_VIOLATION))
-    program.patch(fair, len(program.instructions))
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    program.emit(mips_i(0x3f, R_S0, R_T0, RR_HANDOFF_CHAIN_DONE))
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_GO, want_set=True)
-    emit_wait_for_flag(program, R_S0, RR_HANDOFF_WRAP_ACK, want_set=True)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
-    store_cpu_word(program, RR_HANDOFF_WRAP_FAIR, R_T0)
-    cpu0_spin = len(program.instructions)
-    branch = program.branch(0x04, R_ZERO, R_ZERO)
-    program.patch(branch, cpu0_spin)
     return program
 
 
@@ -1899,9 +1721,9 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('rt-tick-keeps-slice.bin')
         build_rt_tick_write_keeps_slice().write(firmware)
 
-        # Wall-clock RR without icount: the handoff under test only runs
-        # there.  The long kick period makes a donated quantum (12500
-        # ticks) unmistakable against an undonated write window.
+        # Wall-clock RR without icount: a slice is only given up there.
+        # The long kick period makes a yielded quantum (12500 ticks)
+        # unmistakable against a window that kept its slice.
         self.vm.set_machine(
             'origin200,synthesized-firmware=off,debug-leds=off')
         self.vm.add_args(
@@ -1915,7 +1737,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[RT_TICK_DONE // 8], 1, state)
 
         # With the interrupt disabled the write is the mailbox the PROM
-        # arbitration polls, and the scheduling assist must donate the
+        # arbitration polls, and the scheduling assist must give up the
         # slice: most windows span the peer's quantum.
         self.assertLessEqual(state[RT_TICK_MAILBOX_KEPT // 8],
                              RT_TICK_ITERATIONS // 4, state)
@@ -1956,9 +1778,6 @@ class SN0SMPMachine(QemuSystemTest):
                          PEND_READ_ROUNDS, state)
         self.assertEqual(state[PEND_READ_DONE_A // 8],
                          PEND_READ_ROUNDS, state)
-        self.assertEqual(state[PEND_READ_VIOLATION // 8:
-                               PEND_READ_VIOLATION // 8 + 4],
-                         [0, 0, 0, 0], state)
         fair = state[PEND_READ_FAIR // 8:PEND_READ_FAIR // 8 + 4]
         self.assertEqual(fair[:2], [0, 0], state)
         self.assertGreater(fair[2], 0, state)
@@ -2089,51 +1908,6 @@ class SN0SMPMachine(QemuSystemTest):
                           REMOTE_SCRATCH_DONE], scratch)
         self.assertEqual(scratch[1],
                          [REMOTE_SCRATCH_GO, REMOTE_SCRATCH_DONE], scratch)
-
-    def test_local_hub_handoff_selects_requested_peer(self):
-        self.set_machine('origin200')
-        firmware = self.scratch_file('local-hub-handoff-ordering.bin')
-        build_local_hub_handoff_ordering().write(firmware)
-
-        self.vm.set_machine(
-            'origin200,synthesized-firmware=on,debug-leds=off')
-        self.vm.add_args(
-            '-accel', 'tcg,thread=single,rr-kick-period-ns=100000000',
-            '-m', '128M',
-            '-smp', '4,sockets=2,cores=2,threads=1',
-            '-object', 'memory-backend-ram,id=ram0,size=64M',
-            '-object', 'memory-backend-ram,id=ram1,size=64M',
-            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
-            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
-            '-bios', firmware)
-        self.vm.launch()
-
-        # Four 100 ms virtual slices plus startup must complete even when the
-        # host delays QEMU. This wait does not participate in guest ordering.
-        time.sleep(1.5)
-        self.vm.cmd('human-monitor-command', command_line='stop')
-        state = self.read_state(RR_HANDOFF_TEST_STATE,
-                                RR_HANDOFF_STATE_WORDS)
-        self.assertEqual(state[RR_HANDOFF_READY // 8:
-                               RR_HANDOFF_READY // 8 + 4],
-                         [1, 2, 3, 4], state)
-        self.assertEqual(state[RR_HANDOFF_GO // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_ACK // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_VIOLATION // 8:
-                               RR_HANDOFF_VIOLATION // 8 + 4],
-                         [0, 0, 0, 0], state)
-        self.assertEqual(state[RR_HANDOFF_FAIR // 8:
-                               RR_HANDOFF_FAIR // 8 + 4],
-                         [0, 0, 1, 1], state)
-        self.assertEqual(state[RR_HANDOFF_INITIATOR_DONE // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_CHAIN_GO // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_CHAIN_VIOLATION // 8], 0, state)
-        self.assertEqual(state[RR_HANDOFF_CHAIN_DONE // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_WRAP_GO // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_WRAP_ACK // 8], 1, state)
-        self.assertEqual(state[RR_HANDOFF_WRAP_FAIR // 8:
-                               RR_HANDOFF_WRAP_FAIR // 8 + 4],
-                         [1, 1, 0, 0], state)
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')

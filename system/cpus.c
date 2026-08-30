@@ -449,19 +449,6 @@ void qemu_cpu_kick(CPUState *cpu)
     }
 }
 
-void qemu_cpu_handoff(CPUState *cpu)
-{
-    assert(bql_locked());
-
-    if (!cpus_accel->handoff_vcpu_thread) {
-        qemu_cpu_kick(cpu);
-        return;
-    }
-
-    qemu_cond_broadcast(cpu->halt_cond);
-    cpus_accel->handoff_vcpu_thread(cpu);
-}
-
 void qemu_cpu_kick_self(void)
 {
     assert(current_cpu);
