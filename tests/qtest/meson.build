@@ -116,6 +116,7 @@ qtests_i386 = \
   (config_all_devices.has_key('CONFIG_TPM_TIS_ISA') ? ['tpm-tis-test'] : []) +              \
   (config_all_devices.has_key('CONFIG_TPM_TIS_ISA') ? ['tpm-tis-swtpm-test'] : []) +        \
   (config_all_devices.has_key('CONFIG_RTL8139_PCI') ? ['rtl8139-test'] : []) +              \
+  (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) +                   \
   (config_all_devices.has_key('CONFIG_E1000E_PCI_EXPRESS') ? ['fuzz-e1000e-test'] : []) +   \
   (config_all_devices.has_key('CONFIG_MEGASAS_SCSI_PCI') ? ['fuzz-megasas-test'] : []) +    \
   (config_all_devices.has_key('CONFIG_LSI_SCSI_PCI') ? ['fuzz-lsi53c895a-test'] : []) +     \
@@ -216,7 +217,6 @@ qtests_mips64 = \
                                                    'sn0-qlogic-isp-test',
                                                    'sn0-xframe-test',
                                                    'sn0-tigon-test',
-                                                   'bcm570x-test',
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
                                                    'sn0-i2c-test',

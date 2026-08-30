@@ -79,6 +79,8 @@ config TIGON
 
 config BCM570X
     bool
+    default y if PCI_DEVICES
+    depends on PCI
 
 config LAN9118_PHY
     bool
