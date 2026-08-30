@@ -21,9 +21,13 @@
  *    scratch, SW_RESET's key, the RMAC_CFG_KEY MAC-config lock, ADAPTER_STATUS
  *    presenting its quiescent bits immediately, ADAPTER_CONTROL/ADAPTER_EN,
  *    and the factory-MAC indirect read returning the configured netdev MAC.
- *
- * The transmit/receive descriptor rings (the TxP window and the RxDMA path)
- * are a follow-on slice and are not exercised here.
+ *  - The transmit descriptor list (the TxP window): a doorbell emitting a
+ *    golden frame, and the out-of-range-pointer hang guard.
+ *  - The receive descriptor ring (the RxDMA registers plus the RxD ring in
+ *    guest memory): a golden delivered frame with its completion status and
+ *    interrupt, the out-of-range ring-pointer hang guard, the
+ *    filtered-frame-still-counts-as-consumed hang guard, and a buffer
+ *    smaller than the frame truncating rather than overrunning.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -140,6 +144,54 @@
  */
 #define TX_RAM_SCRATCH           0x02000000u
 
+/*
+ * Receive path (RxDMA registers in BAR0 + the RxD ring in guest memory), from
+ * docs/datasheets/xframe.md and public OpenBSD if_xgereg.h. The ring base
+ * register takes the first descriptor page; the ring controller is put in
+ * service with RC_IN_SVC. A completed frame raises RX_TRAFFIC_INT.
+ */
+#define PRC_RXD0_0               0x1930   /* receive ring base register */
+#define PRC_CTRL_0               0x1970   /* receive ring controller */
+#define RC_IN_SVC                (1ULL << 56)
+#define RX_TRAFFIC_INT           0x08f0
+
+/*
+ * RX_TRAFFIC_INT's ring-0 completion bit (Linux s2io-regs.h
+ * RX_TRAFFIC_INT_n(0), the driver's own MSB-first bit numbering: bit 63).
+ * Only ring 0 is modelled.
+ */
+#define RX_TRAFFIC_RING0         (1ULL << 63)
+
+/*
+ * A 1-buffer-mode RxD is four 64-bit words: host control, control1, control2,
+ * buffer pointer. control1 carries ownership (bit 56, 1=card/0=host) and the
+ * status code (XCODE, bits 51:48); control2 carries the buffer size in bits
+ * 63:48 -- the posted capacity, overwritten by the received length.
+ */
+#define RXD_OWN                  (1ULL << 56)
+#define RXD_XCODE_SHIFT          48
+#define RXD_XCODE_MASK           0xf
+#define RXD_XCODE_BSZ            7   /* buffer too small for the frame */
+#define RXD_BUFSIZ_SHIFT         48
+
+/*
+ * Guest RAM for the receive ring and its buffers, page-aligned and clear of
+ * the transmit scratch.
+ */
+#define RX_RING_BASE             (TX_RAM_SCRATCH + 0x10000)
+#define RX_BUF0                  (TX_RAM_SCRATCH + 0x20000)
+#define RX_BUF1                  (TX_RAM_SCRATCH + 0x21000)
+#define RX_BUF_CAPACITY          128
+#define RX_BUF_SMALL_CAPACITY    32   /* smaller than the test frames */
+
+/*
+ * The station address the -device mac= sets, in wire order -- what the receive
+ * filter matches an incoming frame's destination against.
+ */
+static const uint8_t xframe_station_mac[6] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56
+};
+
 static void save_fn(QPCIDevice *dev, int devfn, void *data)
 {
     QPCIDevice **pdev = (QPCIDevice **)data;
@@ -236,6 +288,14 @@ static void net_socket_set_recv_timeout(int fd, int seconds)
                     ==, 0);
 }
 
+static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
+{
+    uint32_t hdr = htonl((uint32_t)len);
+
+    g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
+}
+
 static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
 {
     uint32_t hdr;
@@ -259,13 +319,16 @@ static void net_socket_expect_no_frame(int fd)
 }
 
 /*
- * A booted VM with the card wired to a socket backend, its BAR2 TxP window
- * mapped and bus-mastering enabled. host_fd is the test's end of the pair; the
- * device emits frames onto it, and the test reads them back.
+ * A booted VM with the card wired to a socket backend, both BARs mapped and
+ * bus-mastering enabled. host_fd is the test's end of the pair: the device
+ * emits transmitted frames onto it, and the test injects received frames by
+ * writing the other direction -- the same length-prefixed framing, since the
+ * socket backend uses it both ways.
  */
 typedef struct {
     QOSState *qs;
     QPCIDevice *dev;
+    QPCIBar pif;
     QPCIBar txp;
     int host_fd;
 } XframeTx;
@@ -285,10 +348,23 @@ static void xframe_tx_start(XframeTx *t)
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
     g_assert(t->dev != NULL);
 
+    t->pif = qpci_iomap(t->dev, 0, &barsize);
+    g_assert_cmphex(barsize, ==, XFRAME_PIF_WINDOW_SIZE);
+
     t->txp = qpci_iomap(t->dev, 2, &barsize);
     g_assert_cmphex(barsize, ==, XFRAME_TXP_WINDOW_SIZE);
 
     qpci_device_enable(t->dev);
+}
+
+static uint64_t sock_pif_readq(XframeTx *t, uint64_t off)
+{
+    return qpci_io_readq(t->dev, t->pif, off);
+}
+
+static void sock_pif_writeq(XframeTx *t, uint64_t off, uint64_t val)
+{
+    qpci_io_writeq(t->dev, t->pif, off, val);
 }
 
 static void xframe_tx_stop(XframeTx *t)
@@ -319,6 +395,208 @@ static void xframe_ring_doorbell(XframeTx *t, uint64_t par)
     qpci_io_writeq(t->dev, t->txp, TXP_TXDL_PAR, par);
     qpci_io_writeq(t->dev, t->txp, TXP_TXDL_LCR,
                    TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+}
+
+/*
+ * Program a fresh, card-owned RxD in 1-buffer mode: host control cleared,
+ * ownership to the card, the buffer's capacity in control2, and the buffer
+ * pointer -- if_xgereg.h's struct rxd1 field order (host control, control1,
+ * control2, buffer pointer).
+ */
+static void xframe_program_rxd(XframeTx *t, uint64_t desc, uint64_t buf,
+                               uint64_t capacity)
+{
+    dma_stq_le(t->qs->qts, desc + 0, 0);
+    dma_stq_le(t->qs->qts, desc + 8, RXD_OWN);
+    dma_stq_le(t->qs->qts, desc + 16, capacity << RXD_BUFSIZ_SHIFT);
+    dma_stq_le(t->qs->qts, desc + 24, buf);
+}
+
+/* Point receive ring 0 at ring_base and put it in service. */
+static void xframe_rx_ring_arm(XframeTx *t, uint64_t ring_base)
+{
+    sock_pif_writeq(t, PRC_RXD0_0, ring_base);
+    sock_pif_writeq(t, PRC_CTRL_0, RC_IN_SVC);
+}
+
+/*
+ * Poll RX_TRAFFIC_INT for the ring-0 completion bit rather than sleeping a
+ * fixed time: the socket backend's delivery is not synchronous with the
+ * write that injects it, the same reason sgi-ioc3-eth-test.c's
+ * wait_for_rx_consume polls instead of guessing a delay.
+ */
+static bool xframe_wait_rx_traffic(XframeTx *t, int attempts)
+{
+    int i;
+
+    for (i = 0; i < attempts; i++) {
+        if (sock_pif_readq(t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0) {
+            return true;
+        }
+        g_usleep(1000);
+    }
+    return false;
+}
+
+/*
+ * Receive: post a card-owned RxD, inject a frame addressed to the station
+ * MAC over the socket backend, and assert it lands in the guest buffer with
+ * the documented status and that the receive interrupt is raised. A golden
+ * byte-for-byte assertion on what the card deposited, not a round trip.
+ */
+static void test_receive_delivers_a_frame(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t landed[64];
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex((dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) >>
+                     RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, 0);
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, sizeof(frame));
+
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Guest-driven hang class: a receive ring base far out of range must not
+ * walk off into nothing, spin, or wedge the device -- no frame lands and the
+ * device stays alive, the receive-side counterpart of the transmit slice's
+ * out-of-range doorbell test. Reprogramming a valid ring afterwards and
+ * seeing a frame land proves recovery, not a fluke.
+ */
+static void test_receive_out_of_range_ring_pointer_is_safe(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t landed[64];
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0xa0 + i);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+
+    xframe_rx_ring_arm(&t, 0xffffffff00000000ULL);
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_false(xframe_wait_rx_traffic(&t, 500));
+
+    /* The device is still alive: reprogramming a valid ring recovers. */
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF1, RX_BUF_CAPACITY);
+    sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    qtest_memread(t.qs->qts, RX_BUF1, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The load-bearing hang class: a frame the device's own filter drops (a
+ * unicast destination that is not the station address, not promiscuous)
+ * must still count as consumed, not report 0 -- a 0 return here wedges the
+ * netdev queue, since nothing about a filtered frame changes on a retry. A
+ * legitimate frame right after must still be delivered, proving the queue
+ * never wedged.
+ */
+static void test_receive_filtered_frame_does_not_wedge(void)
+{
+    XframeTx t;
+    uint8_t filtered[64];
+    uint8_t legit[64];
+    uint8_t landed[64];
+    static const uint8_t not_station[6] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55
+    };
+    unsigned i;
+
+    for (i = 0; i < sizeof(filtered); i++) {
+        filtered[i] = (uint8_t)(0xc0 + i);
+        legit[i] = (uint8_t)(0xd0 + i);
+    }
+    memcpy(filtered, not_station, sizeof(not_station));
+    memcpy(legit, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, filtered, sizeof(filtered));
+    /*
+     * Give the filtered frame time to reach and be dropped by the device,
+     * and confirm it did not spuriously land -- what carries the test is
+     * what happens next, not this.
+     */
+    g_usleep(200000);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, 0);
+
+    net_socket_send_frame(t.host_fd, legit, sizeof(legit));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(legit), legit, sizeof(legit));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A buffer smaller than the frame: the deposit truncates to the posted
+ * capacity and the descriptor reports XCODE=X_BSZ, rather than overrunning
+ * the buffer or silently reporting success on a partial frame.
+ */
+static void test_receive_buffer_too_small_truncates(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t landed[RX_BUF_SMALL_CAPACITY];
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0xe0 + i);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_SMALL_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex((dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) >>
+                     RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, RXD_XCODE_BSZ);
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, RX_BUF_SMALL_CAPACITY);
+
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(landed));
+
+    xframe_tx_stop(&t);
 }
 
 /*
@@ -671,6 +949,14 @@ int main(int argc, char **argv)
                    test_transmit_emits_a_frame);
     qtest_add_func("xframe/transmit-out-of-range-pointer-is-safe",
                    test_transmit_out_of_range_pointer_is_safe);
+    qtest_add_func("xframe/receive-delivers-a-frame",
+                   test_receive_delivers_a_frame);
+    qtest_add_func("xframe/receive-out-of-range-ring-pointer-is-safe",
+                   test_receive_out_of_range_ring_pointer_is_safe);
+    qtest_add_func("xframe/receive-filtered-frame-does-not-wedge",
+                   test_receive_filtered_frame_does_not_wedge);
+    qtest_add_func("xframe/receive-buffer-too-small-truncates",
+                   test_receive_buffer_too_small_truncates);
 
     return g_test_run();
 }
