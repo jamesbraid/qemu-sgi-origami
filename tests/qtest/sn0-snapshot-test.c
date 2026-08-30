@@ -1,33 +1,11 @@
 /*
- * Whether the project's actual snapshot workflow -- HMP `savevm`, a real
- * process `quit`, a completely fresh process, HMP `loadvm` (via `-loadvm`
- * on that fresh process's command line) -- round-trips device state, not
- * just whether the internal migration stream format can.
- *
- * This is deliberately a second file rather than an addition to
- * sn0-migration-test.c, because it exercises a different QEMU code path.
- * `migrate` streams state between two already-running processes over a
- * socket (migration/migration.c); `savevm`/`loadvm` serialize into and out
- * of a qcow2 image's own snapshot storage (migration/savevm.c), and the
- * second process here starts completely cold -- nothing survives between
- * the two `qtest_init()` calls but the qcow2 file on disk. A defect
- * specific to that path (the snapshot storage lookup, the load-time device
- * re-init sequence, `-loadvm`'s command-line handling) would not show up
- * in a migration-only test, and this is the mechanism this project's own
- * engineers actually reach for -- boot to a point, `savevm`, and reload
- * for repeated experiments from identical state -- so a regression here is
- * the one that would actually cost people time.
- *
- * The same Bridge device-window case sn0-migration-test.c exercises is
- * reused here on purpose: task 53 found that `device_window_base` and each
- * window's memory-or-I/O selection are derived from the per-slot register
- * in `sgi_bridge_aim_window()` rather than migrated as independent facts,
- * so any transport that carries the raw register correctly but skips
- * re-running that derivation comes up with windows aimed at the wrong PCI
- * space. Proving the register's bits survive
- * (VMSTATE_UINT32_ARRAY already guarantees that) is not the same claim as
- * proving a real access through the window still reaches the card, which
- * is what this asserts, the same way the migration test does.
+ * The savevm/quit/fresh-process/-loadvm round trip -- a different code
+ * path from `migrate` (savevm.c's qcow2 snapshot storage, a cold second
+ * process), so a defect in it never shows in the migration test. The
+ * Bridge device-window case is reused deliberately: the windows' aim is
+ * derived from the per-slot register on load, so carrying the register
+ * bits is a weaker claim than the access through the window still
+ * reaching the card, which is what this asserts.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -35,13 +13,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 
-/*
- * Crosstalk space, the bridge's own widget window inside it, and the
- * per-slot device-window register -- the same constants
- * sn0-bridge-test.c and sn0-migration-test.c each define for themselves,
- * kept as this file's own copy rather than shared, matching how every
- * sn0-*-test.c file in this tree already stands alone.
- */
+/* This file's own copies, the way every sn0-*-test.c stands alone. */
 #define SPACE_XTALK             0x20000000000ULL
 #define BRIDGE_WIDGET           8
 #define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
@@ -60,12 +32,7 @@
                                  (device) * CFG0_DEVICE_STRIDE + \
                                  (function) * CFG0_FUNCTION_STRIDE)
 
-/*
- * A card to probe with, the same in-tree device sn0-bridge-test.c and
- * sn0-migration-test.c each use for the same reason: which card does not
- * matter for a test about the window, so pick one needing no backing file
- * and no network.
- */
+/* Any card works for a window test; this one needs no backing or net. */
 #define PROBE_SLOT              4
 #define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
 
@@ -97,16 +64,9 @@ static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
 }
 
 /*
- * The case task 53 fixed, this time carried across `savevm` / a real quit
- * / a cold `-loadvm` rather than a live migration: aim a window at a real
- * card, snapshot, quit the source process entirely, start a fresh one
- * loading that snapshot from disk, and confirm the same access that
- * worked before the quit still reaches the card. Without
- * `sgi_bridge_post_load()` re-deriving `device_window_base` and the
- * window's memory-or-I/O selection on load, the destination's window
- * comes up aimed at the wrong PCI space and this read returns the bus's
- * unanswered value instead of the card's -- the same failure
- * sn0-migration-test.c's mutation check found on the migration path.
+ * Aim a window at a card, savevm, quit, cold -loadvm, and require the
+ * same access to still reach the card: without sgi_bridge_post_load()
+ * re-deriving the window's aim, it comes up over the wrong PCI space.
  */
 static void test_a_device_window_survives_savevm_loadvm(const void *data)
 {
