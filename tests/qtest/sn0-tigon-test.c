@@ -110,6 +110,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_GENINFO_HI   0x608
 #define TI_GCR_GENINFO_LO   0x60c
 #define TI_GCR_OPMODE       0x618
+#define TI_GCR_EVENTCONS_IDX 0x628
+#define TI_GCR_RXRETURNCONS_IDX 0x680
 #define TI_OPMODE_BYTESWAP_BD   0x00000002
 #define TI_OPMODE_WORDSWAP_BD   0x00000004
 #define TI_OPMODE_BYTESWAP_DATA 0x00000010
@@ -832,6 +834,26 @@ static void test_interrupt_mask_ack(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The real Tigon 2 driver acknowledges by advancing the GCR consumer indices,
+ * not by writing a clear-interrupt bit, so the level line has to drop when a
+ * consumer index catches up to its producer. Without that the firmware-up
+ * interrupt would re-assert forever on a full boot.
+ */
+static void test_interrupt_consumer_catchup(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    go_operational(qts);
+    g_assert_true(irq_asserted(qts));
+
+    /* Consuming the firmware-up event lowers the line. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_EVENTCONS_IDX, 1);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -863,6 +885,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/hang-guard", NULL, test_hang_guard);
     qtest_add_data_func("/sn0/tigon/interrupt-mask-ack", NULL,
                         test_interrupt_mask_ack);
+    qtest_add_data_func("/sn0/tigon/interrupt-consumer-catchup", NULL,
+                        test_interrupt_consumer_catchup);
 
     return g_test_run();
 }
