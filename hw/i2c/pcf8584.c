@@ -5,10 +5,8 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * A third-party bus controller with a public interface, modelled from the
- * register contract in the controller-and-ELSC datasheet kept in the
- * Origami project tree (docs/datasheets/pcf8584-elsc.md there, not in
- * this QEMU tree).
+ * Modelled from the register contract in the Origami project tree's
+ * controller datasheet; see also docs/specs/sgi-elsc.rst.
  */
 
 #include "qemu/osdep.h"
@@ -20,10 +18,8 @@
 #include "trace.h"
 
 /*
- * Which register the A0-low address selects. ESO picks between the working
- * data register and the configuration registers, but ES2 keeps selecting
- * either way -- with the serial interface enabled it still chooses between
- * data and the interrupt vector; only ES1 stops meaning anything.
+ * Which register the A0-low address selects. ES2 keeps selecting even with
+ * the serial interface enabled; only ES1 stops meaning anything.
  */
 typedef enum {
     PCF8584_REG_OWN_ADDRESS,
@@ -93,11 +89,7 @@ static void pcf8584_stop(PCF8584State *s)
     s->status |= PCF8584_STS_BB;
 }
 
-/*
- * Issue a start condition using addr as the address-and-direction byte. Used
- * for a first start, where the address reached the data register before the
- * control write, and for a repeated start, where it arrives after it.
- */
+/* Issue a start with addr as the address-and-direction byte. */
 static void pcf8584_start(PCF8584State *s, uint8_t addr)
 {
     bool recv = addr & 1;
@@ -107,11 +99,9 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
     s->start_address_staged = false;
 
     /*
-     * The I2C core rescans for a slave only when none is matched
-     * (i2c_do_start_transfer), so a repeated start to a different address
-     * would keep talking to the old device unless the match is ended here.
-     * Only on an address change: ending unconditionally would deliver
-     * I2C_FINISH to a slave still mid-command.
+     * The core rescans only when nothing is matched, so an address change
+     * must end the old match here; unconditionally would deliver I2C_FINISH
+     * to a slave still mid-command.
      */
     if (s->transfer && addr7 != s->cur_addr7) {
         i2c_end_transfer(s->bus);
@@ -134,19 +124,12 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
     trace_pcf8584_start(addr7, recv, rc == 0);
 
     if (rc) {
-        /*
-         * Normal, not an error: the firmware addresses an invalid address
-         * after every transaction precisely to be refused.
-         */
+        /* Normal: firmware probes an invalid address in order to be refused. */
         pcf8584_complete(s, true);
         return;
     }
 
-    /*
-     * No fetch even for recv: the datasheet attaches the transfer to the
-     * read of the data register, not to the start. The first read returns
-     * what the register holds and moves the first real byte in.
-     */
+    /* No fetch for recv: the transfer attaches to the read, not the start. */
     pcf8584_complete(s, false);
 }
 
@@ -161,10 +144,7 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
     }
 
     if (s->status & PCF8584_STS_BB) {
-        /*
-         * Bus free: the address byte staged ahead of the control write
-         * that will generate the start.
-         */
+        /* Bus free: the address byte staged ahead of the control write. */
         s->data = val;
         s->start_address_staged = true;
         return;
@@ -196,10 +176,7 @@ static uint8_t pcf8584_read_data(PCF8584State *s)
     uint8_t val = s->data;
 
     if (s->transfer && s->recv) {
-        /*
-         * Hand back the held byte, then fetch: fetch-first is off by one
-         * for the whole packet.
-         */
+        /* Held byte first, then fetch: fetch-first is off by one all packet. */
         if (!(s->control & PCF8584_CTL_ACK)) {
             /* ACK cleared means the driver wants this to be the last byte. */
             trace_pcf8584_nack();
@@ -360,9 +337,8 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * Reading the data register advances the receive pipeline, so impl.max is 8:
- * the default of 4 would split the firmware's eight-byte accesses and run
- * that side effect twice.
+ * impl.max is 8: the default of 4 splits the firmware's eight-byte accesses
+ * and runs the data register's read side effect twice.
  */
 static const MemoryRegionOps pcf8584_ops = {
     .read = pcf8584_read,
@@ -375,11 +351,8 @@ static const MemoryRegionOps pcf8584_ops = {
 };
 
 /*
- * The chip's slave half, a helper device on its own bus: it catches the
- * system controller's broadcasts and any transfer directed at the S0'
- * address, reported through AAS. No state of its own to migrate -- the
- * captured byte lands in the chip's data register and the address is read
- * live from the own-address register.
+ * The chip's slave half: catches broadcasts and directed hits on S0',
+ * reported through AAS. No state of its own to migrate.
  */
 #define TYPE_PCF8584_BCAST_RX "pcf8584-broadcast-rx"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584BcastRxState, PCF8584_BCAST_RX)
@@ -389,10 +362,7 @@ struct PCF8584BcastRxState {
     PCF8584State *chip;
 };
 
-/*
- * The own-address register is consulted at match time, so reset and
- * migration never have to copy it into this device.
- */
+/* Consulted at match time, so reset and migration never copy it here. */
 static bool pcf8584_bcast_rx_match_and_add(I2CSlave *candidate,
                                            uint8_t address, bool broadcast,
                                            I2CNodeList *current_devs)
@@ -426,9 +396,8 @@ static int pcf8584_bcast_rx_send(I2CSlave *dev, uint8_t data)
     PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
 
     /*
-     * The receiver and the transmit path share the data register: a staged
-     * first-start address is preserved until START consumes it, or a
-     * scheduler-delayed START would target an arbitration byte.
+     * A staged first-start address is preserved until START consumes it,
+     * or a delayed START would target an arbitration byte.
      */
     if (!rx->chip->start_address_staged) {
         rx->chip->data = data;
