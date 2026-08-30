@@ -1,34 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A PCI device that exists to make two assertions about the I/O bridge
- * possible: one about how it translates a transfer, and one about how it
- * reports an interrupt pin.
- *
- * The bridge's address translation table is the thing a device transfer goes
- * through, and the defect it must not have is translating once per transfer
- * instead of once per page. That defect is invisible to every transfer
- * fitting inside one page, which is nearly all of them, so the only test that
- * catches it is a transfer crossing a page boundary where the two pages map
- * to physical addresses that are not adjacent. Making that assertion needs a
- * device on the bridge's bus that issues one transfer of a length and address
- * a test chooses.
- *
- * The tree's iommu-testdev covers that basic shape, but three things the
- * bridge tests assert are still missing from it: a seeded byte pattern so a
- * straddle can name which page each byte landed in, a held interrupt level so
- * a status register that must follow rather than latch can be told from one
- * that latches, and a settable PCI identity so the bridge's per-device
- * byte-lane policy can be exercised without the real part. Until those grow
- * on the shared device, this one carries them; retiring it onto an extended
- * iommu-testdev is recorded follow-up work.
- *
- * It is for tests and nothing else: no machine instantiates it, it appears
- * only when a command line asks for it by name, and it models no real
- * hardware. The transfer is one call, issued while the register write that
- * asked for it is still being served, and it goes through the PCI DMA helpers
- * so that whatever translation the bridge above imposes is honoured. That is
- * the whole point: a transfer that bypassed the translation would prove
- * nothing about it.
+ * A test-only PCI device for two Bridge assertions: per-page translation
+ * (only a transfer straddling a page boundary onto non-adjacent physical
+ * pages can catch translate-once-per-transfer) and a held interrupt level
+ * (a status register that must follow, not latch, cannot be told apart by
+ * a pulse). It differs from iommu-testdev in a seeded byte pattern, the
+ * held level, and a settable PCI identity for the byte-lane policy;
+ * retiring it onto an extended iommu-testdev is recorded follow-up work.
+ * No machine instantiates it, and its transfers go through the PCI DMA
+ * helpers so the Bridge's translation is honoured.
  */
 
 #include "qemu/osdep.h"
@@ -71,11 +51,8 @@ struct SGIBridgeDMATestState {
     uint32_t seed;
 
     /*
-     * Where a copy reads from. A copy is how this device tests the read
-     * direction: exposing its own buffer through a register window would put
-     * the programmed-access correction in the path and the comparison would
-     * then be measuring two transforms at once. Also 64 bits, so a copy can read
-     * from a 64-bit source address as well as write to a 64-bit destination.
+     * A copy tests the read direction: exposing the buffer through a
+     * register window would put a second transform in the path.
      */
     uint64_t source;
 
@@ -87,11 +64,8 @@ struct SGIBridgeDMATestState {
     uint16_t device_id;
 
     /*
-     * Which of the four legacy interrupt pins this device declares, A through
-     * D as one through four. A real device has this fixed in silicon; here it
-     * is settable, because the thing a bridge test needs to vary is which pin
-     * arrives — the fold from four bus pins onto the chip's eight is what is
-     * under test, and one pin cannot show it.
+     * Settable where silicon is fixed: the four-onto-eight pin fold is
+     * what is under test, and one pin cannot show it.
      */
     uint8_t interrupt_pin;
 };
