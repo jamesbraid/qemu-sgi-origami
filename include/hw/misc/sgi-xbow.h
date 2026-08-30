@@ -20,9 +20,8 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXbowState, SGI_XBOW)
 
 /*
- * The chip claims its widget's whole crosstalk space, not just the registers
- * it decodes: an undecoded address is an error it reports, not an answer the
- * machine underneath should give.
+ * Claims the widget's whole space: an undecoded address is an error it
+ * reports, not an answer the machine underneath should give.
  */
 struct SGIXbowState {
     SysBusDevice parent_obj;
