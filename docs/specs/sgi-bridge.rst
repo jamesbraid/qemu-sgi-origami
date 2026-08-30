@@ -125,7 +125,10 @@ DMA address map
 
 A device sees 4 GB of PCI address space divided by its top two bits:
 
-* below 1 GB: local, not carried to crosstalk;
+* below 1 GB: local, not carried to crosstalk. The model passes
+  local-window DMA through to system memory, which real hardware
+  does not -- a recorded fidelity gap the byte-lane swap rule
+  deliberately does not mask;
 * the second gigabyte: through the translation table;
 * the upper 2 GB: the direct window -- the direct-map register's
   offset field supplies crosstalk bits 47:31 and the low 31 PCI bits
@@ -210,7 +213,9 @@ that is not present, leaves the wire idling high; the mismatch is
 logged because it is otherwise indistinguishable from an absent
 part.
 
-The data memory is 64 pages of 32 bytes. Two commands read it with
+The data memory is 64 pages of 32 bytes -- a size cross-constrained
+by the status memory, which carries exactly one redirection byte per
+page and has 64 of them. Two commands read it with
 different framing: the extended read sends, per page, a redirection
 byte, a check pair over the request, the page, and a check pair over
 the page; the plain read sends nothing but stored bytes to the end
