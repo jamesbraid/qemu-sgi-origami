@@ -1,15 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 200/2000 ("SN0", IP27) family machines.
- *
- * The family core: the abstract SN0 machine, which derives its chassis count
- * from the SMP topology and builds one node per chassis, and the node device
- * itself -- up to two R10000s with their per-processor views of the shared
- * address map, the node's memory banks, the boot flash with its Hub-special
- * views, the directory and ECC back doors, and the Hub. Products register
- * concrete machine types beside this and parameterize it through
- * SN0MachineClass (sn0-origin200.c); the synthesized firmware lives in
- * sn0-firmware.c and the host diagnostics in sn0-diag.c.
+ * SGI Origin 200/2000 ("SN0", IP27) family machines: the abstract machine
+ * and the node device. Products parameterize them through SN0MachineClass
+ * (sn0-origin200.c); firmware in sn0-firmware.c, diagnostics in sn0-diag.c.
  */
 
 #include "qemu/osdep.h"
@@ -45,12 +38,8 @@
 #define SN0_PROMDATA_SIZE   (32 * KiB)
 #define SN0_PROM_COPY_PADDR 0x01a00000
 /*
- * Not a hardware register: the IP27 PROM's own software convention of keeping
- * a word of boot-status flags in floating-point register 0 during early boot.
- * Neither Linux nor OpenBSD references it -- their kernels run only after the
- * convention has ended.  Bit 1, set while the cache-as-RAM phase is live, is
- * the only bit this model knows; the word's remaining bits are unmapped here
- * and belong to the firmware-structures datasheet.
+ * Not a hardware register: the IP27 PROM's own software convention of
+ * boot-status flags in FPR 0. Bit 1 marks the cache-as-RAM phase.
  */
 #define SN0_PROM_BOOT_STATUS_CACHE_AS_RAM    (1U << 1)
 
@@ -83,13 +72,9 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
     }
 
     /*
-     * Before memory is initialized, the IP27 PROM marks this 32 KiB range
-     * dirty-exclusive in each R10000's primary data cache and uses it for its
-     * C stack and local data. A cache-as-RAM flag in FPR 0's boot-status word
-     * records that cache-only phase. Restrict the convention to code running
-     * from either the boot PROM or the RAM copy to which it transfers before
-     * installing the final mapped alias. Later software can then use FPR 0
-     * and physical memory at 1 MiB normally.
+     * The PROM's cache-as-RAM phase uses this 32 KiB range as per-CPU
+     * cache-private stack; restrict it to code running from the PROM or
+     * its RAM copy.
      */
     return (env->active_fpu.fpr[0].d & SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
            ((pc >= SN0_FLASH_LOCAL &&
@@ -99,18 +84,9 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
 }
 
 /*
- * The cache-only phase keeps only the PROM's stack and locals in this window;
- * the PROM's own code runs from flash, never from here.  So a processor
- * *executing* from inside the window can only be the operating system, which
- * means the private phase is over and the per-access routing is no longer
- * needed -- from here on the window is just the shared DRAM underneath it.
- *
- * Recognise that by translating the program counter through the MMU -- the
- * kernel runs its text through a TLB-mapped segment (IRIX links this window's
- * driver code near 0xc0000000001026a8), not only the unmapped windows -- and
- * comparing the physical address against the window.  It is one-way: the PROM
- * cannot execute from here, so this can only ever turn the overlay off once the
- * window is genuinely running operating-system code, never during the phase.
+ * Only the operating system can execute from inside the window -- the
+ * PROM never does -- so execution here ends the private phase for good.
+ * The PC is translated through the MMU because kernels run mapped.
  */
 static bool sn0_promdata_executing_here(SN0PromDataState *s)
 {
@@ -125,24 +101,15 @@ static bool sn0_promdata_executing_here(SN0PromDataState *s)
 }
 
 /*
- * Runs once, at a quiescent point with every vCPU drained, the first time the
- * window executes operating-system code.  Disabling the priority-2 overlay
- * exposes the shared-DRAM alias beneath it, so the window becomes plain RAM
- * that backs cached translations at full speed instead of retranslating one
- * instruction per block.  A machine reset re-enables it for the next boot's
- * cache-only phase (sn0_promdata_reset).
+ * Runs at a quiescent point. Disabling the overlay exposes the DRAM
+ * alias beneath, which backs cached translations at full speed.
  */
 static void sn0_promdata_leave_private(CPUState *cs, run_on_cpu_data data)
 {
     SN0PromDataState *s = data.host_ptr;
 
     BQL_LOCK_GUARD();
-    /*
-     * A machine reset between scheduling this and running it clears the flag
-     * and re-enables the overlay for a fresh cache-only phase; if that has
-     * happened, leave the overlay in place rather than disabling it back out
-     * from under the new boot.
-     */
+    /* A reset since scheduling re-armed the overlay; leave it in place. */
     if (s->leaving_private) {
         memory_region_set_enabled(&s->filter, false);
     }
@@ -211,25 +178,14 @@ static void sn0_promdata_reset(void *opaque)
     memset(memory_region_get_ram_ptr(&s->data), 0, SN0_PROMDATA_SIZE);
     memory_region_set_dirty(&s->data, 0, SN0_PROMDATA_SIZE);
 
-    /*
-     * A reboot re-enters the PROM's cache-only phase, so restore the overlay
-     * that a previous boot disabled once its operating system began executing
-     * from the window.
-     */
+    /* A reboot re-enters the cache-only phase; restore the overlay. */
     s->leaving_private = false;
     memory_region_set_enabled(&s->filter, true);
 }
 
 /*
- * The ECC and directory back-door storage is a raw buffer behind the
- * populated-bank ops, not a RAM MemoryRegion, so the memory core does not
- * migrate it the way it does guest RAM; the node's descriptor carries it as a
- * sub-section. Both migration ends derive data_size from the same memory
- * configuration at realize and allocate the buffer before any state loads, so
- * only the contents have to cross. A node with no populated banks would leave
- * data NULL and data_size zero, but that machine is unreachable today:
- * sn0_ip29_memory_layout() rejects a zero-size node and construction exits, so
- * every node that boots populates at least one bank.
+ * A raw buffer, not a RAM region, so the memory core does not migrate it;
+ * both ends derive data_size from the same configuration at realize.
  */
 static const VMStateDescription vmstate_sn0_backdoor = {
     .name = "sn0-backdoor",
@@ -253,12 +209,7 @@ static int sn0_promdata_post_load(void *opaque, int version_id)
     SN0NodeState *node = opaque;
     unsigned int slice;
 
-    /*
-     * The stream carries how far each processor's cache-only phase had got.
-     * Reapply that to the overlay the destination built enabled, so a boot
-     * that had already switched the window to plain RAM does not revert to the
-     * slow per-instruction path.
-     */
+    /* Reapply how far each processor's cache-only phase had got. */
     for (slice = 0; slice < SN0_CPUS_PER_NODE; slice++) {
         SN0PromDataState *s = &node->promdata[slice];
 
@@ -293,17 +244,10 @@ static const VMStateDescription vmstate_sn0_promdata = {
 };
 
 /*
- * Named "sn0-flash" for wire compatibility, but since the boot flash became
- * a pflash device that migrates its own state through the qdev tree, this
- * descriptor carries only the back-door storage and the promdata subsection.
- * The unused field keeps the bytes the old flash state machine occupied, so
- * version 1 and 2 streams still load. Their legacy state value is
- * deliberately discarded rather than translated into the device: a stream
- * captured inside a flash command sequence would wake in read-array mode
- * with the sequence forgotten. That window is a handful of guest stores wide
- * and no retained snapshot sits inside it, and a translation would couple
- * this descriptor to the flash device's private state for a case that does
- * not occur.
+ * Named "sn0-flash" for wire compatibility: the pflash device migrates
+ * its own state, so this carries only the back doors and promdata. The
+ * unused field keeps old streams loading; their legacy flash state is
+ * discarded rather than translated.
  */
 static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
@@ -324,21 +268,11 @@ static const VMStateDescription vmstate_sn0_flash = {
 };
 
 /*
- * The Hub's flash controller: the decode between the 64-bit junk bus and the
- * byte-wide chip, in front of the pflash device that models the chip itself.
- *
- * Reads pack the chip 1:1 -- image byte N at bus offset N. The Hub does not
- * address-error decode the upper boot-space address bits, so the model
- * repeats the 1 MB image across the 256 MB LBOOT and RBOOT windows by
- * dropping those bits -- cheaper than 256 tiled aliases, and guest code
- * genuinely lands on offsets past the first repeat. Command writes present
- * the chip's byte-wide
- * command port on 64-bit cycles only, low byte used, with chip byte N at bus
- * offset 8N; the vendor flash programmer states the mapping directly (the
- * boot-flash command interface, in the Hub memory/directory datasheet).
- * Where code executes -- each node's own boot window -- a direct romd alias
- * of the chip overlays this decode; the remote-node RBOOT window is never a
- * fetch path, only the maintenance read/write path, so it takes no overlay.
+ * The Hub's flash controller: the decode between the 64-bit junk bus and
+ * the byte-wide chip. Reads pack the chip 1:1 and repeat the 1 MB image
+ * across the 256 MB windows; command writes present the byte-wide command
+ * port on 64-bit cycles only, chip byte N at bus offset 8N, the mapping
+ * the vendor flash programmer states directly.
  */
 static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -385,25 +319,10 @@ static const MemoryRegionOps sn0_boot_mirror_ops = {
 };
 
 /*
- * The floor beneath a back-door window: what a directory or ECC entry for a
- * bank this configuration does not populate answers. Real firmware's presence
- * probe writes a test pattern, writes zero through the same data lines, and
- * reads back; it calls a bank absent exactly when neither value survives, so
- * this must accept both writes and echo neither.
- *
- * The value returned is a modelling choice, not a fact about the machine --
- * the vendor source says an absent bank's data lines float, so nothing
- * architectural constrains the answer beyond "not zero and not whatever
- * pattern the probe wrote." 0xa5 repeated is arbitrary, chosen only to be
- * visually distinct from either all-zero or an all-ones fill in a trace.
- *
- * impl sizes are declared explicitly (matching valid) so an eight-byte guest
- * access reaches this callback once. Left unset, the maximum defaults to
- * four and the memory core would split it into two four-byte calls -- and
- * because both halves resolve to the same fixed value, nothing about that
- * split would show up as wrong here the way it would on a register with a
- * side effect. Declared anyway, on the general rule rather than because
- * this specific handler would misbehave without it.
+ * The floor beneath a back-door window: firmware's presence probe writes
+ * a pattern, then zero, and calls a bank absent when neither survives, so
+ * accept both writes and echo neither. 0xa5 is an arbitrary choice -- the
+ * real data lines float.
  */
 #define SN0_BACKDOOR_ABSENT_VALUE 0xa5a5a5a5a5a5a5a5ULL
 
@@ -416,13 +335,7 @@ static uint64_t sn0_backdoor_absent_read(void *opaque, hwaddr addr,
 static void sn0_backdoor_absent_write(void *opaque, hwaddr addr,
                                       uint64_t val, unsigned size)
 {
-    /*
-     * Accepted and dropped. A bank that is not there has nothing behind
-     * this address for the write to change, which is the whole point --
-     * and real firmware's own sizing walk runs with no fault guard here,
-     * so refusing or faulting the write would break the one routine that
-     * has nothing to catch it.
-     */
+    /* Dropped; firmware's sizing walk runs with no fault guard here. */
 }
 
 static const MemoryRegionOps sn0_backdoor_absent_ops = {
@@ -436,41 +349,11 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
 };
 
 /*
- * A populated bank's own share of a back-door window -- real storage, but
- * only as wide as this machine's directory format actually is. SGI's own
- * manual states the Origin 200 carries no premium directory memory, the
- * additional hardware a larger machine has; ours is the plainer format
- * throughout. Real firmware's presence probe tells the two apart by how
- * much of a written pattern survives a read: the richer format's entry
- * keeps all six bytes of its low 48 bits, the plainer format's keeps only
- * its low two. A backing store that remembers every byte it is given, as
- * plain RAM does, keeps all of them regardless -- which is what made every
- * populated bank here answer "premium format" whether or not the machine
- * has any.
- *
- * So this remembers everything a guest writes, to whatever width and
- * alignment it writes it, but a read reveals only the low sixteen bits of
- * each eight-byte-aligned entry; the other six always come back as zero,
- * never as what was stored there, because the hardware has no storage
- * there to come back from. Writing the discarded bytes is accepted rather
- * than refused -- real firmware's own restore step (the probe saves an
- * entry, overwrites it, classifies it, then writes the saved value back)
- * writes all eight, and a plainer-format entry's real two bytes have to
- * survive that restore correctly, which this does; the other six are
- * harmless to store since nothing ever reads them back.
- *
- * Back-door addresses are ordinary memory addresses shifted right by two.
- * A bank therefore has one quarter as much unique back-door storage as RAM,
- * repeated across its fixed 128 MiB share of the window. Firmware uses that
- * aliasing to distinguish bank capacities. Keeping only the unique span also
- * prevents a default 64 MiB guest from allocating 256 MiB of mostly redundant
- * diagnostic backing across these two windows.
- *
- * The compact buffer is used instead of memory_region_init_ram because both
- * the address folding and the width mask have to happen on every access. A
- * raw buffer is not migrated for free the way a RAM region is, so the node's
- * descriptor carries it as a sub-section (vmstate_sn0_backdoor): a guest write
- * here survives savevm/loadvm and a live migration.
+ * Real storage only as wide as the plainer directory format: a read
+ * reveals the low sixteen bits of each eight-byte entry, the rest read
+ * zero -- plain RAM would answer firmware's width probe "premium format".
+ * Addresses are memory addresses shifted right by two, so only the
+ * unique quarter span is stored, repeated across the window.
  */
 static uint8_t *sn0_backdoor_byte(SN0BackdoorState *s, hwaddr addr)
 {
@@ -493,12 +376,7 @@ static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
         raw = (raw << 8) | *sn0_backdoor_byte(s, addr + i);
     }
 
-    /*
-     * Byte i of this access sits at addr + i and occupies bits
-     * [8*(size-1-i), 8*(size-1-i)+7] of the big-endian value just read.
-     * The low two bytes of each eight-byte-aligned entry -- (addr+i) & 7
-     * equal to 6 or 7 -- are real; the rest read as zero.
-     */
+    /* Only the low two bytes of each eight-byte-aligned entry are real. */
     for (i = 0; i < size; i++) {
         if (((addr + i) & 7) < 6) {
             raw &= ~(0xffULL << (8 * (size - 1 - i)));
@@ -547,38 +425,11 @@ static void sn0_backdoor_configure(SN0BackdoorState *s,
 }
 
 /*
- * The mode bits this board drives into its processor, which the R10000 latches
- * into the low twenty-five bits of its configuration register while reset is
- * asserted. Real firmware's first act is to check them: it reads the word out
- * of the flash configuration block, compares it against what the register
- * actually holds, and reports "an error copying mode bits" if they differ.
- *
- * **Driven from the same constant the flash block advertises, because two
- * copies of one board fact is the defect this check exists to catch.** A board
- * whose processor latched something other than what its own configuration
- * block claims is exactly the fault condition; a model with two constants can
- * produce it by editing one of them.
- *
- * It runs at reset rather than at machine creation because the processor's own
- * reset restores the register from the CPU model's defaults, which describe a
- * generic R10000 and cannot know this board's word. Registered from the
- * machine-init-done notifier for the same ordering reason as the handler
- * above: reset handlers run in registration order and this one has to follow
- * the processor's.
- */
-/*
- * Reset the processor.
- *
- * **Without this the machine services a reset request without resetting the
- * processor at all**: the devices reset, the machine's own handlers run, and
- * the program counter is untouched, so execution simply carries on. Every
- * other MIPS machine in the tree registers this explicitly and nothing does it
- * automatically.
- *
- * That omission is what made the firmware's deliberate two-pass reset look
- * like a single pass -- the request was serviced and the processor never
- * restarted, so the second pass never happened and the marker it leaves
- * behind was never read.
+ * Nothing resets a MIPS processor automatically: without the explicit
+ * reset the machine services a reset request with the program counter
+ * untouched. The mode bits are driven from the same constant the flash
+ * configuration block advertises -- real firmware compares the two and
+ * reports a mismatch.
  */
 static void sn0_cpu_reset(void *opaque)
 {
@@ -604,11 +455,9 @@ void sn0_mode_bits_reset(void *opaque)
 }
 
 /*
- * The machine's own reset, after every device's. The order below is the
- * contract the old registration list happened to give: the firmware window
- * write and the processor mode-bits write must land after the Hub's and the
- * CPUs' own resets, and the PCI reassignment after the devices cleared
- * their registers.
+ * After every device's reset: the firmware window and mode-bits writes
+ * must follow the Hub's and the CPUs' resets, the PCI reassignment the
+ * devices clearing their registers.
  */
 static void sn0_machine_reset(MachineState *machine, ResetType type)
 {
@@ -631,35 +480,10 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
 }
 
 /*
- * Make the firmware's boot-progress indicator visible without the operator
- * having to know it exists.
- *
- * The Hub emits every write to its indicator register as the trace event
- * sgi_hub_led, decoded against real firmware's own progress and failure
- * codes. A trace event is off by default by construction, so that signal --
- * the only progress this machine reports while the firmware is still
- * deciding which console to talk to -- reached only somebody who already
- * knew to ask for it by name. This turns it on for them.
- *
- * ONE LINE IS ENOUGH, AND IT IS WORTH SAYING WHY, because the log backend
- * makes it look like two are needed: trace_sgi_hub_led() emits only if the
- * event's dynamic state is set AND qemu_loglevel_mask(LOG_TRACE). The second
- * is already true on every run. qemu_init() calls
- * qemu_set_log_filename_flags() unconditionally, not only when -d was given,
- * and qemu_set_log_internal() force-sets LOG_TRACE whenever the log trace
- * backend is compiled in -- which also makes qemu_loglevel non-zero, so the
- * destination opens, defaulting to stderr and honouring -D. Raising the log
- * level here as well changes nothing; it was tried, and a bare run emits the
- * codes with it removed.
- *
- * Going through the trace event rather than printing directly keeps the
- * emitted line byte-identical, which matters because it is parsed:
- * tools/boot-gate ratchets on the set of codes a known-good boot reaches and
- * matches this text with a regular expression. Three runner tools also name
- * the event on their own command lines to arm it, which is harmless now that
- * it is armed here, and is kept so they still work against binaries built
- * before this. Printing the same information by a second route would have
- * given that parser a format to diverge from for no gain.
+ * Arm the sgi_hub_led trace event: the only progress this machine shows
+ * while firmware picks a console. One line is enough -- the log backend
+ * already forces LOG_TRACE on every run. The emitted text is parsed, so
+ * the event stays the single route.
  */
 static void sn0_show_indicator_codes(Error **errp)
 {
@@ -723,15 +547,10 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
 }
 
 /*
- * Which node's memory an address without a NASID names on this node, in
- * memory space. Normally the node's own. The exception is the cached
- * low-address alias after synthesized firmware has handed a directly loaded
- * kernel control: Linux disables PI_CALIAS_SIZE before launching remote
- * processors, so their unqualified kernel-text addresses name node zero. A
- * real PROM keeps the reset-local view and owns that transition itself.
- * Shared by the processors' local views and the Hub's, so the block
- * transfer engines always resolve a node-less address onto the same memory
- * as the processors that programmed them.
+ * Which node a NASID-less address names in memory space: normally the
+ * node's own, but after synthesized firmware hands a kernel control,
+ * remote processors' unqualified addresses name node zero (Linux
+ * disables PI_CALIAS_SIZE first). Shared with the Hub's engines.
  */
 static hwaddr sn0_node_local_memory_base(MachineState *machine,
                                          unsigned int node_index)
@@ -769,11 +588,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                             &node->sysmem_alias[slice], -1);
 
         /*
-         * Addresses without a NASID normally name the reading processor's
-         * node; the local-memory-base property carries the one exception,
-         * which applies to memory space alone.  Keep the global system map
-         * underneath so an explicit NASID still reaches either node in
-         * both cases.
+         * NASID-less addresses name the reading processor's node; the
+         * global map underneath still answers explicit NASIDs.
          */
         for (space = 0; space < SN0_UNCACHED_SPACES; space++) {
             g_autofree char *local_name = g_strdup_printf(
@@ -784,37 +600,10 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             hwaddr local_size = SN0_NODE_SIZE;
 
             /*
-             * In crosstalk space, self-decode only the Hub's own window.
-             *
-             * An address carrying no node name and an address naming node
-             * zero are the same bits, because node zero's offset is zero.
-             * Redirecting a whole node's worth of every space therefore
-             * captured not only the nameless addresses it was meant for but
-             * every explicit reference to node zero as well -- so a
-             * processor elsewhere aiming at node zero's Hub reached its own,
-             * and the interrupt it sent arrived where nobody was waiting for
-             * it. Measured: from the second node, no cross-node interrupt
-             * store ever crossed.
-             *
-             * The hardware separates the two by decoding a small window --
-             * the Hub's eight megabytes -- as "the reading node's own Hub"
-             * from anywhere, and putting the explicit form outside it.
-             * Narrow to that window and the distinction returns: nameless
-             * Hub addresses still find the reader's own node, and every
-             * other crosstalk address, node zero's included, falls through
-             * to the global map, where the per-node explicit view at
-             * SN0_HUB_NODE_WINDOW already answers.
-             *
-             * Scoped to crosstalk space, which is where the Hub lives and
-             * where the fault was measured. The other spaces keep the wide
-             * alias; whether they need the same treatment is unmeasured, and
-             * guessing at it would put an unobserved claim in the map.
-             *
-             * The big windows sit outside this window, so a nameless
-             * reference to them no longer resolves to the reader's own node.
-             * That follows from the hardware's own window being the Hub's
-             * alone, and the ROM suite and firmware boot are what say the
-             * guests do not rely on the wider behaviour.
+             * Self-decode only the Hub's own eight-megabyte window: node
+             * zero's offset is zero, so a wider redirect also captured
+             * explicit references to node zero and no cross-node
+             * interrupt ever crossed. Other spaces keep the wide alias.
              */
             if (SN0_SPACE(space) == SN0_SPACE_XTALK) {
                 local_offset = SN0_HUB_LOCAL_WINDOW;
@@ -832,11 +621,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                 &node->local_space[slice][space], 0);
         }
 
-        /*
-         * The bottom 128 KiB of Hub-local space is the remaining exception:
-         * the reading slice flips address bit 16, giving the two processors
-         * separate scratch halves.
-         */
+        /* The bottom 128 KiB of Hub-local space: bit 16 flips per slice. */
         for (half = 0; half < 2; half++) {
             g_autofree char *private_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.hub-private%u", node_index, slice, half);
@@ -855,20 +640,9 @@ static void sn0_node_create_cpus(SN0NodeState *node)
         node->cpu[slice] = MIPS_CPU(qdev_new(node->cpu_type));
 
         /*
-         * The cache-only private phase the filter models exists only under
-         * the real PROM: it is entered when the PROM sets FPR 0's cache-as-RAM boot-status bit,
-         * which synthesized firmware never does before handing a directly
-         * loaded kernel control.  In that mode the filter would be pure
-         * forwarding -- except that an I/O region cannot back translated
-         * code, so kernel text linked into this 32 KiB window would execute
-         * one instruction per translation block.  For a directly loaded kernel
-         * there is no cache-only phase, so the machine leaves promdata-filter
-         * off and the window is the plain RAM it forwards to.  For a real
-         * PROM boot the filter is genuinely needed during that phase, so
-         * keep it -- but it disables itself once the
-         * operating system first executes from the window
-         * (sn0_promdata_leave_private), after which the window is the plain
-         * shared RAM underneath and backs cached translations at full speed.
+         * The cache-only phase exists only under a real PROM; for a
+         * directly loaded kernel the filter would be pure forwarding, and
+         * an I/O region cannot back translated code, so leave it off.
          */
         if (node->promdata_filter) {
             node->promdata[slice].cpu = node->cpu[slice];
@@ -881,23 +655,13 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                   &sn0_promdata_ops, &node->promdata[slice],
                                   promdata_filter_name, SN0_PROMDATA_SIZE);
             /*
-             * Firmware traps use cpu_memory_rw_debug() to copy results
-             * through guest pointers.  The trap and this filter share the
-             * node as their owner, so the device-wide guard would otherwise
-             * reject that intentional nested access before the filter can
-             * forward it to RAM.
+             * Firmware traps copy through guest pointers; the shared
+             * owner would trip the reentrancy guard.
              */
             node->promdata[slice].filter.disable_reentrancy_guard = true;
             qemu_register_reset(sn0_promdata_reset, &node->promdata[slice]);
 
-            /*
-             * The PROM addresses this cache-only data through its 0xa800...
-             * XKPHYS alias. Its cache algorithm translates to ordinary
-             * physical memory, so intercept that carrier window before
-             * shared node RAM. When the private phase ends, the filter
-             * forwards accesses to the same address in the global memory
-             * space.
-             */
+            /* Intercept the PROM's cached carrier window before node RAM. */
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice],
                 SN0_SPACE_MEMORY + SN0_PROMDATA_PADDR,
@@ -927,10 +691,8 @@ static void sn0_node_map_memory(SN0NodeState *node)
     unsigned int bank, segment;
 
     /*
-     * Each bank occupies a 512 MiB stride. Banks of 128 MiB or less use its
-     * first slot; larger banks interleave one quarter of their bytes into each
-     * of four slots on a 128 MiB stride. Both supported guests derive this
-     * placement from the plain-megabyte bank sizes in KLCONFIG.
+     * Banks of 128 MiB or less use their stride's first slot; larger
+     * banks interleave quarters on a 128 MiB stride.
      */
     for (bank = 0; bank < node->populated_banks; bank++) {
         uint64_t bank_size = (uint64_t)node->bank_mb[bank] * MiB;
@@ -951,12 +713,8 @@ static void sn0_node_map_memory(SN0NodeState *node)
                                         &node->mem_slot[bank][segment]);
 
             /*
-             * Hub-special offset zero mirrors the first 256 MiB of the
-             * reading processor's local node memory. Mirror each populated
-             * run separately so the alias preserves the bank's slot holes.
-             * Per-CPU address-space overlays above flip the low 128 KiB for
-             * slice B. This shared mapping remains the fallback for qtest,
-             * DMA, and every address beyond that private range.
+             * Hub-special offset zero mirrors the first 256 MiB of local
+             * memory; mirror each run separately to keep the slot holes.
              */
             if (segment_addr < SN0_HUB_LOCAL_MEM_SIZE) {
                 uint64_t alias_size = MIN(segment_size,
@@ -1003,12 +761,9 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
     /*
-     * The chip is a standard AMD-command NOR flash device: an Am29F080,
-     * 1 MB in sixteen 64 KB sectors, byte-wide. Its region is never mapped
-     * directly -- every guest-visible view goes through the Hub decode
-     * below -- and it has no backing drive: the firmware builder seeds the
-     * synthesized image after realize. The unlock addresses are the chip's;
-     * the device masks them to its eleven command address bits.
+     * An Am29F080: 1 MB in sixteen 64 KB sectors, byte-wide, with no
+     * backing drive -- the firmware builder seeds the image after
+     * realize. Never mapped directly; every view goes through the Hub.
      */
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
     qdev_prop_set_uint32(flash_dev, "num-blocks",
@@ -1029,10 +784,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_dev), 0);
 
     /*
-     * The Hub-special LBOOT window: the controller decode (repeat and the
-     * strided command port), with a direct romd alias of the chip overlaid
-     * at the flash's own base inside it -- the PROM fetches its relocated
-     * code there, and an I/O region cannot back translated code.
+     * The LBOOT window: the controller decode, with a romd alias of the
+     * chip overlaid where the PROM fetches its relocated code.
      */
     memory_region_init_io(&node->flash_hub_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, hub_name,
@@ -1047,17 +800,11 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         &node->flash_hub_fast, 1);
 
     /*
-     * The reset-vector view aliases the megabyte of Hub space at the flash
-     * base, so reads and fetches resolve to the romd chip -- required, since
-     * the processor boots by fetching here and an I/O region cannot back
-     * translated code. Writes through this view land on the chip's own
-     * byte-addressed decode rather than the controller's strided command
-     * port: the romd overlay wins the whole megabyte, and an alias cannot
-     * route reads and writes differently. That divergence from the old
-     * model is deliberate and confined -- every observed command sequence,
-     * and the vendor flash programmer the datasheet cites, drives commands
-     * through the Hub window, and the reset view's write decode is not
-     * established by any source we hold. It overlaps RAM and wins.
+     * The reset-vector view aliases the megabyte of Hub space at the
+     * flash base. Writes through it land on the chip's byte decode, not
+     * the controller's strided command port -- an alias cannot route the
+     * two differently, and no source establishes the reset view's write
+     * decode. It overlaps RAM and wins.
      */
     memory_region_init_alias(&node->flash_reset_view, OBJECT(node),
                              reset_name, system,
@@ -1066,11 +813,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     memory_region_add_subregion_overlap(system, node_base + SN0_FLASH_LOCAL,
                                         &node->flash_reset_view, 1);
 
-    /*
-     * The remote-node RBOOT window is only ever a maintenance read/write
-     * path -- no processor fetches through it -- so it is the bare
-     * controller decode with no romd overlay.
-     */
+    /* RBOOT is a maintenance path, never a fetch path: no romd overlay. */
     memory_region_init_io(&node->flash_rboot_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, rboot_name,
                           SN0_RBOOT_SIZE);
@@ -1078,10 +821,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
                                 SN0_SPACE_HUB + node_base + SN0_FLASH_RBOOT,
                                 &node->flash_rboot_view);
 
-    /*
-     * Fixed absent floors cover the complete ECC and directory backdoor
-     * windows. Storage for the populated banks overlays those floors.
-     */
+    /* Absent floors cover the whole windows; populated storage overlays. */
     memory_region_init_io(&node->backdoor_ecc_absent, OBJECT(node),
                           &sn0_backdoor_absent_ops, NULL, ecc_absent_name,
                           SN0_BACKDOOR_ECC_SIZE);
@@ -1139,17 +879,10 @@ static void sn0_node_create_hub(SN0NodeState *node)
                        SN0_XTALK_SIZE);
 
     /*
-     * The Hub's block transfer engines address memory the way this node's
-     * processors do: an address without a NASID names this node, and an
-     * explicit NASID still reaches either node through the global map
-     * underneath. Built here, once per node, in the same shape as each
-     * processor's memory-space local view -- the Hub cannot build it for
-     * itself, because under real firmware its programmed node number reads
-     * zero on every node. The per-processor pieces of that view -- the
-     * slice-flipped Hub-private halves and the cache-only firmware data
-     * filter -- are left out on purpose: they belong to a reading
-     * processor, and a device has no slice to flip and no cache to be
-     * private in.
+     * The Hub's engines address memory as this node's processors do,
+     * minus the per-processor pieces -- a device has no slice to flip.
+     * The Hub cannot build this itself: its programmed node number reads
+     * zero under real firmware.
      */
     memory_region_init(&node->hub_memory, OBJECT(node), memory_name,
                        UINT64_MAX);
@@ -1248,11 +981,8 @@ static void sn0_init(MachineState *machine)
     g_assert(smc->node_memory_layout && smc->populate_io);
 
     /*
-     * One SMP socket is one chassis. -numa still owns the memory split and
-     * the processor assignment, and a -numa node count must agree with the
-     * socket count, which the topology check below enforces; with no -numa
-     * given, the sockets alone select the chassis count and memory splits
-     * evenly.
+     * One SMP socket is one chassis; -numa still owns the memory split
+     * and must agree with the socket count.
      */
     if (numa_nodes > smc->max_nodes) {
         error_report("%s: at most %u NUMA nodes are supported",
@@ -1285,11 +1015,7 @@ static void sn0_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
 
-    /*
-     * Whole mebibytes per chassis, because the bank fit below is counted
-     * in them: a byte-even but mebibyte-odd total would otherwise reach
-     * the fit with a truncated size and fail with a misleading message.
-     */
+    /* Whole mebibytes per chassis: the bank fit is counted in them. */
     if (node_count > 1 && !numa_nodes &&
         machine->ram_size % ((uint64_t)node_count * MiB)) {
         error_report("%s: %u chassis split -m evenly into whole MiB; use "
@@ -1312,12 +1038,7 @@ static void sn0_init(MachineState *machine)
         }
     }
 
-    /*
-     * Fatal rather than a warning if this cannot be armed: a machine that
-     * silently fails to show the codes is indistinguishable from firmware
-     * that never wrote one, and that ambiguity is the whole defect being
-     * fixed here.
-     */
+    /* Fatal: silently missing codes look like firmware that wrote none. */
     if (s->debug_leds) {
         sn0_show_indicator_codes(&error_fatal);
     }
@@ -1597,15 +1318,9 @@ static const Property sn0_node_properties[] = {
 };
 
 /*
- * A sysbus device, following the family precedent for a machine's
- * chip-level unit (PowerNV's chip is one) and the tree's own device rule.
- * Sysbus parentage does not move the node's migration sections: the main
- * system bus implements no get_dev_path, so the vmstate below keeps its
- * per-name instance ids either way — proven by loading a stream saved by
- * the bus-less build. The node's resettable state — the flash command
- * machine and the promdata overlay — keeps its explicit reset handlers and
- * their long-standing order for now; sysbus parentage is what allows a
- * later move onto ResettablePhases without re-parenting.
+ * A sysbus device, per the tree's device rule; the main system bus has
+ * no get_dev_path, so the vmstate keeps its per-name instance ids. Reset
+ * stays on the explicit handlers and their long-standing order for now.
  */
 static void sn0_node_class_init(ObjectClass *oc, const void *data)
 {
@@ -1638,11 +1353,9 @@ static void sn0_instance_finalize(Object *obj)
     g_free(s->pci_ioc3);
     g_free(s->pci_scsi);
     /*
-     * The widget0 and widget_alias storage stays: those arrays hold
-     * MemoryRegions this machine owns as QOM children, and children are
-     * released after instance_finalize runs, so freeing their storage here
-     * would leave the release walking freed memory. Like every board's
-     * regions they live as long as the process.
+     * The widget arrays hold MemoryRegions owned as QOM children,
+     * released after instance_finalize; freeing them here would leave
+     * the release walking freed memory.
      */
 }
 
@@ -1716,11 +1429,7 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
 
-    /*
-     * The documented baseline reports revision 4. Keep the property settable
-     * so another captured configuration can be measured without changing the
-     * Bridge device's general default or introducing a machine profile.
-     */
+    /* Settable so another captured configuration can be measured. */
     object_class_property_add(oc, "widget0-revision", "uint32",
                               sn0_get_widget0_revision,
                               sn0_set_widget0_revision, NULL, NULL);
