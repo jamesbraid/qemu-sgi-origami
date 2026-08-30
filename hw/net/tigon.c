@@ -178,7 +178,8 @@ static void tigon_eeprom_step(TigonState *s, uint32_t val)
                 if (e->bitcnt == 8) {
                     switch (e->bytenum) {
                     case 0:
-                        e->read_mode = e->shift & 1;  /* 0xA1 read, 0xA0 write */
+                        /* 0xA1 selects a read, 0xA0 a write. */
+                        e->read_mode = e->shift & 1;
                         break;
                     case 1:
                         e->addr = (uint16_t)e->shift << 8;
@@ -597,8 +598,9 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
              * documented as always zero, so the low word decides validity.
              */
             if (addr == TI_GCR_GENINFO_LO) {
-                s->gib_base = ((uint64_t)s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)]
-                               << 32) | (uint32_t)val;
+                uint32_t hi = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
+
+                s->gib_base = ((uint64_t)hi << 32) | (uint32_t)val;
                 s->gib_valid = val != 0;
                 tigon_try_firmware_up(s);
             }
@@ -727,7 +729,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     /* Take the next posted standard receive buffer. */
     rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
     buf_addr = tigon_dma_ld_addr(s, rx_desc);
-    buf_idx = tigon_dma_ld32(s, rx_desc + 8) >> 16;   /* big-endian: index high */
+    /* Big-endian layout: the buffer index is the high half of the word. */
+    buf_idx = tigon_dma_ld32(s, rx_desc + 8) >> 16;
     s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
 
     pci_dma_write(pci, buf_addr, buf, size);
@@ -735,7 +738,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     /* Post a receive-return descriptor naming the buffer and the length. */
     ret_desc = s->return_ring_base + (uint64_t)s->return_prodidx * 32;
     tigon_dma_st_addr(s, ret_desc, buf_addr);
-    tigon_dma_st32(s, ret_desc + 8, ((uint32_t)buf_idx << 16) | (size & 0xffff));
+    tigon_dma_st32(s, ret_desc + 8,
+                   ((uint32_t)buf_idx << 16) | (size & 0xffff));
     tigon_dma_st32(s, ret_desc + 12,
                    ((uint32_t)TI_BDTYPE_RECV_BD << 16) | flags);
     tigon_dma_st32(s, ret_desc + 16, 0);   /* ip / tcp-udp checksum */

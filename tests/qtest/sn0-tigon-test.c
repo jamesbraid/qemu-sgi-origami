@@ -23,7 +23,7 @@
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
-/* A fixed station address so PAR0/PAR1 and the EEPROM read are deterministic. */
+/* A fixed station address, so PAR0/PAR1 and the EEPROM read are known. */
 #define TIGON_MAC       "52:54:00:12:34:56"
 static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
@@ -56,7 +56,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define REG_DATA            4
 #define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
 #define DEV_MEMORY_SPACE    (1u << 12)
-#define DEV_SWAP_DIRECT     (1u << 19)   /* swap bit for the direct-map window */
+#define DEV_SWAP_DIRECT     (1u << 19)   /* direct-map window swap bit */
 #define BRIDGE_DIRECT_MAP_REG (BRIDGE_BASE + 0x080 + REG_DATA)
 
 /*
@@ -482,7 +482,7 @@ static void test_firmware_up_requires_gib(const void *data)
     enable_dma_big_endian(qts);
     build_gib(qts);
 
-    /* Releasing the CPU without publishing the GIB must not post firmware-up. */
+    /* Releasing the CPU with no GIB published must not post firmware-up. */
     release_cpu(qts);
     g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==, 0);
     g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 0);

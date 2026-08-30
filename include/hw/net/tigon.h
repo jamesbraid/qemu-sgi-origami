@@ -36,10 +36,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(TigonState, TIGON)
 /* The command ring is NIC-resident at 0x700..0x7FC: 64 dwords. */
 #define TIGON_CMD_RING_CNT  64
 
-/* State of the bit-banged serial-EEPROM (24Cxx I2C slave) that holds the MAC. */
+/* The bit-banged serial-EEPROM (24Cxx I2C slave) that holds the MAC. */
 typedef struct TigonEeprom {
     bool last_clk;      /* EE_CLK level at the previous MISC_LOCAL_CTL write */
-    bool last_sda;      /* master data line (EE_DOUT while EE_TXEN) previously */
+    bool last_sda;      /* master data line (EE_DOUT while EE_TXEN) before */
     uint8_t state;      /* TIGON_EE_* phase */
     uint8_t bitcnt;     /* bit index within the byte in flight (0..8) */
     uint8_t shift;      /* byte shifting in (receive) or out (read) */
@@ -96,7 +96,7 @@ struct TigonState {
     bool promisc;
     uint64_t gib_base;
 
-    /* Ring residency parsed from the general information block at firmware-up. */
+    /* Ring residency parsed from the GIB at firmware-up. */
     uint64_t ev_ring_base;
     uint64_t ev_prodidx_ptr;
     uint64_t tx_ring_base;
