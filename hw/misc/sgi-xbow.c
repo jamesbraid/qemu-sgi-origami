@@ -4,12 +4,9 @@
  *
  * Copyright (c) 2026 Origami contributors
  *
- * An eight-port switch routing crosstalk packets by widget number, its own
- * registers answering as widget 0. Only the identification register is
- * implemented; guests read it first and decide the machine type from the
- * answer. The identity is a machine property, not a constant: an Origin 200
- * reports the I/O bridge's identity at widget 0, not a crossbar's.
- * Unimplemented registers raise a bus error rather than answering zero.
+ * Only the widget 0 identification register is implemented. The identity is
+ * a machine property: an Origin 200 reports the I/O bridge's identity here,
+ * not a crossbar's.
  */
 
 #include "qemu/osdep.h"
@@ -20,10 +17,7 @@
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 
-/*
- * Registers are 32 bits in the low half of an eight-byte slot: the data sits
- * at the slot's offset plus four, the address the guests' own headers name.
- */
+/* Registers are 32 bits at their eight-byte slot's offset plus four. */
 #define XBOW_IDENTIFICATION     0x0000
 #define XBOW_REG_DATA           4
 
@@ -41,10 +35,7 @@ static uint32_t sgi_xbow_identification(SGIXbowState *s)
            XBOW_ID_ONE;
 }
 
-/*
- * A slot's upper half holds no register, so it faults like any unimplemented
- * address -- which also catches a reader who forgot the plus-four.
- */
+/* The slot upper half holds no register; faulting it catches a missed +4. */
 static bool sgi_xbow_implemented(hwaddr addr)
 {
     return addr == XBOW_IDENTIFICATION + XBOW_REG_DATA;
@@ -85,10 +76,7 @@ static void sgi_xbow_write(void *opaque, hwaddr addr, uint64_t val,
                   "identification register at 0x%" HWADDR_PRIx "\n", val, addr);
 }
 
-/*
- * Every register access is a crosstalk double-word; any other width is an
- * error. Both bounds are declared so the core rejects instead of reshaping.
- */
+/* Crosstalk double-word only; both bounds set so the core rejects. */
 static const MemoryRegionOps sgi_xbow_ops = {
     .read = sgi_xbow_read,
     .write = sgi_xbow_write,
@@ -125,10 +113,7 @@ static const VMStateDescription vmstate_sgi_xbow = {
     }
 };
 
-/*
- * A real Crossbow reports part 0, manufacturer 0: zero is the identity,
- * not an unset default. Machines override these for a different widget 0.
- */
+/* A real Crossbow reports part 0, manufacturer 0: zero is the identity. */
 static const Property sgi_xbow_properties[] = {
     DEFINE_PROP_UINT64("span", SGIXbowState, span, 0),
     DEFINE_PROP_UINT32("revision", SGIXbowState, revision, 1),
