@@ -1,24 +1,13 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * A MIPS64 branch executed from an MMIO-backed code page.
+ * A MIPS64 branch executed from an MMIO-backed code page: such a page caps
+ * a translation block at one instruction, and the pending-branch state
+ * must survive the gap to the delay slot's block.
  *
- * An MMIO-first page caps a translation block at one instruction, so a
- * branch and its delay slot land in separate blocks and the pending-branch
- * state must survive the gap.  The promdata-window regression measured it
- * not surviving: a jr fell through past its delay slot.  Each case runs one
- * branch from such a page and asks whether the target was reached -- a
- * distinct word stored on each path, so the answer is a memory read, and
- * neither path needs a second branch to report.  The window is the
- * per-processor promdata filter, the one executable MMIO a qtest can reach
- * here; two RAM controls ride the same resume path without MMIO.
- *
- * Every configuration below takes the branch, so the drop needs a further
- * condition none of this reproduces.  The MMIO cases are therefore a
- * sentinel: a drop reports g_test_incomplete() rather than failing, since
- * the mechanism is unpinned, while any third outcome -- neither marker, or
- * a fault -- is a hard failure, because it is not the behaviour under
- * study.
+ * Every configuration here takes the branch, so a drop needs a condition
+ * none of this reproduces: the MMIO cases are a sentinel, reporting
+ * g_test_incomplete() on a drop, and hard-failing only a third outcome.
  */
 
 #include "qemu/osdep.h"
@@ -169,10 +158,8 @@
 #define LOOP_ITERATIONS     1000
 
 /*
- * The branch under test.  Three flavours, because the translator keeps
- * pending-branch state differently for each: an unconditional immediate
- * branch (MIPS_HFLAG_B), a conditional one (MIPS_HFLAG_BC), and a jump to
- * register (MIPS_HFLAG_BR, which is what the original failure was).
+ * Three flavours, because the translator keeps pending-branch state
+ * differently for each: B, BC, and BR (the original failure).
  */
 typedef enum {
     BRANCH_JR,
@@ -379,10 +366,8 @@ static void emit_load_addr(CodeBuf *buf, int rt, uint32_t addr)
 #define SNIPPET_MAX_WORDS   45
 
 /*
- * The looping form runs three branches per iteration and gives a timer
- * interrupt the branch-to-delay-slot gap to land in.  Each branch has its
- * own dropped signature: "fell through", a counter past its limit, or a
- * short count.
+ * Three branches per iteration, a timer interrupt aimed at the gap, and a
+ * distinct dropped signature per branch.
  */
 #define LOOP_EXIT_OFF       0x58
 #define LOOP_WAIT_IRQ_OFF   0x88
@@ -485,10 +470,8 @@ static unsigned int build_snippet(uint32_t *words, const TestCase *tc)
 }
 
 /*
- * The ROM image: an entry that hands control to the snippet, and one handler
- * on every boot-exception vector.  The handler acknowledges a timer
- * interrupt and returns; anything else it records before parking in a loop
- * -- in ROM, where branches are not what is under test.
+ * ROM: entry to the snippet, one handler per boot vector -- timer acked,
+ * anything else recorded and parked, in ROM where branches are not at test.
  */
 #define FAULT_START         0x580
 
