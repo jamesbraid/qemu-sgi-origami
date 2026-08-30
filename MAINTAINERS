@@ -1482,6 +1482,7 @@ F: include/hw/mips/
 SGI Origin 200
 M: James Braid <jamesb@loreland.org>
 S: Maintained
+F: docs/specs/sgi-*
 F: hw/mips/sn0*
 F: hw/i2c/pcf8584.c
 F: hw/misc/sgi-*.c
