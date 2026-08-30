@@ -5,29 +5,16 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * The system controller's checksummed ASCII command/response channel,
- * modelled from the controller-and-ELSC datasheet in the Origami project
- * tree (docs/datasheets/pcf8584-elsc.md there, not in this QEMU tree).
- * Every command is a short
- * mnemonic sent and answered inside one combined write-then-read I2C
- * transaction: a length byte, that many bytes of text, and a checksum byte
- * chosen so the whole packet -- length through checksum, inclusive -- sums
- * to zero modulo 256.
+ * A checksummed ASCII command/response channel, modelled from the
+ * controller-and-ELSC datasheet in the Origami project tree. Each command
+ * is one write-then-read I2C transaction: a length byte, the text, and a
+ * checksum making the whole packet sum to zero modulo 256.
  *
- * "ver", "rsw", "get", "acp" (both directions) and "pas" are answered;
- * everything else in the ASCII vocabulary answers "err cmd", which is
- * load-bearing rather than a placeholder -- the console-selection routine
- * issues a DIP-switch read before it ever probes this device as a
- * console, and it tolerates a negative reply but not a stalled bus.
- *
- * This device also drives the arbitration broadcast that lets it and every
- * node's Hub share one bus with no real I2C multi-master mechanism: a
- * free-running rotation, one processor's signal per cycle, that presents an
- * observable gap before each signal and holds it once presented -- see
- * elsc_arb_step(). And it is the far end of the AUX serial port: characters
- * typed there queue for "get" unless they are an escaped controller command,
- * and "acp" output commands write straight to it -- see elsc_receive() and
- * elsc_handle_acp_command().
+ * "ver", "rsw", "get", "acp" and "pas" are answered; everything else gets
+ * "err cmd" -- load-bearing, because the console-selection routine
+ * tolerates a negative reply but not a stalled bus. The device also drives
+ * the bus-arbitration broadcast rotation (elsc_arb_step()) and is the far
+ * end of the AUX serial port (elsc_receive()).
  */
 
 #include "qemu/osdep.h"
@@ -42,10 +29,8 @@
 #include "trace.h"
 
 /*
- * Firmware requires the response to begin "ok" but does not interpret the
- * version token.  Name the model rather than claiming a real ELSC firmware
- * revision.  Black-box bring-up shows that the first token, including its
- * terminator, must fit in eight bytes.
+ * Firmware needs "ok" but ignores the version token; the first token plus
+ * terminator must fit in eight bytes (black-box bring-up).
  */
 #define SGI_ELSC_VERSION "origami"
 QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION) > 8);
@@ -62,23 +47,9 @@ static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
 }
 
 /*
- * Frame text into the response buffer: a length byte, the text, and a
- * checksum chosen so length + text + checksum sums to zero modulo 256.
- * text_len must never exceed SGI_ELSC_MAX_TEXT -- the datasheet's own
- * bound, because the firmware's transfer-length tracking is unclamped and
- * a longer frame makes it read past its own buffer before any check runs.
- * That bound is a model invariant on what this device may emit, not
- * something a guest can trigger, so it is asserted rather than logged.
- *
- * The framed packet starts at txbuf[0]. An earlier version of this device
- * put a throwaway byte ahead of it, reasoning that the PCF8584's receive
- * pipeline discarded a byte from whichever slave answered. It does not:
- * the discard that datasheet describes is the driver's
- * first read returning the address-and-direction byte the chip's own data
- * register already held, before any response byte has arrived -- the
- * Philips product specification attaches the transfer to the read, not
- * the start (hw/i2c/pcf8584.c). A responder's own first byte was never at
- * risk, and this device does not need to protect it.
+ * text_len must not exceed SGI_ELSC_MAX_TEXT: the firmware's transfer
+ * tracking is unclamped and a longer frame overruns its buffer. A model
+ * invariant, not guest-triggerable, so asserted rather than logged.
  */
 static void elsc_frame_response(SGIElscState *s, const char *text,
                                 unsigned text_len)
@@ -99,19 +70,10 @@ static void elsc_frame_response_str(SGIElscState *s, const char *text)
 }
 
 /*
- * "get": the console-input poll. The response's first six bytes are a
- * fixed "acp " plus a processor-selector digit plus a space -- firmware
- * checks only those first four and copies the payload starting at byte
- * six, discarding bytes four and five unread, so the shape has to be
- * exactly that even though only four of the six are ever inspected. This
- * device reaches only processor 0, so the selector is always "0".
- *
- * A "get" this device answers is a "get" the driver was always going to
- * send: the arbitration wait withholds signal2 -- see elsc_arb_step() --
- * whenever the queue is empty, and the driver's own transaction helper
- * never puts "get" on the bus at all unless it saw signal2. Answering an
- * empty queue with an empty payload here is therefore for a case real
- * firmware does not create, not the queue-empty response firmware reads.
+ * "get": the console-input poll. The first six response bytes are "acp "
+ * plus a selector digit plus a space; firmware checks the first four and
+ * copies the payload from byte six, so the shape must be exact. Only
+ * processor 0 is reachable, so the selector is always "0".
  */
 static void elsc_handle_get(SGIElscState *s)
 {
@@ -143,14 +105,9 @@ static void elsc_handle_get(SGIElscState *s)
 }
 
 /*
- * "acp <selector> <characters>": the console-output flush, the same
- * mnemonic as the "get" response but now as a command. Answered
- * "ok <count>", count in hexadecimal and never zero for a non-empty
- * write -- a bare "ok" parses as zero accepted and livelocks the
- * firmware's output queue, which is why this always answers the count
- * form rather than the bare success elsewhere in this file. Accepting
- * every character submitted is the simple correct answer, and this
- * device has no reason to accept fewer.
+ * "acp <selector> <characters>": the console-output flush. Always answered
+ * in the "ok <count>" form: a bare "ok" parses as zero accepted and
+ * livelocks the firmware's output queue.
  */
 static void elsc_handle_acp_command(SGIElscState *s, const char *text,
                                     unsigned len)
@@ -169,14 +126,9 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
     }
     trace_sgi_elsc_acp(n, text[4]);
     /*
-     * The firmware redirects its console to the ELSC AUX after a failed
-     * power-on diagnostic -- its bad-path device list points the console at
-     * the system controller -- so a flush here is diagnostic output, not the
-     * normal console. The IRIX console (console=d) is IOC3 serial A,
-     * serial_hd(0), not this port. If the rig gave the ELSC no character
-     * device, the flush below discards that diagnostic stream with nothing to
-     * show why -- the failure this warning exists to name. Fire it once and
-     * keep serving the protocol so the guest is not wedged, only silent.
+     * Firmware redirects its console here after a failed power-on
+     * diagnostic, so a flush with no backend silently discards diagnostic
+     * output. Warn once; keep serving so the guest is only silent.
      */
     if (n > 0 && !qemu_chr_fe_backend_connected(&s->chr) &&
         !s->aux_no_backend_warned) {
@@ -197,9 +149,8 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
 }
 
 /*
- * "pas <4 characters>": enter supervisor mode if the password matches the
- * one configured (factory default "none", and this model implements no
- * way to change it), which gates the destructive commands below.
+ * "pas <4 characters>": supervisor mode gate. Factory default password is
+ * "none"; this model implements no way to change it.
  */
 static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
 {
@@ -247,9 +198,8 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
         /*
-         * A minimal protected command, to exercise supervisor gating --
-         * not a claim that "rst" is the real vocabulary's reset mnemonic,
-         * which is not established by anything read for the datasheet.
+         * Exercises supervisor gating; whether "rst" is the real reset
+         * mnemonic is not established by the datasheet's sources.
          */
         if (!s->supervisor) {
             elsc_frame_response_str(s, "err perm");
@@ -273,12 +223,8 @@ static void elsc_request_complete(SGIElscState *s)
     if (s->rxlen < 2 || s->rxlen != (uint32_t)s->rxbuf[0] + 2 ||
         elsc_checksum(s->rxbuf, s->rxlen) != 0) {
         /*
-         * A short, long, or bad-checksum packet. "csum" is the token real
-         * firmware defines for a rejected checksum, and nothing in the
-         * protocol names a separate framing error -- a malformed packet
-         * fails the identical whole-packet-sums-to-zero test a corrupted
-         * checksum does, so answering it the same way is the protocol's
-         * own logic, not an approximation of it.
+         * The protocol names no separate framing error: a malformed packet
+         * fails the same sums-to-zero test a corrupted checksum does.
          */
         elsc_frame_response_str(s, "err csum");
         return;
@@ -423,24 +369,11 @@ static uint8_t elsc_recv(I2CSlave *i2c)
 }
 
 /*
- * The signal pair a processor watches for is derived, not fixed: 0x70 * 2
- * plus twice the node's own slot index plus a live read of the Hub's
- * processor-number register, and signal2 computed as signal1 + 8. The
- * resulting processor code has to fit in three bits: signal2 is signal1
- * with bit 3 set, so a code of eight or more would make one processor's
- * "message waiting" numerically identical to a different, lower-numbered
- * processor's "nothing waiting" -- ds-hub's answer to the width this file
- * originally left open. Eight is also exactly what the protocol's
- * addressable space supplies, four node slots of two processors each, and
- * the firmware's own configuration for the family's larger machines
- * confirms it by name, excluding any node slot whose code would exceed
- * seven from ever using the controller at all. The project-tree datasheet
- * carries the sources.
- *
- * A real controller cannot know in advance which of the eight codes are
- * actually populated, so it offers all eight in turn regardless -- what a
- * real controller doling out time slices does anyway -- independent of how
- * many of those codes this specific model backs with a real input queue.
+ * The processor code must fit in three bits: signal2 is signal1 with bit 3
+ * set, so a code of eight or more collides with another processor's
+ * signal1. Eight codes is also the protocol's addressable space -- four
+ * node slots of two processors; the project-tree datasheet carries the
+ * sources. All eight are offered in turn whether populated or not.
  */
 #define ELSC_SIGNAL_BASE       0xe0   /* 0x70 * 2 */
 #define ELSC_SIGNAL_CODE_COUNT 8      /* three-bit processor code */
@@ -453,14 +386,9 @@ static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
 }
 
 /*
- * A one-shot broadcast write: address nobody, send one byte, release the
- * bus. Nothing about this is an ordinary transaction from any Hub's point
- * of view -- the byte simply appears in every PCF8584's data register,
- * which is the whole of what the arbitration protocol needs (see the
- * project-tree datasheet's construction note and hw/i2c/pcf8584.c's
- * broadcast receiver). If nothing is listening this is a silent no-op:
- * broadcasting to an empty bus is not an error, it just has no effect, and
- * the rotation still advances next time the timer fires.
+ * One-shot broadcast: the byte appears in every PCF8584's data register,
+ * which is all the arbitration protocol needs. An empty bus is a silent
+ * no-op and the rotation still advances.
  */
 static void elsc_broadcast(SGIElscState *s, uint8_t value)
 {
@@ -483,33 +411,18 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
 }
 
 /*
- * Model choices, not measured values: the gap only needs to be long enough
- * that a poll can observe it, and the hold only needs to clear the 250us
- * threshold the project-tree datasheet specifies with margin. Neither
- * number comes from real hardware.
+ * Model choices, not measured values: the gap need only be observable and
+ * the hold need only clear the datasheet's 250us threshold with margin.
  */
 #define ELSC_ARB_GAP_US    50
 #define ELSC_ARB_HOLD_US   300
 #define ELSC_ARB_RETRY_US  20
 
 /*
- * The free-running arbitration cycle: for the current processor slot,
- * present a gap (neither signal value), then present and hold that slot's
- * signal, then advance to the next slot. Presenting a gap before every
- * signal, rather than moving straight from one slot's signal to the next,
- * is what the firmware's first wait loop depends on -- it requires its own
- * signal to be *absent* before it will trust a subsequent appearance of it,
- * so a model that never presents an absence never satisfies that loop, no
- * matter how correctly it eventually presents the signal itself.
- *
- * Deferred rather than driven through when the bus is already in a real
- * transaction: broadcasting here would corrupt whatever the PCF8584 and
- * another slave are in the middle of doing, since QEMU's I2C core has no
- * notion of a second master waiting politely. Retried shortly rather than
- * queued through i2c_bus_master()/i2c_bus_release(), because nothing on
- * this bus's master side (hw/i2c/pcf8584.c) ever calls i2c_bus_release() --
- * it drives transactions directly rather than through that pending-master
- * queue -- so a deferral that waited for a release notification would wait
+ * Gap, then signal, then advance. The gap is required: the firmware's wait
+ * loop must see its signal absent before it trusts an appearance of it.
+ * A busy bus defers by short retry, not i2c_bus_master() queueing -- the
+ * PCF8584 never calls i2c_bus_release(), so a queued deferral would wait
  * forever.
  */
 static void elsc_arb_step(void *opaque)
@@ -530,13 +443,9 @@ static void elsc_arb_step(void *opaque)
     }
 
     /*
-     * Whether this code has console input queued decides signal1 versus
-     * signal2 -- signal2 is what tells the driver's transaction helper a
-     * "get" will find something, and withholding it for an empty queue is
-     * the correct behaviour, not a missing feature. Only processor code 0
-     * has a real queue: the ASCII protocol's "get"/"acp" selector is
-     * hardcoded to it, and a second processor's own input path is not
-     * modelled, so every other code always presents signal1.
+     * signal2 tells the driver a "get" will find something, so it is
+     * withheld while the queue is empty. Only code 0 has a real queue;
+     * every other code always presents signal1.
      */
     {
         bool signal2 = s->arb_code == 0 && s->rx_queue_len > 0;
@@ -551,13 +460,10 @@ static void elsc_arb_step(void *opaque)
 }
 
 /*
- * The AUX line's one multiplexing rule (Origin 200 Owner's Guide, page
- * 132): a byte sequence beginning 0x14 is the controller's own command and
- * is never queued for "get"; everything else is. What ends an escaped
- * command is not stated anywhere read for the datasheet -- a human types
- * commands and presumably terminates them with Enter -- so this discards
- * through the next line terminator as a model choice, not an observed
- * behaviour, and it is the only part of this rule that is.
+ * AUX multiplexing (Origin 200 Owner's Guide p.132): bytes after 0x14 are
+ * the controller's own command, never queued for "get". Discarding through
+ * the next line terminator is a model choice; nothing read states what
+ * ends an escaped command.
  */
 static void elsc_receive(void *opaque, const uint8_t *buf, int size)
 {
@@ -706,12 +612,8 @@ static const TypeInfo sgi_elsc_types[] = {
 DEFINE_TYPES(sgi_elsc_types)
 
 /*
- * "info elsc" from the monitor: dump each controller's console-input queue and
- * the arbitration signal it presents for the console processor. The device
- * already records these transitions through device_diagnostic_record(), but
- * that only reaches an attached sink; this exposes the same state live to a
- * debugger on the monitor socket, with no sink and no trace backend. Filled in
- * at type-init into the hmp-commands-info.hx "elsc" entry.
+ * "info elsc": the console-input queue and presented arbitration signal,
+ * live on the monitor with no sink or trace backend attached.
  */
 static void elsc_format_state(SGIElscState *s, GString *buf)
 {
