@@ -1212,6 +1212,117 @@ static void test_mbox_set_reset_delay_params(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The fabric-refused-transfer pair. With 64 megabytes of memory the first
+ * unbacked address is right after it, and the bridge's direct window passes
+ * the address through, so a transfer aimed there is refused the way a
+ * transfer through an invalid translation entry would be — without needing
+ * the translation table for the refusal.
+ */
+#define ISP_REG_BUS_STATUS          0x0a
+#define ISP_BUS_STATUS_INT_REQ      0x0002
+#define ISP_BUS_STATUS_RISC_INT_REQ 0x0004
+#define ISP_BUS_STATUS_INT_BITS     (ISP_BUS_STATUS_INT_REQ | \
+                                     ISP_BUS_STATUS_RISC_INT_REQ)
+#define RAM_TOP_64M                 0x04000000u
+#define STRADDLE_PHYS               (RAM_TOP_64M - ISP_REQ_OFF_CDB)
+#define STRADDLE_IOVA               (0xa500000000000000ULL | STRADDLE_PHYS)
+#define UNBACKED_RESP_IOVA          (0xa500000000000000ULL | RAM_TOP_64M)
+
+/*
+ * A request entry the fabric only half answers: the header words sit in the
+ * last bytes of memory and the CDB field starts exactly at the boundary, so
+ * every header read succeeds and the CDB read is refused. The adapter must
+ * not act on a command it never received — before this was checked the CDB
+ * buffer was uninitialized stack memory, and whatever it held went to the
+ * bus, a write included. The right outcome is a drop: the consume index
+ * stays on the entry and nothing is posted or raised, because the part
+ * documents no status for a transfer the fabric refused and the bridge
+ * reports the refusal on its own error path.
+ */
+static void test_a_refused_cdb_read_drops_the_request(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE " -m 64");
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t quiescent;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       STRADDLE_IOVA);
+    quiescent = isp_readw(qts, ISP_REG_BUS_STATUS) & ISP_BUS_STATUS_INT_BITS;
+
+    /*
+     * Only the header bytes are written: the rest of the entry has no
+     * memory behind it to hold anything. The device word names an empty
+     * target, which would complete incomplete-with-timeout if the entry
+     * were acted on at all.
+     */
+    build_command(entry, 0x51add1e5, 0x0500, 0x00, 0x00);
+    qtest_memwrite(qts, STRADDLE_PHYS, entry, ISP_REQ_OFF_CDB);
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_STATUS) &
+                    ISP_BUS_STATUS_INT_BITS, ==, quiescent);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The write half of the same defect: a completion bound for a response ring
+ * the fabric refuses. Losing the completion is unavoidable — the part
+ * documents no recovery — but the produce index must not step over a slot
+ * that was never written and the interrupt must not be raised, because
+ * together they tell the guest to read a stale ring entry as this command's
+ * answer.
+ */
+static void test_a_refused_status_write_raises_no_interrupt(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE " -m 64");
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t quiescent;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       UNBACKED_RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+    quiescent = isp_readw(qts, ISP_REG_BUS_STATUS) & ISP_BUS_STATUS_INT_BITS;
+
+    /* A missing target completes without needing a disk behind it. */
+    build_command(entry, 0x0e0e7a21, 0x0500, 0x00, 0x00);
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+
+    /*
+     * The request itself was readable and is consumed; only its
+     * completion is dropped, not faked.
+     */
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_STATUS) &
+                    ISP_BUS_STATUS_INT_BITS, ==, quiescent);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1246,6 +1357,10 @@ int main(int argc, char **argv)
                         test_mbox_get_target_parameters);
     qtest_add_data_func("sn0/qlogic-isp/mbox-set-reset-delay-params", NULL,
                         test_mbox_set_reset_delay_params);
+    qtest_add_data_func("sn0/qlogic-isp/refused-cdb-read-drops-the-request",
+                        NULL, test_a_refused_cdb_read_drops_the_request);
+    qtest_add_data_func("sn0/qlogic-isp/refused-status-write-no-interrupt",
+                        NULL, test_a_refused_status_write_raises_no_interrupt);
 
     return g_test_run();
 }

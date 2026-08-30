@@ -1337,6 +1337,13 @@ static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
  * permutation this machine needs happens in the Bridge, on the strength of the
  * requesting slot's own swap bits, so nothing here has to know which mapping
  * window the ring sits in or what the guest programmed.
+ *
+ * A read the fabric refuses answers zero, deliberately: a zeroed entry type
+ * takes the fail-visibly default in the ring walk, and a zeroed segment is a
+ * transfer of nothing. The two transfers where that defined zero is not
+ * enough — the CDB, where it would stand in for a command the guest never
+ * wrote, and the status write, where it would lie about a completion being
+ * stored — check their results at their own call sites.
  */
 static uint32_t qlogic_isp_desc_ld32(PCIDevice *pci, hwaddr addr)
 {
@@ -1452,7 +1459,18 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
         memcpy(entry + ISP_STATUS_OFF_SENSE_DATA, sense, clamped_sense_len);
     }
 
-    pci_dma_write(pci, addr, entry, sizeof(entry));
+    /*
+     * A completion the fabric refuses to store is dropped: advancing the
+     * produce index or raising the interrupt would point the guest at a
+     * slot still holding a previous entry's bytes. The refusal itself is
+     * the Bridge's own error path's to report.
+     */
+    if (pci_dma_write(pci, addr, entry, sizeof(entry)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: status entry write to 0x%" HWADDR_PRIx
+                      " refused by the fabric; completion dropped\n", addr);
+        return;
+    }
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
     trace_qlogic_isp_response_ring(s->resp_prod, s->resp_cons);
@@ -1768,8 +1786,15 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
  * meet issuing the same command to empty hardware — so it is answered with
  * an incomplete status entry rather than logged, the same outcome the
  * datasheet names for a request that cannot be carried out.
+ *
+ * Returns false when the fabric refused the entry's CDB, and the walk must
+ * stop with the consume index still on the entry: cdb[] then holds nothing
+ * meaningful, and acting on it would put invented bytes — possibly a
+ * write — on the bus. No status is posted for the drop, because the part
+ * documents none for a transfer the fabric refused and the Bridge reports
+ * the refusal on its own error path.
  */
-static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
+static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
                                       uint8_t entry_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -1787,7 +1812,14 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     device = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_DEVICE);
     cdb_len = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_CDBLEN);
     seg_count = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_SEGCOUNT);
-    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+    if (pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb))
+        != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: CDB read for the request entry at 0x%"
+                      HWADDR_PRIx " refused by the fabric; request dropped\n",
+                      addr);
+        return false;
+    }
 
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
@@ -1804,7 +1836,7 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     if (ISP_DEVICE_BUS(device) != 0) {
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                0, 0, 0, NULL, 0);
-        return;
+        return true;
     }
 
     sdev = scsi_device_find(&s->bus, 0, target, lun);
@@ -1833,7 +1865,7 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
                                0, NULL, 0);
-        return;
+        return true;
     }
 
     req = g_new0(QLogicISPRequest, 1);
@@ -1853,6 +1885,7 @@ static void qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
     }
+    return true;
 }
 
 /*
@@ -1916,7 +1949,7 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
  * would just repeat the same numbers under new names. Only the segment
  * area past offset 31 needs A64-specific handling.
  */
-static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
+static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
                                           uint8_t entry_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -1934,7 +1967,15 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     device = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_DEVICE);
     cdb_len = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_CDBLEN);
     seg_count = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_SEGCOUNT);
-    pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb));
+    /* The same refusal contract as the 32-bit path's CDB read. */
+    if (pci_dma_read(pci, addr + ISP_REQ_OFF_CDB, cdb, sizeof(cdb))
+        != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: CDB read for the request entry at 0x%"
+                      HWADDR_PRIx " refused by the fabric; request dropped\n",
+                      addr);
+        return false;
+    }
 
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
@@ -1945,7 +1986,7 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     if (ISP_DEVICE_BUS(device) != 0) {
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                0, 0, 0, NULL, 0);
-        return;
+        return true;
     }
 
     sdev = scsi_device_find(&s->bus, 0, target, lun);
@@ -1961,7 +2002,7 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
                                0, NULL, 0);
-        return;
+        return true;
     }
 
     req = g_new0(QLogicISPRequest, 1);
@@ -1977,6 +2018,7 @@ static void qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
     }
+    return true;
 }
 
 /*
@@ -2037,7 +2079,9 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
 
         switch (entry_type) {
         case ISP_ENTRY_TYPE_REQUEST:
-            qlogic_isp_handle_request(s, addr, entry_count);
+            if (!qlogic_isp_handle_request(s, addr, entry_count)) {
+                return;
+            }
             break;
 
         /*
@@ -2051,7 +2095,9 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
          * visits them.
          */
         case ISP_A64_ENTRY_TYPE_COMMAND:
-            qlogic_isp_handle_request_a64(s, addr, entry_count);
+            if (!qlogic_isp_handle_request_a64(s, addr, entry_count)) {
+                return;
+            }
             break;
 
         case ISP_ENTRY_TYPE_MARKER:
