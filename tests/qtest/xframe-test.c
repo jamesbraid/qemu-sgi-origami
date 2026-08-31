@@ -27,10 +27,12 @@
  *    guest memory): a golden delivered frame with its completion status and
  *    interrupt, the out-of-range ring-pointer hang guard, the
  *    filtered-frame-still-counts-as-consumed hang guard, a buffer smaller
- *    than the frame truncating rather than overrunning, and a ring
- *    exhausted then refilled in place (real driver order: the interrupt-ACK
- *    write first, then the refill) recovering through the device's own
- *    recovery-poll timer.
+ *    than the frame truncating rather than overrunning, a ring exhausted
+ *    then refilled in place (real driver order: the interrupt-ACK write
+ *    first, then the refill) recovering through the device's own
+ *    recovery-poll timer, and the multicast CAM: a joined group delivered
+ *    while a different group is filtered, the IFF_ALLMULTI wildcard
+ *    matching an arbitrary group, and unicast still working unregressed.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -86,6 +88,7 @@
 #define RMAC_CFG_KEY             0x2120
 #define RMAC_ADDR_CMD_MEM        0x2128
 #define RMAC_ADDR_DATA0_MEM      0x2130
+#define RMAC_ADDR_DATA1_MEM      0x2138
 
 /*
  * The fixed constant the byte-swapper diagnostic returns at a correctly
@@ -106,12 +109,41 @@
 #define RMAC_CFG_KEY_VALUE       (0x4c0dULL << 48)      /* unlock key */
 #define RMAC_ADDR_CMD_STROBE     (1ULL << 48)           /* self-clearing */
 #define RMAC_ADDR_CMD_OFF(n)     ((uint64_t)(n) << 32)  /* table offset */
+#define RMAC_ADDR_CMD_WE         (1ULL << 56)           /* write, not read */
 
 /*
  * A MAC_CFG payload for the lock test -- TMAC_EN|RMAC_EN; any non-zero value
  * proves whether the write took.
  */
 #define MAC_CFG_PAYLOAD          0xc000000000000000ULL
+
+/*
+ * Multicast CAM matching (docs/datasheets/xframe.md's "Known model gaps"):
+ * both public drivers program a joined group as a masked entry in the same
+ * 64-entry table the unicast/factory-MAC path already uses. The mask
+ * (RMAC_ADDR_DATA1_MEM) lines up bit-for-bit with RMAC_ADDR_DATA0_MEM's
+ * address field (bits 63:16, MSB-first, the same packing
+ * XFRAME_TEST_MAC_DATA0 above uses) -- and a CLEAR mask bit means "must
+ * match", not a set one. Confirmed from Linux s2io_set_multicast's own two
+ * independent uses (drivers/net/ethernet/neterion/s2io.c): an individual
+ * join writes DATA1_MEM_MASK(0) -- every bit compared, i.e. an exact
+ * match -- and its IFF_ALLMULTI entry writes address 0x010203040506 with
+ * mask 0xfeffffffffff, which under this polarity compares exactly one bit,
+ * byte 0's bit 0 (the IEEE group/individual bit), against 1: "any multicast
+ * destination, nothing else", with no slop. OpenBSD's own xge_setmulti
+ * writes the opposite mask (0xFFFFFFFFFFFFFFFF) for an individual join and a
+ * different, narrower IFF_ALLMULTI sentinel (0x8000...000/0xF000...000)
+ * that does not reduce to "every multicast frame" under either mask
+ * polarity with this packing -- checked both ways against the literal
+ * values in if_xge.c, not against Linux's paraphrase. This device follows
+ * Linux's convention; see xframe_rx_filter's own comment in xframe.c for
+ * the full derivation.
+ */
+#define MCAST_GROUP_A_DATA0      0x01005e0000010000ULL  /* 01:00:5e:00:00:01 */
+#define MCAST_GROUP_B_DATA0      0x01005e0000020000ULL  /* 01:00:5e:00:00:02 */
+#define MCAST_EXACT_MASK         0ULL                   /* every bit compared */
+#define MCAST_ALLMULTI_DATA0     0x0102030405060000ULL  /* Linux's sentinel */
+#define MCAST_ALLMULTI_MASK      0xfeffffffffff0000ULL  /* only the group bit */
 
 /*
  * Transmit path (BAR2 TxP window + the TxD ring in guest memory), from
@@ -431,6 +463,21 @@ static void xframe_rx_ring_arm(XframeTx *t, uint64_t ring_base)
 }
 
 /*
+ * Program one MAC-address-table entry (data0, data1) at offset via the
+ * indirect command/strobe interface, write-enabled -- the same interface
+ * the factory-MAC read-back test uses, just with RMAC_ADDR_CMD_WE set.
+ */
+static void xframe_program_mac_entry(XframeTx *t, unsigned offset,
+                                     uint64_t data0, uint64_t data1)
+{
+    sock_pif_writeq(t, RMAC_ADDR_DATA0_MEM, data0);
+    sock_pif_writeq(t, RMAC_ADDR_DATA1_MEM, data1);
+    sock_pif_writeq(t, RMAC_ADDR_CMD_MEM,
+                    RMAC_ADDR_CMD_WE | RMAC_ADDR_CMD_STROBE |
+                    RMAC_ADDR_CMD_OFF(offset));
+}
+
+/*
  * Poll RX_TRAFFIC_INT for the ring-0 completion bit rather than sleeping a
  * fixed time: the socket backend's delivery is not synchronous with the
  * write that injects it, the same reason sgi-ioc3-eth-test.c's
@@ -730,6 +777,133 @@ static void test_receive_recovers_after_exhaustion_via_recovery_poll(void)
     g_assert_true(xframe_wait_rxd_consumed(&t, slot2, 5000));
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(frame3), frame3, sizeof(frame3));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A joined multicast group is a masked CAM entry with an exact-match mask
+ * (every bit compared) -- see MCAST_EXACT_MASK's comment for the derivation.
+ * A frame to a different group finds no matching entry and is filtered (the
+ * descriptor stays available, not consumed); the joined group's own frame is
+ * delivered into that same descriptor right after, proving the filter -- not
+ * a coincidence of timing -- is what told them apart.
+ */
+static void test_receive_multicast_exact_match(void)
+{
+    XframeTx t;
+    uint8_t wrong_group[64];
+    uint8_t right_group[64];
+    uint8_t landed[64];
+    static const uint8_t group_a[6] = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x01 };
+    static const uint8_t group_b[6] = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x02 };
+    unsigned i;
+
+    for (i = 0; i < sizeof(wrong_group); i++) {
+        wrong_group[i] = (uint8_t)(0x60 + i);
+        right_group[i] = (uint8_t)(0x70 + i);
+    }
+    memcpy(wrong_group, group_b, sizeof(group_b));
+    memcpy(right_group, group_a, sizeof(group_a));
+
+    xframe_tx_start(&t);
+    xframe_program_mac_entry(&t, 4, MCAST_GROUP_A_DATA0, MCAST_EXACT_MASK);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    /*
+     * The unjoined group is filtered, not queued -- unlike the no-buffer
+     * case, a filtered frame leaves no ambiguity: the descriptor's OWN bit
+     * is a real, immediate, device-visible signal that nothing landed.
+     */
+    net_socket_send_frame(t.host_fd, wrong_group, sizeof(wrong_group));
+    g_usleep(200000);
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
+                    RXD_OWN);
+
+    net_socket_send_frame(t.host_fd, right_group, sizeof(right_group));
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(right_group), right_group,
+                    sizeof(right_group));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The IFF_ALLMULTI sentinel (Linux s2io_set_multicast's own address/mask
+ * pair -- MCAST_ALLMULTI_DATA0/MASK's comment has the derivation) matches an
+ * arbitrary multicast destination that was never individually programmed,
+ * proving the wildcard mask genuinely tests only the group bit rather than
+ * happening to match one specific address.
+ */
+static void test_receive_multicast_allmulti_wildcard(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t landed[64];
+    static const uint8_t arbitrary_group[6] = {
+        0x33, 0x33, 0x00, 0x00, 0x00, 0x01
+    };
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x90 + i);
+    }
+    memcpy(frame, arbitrary_group, sizeof(arbitrary_group));
+
+    xframe_tx_start(&t);
+    xframe_program_mac_entry(&t, 4, MCAST_ALLMULTI_DATA0, MCAST_ALLMULTI_MASK);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Unicast regression guard for the masked-match rework: the station address
+ * (entry 0, an exact-match mask by construction -- reset zeroes
+ * mac_addr_mask[]) is still delivered, and a random unicast address, matching
+ * no entry, is still filtered rather than accidentally swept in by the new
+ * masked-compare loop.
+ */
+static void test_receive_unicast_still_matches(void)
+{
+    XframeTx t;
+    uint8_t station_frame[64];
+    uint8_t random_frame[64];
+    uint8_t landed[64];
+    static const uint8_t random_unicast[6] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x66
+    };
+    unsigned i;
+
+    for (i = 0; i < sizeof(station_frame); i++) {
+        station_frame[i] = (uint8_t)(0xa0 + i);
+        random_frame[i] = (uint8_t)(0xb0 + i);
+    }
+    memcpy(station_frame, xframe_station_mac, sizeof(xframe_station_mac));
+    memcpy(random_frame, random_unicast, sizeof(random_unicast));
+
+    xframe_tx_start(&t);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, random_frame, sizeof(random_frame));
+    g_usleep(200000);
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
+                    RXD_OWN);
+
+    net_socket_send_frame(t.host_fd, station_frame, sizeof(station_frame));
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(station_frame), station_frame,
+                    sizeof(station_frame));
 
     xframe_tx_stop(&t);
 }
@@ -1094,6 +1268,12 @@ int main(int argc, char **argv)
                    test_receive_buffer_too_small_truncates);
     qtest_add_func("xframe/receive-recovers-after-exhaustion-via-recovery-poll",
                    test_receive_recovers_after_exhaustion_via_recovery_poll);
+    qtest_add_func("xframe/receive-multicast-exact-match",
+                   test_receive_multicast_exact_match);
+    qtest_add_func("xframe/receive-multicast-allmulti-wildcard",
+                   test_receive_multicast_allmulti_wildcard);
+    qtest_add_func("xframe/receive-unicast-still-matches",
+                   test_receive_unicast_still_matches);
 
     return g_test_run();
 }

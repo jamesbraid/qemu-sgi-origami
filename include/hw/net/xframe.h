@@ -115,6 +115,11 @@ struct XframeState {
     uint64_t rmac_addr_data0;   /* MAC-table data word 0 (the address) */
     uint64_t rmac_addr_data1;   /* MAC-table data word 1 (write-only mask) */
     uint64_t mac_addr[XFRAME_MAC_TABLE_ENTRIES]; /* the 64-entry MAC table */
+    /*
+     * Per-entry match mask, latched from rmac_addr_data1 on a write strobe
+     * -- see xframe_rx_filter for the compare-on-clear-bit semantics.
+     */
+    uint64_t mac_addr_mask[XFRAME_MAC_TABLE_ENTRIES];
 
     /*
      * Transmit doorbell: the pending TxDL list pointer per FIFO, written to the
