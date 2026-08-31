@@ -937,12 +937,6 @@ static void test_translation_entries_reset_clear(const void *data)
 #define WIDE_ROUNDTRIP_VALUE    0xdeadbeefcafef00dULL
 #define WIDE_GOLDEN_UNCHANGED   0x0123456789abcdefULL
 #define WIDE_GOLDEN_MIRRORED    0xefcdab8967452301ULL
-/*
- * The register read as a 32-bit device: the constant's two 32-bit halves
- * exchanged (each word cycle assembled big-endian). The swap bit, a
- * 64-bit-device rule, must not change it.
- */
-#define WIDE_GOLDEN_SPLIT_32BIT 0x89abcdef01234567ULL
 
 /*
  * The translated window, and the two pages of it this test uses. A page is 4 KB
@@ -1718,17 +1712,18 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
                     WIDE_GOLDEN_MIRRORED);
 
-    /* Clear the device-size bit: a 32-bit slot still splits the doubleword into
-     * two word cycles and does not consult the programmed-access swap bit, so
-     * the read is the halves-exchanged value whether that bit is set or not. */
+    /* Clear the device-size bit: a 32-bit slot splits the doubleword into two
+     * word cycles (big-endian high word at the lower offset) and does not consult
+     * the programmed-access swap bit, so the read is the natural doubleword, the
+     * same as the one-cycle read, whether that bit is set or not. */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
-                    WIDE_GOLDEN_SPLIT_32BIT);
+                    WIDE_GOLDEN_UNCHANGED);
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_SWAP_PROGRAMMED | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
-                    WIDE_GOLDEN_SPLIT_32BIT);
+                    WIDE_GOLDEN_UNCHANGED);
 
     /*
      * The write direction round-trips a doubleword to the scratch. The swap bit
@@ -1745,6 +1740,22 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
                  DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | DEV_SWAP_PROGRAMMED |
                  (WIDE_CARD_MMIO >> 20));
     qtest_writeq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH, WIDE_ROUNDTRIP_VALUE);
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
+                    WIDE_ROUNDTRIP_VALUE);
+
+    /*
+     * The 32-bit-slot split has its own write reassembly, uncovered by the
+     * round-trip above, which drives both directions through the one-cycle path.
+     * Exercise it across paths: write the scratch through the split, read it back
+     * through the one-cycle path. A transposed split write surfaces here as a
+     * halves-swapped one-cycle read; it returns the value only when both
+     * directions place the big-endian high word at the lower offset.
+     */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
+    qtest_writeq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH, WIDE_ROUNDTRIP_VALUE);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
                     WIDE_ROUNDTRIP_VALUE);
 
