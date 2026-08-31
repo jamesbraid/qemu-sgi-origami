@@ -659,6 +659,100 @@ static const MemoryRegionOps sgi_hub_bwin_empty_ops = {
     .impl.max_access_size = 8,
 };
 
+/*
+ * The floor beneath the claim aliases: a node-qualified access whose
+ * number neither Hub has programmed fails, and is never served by a Hub
+ * the number does not name. The error, not a timeout, is the datasheet's
+ * conservative shape for an unobserved fault; discovery only needs the
+ * probe not to complete normally.
+ */
+static MemTxResult sgi_hub_claim_error_read(void *opaque, hwaddr addr,
+                                            uint64_t *val, unsigned size,
+                                            MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: read of %u bytes at offset 0x%" HWADDR_PRIx
+                  " in a node-qualified stride no Hub claims\n", size, addr);
+    *val = 0;
+    return MEMTX_DECODE_ERROR;
+}
+
+static MemTxResult sgi_hub_claim_error_write(void *opaque, hwaddr addr,
+                                             uint64_t val, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: write of 0x%" PRIx64 " at offset 0x%" HWADDR_PRIx
+                  " in a node-qualified stride no Hub claims\n", val, addr);
+    return MEMTX_DECODE_ERROR;
+}
+
+static const MemoryRegionOps sgi_hub_claim_error_ops = {
+    .read_with_attrs = sgi_hub_claim_error_read,
+    .write_with_attrs = sgi_hub_claim_error_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+/*
+ * Aim this Hub's claim aliases by the programmed node numbers: a stride
+ * equal to this Hub's number is local, one equal to the directly wired
+ * peer's routes there, anything else drops to the error floor. Own
+ * number first: while both Hubs still hold the reset value zero, every
+ * node's node-field-zero access must stay on its own Hub.
+ */
+static void sgi_hub_claim_update(SGIHubState *s)
+{
+    unsigned int view, space, n;
+    unsigned int strides = s->network_peer ? SGI_HUB_CLAIM_STRIDES : 1;
+
+    memory_region_transaction_begin();
+    for (view = 0; view < s->cpus; view++) {
+        for (space = 0; space < SGI_HUB_CLAIM_SPACES; space++) {
+            for (n = 0; n < strides; n++) {
+                uint32_t stride = n ? s->claim_peer_node : s->claim_own_node;
+                MemoryRegion *alias = &s->claim_alias[view][space][n];
+
+                if (stride == sgi_hub_programmed_nasid(s)) {
+                    memory_region_set_alias_offset(alias,
+                        ((hwaddr)space << s->claim_space_shift) |
+                        ((hwaddr)s->claim_own_node << s->claim_node_shift));
+                    memory_region_set_enabled(alias, true);
+                } else if (s->network_peer && stride ==
+                           sgi_hub_programmed_nasid(s->network_peer)) {
+                    memory_region_set_alias_offset(alias,
+                        ((hwaddr)space << s->claim_space_shift) |
+                        ((hwaddr)s->claim_peer_node << s->claim_node_shift));
+                    memory_region_set_enabled(alias, true);
+                } else {
+                    memory_region_set_enabled(alias, false);
+                }
+            }
+        }
+    }
+    memory_region_transaction_commit();
+}
+
+/*
+ * One programmed number decides claims in both Hubs' views, so a store,
+ * reset or load re-derives the pair; each call touches only the regions
+ * that Hub owns, and the transaction makes the switch atomic.
+ */
+static void sgi_hub_claim_update_pair(SGIHubState *s)
+{
+    memory_region_transaction_begin();
+    sgi_hub_claim_update(s);
+    if (s->network_peer) {
+        sgi_hub_claim_update(s->network_peer);
+    }
+    memory_region_transaction_commit();
+}
+
 /* Level outputs, recomputed on every change: raise-on-set becomes a storm. */
 static void sgi_hub_update_irq(SGIHubState *s)
 {
@@ -1751,6 +1845,8 @@ static void sgi_hub_store_ni_status(SGIHubState *s, unsigned arg,
     /* Node and region size are firmware's; link state and identity are not. */
     s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
                    (val & NI_STATUS_WRITABLE);
+    /* The programmed number moved: the claim decode switches with it. */
+    sgi_hub_claim_update_pair(s);
 }
 
 static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
@@ -2513,6 +2609,16 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
     sgi_hub_update_irq(SGI_HUB(obj));
 }
 
+/*
+ * The claim overlays re-derive once every Hub's programmed number is
+ * back at its seeded value -- the exit phase, because a Hub's claims
+ * depend on the peer's number too, and every enter phase has run by now.
+ */
+static void sgi_hub_reset_exit(Object *obj, ResetType type)
+{
+    sgi_hub_claim_update_pair(SGI_HUB(obj));
+}
+
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
 {
     SGIHubState *s = SGI_HUB(dev);
@@ -2532,6 +2638,18 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "the Hub needs the node-local memory view its "
                          "block transfer engines copy through");
         return;
+    }
+    if (!s->claim_target || !s->claim_node_shift || !s->claim_space_shift) {
+        error_setg(errp, "the Hub needs the canonical map and its node and "
+                         "space geometry to claim node-qualified strides");
+        return;
+    }
+    for (n = 0; n < s->cpus; n++) {
+        if (!s->claim_view[n]) {
+            error_setg(errp, "the Hub needs a claim container for each of "
+                             "its %u processors' views", s->cpus);
+            return;
+        }
     }
 
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_hub_ops, s,
@@ -2656,6 +2774,53 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         g_free(name);
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bwin);
+
+    /*
+     * The claim overlays, disabled until the first reset aims them (the
+     * PAM idiom: pre-created alternatives, switched, never recreated).
+     * The error floor persists beneath each alias so an unclaimed stride
+     * fails rather than falling through to the static placement.
+     */
+    memory_region_transaction_begin();
+    for (n = 0; n < s->cpus; n++) {
+        unsigned int space, stride_index;
+        unsigned int strides = s->network_peer ? SGI_HUB_CLAIM_STRIDES : 1;
+
+        for (space = 0; space < SGI_HUB_CLAIM_SPACES; space++) {
+            for (stride_index = 0; stride_index < strides; stride_index++) {
+                uint32_t stride = stride_index ? s->claim_peer_node
+                                               : s->claim_own_node;
+                hwaddr base = ((hwaddr)space << s->claim_space_shift) |
+                              ((hwaddr)stride << s->claim_node_shift);
+                uint64_t size = 1ULL << s->claim_node_shift;
+                char *name;
+
+                name = g_strdup_printf(
+                    "sgi-hub.claim.cpu%u.space%u.node%u.error",
+                    n, space, stride);
+                memory_region_init_io(
+                    &s->claim_error[n][space][stride_index], OBJECT(dev),
+                    &sgi_hub_claim_error_ops, s, name, size);
+                memory_region_add_subregion_overlap(
+                    s->claim_view[n], base,
+                    &s->claim_error[n][space][stride_index], 0);
+                g_free(name);
+
+                name = g_strdup_printf("sgi-hub.claim.cpu%u.space%u.node%u",
+                                       n, space, stride);
+                memory_region_init_alias(
+                    &s->claim_alias[n][space][stride_index], OBJECT(dev),
+                    name, s->claim_target, base, size);
+                memory_region_set_enabled(
+                    &s->claim_alias[n][space][stride_index], false);
+                memory_region_add_subregion_overlap(
+                    s->claim_view[n], base,
+                    &s->claim_alias[n][space][stride_index], 1);
+                g_free(name);
+            }
+        }
+    }
+    memory_region_transaction_commit();
 }
 
 static int sgi_hub_post_load(void *opaque, int version_id);
@@ -2740,6 +2905,13 @@ static int sgi_hub_post_load(void *opaque, int version_id)
         sgi_hub_bwin_follow(s, n);
     }
     /*
+     * The claim overlays re-derive from the just-restored programmed
+     * number. A Hub's claims also depend on the peer's number, which may
+     * not have loaded yet -- the pair update in whichever Hub's section
+     * loads second leaves both aimed by restored state.
+     */
+    sgi_hub_claim_update_pair(s);
+    /*
      * Re-driving outputs from post_load is sound here only because each
      * drives an idempotent level input on the CPU, whose cause bits migrate
      * with it; an edge-detecting consumer would not converge.
@@ -2765,6 +2937,16 @@ static const Property sgi_hub_properties[] = {
                      MemoryRegion *),
     DEFINE_PROP_LINK("memory", SGIHubState, memory, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_LINK("claim-view0", SGIHubState, claim_view[0],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("claim-view1", SGIHubState, claim_view[1],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("claim-target", SGIHubState, claim_target,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_UINT32("claim-node-shift", SGIHubState, claim_node_shift, 0),
+    DEFINE_PROP_UINT32("claim-space-shift", SGIHubState, claim_space_shift, 0),
+    DEFINE_PROP_UINT32("claim-own-node", SGIHubState, claim_own_node, 0),
+    DEFINE_PROP_UINT32("claim-peer-node", SGIHubState, claim_peer_node, 0),
     DEFINE_PROP_BOOL("junk-uart", SGIHubState, junk_uart_present, false),
     DEFINE_PROP_LINK("elsc-chardev", SGIHubState, elsc_chr,
                      TYPE_CHARDEV, Chardev *),
@@ -2792,6 +2974,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sgi_hub_properties);
     rc->phases.enter = sgi_hub_reset_enter;
     rc->phases.hold = sgi_hub_reset_hold;
+    rc->phases.exit = sgi_hub_reset_exit;
 }
 
 static const TypeInfo sgi_hub_types[] = {

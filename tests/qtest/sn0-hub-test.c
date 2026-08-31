@@ -256,6 +256,23 @@ static void sn0_hub_attach_ioc3(QTestState *qts)
                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
 }
 
+/*
+ * A stock-PROM machine boots with every Hub programmed zero, so a
+ * node-one-qualified address names no Hub -- the qtest backdoor rides
+ * processor 0's view like any other access. Program node 1's real
+ * number the way the PROM's global master does, a vector write over
+ * the CrayLink, so the test can reach node 1 by address.
+ */
+static void assign_node1_number(QTestState *qts)
+{
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR, 0);
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA,
+                 NI_REGION_SIZE | (1ULL << 8));
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_PARMS, NI_STATUS | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE + NI_STATUS) &
+                    NI_NODE_MASK, ==, 1ULL << 8);
+}
+
 /* Both ready bits: firmware polls either; a one-sided test would hang it. */
 static void test_the_flash_ready_signal_reads_ready_at_both_bits(
     const void *data)
@@ -298,8 +315,11 @@ static void test_dual_node_master_slave_sense(const void *data)
         "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
         "-smp 4,sockets=2,cores=2,threads=1");
 
+    assign_node1_number(qts);
     assert_dual_node_master_slave_sense(qts);
     qtest_system_reset(qts);
+    /* Reset returns both Hubs to zero; renumber to reach node 1 again. */
+    assign_node1_number(qts);
     assert_dual_node_master_slave_sense(qts);
 
     qtest_quit(qts);
@@ -2086,15 +2106,20 @@ static void test_stock_prom_hubs_start_unnumbered(const void *data)
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
-    uint64_t peer_status = qtest_readq(qts, node1 + NI_STATUS);
+    uint64_t peer_status;
     uint64_t status;
 
     g_assert_cmphex(qtest_readq(qts, node0 + NI_STATUS) & NI_NODE_MASK,
                     ==, 0);
-    g_assert_cmphex(peer_status & NI_NODE_MASK, ==, 0);
 
+    /*
+     * The peer's own field: while it is unnumbered no qualified address
+     * reaches it, so the instrument is a vector read over the link.
+     */
     status = vector_operation(qts, node0, NI_STATUS, PIOTYPE_READ);
     g_assert_cmphex(status & NVS_TARGET_MASK, ==, 0);
+    peer_status = qtest_readq(qts, node0 + NI_VECTOR_READ_DATA);
+    g_assert_cmphex(peer_status & NI_NODE_MASK, ==, 0);
 
     qtest_writeq(qts, node0 + NI_VECTOR_DATA, peer_status | (1ULL << 8));
     status = vector_operation(qts, node0, NI_STATUS, PIOTYPE_WRITE);
@@ -2105,6 +2130,200 @@ static void test_stock_prom_hubs_start_unnumbered(const void *data)
 
     status = vector_operation(qts, node0, NI_STATUS, PIOTYPE_READ);
     g_assert_cmphex(status & NVS_TARGET_MASK, ==, 1ULL << NVS_TARGET_SHIFT);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The claim decode: a Hub answers the node-qualified stride whose number
+ * equals its programmed node number, not its board position. These tests
+ * read through a processor's own address space -- the claim overlays are
+ * per-view, so the always-correct global space cannot substitute for it.
+ * The processor must be named in the same request: each
+ * human-monitor-command gets its own monitor, so an "xp" after a separate
+ * "cpu" command reads processor zero forever. Unlike the qtest protocol,
+ * this path also surfaces a failed completion, as "Cannot access memory".
+ */
+static bool cpu_view_readq(QTestState *qts, unsigned int cpu, uint64_t phys,
+                           uint64_t *value)
+{
+    g_autofree char *command = g_strdup_printf("xp/1gx 0x%" PRIx64, phys);
+    g_autoptr(QDict) response = NULL;
+    const char *dumped;
+    const char *hex;
+
+    response = qtest_qmp(qts,
+                         "{ 'execute': 'human-monitor-command',"
+                         "  'arguments': { 'command-line': %s,"
+                         "                 'cpu-index': %u } }",
+                         command, cpu);
+    g_assert(qdict_haskey(response, "return"));
+    dumped = qdict_get_str(response, "return");
+    if (strstr(dumped, "Cannot access memory")) {
+        return false;
+    }
+    hex = strchr(dumped, ':');
+    g_assert_nonnull(hex);
+    g_assert_cmpint(sscanf(hex + 1, " 0x%" SCNx64, value), ==, 1);
+    return true;
+}
+
+static uint64_t cpu_view_word64(QTestState *qts, unsigned int cpu,
+                                uint64_t phys)
+{
+    uint64_t value = 0;
+
+    g_assert_true(cpu_view_readq(qts, cpu, phys, &value));
+    return value;
+}
+
+/* The two-node machine, Hubs seeded with their real numbers. */
+static QTestState *qtest_init_dual_node(void)
+{
+    return qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+}
+
+/* Node 1's processor slice A: processors 0-1 are node 0's. */
+#define NODE1_CPU 2
+
+/* Distinguishable plants for the link-diagnostics store, 19 bits wide. */
+#define DIAG_PLANT_NODE0 0x10001ULL
+#define DIAG_PLANT_NODE1 0x20002ULL
+
+/* Clear of the firmware structures, the promdata window and the PROM copy. */
+#define MEM_PROBE        0x00800000ULL
+#define MEM_PLANT_NODE0  0x1111222233334444ULL
+#define MEM_PLANT_NODE1  0x5555666677778888ULL
+
+/*
+ * A node-qualified Hub register access resolves by the programmed node
+ * number. Reprogramming node 1's Hub to zero -- the value every Hub resets
+ * to under a stock PROM -- must make a node-zero-qualified access from
+ * node 1's processor land on node 1's own Hub, exactly as each node's
+ * pre-assignment self-addressed init requires; restoring the real number
+ * must send the same access back to the peer.
+ */
+static void test_qualified_window_follows_the_programmed_number(
+    const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+    uint64_t hub0 = HUB_BY_NODE;
+    uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+
+    /* Distinguishable state in each Hub, planted by board position. */
+    qtest_writeq(qts, HUB_LOCAL + NI_DIAG_PARMS, DIAG_PLANT_NODE0);
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_DIAG_PARMS,
+                 DIAG_PLANT_NODE1);
+
+    /* Seeded at the real numbers, the claim is the static placement. */
+    g_assert_cmphex(cpu_view_word64(qts, 0, hub0 + NI_DIAG_PARMS), ==,
+                    DIAG_PLANT_NODE0);
+    g_assert_cmphex(cpu_view_word64(qts, 0, hub1 + NI_DIAG_PARMS), ==,
+                    DIAG_PLANT_NODE1);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub0 + NI_DIAG_PARMS),
+                    ==, DIAG_PLANT_NODE0);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub1 + NI_DIAG_PARMS),
+                    ==, DIAG_PLANT_NODE1);
+
+    /* Node 1's Hub renumbered to zero: the stock PROM's reset state. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS, 0);
+
+    /* Node 1's processor now reaches its own Hub through node zero. */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub0 + NI_DIAG_PARMS),
+                    ==, DIAG_PLANT_NODE1);
+    /* And its own Hub's status shows the renumbering took. */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub0 + NI_STATUS) &
+                    NI_NODE_MASK, ==, 0);
+    /* Node 0's Hub still claims zero for its own processors. */
+    g_assert_cmphex(cpu_view_word64(qts, 0, hub0 + NI_DIAG_PARMS), ==,
+                    DIAG_PLANT_NODE0);
+
+    /* The real number restored: the same address reaches the peer again. */
+    assign_node1_number(qts);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub0 + NI_DIAG_PARMS),
+                    ==, DIAG_PLANT_NODE0);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub1 + NI_DIAG_PARMS),
+                    ==, DIAG_PLANT_NODE1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A stride claimed by neither Hub fails rather than reaching either --
+ * discovery counts on a probe of an absent node not completing -- and the
+ * failure is not sticky.
+ */
+static void test_unclaimed_node_number_fails(const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+    uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t value;
+
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_DIAG_PARMS,
+                 DIAG_PLANT_NODE1);
+
+    /* Both Hubs at zero: node-one-qualified addresses name no Hub. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS, 0);
+    g_assert_false(cpu_view_readq(qts, NODE1_CPU, hub1 + NI_DIAG_PARMS,
+                                  &value));
+    g_assert_false(cpu_view_readq(qts, 0, hub1 + NI_DIAG_PARMS, &value));
+
+    /* Not sticky: reclaimed over the link, the address answers again. */
+    assign_node1_number(qts);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub1 + NI_DIAG_PARMS),
+                    ==, DIAG_PLANT_NODE1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The memory windows follow the same claim: a node-qualified memory read
+ * never returns the other node's word, in any programmed-number state.
+ * The complement of the address-map suite's two-node agreement case.
+ * Node-field-zero reads from node 1's own processor stay under the
+ * nameless local windows, which name the reader's node throughout.
+ */
+static void test_qualified_memory_follows_the_programmed_number(
+    const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+    uint64_t value;
+
+    /* A distinct word in each node's memory, planted by board position. */
+    qtest_writeq(qts, MEM_PROBE, MEM_PLANT_NODE0);
+    qtest_writeq(qts, NODE_STRIDE + MEM_PROBE, MEM_PLANT_NODE1);
+
+    /* Seeded at the real numbers, every view agrees with the placement. */
+    g_assert_cmphex(cpu_view_word64(qts, 0, MEM_PROBE), ==,
+                    MEM_PLANT_NODE0);
+    g_assert_cmphex(cpu_view_word64(qts, 0, NODE_STRIDE + MEM_PROBE), ==,
+                    MEM_PLANT_NODE1);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, NODE_STRIDE + MEM_PROBE),
+                    ==, MEM_PLANT_NODE1);
+
+    /*
+     * Node 1's Hub at zero: its early init addresses its own memory as
+     * node zero, and node one's stride names no Hub at all.
+     */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS, 0);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, MEM_PROBE), ==,
+                    MEM_PLANT_NODE1);
+    g_assert_false(cpu_view_readq(qts, NODE1_CPU, NODE_STRIDE + MEM_PROBE,
+                                  &value));
+    g_assert_false(cpu_view_readq(qts, 0, NODE_STRIDE + MEM_PROBE, &value));
+
+    /* The real number restored: the qualified stride reaches node 1. */
+    assign_node1_number(qts);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, NODE_STRIDE + MEM_PROBE),
+                    ==, MEM_PLANT_NODE1);
+    g_assert_cmphex(cpu_view_word64(qts, 0, NODE_STRIDE + MEM_PROBE), ==,
+                    MEM_PLANT_NODE1);
 
     qtest_quit(qts);
 }
@@ -2564,6 +2783,8 @@ static void test_bte_engines_see_their_own_node(const void *data)
     uint8_t got[BTE_LINE];
     unsigned int i;
 
+    assign_node1_number(qts);
+
     /*
      * Node-less addresses name the launching engine's own node, as they do
      * for its processors; distinct fills show which node moved.
@@ -2576,7 +2797,7 @@ static void test_bte_engines_see_their_own_node(const void *data)
     qtest_writeq(qts, hub1 + BTE_LENGTH(0), BTE_BUSY | 1);
     qtest_writeq(qts, hub1 + BTE_SOURCE(0), BTE_CACHED_UPPER | 0x01500000);
     qtest_writeq(qts, hub1 + BTE_DEST(0), BTE_CACHED_UPPER | 0x01600000);
-    qtest_writeq(qts, hub1 + BTE_INTERRUPT(0), BTE_INT_LEVEL(20));
+    qtest_writeq(qts, hub1 + BTE_INTERRUPT(0), BTE_INT_LEVEL(20) | 1);
     qtest_writeq(qts, hub1 + BTE_CONTROL(0), 0);
 
     g_assert_cmphex(qtest_readq(qts, hub1 + BTE_LENGTH(0)), ==, 0);
@@ -2589,7 +2810,7 @@ static void test_bte_engines_see_their_own_node(const void *data)
         g_assert_cmphex(got[i], ==, 0xcc);
     }
 
-    /* An interrupt aimed at node zero lands on the launching Hub. */
+    /* An interrupt aimed at the engine's programmed number stays home. */
     g_assert_cmphex(qtest_readq(qts, hub1 + PI_INT_PEND0), ==, 1ULL << 20);
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==, 0);
 
@@ -2766,6 +2987,14 @@ int main(int argc, char **argv)
                         test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,
                         test_stock_prom_hubs_start_unnumbered);
+    qtest_add_data_func(
+        "sn0/hub/qualified-window-follows-the-programmed-number", NULL,
+        test_qualified_window_follows_the_programmed_number);
+    qtest_add_data_func("sn0/hub/unclaimed-node-number-fails", NULL,
+                        test_unclaimed_node_number_fails);
+    qtest_add_data_func(
+        "sn0/hub/qualified-memory-follows-the-programmed-number", NULL,
+        test_qualified_memory_follows_the_programmed_number);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);

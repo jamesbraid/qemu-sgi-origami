@@ -626,17 +626,29 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             "sn0.node%u.cpu%u.promdata-filter", node_index, slice);
         g_autofree char *sysmem_name =
             g_strdup_printf("sn0.node%u.cpu%u.memory", node_index, slice);
+        g_autofree char *claim_name =
+            g_strdup_printf("sn0.node%u.cpu%u.claim", node_index, slice);
 
         memory_region_init(&node->cpu_sysmem[slice], OBJECT(node),
                            sysmem_name, UINT64_MAX);
         memory_region_init_alias(&node->sysmem_alias[slice], OBJECT(node),
                                  alias_name, system, 0, UINT64_MAX);
         memory_region_add_subregion_overlap(&node->cpu_sysmem[slice], 0,
-                                            &node->sysmem_alias[slice], -1);
+                                            &node->sysmem_alias[slice], -2);
 
         /*
-         * NASID-less addresses name the reading processor's node; the
-         * global map underneath still answers explicit NASIDs.
+         * The Hub's claim layer fills this container: the existing
+         * nodes' node-qualified strides route by programmed number,
+         * above the static placement, below the nameless local windows.
+         */
+        memory_region_init(&node->claim_view[slice], OBJECT(node),
+                           claim_name, UINT64_MAX);
+        memory_region_add_subregion_overlap(&node->cpu_sysmem[slice], 0,
+                                            &node->claim_view[slice], -1);
+
+        /*
+         * NASID-less addresses name the reading processor's node;
+         * explicit NASIDs fall to the Hub's claim layer underneath.
          */
         for (space = 0; space < SN0_UNCACHED_SPACES; space++) {
             g_autofree char *local_name = g_strdup_printf(
@@ -647,10 +659,11 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             hwaddr local_size = SN0_NODE_SIZE;
 
             /*
-             * Self-decode only the Hub's own eight-megabyte window: node
-             * zero's offset is zero, so a wider redirect also captured
-             * explicit references to node zero and no cross-node
-             * interrupt ever crossed. Other spaces keep the wide alias.
+             * Self-decode only the Hub's own eight-megabyte window: the
+             * nameless half names the reader's node, and every explicit
+             * node-qualified crosstalk reference -- node zero included --
+             * is the claim layer's to route by programmed number. Other
+             * spaces keep the wide alias.
              */
             if (SN0_SPACE(space) == SN0_SPACE_XTALK) {
                 local_offset = SN0_HUB_LOCAL_WINDOW;
@@ -953,6 +966,26 @@ static void sn0_node_create_hub(SN0NodeState *node)
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",
                              OBJECT(&node->xtalk), &error_fatal);
+
+    /*
+     * The claim layer's wiring: the per-view containers the Hub fills,
+     * the canonical map its aliases resolve into, and the geometry --
+     * the Hub gets offsets to alias by, never the node's own regions.
+     */
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        g_autofree char *view_prop = g_strdup_printf("claim-view%u", slice);
+
+        object_property_set_link(OBJECT(&node->hub), view_prop,
+                                 OBJECT(&node->claim_view[slice]),
+                                 &error_fatal);
+    }
+    object_property_set_link(OBJECT(&node->hub), "claim-target",
+                             OBJECT(system), &error_fatal);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "claim-node-shift",
+                         SN0_NODE_SHIFT);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "claim-space-shift",
+                         MIPS_UNCACHED_WINDOW_SHIFT);
+    qdev_prop_set_uint32(DEVICE(&node->hub), "claim-own-node", node->nasid);
     sysbus_realize(SYS_BUS_DEVICE(&node->hub), &error_fatal);
 
     for (slice = 0; slice < node->nr_cpus; slice++) {
@@ -1178,6 +1211,8 @@ static void sn0_init(MachineState *machine)
             object_property_set_link(OBJECT(&node->hub), "network-peer",
                                      OBJECT(&s->nodes[1 - node_index]->hub),
                                      &error_fatal);
+            qdev_prop_set_uint32(DEVICE(&node->hub), "claim-peer-node",
+                                 1 - node_index);
         }
         qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
                           node_index == 0 && s->junk_uart_present);
