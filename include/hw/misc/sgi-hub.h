@@ -168,6 +168,12 @@ struct SGIHubState {
      * no state at all -- it reads zero by stated modeling choice.
      */
     uint64_t ni_port_parms;
+
+    /*
+     * PIO protection: region-permission storage nothing consults. The
+     * write-only override beside it keeps no state at all.
+     */
+    uint64_t ni_io_protect;
     uint8_t ni_meta_route[SGI_HUB_META_ROUTES];
     uint8_t ni_local_route[SGI_HUB_LOCAL_ROUTES];
 
