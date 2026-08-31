@@ -2062,6 +2062,34 @@ static uint8_t nic_crc8(uint8_t crc, uint64_t rom)
     return crc;
 }
 
+/* The Hub's network interface, as far as renumbering a stock machine needs. */
+#define HUB_NI_STATUS           0x600000
+#define HUB_NI_VECTOR_PARMS     0x600200
+#define HUB_NI_VECTOR           0x600208
+#define HUB_NI_VECTOR_DATA      0x600210
+#define HUB_NI_REGION_SIZE      (1ULL << 17)
+#define HUB_NI_NODE_MASK        (0x1ffULL << 8)
+#define HUB_NI_PIOTYPE_WRITE    1
+#define HUB_NODE_WINDOW         (SPACE_XTALK + 0x01800000)
+
+/*
+ * A stock-PROM machine boots with every Hub programmed zero, so a
+ * node-one-qualified address names no Hub. Program node 1's real number
+ * the way the PROM's global master does, a vector write over the
+ * CrayLink, so the test can reach node 1's bridge by address.
+ */
+static void assign_node1_number(QTestState *qts)
+{
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + HUB_NI_VECTOR, 0);
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + HUB_NI_VECTOR_DATA,
+                 HUB_NI_REGION_SIZE | (1ULL << 8));
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + HUB_NI_VECTOR_PARMS,
+                 HUB_NI_STATUS | HUB_NI_PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, HUB_NODE_WINDOW + NODE_STRIDE +
+                                     HUB_NI_STATUS) & HUB_NI_NODE_MASK,
+                    ==, 1ULL << 8);
+}
+
 static void test_each_node_has_its_own_board_identity(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -2071,9 +2099,12 @@ static void test_each_node_has_its_own_board_identity(const void *data)
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
         "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
         "-smp 4,sockets=2,cores=2,threads=1");
-    uint64_t node0 = nic_search_for_identity_at(qts, BRIDGE_BASE);
-    uint64_t node1 = nic_search_for_identity_at(qts,
-                                                 BRIDGE_BASE + NODE_STRIDE);
+    uint64_t node0;
+    uint64_t node1;
+
+    assign_node1_number(qts);
+    node0 = nic_search_for_identity_at(qts, BRIDGE_BASE);
+    node1 = nic_search_for_identity_at(qts, BRIDGE_BASE + NODE_STRIDE);
 
     g_assert_cmphex(node0 & 0xff, ==, 0x0b);
     g_assert_cmphex(node1 & 0xff, ==, 0x0b);
