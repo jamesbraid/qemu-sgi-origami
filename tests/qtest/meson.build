@@ -214,6 +214,7 @@ qtests_mips64 = \
                                                    'sn0-ioc3-test',
                                                    'sn0-ioc3-serial-test',
                                                    'sn0-qlogic-isp-test',
+                                                   'sn0-xframe-test',
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
                                                    'sn0-i2c-test',
