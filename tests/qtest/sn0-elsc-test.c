@@ -16,6 +16,8 @@
 
 #define SPACE_XTALK     0x20000000000ULL
 #define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
+#define HUB_BY_NODE     (SPACE_XTALK + 0x01800000)
+#define NODE_STRIDE     0x100000000ULL
 
 #define I2C_DATA        0x220000
 #define I2C_CTRL        0x220008
@@ -74,44 +76,53 @@ static unsigned build_request(uint8_t *buf, const char *text)
  * register, which the first read after a direction change always returns
  * (hw/i2c/pcf8584.c).
  */
-static unsigned elsc_transact(QTestState *qts, const uint8_t *req,
-                              unsigned req_len, uint8_t *resp,
-                              unsigned resp_cap)
+static unsigned elsc_transact_at(QTestState *qts, uint64_t hub,
+                                 const uint8_t *req, unsigned req_len,
+                                 uint8_t *resp, unsigned resp_cap)
 {
     unsigned i, total;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO);
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+    qtest_writeq(qts, hub + I2C_DATA, (ELSC_ADDR << 1) | 0);
+    qtest_writeq(qts, hub + I2C_CTRL,
                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+    g_assert_cmphex(qtest_readq(qts, hub + I2C_CTRL) & I2C_PCF_LRB,
                     ==, 0);
 
     for (i = 0; i < req_len; i++) {
-        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, req[i]);
+        qtest_writeq(qts, hub + I2C_DATA, req[i]);
     }
 
-    /* Repeated start, switching direction: control first, then the
-     * address byte, per the discriminator hw/i2c/pcf8584.c uses. */
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
-    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    /*
+     * Repeated start, switching direction: control first, then the
+     * address byte, per the discriminator hw/i2c/pcf8584.c uses.
+     */
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, hub + I2C_DATA, (ELSC_ADDR << 1) | 1);
 
-    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);  /* discarded */
+    (void)qtest_readq(qts, hub + I2C_DATA);  /* discarded */
 
-    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    resp[0] = qtest_readq(qts, hub + I2C_DATA);
     total = (unsigned)resp[0] + 2;
     g_assert_cmpuint(total, <=, resp_cap);
     for (i = 1; i < total; i++) {
         if (i == total - 1) {
-            qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);  /* NAK last */
+            qtest_writeq(qts, hub + I2C_CTRL, CTL_ESO);  /* NAK last */
         }
-        resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+        resp[i] = qtest_readq(qts, hub + I2C_DATA);
     }
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
 
     return total;
+}
+
+static unsigned elsc_transact(QTestState *qts, const uint8_t *req,
+                              unsigned req_len, uint8_t *resp,
+                              unsigned resp_cap)
+{
+    return elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp, resp_cap);
 }
 
 static void test_ver_command_succeeds(const void *data)
@@ -476,6 +487,70 @@ static void test_acp_command_writes_to_console(const void *data)
     captured = qdict_get_str(rb, "return");
     g_assert_cmpstr(captured, ==, "hi");
     qobject_unref(rb);
+
+    qtest_quit(qts);
+}
+
+/*
+ * What one AUX ringbuf captured, read back over QMP. Not
+ * qtest_qmp_assert_success_ref(): it unwraps the result as a QDict and
+ * silently returns NULL for ringbuf-read's bare string.
+ */
+static void assert_aux_captured(QTestState *qts, const char *id,
+                                const char *expect)
+{
+    QDict *rb;
+
+    rb = qtest_qmp(
+        qts, "{'execute': 'ringbuf-read', "
+             "'arguments': {'device': %s, 'size': 64}}", id);
+    g_assert(qdict_haskey(rb, "return"));
+    g_assert_cmpstr(qdict_get_str(rb, "return"), ==, expect);
+    qobject_unref(rb);
+}
+
+/*
+ * Each tower carries its own physical AUX connector, so a two-chassis
+ * machine has two system controllers and a backend may be provisioned
+ * for each: node 0's on serial index 2, node 1's on index 4 (index 3
+ * stays the bring-up UART). The model once handed index 2 to every
+ * node's controller, so a two-node launch with the shipped consoles
+ * provisioned -- the four-processor rig's exact configuration -- died
+ * in chardev init ("chardev 'elsc' is already in use") before a byte
+ * of console output. Launching at all is this test's first assertion;
+ * the acp round-trips pin that each node's controller kept its own
+ * backend and no capture leaked to the other tower's ringbuf.
+ */
+static void test_two_towers_take_two_aux_backends(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-serial null -serial null "
+        "-chardev ringbuf,id=aux0,size=4096 -serial chardev:aux0 "
+        "-serial null "
+        "-chardev ringbuf,id=aux1,size=4096 -serial chardev:aux1");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, "acp 0 n0");
+    resp_len = elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp,
+                                sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+
+    req_len = build_request(req, "acp 0 n1");
+    resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req,
+                                req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+
+    assert_aux_captured(qts, "aux0", "n0");
+    assert_aux_captured(qts, "aux1", "n1");
 
     qtest_quit(qts);
 }
@@ -911,6 +986,8 @@ int main(int argc, char **argv)
                         test_arbitration_preserves_staged_start);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
+    qtest_add_data_func("sn0/elsc/two-towers-take-two-aux-backends", NULL,
+                        test_two_towers_take_two_aux_backends);
     qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
                         test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,

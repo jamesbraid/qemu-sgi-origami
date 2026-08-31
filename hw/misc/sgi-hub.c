@@ -3491,13 +3491,15 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * addressed slave on the chip's own bus is nearly the whole of the
      * wiring. It also needs to know how many processors' arbitration
      * signals to rotate through (this node's own populated count), and the
-     * chardev behind its AUX serial port -- serial_hd(SN0_ELSC_CHARDEV), so it
-     * does not contend with the two IOC3 rear ports on serial_hd(0) and (1) or
-     * the synthesized-firmware console shortcut, which shares the IOC3's own
-     * serial_hd(0). The firmware redirects its console to this port after a
-     * failed power-on diagnostic; the IRIX console (console=d) is IOC3 serial A
-     * on serial_hd(0), not this one. A rig that means to capture that
-     * diagnostic stream has to drive this index.
+     * chardev behind its AUX serial port. The machine resolves that
+     * backend and hands it in through the elsc-chardev property, because
+     * every tower has its own physical AUX connector and only the machine
+     * knows which -serial index this node's connector answers to; a Hub
+     * that resolved an index itself would claim the same backend once per
+     * node. NULL is a connector with no cable, exactly like real
+     * hardware. The firmware redirects its console to this port after a
+     * failed power-on diagnostic; the IRIX console (console=d) is IOC3
+     * serial A, not this one.
      */
     {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
@@ -3506,8 +3508,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
         qdev_prop_set_uint8(DEVICE(elsc), "dip-switches",
                             s->elsc_dip_switches);
-        qdev_prop_set_chr(DEVICE(elsc), "chardev",
-                          serial_hd(SN0_ELSC_CHARDEV));
+        qdev_prop_set_chr(DEVICE(elsc), "chardev", s->elsc_chr);
         s->elsc = SGI_ELSC(elsc);
         s->elsc->diagnostic = s->diagnostic;
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
@@ -3710,6 +3711,8 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_LINK("memory", SGIHubState, memory, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_BOOL("junk-uart", SGIHubState, junk_uart_present, false),
+    DEFINE_PROP_LINK("elsc-chardev", SGIHubState, elsc_chr,
+                     TYPE_CHARDEV, Chardev *),
     DEFINE_PROP_LINK("junk-uart-chardev", SGIHubState, junk_uart_chr,
                      TYPE_CHARDEV, Chardev *),
 };

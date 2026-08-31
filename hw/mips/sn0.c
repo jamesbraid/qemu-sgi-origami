@@ -1353,6 +1353,7 @@ static void sn0_init(MachineState *machine)
         uint16_t bank_mb[SN0_MEM_BANKS];
         unsigned int populated_banks;
         QList *banks_mb;
+        Chardev *aux_chr;
         unsigned int slice, bank;
 
         if (!smc->node_memory_layout(ram_size, bank_mb, &populated_banks)) {
@@ -1386,10 +1387,14 @@ static void sn0_init(MachineState *machine)
          * The Hub facts the machine rather than the node owns: its
          * programmed node number (real firmware programs it later, so a
          * real-PROM boot starts at zero), which chassis is the slave, the
-         * chassis DIP switches, the CrayLink peer, and the bring-up UART.
-         * The UART is a node-0 diagnostic device, not part of either
-         * shipped chassis; keeping it on the console node also avoids
-         * assigning one character backend to two frontends.
+         * chassis DIP switches, the CrayLink peer, the system controller's
+         * AUX backend, and the bring-up UART. Every tower has its own
+         * physical AUX connector, so each node's controller gets its own
+         * -serial index -- node 0 the shipped index 2, node 1 index 4 --
+         * resolved here because assigning one character backend to two
+         * frontends aborts the machine. The UART is a node-0 diagnostic
+         * device, not part of either shipped chassis; keeping it on the
+         * console node avoids the same collision.
          */
         qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
                              s->synthesized_firmware ? node_index : 0);
@@ -1397,6 +1402,12 @@ static void sn0_init(MachineState *machine)
                           node_index != 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
+        aux_chr = serial_hd(node_index == 0 ? SN0_ELSC_CHARDEV
+                                            : SN0_ELSC_NODE1_CHARDEV);
+        if (aux_chr) {
+            object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
+                                     OBJECT(aux_chr), &error_fatal);
+        }
         if (node_count == 2) {
             qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
             object_property_set_link(OBJECT(&node->hub), "network-peer",
