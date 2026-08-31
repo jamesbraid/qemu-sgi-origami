@@ -1147,7 +1147,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                              &error_abort);
     s->dma_as = pci_get_address_space(dev);
     qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->eth), errp)) {
+    if (!qdev_realize(DEVICE(&s->eth), BUS(&s->ioc3_bus), errp)) {
         return;
     }
     memory_region_add_subregion(&s->bar, SGI_IOC3_ENET_BASE,
@@ -1184,8 +1184,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.ssram", SGI_IOC3_SSRAM_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SSRAM_BASE, &s->ssram);
 
-    /* Sysbus children: a bus-less plain device is never reset. */
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->rtc), errp)) {
+    /* On the chip's own bus, so a reset of the IOC3 reaches it. */
+    if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
         return;
     }
     memory_region_add_subregion(&s->bar, SGI_IOC3_BYTEBUS_DEV0,
@@ -1257,6 +1257,9 @@ static void sgi_ioc3_init(Object *obj)
     qdev_init_gpio_in(DEVICE(obj), sgi_ioc3_serial_irq,
                       SGI_IOC3_SERIAL_PORTS);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_eth_irq, "eth-irq", 1);
+
+    qbus_init(&s->ioc3_bus, sizeof(s->ioc3_bus), TYPE_SGI_IOC3_BUS,
+              DEVICE(obj), "ioc3-bus");
 
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         object_initialize_child(obj, "serial[*]", &s->serial[i], TYPE_SERIAL);
@@ -1352,6 +1355,11 @@ static const TypeInfo sgi_ioc3_types[] = {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
             { },
         },
+    },
+    {
+        .name = TYPE_SGI_IOC3_BUS,
+        .parent = TYPE_SYSTEM_BUS,
+        .instance_size = sizeof(SGIIOC3BusState),
     },
 };
 

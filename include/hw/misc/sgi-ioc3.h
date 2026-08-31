@@ -11,10 +11,25 @@
 #include "hw/char/serial.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/net/sgi-ioc3-eth.h"
+#include "hw/core/qdev.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3 "sgi-ioc3"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
+
+/*
+ * The chip's own bus: its sub-devices (ethernet, timekeeper, PS/2) realize onto
+ * it rather than the system bus, so a reset of the IOC3 reaches them and their
+ * migration path names the chip that owns them. Same shape as the macio
+ * controller.
+ */
+#define TYPE_SGI_IOC3_BUS "sgi-ioc3-bus"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3BusState, SGI_IOC3_BUS)
+
+struct SGIIOC3BusState {
+    /*< private >*/
+    BusState parent_obj;
+};
 
 #define SGI_IOC3_VENDOR_ID      0x10A9
 #define SGI_IOC3_DEVICE_ID      0x0003
@@ -263,6 +278,9 @@ typedef struct SGIIOC3SerialAlias {
 
 struct SGIIOC3State {
     PCIDevice parent_obj;
+
+    /* The chip's own bus; the sub-devices below realize onto it. */
+    SGIIOC3BusState ioc3_bus;
 
     MemoryRegion bar;
 
