@@ -765,7 +765,14 @@ static vaddr mips_pointer_wrap(CPUState *cs, int mmu_idx,
 #endif
 
 static const TCGCPUOps mips_tcg_ops = {
-    .mttcg_supported = TARGET_LONG_BITS == 32,
+    /*
+     * Advertised for the big-endian mips64 binary after the Origin 200
+     * qualification campaign (LL/SC lowering, SYNC barriers, CP0 and
+     * MT-ASE/CPS serialization, and the rendezvous, TLB and Linux SMP
+     * suites).  mips64el stays round-robin: its machines carried none
+     * of that validation.
+     */
+    .mttcg_supported = TARGET_LONG_BITS == 32 || TARGET_BIG_ENDIAN,
     .guest_default_memory_order = 0,
 
     .initialize = mips_tcg_init,
