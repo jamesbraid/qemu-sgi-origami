@@ -61,14 +61,16 @@
 #define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
 
-/* The Hub's outgoing lines, in registration order. */
-#define HUB_IRQ_LINES       "sysbus-irq"
-#define HUB_IRQ_BANK0       0
-#define HUB_IRQ_BANK1       1
-#define HUB_IRQ_RT_A        2
-#define HUB_IRQ_RT_B        3
-#define HUB_IRQ_BANK0_B     4
-#define HUB_IRQ_BANK1_B     5
+/*
+ * The Hub's outgoing lines: one named GPIO list per kind, each indexed by
+ * processor slice. qtest intercepts one list per session, so a test that
+ * watches two kinds of line runs one session per kind.
+ */
+#define HUB_IRQ_BANK0_LINES "bank0"
+#define HUB_IRQ_BANK1_LINES "bank1"
+#define HUB_IRQ_RT_LINES    "rt"
+#define HUB_IRQ_SLICE_A     0
+#define HUB_IRQ_SLICE_B     1
 
 /* A millisecond of the counter, which is the unit these tests arm. */
 #define PI_RT_MS            (PI_RT_HZ / 1000)
@@ -429,7 +431,8 @@ static void test_the_comparator_raises_and_releases_the_line(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_RT_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
@@ -437,43 +440,44 @@ static void test_the_comparator_raises_and_releases_the_line(const void *data)
 
     /* A millisecond short of the deadline, nothing has happened. */
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_RT_A));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_quit(qts);
 }
 
-/* The second processor's comparator drives its own line, sysbus irq 3. */
+/* The second processor's comparator drives its own slice's line. */
 static void test_the_second_processors_comparator_raises_its_own_line(
     const void *data)
 {
     /* Two processors, so slice B is populated and its comparator arms. */
     QTestState *qts = qtest_init("-M origin200 -smp 2");
 
-    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_RT_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_B, 1);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_B, PI_RT_MS);
 
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_B), ==, 0);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_B));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_B), ==, 1);
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_RT_B));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     /* The first processor's line must not follow the second's. */
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_B, 0);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_B));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     qtest_quit(qts);
 }
@@ -486,17 +490,18 @@ static void test_the_comparator_pends_with_its_interrupt_off(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_RT_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS);
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
 
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_RT_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_RT_A));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_quit(qts);
 }
@@ -1322,7 +1327,8 @@ static void test_interrupt_number_selects_the_bank(const void *data)
     QTestState *qts = qtest_init("-M origin200");
 
     /* Number 70 is bit 6 of the second bank, not of the first. */
-    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_BANK1_LINES);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK1_A, ~0ULL);
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 70);
@@ -1330,9 +1336,24 @@ static void test_interrupt_number_selects_the_bank(const void *data)
                     1ULL << (70 - INT_BANK_BITS));
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
 
-    /* And the second bank's line rises, not the first's. */
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK1));
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
+    /* The second bank's line rises. */
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+
+    qtest_quit(qts);
+
+    /*
+     * And not the first's: the same stimulus with the first bank's mask
+     * wide open must leave that bank's line down.
+     */
+    qts = qtest_init("-M origin200");
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_BANK0_LINES);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK1_A, ~0ULL);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 70);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_quit(qts);
 }
@@ -1345,20 +1366,21 @@ static void test_a_masked_pending_bit_raises_nothing(const void *data)
      * Masked pending is invisible; unmasking must raise the line with nothing
      * written to pending, which separates recomputing from raise-on-set.
      */
-    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_BANK0_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 1ULL << 12);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1ULL << 12);
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK0));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     /* Clearing the last visible bit drops the line: level-triggered. */
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
 
     qtest_quit(qts);
 }
@@ -1367,26 +1389,40 @@ static void test_pending_banks_are_masked_per_processor(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200 -smp 2");
 
-    qtest_irq_intercept_out_named(qts, "/machine/node0/hub", HUB_IRQ_LINES);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_BANK0_LINES);
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 1ULL << 12);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
 
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0));
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK1_B));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     /* The PROM's order for B: pend while masked, then unmask. */
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
-    g_assert_false(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 1ULL << 12);
-    g_assert_true(qtest_get_irq(qts, HUB_IRQ_BANK0_B));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+
+    qtest_quit(qts);
+
+    /*
+     * B's other bank must not follow bank 0's pending bit, even with its
+     * mask wide open.
+     */
+    qts = qtest_init("-M origin200 -smp 2");
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_BANK1_LINES);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK1_B, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     qtest_quit(qts);
 }

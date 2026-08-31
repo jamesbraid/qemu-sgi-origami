@@ -93,10 +93,16 @@ struct SGIHubState {
     MemoryRegion *memory;
     AddressSpace bte_as;
 
-    /* One level-triggered line per processor per pending bank. */
-    qemu_irq bank_irq[SGI_HUB_PROCESSORS][SGI_HUB_PENDING_BANKS];
+    /*
+     * One level-triggered line per processor per pending bank, published
+     * as the named GPIO outputs "bank0" and "bank1", indexed by processor.
+     */
+    qemu_irq bank_irq[SGI_HUB_PENDING_BANKS][SGI_HUB_PROCESSORS];
 
-    /* Per-processor comparator line, hardware interrupt 2, level-triggered. */
+    /*
+     * Per-processor comparator line, hardware interrupt 2, level-triggered;
+     * the named GPIO output "rt", indexed by processor.
+     */
     qemu_irq rt_irq[SGI_HUB_PROCESSORS];
 
     /* Node number preprogrammed by synthesized firmware, or zero at reset. */
