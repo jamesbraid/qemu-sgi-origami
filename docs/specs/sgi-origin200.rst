@@ -100,9 +100,11 @@ Each node's boot flash is a standard AMD-command NOR device -- an
 Am29F080, 1 MB in sixteen 64 KB sectors, byte-wide -- modelled by
 QEMU's ``pflash_cfi02`` with no backing drive; the firmware builder
 seeds the synthesized image after realize. Its region is never
-mapped directly. Every guest-visible view goes through the Hub's
-flash controller decode between the 64-bit junk bus and the
-byte-wide chip: reads pack the chip 1:1, image byte *N* at bus
+mapped directly; every guest-visible view is a view of that one chip
+-- through the Hub's flash controller decode between the 64-bit junk
+bus and the byte-wide chip for the windows, or as a direct romd
+alias where code must execute. Through the decode, reads pack the
+chip 1:1, image byte *N* at bus
 offset *N*, and the Hub does not address-error decode the upper
 boot-space bits, so the 1 MB image repeats across the 256 MB LBOOT
 and RBOOT windows -- guest code genuinely lands on offsets past the
