@@ -355,6 +355,7 @@ typedef struct SN0PromDataState {
     MemoryRegion filter;
     bool present;           /* the filter was installed (real PROM boot) */
     bool leaving_private;   /* the overlay has been (or is being) disabled */
+    bool phase_private;     /* the cache-as-RAM phase is latched for this CPU */
 } SN0PromDataState;
 
 typedef struct SN0NodeState {

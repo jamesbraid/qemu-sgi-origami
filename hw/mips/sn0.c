@@ -51,11 +51,61 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
 #define SN0_FLASH_CMD_ADDR1   0x5555
 #define SN0_FLASH_CMD_ADDR2   0x2aaa
 
+/*
+ * The phase's two execution homes, from the full 64-bit PC. The PC is
+ * translated through the MMU rather than pattern-matched, because the
+ * phase does not stay on the unmapped aliases: besides the compatibility
+ * segments and XKPHYS, the PROM's guarded PI error probe runs from a
+ * TLB-mapped alias of the flash, and under ERL the low region is an
+ * unmapped alias of physical memory. A node-qualified physical address
+ * reduces to its node-local offset. Comparing physically also admits
+ * the cached alias of the PROM's RAM copy; harmless, because the phase
+ * bit already over-covers the residency and post-exit PROM code touches
+ * no window address on the normal path.
+ */
+static bool sn0_promdata_pc_in_prom(SN0PromDataState *s)
+{
+    TranslateForDebugResult r;
+    uint64_t phys;
+
+    if (!cpu_translate_for_debug(CPU(s->cpu), s->cpu->env.active_tc.PC, &r)) {
+        return false;
+    }
+    /*
+     * An uncached alias names the same node-local text: drop the
+     * uncached-attribute window above the address, then the node.
+     */
+    phys = r.physaddr & ((1ULL << MIPS_UNCACHED_WINDOW_SHIFT) - 1);
+    if (phys - s->node_base < SN0_NODE_SIZE) {
+        phys -= s->node_base;
+    }
+
+    return (phys >= SN0_FLASH_LOCAL &&
+            phys < SN0_FLASH_LOCAL + SN0_FLASH_SIZE) ||
+           (phys >= SN0_PROM_COPY_PADDR &&
+            phys < SN0_PROM_COPY_PADDR + SN0_FLASH_SIZE);
+}
+
+/*
+ * The window holds this CPU's cache-resident PROM stack for the whole
+ * cache-as-RAM phase, entered when boot-status bit 1 is set with the PC
+ * in one of the phase's execution homes -- the boot flash, or the RAM
+ * copy of the PROM text it jumps to mid-phase. Both conditions are
+ * needed to recognise the phase: the bit alone over-covers it, staying
+ * set well after the stack has left the window, and a single-home PC
+ * test flips the classification at the mid-phase jump. Once recognised,
+ * the phase holds for this CPU until reset or until the OS executes
+ * from the window: on real hardware the window is resident cache lines,
+ * and neither clearing the bookkeeping bit nor moving the PC is a cache
+ * operation, so no later state change may reroute an access. Uncached
+ * accesses always forward -- the phase's exit copies the persistent
+ * structures out to real RAM through exactly that path. Contract: the
+ * cache-as-RAM phase and exit sections of
+ * docs/datasheets/firmware-structures.md (in the origami project tree,
+ * not this repository).
+ */
 static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
 {
-    CPUMIPSState *env;
-    uint32_t pc;
-
     if (!current_cpu || current_cpu != CPU(s->cpu)) {
         return false;
     }
@@ -64,23 +114,18 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
         return false;
     }
 
-    env = &s->cpu->env;
-    pc = env->active_tc.PC;
-    /* The PROM switches between its physical and 32-bit KSEG aliases. */
-    if (pc >= 0x80000000 && pc < 0xc0000000) {
-        pc &= 0x1fffffff;
+    if (s->leaving_private) {
+        return false;
     }
 
-    /*
-     * The PROM's cache-as-RAM phase uses this 32 KiB range as per-CPU
-     * cache-private stack; restrict it to code running from the PROM or
-     * its RAM copy.
-     */
-    return (env->active_fpu.fpr[0].d & SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
-           ((pc >= SN0_FLASH_LOCAL &&
-             pc < SN0_FLASH_LOCAL + SN0_FLASH_SIZE) ||
-            (pc >= SN0_PROM_COPY_PADDR &&
-             pc < SN0_PROM_COPY_PADDR + SN0_FLASH_SIZE));
+    if (!s->phase_private &&
+        (s->cpu->env.active_fpu.fpr[0].d &
+         SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
+        sn0_promdata_pc_in_prom(s)) {
+        s->phase_private = true;
+    }
+
+    return s->phase_private;
 }
 
 /*
@@ -180,6 +225,7 @@ static void sn0_promdata_reset(void *opaque)
 
     /* A reboot re-enters the cache-only phase; restore the overlay. */
     s->leaving_private = false;
+    s->phase_private = false;
     memory_region_set_enabled(&s->filter, true);
 }
 
@@ -226,6 +272,7 @@ static const VMStateDescription vmstate_sn0_promdata_slice = {
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(leaving_private, SN0PromDataState),
+        VMSTATE_BOOL(phase_private, SN0PromDataState),
         VMSTATE_END_OF_LIST()
     }
 };
