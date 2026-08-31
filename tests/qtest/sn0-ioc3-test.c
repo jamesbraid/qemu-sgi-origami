@@ -75,6 +75,18 @@ static void sn0_ioc3_attach(QTestState *qts)
 #define CHIP_CTRL_ARB_IDLE  0x00400000u
 #define CHIP_CTRL_STROBE    0x00078000u  /* writable, no status bits */
 
+/*
+ * The interrupt-output timer configuration at 0x2c. The interval count
+ * (bits 0-15), the mode (bits 16-18) and the diagnostic bit (30) are
+ * writable and read back; the pin-state readback (bit 31) and the reserved
+ * field are not stored. The model keeps the configuration; it does not yet
+ * drive the timer, which no guest on our path has been seen to depend on.
+ */
+#define INT_OUTPUT       (IOC3_BASE + 0x2c)
+#define INT_OUT_RW_MASK  0x4007ffffu
+#define INT_OUT_DIAG     0x40000000u  /* bit 30: diagnostic mode */
+#define INT_OUT_PIN      0x80000000u  /* bit 31: read-only pin readback */
+
 #define INT_SERIAL_A    (1u << 6)
 #define INT_SERIAL_B    (1u << 15)
 #define INT_KEYBOARD    (1u << 22)   /* a latched bit, for contrast */
@@ -254,6 +266,29 @@ static void test_the_arbiter_reports_idle(const void *data)
     cr = qtest_readl(qts, CHIP_CONTROL);
     g_assert_cmphex(cr & CHIP_CTRL_ARB_IDLE, ==, CHIP_CTRL_ARB_IDLE);
     g_assert_cmphex(cr & CHIP_CTRL_STROBE, ==, CHIP_CTRL_STROBE);
+
+    qtest_quit(qts);
+}
+
+static void test_the_interrupt_output_stores_its_configuration(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /* Reset leaves the interrupt-output timer configuration clear. */
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0);
+
+    /*
+     * The interval count, the mode and the diagnostic bit are writable and
+     * read back; the pin-state readback and the reserved field are not
+     * stored, so a write there reads back clear.
+     */
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_RW_MASK);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, INT_OUT_RW_MASK);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_PIN | INT_OUT_DIAG | 0x00100000u);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, INT_OUT_DIAG);
 
     qtest_quit(qts);
 }
@@ -4148,6 +4183,8 @@ int main(int argc, char **argv)
                         test_the_enable_mask_has_two_write_aliases);
     qtest_add_data_func("sn0/ioc3/arbiter-reports-idle", NULL,
                         test_the_arbiter_reports_idle);
+    qtest_add_data_func("sn0/ioc3/interrupt-output-stores-configuration", NULL,
+                        test_the_interrupt_output_stores_its_configuration);
     qtest_add_data_func("sn0/ioc3/serial-bit-ignores-acknowledgement", NULL,
                         test_a_serial_bit_ignores_an_acknowledgement);
     qtest_add_data_func("sn0/ioc3/second-interrupt-reaches-bridge-pin-3",
