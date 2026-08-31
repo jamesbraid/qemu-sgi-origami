@@ -356,6 +356,21 @@ Hub's pure store, never its write hook, so it has no local side
 effects; the peer pointer is serialised only by BQL MMIO dispatch,
 which the launch path asserts before the first dereference.
 
+The node field is what the Hub decodes node-qualified addresses
+against, not the board position: in each attached processor's view
+the Hub claims the stride whose node number equals its own programmed
+field, routes the stride equal to the directly wired peer's field to
+the peer, and answers a stride neither Hub claims with a decode error
+-- never by board position. The machine wires the per-view overlay
+containers, the canonical map and the address geometry at build time;
+the Hub owns the overlay aliases and re-aims them inside one memory
+transaction whenever the field is stored, at reset exit, and after a
+migration load. At reset every Hub answers node zero, so each node's
+early self-addressed initialisation stays on its own Hub until the
+global master assigns real numbers. The contract is the "node number
+a Hub answers to is programmed, not fixed" section of
+docs/datasheets/address-map.md in the origami project tree.
+
 Diagnostic indicators and the boot-status word
 ==============================================
 
