@@ -191,6 +191,18 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
     uint32_t pulse = val >> SGI_IOC3_ONEWIRE_PULSE_SHIFT;
     bool level = true;
 
+    if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE)) {
+        /*
+         * Pin-control bit 21 routes the engine onto its pin; with it clear the
+         * bus is disconnected. No part answers: the wire reads high and the
+         * slot advances no conversation.
+         */
+        s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
+                              SGI_IOC3_MICROLAN_DONE |
+                              SGI_IOC3_MICROLAN_LEVEL;
+        return;
+    }
+
     if (pulse >= SGI_IOC3_ONEWIRE_PULSE_RESET) {
         /* Reset: the part pulls the wire low and forgets the conversation. */
         s->onewire_phase = SGI_IOC3_ONEWIRE_COMMAND;
