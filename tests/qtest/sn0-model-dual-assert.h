@@ -25,6 +25,18 @@ typedef struct {
 
 void sn0_model_assert_device_identity(QTestState *qts, unsigned int node,
                                       const SN0ModelDeviceIdentity *expected);
+bool sn0_model_reconstruct_graph(const SN0ModelConfigGraph *graph,
+                                 uint8_t *image, size_t image_size);
+bool sn0_model_apply_graph_divergences(
+    const SN0ModelConfigGraph *graph,
+    const SN0ModelDivergence *divergences,
+    const uint8_t *got, uint8_t *expected);
+void sn0_model_assert_graph_fields(
+    QTestState *qts, const SN0ModelConfigGraph *graph,
+    const SN0ModelDivergence *divergences);
+void sn0_model_assert_graph_image(
+    QTestState *qts, const SN0ModelConfigGraph *graph,
+    const SN0ModelDivergence *divergences);
 void sn0_model_assert_object_graph(QTestState *qts, const char *machine_type,
                                    const SN0ModelDevice *expected_devices,
                                    size_t expected_count);
