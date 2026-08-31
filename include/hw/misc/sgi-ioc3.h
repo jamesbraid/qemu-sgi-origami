@@ -11,6 +11,7 @@
 #include "hw/char/serial.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/net/sgi-ioc3-eth.h"
+#include "hw/input/sgi-ioc3-kbc.h"
 #include "hw/core/qdev.h"
 #include "qom/object.h"
 
@@ -120,17 +121,11 @@ struct SGIIOC3BusState {
 
 #define SGI_IOC3_MAIN_SIZE      (SGI_IOC3_PIN_REG_LAST + 4)
 
-/* The PS/2 controller: a bit-level engine, not an 8042 clone. */
-#define SGI_IOC3_KBC_CONTROL        0x09c
-#define SGI_IOC3_KBC_KBD_RECEIVE    0x0a0
-#define SGI_IOC3_KBC_AUX_RECEIVE    0x0a4
-#define SGI_IOC3_KBC_KBD_TRANSMIT   0x0a8
-#define SGI_IOC3_KBC_AUX_TRANSMIT   0x0ac
-
-#define SGI_IOC3_KBC_BASE           SGI_IOC3_KBC_CONTROL
-#define SGI_IOC3_KBC_SIZE           (SGI_IOC3_KBC_AUX_TRANSMIT + 4 - \
-                                     SGI_IOC3_KBC_BASE)
-#define SGI_IOC3_KBC_REGS           (SGI_IOC3_KBC_SIZE / 4)
+/*
+ * The PS/2 controller: a bit-level engine, not an 8042 clone. Its window
+ * sits here; the registers and behaviour live in hw/input/sgi-ioc3-kbc.c.
+ */
+#define SGI_IOC3_KBC_BASE           0x09c
 
 /* The serial DMA block: a shared ring base, then seven registers per port. */
 #define SGI_IOC3_SDMA_RING_HI       0x0b0
@@ -278,6 +273,9 @@ struct SGIIOC3BusState {
     (SGI_IOC3_SERIAL_SOURCE(0, SGI_IOC3_INT_RX_HIGH_WATER) | \
      SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_RX_HIGH_WATER))
 
+/* The one shared keyboard-and-mouse source, driven by the PS/2 controller. */
+#define SGI_IOC3_INT_KEYBOARD       (1u << 22)
+
 /* Handlers learn their port only from this opaque. */
 typedef struct SGIIOC3SerialAlias {
     SGIIOC3State *chip;
@@ -343,8 +341,7 @@ struct SGIIOC3State {
     uint32_t chip_control;
     uint32_t int_out;
 
-    MemoryRegion kbc;
-    uint32_t kbc_control;
+    SGIIOC3KBCState kbc_dev;
 
     MemoryRegion ssram;
     uint32_t ssram_word[SGI_IOC3_SSRAM_WORDS];

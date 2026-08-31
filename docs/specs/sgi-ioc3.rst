@@ -230,12 +230,21 @@ not clear it: it is memory, not a register file.
 PS/2 ports
 ==========
 
-Nothing is plugged in. The receive registers read zero -- every
-per-byte valid flag clear, a port that has received nothing -- and
-transmit writes are accepted and dropped, because a completing write
-is what a driver needs from an unplugged port. The block is a
-bit-level engine on the real chip, not an 8042 clone: there is no
-command protocol to model.
+The controller (``hw/input/sgi-ioc3-kbc.c``) wraps two generic ps2
+devices, a keyboard and a mouse, and presents SGI's five registers: a
+control/status register, a receive and a transmit register per port.
+A transmit write forwards its low byte to the port's ps2 device,
+whose replies queue up. A receive read packs up to three queued bytes,
+oldest in the highest slot, each with its valid flag, and sets the
+overflow flag when a fourth is still waiting; the read pops the queue,
+so the next read starts from empty. The two ports share one interrupt,
+chip interrupt-status bit 22, which follows the controller's
+data-available line -- asserted while either port holds bytes, cleared
+once the receive registers drain -- and which the guest also clears by
+writing it. The block is a bit-level line engine, not an 8042 clone:
+the byte-level PS/2 command protocol lives in the ps2 devices above
+it, and the control register's write-pending status reads clear, since
+a synchronous transmit completes within the register write.
 
 PCI identity
 ============

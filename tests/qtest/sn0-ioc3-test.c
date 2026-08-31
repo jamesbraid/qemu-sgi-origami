@@ -513,6 +513,104 @@ static void test_the_ps2_ports_read_empty(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The keyboard reset command exercises transmit, the ps2 reply queue and the
+ * receive register's packing in one round trip. The generic ps2 keyboard
+ * answers 0xFF with ACK (0xFA) then self-test-pass (0xAA), oldest first.
+ */
+static void test_the_ps2_keyboard_round_trips(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+
+    /*
+     * Oldest byte occupies the highest slot: 0xFA in bits 16-23 with its
+     * valid flag in bit 31, 0xAA in bits 8-15 with its valid flag in bit 30.
+     * No third byte, so bit 29 and bits 0-7 stay clear; the source bit (27)
+     * is clear for the keyboard and nothing overflowed (bit 28 clear).
+     */
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The receive register packs "bytes since the last read", so reading it
+ * pops the queue and a second read finds nothing left.
+ */
+static void test_the_ps2_receive_drains_on_read(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
+
+    /* Drained: the reads popped both bytes, so nothing remains. */
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The shared keyboard/mouse source (interrupt-status bit 22) is latched: a
+ * queued byte sets it, it survives a drain of the receive register, and only
+ * a write-one-to-clear of the status register acknowledges it -- the contract
+ * both Linux's edge handler and IRIX's acknowledge writes rely on.
+ */
+static void test_the_ps2_interrupt_latches_until_acknowledged(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /* Nothing queued: the source is clear. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+
+    /* A queued reply latches it set. */
+    qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+
+    /*
+     * Draining the receive register delivers the bytes but leaves the latch
+     * set: the guest has read its data, yet the interrupt stays pending until
+     * it acknowledges.
+     */
+    (void)qtest_readl(qts, KBC_KBD_RECEIVE);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+
+    /* Writing a one to the status register clears the latch. */
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The control/status register resets to zero and stores the software control
+ * bits behind a mask; the hardware-status region (write-pending and the live
+ * line states) is read-only and reads clear in this synchronous model.
+ */
+static void test_the_ps2_control_masks_writes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0);
+
+    qtest_writel(qts, KBC_CONTROL, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0x0000ffff);
+
+    qtest_quit(qts);
+}
+
 /* The serial DMA block: the shared ring base, then each port's registers. */
 #define SDMA_RING_LO      (IOC3_BASE + 0x0b4)
 #define SDMA_A_TX_PRODUCE (IOC3_BASE + 0x0bc)
@@ -4043,6 +4141,14 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/ioc3/ps2-ports-read-empty", NULL,
                         test_the_ps2_ports_read_empty);
+    qtest_add_data_func("sn0/ioc3/ps2-keyboard-round-trip", NULL,
+                        test_the_ps2_keyboard_round_trips);
+    qtest_add_data_func("sn0/ioc3/ps2-receive-drains-on-read", NULL,
+                        test_the_ps2_receive_drains_on_read);
+    qtest_add_data_func("sn0/ioc3/ps2-interrupt-latches", NULL,
+                        test_the_ps2_interrupt_latches_until_acknowledged);
+    qtest_add_data_func("sn0/ioc3/ps2-control-masks-writes", NULL,
+                        test_the_ps2_control_masks_writes);
     qtest_add_data_func("sn0/ioc3/serial-dma-indices-by-owner", NULL,
                         test_the_serial_dma_indices_by_owner);
     qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,

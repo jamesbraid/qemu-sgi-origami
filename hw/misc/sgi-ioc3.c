@@ -74,6 +74,22 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 }
 
 /*
+ * The PS/2 controller's data-available line latches interrupt-status bit 22:
+ * a queued byte sets it and it holds across a drain of the receive registers.
+ * Only a write-one-to-clear of the status register acknowledges it, which is
+ * what both Linux's edge handler and IRIX's acknowledge writes expect.
+ */
+static void sgi_ioc3_kbc_irq(void *opaque, int n, int level)
+{
+    SGIIOC3State *s = opaque;
+
+    if (level) {
+        s->int_status |= SGI_IOC3_INT_KEYBOARD;
+        sgi_ioc3_update_irq(s);
+    }
+}
+
+/*
  * The one-wire ethernet-address part behind the MicroLAN engine; protocol
  * per the ioc3 datasheet (docs/datasheets/ioc3.md in the origami project
  * tree the fork is developed inside, not this repository).
@@ -388,62 +404,6 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps sgi_ioc3_main_ops = {
     .read = sgi_ioc3_main_read,
     .write = sgi_ioc3_main_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 4,
-    .valid.max_access_size = 4,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
-};
-
-static uint64_t sgi_ioc3_kbc_read(void *opaque, hwaddr addr, unsigned size)
-{
-    SGIIOC3State *s = opaque;
-
-    switch (SGI_IOC3_KBC_BASE + addr) {
-    case SGI_IOC3_KBC_CONTROL:
-        /* The hardware-owned busy bits are never set: idle at once. */
-        return s->kbc_control;
-
-    case SGI_IOC3_KBC_KBD_RECEIVE:
-    case SGI_IOC3_KBC_AUX_RECEIVE:
-        /* Zero clears every valid flag: nothing received, not zero bytes. */
-        return 0;
-
-    default:
-        /* The transmit registers are write-only. */
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-ioc3: read of write-only PS/2 register 0x%03x\n",
-                      (unsigned)(SGI_IOC3_KBC_BASE + addr));
-        return 0;
-    }
-}
-
-static void sgi_ioc3_kbc_write(void *opaque, hwaddr addr, uint64_t val,
-                               unsigned size)
-{
-    SGIIOC3State *s = opaque;
-
-    switch (SGI_IOC3_KBC_BASE + addr) {
-    case SGI_IOC3_KBC_CONTROL:
-        s->kbc_control = val;
-        return;
-
-    case SGI_IOC3_KBC_KBD_TRANSMIT:
-    case SGI_IOC3_KBC_AUX_TRANSMIT:
-        /* Accepted and dropped: an unplugged port, not a fault. */
-        return;
-
-    default:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-ioc3: write to read-only PS/2 register 0x%03x\n",
-                      (unsigned)(SGI_IOC3_KBC_BASE + addr));
-        return;
-    }
-}
-
-static const MemoryRegionOps sgi_ioc3_kbc_ops = {
-    .read = sgi_ioc3_kbc_read,
-    .write = sgi_ioc3_kbc_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
@@ -1166,9 +1126,15 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
                        qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
 
-    memory_region_init_io(&s->kbc, OBJECT(dev), &sgi_ioc3_kbc_ops, s,
-                          "sgi-ioc3.kbc", SGI_IOC3_KBC_SIZE);
-    memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE, &s->kbc);
+    /* On the chip's own bus, so a reset of the IOC3 reaches it. */
+    if (!qdev_realize(DEVICE(&s->kbc_dev), BUS(&s->ioc3_bus), errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE,
+                                sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->kbc_dev), 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc_dev), 0,
+                       qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
 
     memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
                           "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
@@ -1219,6 +1185,7 @@ static void sgi_ioc3_exit(PCIDevice *dev)
         timer_free(s->sdma_rx_timer[i]);
     }
     qdev_unrealize(DEVICE(&s->eth));
+    qdev_unrealize(DEVICE(&s->kbc_dev));
     qdev_unrealize(DEVICE(&s->rtc));
 }
 
@@ -1238,8 +1205,6 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
         memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
         s->sdma_delivered[i] = false;
     }
-
-    s->kbc_control = 0;
 
     /* The buffer RAM is memory: reset does not clear it. */
     s->microlan_control = 0;
@@ -1268,6 +1233,7 @@ static void sgi_ioc3_init(Object *obj)
     qdev_init_gpio_in(DEVICE(obj), sgi_ioc3_serial_irq,
                       SGI_IOC3_SERIAL_PORTS);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_eth_irq, "eth-irq", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_kbc_irq, "kbc-irq", 1);
 
     qbus_init(&s->ioc3_bus, sizeof(s->ioc3_bus), TYPE_SGI_IOC3_BUS,
               DEVICE(obj), "ioc3-bus");
@@ -1286,6 +1252,8 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
 
+    object_initialize_child(obj, "kbc", &s->kbc_dev, TYPE_SGI_IOC3_KBC);
+
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
 
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
@@ -1301,8 +1269,8 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 13,
-    .minimum_version_id = 13,
+    .version_id = 14,
+    .minimum_version_id = 14,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
@@ -1323,7 +1291,6 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                             SGI_IOC3_SERIAL_PORTS),
         VMSTATE_TIMER_PTR_ARRAY(sdma_rx_timer, SGIIOC3State,
                                 SGI_IOC3_SERIAL_PORTS),
-        VMSTATE_UINT32(kbc_control, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
         VMSTATE_END_OF_LIST()
     }
