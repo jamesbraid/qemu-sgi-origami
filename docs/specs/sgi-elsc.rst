@@ -110,8 +110,10 @@ directly and never calls ``i2c_bus_release()``.
 AUX serial port
 ===============
 
-The controller is the far end of the module's AUX serial port
-(``serial_hd(2)`` on the QEMU command line). Its one multiplexing
+The controller is the far end of its module's AUX serial port. Every
+tower has its own physical connector, so each node's controller takes
+its own ``-serial`` index: node 0's on index 2, node 1's on index 4
+(index 3 stays the bring-up UART). Its one multiplexing
 rule (Origin 200 Owner's Guide, page 132): a byte sequence beginning
 0x14 is a command to the controller itself and is never queued for
 ``get``; every other byte is console input. Nothing read for the
