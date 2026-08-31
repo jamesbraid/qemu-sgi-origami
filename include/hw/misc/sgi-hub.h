@@ -65,6 +65,16 @@ typedef struct SGIHubCounterLine {
 #define SGI_HUB_BWIN_SIZE    (512 * MiB)
 #define SGI_HUB_BWIN_TOTAL   (SGI_HUB_BWIN_ENTRIES * SGI_HUB_BWIN_SIZE)
 
+/* The four uncached spaces a node-qualified physical address selects. */
+#define SGI_HUB_CLAIM_SPACES  4
+
+/*
+ * The node-number strides a Hub can route: its own board's and one
+ * directly wired peer's -- the two-node reduction of the routing-table
+ * rule that the address-map datasheet permits for this machine.
+ */
+#define SGI_HUB_CLAIM_STRIDES 2
+
 struct SGIHubState {
     SysBusDevice parent_obj;
 
@@ -93,6 +103,25 @@ struct SGIHubState {
     /* The BTEs' node-local memory view; only the machine can supply it. */
     MemoryRegion *memory;
     AddressSpace bte_as;
+
+    /*
+     * The claim overlays: per attached processor view, one alias per
+     * uncached space per claimable node-number stride, aimed by the
+     * programmed node numbers over an error floor for a stride neither
+     * Hub claims. The machine wires the per-view containers, the
+     * canonical map the aliases resolve into, and the geometry; the Hub
+     * owns the regions and switches them from its own status store.
+     */
+    MemoryRegion *claim_view[SGI_HUB_PROCESSORS];
+    MemoryRegion *claim_target;
+    uint32_t claim_node_shift;
+    uint32_t claim_space_shift;
+    uint32_t claim_own_node;
+    uint32_t claim_peer_node;
+    MemoryRegion claim_alias[SGI_HUB_PROCESSORS][SGI_HUB_CLAIM_SPACES]
+                            [SGI_HUB_CLAIM_STRIDES];
+    MemoryRegion claim_error[SGI_HUB_PROCESSORS][SGI_HUB_CLAIM_SPACES]
+                            [SGI_HUB_CLAIM_STRIDES];
 
     /*
      * One level-triggered line per processor per pending bank, published

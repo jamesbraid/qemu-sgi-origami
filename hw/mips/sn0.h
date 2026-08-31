@@ -382,6 +382,7 @@ typedef struct SN0NodeState {
     MIPSCPU *cpu[SN0_CPUS_PER_NODE];
     MemoryRegion cpu_sysmem[SN0_CPUS_PER_NODE];
     MemoryRegion sysmem_alias[SN0_CPUS_PER_NODE];
+    MemoryRegion claim_view[SN0_CPUS_PER_NODE];
     MemoryRegion local_space[SN0_CPUS_PER_NODE][SN0_UNCACHED_SPACES];
     MemoryRegion hub_private[SN0_CPUS_PER_NODE][2];
     SN0PromDataState promdata[SN0_CPUS_PER_NODE];
