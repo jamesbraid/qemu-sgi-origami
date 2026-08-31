@@ -26,15 +26,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
 
 /*
  * The whole -serial assignment in one place: an index collision between two
- * files is invisible at either call site. The three shipped connectors come
- * first (port A is the firmware console; the AUX port is where firmware
- * redirects after a failed diagnostic); the optional bring-up port takes
- * the highest index so the shipped numbering never moves.
+ * files is invisible at either call site. The first tower's three shipped
+ * connectors come first (port A is the firmware console; the AUX port is
+ * where firmware redirects after a failed diagnostic), then the optional
+ * bring-up port, so the shipped numbering never moves. The second tower
+ * adds one connector of its own -- its system controller's AUX port --
+ * which takes the next index rather than reusing the first tower's: one
+ * physical connector per tower means one backend per tower, and a machine
+ * that handed index 2 to both towers' controllers could not launch with
+ * that backend provisioned. The machine resolves these indices and hands
+ * each Hub its own backend; the Hub never calls serial_hd() itself.
  */
 #define SN0_IOC3_SERIAL_A_CHARDEV  0
 #define SN0_IOC3_SERIAL_B_CHARDEV  1
 #define SN0_ELSC_CHARDEV           2
 #define SN0_JUNK_UART_CHARDEV      3
+#define SN0_ELSC_NODE1_CHARDEV     4
 
 /*
  * What a comparator's timer is handed when it expires. A timer callback gets
@@ -259,6 +266,13 @@ struct SGIHubState {
      */
     bool junk_uart_present;
     Chardev *junk_uart_chr;
+
+    /*
+     * The backend behind this node's system-controller AUX connector,
+     * resolved and handed in by the machine. NULL is a connector with
+     * no cable.
+     */
+    Chardev *elsc_chr;
 };
 
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
