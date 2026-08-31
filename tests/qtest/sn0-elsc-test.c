@@ -210,6 +210,56 @@ static void test_read_switches_command(const void *data)
 }
 
 /*
+ * The machine's elsc-dip-switches value must reach the controller no
+ * matter how it is spelled or how many chassis are present. Firmware
+ * decodes the switches from rsw's active-low byte, so a switch value
+ * that never crossed the machine->hub->controller path leaves the
+ * console-selection routine seeing the default and skips the local-POD
+ * boot stop entirely. Cover 0x10 through the separate -machine option
+ * on both the single chassis and the two-chassis rig, reading each
+ * node's own controller.
+ */
+static void test_read_switches_roundtrip(const void *data)
+{
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    QTestState *qts;
+
+    req_len = build_request(req, "rsw");
+
+    qts = qtest_init("-M origin200 -machine elsc-dip-switches=16");
+    resp_len = elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp,
+                                sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 5);
+    g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+    qtest_quit(qts);
+
+    qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-machine elsc-dip-switches=16");
+
+    resp_len = elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp,
+                                sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 5);
+    g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+
+    resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
+                                resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 5);
+    g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * Processor code 0's signal pair, the one code with a real input queue.
  * The wait helpers treat every other code's pulse as "not mine", as
  * firmware does for time slices that are not its own.
@@ -951,6 +1001,8 @@ int main(int argc, char **argv)
                         test_unimplemented_command_gets_err_cmd);
     qtest_add_data_func("sn0/elsc/read-switches-command", NULL,
                         test_read_switches_command);
+    qtest_add_data_func("sn0/elsc/read-switches-roundtrip", NULL,
+                        test_read_switches_roundtrip);
     qtest_add_data_func("sn0/elsc/arbitration-three-loop-wait", NULL,
                         test_arbitration_three_loop_wait);
     qtest_add_data_func("sn0/elsc/arbitration-repeats", NULL,
