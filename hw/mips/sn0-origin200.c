@@ -130,17 +130,30 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
 static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 {
     PCIDevice *ioc3;
+    Chardev *ioc3_a, *ioc3_b;
     unsigned int slot;
 
     ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
     /* A child of the node that carries the board, not of the machine. */
     object_property_add_child(OBJECT(s->nodes[node_index]), "ioc3",
                               OBJECT(ioc3));
-    if (node_index == 0) {
-        qdev_prop_set_chr(DEVICE(ioc3), "chardev-a",
-                          serial_hd(SN0_IOC3_SERIAL_A_CHARDEV));
-        qdev_prop_set_chr(DEVICE(ioc3), "chardev-b",
-                          serial_hd(SN0_IOC3_SERIAL_B_CHARDEV));
+    /*
+     * Every module has its own base I/O controller with its own pair of
+     * serial connectors, so each node backs its IOC3 ports A and B from its
+     * own -serial lines -- node-major with a fixed stride, node 0 at 0/1 and
+     * node 1 at 4/5. Attach only a line that has a backend: an unbacked
+     * connector is left with none, the same as the AUX port, so a slot with
+     * no cable stays distinguishable from one that silently swallows. This is
+     * what lights a slave module's POD console, which was dark when only
+     * node 0's controller was backed.
+     */
+    ioc3_a = serial_hd(SN0_NODE_SERIAL(node_index, SN0_IOC3_SERIAL_A_CHARDEV));
+    ioc3_b = serial_hd(SN0_NODE_SERIAL(node_index, SN0_IOC3_SERIAL_B_CHARDEV));
+    if (ioc3_a) {
+        qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", ioc3_a);
+    }
+    if (ioc3_b) {
+        qdev_prop_set_chr(DEVICE(ioc3), "chardev-b", ioc3_b);
     }
 
     /* Distinct per node, or a guest fails the second as a duplicate. */
