@@ -291,6 +291,23 @@ static void pif_writeq(XframeTest *t, uint64_t off, uint64_t val)
 }
 
 /*
+ * 32-bit register access: the width real drivers use for these 64-bit
+ * registers (IRIX xg's byte-swapper handshake reads them 32-bit; Linux s2io on
+ * Xena writes MAC_CFG as two 32-bit halves), and the width the Origin 200
+ * Bridge delivers when a slot leaves DEV_64BIT_DEVICE clear. A register at
+ * off+0 is its low 32 bits, off+4 its high 32 bits.
+ */
+static uint32_t pif_readl(XframeTest *t, uint64_t off)
+{
+    return qpci_io_readl(t->dev, t->pif, off);
+}
+
+static void pif_writel(XframeTest *t, uint64_t off, uint32_t val)
+{
+    qpci_io_writel(t->dev, t->pif, off, val);
+}
+
+/*
  * The device reads descriptors from guest memory in its own native
  * little-endian order (DEVICE_LITTLE_ENDIAN), so a 64-bit descriptor word is
  * written and read back as explicit little-endian bytes.
@@ -1149,6 +1166,166 @@ static void test_factory_mac_readback(void)
 }
 
 /*
+ * 32-bit register access. The registers are 64-bit, but real drivers read and
+ * write them with 32-bit cycles (IRIX xg's swapper handshake reads
+ * PIF_RD_SWAPPER_FB 32-bit; Linux s2io on Xena writes MAC_CFG as two 32-bit
+ * halves), and behind the Origin 200 Bridge a slot with DEV_64BIT_DEVICE clear
+ * gets every 64-bit access split into two 32-bit device cycles. So the device
+ * must serve a register's low half at off+0 and its high half at off+4, and a
+ * write to one half must not disturb the other. These are the subtests that
+ * failed before the window's valid.min_access_size dropped to 4.
+ */
+
+/*
+ * The byte-swapper diagnostic read the way IRIX xg reads it: 32-bit, one half
+ * at a time. Each half must be the corresponding half of the magic constant --
+ * this exact read is what xg's endianness handshake checks, and a 0 here (a
+ * rejected sub-64-bit access) is what aborted attach before the fix.
+ */
+static void test_swapper_diagnostic_32bit_halves(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+    g_assert_cmphex(pif_readl(&t, PIF_RD_SWAPPER_FB + 0), ==,
+                    (uint32_t)SWAPPER_MAGIC);
+    g_assert_cmphex(pif_readl(&t, PIF_RD_SWAPPER_FB + 4), ==,
+                    (uint32_t)(SWAPPER_MAGIC >> 32));
+    xframe_stop(&t);
+}
+
+/*
+ * ADAPTER_STATUS read 32-bit: its two halves differ (0x00000000 low,
+ * 0xf40000c3 high), so a half read that returned the wrong 32 bits -- or the
+ * whole 64-bit value truncated -- shows up here.
+ */
+static void test_adapter_status_32bit_halves(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+    g_assert_cmphex(pif_readl(&t, ADAPTER_STATUS + 0), ==,
+                    (uint32_t)ADAPTER_STATUS_QUIESCENT);
+    g_assert_cmphex(pif_readl(&t, ADAPTER_STATUS + 4), ==,
+                    (uint32_t)(ADAPTER_STATUS_QUIESCENT >> 32));
+    xframe_stop(&t);
+}
+
+/*
+ * The XMSI_ADDRESS scratch via 32-bit halves. Reading back each half of a
+ * 64-bit-written value pins the read split; writing each half separately and
+ * reading the whole back pins the write split -- and that a low-half write
+ * leaves the high half alone, which a naive "widen to 64-bit" write would
+ * clobber to zero.
+ */
+static void test_xmsi_address_32bit_halves(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+    pif_writeq(&t, XMSI_ADDRESS, 0xdeadbeefcafef00dULL);
+    g_assert_cmphex(pif_readl(&t, XMSI_ADDRESS + 0), ==, 0xcafef00d);
+    g_assert_cmphex(pif_readl(&t, XMSI_ADDRESS + 4), ==, 0xdeadbeef);
+
+    pif_writel(&t, XMSI_ADDRESS + 0, 0x11223344);
+    pif_writel(&t, XMSI_ADDRESS + 4, 0x55667788);
+    g_assert_cmphex(pif_readq(&t, XMSI_ADDRESS), ==, 0x5566778811223344ULL);
+    xframe_stop(&t);
+}
+
+/*
+ * SW_RESET's key sits in bits 63:40 -- the register's high 32 bits -- so a
+ * 32-bit write to the low half must not reset, and the 32-bit write that
+ * carries the key to the high half must reset exactly once. This is the
+ * no-double-fire contract for the trigger the memory core would otherwise let
+ * a split write mishandle.
+ */
+static void test_sw_reset_key_via_32bit(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+    pif_writeq(&t, XMSI_ADDRESS, SWAPPER_MAGIC);
+    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
+
+    /* Low half: no key here, must not reset. */
+    pif_writel(&t, SW_RESET + 0, 0x00000001);
+    g_assert_cmphex(pif_readq(&t, XMSI_ADDRESS), ==, SWAPPER_MAGIC);
+    g_assert_cmphex(pif_readq(&t, ADAPTER_CONTROL) & ADAPTER_EN, ==,
+                    ADAPTER_EN);
+
+    /* High half carrying the key (0xa5a5a5 in bits 63:40): reset fires once. */
+    pif_writel(&t, SW_RESET + 4, (uint32_t)(SW_RESET_KEY >> 32));
+    g_assert_cmphex(pif_readq(&t, XMSI_ADDRESS), ==, 0);
+    g_assert_cmphex(pif_readq(&t, ADAPTER_CONTROL), ==, 0);
+    xframe_stop(&t);
+}
+
+/*
+ * MAC_CFG's write lock unlocked and driven entirely by 32-bit writes, the
+ * Linux s2io Xena path: RMAC_CFG_KEY's key is in bits 63:48 (the high half),
+ * re-written before each MAC_CFG half. A 32-bit write of the key to the wrong
+ * (low) half must not unlock, and a MAC_CFG payload with both halves non-zero
+ * proves each half latches.
+ */
+static void test_rmac_cfg_key_unlock_via_32bit(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+
+    /* Locked: the 32-bit-halved write is dropped. */
+    pif_writel(&t, MAC_CFG + 0, 0x0000ffff);
+    pif_writel(&t, MAC_CFG + 4, 0xc0000000);
+    g_assert_cmphex(pif_readq(&t, MAC_CFG), ==, 0);
+
+    /* The key in the wrong half does not unlock. */
+    pif_writel(&t, RMAC_CFG_KEY + 0, 0x00004c0d);
+    pif_writel(&t, MAC_CFG + 4, 0xc0000000);
+    g_assert_cmphex(pif_readq(&t, MAC_CFG), ==, 0);
+
+    /* Key to the high half unlocks; re-keyed before each half, both take. */
+    pif_writel(&t, RMAC_CFG_KEY + 4, (uint32_t)(RMAC_CFG_KEY_VALUE >> 32));
+    pif_writel(&t, MAC_CFG + 0, 0x0000ffff);
+    pif_writel(&t, RMAC_CFG_KEY + 4, (uint32_t)(RMAC_CFG_KEY_VALUE >> 32));
+    pif_writel(&t, MAC_CFG + 4, 0xc0000000);
+    g_assert_cmphex(pif_readq(&t, MAC_CFG), ==, 0xc00000000000ffffULL);
+    xframe_stop(&t);
+}
+
+/*
+ * The MAC-address-table strobe via 32-bit. The command (write-enable, strobe
+ * bit 48, offset) lives in the register's high 32 bits, so a 32-bit write to
+ * the low half must not strobe, and the high-half write fires the read strobe
+ * once -- loading the factory MAC into DATA0, which reads back correctly both
+ * 64-bit and 32-bit-halved.
+ */
+static void test_mac_table_strobe_via_32bit(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+
+    /* A low-half write carries no strobe (bit 48 is in the high half). */
+    pif_writeq(&t, RMAC_ADDR_DATA0_MEM, 0);
+    pif_writel(&t, RMAC_ADDR_CMD_MEM + 0, 0x00000000);
+    g_assert_cmphex(pif_readq(&t, RMAC_ADDR_DATA0_MEM), ==, 0);
+
+    /* The high half carries the read strobe for entry 0: it fires once. */
+    pif_writel(&t, RMAC_ADDR_CMD_MEM + 4,
+               (uint32_t)(RMAC_ADDR_CMD_STROBE >> 32));
+    g_assert_cmphex(pif_readq(&t, RMAC_ADDR_CMD_MEM) & RMAC_ADDR_CMD_STROBE,
+                    ==, 0);
+    g_assert_cmphex(pif_readq(&t, RMAC_ADDR_DATA0_MEM), ==,
+                    XFRAME_TEST_MAC_DATA0);
+    g_assert_cmphex(pif_readl(&t, RMAC_ADDR_DATA0_MEM + 0), ==,
+                    (uint32_t)XFRAME_TEST_MAC_DATA0);
+    g_assert_cmphex(pif_readl(&t, RMAC_ADDR_DATA0_MEM + 4), ==,
+                    (uint32_t)(XFRAME_TEST_MAC_DATA0 >> 32));
+    xframe_stop(&t);
+}
+
+/*
  * Transmit: program a single-descriptor TxD list in guest memory, ring the
  * doorbell, and assert the device consumes the descriptor (ownership bit
  * cleared) and emits the exact frame onto the backend. A golden byte-for-byte
@@ -1254,6 +1431,18 @@ int main(int argc, char **argv)
                    test_sw_reset_key_clears_state);
     qtest_add_func("xframe/mac-config-write-lock", test_mac_config_write_lock);
     qtest_add_func("xframe/factory-mac-readback", test_factory_mac_readback);
+    qtest_add_func("xframe/swapper-diagnostic-32bit-halves",
+                   test_swapper_diagnostic_32bit_halves);
+    qtest_add_func("xframe/adapter-status-32bit-halves",
+                   test_adapter_status_32bit_halves);
+    qtest_add_func("xframe/xmsi-address-32bit-halves",
+                   test_xmsi_address_32bit_halves);
+    qtest_add_func("xframe/sw-reset-key-via-32bit",
+                   test_sw_reset_key_via_32bit);
+    qtest_add_func("xframe/rmac-cfg-key-unlock-via-32bit",
+                   test_rmac_cfg_key_unlock_via_32bit);
+    qtest_add_func("xframe/mac-table-strobe-via-32bit",
+                   test_mac_table_strobe_via_32bit);
     qtest_add_func("xframe/transmit-emits-a-frame",
                    test_transmit_emits_a_frame);
     qtest_add_func("xframe/transmit-out-of-range-pointer-is-safe",

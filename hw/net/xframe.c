@@ -224,17 +224,33 @@ static void xframe_rmac_addr_cmd(XframeState *s, uint64_t val)
 }
 
 /*
- * The PIF register window (BAR0). The registers are 64-bit with full-value
- * side effects on a single access (the swapper diagnostic, SW_RESET's key,
- * RMAC_CFG_KEY), so xframe_pif_ops declares an 8-byte impl and valid width:
- * every access reaches here as one 64-bit call. DEVICE_LITTLE_ENDIAN -- these
- * are little-endian-native parts; values are delivered in native order and a
- * host bridge composes whatever byte order the guest needs.
+ * The PIF register window (BAR0). The registers are 64-bit and
+ * DEVICE_LITTLE_ENDIAN -- little-endian-native parts, delivered in native
+ * order, a host bridge composing whatever byte order the guest needs.
+ *
+ * Real drivers access these 64-bit registers with 32-bit cycles: IRIX xg reads
+ * the byte-swapper diagnostic 32-bit during its endianness handshake, and Linux
+ * s2io on the Xena part writes MAC_CFG as two 32-bit halves. Behind the Origin
+ * 200 Bridge a slot left with DEV_64BIT_DEVICE clear -- as the live IRIX boot
+ * leaves it -- has every 64-bit access split into two 32-bit device cycles. So
+ * xframe_pif_ops declares valid/impl.min_access_size = 4: the window serves a
+ * register's low 32 bits at off+0 and its high 32 bits at off+4.
+ *
+ * impl.min = 4 (not 8) is deliberate. QEMU's memory core does not read-modify-
+ * write a sub-impl access: access_with_adjusted_size() hands the handler the
+ * unaligned guest address with the impl size and zero-extends a narrow write
+ * (system/memory.c). With impl.min = 8 a 32-bit high-half read would reach the
+ * handler at off+4 (undecoded) and a 32-bit low-half write would clobber the
+ * upper 32 bits to zero. Dispatching per size in the handler is what serves a
+ * 64-bit register through 32-bit halves correctly. A read at any width comes
+ * through xframe_pif_read; a write through xframe_pif_write, which composes the
+ * accessed half onto the current value and fires a register's side effect only
+ * when the write covers the half its trigger sits in (all triggers here -- the
+ * SW_RESET key in bits 63:40, RMAC_CFG_KEY in 63:48, the MAC-table strobe in
+ * bit 48 -- live in the high half), so a two-halves write fires it once.
  */
-static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
 {
-    XframeState *s = opaque;
-
     switch (addr) {
     case XFRAME_ADAPTER_STATUS:
         return XFRAME_ADAPTER_STATUS_QUIESCENT;
@@ -278,41 +294,67 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
         return s->general_int_mask;
     default:
         qemu_log_mask(LOG_UNIMP,
-                      "xframe: PIF read at 0x%" PRIx64 " (size %u) is not "
-                      "modelled\n", addr, size);
+                      "xframe: PIF read at 0x%" PRIx64 " is not modelled\n",
+                      addr);
         return 0;
     }
 }
 
-static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
-                             unsigned size)
+/*
+ * Serve a register read at whatever width the memory core delivers. A 32-bit
+ * read takes the register's low half at off+0 or -- off+4, the odd word of the
+ * 8-aligned register -- its high half. A 64-bit read returns the whole value;
+ * the core masks a 32-bit low-half read down to the low word for us.
+ */
+static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 {
     XframeState *s = opaque;
+    uint64_t val = xframe_pif_read_reg(s, addr & ~7ULL);
 
+    if (size == 4 && (addr & 4)) {
+        val >>= 32;
+    }
+    return val;
+}
+
+/*
+ * Apply a write to the register at addr (8-aligned). full is the whole 64-bit
+ * value the register takes -- the accessed half composed onto its current
+ * content by xframe_pif_write below; written is just the bits this access
+ * carries, positioned (what a write-1-to-clear register must act on, rather
+ * than on the untouched half's current bits); commit_high says the access
+ * covers the high 32 bits, where every side-effect trigger here sits.
+ */
+static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
+                                 uint64_t written, bool commit_high)
+{
     switch (addr) {
     case XFRAME_SW_RESET:
-        if ((val >> 40) == XFRAME_SW_RESET_KEY) {
+        if (commit_high && (full >> 40) == XFRAME_SW_RESET_KEY) {
             xframe_soft_reset(s);
         } else {
-            s->sw_reset = val;
+            s->sw_reset = full;
         }
         return;
     case XFRAME_ADAPTER_CONTROL:
-        s->adapter_control = val;
+        s->adapter_control = full;
         return;
     case XFRAME_SWAPPER_CTRL:
-        s->swapper_ctrl = val;
+        s->swapper_ctrl = full;
         return;
     case XFRAME_XMSI_ADDRESS:
-        s->xmsi_address = val;
+        s->xmsi_address = full;
         return;
     case XFRAME_RMAC_CFG_KEY:
-        s->rmac_cfg_unlocked = (val >> 48) == XFRAME_RMAC_CFG_KEY_VALUE;
+        /* The key is in bits 63:48: only a write reaching the high half. */
+        if (commit_high) {
+            s->rmac_cfg_unlocked = (full >> 48) == XFRAME_RMAC_CFG_KEY_VALUE;
+        }
         return;
     case XFRAME_MAC_CFG:
         /* Write-locked: takes only with the config key freshly written. */
         if (s->rmac_cfg_unlocked) {
-            s->mac_cfg = val;
+            s->mac_cfg = full;
             s->rmac_cfg_unlocked = false;
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -321,13 +363,21 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
         }
         return;
     case XFRAME_RMAC_ADDR_DATA0_MEM:
-        s->rmac_addr_data0 = val;
+        s->rmac_addr_data0 = full;
         return;
     case XFRAME_RMAC_ADDR_DATA1_MEM:
-        s->rmac_addr_data1 = val;
+        s->rmac_addr_data1 = full;
         return;
     case XFRAME_RMAC_ADDR_CMD_MEM:
-        xframe_rmac_addr_cmd(s, val);
+        /*
+         * The strobe (bit 48), write-enable and offset are all in the high
+         * half; only a write reaching it carries out an entry access.
+         */
+        if (commit_high) {
+            xframe_rmac_addr_cmd(s, full);
+        } else {
+            s->rmac_addr_cmd = full;
+        }
         return;
     case XFRAME_RX_TRAFFIC_INT:
         /*
@@ -345,13 +395,17 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
          * goes; Linux's s2io_isr is the same order. A flush fired from this
          * write would find the ring still empty. xframe_rx_recovery_timer_cb
          * is what actually recovers that case; see its comment.
+         *
+         * Clear on the bits this access actually carries (written), not on the
+         * composed value: a 32-bit write to one half must not clear the other
+         * half's pending bits, which its untouched current content would name.
          */
-        s->rx_traffic_int &= ~val;
+        s->rx_traffic_int &= ~written;
         xframe_update_irq(s);
         return;
     case XFRAME_PRC_RXD0_0:
-        s->prc_rxd0_0 = val;
-        s->rx_page_addr = val;
+        s->prc_rxd0_0 = full;
+        s->rx_page_addr = full;
         s->rx_desc_idx = 0;
         /*
          * Recovers a netdev queue a prior 0 return left holding a frame, for
@@ -362,7 +416,7 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
     case XFRAME_PRC_CTRL_0:
-        if ((val & XFRAME_RC_IN_SVC) && !(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
+        if ((full & XFRAME_RC_IN_SVC) && !(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
             /*
              * Arming the ring restarts the walk at its base -- the sequence
              * both drivers use writes PRC_RXD0_0 once, before this.
@@ -370,13 +424,13 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
             s->rx_page_addr = s->prc_rxd0_0;
             s->rx_desc_idx = 0;
         }
-        if (val & XFRAME_PRC_CTRL_RING_MODE_MASK) {
+        if (full & XFRAME_PRC_CTRL_RING_MODE_MASK) {
             qemu_log_mask(LOG_UNIMP,
                           "xframe: only 1-buffer receive mode is modelled; "
                           "ring mode %u ignored\n",
-                          (unsigned)((val >> 48) & 3));
+                          (unsigned)((full >> 48) & 3));
         }
-        s->prc_ctrl_0 = val;
+        s->prc_ctrl_0 = full;
         /* Same flush, same guest-re-arms-the-ring case as PRC_RXD0_0 above. */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
@@ -392,7 +446,7 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
          */
         return;
     case XFRAME_GENERAL_INT_MASK:
-        s->general_int_mask = val;
+        s->general_int_mask = full;
         xframe_update_irq(s);
         return;
     case XFRAME_ADAPTER_STATUS:
@@ -404,9 +458,41 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
     default:
         qemu_log_mask(LOG_UNIMP,
                       "xframe: PIF write at 0x%" PRIx64 " = 0x%" PRIx64
-                      " (size %u) is not modelled\n", addr, val, size);
+                      " is not modelled\n", addr, full);
         return;
     }
+}
+
+/*
+ * A register write at whatever width the memory core delivers. Compose the
+ * accessed half onto the register's current content so a 32-bit write to one
+ * half leaves the other untouched, and hand xframe_pif_write_reg both the
+ * composed value and the raw written bits, plus whether the write reaches the
+ * high half (where every side-effect trigger sits).
+ */
+static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
+                             unsigned size)
+{
+    XframeState *s = opaque;
+    hwaddr reg = addr & ~7ULL;
+    uint64_t written, wmask;
+    bool commit_high;
+
+    if (size == 4 && (addr & 4)) {
+        wmask = 0xffffffff00000000ULL;
+        written = (val & 0xffffffffULL) << 32;
+    } else if (size == 4) {
+        wmask = 0x00000000ffffffffULL;
+        written = val & 0xffffffffULL;
+    } else {
+        wmask = ~0ULL;
+        written = val;
+    }
+    commit_high = (wmask & 0xffffffff00000000ULL) != 0;
+
+    xframe_pif_write_reg(s, reg,
+                         (xframe_pif_read_reg(s, reg) & ~wmask) | written,
+                         written, commit_high);
 }
 
 static const MemoryRegionOps xframe_pif_ops = {
@@ -414,11 +500,11 @@ static const MemoryRegionOps xframe_pif_ops = {
     .write = xframe_pif_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 8,
+        .min_access_size = 4,
         .max_access_size = 8,
     },
     .impl = {
-        .min_access_size = 8,
+        .min_access_size = 4,
         .max_access_size = 8,
     },
 };
@@ -554,14 +640,39 @@ static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
      * walk.
      */
     unsigned fifo = (addr / XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXP_FIFOS;
-    unsigned field = (addr % XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXDL_STRIDE;
+    unsigned slot_off = (addr % XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXDL_STRIDE;
+    /*
+     * The two doorbell fields are 64-bit, so like the PIF window this serves a
+     * 32-bit half at off+0/off+4 (both windows must, since the Bridge splits a
+     * doubleword into 32-bit device cycles for a DEV_64BIT_DEVICE-clear slot).
+     * The list pointer latches per half; ringing the list -- the control
+     * field's NUMTXD and gather flags all sit in its high half -- fires only on
+     * the committing write reaching that half, so two halves ring it once.
+     */
+    unsigned field = slot_off & ~7u;
+    uint64_t written, wmask;
+    bool commit_high;
+
+    if (size == 4 && (slot_off & 4)) {
+        wmask = 0xffffffff00000000ULL;
+        written = (val & 0xffffffffULL) << 32;
+    } else if (size == 4) {
+        wmask = 0x00000000ffffffffULL;
+        written = val & 0xffffffffULL;
+    } else {
+        wmask = ~0ULL;
+        written = val;
+    }
+    commit_high = (wmask & 0xffffffff00000000ULL) != 0;
 
     switch (field) {
     case XFRAME_TXDL_PAR:
-        s->txdl_par[fifo] = val;
+        s->txdl_par[fifo] = (s->txdl_par[fifo] & ~wmask) | written;
         return;
     case XFRAME_TXDL_LCR:
-        xframe_tx_doorbell(s, fifo, val);
+        if (commit_high) {
+            xframe_tx_doorbell(s, fifo, written);
+        }
         return;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -572,19 +683,19 @@ static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * The TxP transmit doorbell registers are 64-bit like the PIF window's, so the
- * widths match.
+ * The TxP transmit doorbell registers are 64-bit like the PIF window's, and are
+ * served the same 32-bit-half way (see xframe_pif_ops on why impl.min is 4).
  */
 static const MemoryRegionOps xframe_txp_ops = {
     .read = xframe_txp_read,
     .write = xframe_txp_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 8,
+        .min_access_size = 4,
         .max_access_size = 8,
     },
     .impl = {
-        .min_access_size = 8,
+        .min_access_size = 4,
         .max_access_size = 8,
     },
 };
