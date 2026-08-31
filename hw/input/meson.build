@@ -10,3 +10,4 @@ system_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input-hid.c'))
 system_ss.add(when: 'CONFIG_VIRTIO_INPUT_HOST', if_true: files('virtio-input-host.c'))
 
 system_ss.add(when: 'CONFIG_LASIPS2', if_true: files('lasips2.c'))
+system_ss.add(when: 'CONFIG_SGI_IOC3_KBC', if_true: files('sgi-ioc3-kbc.c'))

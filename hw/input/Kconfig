@@ -33,3 +33,7 @@ config VHOST_USER_INPUT
 
 config LASIPS2
     select PS2
+
+config SGI_IOC3_KBC
+    bool
+    select PS2
