@@ -308,6 +308,8 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_IOC3_CHIP_CONTROL:
         /* Bit 22: arbiter idle, polled by the kernel's console setup. */
         return s->chip_control | SGI_IOC3_CHIP_CTRL_ARB_IDLE;
+    case SGI_IOC3_INT_OUTPUT:
+        return s->int_out;
     case SGI_IOC3_MICROLAN_CONTROL:
         return s->microlan_control;
     case SGI_IOC3_PIN_CONTROL_SET:
@@ -354,6 +356,13 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_IOC3_CHIP_CONTROL:
         /* Stored: every guest programs the offsets already implemented. */
         s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
+        break;
+    case SGI_IOC3_INT_OUTPUT:
+        /*
+         * Stored configuration only. The interval timer and the pin drive
+         * are not modelled; no guest on our path drives them.
+         */
+        s->int_out = val & SGI_IOC3_INT_OUT_MASK;
         break;
     case SGI_IOC3_MICROLAN_CONTROL:
         sgi_ioc3_onewire_slot(s, (uint32_t)val);
@@ -1237,6 +1246,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->pin_control = 0;
     s->pin_data = 0;
     s->chip_control = 0;
+    s->int_out = 0;
 
     s->onewire_phase = 0;
     s->onewire_bit = 0;
@@ -1291,8 +1301,8 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 12,
-    .minimum_version_id = 12,
+    .version_id = 13,
+    .minimum_version_id = 13,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
@@ -1305,6 +1315,7 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
         VMSTATE_UINT32(chip_control, SGIIOC3State),
+        VMSTATE_UINT32(int_out, SGIIOC3State),
         VMSTATE_UINT8_2DARRAY(sdma_packer, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS,
                               SGI_IOC3_SDMA_ENTRY_SIZE),

@@ -57,6 +57,14 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_CHIP_CTRL_MASK 0x0007ffffu
 #define SGI_IOC3_CHIP_CTRL_ARB_IDLE 0x00400000u
 
+/*
+ * Interrupt output timer configuration. The interval count (bits 0-15),
+ * the mode (bits 16-18) and the diagnostic bit (30) are writable; the
+ * pin-state readback (bit 31) and the reserved field are not stored.
+ */
+#define SGI_IOC3_INT_OUTPUT     0x2c
+#define SGI_IOC3_INT_OUT_MASK   0x4007ffffu
+
 /* MicroLAN (one-wire) control; protocol in docs/specs/sgi-ioc3.rst. */
 #define SGI_IOC3_MICROLAN_CONTROL 0x30
 #define SGI_IOC3_MICROLAN_LEVEL (1u << 0)   /* sampled from the bus */
@@ -333,6 +341,7 @@ struct SGIIOC3State {
     AddressSpace *dma_as;   /* ring transfers go through the Bridge */
 
     uint32_t chip_control;
+    uint32_t int_out;
 
     MemoryRegion kbc;
     uint32_t kbc_control;
