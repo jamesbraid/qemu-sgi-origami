@@ -45,13 +45,27 @@
 #define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
 
+/*
+ * A crosstalk address one node stride up reaches the same register on
+ * another node's controller: each node maps its own copy of the console
+ * widget at SN0_SPACE_XTALK + (nasid << 32), the offset the dual-node model
+ * uses. node_base is 0 for the console node.
+ */
+#define SN0_NODE_STRIDE  0x100000000ULL
+
+static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node_base)
+{
+    qtest_writel(qts, node_base + CFG0(PCI_IOC3_DEVICE) + PCI_BAR0,
+                 IOC3_PCI_MMIO);
+    qtest_writel(qts, node_base + CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, node_base + BRIDGE_DEVICE(PCI_IOC3_DEVICE),
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
 static void sn0_ioc3_attach(QTestState *qts)
 {
-    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
-    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
-                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-    qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
-                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    sn0_ioc3_attach_node(qts, 0);
 }
 
 /* The chip control register, which carries the two ports' SuperIO offsets. */
@@ -1513,6 +1527,69 @@ static void test_an_unbacked_receive_ring_raises_the_pci_error(
     qtest_quit(qts);
 }
 
+/*
+ * The two-tower profile: two nodes, so the slave module's base I/O controller
+ * exists and its IOC3 ports A and B take -serial lines 4 and 5. Same topology
+ * as the dual-node model test.
+ */
+#define DUAL_IO_ARGS \
+    "-M origin200,io-bridge=on " \
+    "-m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
+
+/*
+ * Node 1's base I/O controller must be backed by its own serial line. A
+ * slave module drops its POD console onto its own IOC3 port A, which sits on
+ * -serial line 4 under the node-major stride-4 scheme (line 0 is node 0's).
+ * When only node 0's controller was backed, node 1's port had no chardev and
+ * this console was dark. The host sends a byte down line 4 and it must reach
+ * node 1's port A: the plain 16550 pass-through path, rings left off, so this
+ * proves the backend alone. serial_hd(0..3) are left empty, so a byte
+ * arriving at node 1's port cannot have come from any node-0 line.
+ */
+static void test_node1_ioc3_a_receives_through_serial_hd_4(const void *data)
+{
+    uint16_t port;
+    int lfd = portb_listen(&port);
+    g_autofree char *args = g_strdup_printf(
+        DUAL_IO_ARGS
+        " -serial none -serial none -serial none -serial none "
+        "-chardev socket,id=n1a,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:n1a", port);
+    QTestState *qts = qtest_init(args);
+    int fd = portb_accept(lfd);
+    const uint64_t node1 = SN0_NODE_STRIDE;
+    const uint64_t serial_a = node1 + SERIAL_A;
+    const uint8_t sent = 'N';
+
+    /* Bring up node 1's controller and its port A, ring DMA left off. */
+    sn0_ioc3_attach_node(qts, node1);
+    qtest_writeb(qts, serial_a + REG_LCR, 0x03);
+    qtest_writeb(qts, serial_a + REG_FCR, 0x01);
+    qtest_writeb(qts, serial_a + REG_IER, IER_RDI);
+
+    g_assert_cmpint(write(fd, &sent, 1), ==, 1);
+
+    g_test_timer_start();
+    while (!(qtest_readb(qts, serial_a + REG_LSR) & LSR_DR)) {
+        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+        g_usleep(1000);
+    }
+
+    /* The pass-through source follows the port, and the byte is node 1's. */
+    g_assert_cmphex(qtest_readl(qts, node1 + INT_STATUS) &
+                    SOURCE(0, SRC_PASSTHROUGH), ==, SOURCE(0, SRC_PASSTHROUGH));
+    g_assert_cmphex(qtest_readb(qts, serial_a + REG_RBR), ==, sent);
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1596,6 +1673,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/unbacked-receive-ring-raises-error",
                         NULL,
                         test_an_unbacked_receive_ring_raises_the_pci_error);
+    qtest_add_data_func("sn0/ioc3-serial/node1-port-a-receives-on-serial-hd-4",
+                        NULL,
+                        test_node1_ioc3_a_receives_through_serial_hd_4);
 
     return g_test_run();
 }

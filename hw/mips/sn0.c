@@ -1215,13 +1215,13 @@ static void sn0_init(MachineState *machine)
          * programmed node number (real firmware programs it later, so a
          * real-PROM boot starts at zero), which chassis is the slave, the
          * chassis DIP switches, the CrayLink peer, the system controller's
-         * AUX backend, and the bring-up UART. Every tower has its own
+         * AUX backend, and the bring-up UART. Every module has its own
          * physical AUX connector, so each node's controller gets its own
-         * -serial index -- node 0 the shipped index 2, node 1 index 4 --
-         * resolved here because assigning one character backend to two
-         * frontends aborts the machine. The UART is a node-0 diagnostic
-         * device, not part of either shipped chassis; keeping it on the
-         * console node avoids the same collision.
+         * -serial index, node-major with a fixed stride: node 0's AUX at 2,
+         * node 1's at 6. Resolved here because assigning one character
+         * backend to two frontends aborts the machine. The bring-up UART is
+         * a node-0 diagnostic device, not part of any shipped chassis;
+         * keeping it on the console node avoids the same collision.
          */
         qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
                              s->synthesized_firmware ? node_index : 0);
@@ -1229,8 +1229,7 @@ static void sn0_init(MachineState *machine)
                           node_index != 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
-        aux_chr = serial_hd(node_index == 0 ? SN0_ELSC_CHARDEV
-                                            : SN0_ELSC_NODE1_CHARDEV);
+        aux_chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_ELSC_CHARDEV));
         if (aux_chr) {
             object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                      OBJECT(aux_chr), &error_fatal);
@@ -1246,10 +1245,11 @@ static void sn0_init(MachineState *machine)
         qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
                           node_index == 0 && s->junk_uart_present);
         if (node_index == 0 && s->junk_uart_present &&
-            serial_hd(SN0_JUNK_UART_CHARDEV)) {
-            object_property_set_link(OBJECT(&node->hub), "junk-uart-chardev",
-                                     OBJECT(serial_hd(SN0_JUNK_UART_CHARDEV)),
-                                     &error_fatal);
+            serial_hd(SN0_NODE_SERIAL(0, SN0_JUNK_UART_CHARDEV))) {
+            object_property_set_link(
+                OBJECT(&node->hub), "junk-uart-chardev",
+                OBJECT(serial_hd(SN0_NODE_SERIAL(0, SN0_JUNK_UART_CHARDEV))),
+                &error_fatal);
         }
         sn0_diagnostic_attach(s, node_index);
 

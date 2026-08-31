@@ -23,22 +23,31 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
 
 /*
  * The whole -serial assignment in one place: an index collision between two
- * files is invisible at either call site. The first tower's three shipped
- * connectors come first (port A is the firmware console; the AUX port is
- * where firmware redirects after a failed diagnostic), then the optional
- * bring-up port, so the shipped numbering never moves. The second tower
- * adds one connector of its own -- its system controller's AUX port --
- * which takes the next index rather than reusing the first tower's: one
- * physical connector per tower means one backend per tower, and a machine
- * that handed index 2 to both towers' controllers could not launch with
- * that backend provisioned. The machine resolves these indices and hands
- * each Hub its own backend; the Hub never calls serial_hd() itself.
+ * files is invisible at either call site. Every module carries the same set
+ * of serial connectors, so the lines are node-major with a fixed stride:
+ * node n owns the block [4n, 4n+4). Within a block, port A of the base I/O
+ * controller comes first (also the firmware console), then port B, then the
+ * system controller's AUX port -- where firmware redirects after a failed
+ * diagnostic -- then the bring-up port. One physical connector per module
+ * means one backend per module, so each module's ports take their own
+ * indices rather than sharing the first module's: a machine that handed
+ * index 2 to two modules' controllers could not launch with that backend
+ * provisioned. The four constants below are offsets within a node's block;
+ * SN0_NODE_SERIAL() turns a (node, offset) pair into the -serial index, and
+ * for node 0 the offset already is that index. The bring-up port has no
+ * shipped connector and exists on node 0 only. The machine resolves these
+ * indices and hands each Hub its own backend; the Hub never calls
+ * serial_hd() itself.
  */
+#define SN0_SERIAL_LINES_PER_NODE  4
+
 #define SN0_IOC3_SERIAL_A_CHARDEV  0
 #define SN0_IOC3_SERIAL_B_CHARDEV  1
 #define SN0_ELSC_CHARDEV           2
 #define SN0_JUNK_UART_CHARDEV      3
-#define SN0_ELSC_NODE1_CHARDEV     4
+
+#define SN0_NODE_SERIAL(node, offset) \
+    ((node) * SN0_SERIAL_LINES_PER_NODE + (offset))
 
 /* Timer callback argument: which processor's comparator fired. */
 typedef struct SGIHubCounterLine {

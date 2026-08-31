@@ -965,14 +965,16 @@ static void assert_aux_captured(QTestState *qts, const char *id,
 /*
  * Each tower carries its own physical AUX connector, so a two-chassis
  * machine has two system controllers and a backend may be provisioned
- * for each: node 0's on serial index 2, node 1's on index 4 (index 3
- * stays the bring-up UART). The model once handed index 2 to every
- * node's controller, so a two-node launch with the shipped consoles
- * provisioned -- the four-processor rig's exact configuration -- died
- * in chardev init ("chardev 'elsc' is already in use") before a byte
- * of console output. Launching at all is this test's first assertion;
- * the acp round-trips pin that each node's controller kept its own
- * backend and no capture leaked to the other tower's ringbuf.
+ * for each: node 0's AUX on serial index 2 and node 1's on index 6.
+ * The lines are node-major with a fixed stride of four, so node 1's
+ * block starts at index 4 -- its base I/O ports on 4 and 5, left
+ * unbacked here, and its AUX on 6. The model once handed index 2 to
+ * every node's controller, so a two-node launch with the shipped
+ * consoles provisioned -- the four-processor rig's exact configuration
+ * -- died in chardev init ("chardev 'elsc' is already in use") before a
+ * byte of console output. Launching at all is this test's first
+ * assertion; the acp round-trips pin that each node's controller kept
+ * its own backend and no capture leaked to the other tower's ringbuf.
  */
 static void test_two_towers_take_two_aux_backends(const void *data)
 {
@@ -986,6 +988,7 @@ static void test_two_towers_take_two_aux_backends(const void *data)
         "-serial null -serial null "
         "-chardev ringbuf,id=aux0,size=4096 -serial chardev:aux0 "
         "-serial null "
+        "-serial null -serial null "
         "-chardev ringbuf,id=aux1,size=4096 -serial chardev:aux1");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
