@@ -108,6 +108,7 @@ struct XframeState {
     uint64_t xmsi_address;      /* MSI address / byte-swap scratch */
     uint64_t sw_reset;          /* reset-lane control (key is write-only) */
     uint64_t adapter_control;   /* ADAPTER_EN, LED, EOI, wait-int, ECC */
+    uint64_t general_int_mask;  /* GENERAL_INT_MASK: top-level interrupt mask */
     uint64_t mac_cfg;           /* TMAC/RMAC config, key-locked */
     bool rmac_cfg_unlocked;     /* RMAC_CFG_KEY unlocks a MAC_CFG write */
     uint64_t rmac_addr_cmd;     /* MAC-table command/strobe/offset */
@@ -146,6 +147,14 @@ struct XframeState {
      */
     uint64_t rx_page_addr;
     uint32_t rx_desc_idx;
+
+    /*
+     * Recovery poll for a ring the guest refills in place (see
+     * xframe_rx_recovery_timer_cb in xframe.c). Transient netdev-queue
+     * recovery machinery, not device state a migrated-in target needs to
+     * reproduce: not part of VMState.
+     */
+    QEMUTimer *rx_recovery_timer;
 
     /* The netdev frontend. */
     NICConf conf;
