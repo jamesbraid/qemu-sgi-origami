@@ -174,6 +174,13 @@ struct SGIHubState {
      * write-only override beside it keeps no state at all.
      */
     uint64_t ni_io_protect;
+
+    /*
+     * Reset permission (one bit, resets permissive, never consulted)
+     * and link diagnostics (nineteen bits stored, never acted on).
+     */
+    uint64_t ni_protection;
+    uint64_t ni_diag_parms;
     uint8_t ni_meta_route[SGI_HUB_META_ROUTES];
     uint8_t ni_local_route[SGI_HUB_LOCAL_ROUTES];
 

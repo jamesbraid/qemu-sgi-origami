@@ -139,8 +139,11 @@
 #define MD_MEM_DIMM_INIT    0x200090
 #define MD_DIR_DIMM_INIT    0x200098
 #define NI_STATUS           0x600000
+#define NI_PROTECTION       0x600010
 #define NI_SCRATCH_0        0x600100
 #define NI_SCRATCH_1        0x600108
+#define NI_DIAG_PARMS       0x600110
+#define NI_DIAG_PARMS_MASK  0x7ffffULL
 #define NI_VECTOR_PARMS     0x600200
 #define NI_VECTOR           0x600208
 #define NI_VECTOR_DATA      0x600210
@@ -1859,6 +1862,97 @@ static void test_io_protect_registers_answer_the_vector_decode(
 }
 
 /*
+ * The protection-configuration register: one bit that permits reset,
+ * resetting permissive. Storage the model never consults -- the
+ * port-reset path must not require it armed, because Linux never arms
+ * it -- but OpenBSD arms it before rebooting, so it must store and
+ * read back.
+ */
+static void test_protection_config_register(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PROTECTION), ==, 1);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_PROTECTION, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PROTECTION), ==, 0);
+
+    /* One-bit storage. */
+    qtest_writeq(qts, HUB_LOCAL + NI_PROTECTION, 0xffULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PROTECTION), ==, 1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The diagnostic-parameters register: nineteen bits of link fault
+ * injection and tuning this machine stores and never acts on. The
+ * datasheet defines no reset value for the port-timeout bit and no
+ * nonzero reset for the rest, so reading zero at reset is the model's
+ * stated choice, the port-error precedent.
+ */
+static void test_diag_parms_register(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_DIAG_PARMS), ==, 0);
+
+    /* Nineteen-bit storage. */
+    qtest_writeq(qts, HUB_LOCAL + NI_DIAG_PARMS, 0xfffa5a5aULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_DIAG_PARMS), ==,
+                    0xfffa5a5aULL & NI_DIAG_PARMS_MASK);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Both registers through the remote vector decode. IRIX 6.5.30's
+ * fail-soft burst vector-reads the diagnostic parameters twice and
+ * vector-writes them once at every boot; on a two-chassis machine
+ * those launches reach the real peer, and an address-error completion
+ * there is a phantom failure in the OS rather than the PROM's
+ * diagnostic.
+ */
+static void test_ni_config_registers_answer_the_vector_decode(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t status;
+
+    status = vector_operation(qts, node0, NI_PROTECTION, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==, 1);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0);
+    status = vector_operation(qts, node0, NI_PROTECTION, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_PROTECTION), ==, 0);
+
+    status = vector_operation(qts, node0, NI_DIAG_PARMS, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==, 0);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0x1041);
+    status = vector_operation(qts, node0, NI_DIAG_PARMS, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_DIAG_PARMS), ==, 0x1041);
+
+    qtest_quit(qts);
+}
+
+/*
  * A half read of a read-to-clear register is unobserved on hardware; the
  * conservative choice pinned here is that only a full-width read clears.
  */
@@ -2590,6 +2684,13 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/io-protect-registers-answer-vector-decode",
                         NULL,
                         test_io_protect_registers_answer_the_vector_decode);
+    qtest_add_data_func("sn0/hub/ni-protection-config", NULL,
+                        test_protection_config_register);
+    qtest_add_data_func("sn0/hub/ni-diag-parms", NULL,
+                        test_diag_parms_register);
+    qtest_add_data_func("sn0/hub/ni-config-registers-answer-vector-decode",
+                        NULL,
+                        test_ni_config_registers_answer_the_vector_decode);
     qtest_add_data_func("sn0/hub/network-routes-reset-to-zero", NULL,
                         test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,
