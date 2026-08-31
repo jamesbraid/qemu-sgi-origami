@@ -333,6 +333,28 @@
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
+ * Protection configuration: one bit that permits reset, resetting
+ * permissive. Storage the model never consults -- the port-reset path
+ * must not require it armed, because Linux never arms it -- stored
+ * because OpenBSD arms it before rebooting.
+ */
+#define HUB_NI_PROTECTION       0x600010
+#define NI_PROTECTION_MASK      0x1ULL
+#define NI_PROTECTION_RESET     0x1ULL
+
+/*
+ * Diagnostic parameters: nineteen bits of link fault injection and
+ * tuning -- a port-timeout reset, forced eight-bit mode, port disable,
+ * deliberate data errors -- every one acting on a link this machine
+ * does not model, so the bits are stored and never acted on. The
+ * network-interface datasheet defines no reset value for the
+ * port-timeout bit and no nonzero reset for the rest; zero at reset
+ * is the model's stated choice, the port-error precedent.
+ */
+#define HUB_NI_DIAG_PARMS       0x600110
+#define NI_DIAG_PARMS_MASK      0x7ffffULL
+
+/*
  * PIO protection: region-permission storage this model never consults
  * -- one bit per region, permissive at reset -- and its write-only
  * override, whose only documented semantic is that writing the
@@ -2003,6 +2025,18 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_TRACE_WRITE,
       .store = sgi_hub_store_ni_status },
     { .offset = HUB_NI_PORT_RESET, .write = sgi_hub_write_port_reset },
+    /*
+     * Reset permission and link diagnostics: storage nothing consults
+     * or acts on. Both answer the remote vector decode -- IRIX
+     * 6.5.30's fail-soft burst vector-reads and vector-writes the
+     * diagnostic parameters at every boot, so on a two-chassis
+     * machine an address-error completion there is a phantom failure
+     * in the OS.
+     */
+    { .offset = HUB_NI_PROTECTION,
+      .field = offsetof(SGIHubState, ni_protection), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_PROTECTION_MASK },
     { .offset = HUB_NI_SCRATCH_0, .arg = 0,
       .field = offsetof(SGIHubState, ni_scratch[0]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR |
@@ -2013,6 +2047,10 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR |
                HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
       .wmask = ~0ULL, .write = sgi_hub_write_ni_scratch },
+    { .offset = HUB_NI_DIAG_PARMS,
+      .field = offsetof(SGIHubState, ni_diag_parms), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_DIAG_PARMS_MASK },
     { .offset = HUB_NI_VECTOR_PARMS, .write = sgi_hub_write_vector_parms },
     { .offset = HUB_NI_VECTOR,
       .field = offsetof(SGIHubState, ni_vector), .width = 8,
@@ -2429,6 +2467,8 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->ni_vector_read_data = 0;
     s->ni_port_parms = NI_PORT_PARMS_RESET;
     s->ni_io_protect = NI_IO_PROTECT_RESET;
+    s->ni_protection = NI_PROTECTION_RESET;
+    s->ni_diag_parms = 0;
     memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
     memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
 
@@ -2608,7 +2648,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 21,
+    .version_id = 22,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -2632,6 +2672,8 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_port_parms, SGIHubState, 20),
         VMSTATE_UINT64_V(ni_io_protect, SGIHubState, 21),
+        VMSTATE_UINT64_V(ni_protection, SGIHubState, 22),
+        VMSTATE_UINT64_V(ni_diag_parms, SGIHubState, 22),
         VMSTATE_UINT8_ARRAY_V(ni_meta_route, SGIHubState,
                              SGI_HUB_META_ROUTES, 16),
         VMSTATE_UINT8_ARRAY_V(ni_local_route, SGIHubState,
