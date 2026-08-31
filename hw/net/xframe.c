@@ -28,6 +28,7 @@
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/xframe.h"
 #include "hw/pci/pci.h"
@@ -41,6 +42,8 @@
  * touches. Public OpenBSD if_xgereg.h / Linux s2io-regs.h names, taken from
  * docs/datasheets/xframe.md's register map. All registers are 64-bit.
  */
+#define XFRAME_GENERAL_INT_STATUS   0x0000
+#define XFRAME_GENERAL_INT_MASK     0x0008
 #define XFRAME_SW_RESET             0x0100
 #define XFRAME_ADAPTER_STATUS       0x0108
 #define XFRAME_ADAPTER_CONTROL      0x0110
@@ -63,6 +66,30 @@
  * order and never scrambles a read.
  */
 #define XFRAME_SWAPPER_MAGIC        0x0123456789abcdefULL
+
+/*
+ * GENERAL_INT_STATUS's receive-traffic aggregate bit (Linux s2io-regs.h
+ * GEN_INTR_RXTRAFFIC = s2BIT(40); s2io.h's s2BIT(loc) is
+ * 0x8000000000000000ULL >> loc, i.e. bit 63-loc -- the same MSB-first
+ * numbering already cross-checked against OpenBSD's ADAPTER_EN for
+ * ADAPTER_CONTROL). GENERAL_INT_STATUS itself is not modelled as stored
+ * state: it is derived from the same per-block status this device already
+ * keeps (currently just RX_TRAFFIC_INT), so it cannot drift out of sync
+ * with the register that actually clears on acknowledgement.
+ */
+#define XFRAME_GEN_INTR_RXTRAFFIC   (1ULL << 23)
+
+/*
+ * GENERAL_INT_MASK's reset value is marked OPEN in the datasheet
+ * ("OPEN (masked)"): the drivers never assert what they find at power-on,
+ * only that they must unmask before interrupts do anything. Both drivers
+ * mask by writing all-ones (Linux s2io.h's DISABLE_ALL_INTRS /
+ * S2IO_MINUS_ONE, OpenBSD implicitly via the same all-ones convention on
+ * the sibling traffic-interrupt registers), so an all-ones reset -- fully
+ * masked until a driver unmasks it -- is the concrete bit pattern the
+ * public sources actually use for "masked", not an invented default.
+ */
+#define XFRAME_GENERAL_INT_MASK_RESET  0xffffffffffffffffULL
 
 /*
  * ADAPTER_STATUS quiescent/ready value the driver's single non-retrying attach
@@ -118,12 +145,21 @@ static void xframe_load_factory_mac(XframeState *s)
 
 /*
  * Recompute the INTx line from the device's one interrupt source modelled so
- * far: receive completion. A transmit-completion source, if one is ever
- * added, would OR in here too.
+ * far: receive completion, gated by GENERAL_INT_MASK the way both drivers
+ * gate it. Linux's s2io_isr masks GENERAL_INT_MASK to all-ones on entry and
+ * restores the driver's own mask on exit, once per interrupt serviced;
+ * OpenBSD's xge_init instead unmasks once at bring-up
+ * ("PIF_WCSR(GENERAL_INT_MASK, 0);") and its xge_intr never touches the mask
+ * again. Either way it is a real, driver-written mask, not a register the
+ * silicon carries but no driver programs. A transmit-completion source, if
+ * one is ever added, would OR in here too.
  */
 static void xframe_update_irq(XframeState *s)
 {
-    pci_set_irq(PCI_DEVICE(s), s->rx_traffic_int != 0);
+    bool pending = s->rx_traffic_int != 0 &&
+                  !(s->general_int_mask & XFRAME_GEN_INTR_RXTRAFFIC);
+
+    pci_set_irq(PCI_DEVICE(s), pending);
 }
 
 /*
@@ -151,6 +187,13 @@ static void xframe_soft_reset(XframeState *s)
     s->rx_traffic_int = 0;
     s->rx_page_addr = 0;
     s->rx_desc_idx = 0;
+    s->general_int_mask = XFRAME_GENERAL_INT_MASK_RESET;
+    /*
+     * Reset tears the ring down, so a recovery poll left running from before
+     * has nothing left to recover -- stop it rather than let it keep firing
+     * against a ring that no longer exists in any guest-meaningful sense.
+     */
+    timer_del(s->rx_recovery_timer);
     xframe_load_factory_mac(s);
     xframe_update_irq(s);
 }
@@ -216,6 +259,18 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
         return s->prc_rxd0_0;
     case XFRAME_PRC_CTRL_0:
         return s->prc_ctrl_0;
+    case XFRAME_GENERAL_INT_STATUS:
+        /*
+         * The top-level aggregate both drivers read before touching any
+         * per-block register (OpenBSD xge_intr, Linux s2io_isr: "reason =
+         * readq(&bar0->general_int_status)"). Derived from the per-block
+         * state this device keeps rather than stored on its own, so it can
+         * never disagree with RX_TRAFFIC_INT about whether receive traffic
+         * is pending.
+         */
+        return s->rx_traffic_int != 0 ? XFRAME_GEN_INTR_RXTRAFFIC : 0;
+    case XFRAME_GENERAL_INT_MASK:
+        return s->general_int_mask;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "xframe: PIF read at 0x%" PRIx64 " (size %u) is not "
@@ -274,7 +329,17 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
          * Write-1-to-clear: the driver reads the pending bits and writes the
          * same value back to clear exactly those (OpenBSD if_xge.c's
          * xge_intr: "if ((val = PIF_RCSR(RX_TRAFFIC_INT)))
-         * PIF_WCSR(RX_TRAFFIC_INT, val);").
+         * PIF_WCSR(RX_TRAFFIC_INT, val);"; Linux s2io.c's s2io_isr writes
+         * S2IO_MINUS_ONE, its all-ones write-1-clear-everything sentinel:
+         * "if (reason & GEN_INTR_RXTRAFFIC) writeq(S2IO_MINUS_ONE,
+         * &bar0->rx_traffic_int);"). This is the real receive-interrupt ACK
+         * and is modelled here for its own sake, but it does not recover a
+         * ring refilled in place: both drivers perform this exact write
+         * BEFORE refilling anything -- OpenBSD's xge_intr acks here and only
+         * then walks the ring, calling xge_add_rxbuf per descriptor as it
+         * goes; Linux's s2io_isr is the same order. A flush fired from this
+         * write would find the ring still empty. xframe_rx_recovery_timer_cb
+         * is what actually recovers that case; see its comment.
          */
         s->rx_traffic_int &= ~val;
         xframe_update_irq(s);
@@ -284,17 +349,10 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
         s->rx_page_addr = val;
         s->rx_desc_idx = 0;
         /*
-         * Flushing here recovers a netdev queue a prior 0 return left
-         * holding a frame -- but only for the case this register write
-         * covers: the guest re-arming the ring itself. It is not a general
-         * fix for a ring that ran dry under sustained traffic. Both public
-         * drivers refill a live ring by flipping an RxD's OWN bit directly
-         * in guest RAM (OpenBSD xge_add_rxbuf, Linux fill_rx_buffers), never
-         * through a register write, so that refill never reaches this flush
-         * -- a ring exhausted and refilled in place stays wedged in the
-         * netdev queue until something else re-arms it. Tracked as a
-         * follow-on slice (RX recovery under ring exhaustion), not fixed
-         * here.
+         * Recovers a netdev queue a prior 0 return left holding a frame, for
+         * the case this register write covers: the guest re-arming the ring
+         * itself. xframe_rx_recovery_timer_cb is what recovers a ring
+         * refilled in place under sustained traffic instead.
          */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
@@ -314,8 +372,23 @@ static void xframe_pif_write(void *opaque, hwaddr addr, uint64_t val,
                           (unsigned)((val >> 48) & 3));
         }
         s->prc_ctrl_0 = val;
-        /* Same flush, same in-place-refill limitation as PRC_RXD0_0 above. */
+        /* Same flush, same guest-re-arms-the-ring case as PRC_RXD0_0 above. */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        return;
+    case XFRAME_GENERAL_INT_STATUS:
+        /*
+         * OpenBSD's xge_intr writes back exactly what it read here
+         * ("PIF_WCSR(GENERAL_INT_STATUS, val);"); Linux's s2io_isr never
+         * writes it at all, only reads it. Either driver's real per-source
+         * acknowledgement is the RX_TRAFFIC_INT write above, and this
+         * aggregate is derived rather than stored (see xframe_pif_read), so
+         * there is nothing of its own for a write here to clear. Accepted
+         * without effect.
+         */
+        return;
+    case XFRAME_GENERAL_INT_MASK:
+        s->general_int_mask = val;
+        xframe_update_irq(s);
         return;
     case XFRAME_ADAPTER_STATUS:
     case XFRAME_PIF_RD_SWAPPER_FB:
@@ -554,6 +627,14 @@ static const MemoryRegionOps xframe_txp_ops = {
 #define XFRAME_RX_TRAFFIC_RING0      (1ULL << 63)
 
 /*
+ * Modest, arbitrary period for the recovery poll below -- not a modelled
+ * hardware timer (the real card's own coalescing timers are out of scope
+ * here), just short enough that a qtest or a guest driver never notices the
+ * delay.
+ */
+#define XFRAME_RX_RECOVERY_PERIOD_MS  5
+
+/*
  * Follow the ring's next-page pointer once its 127 descriptors are used up.
  * Left in place (index forced back to the page's own start) on a DMA
  * failure: xframe_rx_head's ring-index hygiene then finds that slot already
@@ -661,18 +742,45 @@ static bool xframe_rx_filter(XframeState *s, const uint8_t *buf, size_t size)
 }
 
 /*
+ * Arm the recovery poll if it is not already running. Guarded rather than an
+ * unconditional timer_mod: both call sites below can run repeatedly while
+ * the ring stays genuinely exhausted (can_receive is polled on every packet
+ * QEMU's netdev core considers sending), and resetting the deadline on every
+ * one of those polls would keep pushing it out and never let the poll fire.
+ */
+static void xframe_rx_arm_recovery(XframeState *s)
+{
+    if (!timer_pending(s->rx_recovery_timer)) {
+        timer_mod(s->rx_recovery_timer,
+                 qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                 XFRAME_RX_RECOVERY_PERIOD_MS);
+    }
+}
+
+/*
  * Whether the receive engine has anywhere to put a frame right now: the ring
  * armed and its head descriptor owned by the card. Not gated on ADAPTER_EN
  * or MAC_CFG's RMAC_EN, the same simplification the transmit doorbell
  * already makes -- a driver arms the ring and enables the adapter together.
+ *
+ * QEMU's netdev core checks this BEFORE ever calling receive(): a packet
+ * this refuses is queued directly and receive() is never invoked for it, so
+ * this -- not receive()'s own 0 return -- is where the genuine no-buffer
+ * condition is actually seen in practice, and where the recovery poll has to
+ * be armed for a ring the guest will go on to refill in place.
  */
 static bool xframe_can_receive(NetClientState *nc)
 {
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     uint64_t desc_addr;
     uint8_t raw[XFRAME_RXD_SIZE];
+    bool owned = xframe_rx_head(s, &desc_addr, raw);
 
-    return xframe_rx_head(s, &desc_addr, raw);
+    if (!owned) {
+        xframe_rx_arm_recovery(s);
+    }
+
+    return owned;
 }
 
 /*
@@ -701,10 +809,17 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     uint8_t word[8];
 
     if (!xframe_rx_head(s, &desc_addr, raw)) {
-        return 0;   /* the genuine no-buffer condition */
+        /*
+         * The genuine no-buffer condition -- reached here, rather than only
+         * from can_receive's own gate, when a recovery-poll flush retries a
+         * queued packet directly and still finds nothing owned.
+         */
+        xframe_rx_arm_recovery(s);
+        return 0;
     }
 
     if (!xframe_rx_filter(s, buf, size)) {
+        timer_del(s->rx_recovery_timer);
         return size;
     }
 
@@ -751,8 +866,36 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     s->rx_traffic_int |= XFRAME_RX_TRAFFIC_RING0;
     xframe_update_irq(s);
+    timer_del(s->rx_recovery_timer);
 
     return size;
+}
+
+/*
+ * Re-attempt delivery of whatever the netdev queue is holding. Armed by
+ * xframe_rx_arm_recovery -- called from can_receive's own no-buffer case,
+ * where QEMU's netdev core actually turns a refused packet away before
+ * receive() is ever invoked, and again from receive()'s genuine no-buffer
+ * return for a flush-triggered retry that still finds nothing. Disarmed by
+ * every other return from receive(), so this only ever runs during the
+ * window between "a frame was refused for lack of an owned descriptor" and
+ * "the ring has one again".
+ *
+ * This -- not the RX_TRAFFIC_INT acknowledge modelled above -- is what
+ * recovers a ring the guest refills in place (flips an RxD's OWN bit
+ * directly in guest RAM, no register write at all): both public drivers
+ * acknowledge the receive interrupt BEFORE refilling any descriptor
+ * (OpenBSD's xge_intr acks RX_TRAFFIC_INT and only then walks the ring,
+ * calling xge_add_rxbuf per descriptor as it goes; Linux's s2io_isr is the
+ * same order), so nothing the guest writes to a register ever lands after
+ * the refill for this device to hook a flush onto. Polling is the only
+ * mechanism left that can still notice the refill once it happens.
+ */
+static void xframe_rx_recovery_timer_cb(void *opaque)
+{
+    XframeState *s = opaque;
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
 static NetClientInfo xframe_net_info = {
@@ -780,6 +923,9 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
 {
     XframeState *s = XFRAME(dev);
     DeviceState *d = DEVICE(dev);
+
+    s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                        xframe_rx_recovery_timer_cb, s);
 
     /*
      * The class-level defaults set vendor/device id (and, absent a
@@ -827,20 +973,24 @@ static void xframe_exit(PCIDevice *dev)
 {
     XframeState *s = XFRAME(dev);
 
+    timer_free(s->rx_recovery_timer);
     qemu_del_nic(s->nic);
 }
 
 /*
  * The migratable register state, per docs/datasheets/xframe.md's "VMState /
  * migration fields": the byte-swap and scratch registers, ADAPTER_CONTROL,
- * MAC_CFG and its unlock latch, the whole MAC-address table (entry 0's factory
- * address plus any programmed entry -- whatever the guest wrote must survive
- * migration exactly), the per-FIFO pending transmit list pointer, and the
- * receive ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the pending
- * RX_TRAFFIC_INT status, and the card's current walk position through the
- * ring). The netdev frontend's own state lives in NICConf, which every NIC
- * model leaves out of its VMState (see hw/net/sgi-ioc3-eth.c and
- * hw/net/rtl8139.c); PCI config space is covered by VMSTATE_PCI_DEVICE.
+ * GENERAL_INT_MASK, MAC_CFG and its unlock latch, the whole MAC-address
+ * table (entry 0's factory address plus any programmed entry -- whatever
+ * the guest wrote must survive migration exactly), the per-FIFO pending
+ * transmit list pointer, and the receive ring's own bookkeeping
+ * (PRC_RXD0_0/PRC_CTRL_0, the pending RX_TRAFFIC_INT status, and the card's
+ * current walk position through the ring). GENERAL_INT_STATUS needs no
+ * field of its own: it is derived from RX_TRAFFIC_INT on every read, so
+ * migrating that one register is enough to reproduce it. The netdev
+ * frontend's own state lives in NICConf, which every NIC model leaves out
+ * of its VMState (see hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI
+ * config space is covered by VMSTATE_PCI_DEVICE.
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
@@ -852,6 +1002,7 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(xmsi_address, XframeState),
         VMSTATE_UINT64(sw_reset, XframeState),
         VMSTATE_UINT64(adapter_control, XframeState),
+        VMSTATE_UINT64(general_int_mask, XframeState),
         VMSTATE_UINT64(mac_cfg, XframeState),
         VMSTATE_BOOL(rmac_cfg_unlocked, XframeState),
         VMSTATE_UINT64(rmac_addr_cmd, XframeState),

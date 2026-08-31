@@ -26,8 +26,11 @@
  *  - The receive descriptor ring (the RxDMA registers plus the RxD ring in
  *    guest memory): a golden delivered frame with its completion status and
  *    interrupt, the out-of-range ring-pointer hang guard, the
- *    filtered-frame-still-counts-as-consumed hang guard, and a buffer
- *    smaller than the frame truncating rather than overrunning.
+ *    filtered-frame-still-counts-as-consumed hang guard, a buffer smaller
+ *    than the frame truncating rather than overrunning, and a ring
+ *    exhausted then refilled in place (real driver order: the interrupt-ACK
+ *    write first, then the refill) recovering through the device's own
+ *    recovery-poll timer.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -163,11 +166,19 @@
 #define RX_TRAFFIC_RING0         (1ULL << 63)
 
 /*
+ * How far to step QEMU_CLOCK_VIRTUAL (frozen under qtest until stepped
+ * explicitly) to cross the device's own recovery-poll period
+ * (XFRAME_RX_RECOVERY_PERIOD_MS in xframe.c, 5 ms) with comfortable margin.
+ */
+#define RX_RECOVERY_STEP_NS      (20 * 1000 * 1000)
+
+/*
  * A 1-buffer-mode RxD is four 64-bit words: host control, control1, control2,
  * buffer pointer. control1 carries ownership (bit 56, 1=card/0=host) and the
  * status code (XCODE, bits 51:48); control2 carries the buffer size in bits
  * 63:48 -- the posted capacity, overwritten by the received length.
  */
+#define RXD_SIZE                 32
 #define RXD_OWN                  (1ULL << 56)
 #define RXD_XCODE_SHIFT          48
 #define RXD_XCODE_MASK           0xf
@@ -439,6 +450,25 @@ static bool xframe_wait_rx_traffic(XframeTx *t, int attempts)
 }
 
 /*
+ * Poll one RxD's ownership bit rather than RX_TRAFFIC_INT: the status bit
+ * is sticky across every delivery until acknowledged, so once more than one
+ * descriptor is in play it cannot tell which one landed. The descriptor's
+ * own OWN bit can.
+ */
+static bool xframe_wait_rxd_consumed(XframeTx *t, uint64_t desc, int attempts)
+{
+    int i;
+
+    for (i = 0; i < attempts; i++) {
+        if (!(dma_ldq_le(t->qs->qts, desc + 8) & RXD_OWN)) {
+            return true;
+        }
+        g_usleep(1000);
+    }
+    return false;
+}
+
+/*
  * Receive: post a card-owned RxD, inject a frame addressed to the station
  * MAC over the socket backend, and assert it lands in the guest buffer with
  * the documented status and that the receive interrupt is raised. A golden
@@ -595,6 +625,111 @@ static void test_receive_buffer_too_small_truncates(void)
 
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(landed));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Recovery after ring exhaustion, through the real path: a recovery poll,
+ * not the driver's interrupt-ACK write. Both public drivers acknowledge the
+ * receive interrupt (read RX_TRAFFIC_INT, write the pending bits back)
+ * BEFORE refilling any descriptor -- OpenBSD's xge_intr acks and only then
+ * walks the ring calling xge_add_rxbuf per descriptor; Linux's s2io_isr is
+ * the same order -- and a live ring is never refilled by rewriting
+ * PRC_RXD0_0/PRC_CTRL_0 either: both drivers flip a consumed RxD's OWN bit
+ * directly in guest RAM instead (OpenBSD xge_add_rxbuf, Linux
+ * fill_rx_buffers), no register write at all. So nothing the guest ever
+ * writes to a register lands after the refill for a register-write-triggered
+ * flush to hook onto; only a poll can notice it. This test reproduces the
+ * real order -- ack, then refill, then let the recovery poll's next tick
+ * run -- rather than the reverse, which would pass for the wrong reason.
+ *
+ * Two descriptors are posted and consumed to run the ring dry; a third frame
+ * then finds no owned descriptor and is left queued by QEMU's netdev core,
+ * which disables further delivery until something flushes it. The queued
+ * frame must land once the recovery poll's timer fires after the refill:
+ * this is the mechanism this whole slice adds, and without it (or with the
+ * ack write wrongly modelled as what recovers it) this assertion is exactly
+ * what fails.
+ */
+static void test_receive_recovers_after_exhaustion_via_recovery_poll(void)
+{
+    XframeTx t;
+    uint8_t frame1[64], frame2[64], frame3[64];
+    uint8_t landed[64];
+    uint64_t slot0 = RX_RING_BASE + 0 * RXD_SIZE;
+    uint64_t slot1 = RX_RING_BASE + 1 * RXD_SIZE;
+    uint64_t slot2 = RX_RING_BASE + 2 * RXD_SIZE;
+    uint64_t pending;
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame1); i++) {
+        frame1[i] = (uint8_t)(0x10 + i);
+        frame2[i] = (uint8_t)(0x30 + i);
+        frame3[i] = (uint8_t)(0x50 + i);
+    }
+    memcpy(frame1, xframe_station_mac, sizeof(xframe_station_mac));
+    memcpy(frame2, xframe_station_mac, sizeof(xframe_station_mac));
+    memcpy(frame3, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+
+    /* A two-descriptor ring: just enough capacity to run dry on frame 3. */
+    xframe_program_rxd(&t, slot0, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_program_rxd(&t, slot1, RX_BUF1, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame1, sizeof(frame1));
+    g_assert_true(xframe_wait_rxd_consumed(&t, slot0, 5000));
+
+    net_socket_send_frame(t.host_fd, frame2, sizeof(frame2));
+    g_assert_true(xframe_wait_rxd_consumed(&t, slot1, 5000));
+
+    /*
+     * The ring is dry: slot 2 was never posted, so this frame finds no
+     * owned descriptor and is left in QEMU's netdev queue rather than
+     * delivered. There is no register or memory state that distinguishes
+     * "queued, waiting for recovery" from "never reached the device at
+     * all" -- an untouched descriptor's OWN bit reads exactly like a
+     * completed one's, 0, so asserting that here would not test anything.
+     * The sleep only gives the socket backend real wall-clock time to
+     * actually read the frame off the wire and hit the no-buffer path; the
+     * real proof this frame was genuinely stuck behind exhaustion is that
+     * this test fails at the final assertion without the fix in this
+     * commit.
+     */
+    net_socket_send_frame(t.host_fd, frame3, sizeof(frame3));
+    g_usleep(200000);
+
+    /*
+     * The driver's own interrupt-ACK idiom -- read the pending bits, write
+     * them back -- performed FIRST, matching the real order both drivers
+     * use. It does not itself recover anything here: the ring is still
+     * empty at this point, exactly as it is for the real drivers.
+     */
+    pending = sock_pif_readq(&t, RX_TRAFFIC_INT);
+    g_assert_cmphex(pending & RX_TRAFFIC_RING0, ==, RX_TRAFFIC_RING0);
+    sock_pif_writeq(&t, RX_TRAFFIC_INT, pending);
+
+    /*
+     * Refill in place, after the ack: guest RAM only, exactly what a
+     * driver's own refill touches (OpenBSD xge_add_rxbuf, Linux
+     * fill_rx_buffers), never PRC_RXD0_0/PRC_CTRL_0.
+     */
+    xframe_program_rxd(&t, slot2, RX_BUF0, RX_BUF_CAPACITY);
+
+    /*
+     * Nothing register-visible follows the refill for either driver, so
+     * only the recovery poll's own timer can notice it. QEMU_CLOCK_VIRTUAL
+     * is frozen under qtest until stepped explicitly, so advance it past
+     * the timer's period rather than waiting on wall time, which would
+     * never make it fire at all.
+     */
+    qtest_clock_step(t.qs->qts, RX_RECOVERY_STEP_NS);
+
+    g_assert_true(xframe_wait_rxd_consumed(&t, slot2, 5000));
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(frame3), frame3, sizeof(frame3));
 
     xframe_tx_stop(&t);
 }
@@ -957,6 +1092,8 @@ int main(int argc, char **argv)
                    test_receive_filtered_frame_does_not_wedge);
     qtest_add_func("xframe/receive-buffer-too-small-truncates",
                    test_receive_buffer_too_small_truncates);
+    qtest_add_func("xframe/receive-recovers-after-exhaustion-via-recovery-poll",
+                   test_receive_recovers_after_exhaustion_via_recovery_poll);
 
     return g_test_run();
 }
