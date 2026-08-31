@@ -162,6 +162,7 @@
 #define NVS_TARGET_SHIFT    51
 #define NVS_TARGET_MASK     (0x3ffULL << NVS_TARGET_SHIFT)
 #define NVS_TYPE_MASK       0x7ULL
+#define NVS_ADDRESS_ERROR   4
 #define PIOTYPE_READ        0
 #define PIOTYPE_WRITE       1
 #define PIOTYPE_EXCHANGE    3
@@ -1731,6 +1732,45 @@ static void test_llp_port_registers_answer_the_vector_decode(
 }
 
 /*
+ * A vector write lands only on a row that can store. The port error
+ * register takes the write and stores nothing -- the datasheet says the
+ * register is writable, and no fabric here ever latches a count for the
+ * write to clear -- while its clearing alias, which no source documents
+ * as writable, rejects the write the way an undecoded register does.
+ * Before the decode checked what a row can store, both writes fell
+ * through the raw store to state offset zero and corrupted the target
+ * hub's object header behind a success completion.
+ */
+static void test_vector_writes_land_only_on_rows_that_store(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t status;
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, ~0ULL);
+    status = vector_operation(qts, node0, NI_PORT_ERROR, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_PORT_ERROR), ==, 0);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, ~0ULL);
+    status = vector_operation(qts, node0, NI_PORT_ERROR_CLEAR,
+                              PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | NVS_ADDRESS_ERROR);
+
+    qtest_quit(qts);
+}
+
+/*
  * A half read of a read-to-clear register is unobserved on hardware; the
  * conservative choice pinned here is that only a full-width read clears.
  */
@@ -2454,6 +2494,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/llp-port-registers-answer-vector-decode",
                         NULL,
                         test_llp_port_registers_answer_the_vector_decode);
+    qtest_add_data_func("sn0/hub/vector-writes-land-only-on-rows-that-store",
+                        NULL,
+                        test_vector_writes_land_only_on_rows_that_store);
     qtest_add_data_func("sn0/hub/network-routes-reset-to-zero", NULL,
                         test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,
