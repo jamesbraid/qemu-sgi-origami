@@ -388,6 +388,8 @@ static void test_a_one_wire_reset_finds_the_ethernet_address_part(
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
 
     sn0_ioc3_attach(qts);
+    /* Route the MicroLAN engine onto its pin, as a driver does before use. */
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
     /*
      * The part answers a reset by pulling the wire low; high is what "no
@@ -396,6 +398,25 @@ static void test_a_one_wire_reset_finds_the_ethernet_address_part(
     qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
                     0);
+
+    qtest_quit(qts);
+}
+
+static void test_the_one_wire_bus_is_dead_until_enabled(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    sn0_ioc3_attach(qts);
+
+    /*
+     * Pin-control bit 21 routes the MicroLAN engine onto pin 8; until a
+     * guest sets it the one-wire bus is disconnected. With the bit clear a
+     * reset slot reaches no part: the wire floats high (level set), rather
+     * than being pulled low by the station-address part answering.
+     */
+    qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
+    g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
+                    MICROLAN_LEVEL);
 
     qtest_quit(qts);
 }
@@ -412,6 +433,8 @@ static void test_one_wire_slot_preserves_the_timing_written(const void *data)
     uint32_t timing = written & ~(MICROLAN_LEVEL | MICROLAN_DONE);
 
     sn0_ioc3_attach(qts);
+    /* Route the MicroLAN engine onto its pin, as a driver does before use. */
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
     /*
      * With no reset yet the part is idle and does not drive the wire, so
@@ -901,6 +924,8 @@ static QTestState *sn0_ioc3_attach_with_mac(int host_fd, const char *mac)
     qts = qtest_init(args);
     g_free(args);
     sn0_ioc3_attach(qts);
+    /* Route the MicroLAN engine onto its pin, as a driver does before use. */
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
     return qts;
 }
 
@@ -1211,6 +1236,8 @@ static void test_the_default_station_address_is_an_sgi_address(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = sn0_ioc3_attach_with_netdev(sv[1]);
+    /* Route the MicroLAN engine onto its pin, as a driver does before use. */
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
     assert_ethernet_address_page(qts, ONEWIRE_SELECT_SEARCH, 0xf0, expected);
 
@@ -3838,6 +3865,9 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
 
     sn0_ioc3_attach_node(qts, 0);
     sn0_ioc3_attach_node(qts, NODE_STRIDE);
+    /* Each node's engine needs routing onto its pin before it answers. */
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
+    qtest_writel(qts, NODE_STRIDE + PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
     node0 = onewire_search_rom_node(qts, 0);
     node1 = onewire_search_rom_node(qts, NODE_STRIDE);
@@ -4302,6 +4332,8 @@ int main(int argc, char **argv)
                         test_a_one_wire_slot_always_finishes);
     qtest_add_data_func("sn0/ioc3/one-wire-reset-finds-the-part", NULL,
                         test_a_one_wire_reset_finds_the_ethernet_address_part);
+    qtest_add_data_func("sn0/ioc3/one-wire-dead-until-enabled", NULL,
+                        test_the_one_wire_bus_is_dead_until_enabled);
     qtest_add_data_func("sn0/ioc3/one-wire-slot-preserves-timing", NULL,
                         test_one_wire_slot_preserves_the_timing_written);
     qtest_add_data_func("sn0/ioc3/one-wire-search-finds-the-part", NULL,
