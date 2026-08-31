@@ -49,12 +49,26 @@
 #define XFRAME_SW_RESET             0x0100
 #define XFRAME_ADAPTER_STATUS       0x0108
 #define XFRAME_ADAPTER_CONTROL      0x0110
+#define XFRAME_PIC_INT_STATUS       0x0800
+#define XFRAME_PIC_INT_MASK         0x0808
+#define XFRAME_TXPIC_INT_REG        0x0810
+#define XFRAME_TXPIC_INT_MASK       0x0818
+#define XFRAME_RXPIC_INT_MASK       0x0830
+#define XFRAME_GPIO_INT_REG         0x0890
+#define XFRAME_GPIO_INT_MASK        0x0898
+#define XFRAME_TX_TRAFFIC_INT       0x08e0
+#define XFRAME_TX_TRAFFIC_MASK      0x08e8
 #define XFRAME_RX_TRAFFIC_INT       0x08f0
+#define XFRAME_RX_TRAFFIC_MASK      0x08f8
 #define XFRAME_SWAPPER_CTRL         0x0908
 #define XFRAME_PIF_RD_SWAPPER_FB    0x0910
+#define XFRAME_SCHED_INT_CTRL       0x0918
 #define XFRAME_XMSI_ADDRESS         0x0960
 #define XFRAME_PRC_RXD0_0           0x1930
 #define XFRAME_PRC_CTRL_0           0x1970
+#define XFRAME_MAC_INT_MASK         0x2008
+#define XFRAME_MAC_RMAC_ERR_REG     0x2028
+#define XFRAME_MAC_RMAC_ERR_MASK    0x2030
 #define XFRAME_MAC_CFG              0x2100
 #define XFRAME_RMAC_CFG_KEY         0x2120
 #define XFRAME_RMAC_ADDR_CMD_MEM    0x2128
@@ -82,25 +96,190 @@
 #define XFRAME_GEN_INTR_RXTRAFFIC   (1ULL << 23)
 
 /*
- * GENERAL_INT_MASK's reset value is marked OPEN in the datasheet
- * ("OPEN (masked)"): the drivers never assert what they find at power-on,
- * only that they must unmask before interrupts do anything. Both drivers
- * mask by writing all-ones (Linux s2io.h's DISABLE_ALL_INTRS /
- * S2IO_MINUS_ONE, OpenBSD implicitly via the same all-ones convention on
- * the sibling traffic-interrupt registers), so an all-ones reset -- fully
- * masked until a driver unmasks it -- is the concrete bit pattern the
- * public sources actually use for "masked", not an invented default.
+ * GENERAL_INT_STATUS's transmit-traffic aggregate bit (Linux s2io-regs.h
+ * GEN_INTR_TXTRAFFIC = s2BIT(8), i.e. bit 63-8 = 55), and the per-FIFO
+ * transmit-completion bit within TX_TRAFFIC_INT (TX_TRAFFIC_INT_n(n) =
+ * s2BIT(n), FIFO 0 = bit 63) -- the same MSB-first numbering and the
+ * transmit mirror of RX_TRAFFIC_INT. Both drivers unmask transmit traffic at
+ * bring-up (writing TX_TRAFFIC_MASK = 0) and ack TX_TRAFFIC_INT in their ISR.
  */
-#define XFRAME_GENERAL_INT_MASK_RESET  0xffffffffffffffffULL
+#define XFRAME_GEN_INTR_TXTRAFFIC   (1ULL << 55)
+#define XFRAME_TX_TRAFFIC_FIFO(n)   (1ULL << (63 - (n)))
+
+/*
+ * GENERAL_INT_STATUS's receive-MAC aggregate bit (Linux s2io-regs.h
+ * GEN_INTR_RXMAC = s2BIT(34), i.e. bit 63-34 = 29 in the same MSB-first
+ * numbering as GEN_INTR_RXTRAFFIC above). The RMAC link-state-change
+ * interrupt (below) is a receive-MAC-block source, so it rolls up into this
+ * top-level bit -- the aggregate both drivers read before descending to the
+ * per-block MAC_RMAC_ERR_REG (OpenBSD xge_intr, Linux s2io_isr).
+ */
+#define XFRAME_GEN_INTR_RXMAC       (1ULL << 29)
+
+/*
+ * MAC_RMAC_ERR_REG's link-state-change interrupt (OpenBSD if_xgereg.h
+ * RMAC_LINK_STATE_CHANGE_INT = 1ULL<<32; Linux s2io-regs.h s2BIT(31), the
+ * same bit 32). Both drivers unmask it at bring-up -- OpenBSD's xge_init
+ * writes MAC_RMAC_ERR_MASK = ~RMAC_LINK_STATE_CHANGE_INT and MAC_INT_MASK to
+ * leave only RMAC unmasked; Linux's en_dis_err_alarms adds it to the RX-MAC
+ * unmask set -- and both service it in their ISR (OpenBSD reads
+ * MAC_RMAC_ERR_REG and, if link restored, re-enables the adapter). It is the
+ * one interrupt that fires on an idle interface with no traffic: the link
+ * coming up. Write-1-to-clear, like RX_TRAFFIC_INT.
+ */
+#define XFRAME_RMAC_LINK_STATE_CHANGE_INT  (1ULL << 32)
+
+/*
+ * MAC_INT_STATUS/MAC_INT_MASK's receive-MAC roll-up bit (OpenBSD if_xgereg.h
+ * MAC_RMAC_INT = 1ULL<<62; MAC_TMAC_INT = 1ULL<<63 is the transmit-MAC sibling
+ * both drivers mask). The RMAC error/link block only rolls up into
+ * GEN_INTR_RXMAC when this bit is unmasked in MAC_INT_MASK -- OpenBSD xge_init
+ * writes MAC_INT_MASK = MAC_TMAC_INT (only RMAC unmasked); Linux
+ * en_dis_err_alarms unmasks MAC_INT_STATUS_RMAC_INT. So the link source is
+ * gated by two MAC masks: this block roll-up mask and MAC_RMAC_ERR_MASK's leaf
+ * link bit.
+ */
+#define XFRAME_MAC_RMAC_INT         (1ULL << 62)
+
+/*
+ * GENERAL_INT_STATUS's PCI-X-block aggregate bit (Linux s2io-regs.h
+ * GEN_INTR_TXPIC = s2BIT(0), i.e. bit 63 in the same MSB-first numbering as the
+ * other GEN_INTR bits above). The whole PIC block -- the GPIO link-state source
+ * below included -- rolls up into this one top-level bit, the one s2io_isr
+ * dispatches to s2io_txpic_intr_handle. (The chip's own name for the PIC
+ * block's general-status bit; nothing transmit-specific about it.)
+ */
+#define XFRAME_GEN_INTR_TXPIC       (1ULL << 63)
+
+/*
+ * PIC_INT_STATUS's GPIO sub-block aggregate bit (Linux s2io-regs.h PIC_INT_GPIO
+ * = s2BIT(4), i.e. bit 59). The GPIO leaf below rolls up into PIC_INT_STATUS
+ * here, and PIC_INT_MASK (0x808) gates this bit's contribution to
+ * GEN_INTR_TXPIC. IRIX xg opens the whole PIC block (writes PIC_INT_MASK = 0),
+ * so this bit is unmasked -- the block xg's bring-up actually enables.
+ */
+#define XFRAME_PIC_INT_GPIO         (1ULL << 59)
+
+/*
+ * PIC_INT_STATUS's TXPIC (PCI-X transmit) sub-block aggregate bit (Linux
+ * s2io-regs.h PIC_INT_TX = s2BIT(0), i.e. bit 63). The TXPIC leaf (TXPIC_INT_REG
+ * / TXPIC_INT_MASK) rolls up into PIC_INT_STATUS here, gated by PIC_INT_MASK
+ * (0x808). The scheduled interrupt below is delivered on this sub-block, the
+ * one xg unmasks (PIC_INT_MASK = 0, TXPIC_INT_MASK = 0) alongside the GPIO one.
+ */
+#define XFRAME_PIC_INT_TX           (1ULL << 63)
+
+/*
+ * The scheduled/periodic-interrupt timer control (Linux s2io-regs.h
+ * scheduled_int_ctrl at 0x918; SCHED_INT_CTRL_TIMER_EN = s2BIT(0) = bit 63 arms
+ * the timer, SCHED_INT_CTRL_ONE_SHOT = s2BIT(1) = bit 62 fires once rather than
+ * repeating). IRIX xg programs this at bring-up to feed its "no interrupts"
+ * watchdog with a traffic-independent periodic interrupt.
+ */
+#define XFRAME_SCHED_INT_CTRL_TIMER_EN  (1ULL << 63)
+#define XFRAME_SCHED_INT_CTRL_ONE_SHOT  (1ULL << 62)
+
+/*
+ * The scheduled interrupt's leaf latch in TXPIC_INT_REG (0x810), gated by
+ * TXPIC_INT_MASK (0x818). The public header (s2io-regs.h) names the TXPIC leaf
+ * bits for PCI-X transmit errors and marks the scheduled-interrupt routing and
+ * period (SCHED_INT_PERIOD) TBD, so this is a model-chosen bit in the same leaf
+ * register the source rolls up through -- placed in the high 32 bits so the
+ * ISR's high-half read acks it, like the GPIO link bits. Distinct from every
+ * PCIX_INT_REG_* error bit.
+ */
+#define XFRAME_TXPIC_INT_SCHED      (1ULL << 59)
+
+/*
+ * GPIO_INT_REG's link-state bits and GPIO_INT_MASK's matching mask bits (Linux
+ * s2io-regs.h GPIO_INT_REG_LINK_UP = s2BIT(2) = bit 61, GPIO_INT_REG_LINK_DOWN
+ * = s2BIT(1) = bit 62; GPIO_INT_MASK_LINK_UP/DOWN the same bit positions). The
+ * link-state interrupt an idle interface sees on the PIC/GPIO path -- a
+ * DIFFERENT source from the MAC RMAC_LINK_STATE_CHANGE path above. Linux's ISR
+ * reads PIC_INT_STATUS for PIC_INT_GPIO, then GPIO_INT_REG for LINK_UP, then
+ * enables the adapter and marks the link up (s2io_txpic_intr_handle); its
+ * Hercules enable path unmasks PIC_INT_GPIO in PIC_INT_MASK and
+ * GPIO_INT_MASK_LINK_UP in GPIO_INT_MASK (en_dis_able_nic_intrs). All the GPIO
+ * bits sit in the high 32 bits. Write-1-to-clear on the status, like the other
+ * status registers here.
+ */
+#define XFRAME_GPIO_INT_REG_LINK_UP    (1ULL << 61)
+#define XFRAME_GPIO_INT_REG_LINK_DOWN  (1ULL << 62)
+#define XFRAME_GPIO_INT_LINK_BITS      (XFRAME_GPIO_INT_REG_LINK_UP | \
+                                        XFRAME_GPIO_INT_REG_LINK_DOWN)
+
+/*
+ * ADAPTER_CONTROL's enable bit (OpenBSD if_xgereg.h ADAPTER_EN = 1ULL<<56):
+ * xge_enable sets it to bring the adapter up. The model arms the link-up
+ * timer on the 0->1 transition, modelling the link coming up shortly after.
+ */
+#define XFRAME_ADAPTER_EN           (1ULL << 56)
+
+/*
+ * How long after the driver enables the adapter the modelled link presents its
+ * FIRST edge -- a link-DOWN (see xframe_link_down_timer_cb). Real hardware
+ * raises the link event asynchronously, milliseconds after enable and after the
+ * driver's synchronous bring-up (which acks any stale link event before
+ * unmasking, so a same-instant latch would be wiped). A short virtual-time
+ * delay reproduces that ordering without a modelled PHY. Not a hardware timer;
+ * sized like the receive recovery poll, short enough that a guest never
+ * notices.
+ */
+#define XFRAME_LINK_UP_DELAY_MS     5
+
+/*
+ * How long after the link-DOWN edge the modelled link comes UP -- the second
+ * edge of the bring-up DOWN->UP transition (see xframe_link_up_timer_cb). The
+ * Neterion family gates carrier and transmit on a link-state CHANGE, never a
+ * level, and treats both link bits set at once as an "unstable" state to clear
+ * and re-wait on; so the model presents the DOWN and the UP as two separate,
+ * separately-serviced interrupts an interval apart, giving a driver whose link
+ * belief is already "up" a genuine edge to flip it. Long enough that the guest
+ * services the DOWN before the UP arrives. Not pinned by the public drivers
+ * (they treat the link event as a one-shot edge), so this is a best-supported
+ * interval, not a value read from a reference. Not a hardware timer.
+ */
+#define XFRAME_LINK_DOWN_TO_UP_MS   500
+
+/*
+ * The scheduled interrupt's period. A live IRIX xg boot pinned the watchdog as
+ * a pure liveness timer -- it does not care what interrupt arrives, only that
+ * one arrives inside its interval (~15 s), and it resets the adapter
+ * ("xframe_watchdog: ERROR: No interrupts occuring, reset device...") after the
+ * single bring-up link event, each reset re-knocking the link down. xg feeds it
+ * by arming a periodic hardware scheduled interrupt at bring-up (writing
+ * SCHED_INT_CTRL, unmasking PIC_INT_MASK and TXPIC_INT_MASK), independent of
+ * traffic. The hardware period is computed at runtime from PCI bus speed and is
+ * not a public constant (s2io-regs.h marks SCHED_INT_PERIOD TBD); the model only
+ * needs "more often than the ~15 s watchdog", so it uses a fixed virtual-time
+ * period derived from that behaviour. Two seconds leaves comfortable margin.
+ * Not a hardware timer's exact tick.
+ */
+#define XFRAME_SCHED_INT_PERIOD_MS  2000
+
+/*
+ * Every interrupt mask resets to all-ones = fully masked. Reset values are
+ * marked OPEN in the datasheet ("OPEN (masked)"); all-ones is the concrete
+ * bit pattern the public drivers use for "masked" (Linux s2io.h's
+ * DISABLE_ALL_INTRS / S2IO_MINUS_ONE, OpenBSD's all-ones convention on the
+ * sibling registers), and it is the spurious-safe default: no source can
+ * assert INTx until a driver unmasks its block. Both the top-level
+ * GENERAL_INT_MASK and the per-block masks share this reset -- see
+ * xframe_update_irq for which one actually gates the line.
+ */
+#define XFRAME_INT_MASK_RESET       0xffffffffffffffffULL
 
 /*
  * ADAPTER_STATUS quiescent/ready value the driver's single non-retrying attach
  * read requires (if_xgereg.h QUIESCENT): TDMA/RDMA/PFC ready, TMAC buffer
  * empty, PIC quiescent, memory-controller DRAM+queues ready, both PLLs locked
- * -- and the fault bits clear. The model is always ready, so it presents this
- * immediately.
+ * -- and the fault bits clear. It also includes the subsystem-quiescence/
+ * ready bits 8-15 of the high word: the driver's adapter-start (transmit-
+ * enable) path requires every one of those bits set before it marks the
+ * adapter ready and rings the transmit doorbell. The model is always ready,
+ * so it presents this immediately.
  */
-#define XFRAME_ADAPTER_STATUS_QUIESCENT  0xf40000c300000000ULL
+#define XFRAME_ADAPTER_STATUS_QUIESCENT  0xf400ffc300000000ULL
 
 /*
  * SW_RESET: writing the 0xa5a5a5 key in bits 63:40 (OpenBSD 0xa5a5a5<<40,
@@ -146,22 +325,213 @@ static void xframe_load_factory_mac(XframeState *s)
 }
 
 /*
- * Recompute the INTx line from the device's one interrupt source modelled so
- * far: receive completion, gated by GENERAL_INT_MASK the way both drivers
- * gate it. Linux's s2io_isr masks GENERAL_INT_MASK to all-ones on entry and
- * restores the driver's own mask on exit, once per interrupt serviced;
- * OpenBSD's xge_init instead unmasks once at bring-up
- * ("PIF_WCSR(GENERAL_INT_MASK, 0);") and its xge_intr never touches the mask
- * again. Either way it is a real, driver-written mask, not a register the
- * silicon carries but no driver programs. A transmit-completion source, if
- * one is ever added, would OR in here too.
+ * Whether the link-state-change source is delivering an interrupt right now:
+ * the bit is latched in MAC_RMAC_ERR_REG and unmasked at both MAC levels --
+ * MAC_RMAC_ERR_MASK's leaf link bit and MAC_INT_MASK's RMAC block bit. Both
+ * drivers unmask both (OpenBSD xge_init: MAC_INT_MASK = MAC_TMAC_INT,
+ * MAC_RMAC_ERR_MASK = ~RMAC_LINK_STATE_CHANGE_INT; Linux en_dis_err_alarms
+ * unmasks MAC_INT_STATUS_RMAC_INT and, on Xena, RMAC_LINK_STATE_CHANGE_INT).
+ */
+static bool xframe_link_pending(XframeState *s)
+{
+    return (s->mac_rmac_err & XFRAME_RMAC_LINK_STATE_CHANGE_INT) &&
+           !(s->mac_rmac_err_mask & XFRAME_RMAC_LINK_STATE_CHANGE_INT) &&
+           !(s->mac_int_mask & XFRAME_MAC_RMAC_INT);
+}
+
+/*
+ * Whether the GPIO link-state source is delivering an interrupt right now: a
+ * link bit is latched in GPIO_INT_REG and the PIC block's PIC_INT_GPIO roll-up
+ * is unmasked in PIC_INT_MASK. This is the PIC/GPIO-block link path IRIX xg
+ * enables, distinct from the MAC-block xframe_link_pending above that OpenBSD
+ * xge uses. Linux services it the same way (s2io_txpic_intr_handle reads
+ * pic_int_status for PIC_INT_GPIO, then gpio_int_reg for LINK_UP).
+ *
+ * Gated by PIC_INT_MASK's PIC_INT_GPIO bit ALONE, deliberately NOT by the GPIO
+ * leaf mask (gpio_int_mask): the live IRIX xg diagnostic is decisive. xg opens
+ * PIC_INT_MASK (clearing PIC_INT_GPIO) and TXPIC_INT_MASK but leaves
+ * gpio_int_mask at its all-ones reset, and its watchdog is nonetheless
+ * satisfied once this source reaches its ISR -- so the leaf mask cannot gate
+ * delivery for xg. An earlier model that required the leaf too (Linux's
+ * Hercules enable path in en_dis_able_nic_intrs unmasks GPIO_INT_MASK_LINK_UP)
+ * left the source unreachable and xg's watchdog resetting the adapter in a
+ * loop; the measurement outranks that roll-up theory. gpio_int_mask is held for
+ * read-back only.
+ */
+static bool xframe_gpio_link_pending(XframeState *s)
+{
+    return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS) != 0) &&
+           !(s->pic_int_mask & XFRAME_PIC_INT_GPIO);
+}
+
+/*
+ * Whether the scheduled interrupt is delivering right now: the periodic timer
+ * has fired and latched sched_int_pending, and the source is unmasked at BOTH
+ * levels xg opens -- PIC_INT_MASK's PIC_INT_TX roll-up bit and TXPIC_INT_MASK's
+ * leaf bit. This is the traffic- and link-independent watchdog feed on the
+ * PIC/TXPIC path, distinct from the GPIO link source above (gated by
+ * PIC_INT_GPIO) and never touching the GPIO/link bits, so it never disturbs
+ * carrier. Both masks gate it because xg unmasks both (PIC_INT_MASK = 0,
+ * TXPIC_INT_MASK = 0) -- unlike the GPIO source, whose leaf mask xg leaves set.
+ */
+static bool xframe_sched_int_pending(XframeState *s)
+{
+    return s->sched_int_pending &&
+           !(s->pic_int_mask & XFRAME_PIC_INT_TX) &&
+           !(s->txpic_int_mask & XFRAME_TXPIC_INT_SCHED);
+}
+
+/*
+ * Recompute the INTx line. Each source is gated by its own PER-BLOCK
+ * (second-level) mask -- NOT by the top-level GENERAL_INT_MASK, which the model
+ * does not use to gate anything (see xframe_pif_read_reg: the summary is the
+ * raw block-pending aggregate). This is what the drivers actually rely on: IRIX
+ * xg enables interrupts purely through the block masks (PIC_INT_MASK,
+ * TXPIC_INT_MASK) and leaves GENERAL_INT_MASK at its all-ones reset, yet takes
+ * interrupts on real hardware -- impossible if the general mask gated the line.
+ * OpenBSD xge_init and Linux en_dis_able_nic_intrs also unmask at the block
+ * level (TX/RX_TRAFFIC_MASK = 0, the MAC masks); they additionally write
+ * GENERAL_INT_MASK (OpenBSD to 0, Linux clearing the aggregate bits), but the
+ * model's summary is the raw aggregate regardless -- see the read handler.
+ * Gating on the block masks makes all three drivers work; gating on the general
+ * mask is what left xg's watchdog resetting in a loop.
+ *
+ * Four sources so far: receive completion (RX_TRAFFIC_INT gated by
+ * RX_TRAFFIC_MASK), transmit completion (TX_TRAFFIC_INT gated by
+ * TX_TRAFFIC_MASK), and two independent link-state paths -- the MAC-block one
+ * (MAC_RMAC_ERR_REG gated by the two MAC masks, what OpenBSD xge uses) and the
+ * PIC/GPIO-block one (GPIO_INT_REG gated by PIC_INT_MASK's PIC_INT_GPIO bit
+ * alone, what IRIX xg uses). Either fires on an idle interface -- no frame need
+ * arrive for the link to come up -- so a driver watchdog that resets on "no
+ * interrupts" is satisfied through whichever block that driver unmasked.
  */
 static void xframe_update_irq(XframeState *s)
 {
-    bool pending = s->rx_traffic_int != 0 &&
-                  !(s->general_int_mask & XFRAME_GEN_INTR_RXTRAFFIC);
+    bool rx_pending = (s->rx_traffic_int & ~s->rx_traffic_mask) != 0;
+    bool tx_pending = (s->tx_traffic_int & ~s->tx_traffic_mask) != 0;
+    bool link_pending = xframe_link_pending(s);
+    bool gpio_pending = xframe_gpio_link_pending(s);
+    bool sched_pending = xframe_sched_int_pending(s);
 
-    pci_set_irq(PCI_DEVICE(s), pending);
+    pci_set_irq(PCI_DEVICE(s),
+                rx_pending || tx_pending || link_pending || gpio_pending ||
+                sched_pending);
+}
+
+/*
+ * The FIRST bring-up edge: the modelled link goes DOWN on the PIC/GPIO path,
+ * then arms the UP edge one interval later. IRIX xg (and the Neterion family
+ * generally) propagates carrier and wakes transmit only on a link-state CHANGE,
+ * so the model must present a genuine DOWN->UP transition -- a bare, unchanging
+ * UP is a no-op to a driver whose link belief is already "up", and transmit
+ * stays gated. This latches only GPIO_INT_REG LINK_DOWN (the PIC/GPIO path xg
+ * uses); the MAC-path ADAPTER_STATUS stays quiescent with its fault bits clear,
+ * so a MAC-block "down" has nowhere to show and the DOWN is scoped to the GPIO
+ * path. Armed by the ADAPTER_EN 0->1 transition (see XFRAME_LINK_UP_DELAY_MS),
+ * this fires after the driver's synchronous bring-up has unmasked interrupts,
+ * so the pending bit is delivered rather than acked away. Its own callback arms
+ * the UP edge (XFRAME_LINK_DOWN_TO_UP_MS out) so the two are separate,
+ * separately-serviced interrupts -- never both link bits set at once, which
+ * s2io treats as an unstable state it clears and re-waits on.
+ */
+static void xframe_link_down_timer_cb(void *opaque)
+{
+    XframeState *s = opaque;
+
+    s->gpio_int_reg |= XFRAME_GPIO_INT_REG_LINK_DOWN;
+    xframe_update_irq(s);
+    timer_mod(s->link_up_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              XFRAME_LINK_DOWN_TO_UP_MS);
+}
+
+/*
+ * The SECOND bring-up edge: the modelled link comes up. Latch the
+ * link-state-change interrupt on BOTH link paths -- the MAC-block
+ * RMAC_LINK_STATE_CHANGE_INT and the PIC/GPIO-block GPIO_INT_REG LINK_UP -- and
+ * recompute the line, clearing any still-latched LINK_DOWN so the UP is a clean
+ * up-only edge even if the guest never serviced the DOWN. A driver arms
+ * whichever block it uses, so latching both and letting each source's own masks
+ * decide delivery serves OpenBSD (MAC path) and IRIX xg (PIC/GPIO path) from
+ * one event without either seeing the other's. Armed one interval after the
+ * DOWN edge (see xframe_link_down_timer_cb), this completes the DOWN->UP
+ * transition. This is the settled up-link interrupt an idle interface sees --
+ * the reason a watchdog that resets on "no interrupts" is satisfied without any
+ * frame having to arrive.
+ *
+ * Guarded against the QEMU backend link, not just the guest-facing bits: the
+ * bring-up sequence arms on the ADAPTER_EN edge alone, with no regard for
+ * whether the netdev backend is actually up, so a `set_link off` issued (or
+ * already in effect) before this edge fires must not announce a spurious
+ * LINK_UP for a backend that is down. xframe_set_link_status below cancels
+ * both bring-up timers the moment the backend drops, so this guard is
+ * ordinarily never reached with the backend down mid-transition -- it is a
+ * second line of defence against a driver bring-up racing a backend that was
+ * already down before ADAPTER_EN's rising edge armed this timer in the first
+ * place, since that edge does not itself consult the backend. LINK_DOWN was
+ * already latched by xframe_link_down_timer_cb (and/or by
+ * xframe_set_link_status), so this leaves it in place and returns rather than
+ * completing the transition.
+ */
+static void xframe_link_up_timer_cb(void *opaque)
+{
+    XframeState *s = opaque;
+
+    if (qemu_get_queue(s->nic)->link_down) {
+        s->gpio_int_reg = (s->gpio_int_reg & ~XFRAME_GPIO_INT_REG_LINK_UP) |
+                          XFRAME_GPIO_INT_REG_LINK_DOWN;
+        xframe_update_irq(s);
+        return;
+    }
+
+    s->gpio_int_reg = (s->gpio_int_reg & ~XFRAME_GPIO_INT_REG_LINK_DOWN) |
+                      XFRAME_GPIO_INT_REG_LINK_UP;
+    s->mac_rmac_err |= XFRAME_RMAC_LINK_STATE_CHANGE_INT;
+    xframe_update_irq(s);
+}
+
+/*
+ * Arm the scheduled interrupt one period out, and record that it is armed --
+ * migrated (sched_int_armed) so a target that loads mid-flight knows whether
+ * a completed one-shot needs re-arming or not (see xframe_post_load).
+ */
+static void xframe_sched_int_arm(XframeState *s)
+{
+    s->sched_int_armed = true;
+    timer_mod(s->sched_int_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + XFRAME_SCHED_INT_PERIOD_MS);
+}
+
+/*
+ * The scheduled interrupt fires: latch it and recompute INTx. This is the
+ * traffic- and link-independent watchdog feed the driver programs at bring-up
+ * (SCHED_INT_CTRL) -- it rolls up through the TXPIC leaf and PIC_INT_TX into
+ * GEN_INTR_TXPIC and is serviced by the ISR's read of TXPIC_INT_REG, which
+ * self-clears it (see xframe_pif_read), so it delivers one serviced interrupt
+ * per period rather than storming. It NEVER touches GPIO_INT_REG or the MAC
+ * link latch, so it never re-runs carrier -- the whole point of feeding the
+ * watchdog through a separate source rather than re-raising the link. Re-arms
+ * each period while TIMER_EN stays set, unless ONE_SHOT is set -- a fired
+ * one-shot clears sched_int_armed rather than re-arming, so a migrated-in
+ * target does not wrongly re-fire it (xframe_post_load). A disable
+ * (SCHED_INT_CTRL TIMER_EN cleared), soft reset, or ADAPTER_EN 1->0 cancels the
+ * timer outright; this TIMER_EN guard covers a tick already in flight when that
+ * happens.
+ */
+static void xframe_sched_int_cb(void *opaque)
+{
+    XframeState *s = opaque;
+
+    if (!(s->sched_int_ctrl & XFRAME_SCHED_INT_CTRL_TIMER_EN)) {
+        return;
+    }
+    s->sched_int_pending = true;
+    xframe_update_irq(s);
+    if (!(s->sched_int_ctrl & XFRAME_SCHED_INT_CTRL_ONE_SHOT)) {
+        xframe_sched_int_arm(s);
+    } else {
+        s->sched_int_armed = false;
+    }
 }
 
 /*
@@ -177,6 +547,11 @@ static void xframe_soft_reset(XframeState *s)
     s->xmsi_address = 0;
     s->sw_reset = 0;
     s->adapter_control = 0;
+    s->mac_rmac_err = 0;
+    s->gpio_int_reg = 0;
+    s->sched_int_ctrl = 0;
+    s->sched_int_pending = false;
+    s->sched_int_armed = false;
     s->mac_cfg = 0;
     s->rmac_cfg_unlocked = false;
     s->rmac_addr_cmd = 0;
@@ -185,18 +560,37 @@ static void xframe_soft_reset(XframeState *s)
     memset(s->mac_addr, 0, sizeof(s->mac_addr));
     memset(s->mac_addr_mask, 0, sizeof(s->mac_addr_mask));
     memset(s->txdl_par, 0, sizeof(s->txdl_par));
+    s->tx_traffic_int = 0;
     s->prc_rxd0_0 = 0;
     s->prc_ctrl_0 = 0;
     s->rx_traffic_int = 0;
     s->rx_page_addr = 0;
     s->rx_desc_idx = 0;
-    s->general_int_mask = XFRAME_GENERAL_INT_MASK_RESET;
+    s->general_int_mask = XFRAME_INT_MASK_RESET;
+    s->pic_int_mask = XFRAME_INT_MASK_RESET;
+    s->txpic_int_mask = XFRAME_INT_MASK_RESET;
+    s->rxpic_int_mask = XFRAME_INT_MASK_RESET;
+    s->gpio_int_mask = XFRAME_INT_MASK_RESET;
+    s->tx_traffic_mask = XFRAME_INT_MASK_RESET;
+    s->rx_traffic_mask = XFRAME_INT_MASK_RESET;
+    s->mac_int_mask = XFRAME_INT_MASK_RESET;
+    s->mac_rmac_err_mask = XFRAME_INT_MASK_RESET;
     /*
      * Reset tears the ring down, so a recovery poll left running from before
      * has nothing left to recover -- stop it rather than let it keep firing
      * against a ring that no longer exists in any guest-meaningful sense.
      */
     timer_del(s->rx_recovery_timer);
+    /*
+     * A reset drops the adapter (ADAPTER_EN cleared above), so any pending
+     * link event is void -- the driver re-enables and the link comes up
+     * afresh. Cancel both bring-up one-shots (the DOWN edge and the UP edge it
+     * arms) and the scheduled interrupt rather than let a stale event fire
+     * against a device the guest just took down.
+     */
+    timer_del(s->link_down_timer);
+    timer_del(s->link_up_timer);
+    timer_del(s->sched_int_timer);
     xframe_load_factory_mac(s);
     xframe_update_irq(s);
 }
@@ -276,24 +670,117 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
         return s->rmac_addr_data0;
     case XFRAME_RMAC_ADDR_DATA1_MEM:
         return s->rmac_addr_data1;
+    case XFRAME_TX_TRAFFIC_INT:
+        return s->tx_traffic_int;
     case XFRAME_RX_TRAFFIC_INT:
         return s->rx_traffic_int;
+    case XFRAME_MAC_RMAC_ERR_REG:
+        return s->mac_rmac_err;
     case XFRAME_PRC_RXD0_0:
         return s->prc_rxd0_0;
     case XFRAME_PRC_CTRL_0:
         return s->prc_ctrl_0;
-    case XFRAME_GENERAL_INT_STATUS:
+    case XFRAME_GENERAL_INT_STATUS: {
         /*
-         * The top-level aggregate both drivers read before touching any
-         * per-block register (OpenBSD xge_intr, Linux s2io_isr: "reason =
-         * readq(&bar0->general_int_status)"). Derived from the per-block
-         * state this device keeps rather than stored on its own, so it can
-         * never disagree with RX_TRAFFIC_INT about whether receive traffic
-         * is pending.
+         * The top-level summary both public drivers -- and IRIX xg -- read
+         * before touching any per-block register (OpenBSD xge_intr, Linux
+         * s2io_isr: "reason = readq(&bar0->general_int_status)"). Two
+         * load-bearing properties:
+         *
+         * Derived, never stored: each aggregate bit rolls up from the same
+         * block-gated pending signal that drives INTx (a block shows in the
+         * summary exactly when it has an unmasked pending source), so the
+         * summary can never disagree with the block registers or with the line.
+         *
+         * Raw -- NOT masked by GENERAL_INT_MASK. This is the corrected
+         * semantics: GENERAL_INT_STATUS is the raw block-pending aggregate. The
+         * live IRIX xg diagnostic refuted the earlier "summary-visibility mask"
+         * model: with INTx force-asserted, xg's ISR read this register 379,815
+         * times and got 0 every time, because the model returned
+         * "status & ~general_int_mask" and xg leaves general_int_mask at its
+         * all-ones reset -- so xg could never identify the source and stormed.
+         * xg reads this summary to dispatch and must see the pending block
+         * through it. OpenBSD and Linux write general_int_mask = 0 (or clear
+         * the aggregate bits they service), so "& ~mask" was already a no-op
+         * for them: dropping it does not regress them; it only stops blanking
+         * the summary for a driver that, correctly, leaves the general mask
+         * alone.
          */
-        return s->rx_traffic_int != 0 ? XFRAME_GEN_INTR_RXTRAFFIC : 0;
+        uint64_t status = 0;
+
+        if ((s->rx_traffic_int & ~s->rx_traffic_mask) != 0) {
+            status |= XFRAME_GEN_INTR_RXTRAFFIC;
+        }
+        if ((s->tx_traffic_int & ~s->tx_traffic_mask) != 0) {
+            status |= XFRAME_GEN_INTR_TXTRAFFIC;
+        }
+        if (xframe_link_pending(s)) {
+            status |= XFRAME_GEN_INTR_RXMAC;
+        }
+        if (xframe_gpio_link_pending(s) || xframe_sched_int_pending(s)) {
+            status |= XFRAME_GEN_INTR_TXPIC;
+        }
+        return status;
+    }
     case XFRAME_GENERAL_INT_MASK:
         return s->general_int_mask;
+    case XFRAME_PIC_INT_STATUS: {
+        /*
+         * The PIC block's status summary, one level below GENERAL_INT_STATUS:
+         * the ISR reads it to find which PIC sub-block is asserting before
+         * descending to that sub-block's own register (Linux
+         * s2io_txpic_intr_handle reads pic_int_status, then, on PIC_INT_GPIO,
+         * gpio_int_reg). Derived, never stored -- like GENERAL_INT_STATUS: it
+         * shows PIC_INT_GPIO exactly when the GPIO link source is pending and
+         * unmasked, and PIC_INT_TX when the scheduled interrupt is, so it cannot
+         * drift from the registers that clear them. The GPIO sub-block and the
+         * TXPIC sub-block (the scheduled interrupt) are the two modelled PIC
+         * sources; the others (rxpic/flash/mdio/iic) raise nothing here.
+         */
+        uint64_t status = 0;
+
+        if (xframe_gpio_link_pending(s)) {
+            status |= XFRAME_PIC_INT_GPIO;
+        }
+        if (xframe_sched_int_pending(s)) {
+            status |= XFRAME_PIC_INT_TX;
+        }
+        return status;
+    }
+    case XFRAME_TXPIC_INT_REG:
+        /*
+         * The PCI-X transmit-error status register (ECC/FSM error bits,
+         * Linux s2io-regs.h PCIX_INT_REG_*), the first PIC sub-source. No PCI-X
+         * transmit error is raised, but this leaf is also where the scheduled
+         * interrupt surfaces: when the periodic timer has fired, it reads the
+         * scheduled-interrupt latch bit. IRIX xg reads this register while
+         * walking the PIC block on GEN_INTR_TXPIC (the round-6 trace's 0x810
+         * read), and that read acks the scheduled interrupt (see the clear on
+         * read in xframe_pif_read) -- the same self-clearing service the GPIO
+         * link source gets. It reads a clean 0 when nothing is pending, so xg's
+         * per-ISR probe on an idle link is not a log line.
+         */
+        return s->sched_int_pending ? XFRAME_TXPIC_INT_SCHED : 0;
+    case XFRAME_SCHED_INT_CTRL:
+        return s->sched_int_ctrl;
+    case XFRAME_GPIO_INT_REG:
+        return s->gpio_int_reg;
+    case XFRAME_GPIO_INT_MASK:
+        return s->gpio_int_mask;
+    case XFRAME_PIC_INT_MASK:
+        return s->pic_int_mask;
+    case XFRAME_TXPIC_INT_MASK:
+        return s->txpic_int_mask;
+    case XFRAME_RXPIC_INT_MASK:
+        return s->rxpic_int_mask;
+    case XFRAME_TX_TRAFFIC_MASK:
+        return s->tx_traffic_mask;
+    case XFRAME_RX_TRAFFIC_MASK:
+        return s->rx_traffic_mask;
+    case XFRAME_MAC_INT_MASK:
+        return s->mac_int_mask;
+    case XFRAME_MAC_RMAC_ERR_MASK:
+        return s->mac_rmac_err_mask;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "xframe: PIF read at 0x%" PRIx64 " is not modelled\n",
@@ -311,10 +798,86 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
 static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 {
     XframeState *s = opaque;
-    uint64_t val = xframe_pif_read_reg(s, addr & ~7ULL);
+    hwaddr reg = addr & ~7ULL;
+    uint64_t val = xframe_pif_read_reg(s, reg);
 
     if (size == 4 && (addr & 4)) {
         val >>= 32;
+    }
+
+    /*
+     * The PIC/GPIO link-up interrupt is a self-clearing edge, acknowledged by
+     * the ISR's READ of GPIO_INT_REG -- the measured IRIX xg clear. The round-6
+     * live boot is decisive: xg's ISR reads GENERAL_INT_STATUS (seeing
+     * GEN_INTR_TXPIC), reads the txpic sub-source (0x810, empty), reads
+     * GPIO_INT_REG (LINK_UP), and then issues NO write-1-to-clear of
+     * GPIO_INT_REG and NO per-interrupt write to PIC_INT_MASK/GPIO_INT_MASK --
+     * only a GENERAL_INT_MASK mask/restore toggle, which gates nothing here.
+     * Its sole acknowledgement of the link event is that read. Modelling
+     * GPIO_INT_REG as a plain W1C latch left the source asserted after the
+     * read, so xg re-entered its ISR ~183,869 times in ~12 s and never
+     * transmitted. So the read consumes the edge: it returns the latched link
+     * bits (the driver sees LINK_UP), then clears them and recomputes the line,
+     * dropping INTx. One link-up delivers one serviced interrupt that quiesces;
+     * a genuinely new link event latches afresh. Write-1-to-clear
+     * (xframe_pif_write_reg) remains a valid clear too -- OpenBSD-style W1C and
+     * any explicit ack still drop the source.
+     *
+     * The link bits (LINK_UP/LINK_DOWN) sit in the high 32 bits, so only a read
+     * that covers the high half consumes the edge: the low-half read xg issues
+     * for the byte-swapped register returns 0 and clears nothing, so a
+     * low-then-high half pair still lets the high-half read see LINK_UP before
+     * clearing it. This runs only on a genuine MMIO read, never on the
+     * read-modify-write compose path (xframe_pif_write goes through
+     * xframe_pif_read_reg), so composing a write onto GPIO_INT_REG cannot
+     * spuriously ack.
+     */
+    if (reg == XFRAME_GPIO_INT_REG && (size == 8 || (addr & 4)) &&
+        (s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS)) {
+        s->gpio_int_reg &= ~XFRAME_GPIO_INT_LINK_BITS;
+        xframe_update_irq(s);
+    }
+
+    /*
+     * The scheduled interrupt is the same kind of self-clearing edge: xg reads
+     * TXPIC_INT_REG (0x810) while walking the PIC block and issues no explicit
+     * clear, so the read consumes the latch and drops INTx -- one serviced
+     * interrupt per period, not a storm. Its latch bit (XFRAME_TXPIC_INT_SCHED)
+     * sits in the high 32 bits, so only a read covering the high half consumes
+     * it, exactly as the GPIO link-bit ack above; and like it, this runs only on
+     * a real MMIO read, never on the write-compose path.
+     */
+    if (reg == XFRAME_TXPIC_INT_REG && (size == 8 || (addr & 4)) &&
+        s->sched_int_pending) {
+        s->sched_int_pending = false;
+        xframe_update_irq(s);
+    }
+
+    /*
+     * The MAC-block link-state-change latch is a self-clearing edge too when
+     * the source is MASKED -- the case IRIX xg leaves it in. OpenBSD unmasks
+     * the MAC link path and acks the latch by write-1-to-clear, so while it is
+     * unmasked the read stays non-destructive and W1C is the ack (see the W1C
+     * path in xframe_pif_write_reg, and test_link_up_raises_interrupt). But xg
+     * takes its link interrupt through the PIC/GPIO block and leaves the MAC
+     * path masked, yet its alarm handler still READS MAC_RMAC_ERR_REG (0x2028)
+     * on every scheduled-interrupt pass to test bit 32. A W1C level xg never
+     * writes would read set on every pass, so xg would see the settled link
+     * "change" again and again and flap carrier between passes. The driver will
+     * not W1C a source it masked, so its status read is the only ack it gives:
+     * the read returns the bit (the alarm handler sees the one real change) and
+     * then consumes the latch, so the next pass finds nothing. Only a read
+     * covering the high 32 bits (where bit 32 sits) consumes it, like the GPIO
+     * and scheduled-interrupt acks above; and like them this runs only on a
+     * real MMIO read, never on the write-compose path (which uses
+     * xframe_pif_read_reg). The source being masked means clearing it never
+     * moves INTx, so xframe_update_irq only keeps the recompute uniform.
+     */
+    if (reg == XFRAME_MAC_RMAC_ERR_REG && (size == 8 || (addr & 4)) &&
+        (s->mac_rmac_err & XFRAME_RMAC_LINK_STATE_CHANGE_INT) &&
+        !xframe_link_pending(s)) {
+        s->mac_rmac_err &= ~XFRAME_RMAC_LINK_STATE_CHANGE_INT;
+        xframe_update_irq(s);
     }
     return val;
 }
@@ -339,13 +902,76 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         }
         return;
     case XFRAME_ADAPTER_CONTROL:
+        /*
+         * The driver bringing the adapter up (ADAPTER_EN 0->1) is what starts
+         * the link negotiating; model the link as a DOWN->UP transition a short
+         * time later by arming the link-DOWN one-shot below (which arms the UP
+         * edge in turn). Only the rising edge arms it, so the ISR's own re-enable
+         * on link-restore (OpenBSD xge_intr calls xge_enable, which rewrites
+         * ADAPTER_EN while it is already set) does not re-arm and cannot storm.
+         * The scheduled interrupt that keeps the watchdog fed is NOT armed here
+         * -- the driver arms it explicitly by writing SCHED_INT_CTRL during
+         * bring-up. The falling edge cancels both bring-up one-shots and the
+         * scheduled interrupt -- the driver disabling the adapter without a full
+         * reset must not leave a stale link edge or a periodic interrupt firing
+         * for a device it just took down. It also clears any link source
+         * already latched but not yet acked (GPIO_INT_REG's LINK_UP/LINK_DOWN
+         * bits, mac_rmac_err's RMAC_LINK_STATE_CHANGE_INT), matching how the
+         * read-ack paths clear them (XFRAME_GPIO_INT_REG and
+         * XFRAME_MAC_RMAC_ERR_REG read handling above): delivery of these
+         * sources is not gated by ADAPTER_EN, so leaving one latched would
+         * keep INTx asserted for a disabled adapter, and leaving LINK_UP
+         * latched would let a later re-enable's DOWN edge OR it onto a fresh
+         * LINK_DOWN -- the unstable both-bits state this model otherwise never
+         * presents (see xframe_link_up_timer_cb).
+         */
+        if ((full & XFRAME_ADAPTER_EN) &&
+            !(s->adapter_control & XFRAME_ADAPTER_EN)) {
+            timer_mod(s->link_down_timer,
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      XFRAME_LINK_UP_DELAY_MS);
+        } else if (!(full & XFRAME_ADAPTER_EN) &&
+                   (s->adapter_control & XFRAME_ADAPTER_EN)) {
+            timer_del(s->link_down_timer);
+            timer_del(s->link_up_timer);
+            timer_del(s->sched_int_timer);
+            s->sched_int_pending = false;
+            s->sched_int_armed = false;
+            s->gpio_int_reg &= ~XFRAME_GPIO_INT_LINK_BITS;
+            s->mac_rmac_err &= ~XFRAME_RMAC_LINK_STATE_CHANGE_INT;
+        }
         s->adapter_control = full;
+        xframe_update_irq(s);
         return;
     case XFRAME_SWAPPER_CTRL:
         s->swapper_ctrl = full;
         return;
     case XFRAME_XMSI_ADDRESS:
         s->xmsi_address = full;
+        return;
+    case XFRAME_SCHED_INT_CTRL:
+        /*
+         * The scheduled/periodic-interrupt timer control. The driver arms the
+         * watchdog feed here at bring-up: writing TIMER_EN (with a period the
+         * model does not read, since the hardware tick is TBD publicly) starts
+         * the periodic timer; clearing TIMER_EN stops it and drops any pending
+         * scheduled interrupt. TIMER_EN sits in the high half, so act on it only
+         * when the write reaches that half (a low-half period-only write just
+         * updates the stored value). Not gated on ADAPTER_EN: the bring-up
+         * sequence enables the adapter before programming this, and a live tick
+         * on a disabled adapter is cancelled by the ADAPTER_EN 1->0 path above.
+         */
+        s->sched_int_ctrl = full;
+        if (commit_high) {
+            if (full & XFRAME_SCHED_INT_CTRL_TIMER_EN) {
+                xframe_sched_int_arm(s);
+            } else {
+                timer_del(s->sched_int_timer);
+                s->sched_int_pending = false;
+                s->sched_int_armed = false;
+                xframe_update_irq(s);
+            }
+        }
         return;
     case XFRAME_RMAC_CFG_KEY:
         /* The key is in bits 63:48: only a write reaching the high half. */
@@ -381,6 +1007,19 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
             s->rmac_addr_cmd = full;
         }
         return;
+    case XFRAME_TX_TRAFFIC_INT:
+        /*
+         * Write-1-to-clear, the transmit mirror of the receive ACK below:
+         * the ISR reads the pending completions and writes them back
+         * (OpenBSD xge_intr: "if ((val = PIF_RCSR(TX_TRAFFIC_INT)))
+         * PIF_WCSR(TX_TRAFFIC_INT, val);"; Linux s2io_isr writes
+         * S2IO_MINUS_ONE to tx_traffic_int). Clear on the bits this access
+         * carries, not the composed value, so a 32-bit half-write cannot
+         * clear the untouched half's pending completions.
+         */
+        s->tx_traffic_int &= ~written;
+        xframe_update_irq(s);
+        return;
     case XFRAME_RX_TRAFFIC_INT:
         /*
          * Write-1-to-clear: the driver reads the pending bits and writes the
@@ -404,6 +1043,45 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          */
         s->rx_traffic_int &= ~written;
         xframe_update_irq(s);
+        return;
+    case XFRAME_MAC_RMAC_ERR_REG:
+        /*
+         * Write-1-to-clear, the same ACK idiom as RX_TRAFFIC_INT: the ISR
+         * reads the link-state-change bit and writes it back to clear it
+         * (OpenBSD xge_intr: "PIF_WCSR(MAC_RMAC_ERR_REG,
+         * RMAC_LINK_STATE_CHANGE_INT)"). Clear on the bits this access
+         * carries, not the composed value, so a 32-bit half-write cannot
+         * clear the untouched half's bits.
+         */
+        s->mac_rmac_err &= ~written;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_GPIO_INT_REG:
+        /*
+         * Write-1-to-clear, the PIC/GPIO-block link status -- a secondary clear
+         * path. IRIX xg acks the link-up edge by READING this register, not by
+         * writing it (see xframe_pif_read's clear-on-read); Linux
+         * s2io_txpic_intr_handle acks a plain LINK_UP by masking GPIO_INT_MASK,
+         * and writes the bits back here only in its unstable both-up-and-down
+         * case. This W1C keeps that explicit-write path and any OpenBSD-style
+         * ack working. Clear on the bits this access carries, not the composed
+         * value, so a 32-bit half-write cannot clear the untouched half's bits.
+         */
+        s->gpio_int_reg &= ~written;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_TXPIC_INT_REG:
+        /*
+         * The IRIX xg ISR acks the scheduled interrupt by WRITING this leaf
+         * (it dispatches off GENERAL_INT_STATUS's GEN_INTR_TXPIC and never
+         * reads the leaf), so a write covering the high half consumes the
+         * latch -- the write-path counterpart of the read-based self-clear
+         * in xframe_pif_read. One serviced interrupt per period, not a storm.
+         */
+        if (commit_high && s->sched_int_pending) {
+            s->sched_int_pending = false;
+            xframe_update_irq(s);
+        }
         return;
     case XFRAME_PRC_RXD0_0:
         s->prc_rxd0_0 = full;
@@ -448,8 +1126,70 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          */
         return;
     case XFRAME_GENERAL_INT_MASK:
+        /*
+         * Stored for read-back and migration only: it gates neither INTx nor
+         * the GENERAL_INT_STATUS summary read (that summary is the raw
+         * block-pending aggregate -- see the read handler). Drivers write and
+         * read it back (OpenBSD writes 0; Linux blanks it while servicing), but
+         * nothing the model computes depends on it. No xframe_update_irq.
+         */
         s->general_int_mask = full;
+        return;
+    case XFRAME_TX_TRAFFIC_MASK:
+        /* Second-level mask: gates TX_TRAFFIC_INT -> INTx. Recompute. */
+        s->tx_traffic_mask = full;
         xframe_update_irq(s);
+        return;
+    case XFRAME_RX_TRAFFIC_MASK:
+        /* Second-level mask: gates RX_TRAFFIC_INT -> INTx. Recompute. */
+        s->rx_traffic_mask = full;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_MAC_INT_MASK:
+        /* Gates the RMAC block roll-up for the link source. Recompute. */
+        s->mac_int_mask = full;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_MAC_RMAC_ERR_MASK:
+        /* Gates the leaf link-state-change bit. Recompute. */
+        s->mac_rmac_err_mask = full;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_PIC_INT_MASK:
+        /*
+         * The PIC block mask. Its PIC_INT_GPIO bit gates the GPIO link source's
+         * roll-up to the line (see xframe_gpio_link_pending) -- this is the
+         * block IRIX xg opens (writes PIC_INT_MASK = 0) -- so recompute. Its
+         * other sub-block bits (txpic/rxpic/flash/mdio/iic) gate no modelled
+         * source; they are held for read-back only.
+         */
+        s->pic_int_mask = full;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_GPIO_INT_MASK:
+        /*
+         * The GPIO leaf mask. Real hardware gates the GPIO link leaf with it,
+         * but this model delivers the GPIO link source through PIC_INT_MASK's
+         * PIC_INT_GPIO roll-up alone (see xframe_gpio_link_pending), because
+         * IRIX xg leaves this leaf masked yet must still take the interrupt. So
+         * it gates no modelled source and is held for read-back only; no
+         * xframe_update_irq.
+         */
+        s->gpio_int_mask = full;
+        return;
+    case XFRAME_TXPIC_INT_MASK:
+        /*
+         * The TXPIC (PCI-X transmit) sub-block leaf mask. Its PCI-X-transmit-
+         * error bits gate no modelled error source, but its XFRAME_TXPIC_INT_SCHED
+         * bit gates the scheduled interrupt's leaf (see xframe_sched_int_pending)
+         * -- xg unmasks this leaf (writes 0) precisely to open that source -- so
+         * recompute. Its other bits are held for read-back.
+         */
+        s->txpic_int_mask = full;
+        xframe_update_irq(s);
+        return;
+    case XFRAME_RXPIC_INT_MASK:
+        s->rxpic_int_mask = full;
         return;
     case XFRAME_ADAPTER_STATUS:
     case XFRAME_PIF_RD_SWAPPER_FB:
@@ -616,6 +1356,22 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
 
     if (frame_len > 0) {
         qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
+    }
+
+    /*
+     * Signal the transmit completion for this FIFO once the list is done and
+     * the frame is on the wire: set the FIFO's TX_TRAFFIC_INT bit and
+     * recompute the line. Raised only when a descriptor was actually
+     * processed -- the early returns above (unowned or unreadable descriptor)
+     * complete nothing. Both drivers depend on this to reclaim transmit
+     * descriptors: OpenBSD's xge_intr and Linux's s2io_isr walk the sent
+     * descriptors on TX_TRAFFIC_INT. Setting device state after the send
+     * keeps a synchronous loopback receive from observing a half-updated
+     * doorbell, the same ordering the descriptor release above uses.
+     */
+    if (have_first) {
+        s->tx_traffic_int |= XFRAME_TX_TRAFFIC_FIFO(fifo);
+        xframe_update_irq(s);
     }
 }
 
@@ -1048,11 +1804,58 @@ static void xframe_rx_recovery_timer_cb(void *opaque)
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
+/*
+ * QEMU's own netdev backend link, not the modelled bring-up sequence above:
+ * this is the standard NetClientInfo hook a `set_link` QMP command (or any
+ * other backend disconnect) invokes on NetClientState::link_down changing.
+ * Without it the device never looked at that flag at all -- it announced
+ * LINK_UP on the ADAPTER_EN bring-up edge regardless of whether the backend
+ * was actually connected, so an operator-downed netdev still showed carrier
+ * to the guest.
+ *
+ * Backend down: present LINK_DOWN on the same PIC/GPIO path the bring-up
+ * sequence uses, and cancel a pending bring-up edge -- link_down_timer if the
+ * DOWN hasn't latched yet, link_up_timer if it has and the UP edge is still
+ * armed -- so neither one-shot completes a transition to UP behind a backend
+ * that just went away. (xframe_link_up_timer_cb's own link_down check above
+ * covers the one case this cancellation cannot reach: a backend already down
+ * before ADAPTER_EN's rising edge armed the sequence in the first place.)
+ * This also raises the MAC-block link-state-change latch the way a genuine
+ * link event does, for a driver (OpenBSD xge) that takes its link interrupt
+ * through that path instead of the PIC/GPIO one.
+ *
+ * Backend back up while the adapter is enabled: re-run the bring-up
+ * DOWN->UP transition from its first edge, the same one-shot ADAPTER_EN's
+ * 0->1 edge arms (xframe_pif_write_reg's XFRAME_ADAPTER_CONTROL case) -- a
+ * driver already running needs a genuine transition to notice the link is
+ * back, not a level. Only while the adapter is enabled: a backend recovering
+ * while the guest has not enabled the adapter has nothing to notice yet, and
+ * the driver's own bring-up arms the sequence when it does.
+ */
+static void xframe_set_link_status(NetClientState *nc)
+{
+    XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
+
+    if (nc->link_down) {
+        timer_del(s->link_down_timer);
+        timer_del(s->link_up_timer);
+        s->gpio_int_reg = (s->gpio_int_reg & ~XFRAME_GPIO_INT_REG_LINK_UP) |
+                          XFRAME_GPIO_INT_REG_LINK_DOWN;
+        s->mac_rmac_err |= XFRAME_RMAC_LINK_STATE_CHANGE_INT;
+        xframe_update_irq(s);
+    } else if (s->adapter_control & XFRAME_ADAPTER_EN) {
+        timer_mod(s->link_down_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  XFRAME_LINK_UP_DELAY_MS);
+    }
+}
+
 static NetClientInfo xframe_net_info = {
     .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .can_receive = xframe_can_receive,
     .receive = xframe_receive,
+    .link_status_changed = xframe_set_link_status,
 };
 
 static void xframe_reset_hold(Object *obj, ResetType type)
@@ -1076,6 +1879,12 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
 
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         xframe_rx_recovery_timer_cb, s);
+    s->link_down_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                      xframe_link_down_timer_cb, s);
+    s->link_up_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                    xframe_link_up_timer_cb, s);
+    s->sched_int_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                      xframe_sched_int_cb, s);
 
     /*
      * The class-level defaults set vendor/device id (and, absent a
@@ -1124,29 +1933,132 @@ static void xframe_exit(PCIDevice *dev)
     XframeState *s = XFRAME(dev);
 
     timer_free(s->rx_recovery_timer);
+    timer_free(s->link_down_timer);
+    timer_free(s->link_up_timer);
+    timer_free(s->sched_int_timer);
     qemu_del_nic(s->nic);
 }
 
 /*
+ * A target that loads with the scheduled interrupt armed must keep it coming,
+ * or a driver watchdog resumes resetting the device as if this migrated in
+ * stale. VMSTATE_TIMER_PTR_V above restores the timer's own pending expiry
+ * exactly when the source had it mid-period at save time; re-arm only covers
+ * the gap that restore cannot -- a save taken with nothing pending on the
+ * timer (between periods, or any other case where it was armed but not
+ * outstanding) -- by starting it fresh whenever the driver had it armed and
+ * the restore left nothing running.
+ *
+ * Gated on sched_int_armed, not merely SCHED_INT_CTRL's TIMER_EN bit: TIMER_EN
+ * stays set across a ONE_SHOT interrupt firing (xframe_sched_int_cb's ONE_SHOT
+ * branch does not clear it), so a TIMER_EN-only check would wrongly re-arm an
+ * already-completed one-shot on every future load. sched_int_armed instead
+ * tracks whether an arm is actually outstanding: xframe_sched_int_arm sets it
+ * on every arm (bring-up and periodic re-arm alike, so it stays true across
+ * periods), the ONE_SHOT branch clears it exactly when it declines to re-arm,
+ * and every path that cancels the timer (SCHED_INT_CTRL clearing TIMER_EN,
+ * ADAPTER_EN 1->0, soft reset) clears it too -- so a migrated target re-arms
+ * only when the source device actually still had one pending.
+ *
+ * Also gated on !timer_pending(s->sched_int_timer): VMSTATE_TIMER_PTR_V has
+ * already restored that exact pending expiry by the time post_load runs, so
+ * re-arming unconditionally would discard it for now + period, shifting the
+ * next interrupt later than the source's. Re-arming only when nothing is
+ * pending leaves a migrated-in pending timer on its restored deadline and
+ * still starts one for the armed-but-not-pending gap above.
+ */
+static int xframe_post_load(void *opaque, int version_id)
+{
+    XframeState *s = opaque;
+
+    /*
+     * A version-1 stream predates this branch's per-block interrupt masks
+     * (VMSTATE_UINT64_V at version 2 below): v1 gated every source through
+     * the single GENERAL_INT_MASK, so a v1 source never programmed -- and
+     * this VMState never carried -- any of the eight masks that
+     * xframe_update_irq (via xframe_link_pending, xframe_gpio_link_pending
+     * and xframe_sched_int_pending) actually gates on: pic_int_mask,
+     * txpic_int_mask, rxpic_int_mask, gpio_int_mask, tx_traffic_mask,
+     * rx_traffic_mask, mac_int_mask and mac_rmac_err_mask. Left unset, a v1
+     * load leaves them at this struct's reset value (XFRAME_INT_MASK_RESET,
+     * all-ones/masked), and xframe_update_irq now gates every source through
+     * exactly these masks -- so a migrated v1 guest would stop seeing
+     * interrupts even though its general mask still had them open. The
+     * compatible v2 state for a v1 source is all eight open (0): the
+     * guest's driver is already past bring-up and does not revisit its
+     * masks afterward, so the model must present them open itself rather
+     * than wait for a rewrite that never comes.
+     */
+    if (version_id < 2) {
+        s->pic_int_mask = 0;
+        s->txpic_int_mask = 0;
+        s->rxpic_int_mask = 0;
+        s->gpio_int_mask = 0;
+        s->tx_traffic_mask = 0;
+        s->rx_traffic_mask = 0;
+        s->mac_int_mask = 0;
+        s->mac_rmac_err_mask = 0;
+    }
+
+    if (s->sched_int_armed && !timer_pending(s->sched_int_timer)) {
+        xframe_sched_int_arm(s);
+    }
+    return 0;
+}
+
+/*
  * The migratable register state, per docs/datasheets/xframe.md's "VMState /
- * migration fields": the byte-swap and scratch registers, ADAPTER_CONTROL,
- * GENERAL_INT_MASK, MAC_CFG and its unlock latch, the whole MAC-address
- * table and its parallel per-entry mask (entry 0's factory address plus any
- * programmed unicast or multicast entry -- whatever the guest wrote must
- * survive migration exactly), the per-FIFO pending transmit list pointer,
- * and the receive ring's own bookkeeping
- * (PRC_RXD0_0/PRC_CTRL_0, the pending RX_TRAFFIC_INT status, and the card's
- * current walk position through the ring). GENERAL_INT_STATUS needs no
- * field of its own: it is derived from RX_TRAFFIC_INT on every read, so
- * migrating that one register is enough to reproduce it. The netdev
- * frontend's own state lives in NICConf, which every NIC model leaves out
- * of its VMState (see hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI
- * config space is covered by VMSTATE_PCI_DEVICE.
+ * migration fields". Version 1 (the base this branch started from) covers the
+ * byte-swap and scratch registers, ADAPTER_CONTROL, GENERAL_INT_MASK, MAC_CFG
+ * and its unlock latch, the whole MAC-address table and its parallel
+ * per-entry mask (entry 0's factory address plus any programmed unicast or
+ * multicast entry -- whatever the guest wrote must survive migration
+ * exactly), the per-FIFO pending transmit list pointer, and the receive
+ * ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the pending RX_TRAFFIC_INT
+ * status, and the card's current walk position through the ring).
+ *
+ * Version 2 is this branch's interrupt-block model, added as one logical
+ * bump over that base (VMSTATE_*_V at version 2 below): the per-block
+ * interrupt masks (the PCI-X/PIC masks, the transmit- and receive-traffic
+ * masks, and the two MAC masks) and the pending TX_TRAFFIC_INT completion
+ * status -- these feed xframe_update_irq, so a migrated target that lost them
+ * would recompute a wrong INTx line; the PIC/GPIO-block link path IRIX xg uses
+ * (gpio_int_reg, the link-state status, and gpio_int_mask, held for read-back
+ * only -- the GPIO link source is gated by pic_int_mask's PIC_INT_GPIO bit,
+ * migrated alongside it); the bring-up link edge's two one-shots
+ * (link_down_timer, link_up_timer) -- a save taken mid-transition must still
+ * deliver whichever edge was pending on the target, or a latched DOWN would
+ * never be cleared; and the scheduled interrupt that replaced the earlier
+ * sustained-link heartbeat -- SCHED_INT_CTRL (the register the driver arms it
+ * with), the sched_int_pending latch (which also feeds the INTx recompute),
+ * sched_int_armed (whether an arm is actually outstanding -- see
+ * xframe_post_load), and the timer's own pending expiry (sched_int_timer),
+ * migrated for the same reason link_up_timer is: a target that lost a pending
+ * scheduled interrupt would starve the driver watchdog after migration.
+ *
+ * A version-1 stream loads every version-2 field at this struct's reset
+ * value: zero for the latches, pending flags and timers -- nothing pending,
+ * nothing armed, the correct state for a target that migrated in from a
+ * build with no interrupt model at all -- but XFRAME_INT_MASK_RESET
+ * (all-ones/masked) for the eight gating masks, since the struct resets
+ * masks closed. xframe_post_load re-opens exactly those eight for a
+ * version_id < 2 load (see its comment): the compatible v2 state for a v1
+ * source, whose general_int_mask alone gated its interrupts, is these masks
+ * open.
+ *
+ * The two derived summaries (GENERAL_INT_STATUS and PIC_INT_STATUS) need no
+ * field of their own: both are recomputed from the RX/TX traffic status, the
+ * two link-state sources, the scheduled-interrupt latch and these masks on
+ * every read, so migrating those is enough. The netdev frontend's own state
+ * lives in NICConf, which every NIC model leaves out of its VMState (see
+ * hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI config space is covered by
+ * VMSTATE_PCI_DEVICE.
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, XframeState),
         VMSTATE_UINT64(swapper_ctrl, XframeState),
@@ -1154,6 +2066,16 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(sw_reset, XframeState),
         VMSTATE_UINT64(adapter_control, XframeState),
         VMSTATE_UINT64(general_int_mask, XframeState),
+        VMSTATE_UINT64_V(pic_int_mask, XframeState, 2),
+        VMSTATE_UINT64_V(txpic_int_mask, XframeState, 2),
+        VMSTATE_UINT64_V(rxpic_int_mask, XframeState, 2),
+        VMSTATE_UINT64_V(gpio_int_mask, XframeState, 2),
+        VMSTATE_UINT64_V(tx_traffic_mask, XframeState, 2),
+        VMSTATE_UINT64_V(rx_traffic_mask, XframeState, 2),
+        VMSTATE_UINT64_V(mac_int_mask, XframeState, 2),
+        VMSTATE_UINT64_V(mac_rmac_err_mask, XframeState, 2),
+        VMSTATE_UINT64_V(mac_rmac_err, XframeState, 2),
+        VMSTATE_UINT64_V(gpio_int_reg, XframeState, 2),
         VMSTATE_UINT64(mac_cfg, XframeState),
         VMSTATE_BOOL(rmac_cfg_unlocked, XframeState),
         VMSTATE_UINT64(rmac_addr_cmd, XframeState),
@@ -1163,11 +2085,18 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64_ARRAY(mac_addr_mask, XframeState,
                              XFRAME_MAC_TABLE_ENTRIES),
         VMSTATE_UINT64_ARRAY(txdl_par, XframeState, XFRAME_TXP_FIFOS),
+        VMSTATE_UINT64_V(tx_traffic_int, XframeState, 2),
         VMSTATE_UINT64(prc_rxd0_0, XframeState),
         VMSTATE_UINT64(prc_ctrl_0, XframeState),
         VMSTATE_UINT64(rx_traffic_int, XframeState),
         VMSTATE_UINT64(rx_page_addr, XframeState),
         VMSTATE_UINT32(rx_desc_idx, XframeState),
+        VMSTATE_UINT64_V(sched_int_ctrl, XframeState, 2),
+        VMSTATE_BOOL_V(sched_int_pending, XframeState, 2),
+        VMSTATE_BOOL_V(sched_int_armed, XframeState, 2),
+        VMSTATE_TIMER_PTR_V(sched_int_timer, XframeState, 2),
+        VMSTATE_TIMER_PTR_V(link_down_timer, XframeState, 2),
+        VMSTATE_TIMER_PTR_V(link_up_timer, XframeState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
