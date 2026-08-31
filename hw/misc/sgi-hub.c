@@ -667,7 +667,7 @@ static void sgi_hub_update_irq(SGIHubState *s)
 
     for (cpu = 0; cpu < SGI_HUB_PROCESSORS; cpu++) {
         for (bank = 0; bank < SGI_HUB_PENDING_BANKS; bank++) {
-            qemu_set_irq(s->bank_irq[cpu][bank],
+            qemu_set_irq(s->bank_irq[bank][cpu],
                          !!(s->pi_int_pend[bank] &
                             s->pi_int_mask[cpu * SGI_HUB_PENDING_BANKS +
                                            bank]));
@@ -2610,21 +2610,21 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
-        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[0][n]);
-    }
+    /* Each list is indexed by processor slice, so a consumer names its line. */
+    qdev_init_gpio_out_named(dev, s->bank_irq[0], "bank0",
+                             SGI_HUB_PROCESSORS);
+    qdev_init_gpio_out_named(dev, s->bank_irq[1], "bank1",
+                             SGI_HUB_PROCESSORS);
+    qdev_init_gpio_out_named(dev, s->rt_irq, "rt", SGI_HUB_PROCESSORS);
+
     s->md_onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                        sgi_hub_onewire_slot_done, s);
 
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
-        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->rt_irq[n]);
         s->rt_line[n].hub = s;
         s->rt_line[n].index = n;
         s->rt_timer[n] = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_hub_rt_expire,
                                       &s->rt_line[n]);
-    }
-    for (n = 0; n < SGI_HUB_PENDING_BANKS; n++) {
-        sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->bank_irq[1][n]);
     }
 
     memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",

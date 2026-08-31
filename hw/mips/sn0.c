@@ -921,6 +921,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.hub.memory.local", node_index);
     MemoryRegion *system = get_system_memory();
     MIPSCPU *cpu;
+    unsigned int slice;
 
     memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
                        SN0_XTALK_SIZE);
@@ -954,21 +955,17 @@ static void sn0_node_create_hub(SN0NodeState *node)
                              OBJECT(&node->xtalk), &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(&node->hub), &error_fatal);
 
-    cpu = node->cpu[0];
-    sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 0,
-                       cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 1,
-                       cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 2,
-                       cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
-    if (node->nr_cpus == SN0_CPUS_PER_NODE) {
-        cpu = node->cpu[1];
-        sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 4,
-                           cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 5,
-                           cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(&node->hub), 3,
-                           cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        cpu = node->cpu[slice];
+        qdev_connect_gpio_out_named(
+            DEVICE(&node->hub), "bank0", slice,
+            cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
+        qdev_connect_gpio_out_named(
+            DEVICE(&node->hub), "bank1", slice,
+            cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+        qdev_connect_gpio_out_named(
+            DEVICE(&node->hub), "rt", slice,
+            cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
     }
 }
 
