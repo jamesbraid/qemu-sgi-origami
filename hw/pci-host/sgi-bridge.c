@@ -648,7 +648,7 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
         uint64_t word1 = sgi_bridge_window_read_word(s, slot, space,
                                                      addr + 4, 4);
 
-        return word0 | (word1 << 32);
+        return (word0 << 32) | word1;
     }
 
     return sgi_bridge_window_read_word(s, slot, space, addr, size);
@@ -695,8 +695,8 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
     }
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, slot, space, addr, val, 4);
-        sgi_bridge_window_write_word(s, slot, space, addr + 4, val >> 32, 4);
+        sgi_bridge_window_write_word(s, slot, space, addr, val >> 32, 4);
+        sgi_bridge_window_write_word(s, slot, space, addr + 4, val, 4);
         return;
     }
 
