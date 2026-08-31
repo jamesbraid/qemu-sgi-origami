@@ -169,6 +169,12 @@ HUB_NI_PORT_ERROR = 0x608008
 HUB_NI_PORT_ERROR_REL = HUB_NI_PORT_ERROR - HUB_NI_BASE
 HUB_NI_VECTOR_STATUS_REL = HUB_NI_VECTOR_STATUS - HUB_NI_BASE
 PORT_ERROR_READ_DONE = 0x51
+HUB_NI_IO_PROTECT = 0x600400
+HUB_NI_IO_PROTECT_REL = HUB_NI_IO_PROTECT - HUB_NI_BASE
+HUB_NI_VECTOR_DATA = 0x600210
+HUB_NI_VECTOR_DATA_REL = HUB_NI_VECTOR_DATA - HUB_NI_BASE
+NI_VECTOR_TYPE_WRITE = 1
+IO_PROTECT_WRITE_DONE = 0x52
 PEER_SCRATCH_INTERRUPT = 114
 PEER_SCRATCH_PEND1 = 1 << (PEER_SCRATCH_INTERRUPT - 64)
 
@@ -1309,6 +1315,54 @@ def build_peer_port_error_read():
     return program
 
 
+def build_peer_io_protect_write():
+    # The stock PROM's link diagnostic vector-writes the peer hub's PIO
+    # protection register before its reads, granting itself cross-link
+    # PIO access. The completion must latch clean; an address-error
+    # completion is a counted link error.
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode the real PROM selects at entry.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    emit_local_hub_address(program, R_S0, HUB_NI_BASE)
+    emit_local_hub_address(program, R_S1, 0)
+
+    # Only node zero's A slice launches; every other CPU parks.
+    program.emit(mips_i(0x37, R_S1, R_T0, 0x20))  # PI_PROCESSOR_NUMBER
+    park_slice = program.branch(0x05, R_T0, R_ZERO)
+    program.emit(mips_i(0x37, R_S0, R_T0, 0))  # NI_STATUS
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))  # dsrl t0, t0, 8
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    park_node = program.branch(0x05, R_T0, R_ZERO)
+
+    # A zero route names the other chassis; the data register carries
+    # the value, and the parameters word (register | write type)
+    # launches the write.
+    program.emit(mips_i(0x3f, R_S0, R_ZERO, HUB_NI_VECTOR_REL))
+    program.emit(mips_i(0x3f, R_S0, R_ZERO, HUB_NI_VECTOR_DATA_REL))
+    program.emit(mips_i(0x0d, R_ZERO, R_T0,
+                        HUB_NI_IO_PROTECT_REL | NI_VECTOR_TYPE_WRITE))
+    program.emit(mips_i(0x3f, R_S0, R_T0, HUB_NI_VECTOR_PARMS_REL))
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0, IO_PROTECT_WRITE_DONE))
+    program.emit(mips_i(0x3f, R_S0, R_T0, HUB_NI_SCRATCH_1_REL))
+
+    spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, spin)
+
+    program.patch(park_slice, len(program.instructions))
+    program.patch(park_node, len(program.instructions))
+    park_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, park_spin)
+    return program
+
+
 def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program = MipsProgram()
 
@@ -2058,6 +2112,41 @@ class SN0SMPMachine(QemuSystemTest):
             status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
             NI_VECTOR_VALID, hex(status))
         self.assertEqual(read_data, 0, hex(read_data))
+
+    def test_peer_io_protect_vector_write_completes_clean(self):
+        # The link diagnostic's first vector operation is a WRITE of the
+        # peer's PIO protection register; with the register undecoded on
+        # the vector path the completion carries the address-error
+        # response and the diagnostic counts a link error even after the
+        # LLP port reads were fixed.
+        self.set_machine('origin200')
+        firmware = self.scratch_file('peer-io-protect-write.bin')
+        build_peer_io_protect_write().write(firmware)
+
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=single',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        self.poll_state(
+            lambda: self.read_state(HUB_BY_NODE + HUB_NI_SCRATCH_1, 1),
+            lambda s: s[0] == IO_PROTECT_WRITE_DONE)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+
+        # A clean write completion latches the write response type, not
+        # the read pin's zero.
+        status = self.read_state(HUB_BY_NODE + HUB_NI_VECTOR_STATUS, 1)[0]
+        self.assertEqual(
+            status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
+            NI_VECTOR_VALID | NI_VECTOR_TYPE_WRITE, hex(status))
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')
