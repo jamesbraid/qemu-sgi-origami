@@ -890,7 +890,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     tigon_dma_st32(s, ret_desc + 8,
                    ((uint32_t)buf_idx << 16) | (landed & 0xffff));
     tigon_dma_st32(s, ret_desc + 12,
-                   ((uint32_t)TI_BDTYPE_RECV_BD << 16) | flags);
+                   ((uint32_t)TI_BDTYPE_RECV_BD << 16) |
+                   flags | TI_BDFLAG_END);
     tigon_dma_st32(s, ret_desc + 16, 0);   /* ip / tcp-udp checksum */
     tigon_dma_st32(s, ret_desc + 20, 0);   /* error flags / vlan tag */
     tigon_dma_st32(s, ret_desc + 24, 0);   /* reserved */
