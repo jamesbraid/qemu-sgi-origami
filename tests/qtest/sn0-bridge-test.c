@@ -673,6 +673,37 @@ static void test_configuration_space_is_laid_out_right(const void *data)
 }
 
 /*
+ * Option cards go in devices 5, 6 and 7 (0-2 base I/O, 3 its dual-slot guest,
+ * 4 no connector). Each decodes a fitted card on its own -- fit one, only its
+ * slot answers, the others read all-ones -- catching a decode that skipped
+ * device numbers or aliased slots, which a single-slot check would miss.
+ */
+static void test_each_option_slot_decodes_a_card(const void *data)
+{
+    static const int option_slot[] = { 5, 6, 7 };
+    unsigned int fitted, other;
+
+    for (fitted = 0; fitted < ARRAY_SIZE(option_slot); fitted++) {
+        g_autofree char *args =
+            g_strdup_printf(MACHINE_WITH_BRIDGE " -device lsi53c895a,addr=%d",
+                            option_slot[fitted]);
+        QTestState *qts = qtest_init(args);
+
+        g_assert_cmphex(qtest_readl(qts, CFG0(option_slot[fitted], 0)), ==,
+                        PROBE_IDENTITY);
+
+        for (other = 0; other < ARRAY_SIZE(option_slot); other++) {
+            if (other != fitted) {
+                g_assert_cmphex(qtest_readl(qts, CFG0(option_slot[other], 0)),
+                                ==, NO_CARD);
+            }
+        }
+
+        qtest_quit(qts);
+    }
+}
+
+/*
  * A window reaches whatever decodes the address its register supplies.
  * Windows 3 and 7 sit at 0x700000 and 0xb00000 only if the sizes below
  * them are right, so these five rows pin the whole table.
@@ -2733,6 +2764,8 @@ int main(int argc, char **argv)
                         test_configuration_byte_lanes);
     qtest_add_data_func("sn0/bridge/configuration-space-layout", NULL,
                         test_configuration_space_is_laid_out_right);
+    qtest_add_data_func("sn0/bridge/each-option-slot-decodes-a-card", NULL,
+                        test_each_option_slot_decodes_a_card);
     qtest_add_data_func("sn0/bridge/device-windows", NULL,
                         test_device_windows_reach_their_cards);
     qtest_add_data_func("sn0/bridge/window-follows-its-base", NULL,
