@@ -267,6 +267,17 @@ static uint64_t win_readq(QTestState *qts, uint64_t off)
     return qtest_readq(qts, WINDOW_SLOT3 + off);
 }
 
+/*
+ * A 32-bit register access through the slot window -- the width IRIX xg reads
+ * these 64-bit registers with. On a DEV_64BIT_DEVICE-clear slot this is one
+ * 32-bit device cycle the Bridge byte-lane-corrects, reaching the register's
+ * low half at off+0 and its high half at off+4.
+ */
+static uint32_t win_readl(QTestState *qts, uint64_t off)
+{
+    return qtest_readl(qts, WINDOW_SLOT3 + off);
+}
+
 /* Aim the slot's window at a BAR, marking the device 64-bit and swap-clear. */
 static void aim_window(QTestState *qts, uint32_t pci_base)
 {
@@ -338,6 +349,54 @@ static void test_swapper_magic_composes_through_the_bridge(const void *data)
     g_assert_cmphex(win_readq(qts, PIF_RD_SWAPPER_FB), ==, SWAPPER_MAGIC);
     g_assert_cmphex(win_readq(qts, ADAPTER_STATUS), ==,
                     ADAPTER_STATUS_QUIESCENT);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The real IRIX xg case: the slot's DEV register left with DEV_64BIT_DEVICE
+ * CLEAR, the way the live IRIX boot leaves it -- unlike the test above, which
+ * marks the slot 64-bit. With the bit clear the Bridge delivers a 32-bit
+ * register access to the device as one 32-bit cycle rather than folding a
+ * doubleword into an eight-byte cycle, so this is the register access xg's
+ * endianness handshake actually issues on hardware: a 32-bit read, byte-lane
+ * corrected by the Bridge, of each half of the swapper diagnostic. It reaches
+ * the right bytes only because the device now serves 32-bit register cycles --
+ * before its window's valid.min_access_size dropped to 4 the cycle was rejected
+ * below the valid minimum and the read came back zero, and xg's endian check
+ * aborted attach. Both halves of the swapper magic, and both halves of the
+ * quiescent ADAPTER_STATUS (whose halves differ, so a half reaching the wrong
+ * lane shows), must compose whole.
+ *
+ * A single 64-bit read on a DEV_64BIT_DEVICE-clear slot is a different path the
+ * Bridge word-orders for a 32-bit-device slot; xg never issues one (it reads
+ * 32-bit), so that composition -- a Bridge concern -- is not what this asserts.
+ */
+static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
+{
+    QTestState *qts = boot_plain();
+    uint32_t dev;
+
+    /* Decode both BARs and enable memory, but leave DEV_64BIT_DEVICE clear. */
+    qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_BAR0, PIF_BAR_PCI);
+    qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_BAR0_HIGH, 0);
+    qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_BAR2, TXP_BAR_PCI);
+    qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(XFRAME_SLOT),
+                 DEV_MEMORY_SPACE | (PIF_BAR_PCI >> 20));
+
+    dev = qtest_readl(qts, BRIDGE_DEVICE(XFRAME_SLOT));
+    g_assert_cmphex(dev & DEV_64BIT_DEVICE, ==, 0);
+    g_assert_cmphex(dev & DEV_SWAP_PROGRAMMED, ==, 0);
+
+    g_assert_cmphex(win_readl(qts, PIF_RD_SWAPPER_FB + 0), ==,
+                    (uint32_t)SWAPPER_MAGIC);
+    g_assert_cmphex(win_readl(qts, PIF_RD_SWAPPER_FB + 4), ==,
+                    (uint32_t)(SWAPPER_MAGIC >> 32));
+    g_assert_cmphex(win_readl(qts, ADAPTER_STATUS + 0), ==,
+                    (uint32_t)ADAPTER_STATUS_QUIESCENT);
+    g_assert_cmphex(win_readl(qts, ADAPTER_STATUS + 4), ==,
+                    (uint32_t)(ADAPTER_STATUS_QUIESCENT >> 32));
 
     qtest_quit(qts);
 }
@@ -492,6 +551,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/xframe/swapper-magic-composes-through-the-bridge",
                         NULL, test_swapper_magic_composes_through_the_bridge);
+    qtest_add_data_func("sn0/xframe/swapper-magic-composes-via-32bit-cycles",
+                        NULL, test_swapper_magic_composes_via_32bit_cycles);
     qtest_add_data_func("sn0/xframe/transmit-frame-composes-through-the-bridge",
                         NULL, test_transmit_frame_composes_through_the_bridge);
     qtest_add_data_func("sn0/xframe/receive-frame-composes-through-the-bridge",
