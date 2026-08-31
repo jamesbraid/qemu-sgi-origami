@@ -133,6 +133,42 @@ static void test_programmed_own_address_answers_as_slave(const void *data)
 }
 
 /*
+ * A general call reaches every slave, the controller's own broadcast receiver
+ * included, which is how the ELSC's arbitration broadcast lands in the data
+ * register for the firmware to poll. That receive must not raise
+ * addressed-as-slave: only a directed hit on the programmed address is an AAS
+ * event. When a broadcast raised AAS too, every arbitration signal left the
+ * controller looking addressed as a slave, and the firmware's arbitration
+ * poll wedged before it ever issued the DIP-switch read -- the boot never
+ * reached the local-POD stop.
+ */
+static void test_general_call_does_not_address_as_slave(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* Program an own address so a directed hit would be the AAS case. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x2a);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    /* Start to the general-call address 0x00: it reaches the broadcast RX. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x00);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+
+    /* The general call is acknowledged -- a receiver exists... */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, 0);
+    /* ...but it must not report the controller addressed as a slave. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_AAS,
+                    ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    qtest_quit(qts);
+}
+
+/*
  * After a refused start the chip must keep reporting NAK: i2c_send() over
  * an empty matched list reports success, so the refusal must be remembered.
  */
@@ -280,6 +316,8 @@ int main(int argc, char **argv)
                         test_own_address_round_trip);
     qtest_add_data_func("sn0/i2c/programmed-own-address-answers-as-slave",
                         NULL, test_programmed_own_address_answers_as_slave);
+    qtest_add_data_func("sn0/i2c/general-call-does-not-address-as-slave",
+                        NULL, test_general_call_does_not_address_as_slave);
     qtest_add_data_func("sn0/i2c/send-after-refused-start-stays-nacked",
                         NULL, test_send_after_refused_start_stays_nacked);
     qtest_add_data_func("sn0/i2c/clock-control-independent-fields", NULL,

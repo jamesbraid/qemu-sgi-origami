@@ -360,6 +360,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCF8584BcastRxState, PCF8584_BCAST_RX)
 struct PCF8584BcastRxState {
     I2CSlave parent_obj;
     PCF8584State *chip;
+    /*
+     * Set at match time: the current match is a directed hit on the
+     * programmed address, not the general call. Consulted synchronously by
+     * the event that follows the same start, so it is transient and never
+     * migrated.
+     */
+    bool directed;
 };
 
 /* Consulted at match time, so reset and migration never copy it here. */
@@ -374,6 +381,7 @@ static bool pcf8584_bcast_rx_match_and_add(I2CSlave *candidate,
         return false;
     }
 
+    rx->directed = !broadcast;
     node = g_new(struct I2CNode, 1);
     node->elt = candidate;
     QLIST_INSERT_HEAD(current_devs, node, next);
@@ -384,8 +392,15 @@ static int pcf8584_bcast_rx_event(I2CSlave *dev, enum i2c_event event)
 {
     PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
 
-    /* Addressed as slave: a directed hit on S0' or the general call. */
-    if (event == I2C_START_SEND || event == I2C_START_RECV) {
+    /*
+     * Addressed as slave: only a directed hit on the programmed address, not
+     * the general call. The controller also matches the general call so it
+     * receives the ELSC's arbitration broadcast into its data register, but
+     * that broadcast must not raise AAS -- the firmware polls the arbitration
+     * signal there and wedges if every broadcast marks it addressed as a
+     * slave, never reaching the DIP-switch read.
+     */
+    if (rx->directed && (event == I2C_START_SEND || event == I2C_START_RECV)) {
         rx->chip->status |= PCF8584_STS_AAS;
     }
     return 0;
