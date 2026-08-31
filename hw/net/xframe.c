@@ -181,6 +181,7 @@ static void xframe_soft_reset(XframeState *s)
     s->rmac_addr_data0 = 0;
     s->rmac_addr_data1 = 0;
     memset(s->mac_addr, 0, sizeof(s->mac_addr));
+    memset(s->mac_addr_mask, 0, sizeof(s->mac_addr_mask));
     memset(s->txdl_par, 0, sizeof(s->txdl_par));
     s->prc_rxd0_0 = 0;
     s->prc_ctrl_0 = 0;
@@ -201,7 +202,10 @@ static void xframe_soft_reset(XframeState *s)
 /*
  * The MAC-address table's indirect command: a strobe carries out a read or a
  * write of one entry and then self-clears, so a driver polling the strobe bit
- * sees the operation complete at once.
+ * sees the operation complete at once. A write also latches
+ * RMAC_ADDR_DATA1_MEM into the entry's mask -- see xframe_rx_filter for what
+ * the mask means. DATA1 is write-only in both drivers (never part of any
+ * read-back), so a read strobe restores only DATA0.
  */
 static void xframe_rmac_addr_cmd(XframeState *s, uint64_t val)
 {
@@ -210,6 +214,7 @@ static void xframe_rmac_addr_cmd(XframeState *s, uint64_t val)
     if (val & XFRAME_RMAC_ADDR_CMD_STROBE) {
         if (val & XFRAME_RMAC_ADDR_CMD_WE) {
             s->mac_addr[offset] = s->rmac_addr_data0;
+            s->mac_addr_mask[offset] = s->rmac_addr_data1;
         } else {
             s->rmac_addr_data0 = s->mac_addr[offset];
         }
@@ -586,12 +591,15 @@ static const MemoryRegionOps xframe_txp_ops = {
 
 /*
  * MAC_CFG bits the receive filter consults (if_xgereg.h RMAC_PROM_EN,
- * RMAC_BCAST_EN, RMAC_ALL_ADDR_EN). Everything else in MAC_CFG (TMAC_EN,
- * loopback, pad/FCS strip, RMAC_DISCARD_PFRM) has no filtering role.
+ * RMAC_BCAST_EN). Everything else in MAC_CFG (TMAC_EN, loopback, pad/FCS
+ * strip, RMAC_DISCARD_PFRM, RMAC_ALL_ADDR_EN) has no filtering role here:
+ * RMAC_ALL_ADDR_EN doesn't gate multicast any more, since the CAM's own
+ * masked-match table now expresses "match every multicast frame" (see
+ * xframe_rx_filter) the way both drivers actually configure it, and neither
+ * public driver ever sets RMAC_ALL_ADDR_EN itself.
  */
 #define XFRAME_MAC_CFG_RMAC_PROM_EN      (1ULL << 56)
 #define XFRAME_MAC_CFG_RMAC_BCAST_EN     (1ULL << 54)
-#define XFRAME_MAC_CFG_RMAC_ALL_ADDR_EN  (1ULL << 53)
 
 /*
  * A 1-buffer-mode RxD is four 64-bit words: host control, control1,
@@ -695,20 +703,49 @@ static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
 /*
  * Whether a frame off the wire should reach the ring at all -- real hardware
  * filters by destination address in the RMAC block before a frame is ever
- * written to a receive buffer. The station/multicast table doubles as the
- * unicast filter: any of its 64 programmed entries is a match, not only
- * entry 0's factory address.
+ * written to a receive buffer. The 64-entry MAC-address table is both the
+ * unicast filter (entry 0 is the factory/station address, but any of the 64
+ * is a match) and the multicast filter: both public drivers program a joined
+ * multicast group as a masked entry in the very same table
+ * (RMAC_ADDR_CMD_MEM/DATA0_MEM/DATA1_MEM -- OpenBSD xge_setmulti, Linux
+ * s2io_set_multicast), so one masked-match loop against the table covers
+ * both, with no separate multicast path needed.
  *
- * Multicast is not modelled against that same table and is accepted only in
- * the accept-all-multicast mode. Both public drivers program multicast
- * groups as masked exact-match entries in the same 64-entry
- * RMAC_ADDR_CMD_MEM/DATA0/DATA1_MEM table (OpenBSD xge_setmulti, Linux
- * s2io_set_multicast), each entry's DATA1_MEM mask picking which address
- * bits that entry cares about -- not a hash, and not what this filter does.
- * A real driver joining specific multicast groups never sets
- * RMAC_ALL_ADDR_EN, so this simplification under-delivers multicast traffic
- * to any guest that filters it that way. Tracked as a follow-on slice
- * (multicast CAM matching), not implemented here.
+ * The mask (DATA1_MEM, latched into mac_addr_mask[] by xframe_rmac_addr_cmd)
+ * is a per-bit "compare" selector over the same 48 address bits DATA0/DATA0's
+ * factory-MAC packing uses (bits 63:16, MSB-first): a mask bit CLEAR means
+ * that address bit must match the incoming destination; a mask bit SET means
+ * don't care. An all-clear mask (the reset default, and what entry 0's
+ * factory MAC gets) is therefore an exact match -- unicast is just the
+ * every-bit-compared case of the same rule multicast uses.
+ *
+ * This polarity is Linux s2io_set_multicast's own, verified two ways that
+ * agree with each other: an individual joined group is programmed with
+ * DATA1_MEM_MASK(0) -- an all-clear mask, i.e. every bit compared, i.e. an
+ * exact match against that one group, which is the only sane reading given
+ * per-group multicast join/leave is core, well-exercised functionality, not
+ * an edge case. IFF_ALLMULTI is programmed with address 0x010203040506 and
+ * mask 0xfeffffffffff: byte 0 of that mask is 0xfe (0b11111110) -- every bit
+ * of byte 0 except bit 0 is "don't care", and bytes 1-5 (mask 0xff each) are
+ * entirely "don't care" -- so under this polarity the entry compares exactly
+ * one bit: byte 0's bit 0, the IEEE group/individual bit, against address
+ * 0x01's bit 0, which is 1. That is precisely "any destination with the
+ * multicast bit set", with no slop and no special-casing: the general rule
+ * falls straight out of Linux's own values.
+ *
+ * OpenBSD's xge_setmulti does not corroborate this: it writes DATA1_MEM as
+ * all-ones (0xFFFFFFFFFFFFFFFF, the opposite of Linux's all-clear) for an
+ * individual join, and its own IFF_ALLMULTI sentinel (DATA0=0x8000...000,
+ * DATA1=0xF000...000) does not reduce to "match every multicast frame" under
+ * either mask polarity with this packing -- worked through both ways, it
+ * only ever matches a narrow, specific address pattern, not "every"
+ * multicast destination, contradicting its own "receive everything with the
+ * multicast bit set" comment. Both readings were checked against the exact
+ * literal values in if_xge.c and s2io.c, not against each other's
+ * paraphrase. This model follows Linux's convention, since it is the one
+ * that is internally consistent on its own account for both the common case
+ * (an individual join) and the wildcard case, and does not need a
+ * separately-invented special case to explain the wildcard value.
  */
 static bool xframe_rx_filter(XframeState *s, const uint8_t *buf, size_t size)
 {
@@ -725,16 +762,16 @@ static bool xframe_rx_filter(XframeState *s, const uint8_t *buf, size_t size)
     if (memcmp(buf, broadcast, 6) == 0) {
         return (s->mac_cfg & XFRAME_MAC_CFG_RMAC_BCAST_EN) != 0;
     }
-    if (buf[0] & 1) {
-        return (s->mac_cfg & XFRAME_MAC_CFG_RMAC_ALL_ADDR_EN) != 0;
-    }
 
     dest = 0;
     for (i = 0; i < 6; i++) {
         dest = (dest << 8) | buf[i];
     }
     for (i = 0; i < XFRAME_MAC_TABLE_ENTRIES; i++) {
-        if ((s->mac_addr[i] >> 16) == dest) {
+        uint64_t addr = s->mac_addr[i] >> 16;
+        uint64_t mask = s->mac_addr_mask[i] >> 16;
+
+        if (((dest ^ addr) & ~mask & 0xffffffffffffULL) == 0) {
             return true;
         }
     }
@@ -981,9 +1018,10 @@ static void xframe_exit(PCIDevice *dev)
  * The migratable register state, per docs/datasheets/xframe.md's "VMState /
  * migration fields": the byte-swap and scratch registers, ADAPTER_CONTROL,
  * GENERAL_INT_MASK, MAC_CFG and its unlock latch, the whole MAC-address
- * table (entry 0's factory address plus any programmed entry -- whatever
- * the guest wrote must survive migration exactly), the per-FIFO pending
- * transmit list pointer, and the receive ring's own bookkeeping
+ * table and its parallel per-entry mask (entry 0's factory address plus any
+ * programmed unicast or multicast entry -- whatever the guest wrote must
+ * survive migration exactly), the per-FIFO pending transmit list pointer,
+ * and the receive ring's own bookkeeping
  * (PRC_RXD0_0/PRC_CTRL_0, the pending RX_TRAFFIC_INT status, and the card's
  * current walk position through the ring). GENERAL_INT_STATUS needs no
  * field of its own: it is derived from RX_TRAFFIC_INT on every read, so
@@ -1009,6 +1047,8 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(rmac_addr_data0, XframeState),
         VMSTATE_UINT64(rmac_addr_data1, XframeState),
         VMSTATE_UINT64_ARRAY(mac_addr, XframeState, XFRAME_MAC_TABLE_ENTRIES),
+        VMSTATE_UINT64_ARRAY(mac_addr_mask, XframeState,
+                             XFRAME_MAC_TABLE_ENTRIES),
         VMSTATE_UINT64_ARRAY(txdl_par, XframeState, XFRAME_TXP_FIFOS),
         VMSTATE_UINT64(prc_rxd0_0, XframeState),
         VMSTATE_UINT64(prc_ctrl_0, XframeState),
