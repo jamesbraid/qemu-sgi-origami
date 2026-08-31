@@ -283,6 +283,7 @@ config SGI_IOC3
     select M48T35
     select SERIAL
     select SGI_IOC3_ETH
+    select SGI_IOC3_KBC
 
 config SGI_XBOW
     bool
