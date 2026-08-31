@@ -165,6 +165,10 @@ HUB_NI_VECTOR_REL = HUB_NI_VECTOR - HUB_NI_BASE
 HUB_NI_VECTOR_READ_DATA_REL = HUB_NI_VECTOR_READ_DATA - HUB_NI_BASE
 NI_VECTOR_VALID = 1 << 63
 NI_VECTOR_RESPONSE_MASK = 0x7  # includes the modeled address-error response
+HUB_NI_PORT_ERROR = 0x608008
+HUB_NI_PORT_ERROR_REL = HUB_NI_PORT_ERROR - HUB_NI_BASE
+HUB_NI_VECTOR_STATUS_REL = HUB_NI_VECTOR_STATUS - HUB_NI_BASE
+PORT_ERROR_READ_DONE = 0x51
 PEER_SCRATCH_INTERRUPT = 114
 PEER_SCRATCH_PEND1 = 1 << (PEER_SCRATCH_INTERRUPT - 64)
 
@@ -1255,6 +1259,56 @@ def build_remote_scratch_notification():
     return program
 
 
+def build_peer_port_error_read():
+    # Node zero's A slice vector-reads the peer hub's LLP port error
+    # register, the read the stock PROM's link diagnostic makes. The
+    # datasheet's reviewed prescription is that the register reads zero
+    # and does not fault, through either access path; the completion must
+    # therefore latch with a clean response and zero data.
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode the real PROM selects at entry.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # s0 is this CPU's NI register block, s1 its PI block.
+    emit_local_hub_address(program, R_S0, HUB_NI_BASE)
+    emit_local_hub_address(program, R_S1, 0)
+
+    # Only node zero's A slice launches; every other CPU parks.
+    program.emit(mips_i(0x37, R_S1, R_T0, 0x20))  # PI_PROCESSOR_NUMBER
+    park_slice = program.branch(0x05, R_T0, R_ZERO)
+    program.emit(mips_i(0x37, R_S0, R_T0, 0))  # NI_STATUS
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))  # dsrl t0, t0, 8
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    park_node = program.branch(0x05, R_T0, R_ZERO)
+
+    # A zero route names the other chassis; the parameters word carries
+    # the target register and launches the read.
+    program.emit(mips_i(0x3f, R_S0, R_ZERO, HUB_NI_VECTOR_REL))
+    program.emit(mips_i(0x0d, R_ZERO, R_T0, HUB_NI_PORT_ERROR_REL))
+    program.emit(mips_i(0x3f, R_S0, R_T0, HUB_NI_VECTOR_PARMS_REL))
+    program.emit(mips_i(0x37, R_S0, R_T1, HUB_NI_VECTOR_READ_DATA_REL))
+
+    # The latched completion and data stay in the vector registers for
+    # the harness; the scratch word only marks the sequence finished.
+    program.emit(mips_i(0x19, R_ZERO, R_T0, PORT_ERROR_READ_DONE))
+    program.emit(mips_i(0x3f, R_S0, R_T0, HUB_NI_SCRATCH_1_REL))
+
+    spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, spin)
+
+    program.patch(park_slice, len(program.instructions))
+    program.patch(park_node, len(program.instructions))
+    park_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, park_spin)
+    return program
+
+
 def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program = MipsProgram()
 
@@ -1967,6 +2021,43 @@ class SN0SMPMachine(QemuSystemTest):
                           REMOTE_SCRATCH_DONE], scratch)
         self.assertEqual(scratch[1],
                          [REMOTE_SCRATCH_GO, REMOTE_SCRATCH_DONE], scratch)
+
+    def test_peer_port_error_vector_read_completes_clean(self):
+        # The stock PROM's link diagnostic vector-reads the peer hub's
+        # LLP port error register. The NI datasheet's reviewed
+        # prescription is a zero, non-faulting read through either path,
+        # so the completion must latch clean with zero data; a completion
+        # carrying the address-error response is the modeled defect that
+        # fails the diagnostic on every two-chassis boot.
+        self.set_machine('origin200')
+        firmware = self.scratch_file('peer-port-error-read.bin')
+        build_peer_port_error_read().write(firmware)
+
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=single',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        self.poll_state(
+            lambda: self.read_state(HUB_BY_NODE + HUB_NI_SCRATCH_1, 1),
+            lambda s: s[0] == PORT_ERROR_READ_DONE)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+
+        status = self.read_state(HUB_BY_NODE + HUB_NI_VECTOR_STATUS, 1)[0]
+        read_data = self.read_state(
+            HUB_BY_NODE + HUB_NI_VECTOR_READ_DATA, 1)[0]
+        self.assertEqual(
+            status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
+            NI_VECTOR_VALID, hex(status))
+        self.assertEqual(read_data, 0, hex(read_data))
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')
