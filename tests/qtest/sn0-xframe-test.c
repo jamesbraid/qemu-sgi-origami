@@ -121,7 +121,7 @@
 
 /* The two fixed 64-bit constants the register composition is checked on. */
 #define SWAPPER_MAGIC           0x0123456789abcdefULL
-#define ADAPTER_STATUS_QUIESCENT 0xf40000c300000000ULL
+#define ADAPTER_STATUS_QUIESCENT 0xf400ffc300000000ULL
 
 #define RC_IN_SVC               (1ULL << 56)
 #define RX_TRAFFIC_RING0        (1ULL << 63)
