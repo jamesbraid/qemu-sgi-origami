@@ -240,6 +240,35 @@ static void attach_node_ioc3(QTestState *qts, unsigned int node)
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
 }
 
+/* The Hub's network interface, as far as renumbering a stock machine needs. */
+#define NI_STATUS               0x600000
+#define NI_VECTOR_PARMS         0x600200
+#define NI_VECTOR               0x600208
+#define NI_VECTOR_DATA          0x600210
+#define NI_REGION_SIZE          (1ULL << 17)
+#define NI_NODE_MASK            (0x1ffULL << 8)
+#define NI_PIOTYPE_WRITE        1
+#define HUB_BY_NODE             (SPACE_XTALK + 0x01800000)
+
+/*
+ * A stock-PROM machine boots with every Hub programmed zero, so a
+ * node-one-qualified address names no Hub. Program node 1's real number
+ * the way the PROM's global master does, a vector write over the
+ * CrayLink, so the test can reach node 1's devices by address. The
+ * programmed number is Hub state: the destination re-derives its claim
+ * from the migrated register, which this test then rides.
+ */
+static void assign_node1_number(QTestState *qts)
+{
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR, 0);
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA,
+                 NI_REGION_SIZE | (1ULL << 8));
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_PARMS,
+                 NI_STATUS | NI_PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE + NI_STATUS) &
+                    NI_NODE_MASK, ==, 1ULL << 8);
+}
+
 /* Two equal devfns on different root buses must migrate independently. */
 static void test_dual_base_io_survives_migration(const void *data)
 {
@@ -254,6 +283,7 @@ static void test_dual_base_io_survives_migration(const void *data)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_DUAL);
+    assign_node1_number(from);
     attach_node_ioc3(from, 0);
     attach_node_ioc3(from, 1);
     qtest_writeb(from, IOC3_SCRATCH_AT(0), 0x5a);

@@ -539,6 +539,31 @@ static uint64_t ioc3_scratch(unsigned int node)
            SN0_IOC3_SERIAL_A + SN0_IOC3_SCRATCH;
 }
 
+/* The Hub's network interface, as far as renumbering a stock machine needs. */
+#define SN0_NI_VECTOR_PARMS     0x600200
+#define SN0_NI_VECTOR           0x600208
+#define SN0_NI_VECTOR_DATA      0x600210
+#define SN0_NI_REGION_SIZE      (1ULL << 17)
+#define SN0_NI_NODE_MASK        (0x1ffULL << SN0_NI_NODE_SHIFT)
+#define SN0_NI_PIOTYPE_WRITE    1
+
+/*
+ * A stock-PROM machine boots with every Hub programmed zero, so a
+ * node-one-qualified address names no Hub. Program node 1's real number
+ * the way the PROM's global master does, a vector write over the
+ * CrayLink, so the test can reach node 1's devices by address.
+ */
+static void assign_node1_number(QTestState *qts)
+{
+    qtest_writeq(qts, SN0_HUB_LOCAL + SN0_NI_VECTOR, 0);
+    qtest_writeq(qts, SN0_HUB_LOCAL + SN0_NI_VECTOR_DATA,
+                 SN0_NI_REGION_SIZE | (1ULL << SN0_NI_NODE_SHIFT));
+    qtest_writeq(qts, SN0_HUB_LOCAL + SN0_NI_VECTOR_PARMS,
+                 SN0_NI_STATUS | SN0_NI_PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, SN0_HUB_BY_NODE(1) + SN0_NI_STATUS) &
+                    SN0_NI_NODE_MASK, ==, 1ULL << SN0_NI_NODE_SHIFT);
+}
+
 /*
  * Each chassis carries a complete BaseIO assembly. Probe all three fixed PCI
  * identities through each node-qualified Bridge, then write different values
@@ -549,6 +574,7 @@ static void test_dual_chassis_base_io(const void *data)
     QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
     unsigned int node;
 
+    assign_node1_number(qts);
     for (node = 0; node < 2; node++) {
         g_assert_cmphex(qtest_readl(qts,
                             SN0_CFG0(node, SN0_SCSI_DEVICE0)), ==,
