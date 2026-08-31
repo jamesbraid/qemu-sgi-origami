@@ -706,6 +706,13 @@ static void test_receive(const void *data)
     g_assert_cmphex(word2 >> 16, ==, 0);
     g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
 
+    /*
+     * The return flags must carry END: IRIX's eg silently frees any receive
+     * whose return descriptor has it clear, so without it no frame reaches IP.
+     */
+    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 12) & TI_BDFLAG_END,
+                    ==, TI_BDFLAG_END);
+
     /* The frame landed in the posted buffer, byte for byte. */
     qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
     g_assert_cmpmem(landed, sizeof(rx_frame_ours),
@@ -822,7 +829,7 @@ static const uint8_t rx_frame_direct[63] = {
  * == 2) and non-multiple-of-4 length, forcing the leading- and
  * trailing-partial-word paths on the write side too.
  */
-static void receive_direct_map_check(bool bridge_transparent)
+static void receive_direct_map_check(bool bridge_transparent, uint32_t opmode)
 {
     int sv[2];
     QTestState *qts;
@@ -841,10 +848,7 @@ static void receive_direct_map_check(bool bridge_transparent)
     qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
                  DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
                  (bridge_transparent ? DEV_SWAP_DIRECT : 0));
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
-                 bridge_transparent ?
-                 (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
-                  TI_OPMODE_BYTESWAP_DATA) : 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE, opmode);
 
     /* GIB and the standard-receive/return rings reached through the window. */
     qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
@@ -876,18 +880,30 @@ static void receive_direct_map_check(bool bridge_transparent)
     g_assert_cmpmem(landed, sizeof(rx_frame_direct),
                     rx_frame_direct, sizeof(rx_frame_direct));
 
+    /*
+     * Through the Bridge, the return descriptor must still report the real
+     * frame length and carry the END flag, so the guest driver delivers it.
+     */
+    {
+        uint32_t w8 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+        uint32_t w12 = qtest_readl(qts, RETURN_RING_PHYS + 12);
+        g_assert_cmphex(w8 & 0xffff, ==, sizeof(rx_frame_direct));
+        g_assert_cmphex(w12 & TI_BDFLAG_END, ==, TI_BDFLAG_END);
+    }
+
     qtest_quit(qts);
     close(sv[0]);
 }
 
 static void test_receive_direct_map_transparent(const void *data)
 {
-    receive_direct_map_check(true);
+    receive_direct_map_check(true, TI_OPMODE_BYTESWAP_BD |
+                             TI_OPMODE_WORDSWAP_BD | TI_OPMODE_BYTESWAP_DATA);
 }
 
 static void test_receive_direct_map_corrects(const void *data)
 {
-    receive_direct_map_check(false);
+    receive_direct_map_check(false, 0);
 }
 
 /*
