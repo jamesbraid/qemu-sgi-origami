@@ -146,6 +146,9 @@
 #define NI_VECTOR_DATA      0x600210
 #define NI_VECTOR_STATUS    0x600300
 #define NI_VECTOR_READ_DATA 0x600310
+#define NI_IO_PROTECT       0x600400
+#define NI_IO_PROT_OVRRD    0x600408
+#define NI_PROT_PASSWORD    0x53474972756c6573ULL   /* "SGIrules" */
 #define NI_PORT_PARMS       0x608000
 #define NI_PORT_ERROR       0x608008
 #define NI_PORT_ERROR_CLEAR 0x608088
@@ -1771,6 +1774,91 @@ static void test_vector_writes_land_only_on_rows_that_store(
 }
 
 /*
+ * The PIO-protection register, through plain PIO: full-width storage
+ * the model never consults, resetting all ones -- one permissive bit
+ * per region. The override register beside it is write-only, and its
+ * only documented semantic is the password unlock, a no-op on a model
+ * that never enforces the protection: the write is accepted and stores
+ * nothing.
+ */
+static void test_io_protect_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_IO_PROTECT), ==,
+                    ~0ULL);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_IO_PROTECT, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_IO_PROTECT), ==,
+                    0x0123456789abcdefULL);
+
+    /* The unlock is accepted and stores nothing beside it. */
+    qtest_writeq(qts, HUB_LOCAL + NI_IO_PROT_OVRRD, NI_PROT_PASSWORD);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_IO_PROTECT), ==,
+                    0x0123456789abcdefULL);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same two registers through the remote vector decode. The stock
+ * PROM's link diagnostic's FIRST vector operation is a write of the
+ * peer's PIO-protection register, granting itself cross-link PIO
+ * access; with the register undecoded on the vector path the
+ * completion carries the address-error response the diagnostic counts
+ * as a phantom link error. The override's vector read stays rejected:
+ * the register is write-only, so the read keeps the undecoded
+ * register's answer.
+ */
+static void test_io_protect_registers_answer_the_vector_decode(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t status;
+
+    status = vector_operation(qts, node0, NI_IO_PROTECT, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==,
+                    ~0ULL);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0xfedcba9876543210ULL);
+    status = vector_operation(qts, node0, NI_IO_PROTECT, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_IO_PROTECT), ==,
+                    0xfedcba9876543210ULL);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, NI_PROT_PASSWORD);
+    status = vector_operation(qts, node0, NI_IO_PROT_OVRRD,
+                              PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+
+    /* A non-password write's effect is unstated; it still completes. */
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, 0x1234);
+    status = vector_operation(qts, node0, NI_IO_PROT_OVRRD,
+                              PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+
+    status = vector_operation(qts, node0, NI_IO_PROT_OVRRD,
+                              PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | NVS_ADDRESS_ERROR);
+
+    qtest_quit(qts);
+}
+
+/*
  * A half read of a read-to-clear register is unobserved on hardware; the
  * conservative choice pinned here is that only a full-width read clears.
  */
@@ -2497,6 +2585,11 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/vector-writes-land-only-on-rows-that-store",
                         NULL,
                         test_vector_writes_land_only_on_rows_that_store);
+    qtest_add_data_func("sn0/hub/io-protect-registers", NULL,
+                        test_io_protect_registers);
+    qtest_add_data_func("sn0/hub/io-protect-registers-answer-vector-decode",
+                        NULL,
+                        test_io_protect_registers_answer_the_vector_decode);
     qtest_add_data_func("sn0/hub/network-routes-reset-to-zero", NULL,
                         test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,

@@ -333,6 +333,19 @@
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
+ * PIO protection: region-permission storage this model never consults
+ * -- one bit per region, permissive at reset -- and its write-only
+ * override, whose only documented semantic is that writing the
+ * password "SGIrules" unlocks the protection. The Origami project
+ * tree's network-interface datasheet ("Reset and protection" in
+ * docs/datasheets/hub-network-interface.md there) carries both rows.
+ */
+#define HUB_NI_IO_PROTECT       0x600400
+#define HUB_NI_IO_PROT_OVRRD    0x600408
+#define NI_IO_PROTECT_RESET     (~0ULL)
+#define NI_PROT_OVRRD_PASSWORD  0x53474972756c6573ULL  /* "SGIrules" */
+
+/*
  * The LLP port registers. The parameters register is sixteen bits of
  * storage -- tuning for a link this machine does not model -- whose
  * reset value carries the null-packet timeout in bits 15:10 and the
@@ -1728,6 +1741,22 @@ static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
     }
 }
 
+static void sgi_hub_store_io_prot_ovrrd(SGIHubState *s, unsigned arg,
+                                        uint64_t val)
+{
+    /*
+     * The password unlock is a no-op on a model that never enforces
+     * the protection; a non-password write's effect is unstated.
+     * Neither stores anything.
+     */
+    if (val != NI_PROT_OVRRD_PASSWORD) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-hub: write of 0x%" PRIx64 " to the protection "
+                      "override register (not the password; effect "
+                      "unstated)\n", val);
+    }
+}
+
 static void sgi_hub_store_ni_port_error(SGIHubState *s, unsigned arg,
                                         uint64_t val)
 {
@@ -2011,6 +2040,23 @@ static const SGIHubRegDef sgi_hub_registers[] = {
                HUB_REG_READ_CLEARS,
       .read = sgi_hub_read_vector_clear,
       .write = sgi_hub_write_vector_clear },
+    /*
+     * PIO protection is storage, never consulted: enforcing a register
+     * firmware might not open produces a dead machine with no
+     * diagnostic. Both rows answer the remote vector decode -- the
+     * stock PROM's link diagnostic opens its cross-link access by
+     * vector-writing the peer's protection register before its link
+     * reads, and an address-error completion there counts as a phantom
+     * link error. The override is write-only, so its row carries only
+     * a store and a read keeps the undecoded register's answer.
+     */
+    { .offset = HUB_NI_IO_PROTECT,
+      .field = offsetof(SGIHubState, ni_io_protect), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = ~0ULL },
+    { .offset = HUB_NI_IO_PROT_OVRRD,
+      .flags = HUB_REG_VECTOR,
+      .store = sgi_hub_store_io_prot_ovrrd },
     /*
      * All three LLP port registers answer the remote vector decode as
      * well as plain PIO: the stock PROM's link diagnostic vector-reads
@@ -2382,6 +2428,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->ni_return_vector = 0;
     s->ni_vector_read_data = 0;
     s->ni_port_parms = NI_PORT_PARMS_RESET;
+    s->ni_io_protect = NI_IO_PROTECT_RESET;
     memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
     memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
 
@@ -2561,7 +2608,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 20,
+    .version_id = 21,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -2584,6 +2631,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(ni_return_vector, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_port_parms, SGIHubState, 20),
+        VMSTATE_UINT64_V(ni_io_protect, SGIHubState, 21),
         VMSTATE_UINT8_ARRAY_V(ni_meta_route, SGIHubState,
                              SGI_HUB_META_ROUTES, 16),
         VMSTATE_UINT8_ARRAY_V(ni_local_route, SGIHubState,
