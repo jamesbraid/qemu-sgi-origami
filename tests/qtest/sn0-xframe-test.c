@@ -104,9 +104,10 @@
 #define RX_BUF_PHYS             (TARGET_PAGE + 0x200)
 
 /*
- * The device's PCI identity and register offsets, restated from
- * docs/datasheets/xframe.md the way tests/qtest/xframe-test.c restates them --
- * a test pins the contract independently of the model.
+ * The device's PCI identity and register offsets, restated from the xframe
+ * datasheet (docs/datasheets/xframe.md in the origami project tree, not this
+ * repository) the way tests/qtest/xframe-test.c restates them -- a test pins
+ * the contract independently of the model.
  */
 #define XFRAME_VENDOR           0x17d5
 #define XFRAME_DEVICE_XENA      0x5831
