@@ -2540,10 +2540,24 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     address_space_init(&s->bte_as, s->memory, "sgi-hub.bte");
 
     if (s->junk_uart_present) {
+        DeviceState *uart;
+
+        object_initialize_child(OBJECT(dev), "uart", &s->junk_uart,
+                                TYPE_SERIAL_MM);
+        uart = DEVICE(&s->junk_uart);
+        qdev_prop_set_uint8(uart, "regshift", HUB_MD_JUNKUART_REGSHIFT);
+        qdev_prop_set_uint32(uart, "baudbase", HUB_MD_JUNKUART_CLOCK);
+        qdev_prop_set_chr(uart, "chardev", s->junk_uart_chr);
+        /* The vmstate identity serial_mm_init() gave the port. */
+        qdev_set_legacy_instance_id(uart, HUB_MD_JUNKUART_BASE, 2);
+        qdev_prop_set_uint8(uart, "endianness", DEVICE_BIG_ENDIAN);
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->junk_uart), errp)) {
+            return;
+        }
         /* A subregion of s->regs, so both the machine's mappings reach it. */
-        serial_mm_init(&s->regs, HUB_MD_JUNKUART_BASE,
-                       HUB_MD_JUNKUART_REGSHIFT, NULL, HUB_MD_JUNKUART_CLOCK,
-                       s->junk_uart_chr, DEVICE_BIG_ENDIAN);
+        memory_region_add_subregion(
+            &s->regs, HUB_MD_JUNKUART_BASE,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->junk_uart), 0));
     }
 
     s->i2c.diagnostic = s->diagnostic;

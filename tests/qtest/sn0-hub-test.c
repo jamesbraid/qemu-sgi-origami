@@ -10,6 +10,8 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
 
 /* Crosstalk space, and the two halves of the crossbar's widget 1 window. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -993,6 +995,37 @@ static void test_junk_uart_fitted_answers_present(const void *data)
     junkuart_presence_probe(qts, readback);
     g_assert_cmpmem(readback, sizeof(readback), present, sizeof(present));
 
+    qtest_quit(qts);
+}
+
+/*
+ * The fitted port is the Hub's own QOM child, not an unattached device.
+ * The child is "uart", beside the "junk-uart" bool that fits it.
+ */
+static void test_junk_uart_is_a_child_of_the_hub(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,junk-uart=on");
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     "/machine/node0/hub");
+    QList *children;
+    const QListEntry *entry;
+    bool found = false;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    children = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(child, "name"), "uart")) {
+            g_assert_cmpstr(qdict_get_try_str(child, "type"), ==,
+                            "child<serial-mm>");
+            found = true;
+        }
+    }
+    g_assert_true(found);
+
+    qobject_unref(response);
     qtest_quit(qts);
 }
 
@@ -2662,6 +2695,8 @@ int main(int argc, char **argv)
                         test_junk_uart_fitted_answers_present);
     qtest_add_data_func("sn0/hub/junk-uart-range-is-exact", NULL,
                         test_junk_uart_range_is_exact);
+    qtest_add_data_func("sn0/hub/junk-uart-is-a-child-of-the-hub", NULL,
+                        test_junk_uart_is_a_child_of_the_hub);
     qtest_add_data_func("sn0/hub/chardev-claims-are-distinct", NULL,
                         test_every_chardev_claim_is_distinct);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,

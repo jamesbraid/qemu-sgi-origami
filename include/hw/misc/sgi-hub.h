@@ -12,6 +12,7 @@
 #include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
 #include "hw/core/sysbus.h"
+#include "hw/char/serial-mm.h"
 #include "hw/i2c/pcf8584.h"
 #include "hw/misc/sgi-elsc.h"
 #include "system/memory.h"
@@ -227,6 +228,9 @@ struct SGIHubState {
     /* Bring-up UART, off by default: firmware probes it as first console. */
     bool junk_uart_present;
     Chardev *junk_uart_chr;
+
+    /* The port itself, the QOM child "uart"; realized only when fitted. */
+    SerialMM junk_uart;
 
     /*
      * The backend behind this node's system-controller AUX connector,
