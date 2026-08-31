@@ -2,8 +2,10 @@
 /*
  * Neterion/S2io Xframe 10-Gigabit Ethernet controller.
  *
- * A public third-party PCI add-in card, not SGI silicon -- see
- * docs/datasheets/xframe.md. The SGI 10-Gigabit Ethernet Network Adapter is
+ * A public third-party PCI add-in card, not SGI silicon -- see the xframe
+ * datasheet (docs/datasheets/xframe.md in the origami project tree, not
+ * this repository -- every later citation of it here means that file).
+ * The SGI 10-Gigabit Ethernet Network Adapter is
  * one instantiation of this generic device, distinguished by PCI-identity
  * properties (subsystem-vendor-id 0x10a9), the same way upstream e1000 and
  * rtl8139 expose vendor/board identity as properties rather than as

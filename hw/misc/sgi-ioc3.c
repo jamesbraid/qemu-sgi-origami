@@ -75,7 +75,8 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 
 /*
  * The one-wire ethernet-address part behind the MicroLAN engine; protocol
- * per docs/datasheets/ioc3.md.
+ * per the ioc3 datasheet (docs/datasheets/ioc3.md in the origami project
+ * tree the fork is developed inside, not this repository).
  */
 
 /* Standard one-wire CRC-8, sent as computed -- unlike the CRC-16 below. */

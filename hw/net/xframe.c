@@ -40,7 +40,9 @@
 /*
  * PIF register offsets within BAR0, and the bit fields the probe/attach path
  * touches. Public OpenBSD if_xgereg.h / Linux s2io-regs.h names, taken from
- * docs/datasheets/xframe.md's register map. All registers are 64-bit.
+ * the register map of the xframe datasheet (docs/datasheets/xframe.md in
+ * the origami project tree, not this repository -- every later citation of
+ * it here means that file). All registers are 64-bit.
  */
 #define XFRAME_GENERAL_INT_STATUS   0x0000
 #define XFRAME_GENERAL_INT_MASK     0x0008
