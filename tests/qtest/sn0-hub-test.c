@@ -196,6 +196,10 @@
 #define NI_VECTOR_DATA      0x600210
 #define NI_VECTOR_STATUS    0x600300
 #define NI_VECTOR_READ_DATA 0x600310
+#define NI_PORT_PARMS       0x608000
+#define NI_PORT_ERROR       0x608008
+#define NI_PORT_ERROR_CLEAR 0x608088
+#define NI_PORT_PARMS_RESET ((6ULL << 10) | 0x3f0)
 #define NI_VECTOR_CLEAR     0x600380
 #define NI_META_TABLE       0x638000
 #define NI_META_TABLE_LAST  (NI_META_TABLE + 31 * 8)
@@ -2296,6 +2300,78 @@ static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
 }
 
 /*
+ * The LLP port registers, through plain PIO. The parameters register is
+ * sixteen-bit storage whose reset value carries the null-packet timeout
+ * in bits 15:10 and the maximum burst in bits 9:0; the error register
+ * and its clearing alias read zero as this machine's stated modeling
+ * choice -- the hardware leaves the register undefined at reset and no
+ * fabric exists here to latch an error -- so reading the clearing alias
+ * neither faults nor changes anything.
+ */
+static void test_llp_port_registers(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t parms = qtest_readq(qts, HUB_LOCAL + NI_PORT_PARMS);
+
+    g_assert_cmphex(parms, ==, NI_PORT_PARMS_RESET);
+    g_assert_cmphex((parms >> 10) & 0x3f, ==, 6);
+    g_assert_cmphex(parms & 0x3ff, ==, 0x3f0);
+
+    /* Sixteen-bit storage: the write keeps its low word and no more. */
+    qtest_writeq(qts, HUB_LOCAL + NI_PORT_PARMS, 0xabcd5a5aULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_PARMS), ==,
+                    0x5a5a);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR_CLEAR),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same three registers through the remote vector decode. The stock
+ * PROM's link diagnostic vector-reads the peer hub's port error
+ * register; a decoder that rejects it answers with the address-error
+ * completion, which the diagnostic counts as a link error on every
+ * two-chassis boot. Success completions with the right data are the
+ * pin.
+ */
+static void test_llp_port_registers_answer_the_vector_decode(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = HUB_BY_NODE;
+    uint64_t status;
+
+    status = vector_operation(qts, node0, NI_PORT_ERROR, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==, 0);
+
+    status = vector_operation(qts, node0, NI_PORT_ERROR_CLEAR,
+                              PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==, 0);
+
+    status = vector_operation(qts, node0, NI_PORT_PARMS, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==,
+                    NI_PORT_PARMS_RESET);
+
+    qtest_quit(qts);
+}
+
+/*
  * What a 32-bit read of a read-to-clear register does on real hardware is
  * unobserved — no guest we hold issues one — so the model's choice is the
  * conservative one: only a full-width read clears, and a half read returns
@@ -3189,6 +3265,11 @@ int main(int argc, char **argv)
                         test_vector_pio_reaches_the_direct_peer);
     qtest_add_data_func("sn0/hub/vector-launch-no-fabric-stays-silent", NULL,
                         test_vector_launch_with_no_fabric_stays_silent);
+    qtest_add_data_func("sn0/hub/llp-port-registers", NULL,
+                        test_llp_port_registers);
+    qtest_add_data_func("sn0/hub/llp-port-registers-answer-vector-decode",
+                        NULL,
+                        test_llp_port_registers_answer_the_vector_decode);
     qtest_add_data_func("sn0/hub/network-routes-reset-to-zero", NULL,
                         test_network_routes_reset_to_zero);
     qtest_add_data_func("sn0/hub/stock-prom-hubs-start-unnumbered", NULL,
