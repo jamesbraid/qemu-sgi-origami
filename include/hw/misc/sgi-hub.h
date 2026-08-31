@@ -205,6 +205,13 @@ struct SGIHubState {
     uint64_t ni_vector_status;
     uint64_t ni_return_vector;
     uint64_t ni_vector_read_data;
+
+    /*
+     * The LLP port parameters: sixteen bits of link tuning this machine
+     * stores and never acts on. The port error register beside it keeps
+     * no state at all -- it reads zero by stated modeling choice.
+     */
+    uint64_t ni_port_parms;
     uint8_t ni_meta_route[SGI_HUB_META_ROUTES];
     uint8_t ni_local_route[SGI_HUB_LOCAL_ROUTES];
 

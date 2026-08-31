@@ -720,6 +720,24 @@
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
+ * The LLP port registers. The parameters register is sixteen bits of
+ * storage -- tuning for a link this machine does not model -- whose
+ * reset value carries the null-packet timeout in bits 15:10 and the
+ * maximum burst in bits 9:0. The error register and its clearing alias
+ * read zero as a stated modeling choice, not a hardware reset value:
+ * the chip leaves the register undefined at reset, and this machine
+ * has no fabric that could latch an error for either to report, so the
+ * alias's read-to-clear is a no-op. The Origami project tree's
+ * network-interface datasheet (docs/datasheets/hub-network-interface.md
+ * there) carries the field accounts and the choice's justification.
+ */
+#define HUB_NI_PORT_PARMS       0x608000
+#define HUB_NI_PORT_ERROR       0x608008
+#define HUB_NI_PORT_ERROR_CLEAR 0x608088
+#define NI_PORT_PARMS_MASK      0xffffULL
+#define NI_PORT_PARMS_RESET     ((6ULL << 10) | 0x3f0)
+
+/*
  * The status register's fields. The machine stays in M mode, and link-up
  * reports whether the product wires a peer to its network port. The node field
  * resets to zero on real hardware and is programmed by firmware; synthesized
@@ -2620,6 +2638,21 @@ static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
     }
 }
 
+static void sgi_hub_write_ni_port_error(SGIHubState *s, hwaddr addr,
+                                        unsigned arg, uint64_t val,
+                                        unsigned size)
+{
+    /*
+     * Accepted and logged: no fabric here ever latches an error for a
+     * write to clear, and the register reads zero either way.
+     */
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: write of 0x%" PRIx64 " to the port error "
+                  "register 0x%" HWADDR_PRIx
+                  " (no fabric here ever latches an error to clear)\n",
+                  val, addr);
+}
+
 static void sgi_hub_write_ni_scratch(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
@@ -2899,6 +2932,26 @@ static const SGIHubRegDef sgi_hub_registers[] = {
                HUB_REG_READ_CLEARS,
       .read = sgi_hub_read_vector_clear,
       .write = sgi_hub_write_vector_clear },
+    /*
+     * All three LLP port registers answer the remote vector decode as
+     * well as plain PIO: the stock PROM's link diagnostic vector-reads
+     * the peer's error register, and an address-error completion there
+     * counts as a phantom link error on every two-chassis boot. The
+     * error alias carries no HUB_REG_READ_CLEARS: on an always-zero
+     * register the clear is a no-op, so the read has no side effect to
+     * guard.
+     */
+    { .offset = HUB_NI_PORT_PARMS,
+      .field = offsetof(SGIHubState, ni_port_parms), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_PORT_PARMS_MASK },
+    { .offset = HUB_NI_PORT_ERROR,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR,
+      .peek = sgi_hub_peek_zero,
+      .write = sgi_hub_write_ni_port_error },
+    { .offset = HUB_NI_PORT_ERROR_CLEAR,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR,
+      .peek = sgi_hub_peek_zero },
 };
 
 static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
@@ -3323,6 +3376,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->ni_vector_status = 0;
     s->ni_return_vector = 0;
     s->ni_vector_read_data = 0;
+    s->ni_port_parms = NI_PORT_PARMS_RESET;
     memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
     memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
 
@@ -3585,7 +3639,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 19,
+    .version_id = 20,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3607,6 +3661,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(ni_vector_status, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_return_vector, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
+        VMSTATE_UINT64_V(ni_port_parms, SGIHubState, 20),
         VMSTATE_UINT8_ARRAY_V(ni_meta_route, SGIHubState,
                              SGI_HUB_META_ROUTES, 16),
         VMSTATE_UINT8_ARRAY_V(ni_local_route, SGIHubState,
