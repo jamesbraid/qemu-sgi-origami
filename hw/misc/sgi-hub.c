@@ -1092,7 +1092,7 @@ static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
         return true;
     }
     reg = sgi_hub_reg_lookup(addr);
-    if (reg && (reg->flags & HUB_REG_VECTOR)) {
+    if (reg && (reg->flags & HUB_REG_VECTOR) && sgi_hub_reg_peekable(reg)) {
         *value = sgi_hub_reg_peek(target, reg);
         return true;
     }
@@ -1111,7 +1111,7 @@ static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
     }
     /* The pure store: a remote vector write has no local write-hook effects. */
     reg = sgi_hub_reg_lookup(addr);
-    if (reg && (reg->flags & HUB_REG_VECTOR)) {
+    if (reg && (reg->flags & HUB_REG_VECTOR) && sgi_hub_reg_storable(reg)) {
         sgi_hub_reg_store(target, reg, value);
         return true;
     }
@@ -1728,6 +1728,12 @@ static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
     }
 }
 
+static void sgi_hub_store_ni_port_error(SGIHubState *s, unsigned arg,
+                                        uint64_t val)
+{
+    /* Stores nothing: no fabric here ever latches a count to clear. */
+}
+
 static void sgi_hub_write_ni_port_error(SGIHubState *s, hwaddr addr,
                                         unsigned arg, uint64_t val,
                                         unsigned size)
@@ -2012,7 +2018,10 @@ static const SGIHubRegDef sgi_hub_registers[] = {
      * counts as a phantom link error on every two-chassis boot. The
      * error alias carries no HUB_REG_READ_CLEARS: on an always-zero
      * register the clear is a no-op, so the read has no side effect to
-     * guard.
+     * guard. The error register's store keeps a vector write clean --
+     * the register is writable, with nothing latched for the write to
+     * clear -- while the alias, which no source documents as writable,
+     * stores nothing and so rejects one.
      */
     { .offset = HUB_NI_PORT_PARMS,
       .field = offsetof(SGIHubState, ni_port_parms), .width = 8,
@@ -2021,6 +2030,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_NI_PORT_ERROR,
       .flags = HUB_REG_DIAG | HUB_REG_VECTOR,
       .peek = sgi_hub_peek_zero,
+      .store = sgi_hub_store_ni_port_error,
       .write = sgi_hub_write_ni_port_error },
     { .offset = HUB_NI_PORT_ERROR_CLEAR,
       .flags = HUB_REG_DIAG | HUB_REG_VECTOR,
