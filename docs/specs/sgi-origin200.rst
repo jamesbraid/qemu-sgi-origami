@@ -117,8 +117,13 @@ relocated code there and an I/O region cannot back translated code.
 The remote node's RBOOT window is only ever a maintenance read and
 write path, never a fetch path, so it carries no overlay. The reset
 vector view is an alias of the megabyte of Hub space at the flash
-base, reached through the compatibility space: it overlaps RAM and
-wins.
+base, reached through the compatibility space; it overlaps RAM and
+wins. Writes through it land on the chip's own byte-addressed decode
+rather than the controller's strided command port -- an alias cannot
+route reads and writes differently, and this divergence is deliberate
+and confined: every observed command sequence, and the vendor flash
+programmer the datasheet cites, drives commands through the Hub
+window, and no source establishes the reset view's own write decode.
 
 The chip migrates its own state through the qdev tree. The machine's
 own flash descriptor keeps its wire name and a placeholder for the
