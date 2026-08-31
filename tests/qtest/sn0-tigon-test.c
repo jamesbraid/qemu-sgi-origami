@@ -143,6 +143,9 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TX_RING_PHYS        0x00270000u
 #define RX_BUF_PHYS         0x00280000u
 #define TX_BUF_PHYS         0x00290000u
+/* Misaligned on purpose -- forces the payload copy's buf & 3 != 0 path. */
+#define TX_BUF_DIRECT_PHYS  (TX_BUF_PHYS + 2)
+#define RX_BUF_DIRECT_PHYS  (RX_BUF_PHYS + 2)
 
 #define TI_RCB_FLAG_HOST_RING   0x0040
 #define TI_EV_FIRMWARE_UP       0x01
@@ -556,6 +559,100 @@ static void test_transmit(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A real dst/src/ethertype frame, 61 bytes -- not a multiple of 4 -- so the
+ * transmit-payload golden test below exercises the trailing partial word as
+ * well as the plain aligned words.
+ */
+static const uint8_t test_frame_direct[61] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x99,      /* dest = a peer unicast */
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* source = our MAC */
+    0x08, 0x00,                              /* ethertype IP */
+    0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7,
+    0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+    0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+    0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
+    0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
+    0xf8, 0xf9, 0xfa,
+};
+
+/*
+ * The transmit payload on the real (non-bypassed) direct-map DMA path -- a
+ * driver's actual DMA-mapped sk_buff, unlike TX_BUF_PHYS above which sits
+ * below the Bridge's translated window and so never exercises the swap at
+ * all. Same two pairings as byte_order_check(), because the payload is
+ * composed out of the identical tigon_dma_ld32() calls the descriptors use.
+ * The frame is posted from a misaligned start (buf & 3 == 2) on top of a
+ * length that is not a multiple of 4, forcing the leading- and
+ * trailing-partial-word paths along with the plain aligned-word path.
+ */
+static void transmit_direct_map_check(bool bridge_transparent)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[2048];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    aim_window_at_bar(qts);
+    qtest_writel(qts, CFG0(TIGON_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
+                 (bridge_transparent ? DEV_SWAP_DIRECT : 0));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 bridge_transparent ?
+                 (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                  TI_OPMODE_BYTESWAP_DATA) : 0);
+
+    /* GIB and TX ring reached through the direct-map window too. */
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, TX_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, TX_CONS_PHYS, 0, 8);
+    qtest_writeq(qts, GIB_PHYS + GIB_TX_RCB, IOVA(TX_RING_PHYS));
+    qtest_writel(qts, GIB_PHYS + GIB_TX_RCB + 8,
+                 (512u << 16) | TI_RCB_FLAG_HOST_RING);
+    qtest_writeq(qts, GIB_PHYS + GIB_TX_CONS_PTR, IOVA(TX_CONS_PHYS));
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI,
+                 (uint32_t)(IOVA_PREFIX >> 32));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    release_cpu(qts);
+
+    qtest_memwrite(qts, TX_BUF_DIRECT_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    qtest_writeq(qts, TX_RING_PHYS + 0, IOVA(TX_BUF_DIRECT_PHYS));
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame_direct) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(test_frame_direct));
+    g_assert_cmpmem(got, len, test_frame_direct, sizeof(test_frame_direct));
+
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_transmit_direct_map_transparent(const void *data)
+{
+    transmit_direct_map_check(true);
+}
+
+static void test_transmit_direct_map_corrects(const void *data)
+{
+    transmit_direct_map_check(false);
+}
+
 /* A standard receive-buffer descriptor: address, index and length. */
 static void post_std_rx_buffer(QTestState *qts, unsigned slot, uint32_t phys,
                                uint16_t idx, uint32_t bytes)
@@ -699,6 +796,98 @@ static void test_receive_filters_other(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
+}
+
+/*
+ * A real dst/src/ethertype frame, 63 bytes -- not a multiple of 4 -- so the
+ * receive-payload golden test below exercises the trailing partial word as
+ * well as the plain aligned words.
+ */
+static const uint8_t rx_frame_direct[63] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* dest = our MAC */
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x99,      /* source = a peer unicast */
+    0x08, 0x00,                              /* ethertype IP */
+    0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7,
+    0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+    0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+    0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
+    0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
+    0xf8, 0xf9, 0xfa, 0xfb, 0xfc,
+};
+
+/*
+ * The receive payload written through the real (non-bypassed) direct-map DMA
+ * path -- the mirror of transmit_direct_map_check() for
+ * tigon_dma_write_frame(). Same two pairings, same misaligned start (buf & 3
+ * == 2) and non-multiple-of-4 length, forcing the leading- and
+ * trailing-partial-word paths on the write side too.
+ */
+static void receive_direct_map_check(bool bridge_transparent)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[64];
+    uint32_t desc;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    aim_window_at_bar(qts);
+    qtest_writel(qts, CFG0(TIGON_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
+                 (bridge_transparent ? DEV_SWAP_DIRECT : 0));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 bridge_transparent ?
+                 (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                  TI_OPMODE_BYTESWAP_DATA) : 0);
+
+    /* GIB and the standard-receive/return rings reached through the window. */
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, STD_RX_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, RETURN_RING_PHYS, 0, 0x4000);
+    qtest_memset(qts, RETURN_PROD_PHYS, 0, 8);
+    qtest_writeq(qts, GIB_PHYS + GIB_STD_RX_RCB, IOVA(STD_RX_RING_PHYS));
+    qtest_writeq(qts, GIB_PHYS + GIB_RETURN_RCB, IOVA(RETURN_RING_PHYS));
+    qtest_writel(qts, GIB_PHYS + GIB_RETURN_RCB + 8, (2048u << 16));
+    qtest_writeq(qts, GIB_PHYS + GIB_RETURN_PROD_PTR, IOVA(RETURN_PROD_PHYS));
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI,
+                 (uint32_t)(IOVA_PREFIX >> 32));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    release_cpu(qts);
+
+    qtest_memset(qts, RX_BUF_DIRECT_PHYS, 0, 2048);
+    desc = STD_RX_RING_PHYS + 0;
+    qtest_writeq(qts, desc + 0, IOVA(RX_BUF_DIRECT_PHYS));
+    qtest_writel(qts, desc + 8, 2048);
+    qtest_writel(qts, desc + 12, (uint32_t)TI_BDTYPE_RECV_BD << 16);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_direct, sizeof(rx_frame_direct));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    qtest_memread(qts, RX_BUF_DIRECT_PHYS, landed, sizeof(rx_frame_direct));
+    g_assert_cmpmem(landed, sizeof(rx_frame_direct),
+                    rx_frame_direct, sizeof(rx_frame_direct));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_receive_direct_map_transparent(const void *data)
+{
+    receive_direct_map_check(true);
+}
+
+static void test_receive_direct_map_corrects(const void *data)
+{
+    receive_direct_map_check(false);
 }
 
 /*
@@ -964,11 +1153,19 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/transmit-direct-map-transparent", NULL,
+                        test_transmit_direct_map_transparent);
+    qtest_add_data_func("/sn0/tigon/transmit-direct-map-corrects", NULL,
+                        test_transmit_direct_map_corrects);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
     qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
                         test_receive_clamps_to_buffer);
+    qtest_add_data_func("/sn0/tigon/receive-direct-map-transparent", NULL,
+                        test_receive_direct_map_transparent);
+    qtest_add_data_func("/sn0/tigon/receive-direct-map-corrects", NULL,
+                        test_receive_direct_map_corrects);
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-transparent", NULL,
                         test_byte_order_bridge_transparent);
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-corrects", NULL,

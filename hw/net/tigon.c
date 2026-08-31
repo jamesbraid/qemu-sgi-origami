@@ -311,6 +311,57 @@ static void tigon_dma_st_addr(TigonState *s, uint64_t addr, uint64_t v)
 }
 
 /*
+ * Frame payload DMA. A raw pci_dma_read/write does not compensate for the
+ * Bridge's within-word byte-lane swap (docs/datasheets/bridge.md, "Byte
+ * lanes on the DMA path"): tigon_dma_ld32()/tigon_dma_st32() already compose
+ * correctly against that swap for descriptor and GIB words, so the payload
+ * is moved the same way, one aligned word at a time. The swap correction
+ * only holds at natural alignment, so an unaligned start or a trailing
+ * partial word still goes through a full aligned word access and only the
+ * bytes actually wanted are picked out of (or folded into) it.
+ */
+static void tigon_dma_read_frame(TigonState *s, uint64_t addr, uint8_t *dst,
+                                 uint32_t len)
+{
+    while (len) {
+        uint64_t word_addr = addr & ~3ULL;
+        uint32_t off = addr & 3;
+        uint32_t word = tigon_dma_ld32(s, word_addr);
+        uint32_t take = MIN(4 - off, len);
+        uint32_t i;
+
+        for (i = 0; i < take; i++) {
+            dst[i] = word >> (24 - 8 * (off + i));
+        }
+        addr += take;
+        dst += take;
+        len -= take;
+    }
+}
+
+/* Mirror of tigon_dma_read_frame() for the receive payload write. */
+static void tigon_dma_write_frame(TigonState *s, uint64_t addr,
+                                  const uint8_t *src, uint32_t len)
+{
+    while (len) {
+        uint64_t word_addr = addr & ~3ULL;
+        uint32_t off = addr & 3;
+        uint32_t take = MIN(4 - off, len);
+        uint32_t word = take < 4 ? tigon_dma_ld32(s, word_addr) : 0;
+        uint32_t i;
+
+        for (i = 0; i < take; i++) {
+            uint32_t shift = 24 - 8 * (off + i);
+            word = (word & ~(0xffu << shift)) | ((uint32_t)src[i] << shift);
+        }
+        tigon_dma_st32(s, word_addr, word);
+        addr += take;
+        src += take;
+        len -= take;
+    }
+}
+
+/*
  * Parse the general information block once it is complete. The RCBs and
  * producer-pointer fields are filled by the driver in host DRAM before it
  * releases the CPU, so this runs at firmware-up, when both preconditions hold,
@@ -444,7 +495,6 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
  */
 static void tigon_tx(TigonState *s, uint32_t prod)
 {
-    PCIDevice *pci = PCI_DEVICE(s);
     uint8_t frame[TIGON_MAX_FRAME_SIZE];
     uint32_t frame_len = 0;
 
@@ -476,14 +526,8 @@ static void tigon_tx(TigonState *s, uint32_t prod)
         if (len > sizeof(frame) - frame_len) {
             len = sizeof(frame) - frame_len;
         }
-        /*
-         * Frame bytes are copied as a raw stream: byte order is a property of
-         * the descriptor fields above, not of the payload. This is correct on
-         * the path the qtests exercise; whether the Bridge-corrects path needs
-         * the payload made swap-aware is deferred to the end-to-end IRIX boot,
-         * where the real DEV_SWAP path shows itself.
-         */
-        pci_dma_read(pci, buf, frame + frame_len, len);
+        /* Payload undoes the same Bridge byte-lane swap the descriptors do. */
+        tigon_dma_read_frame(s, buf, frame + frame_len, len);
         frame_len += len;
         s->tx_considx = (s->tx_considx + 1) % TI_TX_RING_CNT;
 
@@ -801,7 +845,6 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
                              size_t size)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
-    PCIDevice *pci = PCI_DEVICE(s);
     uint16_t flags = 0;
     uint64_t rx_desc, buf_addr, ret_desc;
     uint32_t rx_word;
@@ -838,8 +881,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
      * this guards a guest that posts a short one.
      */
     landed = MIN(size, buf_len);
-    /* Payload copied raw; see the transmit path on the deferred swap. */
-    pci_dma_write(pci, buf_addr, buf, landed);
+    /* Payload undoes the same Bridge byte-lane swap the descriptors do. */
+    tigon_dma_write_frame(s, buf_addr, buf, landed);
 
     /* Post a receive-return descriptor naming the buffer and the length. */
     ret_desc = s->return_ring_base + (uint64_t)s->return_prodidx * 32;
