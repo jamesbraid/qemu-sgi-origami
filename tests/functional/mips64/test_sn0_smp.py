@@ -175,6 +175,15 @@ HUB_NI_VECTOR_DATA = 0x600210
 HUB_NI_VECTOR_DATA_REL = HUB_NI_VECTOR_DATA - HUB_NI_BASE
 NI_VECTOR_TYPE_WRITE = 1
 IO_PROTECT_WRITE_DONE = 0x52
+
+# The PROM's cache-as-RAM window and boot-status convention, from the
+# machine's own constants: the 32 KiB window at 1 MiB, and bit 1 of the
+# boot-status word the PROM keeps in FPR 0.
+CONTINUITY_PROBE_OFFSET = 0x00100040
+CONTINUITY_RESULT_BASE = 0x00030000
+CONTINUITY_CACHE_AS_RAM = 2
+CONTINUITY_SENTINEL = 0x5117
+CONTINUITY_DONE = 0x61
 PEER_SCRATCH_INTERRUPT = 114
 PEER_SCRATCH_PEND1 = 1 << (PEER_SCRATCH_INTERRUPT - 64)
 
@@ -1363,6 +1372,90 @@ def build_peer_io_protect_write():
     return program
 
 
+def build_promdata_transition_continuity():
+    # Data written into the cache-as-RAM window is a resident cache line
+    # on real hardware: it survives the PROM clearing its own FPR 0
+    # bookkeeping bit and survives being read by code running at any
+    # program counter, because neither is a cache operation. Write a
+    # sentinel with the boot-status bit raised and the PC in the flash
+    # range, then read it back across each classification input flipped
+    # on its own, one result slot per read.
+    program = MipsProgram()
+
+    # Enter the same 64-bit kernel mode the real PROM selects at entry;
+    # this Status value already grants CP1 access with 64-bit registers.
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    # s0 the window through the PROM's cached alias, s1 the uncached
+    # result slots in node-zero RAM, s2 the PI block, s3 the NI block.
+    load_xkphys_address(program, R_S0, 0xa800, CONTINUITY_PROBE_OFFSET)
+    load_xkphys_address(program, R_S1, 0x9000, CONTINUITY_RESULT_BASE)
+    emit_local_hub_address(program, R_S2, 0)
+    emit_local_hub_address(program, R_S3, HUB_NI_BASE)
+
+    # Only node zero's A slice runs; every other CPU parks.
+    program.emit(mips_i(0x37, R_S2, R_T0, 0x20))  # PI_PROCESSOR_NUMBER
+    park_slice = program.branch(0x05, R_T0, R_ZERO)
+    program.emit(mips_i(0x37, R_S3, R_T0, 0))  # NI_STATUS
+    program.emit(mips_r(R_ZERO, R_T0, R_T0, 8, 0x3a))  # dsrl t0, t0, 8
+    program.emit(mips_i(0x0c, R_T0, R_T0, 0x1ff))
+    park_node = program.branch(0x05, R_T0, R_ZERO)
+
+    # Raise the cache-as-RAM bit and write the sentinel: the reference
+    # state every later read is judged against.
+    program.emit(mips_i(0x19, R_ZERO, R_T0, CONTINUITY_CACHE_AS_RAM))
+    program.emit(0x44a00000 | R_T0 << 16)  # dmtc1 t0, f0
+    program.emit(0)
+    program.emit(mips_i(0x19, R_ZERO, R_T1, CONTINUITY_SENTINEL))
+    program.emit(mips_i(0x3f, R_S0, R_T1, 0))
+
+    # Slot 0, the control: read straight back in the unchanged state.
+    program.emit(mips_i(0x37, R_S0, R_T2, 0))
+    program.emit(mips_i(0x3f, R_S1, R_T2, 0))
+
+    # Slot 1: clear the boot-status bit -- software bookkeeping, not a
+    # cache operation -- and read again from the same flash-range PC.
+    program.emit(0x44a00000)  # dmtc1 zero, f0
+    program.emit(0)
+    program.emit(mips_i(0x37, R_S0, R_T2, 0))
+    program.emit(mips_i(0x3f, R_S1, R_T2, 8))
+
+    # Slot 2: bit raised again, but the reading PC sits outside both of
+    # the checked ranges -- a two-instruction stub placed in ordinary
+    # RAM at 256 KiB and called there.
+    program.emit(mips_i(0x19, R_ZERO, R_T0, CONTINUITY_CACHE_AS_RAM))
+    program.emit(0x44a00000 | R_T0 << 16)  # dmtc1 t0, f0
+    program.emit(0)
+    stub_pair = (mips_i(0x37, R_S0, R_T4, 0) << 32) | 0x03e00008
+    program.emit(mips_i(0x0f, R_ZERO, R_A0, 0x8004))  # kseg0 0x40000
+    load_u32(program, R_T2, stub_pair >> 32)
+    program.emit(mips_r(R_ZERO, R_T2, R_T2, 0, 0x3c))  # dsll32
+    load_u32(program, R_AT, stub_pair & 0xffffffff)
+    program.emit(mips_r(R_T2, R_AT, R_T2, 0, 0x25))  # or
+    program.emit(mips_i(0x3f, R_A0, R_T2, 0))  # ld t4, 0(s0); jr ra
+    program.emit(mips_i(0x3f, R_A0, R_ZERO, 8))  # two nops
+    program.emit(0x0000000f)  # sync
+    program.emit(mips_r(R_A0, R_ZERO, 31, 0, 0x09))  # jalr ra, a0
+    program.emit(0)
+    program.emit(mips_i(0x3f, R_S1, R_T4, 16))
+
+    program.emit(mips_i(0x19, R_ZERO, R_T0, CONTINUITY_DONE))
+    program.emit(mips_i(0x3f, R_S1, R_T0, 24))
+    spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, spin)
+
+    program.patch(park_slice, len(program.instructions))
+    program.patch(park_node, len(program.instructions))
+    park_spin = len(program.instructions)
+    branch = program.branch(0x04, R_ZERO, R_ZERO)
+    program.patch(branch, park_spin)
+    return program
+
+
 def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program = MipsProgram()
 
@@ -2147,6 +2240,44 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(
             status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
             NI_VECTOR_VALID | NI_VECTOR_TYPE_WRITE, hex(status))
+
+    def test_promdata_reads_survive_flag_and_pc_changes(self):
+        # The cache-as-RAM window's data is a resident cache line on real
+        # hardware, so it must read back identically after the PROM
+        # clears its FPR 0 boot-status bit and from code running at any
+        # PC -- neither is a cache operation. The filter classifies each
+        # access by that instantaneous state instead, so a value written
+        # under one classification is lost to a read under the other:
+        # the routing flips behind the four-CPU two-chassis exception
+        # cascade. One result slot per forced flip; the control slot
+        # passes either way and proves the write landed.
+        self.set_machine('origin200')
+        firmware = self.scratch_file('promdata-transition-continuity.bin')
+        build_promdata_transition_continuity().write(firmware)
+
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=single',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        self.poll_state(
+            lambda: self.read_state(CONTINUITY_RESULT_BASE + 24, 1),
+            lambda s: s[0] == CONTINUITY_DONE)
+        self.vm.cmd('human-monitor-command', command_line='stop')
+
+        slots = self.read_state(CONTINUITY_RESULT_BASE, 3)
+        self.assertEqual(
+            slots,
+            [CONTINUITY_SENTINEL, CONTINUITY_SENTINEL, CONTINUITY_SENTINEL],
+            [hex(slot) for slot in slots])
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')
