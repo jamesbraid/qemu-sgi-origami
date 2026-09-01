@@ -100,6 +100,10 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_MB_HOSTINTR      0x504
 #define TI_MB_SENDPROD_IDX  0x514
 #define TI_MB_STDRXPROD_IDX 0x51c
+#define TI_MB_CMDPROD_IDX   0x50c
+#define TI_GCR_CMDRING      0x700
+#define TI_CMD_SET_PROMISC_MODE 0x0a
+#define TI_CMD_CODE_PROMISC_ENB 0x01
 #define TI_MHC_CLEARINT     0x00000002
 #define TI_MHC_MASK_INTS    0x00000040
 #define TI_BDFLAG_END       0x0004
@@ -1150,6 +1154,45 @@ static void test_register_config_roundtrip(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Promiscuous mode is a command, not a register: the driver writes a
+ * SET_PROMISC_MODE command into the command ring and rings the doorbell.
+ * Once enabled, a frame for a different station -- filtered by
+ * receive-filters-other above -- is accepted onto the ring.
+ */
+static void test_receive_promisc_accepts_other(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[64];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_CMDRING,
+                 (TI_CMD_SET_PROMISC_MODE << 24) |
+                 (TI_CMD_CODE_PROMISC_ENB << 16));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_CMDPROD_IDX, 1);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_other, sizeof(rx_frame_other));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_other));
+    g_assert_cmpmem(landed, sizeof(rx_frame_other),
+                    rx_frame_other, sizeof(rx_frame_other));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1195,6 +1238,9 @@ int main(int argc, char **argv)
                         test_interrupt_irix_ack_protocol);
     qtest_add_data_func("/sn0/tigon/register-config-roundtrip", NULL,
                         test_register_config_roundtrip);
+
+    qtest_add_data_func("/sn0/tigon/receive-promisc-accepts-other", NULL,
+                        test_receive_promisc_accepts_other);
 
     return g_test_run();
 }
