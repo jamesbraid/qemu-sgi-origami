@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-elsc.h"
+#include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -186,6 +187,19 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 /* The direction switch to read marks the request complete. */
 static void elsc_request_complete(SGIElscState *s)
 {
+    if (s->rxlen == 0 && s->txpos < s->txlen) {
+        /* No request this transaction: a fetch of the pending response. */
+        return;
+    }
+
+    /*
+     * The response belongs to whoever asked: the CPU driving the bus
+     * is current_cpu at the slave event, and its index is the global
+     * processor code. A monitor or qtest access carries no processor
+     * and attributes as the console processor.
+     */
+    s->resp_owner = current_cpu ? current_cpu->cpu_index : 0;
+
     if (s->rxlen < 2 || s->rxlen != (uint32_t)s->rxbuf[0] + 2 ||
         elsc_checksum(s->rxbuf, s->rxlen) != 0) {
         /* The protocol names no framing error distinct from "err csum". */
@@ -209,8 +223,18 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         break;
     case I2C_FINISH:
         s->rxlen = 0;
-        s->txlen = 0;
-        s->txpos = 0;
+        /*
+         * An unconsumed response stays pending for its requester --
+         * announced by its signal 2 -- until read to its end or
+         * superseded. The controller's own broadcasts deliver this
+         * event too; discarding here would lose the response before
+         * its owner could poll.
+         */
+        if (s->txpos >= s->txlen) {
+            s->txlen = 0;
+            s->txpos = 0;
+            s->resp_owner = -1;
+        }
         break;
     default:
         break;
@@ -296,7 +320,13 @@ static uint8_t elsc_recv_internal(SGIElscState *s)
 {
 
     if (s->txpos < s->txlen) {
-        return s->txbuf[s->txpos++];
+        uint8_t data = s->txbuf[s->txpos++];
+
+        if (s->txpos == s->txlen) {
+            /* Consumed: nothing waits, the announcement ends. */
+            s->resp_owner = -1;
+        }
+        return data;
     }
 
     /* The driver's own length byte said stop; this is over-reading. */
@@ -392,6 +422,18 @@ static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
 }
 
 /*
+ * Whether something waits for the given code's processor: console
+ * input for the console processor, or a response its requester has
+ * not yet consumed.
+ */
+static bool elsc_arb_signal2(SGIElscState *s, uint32_t code)
+{
+    return (code == 0 && s->rx_queue_len > 0) ||
+           (s->resp_owner >= 0 && code == (uint32_t)s->resp_owner &&
+            s->txpos < s->txlen);
+}
+
+/*
  * The gap is required: firmware must see its signal absent before it
  * trusts it. The hold is required too: guest poll and rotation share
  * one deterministic virtual clock, so a one-shot presentation can
@@ -412,7 +454,15 @@ static void elsc_arb_step(void *opaque)
 
     if (s->arb_held) {
         if (now < s->arb_hold_until) {
-            /* Re-present, so a poll after other traffic still finds it. */
+            /*
+             * Re-present, so a poll after other traffic still finds
+             * it -- recomputed, so signal 2 stands only while its
+             * promise does: a slot whose response was consumed or
+             * whose queue drained downgrades to signal 1.
+             */
+            bool signal2 = elsc_arb_signal2(s, s->arb_code);
+
+            s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
             elsc_broadcast(s, s->arb_signal);
             timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
             return;
@@ -432,9 +482,9 @@ static void elsc_arb_step(void *opaque)
         return;
     }
 
-    /* signal2 promises a "get" will find something; withheld when empty. */
+    /* signal2 promises something waits; withheld when nothing does. */
     {
-        bool signal2 = s->arb_code == 0 && s->rx_queue_len > 0;
+        bool signal2 = elsc_arb_signal2(s, s->arb_code);
 
         s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
         trace_sgi_elsc_arb_step(s->cpu_base, s->arb_code, s->arb_signal,
@@ -508,6 +558,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->rxlen = 0;
     s->txlen = 0;
     s->txpos = 0;
+    s->resp_owner = -1;
     s->arb_code = 0;
     s->arb_rev = 0;
     s->arb_present = false;
@@ -545,7 +596,7 @@ static void elsc_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -571,6 +622,12 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
         /* An older stream restarts the slot-length sequence at zero. */
         VMSTATE_UINT32_V(arb_rev, SGIElscState, 5),
+        /*
+         * An older stream loads with no owner: a response in flight
+         * stays passively served, unannounced, as the model that wrote
+         * the stream behaved.
+         */
+        VMSTATE_INT32_V(resp_owner, SGIElscState, 6),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -615,7 +672,10 @@ DEFINE_TYPES(sgi_elsc_types)
 static void elsc_format_state(SGIElscState *s, GString *buf)
 {
     bool console_input = s->rx_queue_len > 0;
-    uint8_t console_signal = elsc_signal_byte(0, console_input);
+    bool resp_pending = s->resp_owner >= 0 && s->txpos < s->txlen;
+    bool code0_signal2 = console_input ||
+                         (resp_pending && s->resp_owner == 0);
+    uint8_t console_signal = elsc_signal_byte(0, code0_signal2);
     g_autofree char *path = object_get_canonical_path(OBJECT(s));
     uint32_t preview = MIN(s->rx_queue_len, 64);
     uint32_t i;
@@ -637,6 +697,14 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
         }
         g_string_append(buf, preview < s->rx_queue_len ? "\"...\n" : "\"\n");
     }
+    if (resp_pending) {
+        g_string_append_printf(buf,
+                               "  pending response: %u byte(s) for "
+                               "processor code %d\n",
+                               s->txlen - s->txpos, s->resp_owner);
+    } else {
+        g_string_append(buf, "  pending response: none\n");
+    }
     g_string_append_printf(buf,
                            "  arbitration rotation: code %u of %u, %s\n",
                            s->arb_code, ELSC_SIGNAL_CODE_COUNT,
@@ -645,7 +713,7 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
     g_string_append_printf(buf,
                            "  console signal (code 0): 0x%02x = signal%d"
                            " (console input %s)\n",
-                           console_signal, console_input ? 2 : 1,
+                           console_signal, code0_signal2 ? 2 : 1,
                            console_input ? "waiting" : "idle");
 }
 

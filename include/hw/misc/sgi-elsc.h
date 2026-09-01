@@ -50,6 +50,13 @@ struct SGIElscState {
     uint8_t txbuf[SGI_ELSC_MAX_FRAME];
     uint32_t txlen;
     uint32_t txpos;
+    /*
+     * The pending response's owner: the global processor code whose
+     * request framed txbuf, -1 when none. While the response is
+     * unconsumed, the owner's arbitration slot presents signal 2
+     * (elsc_arb_step()).
+     */
+    int32_t resp_owner;
 
     /*
      * The arbitration broadcast rotation, free-running from realize
