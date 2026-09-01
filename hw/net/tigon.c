@@ -98,6 +98,9 @@
 
 /* Command opcode: the driver asks the firmware to negotiate the link. */
 #define TI_CMD_LINK_NEGOTIATION 0x0b
+#define TI_CMD_SET_PROMISC_MODE 0x0a
+#define TI_CMD_CODE_PROMISC_ENB 0x01
+#define TI_CMD_CODE_PROMISC_DIS 0x02
 
 /*
  * Link status reported up as a modelled fact: gigabit, full duplex. The chip's
@@ -471,6 +474,8 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
             timer_mod(s->link_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       TIGON_LINK_DELAY_NS);
+        } else if ((cmd >> 24) == TI_CMD_SET_PROMISC_MODE) {
+            s->promisc = ((cmd >> 16) & 0xff) == TI_CMD_CODE_PROMISC_ENB;
         }
         s->cmd_considx = (s->cmd_considx + 1) % TIGON_CMD_RING_CNT;
     }
