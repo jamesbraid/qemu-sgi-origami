@@ -164,6 +164,36 @@
 #define MD_ONEWIRE_PHASE_INIT   0x31ULL
 #define MD_ONEWIRE_RESET        ((MD_ONEWIRE_PHASE_INIT << 20) | \
                                  (MD_ONEWIRE_PHASE_INIT << 27))
+
+/*
+ * The responder: a DS2505-compatible part holding the PIMM manufacturing
+ * record -- the hub one-wire datasheet's settled contract, and the part the
+ * headless bring-up reads as the remote NIC. The pulse thresholds sorting a
+ * slot into reset, zero or one are the same model choices the Bridge's
+ * master uses one level down; the vendor firmware drives both through one
+ * abstraction. Family code 0Bh and the ROM shape -- family, 48-bit serial,
+ * CRC-8 over the seven bytes, least-significant bit first -- are the public
+ * DS2505 datasheet's. The record pages' contents are an open question, so
+ * memory functions are deliberately not answered.
+ */
+#define MD_ONEWIRE_PULSE_IS_RESET  400
+#define MD_ONEWIRE_PULSE_IS_ZERO   40
+
+#define MD_ONEWIRE_ROM_FAMILY      0x0b
+#define MD_ONEWIRE_ROM_BITS        64
+#define MD_ONEWIRE_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
+
+#define MD_ONEWIRE_CMD_SEARCH_ROM  0xf0
+#define MD_ONEWIRE_CMD_MATCH_ROM   0x55
+#define MD_ONEWIRE_CMD_SKIP_ROM    0xcc
+
+enum {
+    MD_ONEWIRE_PHASE_IDLE,      /* nothing asked since the last bus reset */
+    MD_ONEWIRE_PHASE_COMMAND,   /* taking the eight bits of a rom command */
+    MD_ONEWIRE_PHASE_SEARCH,    /* answering a search for parts */
+    MD_ONEWIRE_PHASE_MATCH,     /* taking the identity a guest is naming */
+    MD_ONEWIRE_PHASE_FUNCTION,  /* selected; taking a memory function */
+};
 #define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
 #define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
 
@@ -1174,16 +1204,150 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index, bool programmed)
               muldiv64(ticks, NANOSECONDS_PER_SECOND, PI_RT_HZ));
 }
 
+/* Family, six serial bytes, then the Dallas CRC-8 over the seven. */
+static uint64_t sgi_hub_onewire_rom_id(uint64_t serial)
+{
+    uint64_t identity = MD_ONEWIRE_ROM_FAMILY | (serial << 8);
+    uint64_t data = identity;
+    uint8_t crc = 0;
+    unsigned int byte, bit;
+
+    for (byte = 0; byte < 7; byte++) {
+        crc ^= data & 0xff;
+        data >>= 8;
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+
+    return identity | ((uint64_t)crc << 56);
+}
+
 /*
- * A slot finished with nothing on the bus: an open-drain line nothing pulls
- * down samples one. Which identity part a real board carries is not
- * established, so none is modelled -- a stand-in, not a model of the part.
+ * One slot against the responder: sort the pulse into reset, zero or one,
+ * step the part's phase, and return the level the wire samples. Outside a
+ * transaction nothing drives the line and it samples one.
  */
+static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
+{
+    bool level = true;
+
+    if (pulse >= MD_ONEWIRE_PULSE_IS_RESET) {
+        /* A reset: the part pulls the wire down, which reads as presence. */
+        trace_sgi_hub_onewire_reset(s->onewire_phase, s->onewire_bit);
+        s->onewire_phase = MD_ONEWIRE_PHASE_COMMAND;
+        s->onewire_bit = 0;
+        s->onewire_command = 0;
+        return false;
+    }
+
+    switch (s->onewire_phase) {
+    case MD_ONEWIRE_PHASE_COMMAND:
+        /* A command, least-significant bit first, one slot per bit. */
+        if (pulse < MD_ONEWIRE_PULSE_IS_ZERO) {
+            s->onewire_command |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            trace_sgi_hub_onewire_command(s->onewire_command);
+            switch (s->onewire_command) {
+            case MD_ONEWIRE_CMD_SEARCH_ROM:
+                s->onewire_phase = MD_ONEWIRE_PHASE_SEARCH;
+                break;
+            case MD_ONEWIRE_CMD_MATCH_ROM:
+                s->onewire_match = 0;
+                s->onewire_phase = MD_ONEWIRE_PHASE_MATCH;
+                break;
+            case MD_ONEWIRE_CMD_SKIP_ROM:
+                s->onewire_command = 0;
+                s->onewire_phase = MD_ONEWIRE_PHASE_FUNCTION;
+                break;
+            default:
+                /* Indistinguishable from absence for the guest; say so. */
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-hub: one-wire rom command 0x%02x is not "
+                              "answered by the PIMM record part\n",
+                              s->onewire_command);
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+                break;
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_SEARCH:
+        /* Bit, complement, choice; with one part the choice always matches. */
+        {
+            unsigned int step = s->onewire_bit % 3;
+            unsigned int index = s->onewire_bit / 3;
+            bool bit = (s->onewire_identity >> index) & 1;
+
+            if (step == 0) {
+                level = bit;
+            } else if (step == 1) {
+                level = !bit;
+            }
+
+            if (++s->onewire_bit == MD_ONEWIRE_ROM_BITS * 3) {
+                s->onewire_bit = 0;
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+                trace_sgi_hub_onewire_search_done(s->onewire_identity);
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_MATCH:
+        /* A mismatch goes silent until reset, so it is reported here. */
+        if (pulse < MD_ONEWIRE_PULSE_IS_ZERO) {
+            s->onewire_match |= 1ULL << s->onewire_bit;
+        }
+        if (++s->onewire_bit == MD_ONEWIRE_ROM_BITS) {
+            s->onewire_bit = 0;
+            if (s->onewire_match == s->onewire_identity) {
+                s->onewire_phase = MD_ONEWIRE_PHASE_FUNCTION;
+                s->onewire_command = 0;
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-hub: one-wire match names identity "
+                              "0x%016" PRIx64 ", but the PIMM record part "
+                              "is 0x%016" PRIx64 "\n",
+                              s->onewire_match, s->onewire_identity);
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_FUNCTION:
+        /* The function asked of the selected part, a bit at a time. */
+        if (pulse < MD_ONEWIRE_PULSE_IS_ZERO) {
+            s->onewire_command |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            /*
+             * The record pages' contents are the datasheet's open
+             * question; answering them would invent a manufacturing
+             * record, so the part goes silent instead -- the loud
+             * failure the datasheet's standing rule prefers.
+             */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-hub: one-wire memory function 0x%02x is not "
+                          "answered by the PIMM record part; its record "
+                          "pages are an open question\n",
+                          s->onewire_command);
+            s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+        }
+        break;
+    default:
+        break;
+    }
+
+    return level;
+}
+
+/* A slot finished; report completion and what the wire sampled. */
 static void sgi_hub_onewire_slot_done(void *opaque)
 {
     SGIHubState *s = opaque;
 
-    s->md_onewire |= MD_ONEWIRE_DONE | MD_ONEWIRE_RXDATA;
+    s->md_onewire |= MD_ONEWIRE_DONE |
+                     (s->onewire_level ? MD_ONEWIRE_RXDATA : 0);
 }
 
 static void sgi_hub_rt_expire(void *opaque)
@@ -1815,6 +1979,8 @@ static void sgi_hub_write_onewire(SGIHubState *s, hwaddr addr,
 {
     /* Programs the timing and starts a slot; starting clears completion. */
     s->md_onewire = val & MD_ONEWIRE_WRITABLE;
+    s->onewire_level = sgi_hub_onewire_respond(
+        s, (val & MD_ONEWIRE_PULSE) >> 10);
     timer_mod(s->md_onewire_timer,
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MD_ONEWIRE_SLOT_NS);
 }
@@ -2591,6 +2757,11 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->md_onewire = MD_ONEWIRE_RESET;
     /* A slot armed before reset must not complete after it. */
     timer_del(s->md_onewire_timer);
+    s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+    s->onewire_bit = 0;
+    s->onewire_command = 0;
+    s->onewire_match = 0;
+    s->onewire_level = true;
 
     /*
      * Entries reset to zero with the windows enabled: a guest calls a zero
@@ -2629,6 +2800,12 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "translate into");
         return;
     }
+    if (s->onewire_serial & ~MD_ONEWIRE_SERIAL_MASK) {
+        error_setg(errp, "the Hub one-wire serial 0x%" PRIx64
+                   " does not fit in 48 bits", s->onewire_serial);
+        return;
+    }
+    s->onewire_identity = sgi_hub_onewire_rom_id(s->onewire_serial);
     if (!s->xtalk_widget_shift) {
         error_setg(errp, "the Hub needs the widget stride of the crosstalk "
                          "space its big windows translate into");
@@ -2828,7 +3005,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 22,
+    .version_id = 23,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -2883,6 +3060,16 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY_V(bte_control, SGIHubState, SGI_HUB_BTES, 17),
         VMSTATE_UINT64_ARRAY_V(bte_notify, SGIHubState, SGI_HUB_BTES, 17),
         VMSTATE_UINT64_ARRAY_V(bte_interrupt, SGIHubState, SGI_HUB_BTES, 17),
+        /*
+         * The one-wire responder's protocol state; the serial is a
+         * property and the identity re-derives from it at realize. An
+         * older stream loads as a bus idle since its last reset.
+         */
+        VMSTATE_UINT8_V(onewire_phase, SGIHubState, 23),
+        VMSTATE_UINT8_V(onewire_bit, SGIHubState, 23),
+        VMSTATE_UINT8_V(onewire_command, SGIHubState, 23),
+        VMSTATE_UINT64_V(onewire_match, SGIHubState, 23),
+        VMSTATE_BOOL_V(onewire_level, SGIHubState, 23),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2931,6 +3118,8 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
                       elsc_dip_switches, 0),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
+    DEFINE_PROP_UINT64("onewire-serial", SGIHubState, onewire_serial,
+                       0x0c0b0a090807ULL),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),
