@@ -231,22 +231,23 @@ not complete after it.
 The bus carries one responder: a DS2505-compatible part holding the
 installed PIMM's manufacturing record, which is the settled contract
 of the Origami project tree's hub one-wire datasheet -- the firmware
-reads its ROM identity as a remote node's NIC during headless
-bring-up, and without it that read reported nothing present and the
-peer node's identity never resolved. The part answers a bus reset
-with a presence pulse and speaks the family's ROM protocol: search,
-match and skip, least-significant bit first, with the public DS2505
-datasheet's family code and its CRC-8 check byte over family and
-serial. The 48-bit serial is a synthetic per-unit value the machine
-wires per node; a real machine's serial must never be copied. The
-pulse-width thresholds sorting a slot into reset, zero or one are
-the same model choices the Bridge's one-wire master uses. The
-memory reads -- plain, status and extended, with the public part
-specification's geometry and CRC16 framing, sixty-four 32-byte data
-pages and a status field ending at 0x13f -- serve an unprogrammed
-part: every byte reads 0xff behind a correct check pair, and a
-redirection byte of 0xff means no redirection by the part's own
-definition, so a blank part invents nothing. What the
+reads its ROM identity as a remote node's NIC -- its name for this
+Number-In-a-Can identity chip, not a network device -- during
+headless bring-up, and without it that read reported nothing present
+and the peer node's identity never resolved. The part answers a bus
+reset with a presence pulse and speaks the family's ROM protocol:
+search, match and skip, least-significant bit first, with the public
+DS2505 datasheet's family code and its CRC-8 check byte over family
+and serial. The 48-bit serial is a synthetic per-unit value the
+machine wires per node; a real machine's serial must never be
+copied. The pulse-width thresholds sorting a slot into reset, zero
+or one are the same model choices the Bridge's one-wire master uses.
+The memory reads -- plain, status and extended, with the public part
+specification's geometry and CRC16 framing, 2 KB in sixty-four
+32-byte data pages and a status field ending at 0x13f -- serve an
+unprogrammed part: every byte reads 0xff behind a correct check
+pair, and a redirection byte of 0xff means no redirection by the
+part's own definition, so a blank part invents nothing. What the
 manufacturing-record bytes should say is still an open question --
 the record's key names are not established -- so the part stays
 blank rather than carrying an invented record the guest would parse
