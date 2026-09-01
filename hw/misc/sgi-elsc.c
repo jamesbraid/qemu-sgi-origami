@@ -13,7 +13,6 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-elsc.h"
-#include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -197,26 +196,8 @@ static void elsc_request_complete(SGIElscState *s)
     elsc_dispatch(s, (const char *)&s->rxbuf[1], s->rxbuf[0]);
 }
 
-static void elsc_arb_advance(SGIElscState *s);
-
 static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 {
-    /*
-     * A start from the held code's own processor answers its slot; the
-     * rotation moves on. The code space is the global processor index.
-     * Anyone else's traffic -- the node neighbor's dialogue on the
-     * shared bus, or an access carrying no processor context -- leaves
-     * the hold standing, or on a two-slave node one processor's
-     * dialogue steals the other's slot before its poll lands. Our own
-     * broadcasts reach this handler too and must not consume the slot
-     * they present.
-     */
-    if ((event == I2C_START_SEND || event == I2C_START_RECV) &&
-        s->arb_held && !s->arb_broadcasting &&
-        current_cpu && current_cpu->cpu_index == (int)s->arb_code) {
-        elsc_arb_advance(s);
-    }
-
     switch (event) {
     case I2C_START_SEND:
         /* A request is arriving. */
@@ -363,12 +344,10 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
 {
     bool diagnostic = s->diagnostic != NULL;
 
-    s->arb_broadcasting = true;
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = true;
     }
     if (i2c_start_transfer(s->bus, I2C_BROADCAST, false)) {
-        s->arb_broadcasting = false;
         if (diagnostic) {
             s->diagnostic_arbitration_broadcast = false;
         }
@@ -376,7 +355,6 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
     }
     i2c_send(s->bus, value);
     i2c_end_transfer(s->bus);
-    s->arb_broadcasting = false;
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = false;
     }
@@ -384,22 +362,17 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
 
 /*
  * Model choices: a gap a polling guest can observe; a held signal
- * re-presented until its processor transacts, bounded by a timeout no
- * plausible poll cadence can miss, so a silent code cannot stall the
- * ring. The real controller's pacing is unobserved; see the bus
- * arbitration section of docs/specs/sgi-elsc.rst.
+ * re-presented for its whole slot, a duration no plausible poll cadence
+ * can miss. The rotation is purely timer-driven -- on the bus a waiting
+ * processor's own command retries are indistinguishable from its
+ * answer, so no traffic ends a hold early. The real controller's
+ * pacing is unobserved; see the bus arbitration section of
+ * docs/specs/sgi-elsc.rst.
  */
 #define ELSC_ARB_GAP_US        50
 #define ELSC_ARB_REPRESENT_US  50
-#define ELSC_ARB_TIMEOUT_US    (10 * 1000)
+#define ELSC_ARB_SLOT_US       (10 * 1000)
 #define ELSC_ARB_RETRY_US      20
-
-/* End the current hold and move to the next code, behind a fresh gap. */
-static void elsc_arb_advance(SGIElscState *s)
-{
-    s->arb_held = false;
-    s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
-}
 
 /*
  * The gap is required: firmware must see its signal absent before it
@@ -415,11 +388,7 @@ static void elsc_arb_step(void *opaque)
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
 
     if (i2c_bus_busy(s->bus)) {
-        /*
-         * A transaction is on the wire, and from here its initiator
-         * cannot be told: a held slot stays held -- its own processor's
-         * start or the timeout ends it -- and the rotation just retries.
-         */
+        /* Never mid-transaction: hold and rotation wait out the guest. */
         timer_mod(s->arb_timer, now + ELSC_ARB_RETRY_US);
         return;
     }
@@ -431,8 +400,9 @@ static void elsc_arb_step(void *opaque)
             timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
             return;
         }
-        /* Nothing answered; the timeout keeps the ring turning. */
-        elsc_arb_advance(s);
+        /* The slot has run its length; the next code follows a gap. */
+        s->arb_held = false;
+        s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
     }
 
     if (!s->arb_present) {
@@ -452,7 +422,7 @@ static void elsc_arb_step(void *opaque)
     }
     s->arb_present = false;
     s->arb_held = true;
-    s->arb_hold_until = now + ELSC_ARB_TIMEOUT_US;
+    s->arb_hold_until = now + ELSC_ARB_SLOT_US;
     timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
 }
 
@@ -522,7 +492,6 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->arb_held = false;
     s->arb_signal = 0;
     s->arb_hold_until = 0;
-    s->arb_broadcasting = false;
     s->rx_queue_len = 0;
     s->diagnostic_arbitration_broadcast = false;
     s->in_escape = false;
