@@ -139,8 +139,9 @@
 #define BCM_TXBDFLAG_END        0x0004u
 #define BCM_STATFLAG_UPDATED    0x00000001u
 #define BCM_STATUS_BLK_SIZE     0x50
-#define BCM_STATUS_TX_CONS_OFF  16
-#define BCM_STATUS_RX_PROD_OFF  18
+/* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
+#define BCM_STATUS_RX_PROD_OFF  16
+#define BCM_STATUS_TX_CONS_OFF  18
 
 /* Receive ring. */
 #define BCM_MBX_RX_STD_PROD_LO  0x026cu
@@ -150,16 +151,18 @@
 #define BCM_RX_STD_RCB_MAXLEN   0x2458u
 #define BCM_SRAM_RX_RETURN_RCB  0x0200u
 #define BCM_RXBD_SIZE           32
-#define BCM_RXBD_IDX            0x08
-#define BCM_RXBD_LEN            0x0a
-#define BCM_RXBD_FLAGS          0x0e
+#define BCM_RXBD_LEN            0x08   /* idx_len word: length in the low half */
+#define BCM_RXBD_IDX            0x0a   /* idx_len word: ring index in the high half */
+#define BCM_RXBD_FLAGS          0x0c   /* type_flags word: flags in the low half */
 #define BCM_RXBDFLAG_END        0x0004u
+#define BCM_ETH_FCS_LEN         4      /* length field carries the FCS the driver strips */
 
 /* Interrupts. */
 #define BCM_MBX_IRQ0_LO         0x0204u
 #define BCM_PCI_PCISTATE        0x70
 #define BCM_PCISTATE_INTR_NA    0x00000002u   /* INTR_NOT_ACTIVE */
 #define BCM_MISCCTL_MASK_INTR   0x00000002u   /* MISC_CTL.MASK_PCI_INTR */
+#define BCM_MISCCTL_WORDSWAP    0x00000008u   /* MISC_CTL.ENDIAN_WORDSWAP */
 
 /* Dual-port BCM5704: copper four-tuple and the multifunction bit. */
 #define BCM_DEVICE_ID_BCM5704   0x1648u
@@ -753,6 +756,31 @@ static void test_mac_address_mailbox(const void *data)
 }
 
 /*
+ * The station address also appears in MAC address filter slot 0
+ * (MAC_ADDR_0_HIGH at 0x0410, MAC_ADDR_0_LOW at 0x0414), which the chip loads
+ * from the serial EEPROM at power-on. A driver that reads the address straight
+ * from these MAC control registers -- not the SRAM mailbox -- still sees the
+ * -device mac=.
+ */
+static void test_mac_address_registers(const void *data)
+{
+    Bcm b;
+    QTestState *qts = qtest_initf(BCM_MACHINE
+                                  " -netdev user,id=n0"
+                                  " -device bcm570x,addr=%02x.0,netdev=n0,"
+                                  "mac=52:54:00:ab:cd:ef", BCM_SLOT);
+
+    bcm_open(&b, qts);
+
+    /* MAC_ADDR_0_HIGH: the first two address bytes, in the low half. */
+    g_assert_cmphex(bar_readl(&b, 0x0410), ==, 0x00005254u);
+    /* MAC_ADDR_0_LOW: the remaining four address bytes. */
+    g_assert_cmphex(bar_readl(&b, 0x0414), ==, 0x00abcdefu);
+
+    bcm_close(&b);
+}
+
+/*
  * The PHY answers through MI_COMM with the identity brgphy binds on, and its
  * link comes up when the guest configures the interface -- the load-bearing
  * link/autoneg result. MI_STS, the auto-poll link latch, follows the carrier.
@@ -859,6 +887,48 @@ static void test_status_block_byte_order(const void *data)
 }
 
 /*
+ * Host-address word-swap. The big-endian IRIX driver sets ENDIAN_WORDSWAP and
+ * writes each 64-bit host address as two 32-bit halves word-swapped -- the
+ * intended low word into ADDR_HI, the intended high word into ADDR_LO -- so the
+ * chip must swap them back when it composes the DMA target. Program a
+ * status-block address of 0x01000000 word-swapped (HI <- 0x01000000, LO <- 0)
+ * and confirm the block DMAs there. Composing (HI<<32)|LO raw would target
+ * 0x0100000000000000, off the end of RAM, and land nothing.
+ */
+static void test_status_block_hostaddr_wordswap(const void *data)
+{
+    const uint64_t intended = 0x01000000;   /* 16 MiB, within the 128 MiB RAM */
+    Bcm b;
+    uint32_t misc;
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
+
+    bcm_open(&b, bcm_init());
+
+    /* Send-ring length so a producer-0 doorbell passes the range guard. */
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+
+    /* The driver arms ENDIAN_WORDSWAP in MISC_CTL for the big-endian host. */
+    misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
+    qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
+
+    /* Word-swapped: low word into ADDR_HI, high word into ADDR_LO. */
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)intended);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, (uint32_t)(intended >> 32));
+
+    qtest_memset(b.qts, intended, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* A producer-0 doorbell drives the status-block DMA. */
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
+
+    /* The swap honoured, the block lands at the intended address. */
+    qtest_memread(b.qts, intended, sb, sizeof(sb));
+    g_assert_cmphex(get32le(sb + 0), ==, BCM_STATFLAG_UPDATED);
+
+    bcm_close(&b);
+}
+
+/*
  * The transmit round trip. With the driver's swap options written, a transmit
  * descriptor and its buffer are DMA'd, the frame reaches the backend
  * byte-for-byte, and the status block the chip writes back lands native
@@ -906,8 +976,9 @@ static void test_transmit_round_trip(const void *data)
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, TX_BUF_PHYS >> 32);
     put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, sizeof(frame));
-    put16le(bd + 10, BCM_TXBDFLAG_END);
+    /* len_flags: flags in the low 16 bits (0x08), length in the high (0x0a). */
+    put16le(bd + 8, BCM_TXBDFLAG_END);
+    put16le(bd + 10, sizeof(frame));
     qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS, frame, sizeof(frame));
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
@@ -928,6 +999,80 @@ static void test_transmit_round_trip(const void *data)
     /* Raw bytes prove the order: little-endian 1 is {0x01, 0x00}. */
     g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF], ==, 0x01);
     g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF + 1], ==, 0x00);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * Frame payload byte order under the endian word-swap. With ENDIAN_WORDSWAP set,
+ * the big-endian driver lays each 32-bit DMA word down byte-reversed -- the same
+ * reversal that lets it write descriptors little-endian -- so a payload it stores
+ * reversed must reach the wire in order. Descriptors are read through the
+ * little-endian accessors already; a payload is a raw byte stream, so the device
+ * has to undo the reversal itself. Store the frame reversed per 32-bit word and
+ * confirm the backend receives it straight.
+ */
+static void test_transmit_frame_wordswap(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[60];       /* what must reach the wire */
+    uint8_t swapped[60];     /* what the driver lays into the buffer */
+    uint8_t bd[16];
+    uint8_t got[128];
+    uint32_t misc;
+    unsigned int i;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+    for (i = 0; i < sizeof(frame); i += 4) {
+        swapped[i + 0] = frame[i + 3];
+        swapped[i + 1] = frame[i + 2];
+        swapped[i + 2] = frame[i + 1];
+        swapped[i + 3] = frame[i + 0];
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    /* The driver arms ENDIAN_WORDSWAP for the big-endian host. It gates the
+     * frame swap and the control-block address composition alike, so the
+     * register-programmed host addresses are written word-swapped too: the low
+     * word into the HI slot, the high word into the LO slot. The descriptor's
+     * own buffer address is not register-programmed -- it is read from the
+     * descriptor through the little-endian accessors -- so it stays in order. */
+    misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
+    qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
+
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, TX_BUF_PHYS >> 32);
+    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_END);
+    put16le(bd + 10, sizeof(frame));
+    qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
+    qtest_memwrite(b.qts, TX_BUF_PHYS, swapped, sizeof(swapped));
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
+
+    /* The chip undid the swap: the wire carries the frame in order. */
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
 
     bcm_close(&b);
     close(sv[0]);
@@ -1019,11 +1164,13 @@ static void test_receive_round_trip(const void *data)
     /* The completed descriptor landed in the return ring, little-endian. */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==, sizeof(frame));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                    sizeof(frame) + BCM_ETH_FCS_LEN);
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
-    /* Golden bytes on the device-written length field: 64 is {0x40, 0x00}. */
-    g_assert_cmphex(ret[BCM_RXBD_LEN], ==, 0x40);
+    /* Golden bytes on the length field: 64 payload + 4-byte FCS = 68 is
+     * {0x44, 0x00}, little-endian. */
+    g_assert_cmphex(ret[BCM_RXBD_LEN], ==, 0x44);
     g_assert_cmphex(ret[BCM_RXBD_LEN + 1], ==, 0x00);
 
     /* The status block's receive producer advanced, little-endian. */
@@ -1040,6 +1187,77 @@ static void test_receive_round_trip(const void *data)
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
     g_assert_cmphex(mii_read(&b, BCM_PHY_ADDR, MII_PHYIDR1), ==,
                     BCM_PHY_IDR1_VALUE);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * Frame payload byte order on receive, the inverse of the transmit swap. With
+ * ENDIAN_WORDSWAP set the chip lays the received frame into the buffer reversed
+ * per 32-bit word, the layout the big-endian driver reverses back when it reads
+ * it. Send a frame and confirm the buffer holds the word-reversed image.
+ */
+static void test_receive_frame_wordswap(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];       /* what arrives on the wire */
+    uint8_t swapped[64];     /* what the driver must find in the buffer */
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint8_t got[64];
+    uint32_t misc;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    memset(frame, 0xff, 6);     /* broadcast destination */
+    for (i = 0; i < sizeof(frame); i += 4) {
+        swapped[i + 0] = frame[i + 3];
+        swapped[i + 1] = frame[i + 2];
+        swapped[i + 2] = frame[i + 1];
+        swapped[i + 3] = frame[i + 0];
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    /* ENDIAN_WORDSWAP gates the frame swap and the control-block address
+     * composition alike, so the register-programmed host addresses are written
+     * word-swapped: the low word into the HI slot, the high word into the LO
+     * slot. The posted buffer's own address rides in the descriptor and is read
+     * through the little-endian accessors, so it stays in order. */
+    misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
+    qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, (uint32_t)STD_RING_PHYS);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, (uint32_t)RET_RING_PHYS);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(frame));
+    qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 1);
+
+    qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(frame));
+    g_assert_cmpmem(got, sizeof(frame), swapped, sizeof(swapped));
 
     bcm_close(&b);
     close(sv[0]);
@@ -1427,17 +1645,25 @@ int main(int argc, char **argv)
                         test_misc_ctl_asic_revision);
     qtest_add_data_func("/bcm570x/mac-address-mailbox", NULL,
                         test_mac_address_mailbox);
+    qtest_add_data_func("/bcm570x/mac-address-registers", NULL,
+                        test_mac_address_registers);
     qtest_add_data_func("/bcm570x/phy-readback", NULL, test_phy_readback);
     qtest_add_data_func("/bcm570x/phy-aux-status-link-up", NULL,
                         test_phy_aux_status_link_up);
     qtest_add_data_func("/bcm570x/status-block-byte-order", NULL,
                         test_status_block_byte_order);
+    qtest_add_data_func("/bcm570x/status-block-hostaddr-wordswap", NULL,
+                        test_status_block_hostaddr_wordswap);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
+    qtest_add_data_func("/bcm570x/transmit-frame-wordswap", NULL,
+                        test_transmit_frame_wordswap);
     qtest_add_data_func("/bcm570x/tx-producer-out-of-range", NULL,
                         test_tx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
                         test_receive_round_trip);
+    qtest_add_data_func("/bcm570x/receive-frame-wordswap", NULL,
+                        test_receive_frame_wordswap);
     qtest_add_data_func("/bcm570x/rx-producer-out-of-range", NULL,
                         test_rx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/interrupt-mailbox", NULL,
