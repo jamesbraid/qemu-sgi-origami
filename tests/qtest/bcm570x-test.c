@@ -133,6 +133,8 @@
 #define BCM_MBX_TX_PROD_LO      0x0304u
 #define BCM_HCC_STATUSBLK_HI    0x3c38u
 #define BCM_HCC_STATUSBLK_LO    0x3c3cu
+#define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* receive coalescing: microseconds */
+#define BCM_HCC_RX_MAX_COAL_BDS 0x3c10u        /* receive coalescing: descriptors */
 #define BCM_MODE_CTL            0x6800u
 #define BCM_DMA_SWAP_OPTIONS    0x36u          /* the driver's MODE_CTL swap arm */
 #define BCM_SRAM_SEND_RING_RCB  0x0100u
@@ -142,6 +144,7 @@
 /* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
 #define BCM_STATUS_RX_PROD_OFF  16
 #define BCM_STATUS_TX_CONS_OFF  18
+#define BCM_STATUS_TAG_OFF       4      /* the device bumps this once per status DMA */
 
 /* Receive ring. */
 #define BCM_MBX_RX_STD_PROD_LO  0x026cu
@@ -183,6 +186,7 @@
 #define STATUS2_PHYS            0x00260000ULL
 #define TX_RING_LEN            4u             /* descriptors in the test ring */
 #define RX_RING_LEN           4u
+#define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
 /*
  * A live card: the PCI bus, the device at its slot, and BAR0 mapped and
@@ -402,6 +406,37 @@ static void wait_for_rx_prod(Bcm *b, uint16_t want)
     }
     qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, idx, 2);
     g_assert_cmphex(get16le(idx), ==, want);
+}
+
+/* The status tag the device bumps once per status-block DMA, so its delta over
+ * a burst counts how many interrupts the coalescing block actually raised. */
+static uint32_t read_status_tag(Bcm *b)
+{
+    uint8_t tag[4];
+
+    qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_TAG_OFF, tag, sizeof(tag));
+    return get32le(tag);
+}
+
+/* Poll the return ring until the descriptor at idx is marked end-of-frame -- the
+ * per-frame completion the device writes even while it coalesces the status
+ * block, so a test can tell a frame was received before any interrupt fired. */
+static void wait_for_ret_end(Bcm *b, unsigned int idx)
+{
+    uint8_t flags[2];
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
+                      BCM_RXBD_FLAGS, flags, 2);
+        if (get16le(flags) & BCM_RXBDFLAG_END) {
+            return;
+        }
+        g_usleep(5000);
+    }
+    qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
+                  BCM_RXBD_FLAGS, flags, 2);
+    g_assert_cmphex(get16le(flags) & BCM_RXBDFLAG_END, ==, BCM_RXBDFLAG_END);
 }
 
 /*
@@ -1193,6 +1228,169 @@ static void test_receive_round_trip(const void *data)
 }
 
 /*
+ * Interrupt coalescing on receive. The host-coalescing block batches completed
+ * receive descriptors into one status-block update and one interrupt instead of
+ * one per frame: with RX_MAX_COAL_BDS set to K, K received frames raise a single
+ * status-block DMA. The status tag, bumped once per status DMA, therefore
+ * advances by N/K over N frames, not by N. This is the receive path's per-packet
+ * interrupt cost; honouring the value the driver programs is both the fidelity
+ * contract (the datasheet's host-coalescing registers) and the performance win.
+ *
+ * The coalescing timer is parked far out so the descriptor count, not the timer,
+ * closes each group -- the qtest virtual clock does not advance on its own, so
+ * the timer never fires here and the group boundary is deterministic.
+ */
+static void test_receive_interrupt_coalescing(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    unsigned int i;
+    const unsigned int coal = 4;     /* RX_MAX_COAL_BDS: frames per interrupt */
+    const unsigned int frames = 16;  /* a whole number of coalescing groups */
+    uint32_t tag_before, tag_after;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+    memset(frame, 0xff, 6);          /* broadcast destination, always accepted */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    /* Standard-ring RCB in CSRs, return-ring RCB in SRAM, a ring long enough for
+     * the whole burst, and the status block's host address. */
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, COAL_RING_LEN << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+
+    /* Program receive coalescing before enabling the block: K descriptors per
+     * update, timer parked far out so the count is the trigger. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
+    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0x10000000);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* Post COAL_RING_LEN worth of standard-ring buffers -- one scratch buffer is
+     * enough, the payload is irrelevant here, only the interrupt count is. */
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < frames; i++) {
+        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b.qts, RET_RING_PHYS, 0,
+                 (uint64_t)COAL_RING_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, frames);
+
+    /* The one-shot bring-up status update fires on that first producer write;
+     * sample the tag after it, so the delta below counts only the coalesced,
+     * frame-driven updates. */
+    tag_before = read_status_tag(&b);
+
+    /* Send the whole burst, then wait for the receive producer to reach it. */
+    for (i = 0; i < frames; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    wait_for_rx_prod(&b, frames);
+
+    tag_after = read_status_tag(&b);
+
+    /* N frames coalesced K-at-a-time is exactly N/K status-block updates -- one
+     * interrupt per group, not one per frame. */
+    g_assert_cmpuint(tag_after - tag_before, ==, frames / coal);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * Coalescing's tick timer flushes a partial group. With RX_MAX_COAL_BDS above
+ * the burst size the descriptor count never triggers, so a handful of frames
+ * raise no interrupt until the RX_COAL_TICKS budget elapses, at which point the
+ * timer flushes them in one update. This is the no-stall guarantee: the tail of
+ * a burst is delivered on the tick, never left waiting for a frame that never
+ * comes.
+ */
+static void test_receive_coalescing_timer(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    unsigned int i;
+    const unsigned int coal = 8;     /* larger than the burst: count never fires */
+    const unsigned int ticks = 50;   /* RX_COAL_TICKS, microseconds */
+    const unsigned int frames = 3;   /* only the timer can flush these */
+    uint32_t tag_before;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 3 + 9);
+    }
+    memset(frame, 0xff, 6);          /* broadcast destination, always accepted */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, COAL_RING_LEN << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
+    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, ticks);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < frames; i++) {
+        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b.qts, RET_RING_PHYS, 0,
+                 (uint64_t)COAL_RING_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, frames);
+
+    tag_before = read_status_tag(&b);
+
+    for (i = 0; i < frames; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    /* Every frame lands in the return ring, but under coalescing none raises a
+     * status update yet: the count is below the group size and no tick has
+     * elapsed. */
+    wait_for_ret_end(&b, frames - 1);
+    g_assert_cmpuint(read_status_tag(&b) - tag_before, ==, 0);
+
+    /* Advance past the tick budget; the timer flushes the held group in one
+     * update. */
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    wait_for_rx_prod(&b, frames);
+    g_assert_cmpuint(read_status_tag(&b) - tag_before, ==, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
  * Frame payload byte order on receive, the inverse of the transmit swap. With
  * ENDIAN_WORDSWAP set the chip lays the received frame into the buffer reversed
  * per 32-bit word, the layout the big-endian driver reverses back when it reads
@@ -1664,6 +1862,10 @@ int main(int argc, char **argv)
                         test_receive_round_trip);
     qtest_add_data_func("/bcm570x/receive-frame-wordswap", NULL,
                         test_receive_frame_wordswap);
+    qtest_add_data_func("/bcm570x/receive-interrupt-coalescing", NULL,
+                        test_receive_interrupt_coalescing);
+    qtest_add_data_func("/bcm570x/receive-coalescing-timer", NULL,
+                        test_receive_coalescing_timer);
     qtest_add_data_func("/bcm570x/rx-producer-out-of-range", NULL,
                         test_rx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/interrupt-mailbox", NULL,
