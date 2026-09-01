@@ -196,8 +196,20 @@ static void elsc_request_complete(SGIElscState *s)
     elsc_dispatch(s, (const char *)&s->rxbuf[1], s->rxbuf[0]);
 }
 
+static void elsc_arb_advance(SGIElscState *s);
+
 static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 {
+    /*
+     * A guest-initiated start during a hold is the addressed processor
+     * answering its slot; the rotation moves on. Our own broadcasts
+     * reach this handler too and must not consume the slot they present.
+     */
+    if ((event == I2C_START_SEND || event == I2C_START_RECV) &&
+        s->arb_held && !s->arb_broadcasting) {
+        elsc_arb_advance(s);
+    }
+
     switch (event) {
     case I2C_START_SEND:
         /* A request is arriving. */
@@ -339,15 +351,17 @@ static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
     return signal2 ? signal1 + 8 : signal1;
 }
 
-/* One-shot broadcast; an empty bus is a no-op and the rotation advances. */
+/* One broadcast of value; an empty bus is a no-op. */
 static void elsc_broadcast(SGIElscState *s, uint8_t value)
 {
     bool diagnostic = s->diagnostic != NULL;
 
+    s->arb_broadcasting = true;
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = true;
     }
     if (i2c_start_transfer(s->bus, I2C_BROADCAST, false)) {
+        s->arb_broadcasting = false;
         if (diagnostic) {
             s->diagnostic_arbitration_broadcast = false;
         }
@@ -355,19 +369,37 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
     }
     i2c_send(s->bus, value);
     i2c_end_transfer(s->bus);
+    s->arb_broadcasting = false;
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = false;
     }
 }
 
-/* Model choices: observable gap, hold clearing the 250us threshold. */
-#define ELSC_ARB_GAP_US    50
-#define ELSC_ARB_HOLD_US   300
-#define ELSC_ARB_RETRY_US  20
+/*
+ * Model choices: a gap a polling guest can observe; a held signal
+ * re-presented until its processor transacts, bounded by a timeout no
+ * plausible poll cadence can miss, so a silent code cannot stall the
+ * ring. The real controller's pacing is unobserved; see the bus
+ * arbitration section of docs/specs/sgi-elsc.rst.
+ */
+#define ELSC_ARB_GAP_US        50
+#define ELSC_ARB_REPRESENT_US  50
+#define ELSC_ARB_TIMEOUT_US    (10 * 1000)
+#define ELSC_ARB_RETRY_US      20
+
+/* End the current hold and move to the next code, behind a fresh gap. */
+static void elsc_arb_advance(SGIElscState *s)
+{
+    s->arb_held = false;
+    s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
+}
 
 /*
  * The gap is required: firmware must see its signal absent before it
- * trusts it. Deferral is by retry -- the PCF8584 never calls
+ * trusts it. The hold is required too: guest poll and rotation share
+ * one deterministic virtual clock, so a one-shot presentation can
+ * phase-lock with the poll and a processor then never samples its own
+ * slot. Deferral is by retry -- the PCF8584 never calls
  * i2c_bus_release(), so queueing would wait forever.
  */
 static void elsc_arb_step(void *opaque)
@@ -376,8 +408,23 @@ static void elsc_arb_step(void *opaque)
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
 
     if (i2c_bus_busy(s->bus)) {
+        if (s->arb_held) {
+            /* Only a guest holds the bus across time: the slot is in use. */
+            elsc_arb_advance(s);
+        }
         timer_mod(s->arb_timer, now + ELSC_ARB_RETRY_US);
         return;
+    }
+
+    if (s->arb_held) {
+        if (now < s->arb_hold_until) {
+            /* Re-present, so a poll after other traffic still finds it. */
+            elsc_broadcast(s, s->arb_signal);
+            timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
+            return;
+        }
+        /* Nothing answered; the timeout keeps the ring turning. */
+        elsc_arb_advance(s);
     }
 
     if (!s->arb_present) {
@@ -390,14 +437,15 @@ static void elsc_arb_step(void *opaque)
     /* signal2 promises a "get" will find something; withheld when empty. */
     {
         bool signal2 = s->arb_code == 0 && s->rx_queue_len > 0;
-        uint8_t signal = elsc_signal_byte(s->arb_code, signal2);
 
-        trace_sgi_elsc_arb_step(s->arb_code, signal, signal2);
-        elsc_broadcast(s, signal);
+        s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
+        trace_sgi_elsc_arb_step(s->arb_code, s->arb_signal, signal2);
+        elsc_broadcast(s, s->arb_signal);
     }
     s->arb_present = false;
-    s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
-    timer_mod(s->arb_timer, now + ELSC_ARB_HOLD_US);
+    s->arb_held = true;
+    s->arb_hold_until = now + ELSC_ARB_TIMEOUT_US;
+    timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
 }
 
 /*
@@ -463,6 +511,10 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->txpos = 0;
     s->arb_code = 0;
     s->arb_present = false;
+    s->arb_held = false;
+    s->arb_signal = 0;
+    s->arb_hold_until = 0;
+    s->arb_broadcasting = false;
     s->rx_queue_len = 0;
     s->diagnostic_arbitration_broadcast = false;
     s->in_escape = false;
@@ -494,7 +546,7 @@ static void elsc_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -511,6 +563,13 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL(in_escape, SGIElscState),
         VMSTATE_BOOL(supervisor, SGIElscState),
         VMSTATE_UINT8_V(dip_switches, SGIElscState, 3),
+        /*
+         * A version-2 or -3 stream loads with these zeroed: no hold in
+         * progress, and the rotation resumes from the pending gap.
+         */
+        VMSTATE_BOOL_V(arb_held, SGIElscState, 4),
+        VMSTATE_UINT8_V(arb_signal, SGIElscState, 4),
+        VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -579,7 +638,8 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
     g_string_append_printf(buf,
                            "  arbitration rotation: code %u of %u, %s\n",
                            s->arb_code, ELSC_SIGNAL_CODE_COUNT,
-                           s->arb_present ? "holding signal" : "showing gap");
+                           s->arb_held ? "holding signal"
+                           : s->arb_present ? "showing gap" : "advancing");
     g_string_append_printf(buf,
                            "  console signal (code 0): 0x%02x = signal%d"
                            " (console input %s)\n",

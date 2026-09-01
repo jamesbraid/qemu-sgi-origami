@@ -64,7 +64,16 @@ struct SGIElscState {
     uint32_t num_cpus;
     uint8_t dip_switches;
     uint32_t arb_code;    /* which of the eight codes this cycle presents */
-    bool arb_present;    /* false: showing the gap; true: holding the signal */
+    bool arb_present;    /* the gap has been shown; the signal comes next */
+    bool arb_held;       /* the signal is on the wire, held for its processor */
+    uint8_t arb_signal;  /* the held byte, latched when the hold begins */
+    int64_t arb_hold_until;   /* virtual-clock us bound on an unanswered hold */
+    /*
+     * True only inside our own broadcast, so the slave path can tell the
+     * rotation's traffic from a processor answering its slot. Never set
+     * across a callback boundary, so not migrated.
+     */
+    bool arb_broadcasting;
 
     /*
      * The AUX serial port, multiplexed with the command channel by one

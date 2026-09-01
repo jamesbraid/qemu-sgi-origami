@@ -76,9 +76,9 @@ Bus arbitration
 
 The controller and every node's Hub share one I2C bus with no real
 multi-master mechanism. The controller arbitrates by broadcasting a
-free-running rotation of per-processor signal bytes; a processor
-polls its PCF8584's data register for its own signal before starting
-a transaction.
+rotation of per-processor signal bytes; a processor polls its
+PCF8584's data register for its own signal before starting a
+transaction.
 
 The signal pair for a processor code ``c`` is ``0xE0 + c``
 (signal 1, "your slot, nothing waiting") and ``0xE0 + c + 8``
@@ -99,11 +99,30 @@ Two properties of the rotation are contracts, not conveniences:
   tells the driver a ``get`` will find something; the driver never
   issues ``get`` without having seen it.
 
+A presented signal is held until it is answered: the model
+re-broadcasts the byte so that a poll at any cadence finds it, and
+ends the hold when a guest-initiated transaction reaches the bus
+during it -- the slot being used. The model cannot tell which
+processor a transaction came from; it relies on the protocol's own
+rule that a processor transacts only in its own slot. A slot nothing
+answers ends after ten milliseconds, so an absent or silent
+processor cannot stall the ring. The hold exists to remove a race
+the model itself created: the guest's polling loop and the rotation
+run on the same deterministic virtual clock, so a signal presented
+once on a fixed beat could phase-lock with the poll, leaving one
+processor never sampling its own slot -- on hardware the two clocks
+drift, in the model an unlucky phase repeats forever.
+
 The model's timing values are choices, not measurements: the gap
-need only be observable by a polling guest, and the hold need only
-clear the 250 microsecond threshold the datasheet specifies, with
-margin. When the bus is busy with a real transaction the rotation
-defers by short retry rather than through the I2C core's
+need only be observable by a polling guest, a held signal stands
+past the 250 microsecond threshold the datasheet specifies unless
+its processor answers sooner, and the ten millisecond timeout only
+needs to be impossible for a plausible polling cadence to miss
+while keeping the full eight-code round short. Whether the real
+controller holds a signal until acknowledged, and how it paces its
+rotation, is unobserved; settling it would take bus traces from a
+real machine. When the bus is busy with a real transaction the
+rotation defers by short retry rather than through the I2C core's
 pending-master queue, because the PCF8584 model drives transactions
 directly and never calls ``i2c_bus_release()``.
 
