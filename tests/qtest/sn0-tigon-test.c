@@ -1193,6 +1193,44 @@ static void test_receive_promisc_accepts_other(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A completion that arrives while the host interrupt is masked must still
+ * raise the line when the driver re-enables it. The Tigon 2 driver masks by
+ * writing 1 to the interrupt mailbox and re-enables by writing 0; a frame
+ * delivered in between sets the pending latch, and the re-enable -- distinct
+ * from IRIX's zero-only acknowledge -- must not drop it.
+ */
+static void test_interrupt_reenable_preserves_completion(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    /* Mask and acknowledge: the line is held off. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 1);
+
+    /* A frame arrives while masked: it sets the pending latch. */
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    g_assert_false(irq_asserted(qts));
+
+    /* Re-enable: the completion that arrived while masked must raise INTA. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1241,6 +1279,9 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("/sn0/tigon/receive-promisc-accepts-other", NULL,
                         test_receive_promisc_accepts_other);
+
+    qtest_add_data_func("/sn0/tigon/interrupt-reenable-preserves-completion",
+                        NULL, test_interrupt_reenable_preserves_completion);
 
     return g_test_run();
 }
