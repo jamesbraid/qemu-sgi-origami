@@ -2708,6 +2708,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
 
         object_property_add_child(OBJECT(s), "elsc", OBJECT(elsc));
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
+        qdev_prop_set_uint32(DEVICE(elsc), "cpu-base", s->cpu_base);
         qdev_prop_set_uint8(DEVICE(elsc), "dip-switches",
                             s->elsc_dip_switches);
         qdev_prop_set_chr(DEVICE(elsc), "chardev", s->elsc_chr);
