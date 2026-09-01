@@ -705,8 +705,17 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
          * and never advances EVENTCONS_IDX. The value is the delivery mask
          * (see tigon_irq_line).
          */
+        /*
+         * A write of 1 masks and acknowledges; the following 0 re-enables
+         * (if_ti.c ti_intr). IRIX's eg only ever writes 0, and that write is
+         * its acknowledge. Clear the pending latch on an acknowledge, but not
+         * on the mask-to-unmask re-enable, so a completion that arrived while
+         * the line was held off is still delivered once it is unmasked.
+         */
+        if (!(s->mb_hostintr && (val & 1) == 0)) {
+            s->irq_asserted = false;
+        }
         s->mb_hostintr = val & 1;
-        s->irq_asserted = false;
         tigon_update_irq(s);
         return;
     case TI_MB_SENDPROD_IDX:
