@@ -99,31 +99,28 @@ Two properties of the rotation are contracts, not conveniences:
   tells the driver a ``get`` will find something; the driver never
   issues ``get`` without having seen it.
 
-A presented signal is held until it is answered: the model
-re-broadcasts the byte so that a poll at any cadence finds it, and
-ends the hold when the held code's own processor starts a
-transaction during it. The processor is identified by the CPU
-driving the bus at that moment, its global index being the code
-space. The distinction is load-bearing because a node's two
-processors share one bus: consuming on any traffic let one
-processor's dialogue steal its neighbor's held slot before the
-neighbor's poll landed on it. Traffic from any other processor,
-traffic carrying no processor context, and bus occupancy the
-controller cannot attribute all leave the hold standing. A slot its
-processor never answers ends after ten milliseconds, so an absent
-or silent processor cannot stall the ring. The hold exists to remove a race
-the model itself created: the guest's polling loop and the rotation
-run on the same deterministic virtual clock, so a signal presented
-once on a fixed beat could phase-lock with the poll, leaving one
-processor never sampling its own slot -- on hardware the two clocks
-drift, in the model an unlucky phase repeats forever.
+Each signal is held for a fixed ten-millisecond slot, re-broadcast
+throughout so that a poll at any cadence finds it, then withdrawn
+behind a fresh gap as the rotation moves to the next code. The
+rotation is purely timer-driven: no bus traffic ends a hold early.
+The model deliberately does not model a processor answering its
+slot, because on the bus a waiting processor's periodic command
+retries are indistinguishable from its answer -- ending the hold on
+them withdrew a signal microseconds after each presentation, before
+the waiting processor's own poll could sample it. The hold itself
+exists to remove a race the model created: the guest's polling loop
+and the rotation run on the same deterministic virtual clock, so a
+signal presented once on a fixed beat could phase-lock with the
+poll, leaving one processor never sampling its own slot -- on
+hardware the two clocks drift, in the model an unlucky phase
+repeats forever.
 
 The model's timing values are choices, not measurements: the gap
 need only be observable by a polling guest, a held signal stands
-past the 250 microsecond threshold the datasheet specifies unless
-its processor answers sooner, and the ten millisecond timeout only
-needs to be impossible for a plausible polling cadence to miss
-while keeping the full eight-code round short. Whether the real
+far past the 250 microsecond threshold the datasheet specifies, and
+the ten millisecond slot only needs to be impossible for a
+plausible polling cadence to miss while keeping the full eight-code
+round well inside the deadlines the polling firmware applies. Whether the real
 controller holds a signal until acknowledged, and how it paces its
 rotation, is unobserved; settling it would take bus traces from a
 real machine. When the bus is busy with a real transaction the

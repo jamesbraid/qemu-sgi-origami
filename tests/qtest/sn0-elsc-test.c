@@ -272,8 +272,8 @@ static void test_read_switches_roundtrip(const void *data)
 #define ARB_HOLD_ASSERT_NS (260 * 1000)  /* past the 250us threshold */
 
 /*
- * Crossing the rotation: an unanswered position is held up to the 10ms
- * hold timeout, so hunting one code's signal can take most of an 80.4ms
+ * Crossing the rotation: every position is held for its full 10ms
+ * slot, so hunting one code's signal can take most of an 80.4ms
  * round. Scan coarsely -- a step this size cannot miss a held signal --
  * and keep the fine step where a 50us gap must not fall between samples.
  */
@@ -562,15 +562,13 @@ static void test_arbitration_survives_phase_locked_poll(const void *data)
 }
 
 /*
- * A slot is consumed only by its own processor. Traffic from anyone
- * else -- on a two-slave node, the neighbor's dialogue on the shared
- * bus -- or with no processor context at all must leave the hold
- * standing, or one processor's dialogue starves the other's poll out
- * of its slot: observed live as cpu3's retries consuming code 2's held
- * slot before cpu2's poll landed on it. Every qtest access arrives
- * with no processor context (nothing on a qtest path runs with
- * current_cpu set), so the transaction below exercises exactly the
- * not-the-owner case.
+ * No bus traffic ends a hold: every slot runs its full length. Any
+ * consume-on-traffic edge starved a waiting processor -- its neighbor's
+ * dialogue stole the held slot, and its own periodic command retries,
+ * indistinguishable from an answer, withdrew the signal microseconds
+ * after each presentation, before its poll could sample it. The hold
+ * must survive the transaction below and still be found by a later
+ * poll; only the slot length may end it.
  */
 static void test_arbitration_foreign_traffic_leaves_hold(const void *data)
 {
@@ -585,7 +583,7 @@ static void test_arbitration_foreign_traffic_leaves_hold(const void *data)
     arb_wait_for_absence(qts);
     held = arb_wait_for_signal(qts);
 
-    /* Not code 0's processor talking: this transaction owns no slot. */
+    /* Traffic mid-hold: whoever this was, the slot must not end. */
     req_len = build_request(req, "ver");
     elsc_transact(qts, req, req_len, resp, sizeof(resp));
 
@@ -611,10 +609,9 @@ static void test_arbitration_foreign_traffic_leaves_hold(const void *data)
 }
 
 /*
- * When a hold ends -- by timeout here, the only end a qtest can reach,
- * since no qtest access carries a processor context -- the next code's
- * signal appears only behind a fresh gap: the next processor's trust
- * check needs to see its signal absent before it appears.
+ * When a slot runs its length -- the only way a hold ends -- the next
+ * code's signal appears only behind a fresh gap: the next processor's
+ * trust check needs to see its signal absent before it appears.
  */
 static void test_arbitration_hold_end_gaps_before_next(const void *data)
 {
@@ -627,7 +624,7 @@ static void test_arbitration_hold_end_gaps_before_next(const void *data)
     arb_wait_for_absence(qts);
     arb_wait_for_signal(qts);
 
-    /* Fine steps across the 10ms hold timeout and the boundary. */
+    /* Fine steps across the 10ms slot and its end. */
     for (i = 0; i < 1200; i++) {
         uint64_t value = read_data(qts);
 
