@@ -471,6 +471,9 @@ sgi_hub_bte_launch(unsigned int engine, uint64_t control, uint64_t src, uint64_t
 sgi_hub_onewire_reset(uint8_t phase, uint8_t bit) "one-wire bus reset from phase %u bit %u"
 sgi_hub_onewire_command(uint8_t command) "one-wire rom command 0x%02x"
 sgi_hub_onewire_search_done(uint64_t identity) "one-wire search answered identity 0x%016" PRIx64
+sgi_hub_onewire_function(uint8_t command) "one-wire memory function 0x%02x"
+sgi_hub_onewire_address(uint8_t command, uint16_t address) "one-wire memory function 0x%02x from address 0x%04x"
+sgi_hub_onewire_page(uint8_t command, uint16_t address) "one-wire memory function 0x%02x crossed into page 0x%04x"
 
 # sgi-ioc3.c
 sgi_ioc3_sdma_read(uint32_t reg, uint32_t val) "reg 0x%03x -> 0x%08x"

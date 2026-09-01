@@ -1463,6 +1463,7 @@ static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
         }
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
+            trace_sgi_hub_onewire_function(s->onewire_command);
             switch (s->onewire_command) {
             case MD_ONEWIRE_CMD_READ_MEMORY:
             case MD_ONEWIRE_CMD_READ_STATUS:
@@ -1491,6 +1492,9 @@ static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
             if (++s->onewire_argn == 2) {
+                trace_sgi_hub_onewire_address(s->onewire_command,
+                                              s->onewire_args[0] |
+                                              (s->onewire_args[1] << 8));
                 if (s->onewire_command == MD_ONEWIRE_CMD_READ_STATUS) {
                     sgi_hub_onewire_status_answer(s);
                 } else if (s->onewire_command == MD_ONEWIRE_CMD_READ_MEMORY) {
@@ -1513,6 +1517,8 @@ static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
             if (s->onewire_cursor > MD_ONEWIRE_STATUS_LAST) {
                 s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
             } else {
+                trace_sgi_hub_onewire_page(s->onewire_command,
+                                           s->onewire_cursor);
                 sgi_hub_onewire_status_page(s, false);
             }
         }
@@ -1525,6 +1531,11 @@ static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
                            ? MD_ONEWIRE_BLANK
                            : s->onewire_end[at - MD_ONEWIRE_DATA_SIZE];
 
+            if (s->onewire_outbit % 8 == 0 && at != s->onewire_cursor &&
+                at < MD_ONEWIRE_DATA_SIZE &&
+                at % MD_ONEWIRE_PAGE_SIZE == 0) {
+                trace_sgi_hub_onewire_page(s->onewire_command, at);
+            }
             level = (byte >> (s->onewire_outbit % 8)) & 1;
             if (++s->onewire_outbit ==
                 (MD_ONEWIRE_DATA_SIZE + 2 - s->onewire_cursor) * 8u) {
@@ -1542,6 +1553,8 @@ static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
             } else if (s->onewire_cursor >= MD_ONEWIRE_DATA_SIZE) {
                 s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
             } else {
+                trace_sgi_hub_onewire_page(s->onewire_command,
+                                           s->onewire_cursor);
                 sgi_hub_onewire_extended_redirection(s, false);
             }
         }
