@@ -100,6 +100,17 @@
 #define SWAPPER_MAGIC            0x0123456789abcdefULL
 
 /*
+ * SWAPPER_CTRL's per-DMA-path swap-enable (SE) bits that select descriptor
+ * byte order (Linux s2io-regs.h SWAPPER_CTRL_TXD_R_SE = s2BIT(19) = bit 44,
+ * SWAPPER_CTRL_RXD_R_SE = s2BIT(33) = bit 30, s2io.h's s2BIT(loc) = bit
+ * 63-loc). Clear -- the reset default -- is big-endian; setting a type's SE
+ * bit switches that type's descriptors to little-endian. See
+ * hw/net/xframe.c's xframe_desc_ldq/xframe_desc_stq.
+ */
+#define SWAPPER_CTRL_TXD_R_SE    (1ULL << 44)
+#define SWAPPER_CTRL_RXD_R_SE    (1ULL << 30)
+
+/*
  * ADAPTER_STATUS quiescent/ready value the driver's single non-retrying
  * attach read requires (if_xgereg.h QUIESCENT): TDMA/RDMA/PFC ready, TMAC
  * buffer empty, PIC quiescent, memory-controller DRAM+queues ready, both PLLs
@@ -436,9 +447,46 @@ static void pif_writel(XframeTest *t, uint64_t off, uint32_t val)
 }
 
 /*
- * The device reads descriptors from guest memory in its own native
- * little-endian order (DEVICE_LITTLE_ENDIAN), so a 64-bit descriptor word is
- * written and read back as explicit little-endian bytes.
+ * TxD/RxD control words are the Xframe's hardware-default big-endian format:
+ * Linux's own comment is "the device by default set to a big endian format,
+ * so a big endian driver need not set anything" (s2io_set_swapper), and
+ * OpenBSD's xge_attach likewise skips the SWAPPER_CTRL write on a big-endian
+ * host. The Origin 200's IRIX guest is always big-endian, so it never
+ * programs the swapper away from that default. A 64-bit descriptor word is
+ * therefore written and read back as explicit big-endian bytes here,
+ * independent of the register-MMIO windows below, which stay little-endian
+ * (DEVICE_LITTLE_ENDIAN).
+ */
+static void dma_stq_be(QTestState *qts, uint64_t addr, uint64_t val)
+{
+    uint8_t b[8];
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        b[7 - i] = val >> (8 * i);
+    }
+    qtest_memwrite(qts, addr, b, sizeof(b));
+}
+
+static uint64_t dma_ldq_be(QTestState *qts, uint64_t addr)
+{
+    uint8_t b[8];
+    uint64_t val = 0;
+    int i;
+
+    qtest_memread(qts, addr, b, sizeof(b));
+    for (i = 0; i < 8; i++) {
+        val = (val << 8) | b[i];
+    }
+    return val;
+}
+
+/*
+ * Little-endian counterparts of dma_stq_be/dma_ldq_be above, for the
+ * SWAPPER_CTRL-programmed little-endian descriptor variant (a little-endian
+ * guest -- Linux s2io / OpenBSD xge on an LE host -- sets a descriptor
+ * type's _SE bit and writes its descriptors this way; see
+ * test_descriptors_honor_swapper_ctrl_little_endian).
  */
 static void dma_stq_le(QTestState *qts, uint64_t addr, uint64_t val)
 {
@@ -570,11 +618,11 @@ static void xframe_program_txd(XframeTx *t, uint64_t par, uint64_t buf,
                                const uint8_t *frame, size_t len)
 {
     qtest_memwrite(t->qs->qts, buf, frame, len);
-    dma_stq_le(t->qs->qts, par + 0,
+    dma_stq_be(t->qs->qts, par + 0,
                (uint64_t)len | TXD_OWN | TXD_GCF | TXD_GCL);
-    dma_stq_le(t->qs->qts, par + 8, 0);
-    dma_stq_le(t->qs->qts, par + 16, buf);
-    dma_stq_le(t->qs->qts, par + 24, 0);
+    dma_stq_be(t->qs->qts, par + 8, 0);
+    dma_stq_be(t->qs->qts, par + 16, buf);
+    dma_stq_be(t->qs->qts, par + 24, 0);
 }
 
 /* Ring the doorbell for a one-descriptor list at par. */
@@ -594,10 +642,10 @@ static void xframe_ring_doorbell(XframeTx *t, uint64_t par)
 static void xframe_program_rxd(XframeTx *t, uint64_t desc, uint64_t buf,
                                uint64_t capacity)
 {
-    dma_stq_le(t->qs->qts, desc + 0, 0);
-    dma_stq_le(t->qs->qts, desc + 8, RXD_OWN);
-    dma_stq_le(t->qs->qts, desc + 16, capacity << RXD_BUFSIZ_SHIFT);
-    dma_stq_le(t->qs->qts, desc + 24, buf);
+    dma_stq_be(t->qs->qts, desc + 0, 0);
+    dma_stq_be(t->qs->qts, desc + 8, RXD_OWN);
+    dma_stq_be(t->qs->qts, desc + 16, capacity << RXD_BUFSIZ_SHIFT);
+    dma_stq_be(t->qs->qts, desc + 24, buf);
 }
 
 /* Point receive ring 0 at ring_base and put it in service. */
@@ -652,7 +700,7 @@ static bool xframe_wait_rxd_consumed(XframeTx *t, uint64_t desc, int attempts)
     int i;
 
     for (i = 0; i < attempts; i++) {
-        if (!(dma_ldq_le(t->qs->qts, desc + 8) & RXD_OWN)) {
+        if (!(dma_ldq_be(t->qs->qts, desc + 8) & RXD_OWN)) {
             return true;
         }
         g_usleep(1000);
@@ -685,10 +733,10 @@ static void test_receive_delivers_a_frame(void)
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
     g_assert_true(xframe_wait_rx_traffic(&t, 5000));
 
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
-    g_assert_cmphex((dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) >>
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex((dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) >>
                      RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, 0);
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 16) >>
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 16) >>
                     RXD_BUFSIZ_SHIFT, ==, sizeof(frame));
 
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
@@ -778,7 +826,7 @@ static void test_receive_filtered_frame_does_not_wedge(void)
     net_socket_send_frame(t.host_fd, legit, sizeof(legit));
     g_assert_true(xframe_wait_rx_traffic(&t, 5000));
 
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(legit), legit, sizeof(legit));
 
@@ -809,10 +857,10 @@ static void test_receive_buffer_too_small_truncates(void)
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
     g_assert_true(xframe_wait_rx_traffic(&t, 5000));
 
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
-    g_assert_cmphex((dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) >>
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex((dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) >>
                      RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, RXD_XCODE_BSZ);
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 16) >>
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 16) >>
                     RXD_BUFSIZ_SHIFT, ==, RX_BUF_SMALL_CAPACITY);
 
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
@@ -963,7 +1011,7 @@ static void test_receive_multicast_exact_match(void)
      */
     net_socket_send_frame(t.host_fd, wrong_group, sizeof(wrong_group));
     g_usleep(200000);
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
                     RXD_OWN);
 
     net_socket_send_frame(t.host_fd, right_group, sizeof(right_group));
@@ -1041,7 +1089,7 @@ static void test_receive_unicast_still_matches(void)
 
     net_socket_send_frame(t.host_fd, random_frame, sizeof(random_frame));
     g_usleep(200000);
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
                     RXD_OWN);
 
     net_socket_send_frame(t.host_fd, station_frame, sizeof(station_frame));
@@ -1550,7 +1598,7 @@ static void test_transmit_emits_a_frame(void)
     g_assert_cmpmem(got, len, frame, sizeof(frame));
 
     /* The card released the descriptor: ownership handed back to the host. */
-    g_assert_cmphex(dma_ldq_le(t.qs->qts, par) & TXD_OWN, ==, 0);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, par) & TXD_OWN, ==, 0);
 
     xframe_tx_stop(&t);
 }
@@ -1655,6 +1703,89 @@ static void test_transmit_completion_raises_interrupt(void)
     g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
     g_assert_cmphex(sock_pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXTRAFFIC,
                     ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * SWAPPER_CTRL-conditional descriptor byte order: a little-endian guest
+ * (Linux s2io / OpenBSD xge on an LE host) sets the TxD/RxD _SE bits and
+ * writes little-endian descriptors, and the device must honor that -- not
+ * decode big-endian unconditionally, which is all the rest of this suite's
+ * descriptor tests exercise (SWAPPER_CTRL left at its reset 0). Exercises
+ * both directions in one test, the same XframeTx socket-backed harness
+ * test_receive_delivers_a_frame already shares with the transmit tests: a
+ * doorbell with a little-endian TxD still emits the frame and releases
+ * ownership little-endian, and a posted little-endian RxD still receives a
+ * frame and writes its little-endian completion status back.
+ *
+ * RED/GREEN: against the pre-fix unconditional-big-endian decode, this test
+ * fails both ways -- transmit sees TXD_OWN misread clear
+ * ("descriptor the card does not own; ignored", no frame egresses) and
+ * receive sees the RxD's OWN bit misread clear too (can_receive reports no
+ * buffer, the frame is never delivered). It passes once the decode honors
+ * SWAPPER_CTRL's per-path SE bit.
+ */
+static void test_descriptors_honor_swapper_ctrl_little_endian(void)
+{
+    XframeTx t;
+    uint8_t tx_frame[64];
+    uint8_t rx_frame[64];
+    uint8_t got[128];
+    uint8_t landed[64];
+    uint64_t par = TX_RAM_SCRATCH;
+    uint64_t buf = TX_RAM_SCRATCH + 0x1000;
+    size_t len;
+    unsigned i;
+
+    for (i = 0; i < sizeof(tx_frame); i++) {
+        tx_frame[i] = (uint8_t)(i + 1);
+    }
+    memset(tx_frame, 0xff, 6);  /* broadcast destination */
+
+    for (i = 0; i < sizeof(rx_frame); i++) {
+        rx_frame[i] = (uint8_t)(0xc0 + i);
+    }
+    memcpy(rx_frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+
+    /* Program the little-endian swap for both descriptor types. */
+    sock_pif_writeq(&t, SWAPPER_CTRL,
+                    SWAPPER_CTRL_TXD_R_SE | SWAPPER_CTRL_RXD_R_SE);
+
+    /* Transmit: a little-endian TxD must still be consumed and sent. */
+    qtest_memwrite(t.qs->qts, buf, tx_frame, sizeof(tx_frame));
+    dma_stq_le(t.qs->qts, par + 0,
+              (uint64_t)sizeof(tx_frame) | TXD_OWN | TXD_GCF | TXD_GCL);
+    dma_stq_le(t.qs->qts, par + 8, 0);
+    dma_stq_le(t.qs->qts, par + 16, buf);
+    dma_stq_le(t.qs->qts, par + 24, 0);
+    xframe_ring_doorbell(&t, par);
+
+    len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(tx_frame));
+    g_assert_cmpmem(got, len, tx_frame, sizeof(tx_frame));
+    /* The card released the descriptor: ownership handed back, still LE. */
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, par) & TXD_OWN, ==, 0);
+
+    /* Receive: a little-endian RxD must still be recognised and filled. */
+    dma_stq_le(t.qs->qts, RX_RING_BASE + 0, 0);
+    dma_stq_le(t.qs->qts, RX_RING_BASE + 8, RXD_OWN);
+    dma_stq_le(t.qs->qts, RX_RING_BASE + 16,
+              (uint64_t)RX_BUF_CAPACITY << RXD_BUFSIZ_SHIFT);
+    dma_stq_le(t.qs->qts, RX_RING_BASE + 24, RX_BUF0);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, rx_frame, sizeof(rx_frame));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, sizeof(rx_frame));
+
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(rx_frame), rx_frame, sizeof(rx_frame));
 
     xframe_tx_stop(&t);
 }
@@ -2705,6 +2836,8 @@ int main(int argc, char **argv)
                    test_transmit_out_of_range_pointer_is_safe);
     qtest_add_func("xframe/transmit-completion-raises-interrupt",
                    test_transmit_completion_raises_interrupt);
+    qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
+                   test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
                    test_xg_enable_path_link_via_block_masks);
     qtest_add_func("xframe/xg-enable-path-link-via-gpio-block",

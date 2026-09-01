@@ -183,23 +183,30 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
     return len;
 }
 
-/* Little-endian pack/unpack of a 64-bit descriptor word in a byte buffer. */
-static void stq_le_buf(uint8_t *b, uint64_t v)
+/*
+ * Big-endian pack/unpack of a 64-bit descriptor word in a byte buffer -- the
+ * descriptor format's reset default, which the always-big-endian Origin 200
+ * guest never reprograms away from (hw/net/xframe.c's ldq_be_p/stq_be_p
+ * descriptor accessors). These bytes are "canonical" from the device's own
+ * point of view: dma_write_canonical/dma_read_canonical below apply the
+ * Bridge's separate per-word byte-lane correction on top.
+ */
+static void stq_be_buf(uint8_t *b, uint64_t v)
 {
     int i;
 
     for (i = 0; i < 8; i++) {
-        b[i] = v >> (8 * i);
+        b[i] = v >> (8 * (7 - i));
     }
 }
 
-static uint64_t ldq_le_buf(const uint8_t *b)
+static uint64_t ldq_be_buf(const uint8_t *b)
 {
     uint64_t v = 0;
     int i;
 
     for (i = 0; i < 8; i++) {
-        v |= (uint64_t)b[i] << (8 * i);
+        v = (v << 8) | b[i];
     }
     return v;
 }
@@ -444,8 +451,8 @@ static void test_transmit_frame_composes_through_the_bridge(const void *data)
 
     /* One card-owned first-and-last segment; length in control1 bits 15:0. */
     memset(desc, 0, sizeof(desc));
-    stq_le_buf(desc + 0, (uint64_t)FRAME_LEN | TXD_OWN | TXD_GCF | TXD_GCL);
-    stq_le_buf(desc + 16, TX_BUF_IOVA);
+    stq_be_buf(desc + 0, (uint64_t)FRAME_LEN | TXD_OWN | TXD_GCF | TXD_GCL);
+    stq_be_buf(desc + 16, TX_BUF_IOVA);
     dma_write_canonical(qts, DESC_PHYS, desc, sizeof(desc));
 
     /* Ring the doorbell for a one-descriptor list at the descriptor's IOVA. */
@@ -459,7 +466,7 @@ static void test_transmit_frame_composes_through_the_bridge(const void *data)
 
     /* The card released the descriptor: ownership handed back, length kept. */
     dma_read_canonical(qts, DESC_PHYS, handback, sizeof(handback));
-    control1 = ldq_le_buf(handback);
+    control1 = ldq_be_buf(handback);
     g_assert_cmphex(control1 & TXD_OWN, ==, 0);
     g_assert_cmphex(control1 & 0xffff, ==, FRAME_LEN);
 
@@ -512,9 +519,9 @@ static void test_receive_frame_composes_through_the_bridge(const void *data)
 
     /* host control 0, card-owned, capacity in control2 bits 63:48, buf ptr. */
     memset(rxd, 0, sizeof(rxd));
-    stq_le_buf(rxd + 8, RXD_OWN);
-    stq_le_buf(rxd + 16, (uint64_t)RX_BUF_CAPACITY << RXD_BUFSIZ_SHIFT);
-    stq_le_buf(rxd + 24, RX_BUF_IOVA);
+    stq_be_buf(rxd + 8, RXD_OWN);
+    stq_be_buf(rxd + 16, (uint64_t)RX_BUF_CAPACITY << RXD_BUFSIZ_SHIFT);
+    stq_be_buf(rxd + 24, RX_BUF_IOVA);
     dma_write_canonical(qts, DESC_PHYS, rxd, sizeof(rxd));
 
     win_writeq(qts, PRC_RXD0_0, DESC_IOVA);
@@ -529,13 +536,13 @@ static void test_receive_frame_composes_through_the_bridge(const void *data)
 
     /* control1: ownership handed back, status code OK. */
     dma_read_canonical(qts, DESC_PHYS + 8, word, sizeof(word));
-    control1 = ldq_le_buf(word);
+    control1 = ldq_be_buf(word);
     g_assert_cmphex(control1 & RXD_OWN, ==, 0);
     g_assert_cmphex((control1 >> RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, 0);
 
     /* control2: the received length overwrote the posted capacity. */
     dma_read_canonical(qts, DESC_PHYS + 16, word, sizeof(word));
-    control2 = ldq_le_buf(word);
+    control2 = ldq_be_buf(word);
     g_assert_cmphex(control2 >> RXD_BUFSIZ_SHIFT, ==, FRAME_LEN);
 
     qtest_quit(qts);
