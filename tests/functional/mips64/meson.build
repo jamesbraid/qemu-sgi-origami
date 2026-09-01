@@ -108,6 +108,19 @@ test_mips64_timeouts = {
   # same margin every other test in this directory keeps against its
   # own meson timeout.
   'openbsd_install' : 5400,
+  # Boots the stock OpenBSD 6.9 disk with an xframe adapter attached and
+  # reads only until PCI autoconfiguration reports it -- a real measured
+  # run reached PASS in about 43s end to end (see BOOT_TIMEOUT_SECONDS's
+  # own comment in test_xframe_pci.py); 360 keeps the usual 60s margin
+  # over that file's own 300s budget.
+  'xframe_pci' : 360,
+  # ASSET-GATED SCAFFOLD (test_openbsd_xge.py): no xge-enabled kernel is
+  # provisioned yet, so this always skips before ever launching a VM (see
+  # that file's own docstring) -- this timeout is for once that asset
+  # exists. Reuses test_openbsd_net_transfer.py's own 1400s entry: the
+  # same login budget plus one transfer leg's own fixed timeout, not
+  # three.
+  'openbsd_xge' : 1400,
 }
 
 tests_mips64_system_quick = [
@@ -138,6 +151,8 @@ tests_mips64_system_thorough = [
   'linux_multiuser',
   'openbsd_net_transfer',
   'openbsd_install',
+  'xframe_pci',
+  'openbsd_xge',
 ]
 
 # The boot tests' pure-logic companions: the *_verdict.py suites that pin
@@ -157,6 +172,7 @@ tests_mips64_unit = [
   'openbsd_install_verdict',
   'openbsd_login_verdict',
   'openbsd_net_transfer_verdict',
+  'openbsd_xge_verdict',
   'prom_boot_verdict',
   'prom_copy_speed_verdict',
   'prom_diagnostics_verdict',
@@ -167,6 +183,7 @@ tests_mips64_unit = [
   'prom_mdk_verdict',
   'prom_pod_verdict',
   'prom_sash_verdict',
+  'xframe_pci_verdict',
 ]
 
 foreach test : tests_mips64_unit
