@@ -371,8 +371,25 @@ static void elsc_broadcast(SGIElscState *s, uint8_t value)
  */
 #define ELSC_ARB_GAP_US        50
 #define ELSC_ARB_REPRESENT_US  50
-#define ELSC_ARB_SLOT_US       (10 * 1000)
+#define ELSC_ARB_SLOT_BASE_US  (10 * 1000)
 #define ELSC_ARB_RETRY_US      20
+
+/*
+ * Slot lengths vary, 10.0 to 11.6ms, as a pure function of (code,
+ * revolution) -- deterministic, so record/replay and migration stay
+ * exact. A metronomic ring admits a stable phase lock from a guest
+ * polling loop with a commensurate period, both clocks being the one
+ * virtual clock; real controller and processor oscillators are not
+ * synchronized. 17 is prime and coprime to the ring's eight codes and
+ * to both multipliers, so each code walks all seventeen lengths across
+ * revolutions and consecutive revolutions never repeat a ring period.
+ */
+static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
+{
+    uint32_t vary = (code * 7 + (rev % 17) * 13) % 17;
+
+    return ELSC_ARB_SLOT_BASE_US + (int64_t)vary * 100;
+}
 
 /*
  * The gap is required: firmware must see its signal absent before it
@@ -403,6 +420,9 @@ static void elsc_arb_step(void *opaque)
         /* The slot has run its length; the next code follows a gap. */
         s->arb_held = false;
         s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
+        if (s->arb_code == 0) {
+            s->arb_rev++;
+        }
     }
 
     if (!s->arb_present) {
@@ -423,7 +443,7 @@ static void elsc_arb_step(void *opaque)
     }
     s->arb_present = false;
     s->arb_held = true;
-    s->arb_hold_until = now + ELSC_ARB_SLOT_US;
+    s->arb_hold_until = now + elsc_arb_slot_us(s->arb_code, s->arb_rev);
     timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
 }
 
@@ -489,6 +509,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->txlen = 0;
     s->txpos = 0;
     s->arb_code = 0;
+    s->arb_rev = 0;
     s->arb_present = false;
     s->arb_held = false;
     s->arb_signal = 0;
@@ -524,7 +545,7 @@ static void elsc_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -548,6 +569,8 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL_V(arb_held, SGIElscState, 4),
         VMSTATE_UINT8_V(arb_signal, SGIElscState, 4),
         VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
+        /* An older stream restarts the slot-length sequence at zero. */
+        VMSTATE_UINT32_V(arb_rev, SGIElscState, 5),
         VMSTATE_END_OF_LIST()
     },
 };
