@@ -33,6 +33,13 @@ test_mips64_timeouts = {
   # BOOT_TIMEOUT_SECONDS in test_irix_miniroot.py keeps a 60s margin under
   # this, the same margin test_prom_sash.py keeps against its own timeout.
   'irix_miniroot' : 900,
+  # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
+  # PROM, then the eg (Alteon Tigon) adapter brought up and a 128 KiB
+  # payload pulled over it by TFTP and checked byte-for-byte. The boot is
+  # the long pole (real power-on diagnostics, kernel, init to a console
+  # login); LOGIN_BUDGET_SECONDS in test_irix_eg_net.py keeps a margin
+  # under this, with the transfer legs on their own fixed timeouts on top.
+  'irix_eg_net' : 1800,
   # Boot to the POD prompt plus sixteen immediate commands; BOOT_TIMEOUT
   # in test_prom_pod.py keeps the usual 60s margin under this.
   'prom_pod' : 900,
@@ -117,6 +124,7 @@ tests_mips64_system_thorough = [
   'prom_mdk_instgen',
   'prom_mdk_router',
   'irix_miniroot',
+  'irix_eg_net',
   'openbsd_login',
   'linux_kernel',
   'linux_multiuser',
@@ -134,6 +142,7 @@ tests_mips64_system_thorough = [
 tests_mips64_unit = [
   'lib_matrix',
   'lib_prom',
+  'irix_eg_net_verdict',
   'linux_kernel_verdict',
   'linux_multiuser_verdict',
   'openbsd_install_verdict',
