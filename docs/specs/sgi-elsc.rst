@@ -82,7 +82,7 @@ transaction.
 
 The signal pair for a processor code ``c`` is ``0xE0 + c``
 (signal 1, "your slot, nothing waiting") and ``0xE0 + c + 8``
-(signal 2, "your slot, console input waiting"). The code must fit in
+(signal 2, "your slot, something waiting for you"). The code must fit in
 three bits: signal 2 is signal 1 with bit 3 set, so a code of eight
 or more would collide with another processor's signal 1. Eight codes
 is also exactly the protocol's addressable space -- four node slots
@@ -95,13 +95,32 @@ Two properties of the rotation are contracts, not conveniences:
 * A gap -- a broadcast of neither signal value -- precedes every
   signal. The firmware's wait loop requires its signal to be absent
   before it trusts a subsequent appearance of it.
-* Signal 2 is withheld while the input queue is empty. It is what
-  tells the driver a ``get`` will find something; the driver never
-  issues ``get`` without having seen it.
+* Signal 2 is presented only while something waits for the slot's
+  processor: console input, for the console processor, or a pending
+  response, for its requester. The console case is what tells the
+  driver a ``get`` will find something -- the driver never issues
+  ``get`` without having seen it -- and it is the special case of
+  the general rule, observed from the 6.5.30 firmware's slave
+  bring-up, which parks a launching processor on its own signal 2
+  until the controller announces the response it has yet to read.
+
+A response belongs to its requester -- the processor whose request
+the direction switch completed -- and it outlives the transaction
+that produced it: a requester may end its transaction with the
+response unread, poll for its own signal 2, and fetch the frame with
+a read-only transaction. The response stays pending, and its owner's
+slot keeps presenting signal 2, until it is read to its end or a new
+request replaces it. A request from a context that carries no
+processor -- a monitor or qtest access -- is attributed to the
+console processor.
 
 Each signal is held for a slot of at least ten milliseconds,
 re-broadcast throughout so that a poll at any cadence finds it, then
 withdrawn behind a fresh gap as the rotation moves to the next code.
+Each re-broadcast recomputes the signal 2 half, so a slot whose
+promise has been kept mid-slot -- the response consumed, the queue
+drained -- downgrades to signal 1 rather than announcing something
+no longer there.
 The rotation is purely timer-driven: no bus traffic ends a hold
 early. The model deliberately does not model a processor answering
 its slot, because on the bus a waiting processor's periodic command
@@ -185,6 +204,7 @@ rather than asked again -- the firmware's closing step, addressed to
 Monitor access
 ==============
 
-``info elsc`` prints each controller's console-input queue and the
-arbitration signal currently presented for the console processor,
-without requiring a trace backend or diagnostic sink.
+``info elsc`` prints each controller's console-input queue, any
+pending response and its owner, and the arbitration signal currently
+presented for the console processor, without requiring a trace
+backend or diagnostic sink.

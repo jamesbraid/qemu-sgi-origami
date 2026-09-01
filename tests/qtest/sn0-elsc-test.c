@@ -738,6 +738,175 @@ static void test_arbitration_walks_all_codes_full_slots(const void *data)
 }
 
 /*
+ * A request completed through the direction switch, then abandoned: the
+ * transaction ends with the response entirely unread -- not even the
+ * discard read runs. This is the window the firmware's slave bring-up
+ * waits out: request issued, response pending, the processor parked on
+ * its own signal 2 until the controller announces it.
+ */
+static void elsc_request_without_read(QTestState *qts, const char *text)
+{
+    uint8_t req[8];
+    unsigned req_len, i;
+
+    req_len = build_request(req, text);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+
+    for (i = 0; i < req_len; i++) {
+        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, req[i]);
+    }
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+}
+
+/* A read-only transaction: fetch a response with no request written. */
+static unsigned elsc_read_response(QTestState *qts, uint8_t *resp,
+                                   unsigned resp_cap)
+{
+    unsigned i, total;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);  /* discarded */
+
+    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    total = (unsigned)resp[0] + 2;
+    g_assert_cmpuint(total, <=, resp_cap);
+    for (i = 1; i < total; i++) {
+        if (i == total - 1) {
+            qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);  /* NAK last */
+        }
+        resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    }
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+
+    return total;
+}
+
+/*
+ * Signal 2 is "your slot, something waiting for you", and a pending
+ * response is something waiting: on a one-bus controller a response must
+ * be announced to its requester, or a processor that ends its request
+ * transaction before reading polls for its own signal 2 forever. The
+ * firmware's slave bring-up does exactly that -- observed live as a
+ * two-node launch parked on a signal 2 no build had ever emitted. A
+ * qtest carries no processor context, so the requester attributes as
+ * the console processor and the announcement lands in code 0's slot.
+ */
+static void test_pending_response_announces_signal2(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    g_autofree char *out = NULL;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    elsc_request_without_read(qts, "ver");
+
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    out = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(out, "pending response"));
+    g_assert_nonnull(strstr(out, "for processor code 0"));
+
+    qtest_quit(qts);
+}
+
+/*
+ * The announcement ends with the response: a request whose response was
+ * read to its end leaves nothing waiting, so the slot reverts to
+ * signal 1. This is the half a model that never announces already gets
+ * right; it pins the announcement to the pending response rather than
+ * to the request having happened.
+ */
+static void test_consumed_response_reverts_to_signal1(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    req_len = build_request(req, "ver");
+    elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The fetch the announcement promises: after the requester's transaction
+ * ended unread, the response survives -- the ELSC's own broadcasts
+ * deliver finish events too and must not discard it -- and a read-only
+ * transaction returns the frame. Once consumed, the announcement stops.
+ */
+static void test_announced_response_read_after_stop(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t resp[RESP_CAP];
+    unsigned resp_len;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    elsc_request_without_read(qts, "ver");
+
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    resp_len = elsc_read_response(qts, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], >=, 4);
+    g_assert(memcmp(&resp[1], "ok ", 3) == 0);
+
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A new request supersedes an unfetched response: the frame is replaced
+ * and the old announcement must not outlive it. The superseding
+ * command's own response is consumed in full, so nothing is left
+ * waiting and the slot reverts to signal 1.
+ */
+static void test_new_request_supersedes_pending_response(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    elsc_request_without_read(qts, "ver");
+
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    req_len = build_request(req, "rsw");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok ff", 5) == 0);
+
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+
+    qtest_quit(qts);
+}
+
+/*
  * "acp" output: a ring-buffer chardev captures what the device writes,
  * enough for the output direction with no live connection.
  */
@@ -1196,6 +1365,7 @@ static void test_info_elsc_dump_empty(const void *data)
     g_autofree char *out = qtest_hmp(qts, "info elsc");
 
     g_assert_nonnull(strstr(out, "rx queue: 0 byte(s)"));
+    g_assert_nonnull(strstr(out, "pending response: none"));
     g_assert_nonnull(strstr(out, "signal1"));
     g_assert_nonnull(strstr(out, "console input idle"));
 
@@ -1270,6 +1440,14 @@ int main(int argc, char **argv)
                         NULL, test_arbitration_defeats_ring_period_sampler);
     qtest_add_data_func("sn0/elsc/arbitration-walks-all-codes-full-slots",
                         NULL, test_arbitration_walks_all_codes_full_slots);
+    qtest_add_data_func("sn0/elsc/pending-response-announces-signal2", NULL,
+                        test_pending_response_announces_signal2);
+    qtest_add_data_func("sn0/elsc/consumed-response-reverts-to-signal1", NULL,
+                        test_consumed_response_reverts_to_signal1);
+    qtest_add_data_func("sn0/elsc/announced-response-read-after-stop", NULL,
+                        test_announced_response_read_after_stop);
+    qtest_add_data_func("sn0/elsc/new-request-supersedes-pending-response",
+                        NULL, test_new_request_supersedes_pending_response);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/two-towers-take-two-aux-backends", NULL,
