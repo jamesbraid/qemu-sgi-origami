@@ -822,10 +822,14 @@ static bool tigon_can_receive(NetClientState *nc)
  * value says whether to keep the frame and sets the cast flag for its return
  * descriptor.
  */
-static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, uint16_t *flags)
+static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, size_t size,
+                            uint16_t *flags)
 {
     static const uint8_t broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
+    if (size < sizeof(broadcast)) {
+        return false;   /* runt: too short to carry a destination address */
+    }
     if (memcmp(dest, broadcast, 6) == 0) {
         *flags = TI_BDFLAG_BCAST_PKT;
         return true;
@@ -854,7 +858,7 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     if (!s->firmware_up) {
         return size;   /* not operational: consumed, not queued */
     }
-    if (!tigon_rx_filter(s, buf, &flags)) {
+    if (!tigon_rx_filter(s, buf, size, &flags)) {
         /*
          * Filtered frames are consumed, never returned as 0: a 0 would wedge
          * the backend's queue head behind a frame no retry can ever pass.
