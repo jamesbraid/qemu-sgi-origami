@@ -829,6 +829,172 @@ static void test_each_hub_carries_its_own_identity(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The memory-function reads, per the public DS2505 datasheet: an
+ * unprogrammed part serves 0xff everywhere -- a redirection byte of
+ * 0xff means "no redirection, data valid" by the part's own spec --
+ * behind correct CRC16 framing. The firmware's headless bring-up
+ * failed here next: "invalid crc16 reading redirection map page 0",
+ * because the selected part went silent and the frame read all-ones.
+ */
+#define ONEWIRE_CMD_SKIP        0xcc
+#define ONEWIRE_CMD_READ_MEM    0xf0
+#define ONEWIRE_CMD_READ_STATUS 0xaa
+#define ONEWIRE_CMD_READ_EXT    0xa5
+
+/* The Dallas CRC16; the part transmits its complement, low byte first. */
+static uint16_t onewire_crc16(uint16_t crc, const uint8_t *data,
+                              unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+static void onewire_write_byte(QTestState *qts, uint64_t hub, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        onewire_write_bit(qts, hub, (byte >> i) & 1);
+    }
+}
+
+static uint8_t onewire_read_byte(QTestState *qts, uint64_t hub)
+{
+    uint8_t byte = 0;
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        byte |= onewire_slot(qts, hub, ONEWIRE_PULSE_SHORT) << i;
+    }
+    return byte;
+}
+
+/* Reset, presence, and a skip: the single part is selected. */
+static void onewire_select(QTestState *qts, uint64_t hub)
+{
+    g_assert_cmphex(onewire_slot(qts, hub, ONEWIRE_PULSE_RESET), ==, 0);
+    onewire_write_byte(qts, hub, ONEWIRE_CMD_SKIP);
+}
+
+/* The received CRC16 pair must complement the locally computed one. */
+static void onewire_assert_crc16(QTestState *qts, uint64_t hub, uint16_t crc)
+{
+    uint16_t sent = onewire_read_byte(qts, hub);
+
+    sent |= (uint16_t)onewire_read_byte(qts, hub) << 8;
+    g_assert_cmphex(sent, ==, (uint16_t)~crc);
+}
+
+/*
+ * The redirection map, as the firmware reads it: a status read at
+ * 0x100, an 8-byte page of 0xff, then the CRC16 of command, address
+ * and data. The next page follows with a CRC16 of its data alone.
+ */
+static void test_a_status_read_frames_the_redirection_map(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t request[3] = { ONEWIRE_CMD_READ_STATUS, 0x00, 0x01 };
+    uint8_t page[8];
+    uint16_t crc;
+    unsigned int i;
+
+    onewire_select(qts, HUB_LOCAL);
+    onewire_write_byte(qts, HUB_LOCAL, request[0]);
+    onewire_write_byte(qts, HUB_LOCAL, request[1]);
+    onewire_write_byte(qts, HUB_LOCAL, request[2]);
+
+    for (i = 0; i < 8; i++) {
+        page[i] = onewire_read_byte(qts, HUB_LOCAL);
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    crc = onewire_crc16(0, request, sizeof(request));
+    onewire_assert_crc16(qts, HUB_LOCAL,
+                         onewire_crc16(crc, page, sizeof(page)));
+
+    /* The following page frames its own bytes only. */
+    for (i = 0; i < 8; i++) {
+        page[i] = onewire_read_byte(qts, HUB_LOCAL);
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    onewire_assert_crc16(qts, HUB_LOCAL,
+                         onewire_crc16(0, page, sizeof(page)));
+
+    qtest_quit(qts);
+}
+
+/*
+ * An extended read of page 0 on a blank part: the redirection byte
+ * (0xff, no redirection), its request-covering CRC16, the 32-byte
+ * page of 0xff, and the page's own CRC16.
+ */
+static void test_an_extended_read_serves_a_blank_page(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t request[4] = { ONEWIRE_CMD_READ_EXT, 0x00, 0x00, 0 };
+    uint8_t page[32];
+    unsigned int i;
+
+    onewire_select(qts, HUB_LOCAL);
+    onewire_write_byte(qts, HUB_LOCAL, request[0]);
+    onewire_write_byte(qts, HUB_LOCAL, request[1]);
+    onewire_write_byte(qts, HUB_LOCAL, request[2]);
+
+    request[3] = onewire_read_byte(qts, HUB_LOCAL);
+    g_assert_cmphex(request[3], ==, 0xff);
+    onewire_assert_crc16(qts, HUB_LOCAL,
+                         onewire_crc16(0, request, sizeof(request)));
+
+    for (i = 0; i < 32; i++) {
+        page[i] = onewire_read_byte(qts, HUB_LOCAL);
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    onewire_assert_crc16(qts, HUB_LOCAL,
+                         onewire_crc16(0, page, sizeof(page)));
+
+    qtest_quit(qts);
+}
+
+/*
+ * A plain memory read streams to the end of the data field, then
+ * sixteen further slots carry the CRC16 of command, address and every
+ * data byte served. Started on the last eight bytes to keep the slot
+ * count small.
+ */
+static void test_a_memory_read_ends_with_its_crc(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t request[3] = { ONEWIRE_CMD_READ_MEM, 0xf8, 0x07 };
+    uint8_t tail[8];
+    uint16_t crc;
+    unsigned int i;
+
+    onewire_select(qts, HUB_LOCAL);
+    onewire_write_byte(qts, HUB_LOCAL, request[0]);
+    onewire_write_byte(qts, HUB_LOCAL, request[1]);
+    onewire_write_byte(qts, HUB_LOCAL, request[2]);
+
+    for (i = 0; i < 8; i++) {
+        tail[i] = onewire_read_byte(qts, HUB_LOCAL);
+        g_assert_cmphex(tail[i], ==, 0xff);
+    }
+    crc = onewire_crc16(0, request, sizeof(request));
+    onewire_assert_crc16(qts, HUB_LOCAL,
+                         onewire_crc16(crc, tail, sizeof(tail)));
+
+    /* Past the CRC the part has left the bus and the line reads one. */
+    g_assert_cmphex(onewire_read_byte(qts, HUB_LOCAL), ==, 0xff);
+
+    qtest_quit(qts);
+}
+
 static void test_reset_values(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -3177,6 +3343,12 @@ int main(int argc, char **argv)
                         test_the_search_reads_a_valid_identity);
     qtest_add_data_func("sn0/hub/one-wire-identity-is-per-unit", NULL,
                         test_each_hub_carries_its_own_identity);
+    qtest_add_data_func("sn0/hub/one-wire-status-frames-redirection-map",
+                        NULL, test_a_status_read_frames_the_redirection_map);
+    qtest_add_data_func("sn0/hub/one-wire-extended-read-serves-blank-page",
+                        NULL, test_an_extended_read_serves_a_blank_page);
+    qtest_add_data_func("sn0/hub/one-wire-memory-read-ends-with-crc",
+                        NULL, test_a_memory_read_ends_with_its_crc);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
     qtest_add_data_func("sn0/hub/bte-registers-reset-to-zero", NULL,
