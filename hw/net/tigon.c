@@ -1075,6 +1075,7 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT32(std_rx_prodidx, TigonState),
         VMSTATE_UINT32(cmd_considx, TigonState),
         VMSTATE_BOOL(irq_asserted, TigonState),
+        VMSTATE_TIMER_PTR(link_timer, TigonState),
         VMSTATE_STRUCT(eeprom, TigonState, 1, vmstate_tigon_eeprom,
                        TigonEeprom),
         VMSTATE_END_OF_LIST()
