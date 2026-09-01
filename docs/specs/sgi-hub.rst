@@ -226,12 +226,26 @@ exact assertion, a discrepancy reported rather than papered over. A
 slot's duration is nominal and chosen: what the timing encodings mean
 in real time is not established, and the contract needs only that a
 slot not complete inside the write. A slot armed before a reset must
-not complete after it. Nothing is attached to this bus, deliberately:
-an open-drain line nothing pulls down samples one every slot, and
-modelling an invented identity part would turn a visible absence into
-a plausible identity nothing downstream could tell was invented. The
-firmware manual says every board carries a part; which part is not
-established.
+not complete after it.
+
+The bus carries one responder: a DS2505-compatible part holding the
+installed PIMM's manufacturing record, which is the settled contract
+of the Origami project tree's hub one-wire datasheet -- the firmware
+reads its ROM identity as a remote node's NIC during headless
+bring-up, and without it that read reported nothing present and the
+peer node's identity never resolved. The part answers a bus reset
+with a presence pulse and speaks the family's ROM protocol: search,
+match and skip, least-significant bit first, with the public DS2505
+datasheet's family code and its CRC-8 check byte over family and
+serial. The 48-bit serial is a synthetic per-unit value the machine
+wires per node; a real machine's serial must never be copied. The
+pulse-width thresholds sorting a slot into reset, zero or one are
+the same model choices the Bridge's one-wire master uses. What the
+part's memory pages say is still an open question, so the memory
+functions behind a select are deliberately not answered -- the part
+goes silent and the line samples one -- rather than inventing a
+manufacturing record the guest would parse into this machine's
+serial number.
 
 The PCF8584 is mapped as a subregion of the Hub's own register region
 at higher priority, so both of the machine's mappings of the window

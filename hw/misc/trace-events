@@ -468,6 +468,9 @@ disable sgi_hub_rt_count_read(int cpu, uint32_t hub_cpu_base, uint32_t nasid, ui
 sgi_hub_rt_expire(uint32_t hub_cpu_base, uint32_t nasid, unsigned int slice, uint64_t count, uint64_t compare, bool enabled, int64_t realtime_ns, int64_t virtual_ns) "hub_cpu_base %u nasid %u slice %u count 0x%013" PRIx64 " compare 0x%013" PRIx64 " enabled %d realtime_ns %" PRId64 " virtual_ns %" PRId64
 sgi_hub_vector_complete(int cpu, uint32_t source_nasid, int target_nasid, uint64_t pc, uint64_t parms, uint64_t write_data, uint64_t read_data, uint64_t status, int64_t realtime_ns, int64_t virtual_ns) "cpu %d source_nasid %u target_nasid %d pc 0x%016" PRIx64 " parms 0x%016" PRIx64 " write_data 0x%016" PRIx64 " read_data 0x%016" PRIx64 " status 0x%016" PRIx64 " realtime_ns %" PRId64 " virtual_ns %" PRId64
 sgi_hub_bte_launch(unsigned int engine, uint64_t control, uint64_t src, uint64_t dst, uint64_t lines) "engine %u control 0x%03" PRIx64 " src 0x%010" PRIx64 " dst 0x%010" PRIx64 " lines 0x%" PRIx64
+sgi_hub_onewire_reset(uint8_t phase, uint8_t bit) "one-wire bus reset from phase %u bit %u"
+sgi_hub_onewire_command(uint8_t command) "one-wire rom command 0x%02x"
+sgi_hub_onewire_search_done(uint64_t identity) "one-wire search answered identity 0x%016" PRIx64
 
 # sgi-ioc3.c
 sgi_ioc3_sdma_read(uint32_t reg, uint32_t val) "reg 0x%03x -> 0x%08x"

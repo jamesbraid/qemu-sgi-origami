@@ -985,6 +985,12 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
+    /*
+     * Each PIMM record part gets its own synthetic serial: per-unit as the
+     * hub one-wire datasheet's contract requires, never a real machine's.
+     */
+    qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
+                         0x0c0b0a090807ULL + node->nasid);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",

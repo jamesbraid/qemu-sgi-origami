@@ -254,6 +254,21 @@ struct SGIHubState {
     /* A slot must not complete inside the write that starts it. */
     QEMUTimer *md_onewire_timer;
 
+    /*
+     * The responder on that wire: the PIMM manufacturing-record part,
+     * DS2505-compatible (the hub one-wire datasheet's settled contract).
+     * The serial is a synthetic per-unit property the machine wires; the
+     * identity is derived from it at realize. The record pages are an
+     * open question and are deliberately not answered.
+     */
+    uint64_t onewire_serial;
+    uint64_t onewire_identity;
+    uint8_t onewire_phase;
+    uint8_t onewire_bit;
+    uint8_t onewire_command;
+    uint64_t onewire_match;
+    bool onewire_level;    /* what the wire sampled in the slot underway */
+
     /* Bring-up UART, off by default: firmware probes it as first console. */
     bool junk_uart_present;
     Chardev *junk_uart_chr;

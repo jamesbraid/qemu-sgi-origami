@@ -686,26 +686,145 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
 }
 
 /*
- * An empty open-drain bus samples one and completes. A deliberate stand-in:
- * when a responder lands, this test changes with it.
+ * The bus carries the PIMM manufacturing-record part (the hub one-wire
+ * datasheet's settled responder contract): a DS2505-compatible responder
+ * whose ROM identity the headless bring-up reads as the remote NIC. The
+ * pulse thresholds and the synthetic serial mirror the model's choices;
+ * the serial expression is the machine's per-node wiring.
  */
-static void test_an_empty_bus_completes_and_reads_one(const void *data)
+#define ONEWIRE_PULSE_RESET   0x321  /* long low: a bus reset */
+#define ONEWIRE_PULSE_SHORT   8      /* a read slot, or writing a one */
+#define ONEWIRE_PULSE_ZERO    60     /* writing a zero */
+#define ONEWIRE_CMD_SEARCH    0xf0
+#define ONEWIRE_FAMILY_DS2505 0x0b
+#define HUB_ONEWIRE_SERIAL(nasid) (0x0c0b0a090807ULL + (nasid))
+
+/* The Dallas CRC-8 over the low bytes, as the public DS2505 sheet has it. */
+static uint8_t onewire_crc8(uint64_t data, unsigned int bytes)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    uint8_t crc = 0;
+    unsigned int i, bit;
+
+    for (i = 0; i < bytes; i++) {
+        crc ^= data & 0xff;
+        data >>= 8;
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+static uint64_t onewire_expected_identity(uint64_t serial)
+{
+    uint64_t identity = ONEWIRE_FAMILY_DS2505 | (serial << 8);
+
+    return identity | ((uint64_t)onewire_crc8(identity, 7) << 56);
+}
+
+/* One bit slot: program the timing, run the slot, return the sampled bit. */
+static uint64_t onewire_slot(QTestState *qts, uint64_t hub,
+                             unsigned int pulse)
+{
     uint64_t after;
 
-    qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
-                 MD_ONEWIRE_RESET | (0x321ULL << 10));
+    qtest_writeq(qts, hub + MD_ONEWIRE,
+                 MD_ONEWIRE_RESET | ((uint64_t)pulse << 10) |
+                 (0x04ULL << 2));
+    qtest_clock_step(qts, 2000);
 
-    /* The slot duration is a model choice, so step generously. */
-    qtest_clock_step(qts, 1000 * 1000);
-
-    after = qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE);
+    after = qtest_readq(qts, hub + MD_ONEWIRE);
     g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, MD_ONEWIRE_DONE);
-    g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, MD_ONEWIRE_RXDATA);
+    return after & MD_ONEWIRE_RXDATA;
+}
 
-    /* The programmed timing is untouched by running a slot. */
-    g_assert_cmphex(after & MD_ONEWIRE_PHASE_HI, ==, 0x31ULL << 27);
+static void onewire_write_bit(QTestState *qts, uint64_t hub, unsigned int bit)
+{
+    onewire_slot(qts, hub, bit ? ONEWIRE_PULSE_SHORT : ONEWIRE_PULSE_ZERO);
+}
+
+/*
+ * The family's search algorithm, as the firmware runs it: each round reads
+ * a ROM bit, reads its complement, then writes the chosen direction back.
+ */
+static uint64_t onewire_search_identity(QTestState *qts, uint64_t hub)
+{
+    uint64_t identity = 0;
+    unsigned int i;
+
+    /* A reset slot: the part pulls the line down, the presence pulse. */
+    g_assert_cmphex(onewire_slot(qts, hub, ONEWIRE_PULSE_RESET), ==, 0);
+
+    for (i = 0; i < 8; i++) {
+        onewire_write_bit(qts, hub, (ONEWIRE_CMD_SEARCH >> i) & 1);
+    }
+
+    for (i = 0; i < 64; i++) {
+        uint64_t bit = onewire_slot(qts, hub, ONEWIRE_PULSE_SHORT);
+        uint64_t complement = onewire_slot(qts, hub, ONEWIRE_PULSE_SHORT);
+
+        /* One part: the complement is always the bit's inverse. */
+        g_assert_cmphex(complement, ==, bit ^ 1);
+        onewire_write_bit(qts, hub, bit);
+        identity |= bit << i;
+    }
+    return identity;
+}
+
+/*
+ * A bus reset answers with a presence pulse; a bit slot outside any
+ * transaction is not driven and samples one. The pre-responder model
+ * sampled one on every slot, reset included, and that absence is what
+ * the firmware reported as an unreadable remote NIC.
+ */
+static void test_a_bus_reset_reports_presence(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    g_assert_cmphex(onewire_slot(qts, HUB_LOCAL, ONEWIRE_PULSE_RESET),
+                    ==, 0);
+    g_assert_cmphex(onewire_slot(qts, HUB_LOCAL, ONEWIRE_PULSE_SHORT),
+                    ==, MD_ONEWIRE_RXDATA);
+
+    /* The programmed timing is untouched by running the slots. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
+                    MD_ONEWIRE_PHASE_HI, ==, 0x31ULL << 27);
+
+    qtest_quit(qts);
+}
+
+/* The search yields the synthetic identity, family and check byte valid. */
+static void test_the_search_reads_a_valid_identity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t identity = onewire_search_identity(qts, HUB_LOCAL);
+
+    g_assert_cmphex(identity & 0xff, ==, ONEWIRE_FAMILY_DS2505);
+    g_assert_cmphex(identity >> 56, ==, onewire_crc8(identity, 7));
+    g_assert_cmphex(identity, ==,
+                    onewire_expected_identity(HUB_ONEWIRE_SERIAL(0)));
+
+    qtest_quit(qts);
+}
+
+/* Per-unit identity: each node's part carries its own serial. */
+static void test_each_hub_carries_its_own_identity(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t node0 = onewire_search_identity(qts, HUB_BY_NODE);
+    uint64_t node1 = onewire_search_identity(qts, HUB_BY_NODE + NODE_STRIDE);
+
+    g_assert_cmphex(node0, ==,
+                    onewire_expected_identity(HUB_ONEWIRE_SERIAL(0)));
+    g_assert_cmphex(node1, ==,
+                    onewire_expected_identity(HUB_ONEWIRE_SERIAL(1)));
+    g_assert_cmphex(node0, !=, node1);
 
     qtest_quit(qts);
 }
@@ -3052,8 +3171,12 @@ int main(int argc, char **argv)
                         test_the_one_wire_master_keeps_its_wide_field);
     qtest_add_data_func("sn0/hub/one-wire-start-is-not-finish", NULL,
                         test_starting_a_slot_does_not_report_it_finished);
-    qtest_add_data_func("sn0/hub/one-wire-empty-bus-reads-one", NULL,
-                        test_an_empty_bus_completes_and_reads_one);
+    qtest_add_data_func("sn0/hub/one-wire-reset-reports-presence", NULL,
+                        test_a_bus_reset_reports_presence);
+    qtest_add_data_func("sn0/hub/one-wire-search-reads-identity", NULL,
+                        test_the_search_reads_a_valid_identity);
+    qtest_add_data_func("sn0/hub/one-wire-identity-is-per-unit", NULL,
+                        test_each_hub_carries_its_own_identity);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
     qtest_add_data_func("sn0/hub/bte-registers-reset-to-zero", NULL,
