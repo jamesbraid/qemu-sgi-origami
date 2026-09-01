@@ -2785,6 +2785,643 @@ static void test_link_up_timer_respects_backend_already_down(void)
     xframe_tx_stop(&t);
 }
 
+/*
+ * ==========================================================================
+ * Device-level protocol-traffic and interrupt-rate tests.
+ *
+ * The xframe carries whatever bytes the guest hands it: no checksum offload,
+ * no segmentation, no header inspection, so a complete Ethernet II / IPv4 /
+ * TCP or UDP frame must cross transmit and receive byte-for-byte -- its L3
+ * (IPv4 header) and L4 (TCP/UDP) checksum fields included. That checksum
+ * pass-through is the exact class of corruption that once bit the IOC3 model,
+ * which overwrote an L4 checksum with a partial value and had slirp silently
+ * drop the frames; these tests prove xframe leaves the fields alone, even a
+ * deliberately wrong one it would have to rewrite if it had any offload.
+ *
+ * The frames use public RFC layouts only (Ethernet II, RFC 791 IPv4, RFC 793
+ * TCP, RFC 768 UDP) with the standard internet checksum, built here rather
+ * than captured. Sizes run from a sub-64-byte padded runt through a full
+ * 1500-MTU frame to the device's XFRAME_MAX_FRAME jumbo maximum.
+ *
+ * The last two tests MEASURE the transmit- and receive-completion interrupt
+ * rate: the model has no interrupt coalescing, so every frame raises its own
+ * completion interrupt. Acking between frames makes each completion a fresh,
+ * countable INTx assertion; the count equals the frame count -- a 1:1
+ * interrupt-to-frame ratio, which quantifies the absence of coalescing.
+ * ==========================================================================
+ */
+
+/*
+ * Guest RAM for the traffic tests: well clear of the transmit/receive scratch
+ * the register tests above use, and spaced for a full XFRAME_MAX_FRAME
+ * (9600-byte) jumbo frame in each buffer.
+ */
+#define TRAFFIC_TXD_PAR    0x03000000u   /* transmit descriptor list */
+#define TRAFFIC_TX_BUF     0x03010000u   /* transmit frame buffer */
+#define TRAFFIC_RX_RING    0x03100000u   /* receive ring base (one page) */
+#define TRAFFIC_RX_BUF     0x03200000u   /* receive frame buffer */
+
+/* Header sizes and the frame max, from the public RFC layouts and the
+ * device's own XFRAME_MAX_FRAME (9600). */
+#define ETH_HDR_LEN            14
+#define IPV4_HDR_LEN          20
+#define TCP_HDR_LEN          20
+#define UDP_HDR_LEN           8
+#define XFRAME_MAX_FRAME_BYTES  9600
+
+/* Where each checksum field sits in the assembled frame -- what the
+ * pass-through assertions read back. IPV4_CSUM at the IPv4 header's bytes
+ * 10-11, TCP_CSUM at the TCP header's bytes 16-17, UDP_CSUM at the UDP
+ * header's bytes 6-7. */
+#define IPV4_CSUM_OFF   (ETH_HDR_LEN + 10)
+#define TCP_CSUM_OFF    (ETH_HDR_LEN + IPV4_HDR_LEN + 16)
+#define UDP_CSUM_OFF    (ETH_HDR_LEN + IPV4_HDR_LEN + 6)
+
+/* How many frames the interrupt-rate tests push back to back. */
+#define TRAFFIC_BURST   64
+
+/* The IPv4 endpoints every built frame uses -- shared so the builder and the
+ * checksum validators agree on the pseudo-header. */
+static const uint8_t traffic_src_ip[4] = { 10, 0, 0, 1 };
+static const uint8_t traffic_dst_ip[4] = { 10, 0, 0, 2 };
+
+/* The remote unicast destination for transmitted frames (transmit does not
+ * filter, so any address serves). */
+static const uint8_t traffic_remote_mac[6] = {
+    0x02, 0x00, 0x53, 0x47, 0x49, 0x02
+};
+
+/*
+ * The internet checksum (RFC 1071): a 16-bit ones-complement sum. _add folds
+ * bytes into a running 32-bit accumulator (big-endian 16-bit words, an odd
+ * trailing byte in the high half); _fold carries the accumulator down and
+ * complements it. A correct field makes the sum over the covered bytes --
+ * that field included -- fold to zero, which the validators below check.
+ */
+static uint32_t frame_csum_add(uint32_t sum, const uint8_t *data, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)data[i] << 8) | data[i + 1];
+    }
+    if (i < len) {
+        sum += (uint32_t)data[i] << 8;
+    }
+    return sum;
+}
+
+static uint16_t frame_csum_fold(uint32_t sum)
+{
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+/* Read a big-endian 16-bit field out of a frame -- the wire order of every
+ * checksum and length field. */
+static uint16_t frame_be16(const uint8_t *frame, size_t off)
+{
+    return ((uint16_t)frame[off] << 8) | frame[off + 1];
+}
+
+/*
+ * Assemble a complete Ethernet II / IPv4 / (TCP|UDP) frame into buf with
+ * correct L3 and L4 checksums, zero-padded to total_len (>= the natural
+ * header+payload length -- the excess is Ethernet padding, as a runt gets).
+ * The payload is a byte ramp so a miscompare points at an offset. proto is
+ * IPPROTO_TCP or IPPROTO_UDP (from netinet/in.h). Returns total_len.
+ */
+static size_t build_ipv4_frame(uint8_t *buf, const uint8_t *dst_mac,
+                               uint8_t proto, size_t payload_len,
+                               size_t total_len)
+{
+    static const uint8_t src_mac[6] = { 0x02, 0x00, 0x53, 0x47, 0x49, 0x01 };
+    size_t l4_hdr = (proto == IPPROTO_TCP) ? TCP_HDR_LEN : UDP_HDR_LEN;
+    size_t l4_total = l4_hdr + payload_len;
+    size_t ip_total = IPV4_HDR_LEN + l4_total;
+    size_t natural = ETH_HDR_LEN + ip_total;
+    uint8_t *ip = buf + ETH_HDR_LEN;
+    uint8_t *l4 = ip + IPV4_HDR_LEN;
+    uint8_t *payload = l4 + l4_hdr;
+    uint8_t pseudo[12];
+    uint16_t csum;
+    uint32_t sum;
+    size_t i;
+
+    g_assert_cmpuint(total_len, >=, natural);
+    memset(buf, 0, total_len);
+
+    /* Ethernet II: destination, source, ethertype IPv4 (0x0800). */
+    memcpy(buf, dst_mac, 6);
+    memcpy(buf + 6, src_mac, 6);
+    buf[12] = 0x08;
+    buf[13] = 0x00;
+
+    /* IPv4 header (RFC 791), checksum field left zero for the sum below. */
+    ip[0] = 0x45;                    /* version 4, IHL 5 (no options) */
+    ip[1] = 0x00;                    /* DSCP/ECN */
+    ip[2] = (uint8_t)(ip_total >> 8);
+    ip[3] = (uint8_t)ip_total;
+    ip[4] = 0x12;                    /* identification */
+    ip[5] = 0x34;
+    ip[6] = 0x40;                    /* flags: don't fragment */
+    ip[7] = 0x00;                    /* fragment offset 0 */
+    ip[8] = 0x40;                    /* TTL 64 */
+    ip[9] = proto;
+    ip[10] = 0x00;                   /* header checksum, filled below */
+    ip[11] = 0x00;
+    memcpy(ip + 12, traffic_src_ip, 4);
+    memcpy(ip + 16, traffic_dst_ip, 4);
+
+    /* Payload byte ramp. */
+    for (i = 0; i < payload_len; i++) {
+        payload[i] = (uint8_t)(0x40 + i);
+    }
+
+    /* L4 header, checksum field left zero for the sum below. */
+    if (proto == IPPROTO_TCP) {
+        l4[0] = 0xc0; l4[1] = 0x00;  /* source port 49152 */
+        l4[2] = 0x00; l4[3] = 0x50;  /* destination port 80 */
+        l4[4] = 0x00; l4[5] = 0x00; l4[6] = 0x00; l4[7] = 0x01;  /* seq */
+        l4[8] = 0x00; l4[9] = 0x00; l4[10] = 0x00; l4[11] = 0x00; /* ack */
+        l4[12] = 0x50;               /* data offset 5 (no options) */
+        l4[13] = 0x18;               /* flags PSH|ACK */
+        l4[14] = 0xff; l4[15] = 0xff; /* window */
+        l4[16] = 0x00; l4[17] = 0x00; /* checksum, filled below */
+        l4[18] = 0x00; l4[19] = 0x00; /* urgent pointer */
+    } else {
+        l4[0] = 0xc0; l4[1] = 0x00;  /* source port 49152 */
+        l4[2] = 0x00; l4[3] = 0x35;  /* destination port 53 */
+        l4[4] = (uint8_t)(l4_total >> 8);
+        l4[5] = (uint8_t)l4_total;
+        l4[6] = 0x00; l4[7] = 0x00;  /* checksum, filled below */
+    }
+
+    /* IPv4 header checksum. */
+    csum = frame_csum_fold(frame_csum_add(0, ip, IPV4_HDR_LEN));
+    ip[10] = (uint8_t)(csum >> 8);
+    ip[11] = (uint8_t)csum;
+
+    /* L4 checksum over the pseudo-header plus the L4 segment. */
+    memcpy(pseudo, traffic_src_ip, 4);
+    memcpy(pseudo + 4, traffic_dst_ip, 4);
+    pseudo[8] = 0x00;
+    pseudo[9] = proto;
+    pseudo[10] = (uint8_t)(l4_total >> 8);
+    pseudo[11] = (uint8_t)l4_total;
+    sum = frame_csum_add(0, pseudo, sizeof(pseudo));
+    sum = frame_csum_add(sum, l4, l4_total);
+    csum = frame_csum_fold(sum);
+    /* A UDP checksum result of zero is transmitted as 0xffff (0 means "none");
+     * these endpoints never produce zero, but honour the rule. */
+    if (proto == IPPROTO_UDP && csum == 0) {
+        csum = 0xffff;
+    }
+    if (proto == IPPROTO_TCP) {
+        l4[16] = (uint8_t)(csum >> 8);
+        l4[17] = (uint8_t)csum;
+    } else {
+        l4[6] = (uint8_t)(csum >> 8);
+        l4[7] = (uint8_t)csum;
+    }
+
+    return total_len;
+}
+
+/* A correct IPv4 header checksum folds the header (its own field included) to
+ * zero. */
+static bool ipv4_checksum_valid(const uint8_t *frame)
+{
+    return frame_csum_fold(frame_csum_add(0, frame + ETH_HDR_LEN,
+                                          IPV4_HDR_LEN)) == 0;
+}
+
+/* A correct L4 checksum folds the pseudo-header plus the whole L4 segment (its
+ * own field included) to zero. l4_total is the L4 header plus payload length. */
+static bool l4_checksum_valid(const uint8_t *frame, uint8_t proto,
+                              size_t l4_total)
+{
+    uint8_t pseudo[12];
+    uint32_t sum;
+
+    memcpy(pseudo, traffic_src_ip, 4);
+    memcpy(pseudo + 4, traffic_dst_ip, 4);
+    pseudo[8] = 0x00;
+    pseudo[9] = proto;
+    pseudo[10] = (uint8_t)(l4_total >> 8);
+    pseudo[11] = (uint8_t)l4_total;
+    sum = frame_csum_add(0, pseudo, sizeof(pseudo));
+    sum = frame_csum_add(sum, frame + ETH_HDR_LEN + IPV4_HDR_LEN, l4_total);
+    return frame_csum_fold(sum) == 0;
+}
+
+/*
+ * Read exactly n bytes from the stream socket, looping over short reads. A
+ * single recv() on a stream socket may return fewer bytes than asked once a
+ * frame is jumbo-sized, unlike the small frames net_socket_recv_frame reads in
+ * one call.
+ */
+static void sock_read_full(int fd, uint8_t *buf, size_t n)
+{
+    size_t off = 0;
+
+    while (off < n) {
+        ssize_t r = recv(fd, buf + off, n - off, 0);
+
+        g_assert_cmpint(r, >, 0);
+        off += (size_t)r;
+    }
+}
+
+/* The length-prefixed socket-backend frame read, robust to short reads (see
+ * sock_read_full) so it can capture a jumbo frame. */
+static size_t traffic_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint8_t hdr[4];
+    size_t len;
+
+    sock_read_full(fd, hdr, sizeof(hdr));
+    len = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) |
+          ((uint32_t)hdr[2] << 8) | hdr[3];
+    g_assert_cmpuint(len, <=, buf_size);
+    sock_read_full(fd, buf, len);
+    return len;
+}
+
+/*
+ * Transmit one frame through a single-segment TxD and return what the device
+ * emitted onto the backend, asserting the descriptor was released.
+ */
+static size_t traffic_tx_capture(XframeTx *t, const uint8_t *frame, size_t len,
+                                 uint8_t *got, size_t got_size)
+{
+    size_t emitted;
+
+    xframe_program_txd(t, TRAFFIC_TXD_PAR, TRAFFIC_TX_BUF, frame, len);
+    xframe_ring_doorbell(t, TRAFFIC_TXD_PAR);
+    emitted = traffic_recv_frame(t->host_fd, got, got_size);
+    g_assert_cmphex(dma_ldq_be(t->qs->qts, TRAFFIC_TXD_PAR) & TXD_OWN, ==, 0);
+    return emitted;
+}
+
+/*
+ * Post one card-owned RxD sized for a jumbo frame, inject the frame, wait for
+ * its completion, and read the deposited bytes back into landed. Asserts the
+ * descriptor completed with XCODE OK and the reported length equals len.
+ */
+static void traffic_rx_capture(XframeTx *t, const uint8_t *frame, size_t len,
+                               uint8_t *landed)
+{
+    xframe_program_rxd(t, TRAFFIC_RX_RING, TRAFFIC_RX_BUF,
+                       XFRAME_MAX_FRAME_BYTES);
+    xframe_rx_ring_arm(t, TRAFFIC_RX_RING);
+
+    net_socket_send_frame(t->host_fd, frame, len);
+    g_assert_true(xframe_wait_rx_traffic(t, 5000));
+
+    g_assert_cmphex(dma_ldq_be(t->qs->qts, TRAFFIC_RX_RING + 8) & RXD_OWN,
+                    ==, 0);
+    g_assert_cmphex((dma_ldq_be(t->qs->qts, TRAFFIC_RX_RING + 8) >>
+                     RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, 0);
+    g_assert_cmphex(dma_ldq_be(t->qs->qts, TRAFFIC_RX_RING + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, len);
+
+    qtest_memread(t->qs->qts, TRAFFIC_RX_BUF, landed, len);
+}
+
+/*
+ * Transmit a complete TCP/IPv4 frame and assert every L2/L3/L4 byte the device
+ * emits is byte-for-byte what was in the buffer, with the L3 and L4 checksum
+ * fields surviving both as the exact bytes built and as valid checksums.
+ */
+static void test_transmit_tcp_frame_byte_exact(void)
+{
+    XframeTx t;
+    uint8_t frame[256];
+    uint8_t got[256];
+    size_t len, emitted;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, 40, 94);
+
+    xframe_tx_start(&t);
+    emitted = traffic_tx_capture(&t, frame, len, got, sizeof(got));
+
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmpmem(got, emitted, frame, len);
+    g_assert_cmphex(frame_be16(got, IPV4_CSUM_OFF), ==,
+                    frame_be16(frame, IPV4_CSUM_OFF));
+    g_assert_cmphex(frame_be16(got, TCP_CSUM_OFF), ==,
+                    frame_be16(frame, TCP_CSUM_OFF));
+    g_assert_true(ipv4_checksum_valid(got));
+    g_assert_true(l4_checksum_valid(got, IPPROTO_TCP, TCP_HDR_LEN + 40));
+
+    xframe_tx_stop(&t);
+}
+
+/* The UDP/IPv4 counterpart of the transmit byte-exact test. */
+static void test_transmit_udp_frame_byte_exact(void)
+{
+    XframeTx t;
+    uint8_t frame[256];
+    uint8_t got[256];
+    size_t len, emitted;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 40, 82);
+
+    xframe_tx_start(&t);
+    emitted = traffic_tx_capture(&t, frame, len, got, sizeof(got));
+
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmpmem(got, emitted, frame, len);
+    g_assert_cmphex(frame_be16(got, IPV4_CSUM_OFF), ==,
+                    frame_be16(frame, IPV4_CSUM_OFF));
+    g_assert_cmphex(frame_be16(got, UDP_CSUM_OFF), ==,
+                    frame_be16(frame, UDP_CSUM_OFF));
+    g_assert_true(ipv4_checksum_valid(got));
+    g_assert_true(l4_checksum_valid(got, IPPROTO_UDP, UDP_HDR_LEN + 40));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Receive a complete TCP/IPv4 frame and assert the DMA'd buffer matches the
+ * injected frame byte-for-byte, checksum fields surviving verbatim and valid.
+ */
+static void test_receive_tcp_frame_byte_exact(void)
+{
+    XframeTx t;
+    uint8_t frame[256];
+    uint8_t landed[256];
+    size_t len;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_TCP, 40, 94);
+
+    xframe_tx_start(&t);
+    traffic_rx_capture(&t, frame, len, landed);
+
+    g_assert_cmpmem(landed, len, frame, len);
+    g_assert_cmphex(frame_be16(landed, IPV4_CSUM_OFF), ==,
+                    frame_be16(frame, IPV4_CSUM_OFF));
+    g_assert_cmphex(frame_be16(landed, TCP_CSUM_OFF), ==,
+                    frame_be16(frame, TCP_CSUM_OFF));
+    g_assert_true(ipv4_checksum_valid(landed));
+    g_assert_true(l4_checksum_valid(landed, IPPROTO_TCP, TCP_HDR_LEN + 40));
+
+    xframe_tx_stop(&t);
+}
+
+/* The UDP/IPv4 counterpart of the receive byte-exact test. */
+static void test_receive_udp_frame_byte_exact(void)
+{
+    XframeTx t;
+    uint8_t frame[256];
+    uint8_t landed[256];
+    size_t len;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_UDP, 40, 82);
+
+    xframe_tx_start(&t);
+    traffic_rx_capture(&t, frame, len, landed);
+
+    g_assert_cmpmem(landed, len, frame, len);
+    g_assert_cmphex(frame_be16(landed, IPV4_CSUM_OFF), ==,
+                    frame_be16(frame, IPV4_CSUM_OFF));
+    g_assert_cmphex(frame_be16(landed, UDP_CSUM_OFF), ==,
+                    frame_be16(frame, UDP_CSUM_OFF));
+    g_assert_true(ipv4_checksum_valid(landed));
+    g_assert_true(l4_checksum_valid(landed, IPPROTO_UDP, UDP_HDR_LEN + 40));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Checksum pass-through on transmit: the device has no offload, so a
+ * deliberately WRONG L3 and L4 checksum must egress unchanged. A device that
+ * recomputed or "corrected" them -- the IOC3 model's bug -- would overwrite
+ * these sentinels; their verbatim survival proves xframe never touches them.
+ */
+static void test_transmit_preserves_checksums_verbatim(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len, emitted;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, 20, 74);
+    /* Corrupt both checksum fields to sentinels no correct checksum equals. */
+    frame[IPV4_CSUM_OFF] = 0xde; frame[IPV4_CSUM_OFF + 1] = 0xad;
+    frame[TCP_CSUM_OFF] = 0xbe; frame[TCP_CSUM_OFF + 1] = 0xef;
+
+    xframe_tx_start(&t);
+    emitted = traffic_tx_capture(&t, frame, len, got, sizeof(got));
+
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmpmem(got, emitted, frame, len);
+    g_assert_cmphex(frame_be16(got, IPV4_CSUM_OFF), ==, 0xdead);
+    g_assert_cmphex(frame_be16(got, TCP_CSUM_OFF), ==, 0xbeef);
+
+    xframe_tx_stop(&t);
+}
+
+/* Checksum pass-through on receive: a deliberately wrong L3/L4 checksum (UDP
+ * here) must land in the buffer unchanged -- no recompute on the receive path
+ * either. */
+static void test_receive_preserves_checksums_verbatim(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t landed[128];
+    size_t len;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_UDP, 20, 62);
+    frame[IPV4_CSUM_OFF] = 0xde; frame[IPV4_CSUM_OFF + 1] = 0xad;
+    frame[UDP_CSUM_OFF] = 0xbe; frame[UDP_CSUM_OFF + 1] = 0xef;
+
+    xframe_tx_start(&t);
+    traffic_rx_capture(&t, frame, len, landed);
+
+    g_assert_cmpmem(landed, len, frame, len);
+    g_assert_cmphex(frame_be16(landed, IPV4_CSUM_OFF), ==, 0xdead);
+    g_assert_cmphex(frame_be16(landed, UDP_CSUM_OFF), ==, 0xbeef);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Frame-size coverage on transmit: a sub-64-byte padded runt, a full 1500-MTU
+ * frame, and the device's XFRAME_MAX_FRAME jumbo maximum must each egress
+ * byte-for-byte. The runt is a small UDP datagram with trailing Ethernet
+ * padding; the larger two are TCP segments filling the size exactly.
+ */
+static void test_transmit_frame_sizes_byte_exact(void)
+{
+    static const struct {
+        size_t total;
+        uint8_t proto;
+        size_t payload;
+    } cases[] = {
+        { 60, IPPROTO_UDP, 4 },          /* sub-64 runt, Ethernet-padded */
+        { 1514, IPPROTO_TCP, 1460 },     /* a full 1500-MTU frame */
+        { XFRAME_MAX_FRAME_BYTES, IPPROTO_TCP,
+          XFRAME_MAX_FRAME_BYTES - ETH_HDR_LEN - IPV4_HDR_LEN - TCP_HDR_LEN },
+    };
+    unsigned c;
+
+    for (c = 0; c < G_N_ELEMENTS(cases); c++) {
+        XframeTx t;
+        uint8_t frame[XFRAME_MAX_FRAME_BYTES];
+        uint8_t got[XFRAME_MAX_FRAME_BYTES];
+        size_t len, emitted;
+
+        len = build_ipv4_frame(frame, traffic_remote_mac, cases[c].proto,
+                               cases[c].payload, cases[c].total);
+
+        xframe_tx_start(&t);
+        emitted = traffic_tx_capture(&t, frame, len, got, sizeof(got));
+        g_assert_cmpint(emitted, ==, (int)cases[c].total);
+        g_assert_cmpmem(got, emitted, frame, cases[c].total);
+        xframe_tx_stop(&t);
+    }
+}
+
+/* The receive counterpart of the frame-size coverage test. */
+static void test_receive_frame_sizes_byte_exact(void)
+{
+    static const struct {
+        size_t total;
+        uint8_t proto;
+        size_t payload;
+    } cases[] = {
+        { 60, IPPROTO_UDP, 4 },
+        { 1514, IPPROTO_TCP, 1460 },
+        { XFRAME_MAX_FRAME_BYTES, IPPROTO_TCP,
+          XFRAME_MAX_FRAME_BYTES - ETH_HDR_LEN - IPV4_HDR_LEN - TCP_HDR_LEN },
+    };
+    unsigned c;
+
+    for (c = 0; c < G_N_ELEMENTS(cases); c++) {
+        XframeTx t;
+        uint8_t frame[XFRAME_MAX_FRAME_BYTES];
+        uint8_t landed[XFRAME_MAX_FRAME_BYTES];
+        size_t len;
+
+        len = build_ipv4_frame(frame, xframe_station_mac, cases[c].proto,
+                               cases[c].payload, cases[c].total);
+
+        xframe_tx_start(&t);
+        traffic_rx_capture(&t, frame, len, landed);
+        g_assert_cmpmem(landed, cases[c].total, frame, cases[c].total);
+        xframe_tx_stop(&t);
+    }
+}
+
+/*
+ * Transmit interrupt rate: push TRAFFIC_BURST frames back to back, acking the
+ * completion after each so the next is a fresh, countable INTx assertion. The
+ * model has no coalescing, so each frame raises its own transmit-completion
+ * interrupt -- the raise count equals the frame count, a 1:1 ratio. A card
+ * that batched completions would raise fewer.
+ */
+static void test_transmit_interrupt_rate_is_one_per_frame(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len;
+    int raises = 0;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, 10, 64);
+
+    xframe_tx_start(&t);
+
+    /* Unmask transmit completion the way the drivers do: general mask 0, the
+     * transmit-traffic block mask 0. */
+    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
+    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    for (i = 0; i < TRAFFIC_BURST; i++) {
+        xframe_program_txd(&t, TRAFFIC_TXD_PAR, TRAFFIC_TX_BUF, frame, len);
+        xframe_ring_doorbell(&t, TRAFFIC_TXD_PAR);
+        g_assert_cmpint(traffic_recv_frame(t.host_fd, got, sizeof(got)),
+                        ==, (int)len);
+
+        /* This frame's completion raised its own interrupt. */
+        if (xframe_intx_asserted(t.dev)) {
+            raises++;
+        }
+        g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                        ==, TX_TRAFFIC_FIFO0);
+
+        /* Ack it so the next frame's completion is a fresh raise. */
+        sock_pif_writeq(&t, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+        g_assert_false(xframe_intx_asserted(t.dev));
+    }
+
+    /* One transmit-completion interrupt per frame: no coalescing (1:1). */
+    g_assert_cmpint(raises, ==, TRAFFIC_BURST);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Receive interrupt rate: post a ring of TRAFFIC_BURST owned descriptors,
+ * inject that many frames one at a time, and ack the receive completion after
+ * each so it is a fresh, countable INTx assertion. As on transmit, the model
+ * raises one receive-completion interrupt per frame -- the raise count equals
+ * the frame count, a 1:1 ratio, quantifying the absence of coalescing. The
+ * descriptors share one buffer: this counts completions, not landed bytes.
+ */
+static void test_receive_interrupt_rate_is_one_per_frame(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    size_t len;
+    int raises = 0;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_UDP, 10, 64);
+
+    xframe_tx_start(&t);
+
+    /* Unmask receive completion on INTx: general mask 0, block mask 0. */
+    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
+    sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
+
+    for (i = 0; i < TRAFFIC_BURST; i++) {
+        xframe_program_rxd(&t, TRAFFIC_RX_RING + (uint64_t)i * RXD_SIZE,
+                           TRAFFIC_RX_BUF, RX_BUF_CAPACITY);
+    }
+    xframe_rx_ring_arm(&t, TRAFFIC_RX_RING);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    for (i = 0; i < TRAFFIC_BURST; i++) {
+        uint64_t slot = TRAFFIC_RX_RING + (uint64_t)i * RXD_SIZE;
+
+        net_socket_send_frame(t.host_fd, frame, len);
+        g_assert_true(xframe_wait_rxd_consumed(&t, slot, 5000));
+
+        /* This frame's completion raised its own interrupt. */
+        if (xframe_intx_asserted(t.dev)) {
+            raises++;
+        }
+        g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                        ==, RX_TRAFFIC_RING0);
+
+        /* Ack it so the next frame's completion is a fresh raise. */
+        sock_pif_writeq(&t, RX_TRAFFIC_INT, RX_TRAFFIC_RING0);
+        g_assert_false(xframe_intx_asserted(t.dev));
+    }
+
+    /* One receive-completion interrupt per frame: no coalescing (1:1). */
+    g_assert_cmpint(raises, ==, TRAFFIC_BURST);
+
+    xframe_tx_stop(&t);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2884,6 +3521,26 @@ int main(int argc, char **argv)
                    test_receive_multicast_allmulti_wildcard);
     qtest_add_func("xframe/receive-unicast-still-matches",
                    test_receive_unicast_still_matches);
+    qtest_add_func("xframe/transmit-tcp-frame-byte-exact",
+                   test_transmit_tcp_frame_byte_exact);
+    qtest_add_func("xframe/transmit-udp-frame-byte-exact",
+                   test_transmit_udp_frame_byte_exact);
+    qtest_add_func("xframe/receive-tcp-frame-byte-exact",
+                   test_receive_tcp_frame_byte_exact);
+    qtest_add_func("xframe/receive-udp-frame-byte-exact",
+                   test_receive_udp_frame_byte_exact);
+    qtest_add_func("xframe/transmit-preserves-checksums-verbatim",
+                   test_transmit_preserves_checksums_verbatim);
+    qtest_add_func("xframe/receive-preserves-checksums-verbatim",
+                   test_receive_preserves_checksums_verbatim);
+    qtest_add_func("xframe/transmit-frame-sizes-byte-exact",
+                   test_transmit_frame_sizes_byte_exact);
+    qtest_add_func("xframe/receive-frame-sizes-byte-exact",
+                   test_receive_frame_sizes_byte_exact);
+    qtest_add_func("xframe/transmit-interrupt-rate-is-one-per-frame",
+                   test_transmit_interrupt_rate_is_one_per_frame);
+    qtest_add_func("xframe/receive-interrupt-rate-is-one-per-frame",
+                   test_receive_interrupt_rate_is_one_per_frame);
 
     return g_test_run();
 }
