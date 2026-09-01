@@ -562,16 +562,63 @@ static void test_arbitration_survives_phase_locked_poll(const void *data)
 }
 
 /*
- * Transacting during one's own hold consumes the slot: the rotation
- * must advance promptly -- the bound here is far below any hold
- * timeout -- and behind a fresh gap, because the next processor's
- * trust check needs to see its signal absent before it appears.
+ * A slot is consumed only by its own processor. Traffic from anyone
+ * else -- on a two-slave node, the neighbor's dialogue on the shared
+ * bus -- or with no processor context at all must leave the hold
+ * standing, or one processor's dialogue starves the other's poll out
+ * of its slot: observed live as cpu3's retries consuming code 2's held
+ * slot before cpu2's poll landed on it. Every qtest access arrives
+ * with no processor context (nothing on a qtest path runs with
+ * current_cpu set), so the transaction below exercises exactly the
+ * not-the-owner case.
  */
-static void test_arbitration_consumed_slot_gaps_before_next(const void *data)
+static void test_arbitration_foreign_traffic_leaves_hold(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len;
+    uint8_t held;
+    bool saw_same = false;
+    int i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    held = arb_wait_for_signal(qts);
+
+    /* Not code 0's processor talking: this transaction owns no slot. */
+    req_len = build_request(req, "ver");
+    elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    /*
+     * The owner's later poll must still find its signal, promptly
+     * re-presented; the ring advancing to code 1 is the theft.
+     */
+    for (i = 0; i < 100; i++) {
+        uint64_t value = read_data(qts);
+
+        if (read_status(qts) & I2C_PCF_BB) {
+            g_assert_cmphex(value, !=, ARB_SIGNAL1 + 1);
+            if (value == held) {
+                saw_same = true;
+                break;
+            }
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+    g_assert_true(saw_same);
+
+    qtest_quit(qts);
+}
+
+/*
+ * When a hold ends -- by timeout here, the only end a qtest can reach,
+ * since no qtest access carries a processor context -- the next code's
+ * signal appears only behind a fresh gap: the next processor's trust
+ * check needs to see its signal absent before it appears.
+ */
+static void test_arbitration_hold_end_gaps_before_next(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
     uint64_t next_signal = 0;
     bool saw_gap = false;
     int i;
@@ -580,11 +627,8 @@ static void test_arbitration_consumed_slot_gaps_before_next(const void *data)
     arb_wait_for_absence(qts);
     arb_wait_for_signal(qts);
 
-    /* Code 0's slot; use it. */
-    req_len = build_request(req, "ver");
-    elsc_transact(qts, req, req_len, resp, sizeof(resp));
-
-    for (i = 0; i < 100; i++) {
+    /* Fine steps across the 10ms hold timeout and the boundary. */
+    for (i = 0; i < 1200; i++) {
         uint64_t value = read_data(qts);
 
         if (read_status(qts) & I2C_PCF_BB) {
@@ -598,7 +642,6 @@ static void test_arbitration_consumed_slot_gaps_before_next(const void *data)
         qtest_clock_step(qts, ARB_STEP_NS);
     }
     g_assert_true(saw_gap);
-    /* Code 1 next: the transaction consumed code 0's slot. */
     g_assert_cmphex(next_signal, ==, ARB_SIGNAL1 + 1);
 
     qtest_quit(qts);
@@ -1129,8 +1172,10 @@ int main(int argc, char **argv)
                         test_arbitration_preserves_staged_start);
     qtest_add_data_func("sn0/elsc/arbitration-survives-phase-locked-poll",
                         NULL, test_arbitration_survives_phase_locked_poll);
-    qtest_add_data_func("sn0/elsc/arbitration-consumed-slot-gaps-before-next",
-                        NULL, test_arbitration_consumed_slot_gaps_before_next);
+    qtest_add_data_func("sn0/elsc/arbitration-foreign-traffic-leaves-hold",
+                        NULL, test_arbitration_foreign_traffic_leaves_hold);
+    qtest_add_data_func("sn0/elsc/arbitration-hold-end-gaps-before-next",
+                        NULL, test_arbitration_hold_end_gaps_before_next);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/two-towers-take-two-aux-backends", NULL,
