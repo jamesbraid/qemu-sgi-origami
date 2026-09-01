@@ -271,6 +271,14 @@ static void test_read_switches_roundtrip(const void *data)
 #define ARB_MAX_STEPS     2000
 #define ARB_HOLD_ASSERT_NS (260 * 1000)  /* past the 250us threshold */
 
+/*
+ * Crossing the rotation: an unanswered position is held up to the 10ms
+ * hold timeout, so hunting one code's signal can take most of an 80.4ms
+ * round. Scan coarsely -- a step this size cannot miss a held signal --
+ * and keep the fine step where a 50us gap must not fall between samples.
+ */
+#define ARB_SCAN_STEP_NS  (100 * 1000)
+
 static uint64_t read_status(QTestState *qts)
 {
     return qtest_readq(qts, HUB_LOCAL + I2C_CTRL);
@@ -317,7 +325,7 @@ static uint8_t arb_wait_for_signal(QTestState *qts)
             (data == ARB_SIGNAL1 || data == ARB_SIGNAL2)) {
             return (uint8_t)data;
         }
-        qtest_clock_step(qts, ARB_STEP_NS);
+        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
     }
     g_assert_not_reached();
     return 0;
@@ -404,7 +412,7 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
         if (observed == 0xe1 || observed == 0xe9) {
             saw_code_1 = true;
         }
-        qtest_clock_step(qts, ARB_STEP_NS);
+        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
     }
 
     g_assert_true(saw_code_0);
@@ -484,6 +492,114 @@ static void test_arbitration_preserves_staged_start(const void *data)
                  CTL_PIN | CTL_ESO | CTL_STO);
     arb_wait_for_absence(qts);
     arb_wait_for_signal(qts);
+
+    qtest_quit(qts);
+}
+
+/* Any code's signal, either half of its pair. */
+static bool arb_is_signal_byte(uint64_t value)
+{
+    return value >= 0xe0 && value <= 0xef;
+}
+
+/*
+ * The adversarial cadence: exactly two positions of a one-shot 350us
+ * rotation (50us gap plus 300us hold), so a poll phase-locked against
+ * such a rotation samples positions of one parity only and never the
+ * code one past the first it observed. 256 polls cover two full rounds
+ * of the held rotation with margin.
+ */
+#define ARB_PHASE_LOCKED_STEP_NS  (700 * 1000)
+#define ARB_PHASE_LOCKED_POLLS    256
+
+/*
+ * A processor polling at a fixed cadence must find its own signal no
+ * matter how that cadence phases against the rotation -- both run on
+ * the same deterministic virtual clock, so an unlucky phase repeats
+ * forever rather than drifting apart as it would on hardware. A signal
+ * presented as a one-shot fails this: the poll below never samples the
+ * target code's slot, which is how a two-node IRIX boot left one
+ * processor waiting for its signal indefinitely. The signal must be
+ * held until answered for every cadence to find it.
+ */
+static void test_arbitration_survives_phase_locked_poll(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t value = 0;
+    unsigned target_code;
+    bool saw_own_signal = false;
+    int i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    /* Sync to the rotation: catch the first presented signal. */
+    for (i = 0; i < ARB_MAX_STEPS; i++) {
+        value = read_data(qts);
+        if ((read_status(qts) & I2C_PCF_BB) && arb_is_signal_byte(value)) {
+            break;
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+    g_assert_true(arb_is_signal_byte(value));
+    /* The low three bits of either signal byte are the processor code. */
+    target_code = ((value & 7) + 1) % 8;
+
+    /* Sample mid-window, away from the presentation instants. */
+    qtest_clock_step(qts, 150 * 1000);
+
+    for (i = 0; i < ARB_PHASE_LOCKED_POLLS; i++) {
+        value = read_data(qts);
+        if ((read_status(qts) & I2C_PCF_BB) && arb_is_signal_byte(value) &&
+            (value & 7) == target_code) {
+            saw_own_signal = true;
+            break;
+        }
+        qtest_clock_step(qts, ARB_PHASE_LOCKED_STEP_NS);
+    }
+    g_assert_true(saw_own_signal);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Transacting during one's own hold consumes the slot: the rotation
+ * must advance promptly -- the bound here is far below any hold
+ * timeout -- and behind a fresh gap, because the next processor's
+ * trust check needs to see its signal absent before it appears.
+ */
+static void test_arbitration_consumed_slot_gaps_before_next(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[8], resp[RESP_CAP];
+    unsigned req_len;
+    uint64_t next_signal = 0;
+    bool saw_gap = false;
+    int i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    /* Code 0's slot; use it. */
+    req_len = build_request(req, "ver");
+    elsc_transact(qts, req, req_len, resp, sizeof(resp));
+
+    for (i = 0; i < 100; i++) {
+        uint64_t value = read_data(qts);
+
+        if (read_status(qts) & I2C_PCF_BB) {
+            if (value == 0) {
+                saw_gap = true;
+            } else if (saw_gap && arb_is_signal_byte(value)) {
+                next_signal = value;
+                break;
+            }
+        }
+        qtest_clock_step(qts, ARB_STEP_NS);
+    }
+    g_assert_true(saw_gap);
+    /* Code 1 next: the transaction consumed code 0's slot. */
+    g_assert_cmphex(next_signal, ==, ARB_SIGNAL1 + 1);
 
     qtest_quit(qts);
 }
@@ -1011,6 +1127,10 @@ int main(int argc, char **argv)
                         NULL, test_arbitration_visits_other_processor_codes);
     qtest_add_data_func("sn0/elsc/arbitration-preserves-staged-start", NULL,
                         test_arbitration_preserves_staged_start);
+    qtest_add_data_func("sn0/elsc/arbitration-survives-phase-locked-poll",
+                        NULL, test_arbitration_survives_phase_locked_poll);
+    qtest_add_data_func("sn0/elsc/arbitration-consumed-slot-gaps-before-next",
+                        NULL, test_arbitration_consumed_slot_gaps_before_next);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/two-towers-take-two-aux-backends", NULL,
