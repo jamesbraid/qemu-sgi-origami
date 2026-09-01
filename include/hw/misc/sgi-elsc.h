@@ -62,6 +62,13 @@ struct SGIElscState {
      * eight codes and only code 0 has a real input queue.
      */
     uint32_t num_cpus;
+    /*
+     * Hub-supplied: the global index of this node's slice A processor,
+     * naming this controller's instance in the arbitration trace. The
+     * code space is global processor indexes, so it also says which
+     * codes are local.
+     */
+    uint32_t cpu_base;
     uint8_t dip_switches;
     uint32_t arb_code;    /* which of the eight codes this cycle presents */
     bool arb_present;    /* the gap has been shown; the signal comes next */

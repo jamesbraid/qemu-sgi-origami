@@ -417,7 +417,8 @@ static void elsc_arb_step(void *opaque)
         bool signal2 = s->arb_code == 0 && s->rx_queue_len > 0;
 
         s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
-        trace_sgi_elsc_arb_step(s->arb_code, s->arb_signal, signal2);
+        trace_sgi_elsc_arb_step(s->cpu_base, s->arb_code, s->arb_signal,
+                                signal2);
         elsc_broadcast(s, s->arb_signal);
     }
     s->arb_present = false;
@@ -553,6 +554,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
 
 static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_UINT32("num-cpus", SGIElscState, num_cpus, 1),
+    DEFINE_PROP_UINT32("cpu-base", SGIElscState, cpu_base, 0),
     DEFINE_PROP_UINT8("dip-switches", SGIElscState, dip_switches, 0),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
