@@ -101,12 +101,17 @@ Two properties of the rotation are contracts, not conveniences:
 
 A presented signal is held until it is answered: the model
 re-broadcasts the byte so that a poll at any cadence finds it, and
-ends the hold when a guest-initiated transaction reaches the bus
-during it -- the slot being used. The model cannot tell which
-processor a transaction came from; it relies on the protocol's own
-rule that a processor transacts only in its own slot. A slot nothing
-answers ends after ten milliseconds, so an absent or silent
-processor cannot stall the ring. The hold exists to remove a race
+ends the hold when the held code's own processor starts a
+transaction during it. The processor is identified by the CPU
+driving the bus at that moment, its global index being the code
+space. The distinction is load-bearing because a node's two
+processors share one bus: consuming on any traffic let one
+processor's dialogue steal its neighbor's held slot before the
+neighbor's poll landed on it. Traffic from any other processor,
+traffic carrying no processor context, and bus occupancy the
+controller cannot attribute all leave the hold standing. A slot its
+processor never answers ends after ten milliseconds, so an absent
+or silent processor cannot stall the ring. The hold exists to remove a race
 the model itself created: the guest's polling loop and the rotation
 run on the same deterministic virtual clock, so a signal presented
 once on a fixed beat could phase-lock with the poll, leaving one

@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-elsc.h"
+#include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -201,12 +202,18 @@ static void elsc_arb_advance(SGIElscState *s);
 static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 {
     /*
-     * A guest-initiated start during a hold is the addressed processor
-     * answering its slot; the rotation moves on. Our own broadcasts
-     * reach this handler too and must not consume the slot they present.
+     * A start from the held code's own processor answers its slot; the
+     * rotation moves on. The code space is the global processor index.
+     * Anyone else's traffic -- the node neighbor's dialogue on the
+     * shared bus, or an access carrying no processor context -- leaves
+     * the hold standing, or on a two-slave node one processor's
+     * dialogue steals the other's slot before its poll lands. Our own
+     * broadcasts reach this handler too and must not consume the slot
+     * they present.
      */
     if ((event == I2C_START_SEND || event == I2C_START_RECV) &&
-        s->arb_held && !s->arb_broadcasting) {
+        s->arb_held && !s->arb_broadcasting &&
+        current_cpu && current_cpu->cpu_index == (int)s->arb_code) {
         elsc_arb_advance(s);
     }
 
@@ -408,10 +415,11 @@ static void elsc_arb_step(void *opaque)
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
 
     if (i2c_bus_busy(s->bus)) {
-        if (s->arb_held) {
-            /* Only a guest holds the bus across time: the slot is in use. */
-            elsc_arb_advance(s);
-        }
+        /*
+         * A transaction is on the wire, and from here its initiator
+         * cannot be told: a held slot stays held -- its own processor's
+         * start or the timeout ends it -- and the rotation just retries.
+         */
         timer_mod(s->arb_timer, now + ELSC_ARB_RETRY_US);
         return;
     }
