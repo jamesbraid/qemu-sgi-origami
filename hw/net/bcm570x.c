@@ -44,6 +44,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/sysbus.h"
@@ -114,6 +115,8 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  */
 #define BCM570X_MISCCTL_CLEAR_INTA      0x00000001u
 #define BCM570X_MISCCTL_MASK_PCI_INTR   0x00000002u
+#define BCM570X_MISCCTL_ENDIAN_BYTESWAP 0x00000004u
+#define BCM570X_MISCCTL_ENDIAN_WORDSWAP 0x00000008u
 
 /*
  * Config 0x70 (PCISTATE) reports the bus and the interrupt line. The chip runs
@@ -129,6 +132,14 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 /* Register-file offsets with modelled behaviour. */
 #define BCM570X_MAC_MODE            0x0400
+/*
+ * MAC address filter slot 0. The chip loads the station address here from the
+ * serial EEPROM at power-on, so a driver may read it back straight from these
+ * registers instead of the SRAM mailbox: the high word holds the first two
+ * address bytes, the low word the remaining four.
+ */
+#define BCM570X_MAC_ADDR_0_HIGH     0x0410
+#define BCM570X_MAC_ADDR_0_LOW      0x0414
 #define BCM570X_HCC_MODE            0x3c00
 #define BCM570X_BUFMGR_MODE         0x4400
 #define BCM570X_MISC_CFG            0x6804
@@ -143,11 +154,11 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 /*
  * The buffer-manager enable bit diverges from the public drivers. tg3 and bge
- * set BUFMGR_MODE.ENABLE and poll for it to stay SET; IRIX tg sets it and polls
- * for it to CLEAR ("TG3_BM_ENA bit did not clear" on timeout), reading the drop
- * as the chip's acknowledgement that the buffer manager has started. So the
- * model self-clears ENABLE -- an enable-request the chip completes at once --
- * while ATTN_ENABLE and the rest of the write persist.
+ * set BUFMGR_MODE.ENABLE and poll for it to stay SET; the IRIX tg driver sets it
+ * and instead polls for it to CLEAR, reading the drop as the chip's
+ * acknowledgement that the buffer manager has started. So the model self-clears
+ * ENABLE -- an enable-request the chip completes at once -- while ATTN_ENABLE and
+ * the rest of the write persist.
  */
 #define BCM570X_BUFMGR_MODE_ENABLE  0x00000002u
 
@@ -217,8 +228,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_TXBD_SIZE           16
 #define BCM570X_TXBD_ADDR_HI        0x00    /* offsets within a tx descriptor */
 #define BCM570X_TXBD_ADDR_LO        0x04
-#define BCM570X_TXBD_LEN            0x08
-#define BCM570X_TXBD_FLAGS          0x0a
+/* len_flags word at 0x08: length in the high 16 bits (0x0a), flags low (0x08). */
+#define BCM570X_TXBD_FLAGS          0x08
+#define BCM570X_TXBD_LEN            0x0a
 #define BCM570X_TXBDFLAG_END        0x0004
 
 /*
@@ -233,8 +245,10 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_HCC_STATUSBLK_ADDR_LO 0x3c3c
 #define BCM570X_STATUS_BLK_SIZE     0x50
 #define BCM570X_STATFLAG_UPDATED    0x00000001u
-#define BCM570X_STATUS_TX_CONS_OFF  16
-#define BCM570X_STATUS_RX_PROD_OFF  18
+/* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
+#define BCM570X_STATUS_RX_PROD_OFF  16
+#define BCM570X_STATUS_TX_CONS_OFF  18
+#define BCM570X_STATUS_TAG_OFF      4
 
 /*
  * The interrupt mailbox. Writing 1 masks the line and acknowledges the pending
@@ -268,10 +282,19 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RXBD_SIZE           32
 #define BCM570X_RXBD_ADDR_HI        0x00    /* offsets within an rx descriptor */
 #define BCM570X_RXBD_ADDR_LO        0x04
-#define BCM570X_RXBD_IDX            0x08
-#define BCM570X_RXBD_LEN            0x0a
-#define BCM570X_RXBD_FLAGS          0x0e
+/*
+ * A completed descriptor packs the ring index and length into one word and the
+ * type and flags into the next, little-endian to match the transmit ring. The
+ * length includes the four-byte FCS the driver strips; the END flag marks the
+ * last descriptor of a frame. The opaque word is copied back from the posted
+ * buffer so the driver maps the frame to the buffer it supplied.
+ */
+#define BCM570X_RXBD_IDX_LEN        0x08    /* ring index (31:16), length (15:0) */
+#define BCM570X_RXBD_TYPE_FLAGS     0x0c    /* type (31:16), flags (15:0) */
+#define BCM570X_RXBD_OPAQUE         0x1c
 #define BCM570X_RXBDFLAG_END        0x0004
+#define BCM570X_ETH_FCS_LEN         4
+#define BCM570X_ETH_MIN_FRAME       60
 
 struct Bcm570xState {
     PCIDevice parent_obj;
@@ -309,6 +332,8 @@ struct Bcm570xState {
      * set; tx_busy above is transient and not migrated, these two are. */
     bool irq_masked;
     bool irq_pending;
+    bool status_kick_done;  /* bring-up status update posted once past enable */
+    uint8_t status_tag;         /* monotonic per status-block update, delivered in the block */
 
     /* The integrated copper PHY, reached through the MI registers. */
     Bcm570xPhyState phy;
@@ -326,12 +351,15 @@ static void bcm570x_regfile_write(Bcm570xState *s, uint32_t off, uint32_t val)
 
 static uint32_t bcm570x_sram_read(Bcm570xState *s, uint32_t off)
 {
-    return s->sram[(off & (BCM570X_SRAM_SIZE - 1)) >> 2];
+    uint32_t o = off & (BCM570X_SRAM_SIZE - 1);
+
+    return s->sram[o >> 2];
 }
 
 static void bcm570x_sram_write(Bcm570xState *s, uint32_t off, uint32_t val)
 {
     off &= (BCM570X_SRAM_SIZE - 1);
+
     /*
      * The firmware mailbox stands in for the on-chip bootcode: it reads
      * back the one's-complement of whatever was last written, so the
@@ -388,20 +416,24 @@ static void bcm570x_update_irq(Bcm570xState *s)
 }
 
 /*
- * Present the station address in the SRAM mailbox the driver reads first, with
- * the tag in the high half of 0x0C14. The on-chip bootcode leaves it there, so
- * every reset re-populates it.
+ * Present the station address the two ways a driver may read it at attach: the
+ * SRAM mailbox at 0x0C14, tagged 0x484B in its high half, which bge_attach
+ * reads first; and MAC address filter slot 0, which the chip loads from the
+ * serial EEPROM at power-on and a driver may read straight from. The on-chip
+ * bootcode owns both, so every reset re-populates them.
  */
-static void bcm570x_load_mac_mailbox(Bcm570xState *s)
+static void bcm570x_load_station_address(Bcm570xState *s)
 {
     const uint8_t *m = s->conf.macaddr.a;
+    uint32_t hi = ((uint32_t)m[0] << 8) | m[1];
+    uint32_t lo = ((uint32_t)m[2] << 24) | ((uint32_t)m[3] << 16) |
+                  ((uint32_t)m[4] << 8) | m[5];
 
     bcm570x_sram_write(s, BCM570X_SRAM_MAC_HI,
-                       ((uint32_t)BCM570X_MAC_TAG << 16) |
-                       ((uint32_t)m[0] << 8) | m[1]);
-    bcm570x_sram_write(s, BCM570X_SRAM_MAC_LO,
-                       ((uint32_t)m[2] << 24) | ((uint32_t)m[3] << 16) |
-                       ((uint32_t)m[4] << 8) | m[5]);
+                       ((uint32_t)BCM570X_MAC_TAG << 16) | hi);
+    bcm570x_sram_write(s, BCM570X_SRAM_MAC_LO, lo);
+    bcm570x_regfile_write(s, BCM570X_MAC_ADDR_0_HIGH, hi);
+    bcm570x_regfile_write(s, BCM570X_MAC_ADDR_0_LOW, lo);
 }
 
 /*
@@ -426,9 +458,134 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->rx_std_cons = 0;
     s->irq_masked = true;
     s->irq_pending = false;
+    s->status_kick_done = false;
+    s->status_tag = 0;
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_MAGIC);
-    bcm570x_load_mac_mailbox(s);
+    bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
+}
+
+/*
+ * The driver word-swaps its register/SRAM host-address writes for the
+ * big-endian host via ENDIAN_WORDSWAP; honour it at composition so the two
+ * 32-bit halves form the intended 64-bit DMA address (datasheet "Byte order").
+ */
+static uint64_t bcm570x_compose_hostaddr(Bcm570xState *s, uint32_t hi,
+                                         uint32_t lo)
+{
+    uint32_t misc = pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL);
+
+    if (misc & BCM570X_MISCCTL_ENDIAN_WORDSWAP) {
+        return ((uint64_t)lo << 32) | hi;
+    }
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/*
+ * Frame payloads cross the DMA the same way descriptors do: the big-endian
+ * driver turns on the chip's MISC_CTL byte and word endian swap so it can lay
+ * integers down little-endian, and a payload written that way is byte-reversed
+ * per 32-bit word on the wire unless the chip swaps it back. Descriptors read
+ * back correct because they go through ldl_le_p; a payload is a byte stream, so
+ * the swap must be applied here. The swap reverses whole 32-bit words at their
+ * physical alignment, not the frame's, so a buffer at the driver's two-byte
+ * IP-alignment offset reverses across the same word boundaries the chip uses.
+ */
+static void bcm570x_swap_span(uint8_t *p, unsigned int span,
+                              bool bswap, bool wswap)
+{
+    unsigned int i;
+
+    for (i = 0; i + 4 <= span; i += 4) {
+        uint8_t *w = p + i;
+        uint8_t t;
+
+        if (bswap) {
+            t = w[0]; w[0] = w[1]; w[1] = t;
+            t = w[2]; w[2] = w[3]; w[3] = t;
+        }
+        if (wswap) {
+            t = w[0]; w[0] = w[2]; w[2] = t;
+            t = w[1]; w[1] = w[3]; w[3] = t;
+        }
+    }
+}
+
+static bool bcm570x_frame_swap(Bcm570xState *s, bool *bswap, bool *wswap)
+{
+    uint32_t misc = pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL);
+
+    /*
+     * The driver's big-endian setup reverses whole 32-bit DMA words: descriptors
+     * come back right because ldl_le_p reverses them, and a payload byte stream
+     * needs the same full reversal here. The word-swap enable is the driver's
+     * signal that the swap is on; when it is, reverse each word (byte and word
+     * swap together).
+     */
+    *bswap = (misc & BCM570X_MISCCTL_ENDIAN_WORDSWAP) != 0;
+    *wswap = *bswap;
+    return *bswap;
+}
+
+/*
+ * Read a frame fragment from host memory, undoing the chip's data swap. The
+ * swap reverses whole 32-bit words at their physical alignment, so read the
+ * word-aligned span the fragment falls in, swap it, and take the fragment out.
+ */
+static void bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
+                                   uint64_t phys, uint8_t *dst, unsigned int len)
+{
+    bool bswap, wswap;
+    uint64_t astart;
+    unsigned int lead, span;
+    uint8_t tmp[BCM570X_MAX_FRAME + 8];
+
+    if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
+        pci_dma_read(pci, phys, dst, len);
+        return;
+    }
+    astart = phys & ~(uint64_t)3;
+    lead = (unsigned int)(phys - astart);
+    span = (lead + len + 3) & ~3u;
+    if (span > sizeof(tmp)) {
+        pci_dma_read(pci, phys, dst, len);
+        return;
+    }
+    pci_dma_read(pci, astart, tmp, span);
+    bcm570x_swap_span(tmp, span, bswap, wswap);
+    memcpy(dst, tmp + lead, len);
+}
+
+/*
+ * Write a frame to host memory in the swapped layout the driver expects, the
+ * inverse of the read path. The word-aligned span is reversed whole, so the
+ * padding around the fragment is written too; it lands outside the frame the
+ * driver reads and is harmless.
+ */
+static void bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
+                                    uint64_t phys, const uint8_t *src,
+                                    unsigned int len)
+{
+    bool bswap, wswap;
+    uint64_t astart;
+    unsigned int lead, span;
+    uint8_t tmp[BCM570X_MAX_FRAME + 8];
+
+    if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
+        pci_dma_write(pci, phys, src, len);
+        return;
+    }
+    astart = phys & ~(uint64_t)3;
+    lead = (unsigned int)(phys - astart);
+    span = (lead + len + 3) & ~3u;
+    if (span > sizeof(tmp)) {
+        pci_dma_write(pci, phys, src, len);
+        return;
+    }
+    memset(tmp, 0, span);
+    memcpy(tmp + lead, src, len);
+    bcm570x_swap_span(tmp, span, bswap, wswap);
+    pci_dma_write(pci, astart, tmp, span);
 }
 
 /*
@@ -442,9 +599,11 @@ static void bcm570x_global_reset(Bcm570xState *s)
  * DEVICE_LITTLE_ENDIAN register file. The device makes no assumption about the
  * host bridge: a little-endian host reads the block back directly, while on a
  * big-endian host any byte-swap correction is the host bridge's concern, not
- * this device's. The MODE_CTL DMA-swap and MISC_CTL word-swap controls the
- * driver programs are accepted and stored for read-back; the model's DMA is
- * byte-addressed, so each byte-swap layer is modelled once and never doubled.
+ * this device's. The MODE_CTL DMA-swap control is accepted and stored for
+ * read-back; the MISC_CTL word-swap the driver sets is honoured where it
+ * matters -- composing the 64-bit host addresses (bcm570x_compose_hostaddr).
+ * The model's DMA is byte-addressed, so each swap layer is modelled once and
+ * never doubled.
  */
 static void bcm570x_dma_status_block(Bcm570xState *s)
 {
@@ -456,22 +615,42 @@ static void bcm570x_dma_status_block(Bcm570xState *s)
         return;
     }
 
-    base = ((uint64_t)bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_HI)
-            << 32) | bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_LO);
+    base = bcm570x_compose_hostaddr(s,
+               bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_HI),
+               bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_LO));
 
     memset(blk, 0, sizeof(blk));
+    s->status_tag++;
     stl_le_p(blk, BCM570X_STATFLAG_UPDATED);
+    stl_le_p(blk + BCM570X_STATUS_TAG_OFF, s->status_tag);
     stw_le_p(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
     stw_le_p(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
     pci_dma_write(pci, base, blk, sizeof(blk));
 
     /*
-     * The block now carries work the driver has not taken; latch it and let the
-     * line assert if interrupts are unmasked. Reached only past the enable gate
-     * above, so a disabled host-coalescing block raises no interrupt either.
+     * The block now carries an update the driver has not taken. The line asserts
+     * while that pending latch is set and interrupts are unmasked, and drops when
+     * the driver acknowledges by writing the interrupt mailbox. The monotonic tag
+     * is delivered in the block for the driver's own use, not to gate the line.
+     * Reached only past the enable gate above, so a disabled host-coalescing
+     * block raises no interrupt either.
      */
     s->irq_pending = true;
     bcm570x_update_irq(s);
+}
+
+/*
+ * Release peer-queued receive frames from a bottom half. Posting a standard-
+ * ring buffer makes the engine ready to receive, but flushing synchronously
+ * from the mailbox write re-enters the receive path inside the driver's own
+ * interrupt handler and re-asserts the status block, which the handler then
+ * re-polls without bound. Deferring the flush lets the handler finish first.
+ */
+static void bcm570x_rx_flush(void *opaque)
+{
+    Bcm570xState *s = opaque;
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
 /*
@@ -500,6 +679,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     uint8_t frame[BCM570X_MAX_FRAME];
     unsigned int frame_len = 0;
     unsigned int walked = 0;
+    bool frame_dropped = false;
 
     if (ring_len == 0 || prod >= ring_len) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -511,10 +691,11 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         return;
     }
 
-    ring_base = ((uint64_t)bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
-                                             BCM570X_RCB_HOSTADDR_HI) << 32) |
-                bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
-                                  BCM570X_RCB_HOSTADDR_LO);
+    ring_base = bcm570x_compose_hostaddr(s,
+                    bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
+                                      BCM570X_RCB_HOSTADDR_HI),
+                    bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
+                                      BCM570X_RCB_HOSTADDR_LO));
 
     s->tx_busy = true;
     while (s->tx_cons != prod && walked < ring_len) {
@@ -529,21 +710,28 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         len = lduw_le_p(bd + BCM570X_TXBD_LEN);
         flags = lduw_le_p(bd + BCM570X_TXBD_FLAGS);
 
-        if (frame_len + len <= sizeof(frame)) {
-            pci_dma_read(pci, buf_addr, frame + frame_len, len);
+        if (!frame_dropped && frame_len + len <= sizeof(frame)) {
+            bcm570x_frame_dma_read(pci, s, buf_addr, frame + frame_len, len);
             frame_len += len;
-        } else {
+        } else if (!frame_dropped) {
+            /*
+             * The frame overran the buffer. Drop the whole frame -- stay in the
+             * dropping state across the remaining fragments so a later fragment
+             * is not mistaken for a fresh, in-range packet -- and resume at the
+             * next END.
+             */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "bcm570x: transmit frame exceeds %u bytes, dropped\n",
                           (unsigned int)sizeof(frame));
-            frame_len = 0;
+            frame_dropped = true;
         }
 
         if (flags & BCM570X_TXBDFLAG_END) {
-            if (frame_len) {
+            if (!frame_dropped && frame_len) {
                 qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
             }
             frame_len = 0;
+            frame_dropped = false;
         }
 
         s->tx_cons = (s->tx_cons + 1) % ring_len;
@@ -586,14 +774,18 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         break;
     case BCM570X_MBX_IRQ0_LO:
         /*
-         * The interrupt mask. Writing 1 masks and acknowledges: it drops the
-         * line and clears the pending latch, so re-enabling does not re-fire on
-         * an update already taken. Writing 0 re-enables, and a later update
-         * re-asserts. The driver reads completions from the status block, not
-         * this register, so the stored value is only for read-back.
+         * The interrupt mailbox. Bit 0 masks the line, and writing 0 to re-enable
+         * is the acknowledgement: the IRIX driver takes the update from the status
+         * block and writes 0 here, which clears the pending latch so the line
+         * drops and re-asserts only on the next update. The line is a level, so a
+         * write that does not clear the latch keeps it asserted -- clearing on the
+         * mask write instead was tried and stormed at runtime, because the
+         * driver's runtime acknowledgement is the write-0 with no preceding mask.
+         * Completions are read from the status block, not here, so the rest of the
+         * value is only for read-back.
          */
         s->irq_masked = (val & 1) != 0;
-        if (val & 1) {
+        if (!(val & 1)) {
             s->irq_pending = false;
         }
         bcm570x_regfile_write(s, off, val);
@@ -616,8 +808,32 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             return;
         }
         bcm570x_regfile_write(s, off, val);
-        /* A newly posted buffer may release a frame the peer had queued. */
-        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        /*
+         * Bring-up completes with the driver enabling the engines, unmasking
+         * interrupts, and posting receive buffers; only then does it wait for
+         * the host-coalescing engine's first status-block DMA and interrupt
+         * before declaring the interface running. With no traffic the runtime
+         * status paths (transmit doorbell, received frame) never fire, so post
+         * one status update here, on the first standard-ring doorbell past the
+         * enable. One shot suffices; the runtime paths carry it afterwards.
+         * (Gating this on the host-coalescing enable was tried and hung bring-up:
+         * the driver's enable and first doorbell do not straddle it the way that
+         * guard assumed.)
+         */
+        if (!s->status_kick_done) {
+            bcm570x_dma_status_block(s);
+            s->status_kick_done = true;
+        }
+        /*
+         * A newly posted buffer may release a frame the peer had queued, but
+         * deliver it from a bottom half rather than synchronously here. A
+         * synchronous receive would re-enter the receive path and re-DMA the
+         * status block -- re-asserting its "updated" bit -- while the driver is
+         * still inside its interrupt handler, which then re-polls that bit
+         * without bound and never returns (the observed bring-up hang). The BH
+         * lets the handler finish and take the buffer on the next interrupt.
+         */
+        aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
         return;
     }
     case BCM570X_MBX_RX_CONS0_LO: {
@@ -673,14 +889,22 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
  */
 static uint32_t bcm570x_reg_read(Bcm570xState *s, uint32_t off)
 {
-    switch (off & (BCM570X_REG_FILE_SIZE - 1)) {
+    uint32_t o = off & (BCM570X_REG_FILE_SIZE - 1);
+    uint32_t val;
+
+    switch (o) {
     case BCM570X_MI_STS:
-        return bcm570x_phy_link_up(&s->phy) ? BCM570X_MISTS_LINK : 0;
+        val = bcm570x_phy_link_up(&s->phy) ? BCM570X_MISTS_LINK : 0;
+        break;
     case BCM570X_FW_PROGRESS:
-        return BCM570X_FW_PROGRESS_INIT;
+        val = BCM570X_FW_PROGRESS_INIT;
+        break;
     default:
-        return bcm570x_regfile_read(s, off);
+        val = bcm570x_regfile_read(s, off);
+        break;
     }
+
+    return val;
 }
 
 /* SRAM offset the BAR0 window at 0x8000 exposes for a given BAR address. */
@@ -831,7 +1055,9 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
 
 static bool bcm570x_can_receive(NetClientState *nc)
 {
-    return bcm570x_rx_ready(qemu_get_nic_opaque(nc));
+    Bcm570xState *s = qemu_get_nic_opaque(nc);
+
+    return bcm570x_rx_ready(s);
 }
 
 /*
@@ -876,7 +1102,9 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint64_t std_base, ret_base, buf_addr;
     uint8_t std_bd[BCM570X_RXBD_SIZE];
     uint8_t ret_bd[BCM570X_RXBD_SIZE];
+    uint8_t padded[BCM570X_ETH_MIN_FRAME];
     unsigned int idx;
+    uint32_t framelen;
 
     if (!bcm570x_rx_ready(s)) {
         return 0;
@@ -888,12 +1116,27 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         size = BCM570X_MAX_FRAME;
     }
 
-    std_base = ((uint64_t)bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI)
-                << 32) | bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO);
-    ret_base = ((uint64_t)bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
-                                            BCM570X_RCB_HOSTADDR_HI) << 32) |
-               bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
-                                 BCM570X_RCB_HOSTADDR_LO);
+    /*
+     * Pad a short frame to the 60-byte Ethernet minimum. A frame on the wire is
+     * padded by its sender, but a host backend can hand us a runt, and the
+     * driver rejects a descriptor whose length falls below the minimum.
+     */
+    framelen = size;
+    if (framelen < BCM570X_ETH_MIN_FRAME) {
+        memcpy(padded, buf, framelen);
+        memset(padded + framelen, 0, BCM570X_ETH_MIN_FRAME - framelen);
+        buf = padded;
+        framelen = BCM570X_ETH_MIN_FRAME;
+    }
+
+    std_base = bcm570x_compose_hostaddr(s,
+                   bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
+                   bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO));
+    ret_base = bcm570x_compose_hostaddr(s,
+                   bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                                     BCM570X_RCB_HOSTADDR_HI),
+                   bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
+                                     BCM570X_RCB_HOSTADDR_LO));
     idx = s->rx_std_cons;
 
     /* The posted buffer's host address, from the standard-ring descriptor. */
@@ -902,15 +1145,18 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     buf_addr = ((uint64_t)ldl_le_p(std_bd + BCM570X_RXBD_ADDR_HI) << 32) |
                ldl_le_p(std_bd + BCM570X_RXBD_ADDR_LO);
 
-    pci_dma_write(pci, buf_addr, buf, size);
+    bcm570x_frame_dma_write(pci, s, buf_addr, buf, framelen);
 
-    /* The completed descriptor into the return ring, native little-endian. */
+    /* The completed descriptor into the return ring, little-endian. */
     memset(ret_bd, 0, sizeof(ret_bd));
     stl_le_p(ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
     stl_le_p(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
-    stw_le_p(ret_bd + BCM570X_RXBD_IDX, idx);
-    stw_le_p(ret_bd + BCM570X_RXBD_LEN, size);
-    stw_le_p(ret_bd + BCM570X_RXBD_FLAGS, BCM570X_RXBDFLAG_END);
+    stl_le_p(ret_bd + BCM570X_RXBD_IDX_LEN,
+             ((uint32_t)idx << 16) | ((framelen + BCM570X_ETH_FCS_LEN) & 0xffff));
+    stl_le_p(ret_bd + BCM570X_RXBD_TYPE_FLAGS, BCM570X_RXBDFLAG_END);
+    stl_le_p(ret_bd + BCM570X_RXBD_OPAQUE,
+             ldl_le_p(std_bd + BCM570X_RXBD_OPAQUE));
+
     pci_dma_write(pci, ret_base + (uint64_t)s->status_rx_prod *
                   BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
 
@@ -1080,7 +1326,9 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->tx_busy = false;
     s->irq_masked = true;
     s->irq_pending = false;
-    bcm570x_load_mac_mailbox(s);
+    s->status_kick_done = false;
+    s->status_tag = 0;
+    bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
 }
 
@@ -1099,7 +1347,7 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -1114,6 +1362,8 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16(rx_std_cons, Bcm570xState),
         VMSTATE_BOOL_V(irq_masked, Bcm570xState, 2),
         VMSTATE_BOOL_V(irq_pending, Bcm570xState, 2),
+        VMSTATE_BOOL_V(status_kick_done, Bcm570xState, 3),
+        VMSTATE_UINT8_V(status_tag, Bcm570xState, 3),
         VMSTATE_END_OF_LIST()
     }
 };
