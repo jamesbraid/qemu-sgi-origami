@@ -272,10 +272,11 @@ static void test_read_switches_roundtrip(const void *data)
 #define ARB_HOLD_ASSERT_NS (260 * 1000)  /* past the 250us threshold */
 
 /*
- * Crossing the rotation: every position is held for its full 10ms
- * slot, so hunting one code's signal can take most of an 80.4ms
- * round. Scan coarsely -- a step this size cannot miss a held signal --
- * and keep the fine step where a 50us gap must not fall between samples.
+ * Crossing the rotation: every position is held for a slot of at
+ * least 10ms, so hunting one code's signal can take most of a round
+ * (up to 88.2ms with the varying slot lengths). Scan coarsely -- a
+ * step this size cannot miss a held signal -- and keep the fine step
+ * where a 50us gap must not fall between samples.
  */
 #define ARB_SCAN_STEP_NS  (100 * 1000)
 
@@ -624,8 +625,8 @@ static void test_arbitration_hold_end_gaps_before_next(const void *data)
     arb_wait_for_absence(qts);
     arb_wait_for_signal(qts);
 
-    /* Fine steps across the 10ms slot and its end. */
-    for (i = 0; i < 1200; i++) {
+    /* Fine steps across the longest slot and its end. */
+    for (i = 0; i < 1400; i++) {
         uint64_t value = read_data(qts);
 
         if (read_status(qts) & I2C_PCF_BB) {
@@ -640,6 +641,98 @@ static void test_arbitration_hold_end_gaps_before_next(const void *data)
     }
     g_assert_true(saw_gap);
     g_assert_cmphex(next_signal, ==, ARB_SIGNAL1 + 1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The commensurate trap the varying slot lengths exist to break: a
+ * sampler whose period exactly matches a metronomic ring reads the
+ * same slot at the same phase forever -- observed live as a poll
+ * returning one code on 22 consecutive traps while a passive read of
+ * the same register cycled through all eight. Slot lengths vary per
+ * (code, revolution), so a sampler at the old constant ring period
+ * slips 5.0-7.8ms per revolution against the ring; every slot spans
+ * at least 10ms, so the drifting phase cannot step over a slot and
+ * visits every code within one wrap -- at most 18 samples. 64 give
+ * threefold margin.
+ */
+#define ARB_METRONOME_STEP_NS   (80400 * 1000)
+#define ARB_METRONOME_SAMPLES   64
+
+static void test_arbitration_defeats_ring_period_sampler(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    bool saw_code_2 = false;
+    int i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_wait_for_absence(qts);
+    arb_wait_for_signal(qts);
+
+    /* A phase deep inside code 0's slot in every revolution. */
+    qtest_clock_step(qts, 5000 * 1000);
+
+    for (i = 0; i < ARB_METRONOME_SAMPLES; i++) {
+        uint64_t value = read_data(qts);
+
+        if ((read_status(qts) & I2C_PCF_BB) && value == 0xe2) {
+            saw_code_2 = true;
+            break;
+        }
+        qtest_clock_step(qts, ARB_METRONOME_STEP_NS);
+    }
+    g_assert_true(saw_code_2);
+
+    qtest_quit(qts);
+}
+
+/* Base slot minus the walk's 10us sampling grain, asserted held. */
+#define ARB_SLOT_HELD_ASSERT_NS  (9900 * 1000)
+
+/*
+ * One revolution walked code by code: after each 50us gap the next
+ * code's signal appears and stands at least the base slot. The
+ * protocol is a multi-code handshake -- the accept path loops back
+ * into the poll -- so a guest must be able to observe the codes in
+ * sequence, not merely find its own eventually.
+ */
+static void test_arbitration_walks_all_codes_full_slots(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int code;
+    int i;
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    /* The rotation begins with code 0's gap; the register reads 0. */
+    g_assert_cmphex(read_data(qts), ==, 0);
+
+    for (code = 0; code < 8; code++) {
+        uint64_t value = 0;
+
+        /* Leave the gap: the next signal begins within 50us. */
+        for (i = 0; i < 200; i++) {
+            value = read_data(qts);
+            if (value != 0) {
+                break;
+            }
+            qtest_clock_step(qts, ARB_STEP_NS);
+        }
+        g_assert_true(arb_is_signal_byte(value));
+        g_assert_cmpuint(value & 7, ==, code);
+
+        arb_assert_held(qts, (uint8_t)value, ARB_SLOT_HELD_ASSERT_NS);
+
+        /* Step out the slot's remainder to the next gap. */
+        for (i = 0; i < 400; i++) {
+            if (read_data(qts) == 0) {
+                break;
+            }
+            qtest_clock_step(qts, ARB_STEP_NS);
+        }
+        g_assert_cmphex(read_data(qts), ==, 0);
+    }
 
     qtest_quit(qts);
 }
@@ -1173,6 +1266,10 @@ int main(int argc, char **argv)
                         NULL, test_arbitration_foreign_traffic_leaves_hold);
     qtest_add_data_func("sn0/elsc/arbitration-hold-end-gaps-before-next",
                         NULL, test_arbitration_hold_end_gaps_before_next);
+    qtest_add_data_func("sn0/elsc/arbitration-defeats-ring-period-sampler",
+                        NULL, test_arbitration_defeats_ring_period_sampler);
+    qtest_add_data_func("sn0/elsc/arbitration-walks-all-codes-full-slots",
+                        NULL, test_arbitration_walks_all_codes_full_slots);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/two-towers-take-two-aux-backends", NULL,

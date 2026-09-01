@@ -99,31 +99,40 @@ Two properties of the rotation are contracts, not conveniences:
   tells the driver a ``get`` will find something; the driver never
   issues ``get`` without having seen it.
 
-Each signal is held for a fixed ten-millisecond slot, re-broadcast
-throughout so that a poll at any cadence finds it, then withdrawn
-behind a fresh gap as the rotation moves to the next code. The
-rotation is purely timer-driven: no bus traffic ends a hold early.
-The model deliberately does not model a processor answering its
-slot, because on the bus a waiting processor's periodic command
+Each signal is held for a slot of at least ten milliseconds,
+re-broadcast throughout so that a poll at any cadence finds it, then
+withdrawn behind a fresh gap as the rotation moves to the next code.
+The rotation is purely timer-driven: no bus traffic ends a hold
+early. The model deliberately does not model a processor answering
+its slot, because on the bus a waiting processor's periodic command
 retries are indistinguishable from its answer -- ending the hold on
 them withdrew a signal microseconds after each presentation, before
-the waiting processor's own poll could sample it. The hold itself
-exists to remove a race the model created: the guest's polling loop
-and the rotation run on the same deterministic virtual clock, so a
-signal presented once on a fixed beat could phase-lock with the
-poll, leaving one processor never sampling its own slot -- on
-hardware the two clocks drift, in the model an unlucky phase
-repeats forever.
+the waiting processor's own poll could sample it.
+
+Slot lengths vary, from ten to eleven point six milliseconds, as a
+fixed function of the code and a revolution counter. Both the hold
+and the variation exist to remove races the model itself created:
+guest polling loops and the rotation run on the one deterministic
+virtual clock, so a signal presented once on a fixed beat could
+phase-lock with a poll and leave a processor never sampling its own
+slot, and even held slots on a metronomic ring let a polling loop
+whose period is commensurate with the ring read the same slot at
+the same phase on every revolution -- observed as a poll pinned to
+one code while the rotation ran beneath it. On hardware the
+controller's and the processors' oscillators are unsynchronized and
+drift; the varying slot length models that non-synchronization with
+a pure function of model state, so record/replay and migration stay
+exact where real drift would not.
 
 The model's timing values are choices, not measurements: the gap
 need only be observable by a polling guest, a held signal stands
 far past the 250 microsecond threshold the datasheet specifies, and
-the ten millisecond slot only needs to be impossible for a
+the roughly ten millisecond slots only need to be impossible for a
 plausible polling cadence to miss while keeping the full eight-code
-round well inside the deadlines the polling firmware applies. Whether the real
-controller holds a signal until acknowledged, and how it paces its
-rotation, is unobserved; settling it would take bus traces from a
-real machine. When the bus is busy with a real transaction the
+round well inside the deadlines the polling firmware applies.
+Whether the real controller holds a signal until acknowledged, and
+how it paces its rotation, is unobserved; settling it would take
+bus traces from a real machine. When the bus is busy with a real transaction the
 rotation defers by short retry rather than through the I2C core's
 pending-master queue, because the PCF8584 model drives transactions
 directly and never calls ``i2c_bus_release()``.

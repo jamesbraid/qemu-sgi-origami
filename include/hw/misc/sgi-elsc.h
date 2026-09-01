@@ -71,6 +71,7 @@ struct SGIElscState {
     uint32_t cpu_base;
     uint8_t dip_switches;
     uint32_t arb_code;    /* which of the eight codes this cycle presents */
+    uint32_t arb_rev;    /* full rotations completed; varies the slot lengths */
     bool arb_present;    /* the gap has been shown; the signal comes next */
     bool arb_held;       /* the signal is on the wire, held for its processor */
     uint8_t arb_signal;  /* the held byte, latched when the hold begins */
