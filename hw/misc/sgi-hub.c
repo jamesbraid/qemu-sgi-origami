@@ -171,10 +171,14 @@
  * headless bring-up reads as the remote NIC. The pulse thresholds sorting a
  * slot into reset, zero or one are the same model choices the Bridge's
  * master uses one level down; the vendor firmware drives both through one
- * abstraction. Family code 0Bh and the ROM shape -- family, 48-bit serial,
- * CRC-8 over the seven bytes, least-significant bit first -- are the public
- * DS2505 datasheet's. The record pages' contents are an open question, so
- * memory functions are deliberately not answered.
+ * abstraction. Family code 0Bh, the ROM shape -- family, 48-bit serial,
+ * CRC-8 over the seven bytes, least-significant bit first -- the memory
+ * geometry and the read commands' CRC16 framing are the public DS2505
+ * datasheet's. The memory reads serve an unprogrammed part: every byte
+ * 0xff, a redirection byte of 0xff meaning no redirection by the part's
+ * own definition. What the record bytes should say is an open question,
+ * and a blank part states nothing; the programming commands are not
+ * answered.
  */
 #define MD_ONEWIRE_PULSE_IS_RESET  400
 #define MD_ONEWIRE_PULSE_IS_ZERO   40
@@ -187,12 +191,28 @@
 #define MD_ONEWIRE_CMD_MATCH_ROM   0x55
 #define MD_ONEWIRE_CMD_SKIP_ROM    0xcc
 
+#define MD_ONEWIRE_CMD_READ_MEMORY   0xf0
+#define MD_ONEWIRE_CMD_READ_STATUS   0xaa
+#define MD_ONEWIRE_CMD_READ_EXTENDED 0xa5
+
+#define MD_ONEWIRE_PAGE_SIZE       32
+#define MD_ONEWIRE_DATA_SIZE       0x800  /* 64 pages of 32 bytes */
+/* A wider address has its high bits zeroed, failing the master's CRC. */
+#define MD_ONEWIRE_ADDR_MASK       (MD_ONEWIRE_DATA_SIZE - 1)
+#define MD_ONEWIRE_STATUS_PAGE     8
+#define MD_ONEWIRE_STATUS_LAST     0x13f
+#define MD_ONEWIRE_BLANK           0xff
+
 enum {
     MD_ONEWIRE_PHASE_IDLE,      /* nothing asked since the last bus reset */
     MD_ONEWIRE_PHASE_COMMAND,   /* taking the eight bits of a rom command */
     MD_ONEWIRE_PHASE_SEARCH,    /* answering a search for parts */
     MD_ONEWIRE_PHASE_MATCH,     /* taking the identity a guest is naming */
     MD_ONEWIRE_PHASE_FUNCTION,  /* selected; taking a memory function */
+    MD_ONEWIRE_PHASE_OFFSET,    /* taking a read command's address bytes */
+    MD_ONEWIRE_PHASE_STATUS,    /* serving status pages, CRC16 per page */
+    MD_ONEWIRE_PHASE_READ,      /* streaming data memory to its end */
+    MD_ONEWIRE_PHASE_EXTENDED,  /* serving redirection and page chunks */
 };
 #define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
 #define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
@@ -1223,6 +1243,129 @@ static uint64_t sgi_hub_onewire_rom_id(uint64_t serial)
     return identity | ((uint64_t)crc << 56);
 }
 
+/* The part transmits each CRC16 inverted; the master checks a residue. */
+static uint16_t sgi_hub_onewire_crc16(uint16_t crc, const uint8_t *data,
+                                      unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * One 8-byte status page of the blank part, with its CRC16; only the
+ * first page's check also covers the request, the part's asymmetry.
+ */
+static void sgi_hub_onewire_status_page(SGIHubState *s, bool first)
+{
+    unsigned int end = s->onewire_cursor | (MD_ONEWIRE_STATUS_PAGE - 1);
+    uint16_t crc = 0;
+    unsigned int n = 0;
+
+    while (s->onewire_cursor + n <= end) {
+        s->onewire_out[n++] = MD_ONEWIRE_BLANK;
+    }
+    if (first) {
+        uint8_t request[3] = { MD_ONEWIRE_CMD_READ_STATUS,
+                               s->onewire_args[0], s->onewire_args[1] };
+
+        crc = sgi_hub_onewire_crc16(0, request, sizeof(request));
+    }
+    crc = ~sgi_hub_onewire_crc16(crc, s->onewire_out, n);
+    s->onewire_out[n++] = crc & 0xff;
+    s->onewire_out[n++] = crc >> 8;
+    s->onewire_cursor = end + 1;
+    s->onewire_outlen = n;
+    s->onewire_outbit = 0;
+}
+
+/* Past the end of the status field the part goes quiet. */
+static void sgi_hub_onewire_status_answer(SGIHubState *s)
+{
+    s->onewire_cursor = s->onewire_args[0] | (s->onewire_args[1] << 8);
+    if (s->onewire_cursor > MD_ONEWIRE_STATUS_LAST) {
+        s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+        return;
+    }
+    sgi_hub_onewire_status_page(s, true);
+    s->onewire_phase = MD_ONEWIRE_PHASE_STATUS;
+}
+
+/*
+ * A plain read streams to the end of the data field, then a CRC16 of
+ * command, address and everything served; precomputed since every data
+ * byte is the blank 0xff.
+ */
+static void sgi_hub_onewire_read_answer(SGIHubState *s)
+{
+    uint8_t request[3] = { MD_ONEWIRE_CMD_READ_MEMORY,
+                           s->onewire_args[0], s->onewire_args[1] };
+    uint16_t crc = sgi_hub_onewire_crc16(0, request, sizeof(request));
+    unsigned int i;
+
+    s->onewire_cursor = (s->onewire_args[0] | (s->onewire_args[1] << 8)) &
+                        MD_ONEWIRE_ADDR_MASK;
+    for (i = s->onewire_cursor; i < MD_ONEWIRE_DATA_SIZE; i++) {
+        static const uint8_t blank = MD_ONEWIRE_BLANK;
+
+        crc = sgi_hub_onewire_crc16(crc, &blank, 1);
+    }
+    crc = ~crc;
+    s->onewire_end[0] = crc & 0xff;
+    s->onewire_end[1] = crc >> 8;
+    s->onewire_outbit = 0;
+    s->onewire_phase = MD_ONEWIRE_PHASE_READ;
+}
+
+/* An extended read's redirection chunk: 0xff, no redirection, blank. */
+static void sgi_hub_onewire_extended_redirection(SGIHubState *s, bool first)
+{
+    uint16_t crc = 0;
+    unsigned int n = 0;
+
+    s->onewire_out[n++] = MD_ONEWIRE_BLANK;
+    if (first) {
+        uint8_t request[4] = { MD_ONEWIRE_CMD_READ_EXTENDED,
+                               s->onewire_args[0], s->onewire_args[1],
+                               MD_ONEWIRE_BLANK };
+
+        crc = sgi_hub_onewire_crc16(0, request, sizeof(request));
+    } else {
+        crc = sgi_hub_onewire_crc16(0, s->onewire_out, 1);
+    }
+    crc = ~crc;
+    s->onewire_out[n++] = crc & 0xff;
+    s->onewire_out[n++] = crc >> 8;
+    s->onewire_outlen = n;
+    s->onewire_outbit = 0;
+    s->onewire_extended_data = false;
+}
+
+/* The rest of the addressed page, then a CRC16 of those bytes alone. */
+static void sgi_hub_onewire_extended_page(SGIHubState *s)
+{
+    unsigned int end = s->onewire_cursor | (MD_ONEWIRE_PAGE_SIZE - 1);
+    uint16_t crc;
+    unsigned int n = 0;
+
+    while (s->onewire_cursor + n <= end) {
+        s->onewire_out[n++] = MD_ONEWIRE_BLANK;
+    }
+    crc = ~sgi_hub_onewire_crc16(0, s->onewire_out, n);
+    s->onewire_out[n++] = crc & 0xff;
+    s->onewire_out[n++] = crc >> 8;
+    s->onewire_cursor = end + 1;
+    s->onewire_outlen = n;
+    s->onewire_outbit = 0;
+    s->onewire_extended_data = true;
+}
+
 /*
  * One slot against the responder: sort the pulse into reset, zero or one,
  * step the part's phase, and return the level the wire samples. Outside a
@@ -1320,18 +1463,87 @@ static bool sgi_hub_onewire_respond(SGIHubState *s, unsigned int pulse)
         }
         if (++s->onewire_bit == 8) {
             s->onewire_bit = 0;
-            /*
-             * The record pages' contents are the datasheet's open
-             * question; answering them would invent a manufacturing
-             * record, so the part goes silent instead -- the loud
-             * failure the datasheet's standing rule prefers.
-             */
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-hub: one-wire memory function 0x%02x is not "
-                          "answered by the PIMM record part; its record "
-                          "pages are an open question\n",
-                          s->onewire_command);
-            s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+            switch (s->onewire_command) {
+            case MD_ONEWIRE_CMD_READ_MEMORY:
+            case MD_ONEWIRE_CMD_READ_STATUS:
+            case MD_ONEWIRE_CMD_READ_EXTENDED:
+                s->onewire_argn = 0;
+                s->onewire_args[0] = 0;
+                s->onewire_args[1] = 0;
+                s->onewire_phase = MD_ONEWIRE_PHASE_OFFSET;
+                break;
+            default:
+                /* Programming needs a voltage this model does not carry. */
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-hub: one-wire memory function 0x%02x is "
+                              "not answered by the PIMM record part\n",
+                              s->onewire_command);
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+                break;
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_OFFSET:
+        /* Two bytes of starting address, low first, one slot per bit. */
+        if (pulse < MD_ONEWIRE_PULSE_IS_ZERO) {
+            s->onewire_args[s->onewire_argn] |= 1u << s->onewire_bit;
+        }
+        if (++s->onewire_bit == 8) {
+            s->onewire_bit = 0;
+            if (++s->onewire_argn == 2) {
+                if (s->onewire_command == MD_ONEWIRE_CMD_READ_STATUS) {
+                    sgi_hub_onewire_status_answer(s);
+                } else if (s->onewire_command == MD_ONEWIRE_CMD_READ_MEMORY) {
+                    sgi_hub_onewire_read_answer(s);
+                } else {
+                    s->onewire_cursor =
+                        (s->onewire_args[0] | (s->onewire_args[1] << 8)) &
+                        MD_ONEWIRE_ADDR_MASK;
+                    sgi_hub_onewire_extended_redirection(s, true);
+                    s->onewire_phase = MD_ONEWIRE_PHASE_EXTENDED;
+                }
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_STATUS:
+        /* Page after page, each with its check pair, until the end. */
+        level = (s->onewire_out[s->onewire_outbit / 8] >>
+                 (s->onewire_outbit % 8)) & 1;
+        if (++s->onewire_outbit == s->onewire_outlen * 8u) {
+            if (s->onewire_cursor > MD_ONEWIRE_STATUS_LAST) {
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+            } else {
+                sgi_hub_onewire_status_page(s, false);
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_READ:
+        /* The stream to the end of data memory, then the check pair. */
+        {
+            unsigned int at = s->onewire_cursor + s->onewire_outbit / 8;
+            uint8_t byte = at < MD_ONEWIRE_DATA_SIZE
+                           ? MD_ONEWIRE_BLANK
+                           : s->onewire_end[at - MD_ONEWIRE_DATA_SIZE];
+
+            level = (byte >> (s->onewire_outbit % 8)) & 1;
+            if (++s->onewire_outbit ==
+                (MD_ONEWIRE_DATA_SIZE + 2 - s->onewire_cursor) * 8u) {
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+            }
+        }
+        break;
+    case MD_ONEWIRE_PHASE_EXTENDED:
+        /* Redirection chunk, page chunk, next page, to the data's end. */
+        level = (s->onewire_out[s->onewire_outbit / 8] >>
+                 (s->onewire_outbit % 8)) & 1;
+        if (++s->onewire_outbit == s->onewire_outlen * 8u) {
+            if (!s->onewire_extended_data) {
+                sgi_hub_onewire_extended_page(s);
+            } else if (s->onewire_cursor >= MD_ONEWIRE_DATA_SIZE) {
+                s->onewire_phase = MD_ONEWIRE_PHASE_IDLE;
+            } else {
+                sgi_hub_onewire_extended_redirection(s, false);
+            }
         }
         break;
     default:
@@ -2762,6 +2974,13 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->onewire_command = 0;
     s->onewire_match = 0;
     s->onewire_level = true;
+    s->onewire_args[0] = 0;
+    s->onewire_args[1] = 0;
+    s->onewire_argn = 0;
+    s->onewire_outbit = 0;
+    s->onewire_outlen = 0;
+    s->onewire_cursor = 0;
+    s->onewire_extended_data = false;
 
     /*
      * Entries reset to zero with the windows enabled: a guest calls a zero
@@ -3070,6 +3289,14 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT8_V(onewire_command, SGIHubState, 23),
         VMSTATE_UINT64_V(onewire_match, SGIHubState, 23),
         VMSTATE_BOOL_V(onewire_level, SGIHubState, 23),
+        VMSTATE_UINT8_ARRAY_V(onewire_args, SGIHubState, 2, 23),
+        VMSTATE_UINT8_V(onewire_argn, SGIHubState, 23),
+        VMSTATE_UINT8_ARRAY_V(onewire_out, SGIHubState, 40, 23),
+        VMSTATE_UINT16_V(onewire_outbit, SGIHubState, 23),
+        VMSTATE_UINT8_V(onewire_outlen, SGIHubState, 23),
+        VMSTATE_UINT16_V(onewire_cursor, SGIHubState, 23),
+        VMSTATE_UINT8_ARRAY_V(onewire_end, SGIHubState, 2, 23),
+        VMSTATE_BOOL_V(onewire_extended_data, SGIHubState, 23),
         VMSTATE_END_OF_LIST()
     }
 };

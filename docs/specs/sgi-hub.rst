@@ -240,12 +240,18 @@ datasheet's family code and its CRC-8 check byte over family and
 serial. The 48-bit serial is a synthetic per-unit value the machine
 wires per node; a real machine's serial must never be copied. The
 pulse-width thresholds sorting a slot into reset, zero or one are
-the same model choices the Bridge's one-wire master uses. What the
-part's memory pages say is still an open question, so the memory
-functions behind a select are deliberately not answered -- the part
-goes silent and the line samples one -- rather than inventing a
-manufacturing record the guest would parse into this machine's
-serial number.
+the same model choices the Bridge's one-wire master uses. The
+memory reads -- plain, status and extended, with the public part
+specification's geometry and CRC16 framing, sixty-four 32-byte data
+pages and a status field ending at 0x13f -- serve an unprogrammed
+part: every byte reads 0xff behind a correct check pair, and a
+redirection byte of 0xff means no redirection by the part's own
+definition, so a blank part invents nothing. What the
+manufacturing-record bytes should say is still an open question --
+the record's key names are not established -- so the part stays
+blank rather than carrying an invented record the guest would parse
+into this machine's serial number; the programming commands are not
+answered.
 
 The PCF8584 is mapped as a subregion of the Hub's own register region
 at higher priority, so both of the machine's mappings of the window
