@@ -46,6 +46,7 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
@@ -243,6 +244,8 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_HCC_MODE_ENABLE     0x00000002u
 #define BCM570X_HCC_STATUSBLK_ADDR_HI 0x3c38
 #define BCM570X_HCC_STATUSBLK_ADDR_LO 0x3c3c
+#define BCM570X_HCC_RX_COAL_TICKS   0x3c08  /* receive coalescing tick budget */
+#define BCM570X_HCC_RX_MAX_COAL_BDS 0x3c10  /* receive coalescing frame count */
 #define BCM570X_STATUS_BLK_SIZE     0x50
 #define BCM570X_STATFLAG_UPDATED    0x00000001u
 /* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
@@ -334,6 +337,12 @@ struct Bcm570xState {
     bool irq_pending;
     bool status_kick_done;  /* bring-up status update posted once past enable */
     uint8_t status_tag;         /* monotonic per status-block update, delivered in the block */
+
+    /* Receive interrupt coalescing: frames accepted since the last status-block
+     * DMA, and the timer that flushes a partial group so the tail of a burst is
+     * never stranded past the driver's programmed tick budget. */
+    uint16_t rx_coal_pending;
+    QEMUTimer coal_timer;
 
     /* The integrated copper PHY, reached through the MI registers. */
     Bcm570xPhyState phy;
@@ -637,6 +646,52 @@ static void bcm570x_dma_status_block(Bcm570xState *s)
      */
     s->irq_pending = true;
     bcm570x_update_irq(s);
+}
+
+/* The driver programs the receive coalescing tick budget in microseconds. */
+#define BCM570X_COAL_TICK_NS 1000
+
+/*
+ * Flush a coalesced receive group: report every frame accumulated since the last
+ * update through one status-block DMA and interrupt, and disarm the tick timer.
+ * The status block always carries the current receive producer, so one update
+ * tells the driver about the whole group.
+ */
+static void bcm570x_rx_coal_flush(Bcm570xState *s)
+{
+    if (s->rx_coal_pending == 0) {
+        return;
+    }
+    s->rx_coal_pending = 0;
+    timer_del(&s->coal_timer);
+    bcm570x_dma_status_block(s);
+}
+
+static void bcm570x_coal_timer(void *opaque)
+{
+    bcm570x_rx_coal_flush(opaque);
+}
+
+/*
+ * A received frame reached its buffer. Batch its status-block update the way the
+ * host-coalescing block does: raise one interrupt per RX_MAX_COAL_BDS frames
+ * (0x3c10) instead of one per frame, and arm the RX_COAL_TICKS (0x3c08) timer so
+ * a partial final group still flushes within the driver's tick budget. A
+ * max-BDs of zero or one is the un-coalesced case the model shipped with -- one
+ * update per frame -- so a driver that programs neither register is unchanged.
+ */
+static void bcm570x_rx_coalesce(Bcm570xState *s)
+{
+    uint32_t max_bds = bcm570x_regfile_read(s, BCM570X_HCC_RX_MAX_COAL_BDS);
+    uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
+
+    s->rx_coal_pending++;
+    if (max_bds <= 1 || s->rx_coal_pending >= max_bds) {
+        bcm570x_rx_coal_flush(s);
+    } else if (ticks != 0 && !timer_pending(&s->coal_timer)) {
+        timer_mod(&s->coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  (int64_t)ticks * BCM570X_COAL_TICK_NS);
+    }
 }
 
 /*
@@ -1163,7 +1218,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     s->rx_std_cons = (s->rx_std_cons + 1) % std_len;
     s->status_rx_prod = (s->status_rx_prod + 1) % ret_len;
 
-    bcm570x_dma_status_block(s);
+    bcm570x_rx_coalesce(s);
     return size;
 }
 
@@ -1328,6 +1383,8 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->irq_pending = false;
     s->status_kick_done = false;
     s->status_tag = 0;
+    s->rx_coal_pending = 0;
+    timer_del(&s->coal_timer);
     bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
 }
@@ -1341,13 +1398,23 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
  */
 static int bcm570x_post_load(void *opaque, int version_id)
 {
-    bcm570x_update_irq(opaque);
+    Bcm570xState *s = opaque;
+
+    bcm570x_update_irq(s);
+    /*
+     * A partial coalescing group can cross a migration; flush it on the
+     * destination so its frames are not stranded waiting for a status update the
+     * source would have delivered from its now-gone tick timer.
+     */
+    if (s->rx_coal_pending != 0) {
+        timer_mod(&s->coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -1364,6 +1431,7 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_BOOL_V(irq_pending, Bcm570xState, 2),
         VMSTATE_BOOL_V(status_kick_done, Bcm570xState, 3),
         VMSTATE_UINT8_V(status_tag, Bcm570xState, 3),
+        VMSTATE_UINT16_V(rx_coal_pending, Bcm570xState, 4),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1386,6 +1454,7 @@ static void bcm570x_init(Object *obj)
     Bcm570xState *s = BCM570X(obj);
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
+    timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_coal_timer, s);
 }
 
 static void bcm570x_class_init(ObjectClass *oc, const void *data)
