@@ -106,6 +106,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_CMD_CODE_PROMISC_ENB 0x01
 #define TI_MHC_CLEARINT     0x00000002
 #define TI_MHC_MASK_INTS    0x00000040
+#define TI_BDFLAG_TCP_UDP_CKSUM 0x0001
 #define TI_BDFLAG_END       0x0004
 #define TI_BDFLAG_UCAST_PKT 0x0020
 #define TI_BDFLAG_BCAST_PKT 0x0060
@@ -564,6 +565,95 @@ static void test_transmit(const void *data)
 }
 
 /*
+ * A 60-byte IPv4 TCP SYN with its TCP checksum field left zero, the way IRIX's
+ * eg hands a checksum-offloaded segment to the card. Offsets: ethernet 0..13,
+ * IP header 14..33 (protocol 6, total length 40), TCP header 34..53 (checksum
+ * at 50..51), then ethernet padding to the 60-byte minimum.
+ */
+static const uint8_t tcp_csum_frame[60] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x99,      /* dest = a peer unicast */
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* source = our MAC */
+    0x08, 0x00,                              /* ethertype IP */
+    0x45, 0x00, 0x00, 0x28,                  /* v4, IHL 5, total length 40 */
+    0x00, 0x00, 0x40, 0x00,                  /* id 0, flags DF */
+    0x40, 0x06, 0x00, 0x00,                  /* ttl 64, proto TCP, ip cksum 0 */
+    0x0a, 0x00, 0x02, 0x0f,                  /* src 10.0.2.15 */
+    0x0a, 0x00, 0x02, 0x02,                  /* dst 10.0.2.2 */
+    0x13, 0x89, 0x13, 0x8a,                  /* src port 5001, dst 5002 */
+    0x00, 0x00, 0x00, 0x01,                  /* seq */
+    0x00, 0x00, 0x00, 0x00,                  /* ack */
+    0x50, 0x02, 0x20, 0x00,                  /* data offset 5, SYN, window */
+    0x00, 0x00, 0x00, 0x00,                  /* TCP checksum 0, urgent 0 */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,      /* padding to 60 bytes */
+};
+
+/*
+ * Fold the ones-complement sum over the TCP pseudo-header and the 20-byte TCP
+ * header as the frame stands. A correct TCP checksum makes this 0xffff; a zero
+ * checksum field makes it the complement of the real checksum instead.
+ */
+static uint16_t tcp_csum_fold(const uint8_t *f)
+{
+    uint32_t sum = 0;
+    int i;
+
+    sum += (f[26] << 8) | f[27];   /* src ip high */
+    sum += (f[28] << 8) | f[29];   /* src ip low */
+    sum += (f[30] << 8) | f[31];   /* dst ip high */
+    sum += (f[32] << 8) | f[33];   /* dst ip low */
+    sum += f[23];                  /* protocol (pseudo-header zero byte + it) */
+    sum += 20;                     /* TCP length */
+    for (i = 34; i < 54; i += 2) {
+        sum += (f[i] << 8) | f[i + 1];
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)sum;
+}
+
+/*
+ * Transmit checksum offload: a descriptor flagged TI_BDFLAG_TCP_UDP_CKSUM asks
+ * the card to fill the L4 checksum the driver left zero. Without it every TCP
+ * segment leaves with a zero checksum and no peer accepts it -- the reason an
+ * eg TCP handshake never completes though UDP (optional checksum) survives.
+ */
+static void test_transmit_checksum_offload(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[2048];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* The frame carries a zero TCP checksum; the offload flag asks for it. */
+    qtest_memwrite(qts, TX_BUF_PHYS, tcp_csum_frame, sizeof(tcp_csum_frame));
+    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(tcp_csum_frame) << 16) |
+                 TI_BDFLAG_END | TI_BDFLAG_TCP_UDP_CKSUM);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(tcp_csum_frame));
+
+    /* The card filled the checksum in, and it verifies. */
+    g_assert_cmpuint((got[50] << 8) | got[51], !=, 0);
+    g_assert_cmphex(tcp_csum_fold(got), ==, 0xffff);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * A real dst/src/ethertype frame, 61 bytes -- not a multiple of 4 -- so the
  * transmit-payload golden test below exercises the trailing partial word as
  * well as the plain aligned words.
@@ -681,6 +771,89 @@ static const uint8_t rx_frame_other[64] = {
     0x08, 0x00,
     0x99, 0x98, 0x97, 0x96,
 };
+
+/*
+ * A frame flagged for checksum offload need not be the IPv4 packet the flag
+ * claims: the guest composes the bytes. A header length below the 20-byte
+ * minimum underflows the checksum helper's remaining-length arithmetic and
+ * walks off the end of the frame, so the card must refuse to offload it and
+ * send the frame as it stands.
+ */
+static void test_transmit_checksum_rejects_malformed(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[60];
+    uint8_t got[2048];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* An IPv4 frame claiming header length 0 and a huge total length. */
+    memcpy(frame, tcp_csum_frame, sizeof(frame));
+    frame[14] = 0x40;               /* version 4, header length 0 */
+    frame[16] = 0xff;               /* total length 65535 */
+    frame[17] = 0xff;
+
+    qtest_memwrite(qts, TX_BUF_PHYS, frame, sizeof(frame));
+    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(frame) << 16) |
+                 TI_BDFLAG_END | TI_BDFLAG_TCP_UDP_CKSUM);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    /* The frame goes out untouched rather than being parsed as IPv4. */
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The same guard for a frame that is not IP at all: an ARP frame flagged for
+ * offload must be sent as it stands, not parsed through the IPv4 path because
+ * its first payload byte happens to look like a version nibble.
+ */
+static void test_transmit_checksum_ignores_non_ip(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[2048];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* test_frame is ARP (ethertype 0x0806), flagged for offload anyway. */
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) |
+                 TI_BDFLAG_END | TI_BDFLAG_TCP_UDP_CKSUM);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(test_frame));
+    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
 
 static void test_receive(const void *data)
 {
@@ -1250,6 +1423,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/transmit-checksum-offload", NULL,
+                        test_transmit_checksum_offload);
+    qtest_add_data_func("/sn0/tigon/transmit-checksum-rejects-malformed", NULL,
+                        test_transmit_checksum_rejects_malformed);
+    qtest_add_data_func("/sn0/tigon/transmit-checksum-ignores-non-ip", NULL,
+                        test_transmit_checksum_ignores_non_ip);
     qtest_add_data_func("/sn0/tigon/transmit-direct-map-transparent", NULL,
                         test_transmit_direct_map_transparent);
     qtest_add_data_func("/sn0/tigon/transmit-direct-map-corrects", NULL,

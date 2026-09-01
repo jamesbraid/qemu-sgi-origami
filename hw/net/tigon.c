@@ -26,6 +26,7 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
+#include "net/checksum.h"
 
 #define TIGON_PCI_VENDOR_ID     0x10a9   /* Silicon Graphics */
 #define TIGON_PCI_DEVICE_ID     0x0009   /* SGI Tigon */
@@ -113,6 +114,8 @@
 #define TI_RCB_FLAG_HOST_RING   0x0040
 
 /* Buffer-descriptor flags and type (if_tireg.h). */
+#define TI_BDFLAG_TCP_UDP_CKSUM 0x0001  /* insert the L4 checksum on transmit */
+#define TI_BDFLAG_IP_CKSUM      0x0002  /* insert the IP header checksum */
 #define TI_BDFLAG_END           0x0004
 #define TI_BDFLAG_UCAST_PKT     0x0020
 #define TI_BDFLAG_MCAST_PKT     0x0040
@@ -498,10 +501,49 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
  * path is not modelled. The producer index is reduced into range so an
  * out-of-range mailbox write cannot make the walk loop forever.
  */
+/*
+ * Whether a frame is safe to hand to net_checksum_calculate(). The guest
+ * composes these bytes, so a frame flagged for offload need not be the IPv4
+ * packet the flag claims. The helper reads the IP header length and the IP
+ * total length and trusts both against the buffer it was given: a header
+ * length below the 20-byte minimum underflows its remaining-length arithmetic
+ * and walks off the end of the frame. Check here, at the point where the
+ * guest's bytes enter, that the frame really is IPv4 and that its own two
+ * lengths fit inside it.
+ */
+static bool tigon_frame_offloadable(const uint8_t *frame, uint32_t len)
+{
+    static const uint32_t eth_hdr_len = 14;
+    uint32_t ihl, ip_len;
+
+    /* Ethernet header plus the smallest possible IPv4 header. */
+    if (len < eth_hdr_len + 20) {
+        return false;
+    }
+    /* Only IPv4 is offloaded: anything else is not the packet claimed. */
+    if (frame[12] != 0x08 || frame[13] != 0x00) {
+        return false;
+    }
+    if ((frame[eth_hdr_len] >> 4) != 4) {
+        return false;
+    }
+
+    ihl = (frame[eth_hdr_len] & 0x0f) * 4;
+    ip_len = ((uint32_t)frame[eth_hdr_len + 2] << 8) | frame[eth_hdr_len + 3];
+
+    /* The header must be at least the minimum and fit inside the packet, */
+    if (ihl < 20 || ip_len < ihl) {
+        return false;
+    }
+    /* and the packet must fit inside the frame the card is sending. */
+    return eth_hdr_len + ip_len <= len;
+}
+
 static void tigon_tx(TigonState *s, uint32_t prod)
 {
     uint8_t frame[TIGON_MAX_FRAME_SIZE];
     uint32_t frame_len = 0;
+    uint16_t frame_cksum = 0;   /* checksum-offload flags across the frame */
 
     if (!s->firmware_up) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -534,11 +576,33 @@ static void tigon_tx(TigonState *s, uint32_t prod)
         /* Payload undoes the same Bridge byte-lane swap the descriptors do. */
         tigon_dma_read_frame(s, buf, frame + frame_len, len);
         frame_len += len;
+        frame_cksum |= flags & (TI_BDFLAG_TCP_UDP_CKSUM | TI_BDFLAG_IP_CKSUM);
         s->tx_considx = (s->tx_considx + 1) % TI_TX_RING_CNT;
 
         if (flags & TI_BDFLAG_END) {
+            /*
+             * Checksum offload: IRIX's eg hands transmit frames with the L4
+             * (and optionally IP) checksum field left zero and asks the card
+             * to fill it via these descriptor flags. Compute it here, as the
+             * firmware would -- without it every TCP segment leaves with a
+             * zero checksum and the peer drops it (UDP's optional checksum
+             * happens to survive, which is why a UDP transfer worked but TCP
+             * never completed a handshake). Same offload the on-board IOC3
+             * honours in hw/net/sgi-ioc3-eth.c.
+             */
+            int csum = 0;
+            if (frame_cksum & TI_BDFLAG_TCP_UDP_CKSUM) {
+                csum |= CSUM_TCP | CSUM_UDP;
+            }
+            if (frame_cksum & TI_BDFLAG_IP_CKSUM) {
+                csum |= CSUM_IP;
+            }
+            if (csum && tigon_frame_offloadable(frame, frame_len)) {
+                net_checksum_calculate(frame, frame_len, csum);
+            }
             qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
             frame_len = 0;
+            frame_cksum = 0;
         }
     }
 
