@@ -47,7 +47,10 @@ endianness order-preservingly: an eight-byte access through a
 little-endian region served by four-byte handlers recomposes to the
 same bytes as one eight-byte cycle. A transposition observed in
 practice is a device placing its two 32-bit halves at the wrong
-offsets, not the core's split. (Widening is still sometimes required
+offsets, or a hand-rolled split choosing the wrong half order (the
+Bridge's device-window doubleword did exactly that: for a big-endian
+device the lower-offset word is the high half) -- never the core's
+split. A split the core can do should be left to the core. (Widening is still sometimes required
 for side effects -- a read-to-clear register must not see two half
 reads -- which is a different reason and says so in its comment.)
 
