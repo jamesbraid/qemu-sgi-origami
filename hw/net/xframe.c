@@ -1286,7 +1286,63 @@ static const MemoryRegionOps xframe_pif_ops = {
  * copied unbounded. The frame is fully copied into s->tx_frame and the
  * descriptor released before qemu_send_packet, so a receive that a loopback or
  * hub backend re-enters synchronously finds consistent device state.
+ *
+ * Descriptor control words are decoded through xframe_desc_ldq/xframe_desc_stq
+ * below, which honour SWAPPER_CTRL's per-path _SE bit: big-endian while it is
+ * clear (the reset default -- Linux's own comment: "the device by default set
+ * to a big endian format, so a big endian driver need not set anything" --
+ * s2io_set_swapper; OpenBSD's xge_attach likewise skips the SWAPPER_CTRL write
+ * on a BE host), little-endian once a guest programs it. The Origin 200's
+ * IRIX/OpenBSD-mips guest is always big-endian and never programs the swapper
+ * away from that default, so decode stays effectively unconditional on this
+ * machine; a little-endian guest (Linux s2io / OpenBSD xge on an LE host)
+ * that does set the swap bit gets the order it asked for. Frame payload DMA
+ * below stays a raw byte copy -- packet data carries no word order to get
+ * wrong.
  */
+
+/*
+ * SWAPPER_CTRL's per-DMA-path swap-enable (SE) bits that pick descriptor byte
+ * order (Linux s2io-regs.h SWAPPER_CTRL_TXD_R_SE = s2BIT(19) = bit 44,
+ * SWAPPER_CTRL_RXD_R_SE = s2BIT(33) = bit 30; s2io.h's s2BIT(loc) is
+ * 0x8000000000000000ULL >> loc, the same MSB-first numbering as the interrupt
+ * bits above). s2io_set_swapper's __BIG_ENDIAN branch sets the TxD/RxD _FE
+ * bits with the _SE bits CLEAR; its little-endian (#else) branch sets both
+ * _FE and _SE for the same paths -- so the _SE bit alone selects order, and
+ * it agrees with SWAPPER_CTRL's all-zero reset value (big-endian), which a
+ * big-endian driver never disturbs. Only the _R_SE bit is checked, not the
+ * separate _W_SE bit the same driver also sets: both branches of
+ * s2io_set_swapper OR a descriptor type's _R_SE and _W_SE into the same
+ * writeq together, so one stored bit per type tracks reads and write-backs
+ * alike.
+ */
+#define XFRAME_SWAPPER_CTRL_TXD_R_SE  (1ULL << 44)
+#define XFRAME_SWAPPER_CTRL_RXD_R_SE  (1ULL << 30)
+
+/*
+ * Decode/encode one descriptor control word in the byte order SWAPPER_CTRL
+ * selects for that descriptor type. Every TxD/RxD control-word accessor in
+ * xframe_tx_doorbell, xframe_rx_advance_page, xframe_rx_head and
+ * xframe_receive routes through these; frame-payload DMA does not.
+ */
+static uint64_t xframe_desc_ldq(XframeState *s, const uint8_t *p, bool rxd)
+{
+    uint64_t se = rxd ? XFRAME_SWAPPER_CTRL_RXD_R_SE : XFRAME_SWAPPER_CTRL_TXD_R_SE;
+
+    return (s->swapper_ctrl & se) ? ldq_le_p(p) : ldq_be_p(p);
+}
+
+static void xframe_desc_stq(XframeState *s, uint8_t *p, uint64_t val, bool rxd)
+{
+    uint64_t se = rxd ? XFRAME_SWAPPER_CTRL_RXD_R_SE : XFRAME_SWAPPER_CTRL_TXD_R_SE;
+
+    if (s->swapper_ctrl & se) {
+        stq_le_p(p, val);
+    } else {
+        stq_be_p(p, val);
+    }
+}
+
 /* Not gated on ADAPTER_EN: drivers enable the adapter before any doorbell. */
 static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
 {
@@ -1310,8 +1366,8 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
                           " failed; list abandoned\n", txd_addr);
             return;
         }
-        control1 = ldq_le_p(raw);
-        bufaddr = ldq_le_p(raw + 16);
+        control1 = xframe_desc_ldq(s, raw, false);
+        bufaddr = xframe_desc_ldq(s, raw + 16, false);
         seg_len = control1 & XFRAME_TXD_BUF_LEN_MASK;
 
         if (i == 0) {
@@ -1350,7 +1406,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     if (have_first) {
         uint8_t word[8];
 
-        stq_le_p(word, first_control1 & ~XFRAME_TXD_OWN);
+        xframe_desc_stq(s, word, first_control1 & ~XFRAME_TXD_OWN, false);
         pci_dma_write(pdev, par, word, sizeof(word));
     }
 
@@ -1532,7 +1588,7 @@ static void xframe_rx_advance_page(XframeState *s)
         s->rx_desc_idx = 0;
         return;
     }
-    s->rx_page_addr = ldq_le_p(raw);
+    s->rx_page_addr = xframe_desc_ldq(s, raw, true);
     s->rx_desc_idx = 0;
 }
 
@@ -1566,7 +1622,7 @@ static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
         return false;
     }
 
-    return (ldq_le_p(raw + 8) & XFRAME_RXD_OWN) != 0;
+    return (xframe_desc_ldq(s, raw + 8, true) & XFRAME_RXD_OWN) != 0;
 }
 
 /*
@@ -1693,7 +1749,8 @@ static bool xframe_can_receive(NetClientState *nc)
  * Deposit one frame into the head-of-ring RxD: filter it, write it into the
  * posted buffer, and publish the completion -- length and status first, then
  * ownership released last, the same order the transmit doorbell releases its
- * own descriptor.
+ * own descriptor. RxD control words decode big-endian for the same reason
+ * TxD's do -- see xframe_tx_doorbell's comment.
  *
  * Guest-driven hang safety: a filtered frame and a genuine no-buffer
  * condition return different values on purpose. No buffer at all returns 0,
@@ -1729,8 +1786,8 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         return size;
     }
 
-    control2 = ldq_le_p(raw + 16);
-    bufaddr = ldq_le_p(raw + 24);
+    control2 = xframe_desc_ldq(s, raw + 16, true);
+    bufaddr = xframe_desc_ldq(s, raw + 24, true);
     capacity = (control2 >> XFRAME_RXD_BUFSIZ_SHIFT) & 0xffff;
 
     copy_len = size;
@@ -1759,10 +1816,10 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         xcode = XFRAME_RXD_XCODE_ABORT;
     }
 
-    stq_le_p(word, (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT);
+    xframe_desc_stq(s, word, (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT, true);
     pci_dma_write(pdev, desc_addr + 16, word, sizeof(word));
 
-    stq_le_p(word, (uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT);
+    xframe_desc_stq(s, word, (uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT, true);
     pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
 
     s->rx_desc_idx++;
