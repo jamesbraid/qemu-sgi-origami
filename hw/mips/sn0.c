@@ -94,16 +94,24 @@ static bool sn0_promdata_pc_in_prom(SN0PromDataState *s)
  * needed to recognise the phase: the bit alone over-covers it, staying
  * set well after the stack has left the window, and a single-home PC
  * test flips the classification at the mid-phase jump. Once recognised,
- * the phase holds for this CPU until reset or until the OS executes
- * from the window: on real hardware the window is resident cache lines,
- * and neither clearing the bookkeeping bit nor moving the PC is a cache
- * operation, so no later state change may reroute an access. Uncached
- * accesses always forward -- the phase's exit copies the persistent
- * structures out to real RAM through exactly that path. Contract: the
- * cache-as-RAM phase and exit sections of
+ * the phase holds for this CPU until reset or OS handoff: on real
+ * hardware the window is resident cache lines, and neither clearing the
+ * bookkeeping bit nor moving the PC is a cache operation, so no single
+ * later state change may reroute an access. Handoff is both recognition
+ * inputs withdrawn at once -- the bit clear and the PC outside both
+ * homes -- a state first reached with the OS running, because the PROM
+ * clears the bit at its second uncached switch and then executes from
+ * its RAM copy through handoff. The exit's cache invalidate discards
+ * the private lines without writing them back, so serving RAM from then
+ * on is faithful; like the OS-execution release below, this one is
+ * one-way until reset. Uncached accesses always forward -- the phase's
+ * exit copies the persistent structures out to real RAM through exactly
+ * that path. Contract: the cache-as-RAM phase and exit sections of
  * docs/datasheets/firmware-structures.md (in the origami project tree,
  * not this repository).
  */
+static void sn0_promdata_leave_private(CPUState *cs, run_on_cpu_data data);
+
 static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
 {
     if (!current_cpu || current_cpu != CPU(s->cpu)) {
@@ -118,8 +126,23 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
         return false;
     }
 
-    if (!s->phase_private &&
-        (s->cpu->env.active_fpu.fpr[0].d &
+    if (s->phase_private) {
+        /*
+         * Test the bit first: the PC translation runs only on the
+         * phase's way out, not on every private access.
+         */
+        if (!(s->cpu->env.active_fpu.fpr[0].d &
+              SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
+            !sn0_promdata_pc_in_prom(s)) {
+            s->phase_private = false;
+            s->leaving_private = true;
+            async_safe_run_on_cpu(CPU(s->cpu), sn0_promdata_leave_private,
+                                  RUN_ON_CPU_HOST_PTR(s));
+        }
+        return s->phase_private;
+    }
+
+    if ((s->cpu->env.active_fpu.fpr[0].d &
          SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
         sn0_promdata_pc_in_prom(s)) {
         s->phase_private = true;

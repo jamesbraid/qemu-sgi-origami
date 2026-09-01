@@ -1379,7 +1379,10 @@ def build_promdata_transition_continuity():
     # program counter, because neither is a cache operation. Write a
     # sentinel with the boot-status bit raised and the PC in the flash
     # range, then read it back across each classification input flipped
-    # on its own, one result slot per read.
+    # on its own, one result slot per read. The final slot withdraws
+    # both inputs at once -- the state the OS first runs in, after the
+    # PROM's exit has invalidated the window's lines -- so that read
+    # must return the RAM beneath the window, not the sentinel.
     program = MipsProgram()
 
     # Enter the same 64-bit kernel mode the real PROM selects at entry;
@@ -1442,8 +1445,19 @@ def build_promdata_transition_continuity():
     program.emit(0)
     program.emit(mips_i(0x3f, R_S1, R_T4, 16))
 
+    # Slot 3: both inputs withdrawn together -- the bit cleared and the
+    # read again issued from the RAM stub. Unlike the three holds above
+    # this is the phase's release edge: the exit's cache invalidate has
+    # discarded the window's lines by the time the OS runs, so the read
+    # must return the RAM beneath the window, still zero here.
+    program.emit(0x44a00000)  # dmtc1 zero, f0
+    program.emit(0)
+    program.emit(mips_r(R_A0, R_ZERO, 31, 0, 0x09))  # jalr ra, a0
+    program.emit(0)
+    program.emit(mips_i(0x3f, R_S1, R_T4, 24))
+
     program.emit(mips_i(0x19, R_ZERO, R_T0, CONTINUITY_DONE))
-    program.emit(mips_i(0x3f, R_S1, R_T0, 24))
+    program.emit(mips_i(0x3f, R_S1, R_T0, 32))
     spin = len(program.instructions)
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, spin)
@@ -2250,7 +2264,13 @@ class SN0SMPMachine(QemuSystemTest):
         # under one classification is lost to a read under the other:
         # the routing flips behind the four-CPU two-chassis exception
         # cascade. One result slot per forced flip; the control slot
-        # passes either way and proves the write landed.
+        # passes either way and proves the write landed. The last slot
+        # is the opposite edge: with the bit cleared and the PC outside
+        # both execution homes at once -- the state the OS first runs
+        # in -- the phase is over and the read must see the RAM beneath
+        # the window, because the exit's cache invalidate discarded the
+        # private lines. A phase held past that point serves the OS
+        # stale phase-era data instead of what firmware left in RAM.
         self.set_machine('origin200')
         firmware = self.scratch_file('promdata-transition-continuity.bin')
         build_promdata_transition_continuity().write(firmware)
@@ -2269,14 +2289,15 @@ class SN0SMPMachine(QemuSystemTest):
         self.vm.launch()
 
         self.poll_state(
-            lambda: self.read_state(CONTINUITY_RESULT_BASE + 24, 1),
+            lambda: self.read_state(CONTINUITY_RESULT_BASE + 32, 1),
             lambda s: s[0] == CONTINUITY_DONE)
         self.vm.cmd('human-monitor-command', command_line='stop')
 
-        slots = self.read_state(CONTINUITY_RESULT_BASE, 3)
+        slots = self.read_state(CONTINUITY_RESULT_BASE, 4)
         self.assertEqual(
             slots,
-            [CONTINUITY_SENTINEL, CONTINUITY_SENTINEL, CONTINUITY_SENTINEL],
+            [CONTINUITY_SENTINEL, CONTINUITY_SENTINEL, CONTINUITY_SENTINEL,
+             0],
             [hex(slot) for slot in slots])
 
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
