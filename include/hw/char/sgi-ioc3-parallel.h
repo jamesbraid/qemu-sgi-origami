@@ -11,6 +11,8 @@
 #ifndef HW_CHAR_SGI_IOC3_PARALLEL_H
 #define HW_CHAR_SGI_IOC3_PARALLEL_H
 
+#include "chardev/char-fe.h"
+#include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
 
@@ -38,6 +40,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_DMA_SIZE       (SGI_IOC3_PAR_CTXB_COUNT + 4)
 
 #define SGI_IOC3_PAR_CONTEXTS       2
+
+/*
+ * The four interrupt lines the port drives, in the order the chip's own
+ * interrupt register carries them: the service interrupt that reports a
+ * whole chain complete, one line per context, and a DMA fault. The chip
+ * maps them to consecutive bits, so the wiring is index plus a base.
+ */
+#define SGI_IOC3_PAR_IRQ_SERVICE    0
+#define SGI_IOC3_PAR_IRQ_CONTEXT    1   /* and CONTEXT + 1 for context B */
+#define SGI_IOC3_PAR_IRQ_ERROR      3
+#define SGI_IOC3_PAR_IRQS           4
 
 /*
  * A context's count and control: seventeen count bits, so one context
@@ -133,6 +146,22 @@ struct SGIIOC3ParallelState {
 
     MemoryRegion dma_mmio;
     MemoryRegion ecp_mmio;
+
+    /* The parent's bus-master view, linked before realize. */
+    MemoryRegion *dma_mr;
+    AddressSpace dma_as;
+
+    /* What the cable reaches, if a board was given one. */
+    CharFrontend chr;
+
+    qemu_irq irq[SGI_IOC3_PAR_IRQS];
+
+    /*
+     * The service condition, which the completion interrupt follows: set
+     * when a chain reaches terminal count and quiet again once software
+     * writes the extended control register.
+     */
+    bool service;
 
     uint32_t addr_hi[SGI_IOC3_PAR_CONTEXTS];
     uint32_t addr_lo[SGI_IOC3_PAR_CONTEXTS];

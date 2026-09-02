@@ -91,6 +91,27 @@ static void sgi_ioc3_kbc_irq(void *opaque, int n, int level)
 }
 
 /*
+ * The parallel port's four sources. Its service interrupt is a level, like
+ * the two serial pass-throughs: what quiets it is a write to the port's own
+ * extended control register, so a write-one-to-clear here would drop an
+ * interrupt this chip would never raise again. The three below it -- one per
+ * DMA context, then the DMA fault -- latch on the port's pulse and the
+ * driver clears each by writing its bit back.
+ */
+static void sgi_ioc3_parallel_irq(void *opaque, int n, int level)
+{
+    SGIIOC3State *s = opaque;
+    uint32_t bit = 1u << (SGI_IOC3_INT_PARALLEL_SHIFT + n);
+
+    if (n == SGI_IOC3_PAR_IRQ_SERVICE) {
+        s->int_status = (s->int_status & ~bit) | (level ? bit : 0);
+    } else if (level) {
+        s->int_status |= bit;
+    }
+    sgi_ioc3_update_irq(s);
+}
+
+/*
  * The one-wire ethernet-address part behind the MicroLAN engine; protocol
  * per the ioc3 datasheet (docs/datasheets/ioc3.md in the origami project
  * tree the fork is developed inside, not this repository).
@@ -374,6 +395,7 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_IOC3_INT_STATUS:
         /* Write-one-to-clear; the level-driven bits ignore the write. */
         s->int_status &= ~(val & ~(SGI_IOC3_INT_PASSTHROUGH |
+                                   SGI_IOC3_INT_PARALLEL_SERVICE |
                                    SGI_IOC3_INT_RX_HIGH_WATER_LEVEL));
         sgi_ioc3_update_irq(s);
         break;
@@ -1255,6 +1277,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
     if (s->board->parallel) {
+        object_property_set_link(OBJECT(&s->parallel_dev), "dma-memory",
+                                 OBJECT(&dev->bus_master_container_region),
+                                 &error_abort);
         if (!qdev_realize(DEVICE(&s->parallel_dev), BUS(&s->ioc3_bus), errp)) {
             return;
         }
@@ -1264,6 +1289,11 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         memory_region_add_subregion(&s->bar, SGI_IOC3_PARALLEL_ECP_BASE,
                                     sysbus_mmio_get_region(
                                         SYS_BUS_DEVICE(&s->parallel_dev), 1));
+        for (i = 0; i < SGI_IOC3_PAR_IRQS; i++) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(&s->parallel_dev), i,
+                               qdev_get_gpio_in_named(DEVICE(dev),
+                                                      "parallel-irq", i));
+        }
     } else {
         object_unparent(OBJECT(&s->parallel_dev));
     }
@@ -1430,6 +1460,8 @@ static void sgi_ioc3_init(Object *obj)
                       SGI_IOC3_SERIAL_PORTS);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_eth_irq, "eth-irq", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_kbc_irq, "kbc-irq", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_parallel_irq, "parallel-irq",
+                            SGI_IOC3_PAR_IRQS);
 
     qbus_init(&s->ioc3_bus, sizeof(s->ioc3_bus), TYPE_SGI_IOC3_BUS,
               DEVICE(obj), "ioc3-bus");
@@ -1452,6 +1484,9 @@ static void sgi_ioc3_init(Object *obj)
 
     object_initialize_child(obj, "parallel", &s->parallel_dev,
                             TYPE_SGI_IOC3_PARALLEL);
+
+    object_property_add_alias(obj, "parallel-chardev",
+                              OBJECT(&s->parallel_dev), "chardev");
 
     /*
      * Both clocks are initialized; realize keeps whichever this board fits

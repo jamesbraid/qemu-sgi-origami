@@ -299,6 +299,16 @@ struct SGIIOC3BusState {
     (SGI_IOC3_SERIAL_SOURCE(0, SGI_IOC3_INT_RX_HIGH_WATER) | \
      SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_RX_HIGH_WATER))
 
+/*
+ * The parallel port's four consecutive sources: its service interrupt,
+ * one per DMA context, then a DMA fault. The service bit is a level like
+ * the two serial pass-throughs, quieted by a write to the port's own
+ * extended control register rather than to the status register here; the
+ * other three latch and a write-one-to-clear acknowledges them.
+ */
+#define SGI_IOC3_INT_PARALLEL_SHIFT 18
+#define SGI_IOC3_INT_PARALLEL_SERVICE (1u << SGI_IOC3_INT_PARALLEL_SHIFT)
+
 /* The one shared keyboard-and-mouse source, driven by the PS/2 controller. */
 #define SGI_IOC3_INT_KEYBOARD       (1u << 22)
 
