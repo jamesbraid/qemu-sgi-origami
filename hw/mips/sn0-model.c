@@ -94,8 +94,8 @@ unsigned int sn0_model_max_cpus(const SN0MachineModel *model)
     return max_cpus;
 }
 
-uint64_t sn0_model_node_offset(const SN0MachineModel *model,
-                               unsigned int nasid)
+static uint64_t sn0_model_node_offset(const SN0MachineModel *model,
+                                      unsigned int nasid)
 {
     uint64_t offset;
 

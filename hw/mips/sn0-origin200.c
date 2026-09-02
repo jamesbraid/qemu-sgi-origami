@@ -86,6 +86,21 @@ static const char *origin200_pci_qom_type(SN0ModelPciKind kind)
     }
 }
 
+static const char * const origin200_r10000_cpu_types[] = {
+    MIPS_CPU_TYPE_NAME("R10000"),
+    NULL,
+};
+
+static const char * const *origin200_valid_cpu_types(SN0ModelCpuKind kind)
+{
+    switch (kind) {
+    case SN0_MODEL_CPU_R10000:
+        return origin200_r10000_cpu_types;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static void origin200_create_ioc3(SN0MachineState *s,
                                   unsigned int node_index,
                                   const SN0ModelPciFunction *function)
@@ -240,7 +255,7 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
                                    node_index, widget);
             memory_region_init_alias(&s->widget_alias[node_index][widget],
                                      OBJECT(s), name, bridge_face, 0,
-                                     SGI_BRIDGE_WIDGET_SIZE);
+                                     bridge->size);
             memory_region_add_subregion(&s->nodes[node_index]->xtalk,
                                         SN0_XTALK_BASE(widget),
                                         &s->widget_alias[node_index][widget]);
@@ -294,7 +309,10 @@ static void origin200_create_bridge(SN0MachineState *s,
     const SN0ModelBaseIO *base_io = &model->base_io;
     const SN0ModelAddressSpace *xtalk = sn0_model_find_space(
         model, SN0_MODEL_SPACE_XTALK);
+    const SN0ModelRegion *bridge_region = sn0_model_find_region(
+        model, SN0_MODEL_REGION_BRIDGE_REGISTERS);
     MemoryRegion *system = get_system_memory();
+    MemoryRegion *bridge_face;
     SGIBridgeState *bridge;
     g_autofree char *bridge_name = node_index == 0 ?
         g_strdup("bridge") : g_strdup_printf("bridge%u", node_index);
@@ -302,7 +320,7 @@ static void origin200_create_bridge(SN0MachineState *s,
         g_strdup("sn0.xtalk.widget0") :
         g_strdup_printf("sn0.node%u.xtalk.widget0", node_index);
 
-    g_assert(xtalk);
+    g_assert(xtalk && bridge_region);
     g_assert(is_power_of_2(model->node_stride));
     bridge = SGI_BRIDGE(object_new(TYPE_SGI_BRIDGE));
     object_property_add_child(OBJECT(s), bridge_name, OBJECT(bridge));
@@ -334,14 +352,15 @@ static void origin200_create_bridge(SN0MachineState *s,
      * stale.
      */
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
+    bridge_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
+    g_assert(memory_region_size(bridge_face) == bridge_region->size);
 
     /*
      * Widget 0 is the same chip, aliased so it cannot disagree. Unconditional:
      * OpenBSD panics if widget 0's identification register does not read.
      */
     memory_region_init_alias(&s->widget0[node_index], OBJECT(s), widget0_name,
-                             sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
-                             0, SGI_BRIDGE_WIDGET_SIZE);
+                             bridge_face, 0, bridge_region->size);
     memory_region_add_subregion(&s->nodes[node_index]->xtalk,
                                 SN0_XTALK_BASE(base_io->discovery_widget),
                                 &s->widget0[node_index]);
@@ -359,7 +378,6 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     SN0MachineClass *smc = SN0_MACHINE_CLASS(oc);
     const SN0ModelProfile *default_profile;
     const SN0ModelPciFunction *ioc3;
-    uint64_t default_ram_mib = 0;
     unsigned int default_cpus = 0;
     size_t node_index;
 
@@ -374,8 +392,6 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
         const SN0ModelNodeInstance *node =
             sn0_model_profile_node(default_profile, node_index);
 
-        g_assert(default_ram_mib <= UINT64_MAX - node->default_memory_mib);
-        default_ram_mib += node->default_memory_mib;
         g_assert(default_cpus <= UINT_MAX - node->cpu_count);
         default_cpus += node->cpu_count;
     }
@@ -385,8 +401,9 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     compat_props_add(mc->compat_props, origin200_compat,
                      ARRAY_SIZE(origin200_compat));
     mc->desc = smc->model->description;
-    g_assert(default_ram_mib <= UINT64_MAX / MiB);
-    mc->default_ram_size = default_ram_mib * MiB;
+    mc->valid_cpu_types = origin200_valid_cpu_types(smc->model->cpu_kind);
+    g_assert(smc->model->default_ram_mib <= UINT64_MAX / MiB);
+    mc->default_ram_size = smc->model->default_ram_mib * MiB;
     mc->default_cpus = default_cpus;
     mc->default_ram_id = "sn0.node0.ram";
     /* -hda and if=default drives belong on the first SCSI adapter. */

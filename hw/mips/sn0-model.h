@@ -25,10 +25,9 @@ typedef enum SN0ModelRegionRole {
     SN0_MODEL_REGION_PFLASH_RBOOT,
 } SN0ModelRegionRole;
 
-typedef enum SN0ModelInterconnectKind {
-    SN0_MODEL_INTERCONNECT_NONE,
-    SN0_MODEL_INTERCONNECT_DIRECT_PEER,
-} SN0ModelInterconnectKind;
+typedef enum SN0ModelCpuKind {
+    SN0_MODEL_CPU_R10000,
+} SN0ModelCpuKind;
 
 typedef enum SN0ModelPciKind {
     SN0_MODEL_PCI_IOC3,
@@ -53,13 +52,12 @@ typedef struct SN0ModelNodeInstance {
     uint8_t nasid;
     uint8_t cpu_first_id;
     uint8_t cpu_count;
-    uint16_t default_memory_mib;
+    int peer_index;
 } SN0ModelNodeInstance;
 
 typedef struct SN0ModelProfile {
     const SN0ModelNodeInstance *nodes;
     size_t node_count;
-    SN0ModelInterconnectKind interconnect;
 } SN0ModelProfile;
 
 typedef struct SN0ModelMemory {
@@ -163,12 +161,15 @@ typedef struct SN0KlConfigModel {
     uint32_t console_config_window;
     uint32_t console_port_offset;
     uint16_t console_baud;
+    uint32_t console_type;
     const SN0KlBoardModel *boards;
     size_t board_count;
 } SN0KlConfigModel;
 
 typedef struct SN0MachineModel {
     const char *description;
+    SN0ModelCpuKind cpu_kind;
+    uint64_t default_ram_mib;
     unsigned int cpu_slots_per_node;
     uint64_t cpu_clock_hz;
     uint32_t cpu_mode_bits;
@@ -200,8 +201,6 @@ const SN0ModelPciFunction *sn0_model_find_pci_function(
     unsigned int instance);
 unsigned int sn0_model_max_nodes(const SN0MachineModel *model);
 unsigned int sn0_model_max_cpus(const SN0MachineModel *model);
-uint64_t sn0_model_node_offset(const SN0MachineModel *model,
-                               unsigned int nasid);
 uint64_t sn0_model_node_address(const SN0MachineModel *model,
                                 const SN0ModelAddressSpace *space,
                                 unsigned int nasid, uint64_t offset);
