@@ -45,6 +45,7 @@ tests = {
   'check-qom-proplist': [qom],
   'test-qemu-opts': [],
   'test-keyval': [testqapi],
+  'test-onewire': ['../../hw/1wire/crc.c'],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],

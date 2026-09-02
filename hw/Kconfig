@@ -1,4 +1,5 @@
 # devices Kconfig
+source 1wire/Kconfig
 source 9pfs/Kconfig
 source acpi/Kconfig
 source adc/Kconfig

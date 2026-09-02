@@ -22,6 +22,7 @@ subdir('sparc64')
 subdir('tricore')
 subdir('xtensa')
 
+subdir('1wire')
 subdir('9pfs')
 subdir('acpi')
 subdir('adc')
