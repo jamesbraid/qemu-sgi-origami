@@ -550,3 +550,6 @@ dp83840_read(uint16_t val, int reg) "[0x%02x] -> 0x%04" PRIx16
 dp83840_write(uint16_t val, int reg) "[0x%02x] <- 0x%04" PRIx16
 dp83840_update_link(const char *s) "%s"
 dp83840_reset(void) ""
+
+# tigon.c
+tigon_rx_ring(const char *ring, uint32_t len, uint32_t posted) "%s ring, %u bytes, %u buffers posted"
