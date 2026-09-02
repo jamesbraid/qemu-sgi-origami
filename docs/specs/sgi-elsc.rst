@@ -78,6 +78,22 @@ Command vocabulary
     space included, so the argument bytes are read by position
     rather than split on whitespace. Answered a plain ``ok``.
 
+``pwr q``
+    The power-on query, which the PROM issues once at power-on to
+    detect a cold start. Answered ``ok 1`` on the first read in a
+    power cycle and ``ok 0`` afterwards. The model latches a cold
+    power-on and clears the latch on read, so only the first caller
+    after power-on sees the 1; the latch is set when the controller
+    powers up and is not re-armed by a warm reset. The controller
+    datasheet records this clear-on-read behaviour as 6.5.7-derived and
+    unconfirmed for the 6.5.30 firmware; one measured exchange would
+    settle it. The latch is per-controller: on the single-module Origin
+    200 that is the whole machine, and a multi-module machine has one
+    controller per module (each genuinely cold-powered), with the boot
+    master reading its own module's latch once and propagating the
+    result. Whether a multi-module cold-power latch is per-module or
+    machine-wide is not settled by the datasheet.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates

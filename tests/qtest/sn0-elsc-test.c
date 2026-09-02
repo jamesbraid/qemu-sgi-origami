@@ -1521,6 +1521,50 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "pwr q" is the power-on query the PROM issues once at power-on to detect
+ * a cold start (datasheet: firmware-facing command contracts). The
+ * controller answers "ok 1" on the first read in a power cycle and "ok 0"
+ * afterwards, clearing the latch on read. (The clear-on-read one-shot is
+ * from the 6.5.7 driver and unverified on 6.5.30.)
+ */
+static void test_pwr_query_reports_cold_power_on(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /* First query after a cold power-on: the latch reads 1. */
+    req_len = build_request(req, "pwr q");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+
+    /* Cleared on read: a second query in the same power cycle reads 0. */
+    req_len = build_request(req, "pwr q");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+
+    /* An unknown power subcommand is an unknown command, not a bad arg. */
+    req_len = build_request(req, "pwr z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+
+    /* A known subcommand letter with a bad argument is a bad argument. */
+    req_len = build_request(req, "pwr q x");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1589,6 +1633,8 @@ int main(int argc, char **argv)
                         test_info_elsc_dump_empty);
     qtest_add_data_func("sn0/elsc/info-elsc-dump-shows-queued-input", NULL,
                         test_info_elsc_dump_shows_queued_input);
+    qtest_add_data_func("sn0/elsc/pwr-query-reports-cold-power-on", NULL,
+                        test_pwr_query_reports_cold_power_on);
 
     ret = g_test_run();
 

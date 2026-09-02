@@ -176,6 +176,58 @@ static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response_str(s, "ok");
 }
 
+/*
+ * "pwr <sub>": the power subcommands share the "pwr" mnemonic and select on
+ * the letter after the space. Only the power-on query is boot-driven; the
+ * datasheet lists the rest (delayed power-down, power-cycle, redundant
+ * supply) as shutdown and reset-recovery paths. An unknown subcommand letter
+ * is "err cmd"; a known letter with a bad argument is "err arg".
+ */
+static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
+{
+    if (len < 5 || text[3] != ' ') {
+        /* "pwr", "pwrx", "pwr ": no subcommand letter. */
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+
+    switch (text[4]) {
+    case 'q':
+        if (len != 5) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        /*
+         * Power-on query: the PROM issues it once at power-on to detect a
+         * cold start and seed a boot-status bit. Answered "ok 1" on the
+         * first read after a cold power-on and "ok 0" thereafter. The model
+         * clears the latch on read, so only the first caller in a power
+         * cycle sees the 1; the datasheet records this clear-on-read as
+         * 6.5.7-derived and unconfirmed for the 6.5.30 firmware we boot.
+         *
+         * The latch is per-controller. On the single-module Origin 200 this
+         * model targets that is the whole machine. A multi-module machine
+         * has one controller per module, each genuinely cold-powered; the
+         * datasheet's design has the boot master read its own module's latch
+         * once and propagate the result, so the others are not read. Whether
+         * a multi-module cold-power latch is per-module or machine-wide is
+         * not settled by the datasheet.
+         */
+        {
+            char resp[6];
+
+            snprintf(resp, sizeof(resp), "ok %x", s->cold_power_on ? 1 : 0);
+            s->cold_power_on = false;
+            elsc_frame_response_str(s, resp);
+        }
+        return;
+    default:
+        /* An unrecognised subcommand letter is an unknown command. */
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+}
+
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -208,6 +260,10 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len >= 3 && memcmp(text, "pas", 3) == 0) {
         elsc_handle_pas(s, text, len);
+        return;
+    }
+    if (len >= 3 && memcmp(text, "pwr", 3) == 0) {
+        elsc_handle_pwr(s, text, len);
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
@@ -619,6 +675,13 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     SGIElscState *s = SGI_ELSC(dev);
 
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
+    /*
+     * The cold power-on latch is set here rather than in reset because a
+     * warm reset -- a guest "rst", or any system reset -- does not cycle
+     * power and so must not re-arm it; only powering the controller up
+     * does, which realize models. A migrated stream overwrites it on load.
+     */
+    s->cold_power_on = true;
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
     timer_mod(s->arb_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
 
@@ -639,7 +702,7 @@ static void elsc_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 7,
+    .version_id = 8,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -674,6 +737,12 @@ static const VMStateDescription vmstate_sgi_elsc = {
         /* An older stream loads the display zeroed, not blank. */
         VMSTATE_UINT8_ARRAY_V(display, SGIElscState,
                               SGI_ELSC_DISPLAY_CHARS, 7),
+        /*
+         * A pre-version-8 stream carried no latch and never answered
+         * "pwr q"; it keeps realize's value (freshly powered), so a query
+         * after such a migration reads the cold-power-on once.
+         */
+        VMSTATE_BOOL_V(cold_power_on, SGIElscState, 8),
         VMSTATE_END_OF_LIST()
     },
 };
