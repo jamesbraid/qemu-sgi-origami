@@ -244,10 +244,12 @@ copied. The pulse-width thresholds sorting a slot into reset, zero
 or one are the same model choices the Bridge's one-wire master uses.
 The memory reads -- plain, status and extended, with the public part
 specification's geometry and CRC16 framing, 2 KB in sixty-four
-32-byte data pages and a status field ending at 0x13f -- serve an
-unprogrammed part: every byte reads 0xff behind a correct check
-pair, and a redirection byte of 0xff means no redirection by the
-part's own definition, so a blank part invents nothing. What the
+32-byte data pages, and a status field addressed at that same width
+whose implemented regions stop at 0x13f while everything from there
+to 0x7ff is unimplemented space -- serve an unprogrammed part: every
+byte reads 0xff behind a correct check pair, implemented or not, and
+a redirection byte of 0xff means no redirection by the part's own
+definition, so a blank part invents nothing. What the
 manufacturing-record bytes should say is still an open question --
 the record's key names are not established -- so the part stays
 blank rather than carrying an invented record the guest would parse
