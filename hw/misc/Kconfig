@@ -280,6 +280,7 @@ config SGI_IOC3
     bool
     default y if PCI_DEVICES
     depends on PCI
+    select DS1685
     select M48T35
     select SERIAL
     select SGI_IOC3_ETH

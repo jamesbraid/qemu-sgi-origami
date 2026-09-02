@@ -9,6 +9,7 @@
 #include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
+#include "hw/rtc/ds1685.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/net/sgi-ioc3-eth.h"
 #include "hw/input/sgi-ioc3-kbc.h"
@@ -259,8 +260,16 @@ struct SGIIOC3BusState {
 /* Generated per read: the diagnostic writes bad parity deliberately. */
 #define SGI_IOC3_SSRAM_PARITY_ERROR 0x00020000u
 
-/* The first byte-bus select (the Timekeeper); the other three are holes. */
+/*
+ * The byte-bus selects, and which of them answer is a board's business. A
+ * Timekeeper is one directly-addressed window on the first; a DS1685 is
+ * reached indirectly, through an address port on the second and a data port
+ * on the third. No board fits both clocks, and the fourth select is always
+ * a hole.
+ */
 #define SGI_IOC3_BYTEBUS_DEV0   0x80000
+#define SGI_IOC3_BYTEBUS_DEV1   0xa0000
+#define SGI_IOC3_BYTEBUS_DEV2   0xc0000
 
 /* Each port owns nine consecutive interrupt-status bits, A then B. */
 #define SGI_IOC3_INT_PORT_STRIDE 9
@@ -299,11 +308,23 @@ struct SGIIOC3BusState {
  * either. The buffer RAM, the serial DMA registers and the main register
  * block belong to the chip rather than to a board, and every board has them.
  */
+/*
+ * Which clock, rather than whether one: the two parts are not alternatives
+ * behind one name. A Timekeeper is a flat window and a DS1685 is an index
+ * and a data port, so a board that names the wrong one hands its guest a
+ * different register layout at the address it looked for.
+ */
+typedef enum SGIIOC3ClockKind {
+    SGI_IOC3_CLOCK_NONE = 0,
+    SGI_IOC3_CLOCK_M48T35,      /* byte-bus device 0, directly addressed */
+    SGI_IOC3_CLOCK_DS1685,      /* byte-bus devices 1 and 2, indirect */
+} SGIIOC3ClockKind;
+
 typedef struct SGIIOC3Population {
     bool eth;
     bool serial[SGI_IOC3_SERIAL_PORTS];
     bool kbc;
-    bool rtc;       /* the M48T35 timekeeper at byte-bus device 0 */
+    SGIIOC3ClockKind clock;
 } SGIIOC3Population;
 
 /* Handlers learn their port only from this opaque. */
@@ -382,7 +403,9 @@ struct SGIIOC3State {
     MemoryRegion ssram;
     uint32_t ssram_word[SGI_IOC3_SSRAM_WORDS];
 
+    /* One of these is realized, or neither; never both. */
     M48T35State rtc;
+    DS1685State ds1685;
 };
 
 #endif
