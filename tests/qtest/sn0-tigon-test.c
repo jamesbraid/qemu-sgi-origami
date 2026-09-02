@@ -823,6 +823,72 @@ static const uint8_t rx_frame_other[64] = {
     0x99, 0x98, 0x97, 0x96,
 };
 
+/*
+ * The card must not lap the driver in the return ring. A descriptor written
+ * over one the driver has not read yet sends it to a buffer that has already
+ * been recycled, which faults the guest kernel a long way from the adapter --
+ * and only after enough frames to go the whole way round, which is why it
+ * shows up as an intermittent fault under sustained receive rather than as a
+ * failure anyone can point at.
+ *
+ * A small return ring makes the wrap reachable in a handful of frames. The
+ * driver here consumes nothing, so the ring fills and delivery must stop with
+ * the producer one short of the consumer, then resume once the driver says it
+ * has read some.
+ */
+static void test_receive_return_ring_full(const void *data)
+{
+    enum { RING = 8 };
+    int sv[2];
+    QTestState *qts;
+    unsigned i;
+    uint32_t prod;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+    /* A return ring of RING entries rather than the default 2048. */
+    qtest_writel(qts, GIB_PHYS + GIB_RETURN_RCB + 8, (uint32_t)RING << 16);
+    publish_gib(qts);
+    release_cpu(qts);
+
+    /* Post plenty of receive buffers: the return ring is the limit here. */
+    for (i = 0; i < RING * 4; i++) {
+        post_std_rx_buffer(qts, i, RX_BUF_PHYS + i * 2048, i, 2048);
+    }
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, RING * 4);
+
+    /* Offer more frames than the ring can report. */
+    for (i = 0; i < RING * 3; i++) {
+        net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    }
+
+    /*
+     * The producer stops one short of the consumer, which has never moved.
+     * Without the check it runs on round the ring, overwriting descriptors
+     * the driver has not read.
+     */
+    for (i = 0; i < 40; i++) {
+        g_usleep(5000);
+    }
+    prod = qtest_readl(qts, RETURN_PROD_PHYS);
+    g_assert_cmpuint(prod, ==, RING - 1);
+
+    /* The driver reports it has read them; delivery resumes. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RXRETURNCONS_IDX, RING - 1);
+    for (i = 0; i < 40 && qtest_readl(qts, RETURN_PROD_PHYS) == RING - 1; i++) {
+        g_usleep(5000);
+    }
+    g_assert_cmpuint(qtest_readl(qts, RETURN_PROD_PHYS), !=, RING - 1);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_receive(const void *data)
 {
     int sv[2];
@@ -1635,6 +1701,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/transmit-direct-map-corrects", NULL,
                         test_transmit_direct_map_corrects);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
+    qtest_add_data_func("/sn0/tigon/receive-return-ring-full", NULL,
+                        test_receive_return_ring_full);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
     qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
