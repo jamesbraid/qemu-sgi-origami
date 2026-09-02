@@ -246,6 +246,36 @@ the byte-level PS/2 command protocol lives in the ps2 devices above
 it, and the control register's write-pending status reads clear, since
 a synchronous transmit completes within the register write.
 
+Board variants
+==============
+
+The same chip sits on boards that wire up different subsets of it,
+and a guest works out which board it is on from the subsystem
+identity in configuration space. The ``subsystem-id`` property
+carries that identity and the model selects the population from it:
+the ethernet block and, with it, the one-wire station-address part;
+each 16550 with its DMA registers and alias page; the PS/2
+controller; and the M48T35 on byte-bus device 0. What a board does
+not fit is neither realized nor mapped, and the window it would have
+answered is a hole like any other. An identity the table does not
+name gets the fall-through population rather than a refusal,
+matching the dispatch in mainline Linux's multifunction driver the
+table is taken from.
+
+One-wire is not selected separately. The station-address part is
+wired up with the ethernet, so a board without ethernet has no part
+on its bus and the wire reads idle -- the same answer the pin-control
+gate gives, reached the same way.
+
+Two of the Octane board's sub-devices are a deliberate gap: its clock
+is a DS1685 at two other byte-bus selects, which no device here
+models, and its front-panel LEDs are not modelled either. That board
+gets everything else and an empty window where those belong, rather
+than an M48T35 answering to a layout it does not have.
+
+The default is the Origin 200's own board, so the machine and every
+test that does not ask for another are unaffected.
+
 PCI identity
 ============
 
