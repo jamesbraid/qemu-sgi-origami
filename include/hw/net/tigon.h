@@ -126,6 +126,17 @@ struct TigonState {
 
     /* Internal pending-interrupt latch. */
     bool irq_asserted;
+    /* Last level traced, so the trace records edges rather than calls. */
+    bool irq_line_traced;
+
+    /*
+     * Interrupt coalescing. The driver asks for completions to accumulate up
+     * to a count or a time, whichever comes first, so that one interrupt
+     * covers many. Counted per direction; the line is shared.
+     */
+    uint32_t coal_rx_bds;
+    uint32_t coal_tx_bds;
+    QEMUTimer *coal_timer;
 
     /*
      * Link negotiation is asynchronous on real hardware: the firmware answers a

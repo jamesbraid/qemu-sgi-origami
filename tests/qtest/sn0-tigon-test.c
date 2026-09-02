@@ -116,6 +116,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_GENINFO_LO   0x60c
 #define TI_GCR_OPMODE       0x618
 #define TI_GCR_EVENTCONS_IDX 0x628
+#define TI_GCR_RX_COAL_TICKS 0x630
+#define TI_GCR_RX_MAX_COAL_BD 0x640
 #define TI_GCR_MASK_INTRS  0x664
 #define TI_GCR_RXRETURNCONS_IDX 0x680
 #define TI_MHC_BYTE_SWAP_ENB 0x00000010
@@ -939,6 +941,93 @@ static void test_firmware_up_releases_a_held_frame(const void *data)
     qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), rx_frame_ours,
                     sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+
+/*
+ * Interrupt coalescing. The driver asks the card to hold off interrupting
+ * until a number of completions have accumulated or a time has passed,
+ * whichever comes first, and IRIX asks for 130 descriptors or 900
+ * microseconds. A card that interrupts per frame regardless makes the guest
+ * take up to two orders of magnitude more interrupts than it asked for, and
+ * every one of them is a handler entry the guest did not want.
+ *
+ * Completions are still posted to the ring as they happen; only the interrupt
+ * is held. A model that also held the completions would stall a driver that
+ * polls the ring.
+ */
+static void test_interrupt_coalesce_by_count(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    unsigned i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    /* Four completions per interrupt; the timer set far enough out not to. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_MAX_COAL_BD, 4);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_COAL_TICKS, 1000000);
+
+    for (i = 0; i < 4; i++) {
+        qtest_memset(qts, RX_BUF_PHYS + i * 2048, 0, 2048);
+        post_std_rx_buffer(qts, i, RX_BUF_PHYS + i * 2048, i, 2048);
+    }
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 4);
+
+    for (i = 0; i < 3; i++) {
+        net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+        g_assert_cmphex(wait_return_prod(qts), ==, i + 1);
+        /* Posted, but not yet worth an interrupt. */
+        g_assert_false(irq_asserted(qts));
+    }
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 4);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The other half of the same contract: a frame that never reaches the count
+ * must still be delivered when the time expires, or a transfer that ends
+ * mid-batch waits for an interrupt that never comes.
+ */
+static void test_interrupt_coalesce_by_time(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    /* A count this frame will never reach, and a millisecond of patience. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_MAX_COAL_BD, 100);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_COAL_TICKS, 1000);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_clock_step(qts, 2000000);   /* two milliseconds */
+    g_assert_true(irq_asserted(qts));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -1782,6 +1871,10 @@ int main(int argc, char **argv)
                         test_transmit_direct_map_transparent);
     qtest_add_data_func("/sn0/tigon/transmit-direct-map-corrects", NULL,
                         test_transmit_direct_map_corrects);
+    qtest_add_data_func("/sn0/tigon/interrupt-coalesce-by-count", NULL,
+                        test_interrupt_coalesce_by_count);
+    qtest_add_data_func("/sn0/tigon/interrupt-coalesce-by-time", NULL,
+                        test_interrupt_coalesce_by_time);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
