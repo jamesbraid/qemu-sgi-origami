@@ -897,6 +897,52 @@ static void test_receive_jumbo_frame(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A frame offered before the firmware is up is refused, and the back end then
+ * holds it until the card says it can take another. Bringing the firmware up
+ * is one of the things that makes the card able to take one, so it has to say
+ * so: a driver that posted its buffers first and rang no further doorbell
+ * would otherwise never see the held frame.
+ */
+static void test_firmware_up_releases_a_held_frame(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[sizeof(rx_frame_ours)];
+    uint32_t word2;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    /* Everything except the CPU release, so the firmware stays down. */
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+    publish_gib(qts);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    /* Refused: there are buffers, but the card is not operational yet. */
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
+
+    /* The only thing that changes. No further doorbell is written. */
+    release_cpu(qts);
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), rx_frame_ours,
+                    sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_receive(const void *data)
 {
     int sv[2];
@@ -1711,6 +1757,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
+    qtest_add_data_func("/sn0/tigon/firmware-up-releases-a-held-frame", NULL,
+                        test_firmware_up_releases_a_held_frame);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
     qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,

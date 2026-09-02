@@ -518,6 +518,13 @@ static void tigon_try_firmware_up(TigonState *s)
     tigon_parse_gib(s);
     s->firmware_up = true;
     tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0);
+    /*
+     * Coming up is a transition from refusing frames to accepting them, so it
+     * has to re-offer anything held, exactly as posting a buffer does. A
+     * driver that posts its buffers before the handshake completes rings no
+     * doorbell afterwards, and the held frame would wait for one forever.
+     */
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
 /*
