@@ -2,6 +2,7 @@
 /* Generic consumers for data generated from an SN0 product model. */
 
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "qemu/units.h"
 #include "sn0-model.h"
 
@@ -17,12 +18,12 @@ const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
         const SN0ModelProfile *profile = &model->profiles[profile_index];
         unsigned int node;
 
-        if (profile->nodes != nodes) {
+        if (profile->node_count != nodes) {
             continue;
         }
-        g_assert(profile->cpus_per_node || profile->nodes == 0);
+        g_assert(profile->nodes || profile->node_count == 0);
         for (node = 0; node < nodes; node++) {
-            if (profile->cpus_per_node[node] != cpus[node]) {
+            if (profile->nodes[node].cpu_count != cpus[node]) {
                 break;
             }
         }
@@ -33,38 +34,78 @@ const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
     return NULL;
 }
 
-const SN0ModelDevice *sn0_model_find_device(const SN0MachineModel *model,
-                                            SN0ModelDeviceKind kind,
-                                            unsigned int instance)
+unsigned int sn0_model_max_nodes(const SN0MachineModel *model)
 {
-    size_t device_index;
+    size_t profile_index;
+    unsigned int max_nodes = 0;
 
-    for (device_index = 0; device_index < model->device_count; device_index++) {
-        const SN0ModelDevice *device = &model->devices[device_index];
+    for (profile_index = 0; profile_index < model->profile_count;
+         profile_index++) {
+        const SN0ModelProfile *profile = &model->profiles[profile_index];
 
-        if (device->kind == kind) {
-            if (instance == 0) {
-                return device;
-            }
-            instance--;
+        g_assert(profile->node_count <= UINT_MAX);
+        if (profile->node_count > max_nodes) {
+            max_nodes = profile->node_count;
         }
     }
-    return NULL;
+    return max_nodes;
 }
 
-unsigned int sn0_model_device_count(const SN0MachineModel *model,
-                                    SN0ModelDeviceKind kind)
+unsigned int sn0_model_max_cpus(const SN0MachineModel *model)
 {
-    size_t device_index;
-    unsigned int count = 0;
+    size_t profile_index;
+    unsigned int max_cpus = 0;
 
-    for (device_index = 0; device_index < model->device_count;
-        device_index++) {
-        if (model->devices[device_index].kind == kind) {
-            count++;
+    for (profile_index = 0; profile_index < model->profile_count;
+         profile_index++) {
+        const SN0ModelProfile *profile = &model->profiles[profile_index];
+        unsigned int count = 0;
+        size_t node_index;
+
+        for (node_index = 0; node_index < profile->node_count; node_index++) {
+            g_assert(count <= UINT_MAX - profile->nodes[node_index].cpu_count);
+            count += profile->nodes[node_index].cpu_count;
+        }
+        if (count > max_cpus) {
+            max_cpus = count;
         }
     }
-    return count;
+    return max_cpus;
+}
+
+uint64_t sn0_model_node_offset(const SN0MachineModel *model,
+                               unsigned int nasid)
+{
+    uint64_t offset;
+
+    g_assert(!umul64_overflow(model->node_stride, nasid, &offset));
+    return offset;
+}
+
+uint64_t sn0_model_node_address(const SN0MachineModel *model,
+                                const SN0ModelAddressSpace *space,
+                                unsigned int nasid, uint64_t offset)
+{
+    uint64_t address;
+
+    g_assert(!uadd64_overflow(space->carrier_base,
+                             sn0_model_node_offset(model, nasid), &address));
+    g_assert(!uadd64_overflow(address, offset, &address));
+    return address;
+}
+
+uint64_t sn0_model_region_address(const SN0MachineModel *model,
+                                  const SN0ModelAddressSpace *space,
+                                  unsigned int nasid,
+                                  const SN0ModelRegion *region,
+                                  uint64_t offset)
+{
+    uint64_t region_offset;
+
+    g_assert(region->space == space->kind);
+    g_assert(offset < region->size);
+    g_assert(!uadd64_overflow(region->offset, offset, &region_offset));
+    return sn0_model_node_address(model, space, nasid, region_offset);
 }
 
 const SN0ModelRegion *sn0_model_find_region(const SN0MachineModel *model,

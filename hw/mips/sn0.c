@@ -62,7 +62,7 @@ static hwaddr sn0_space_node_base(const SN0MachineModel *model,
 {
     const SN0ModelAddressSpace *space = sn0_space(model, kind);
 
-    return space->carrier_base + space->node_stride * nasid;
+    return sn0_model_node_address(model, space, nasid, 0);
 }
 
 static const SN0ModelRegion *sn0_region(const SN0MachineModel *model,
@@ -605,32 +605,50 @@ static void sn0_show_indicator_codes(Error **errp)
 static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
 {
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
+    const SN0ModelProfile *profile;
     unsigned int max_cpus = machine->smp.max_cpus;
-    unsigned int index;
+    g_autofree unsigned int *cpus = NULL;
+    unsigned int index = 0;
+    unsigned int node_count = machine->smp.sockets;
+    unsigned int node_index;
 
     if (machine->possible_cpus) {
         assert(machine->possible_cpus->len == max_cpus);
         return machine->possible_cpus;
     }
 
+    cpus = g_new0(unsigned int, node_count);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        cpus[node_index] = node_count == 1 ? machine->smp.cpus :
+            machine->smp.cores * machine->smp.threads;
+    }
+    profile = sn0_model_find_profile(model, node_count, cpus);
+    g_assert(profile);
+
     machine->possible_cpus = g_malloc0(sizeof(CPUArchIdList) +
                                        sizeof(CPUArchId) * max_cpus);
     machine->possible_cpus->len = max_cpus;
-    for (index = 0; index < max_cpus; index++) {
-        CPUArchId *slot = &machine->possible_cpus->cpus[index];
-        unsigned int node = index / model->cpu_slots_per_node;
-        unsigned int slice = index % model->cpu_slots_per_node;
+    for (node_index = 0; node_index < profile->node_count; node_index++) {
+        const SN0ModelNodeInstance *node =
+            sn0_model_profile_node(profile, node_index);
+        unsigned int slice;
 
-        slot->type = machine->cpu_type;
-        slot->vcpus_count = 1;
-        slot->arch_id = (node << 1) | slice;
-        slot->props.has_socket_id = true;
-        slot->props.socket_id = node;
-        slot->props.has_core_id = true;
-        slot->props.core_id = slice;
-        slot->props.has_thread_id = true;
-        slot->props.thread_id = 0;
+        for (slice = 0; slice < node->cpu_count; slice++, index++) {
+            CPUArchId *slot = &machine->possible_cpus->cpus[index];
+
+            g_assert(index < max_cpus);
+            slot->type = machine->cpu_type;
+            slot->vcpus_count = 1;
+            slot->arch_id = sn0_model_node_cpu_id(node, slice);
+            slot->props.has_socket_id = true;
+            slot->props.socket_id = node_index;
+            slot->props.has_core_id = true;
+            slot->props.core_id = slice;
+            slot->props.has_thread_id = true;
+            slot->props.thread_id = 0;
+        }
     }
+    g_assert(index == max_cpus);
 
     return machine->possible_cpus;
 }
@@ -649,8 +667,28 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
                                            int index)
 {
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
+    const SN0ModelProfile *profile;
+    g_autofree unsigned int *cpus = NULL;
+    unsigned int node_count = machine->smp.sockets;
+    unsigned int node_index;
 
-    return index / model->cpu_slots_per_node;
+    cpus = g_new0(unsigned int, node_count);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        cpus[node_index] = node_count == 1 ? machine->smp.cpus :
+            machine->smp.cores * machine->smp.threads;
+    }
+    profile = sn0_model_find_profile(model, node_count, cpus);
+    g_assert(profile);
+    for (node_index = 0; node_index < profile->node_count; node_index++) {
+        const SN0ModelNodeInstance *node =
+            sn0_model_profile_node(profile, node_index);
+
+        if (index < node->cpu_count) {
+            return node_index;
+        }
+        index -= node->cpu_count;
+    }
+    g_assert_not_reached();
 }
 
 /*
@@ -660,22 +698,20 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
  * disables PI_CALIAS_SIZE first). Shared with the Hub's engines.
  */
 static hwaddr sn0_node_local_memory_base(MachineState *machine,
-                                         unsigned int node_index)
+                                         unsigned int nasid)
 {
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
 
-    if (node_index != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
+    if (nasid != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
         machine->kernel_filename) {
         return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, 0);
     }
-    return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, node_index);
+    return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, nasid);
 }
 
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelDevice *cpu_model = sn0_model_find_device(
-        node->model, SN0_MODEL_DEVICE_CPU_R10000, 0);
     const SN0ModelRegion *memory_region =
         sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
     const SN0ModelAddressSpace *hub_special =
@@ -685,8 +721,6 @@ static void sn0_node_create_cpus(SN0NodeState *node)
     unsigned int node_index = node->nasid;
     unsigned int slice, half, space_index;
 
-    g_assert(cpu_model && cpu_model->bus == SN0_MODEL_BUS_SYSAD &&
-             cpu_model->parent == SN0_MODEL_DEVICE_HUB);
     g_assert(node->model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *alias_name =
@@ -828,8 +862,6 @@ static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     const SN0ModelMemory *geometry = &node->model->memory;
-    const SN0ModelDevice *memory_model = sn0_model_find_device(
-        node->model, SN0_MODEL_DEVICE_MEMORY, 0);
     const SN0ModelRegion *local_memory =
         sn0_region(node->model, SN0_MODEL_REGION_HUB_LOCAL_MEMORY);
     const SN0ModelRegion *remote_memory =
@@ -842,9 +874,6 @@ static void sn0_node_map_memory(SN0NodeState *node)
     unsigned int node_index = node->nasid;
     unsigned int bank, segment;
 
-    g_assert(memory_model &&
-             memory_model->bus == SN0_MODEL_BUS_DIRECTORY &&
-             memory_model->parent == SN0_MODEL_DEVICE_HUB);
     g_assert(geometry->architectural_banks <= SN0_MAX_MEMORY_BANKS);
     g_assert(geometry->physical_banks <= geometry->architectural_banks);
     g_assert(geometry->bank_stride_mib > 0);
@@ -921,8 +950,6 @@ static void sn0_node_map_memory(SN0NodeState *node)
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelDevice *flash_model = sn0_model_find_device(
-        node->model, SN0_MODEL_DEVICE_PFLASH, 0);
     const SN0ModelRegion *flash_hub =
         sn0_region(node->model, SN0_MODEL_REGION_PFLASH_LBOOT);
     const SN0ModelRegion *flash_reset =
@@ -959,9 +986,6 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     g_autofree char *dir_name =
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
-    g_assert(flash_model &&
-             flash_model->bus == SN0_MODEL_BUS_DIRECTORY &&
-             flash_model->parent == SN0_MODEL_DEVICE_HUB);
     g_assert(flash_reset &&
              flash_reset->space == SN0_MODEL_SPACE_MEMORY);
     g_assert(rboot_storage == flash_reset);
@@ -1081,8 +1105,6 @@ static void sn0_node_create_hub(SN0NodeState *node)
 {
     const SN0ModelRegion *memory_region =
         sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
-    const SN0ModelDevice *hub_model = sn0_model_find_device(
-        node->model, SN0_MODEL_DEVICE_HUB, 0);
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
@@ -1096,8 +1118,6 @@ static void sn0_node_create_hub(SN0NodeState *node)
     MIPSCPU *cpu;
     unsigned int slice;
 
-    g_assert(hub_model && hub_model->bus == SN0_MODEL_BUS_NONE &&
-             hub_model->parent == SN0_MODEL_DEVICE_NONE);
     memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
                        SN0_XTALK_SIZE);
 
@@ -1131,8 +1151,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         hub_model->serial_base +
-                         hub_model->serial_stride * node->nasid);
+                         node->model->hub.serial_base +
+                         node->model->hub.serial_stride * node->nasid);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",
@@ -1153,9 +1173,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
     object_property_set_link(OBJECT(&node->hub), "claim-target",
                              OBJECT(system), &error_fatal);
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-node-shift",
-                         ctz64(sn0_space(
-                             node->model,
-                             SN0_MODEL_SPACE_MEMORY)->node_stride));
+                         ctz64(node->model->node_stride));
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-space-shift",
                          MIPS_UNCACHED_WINDOW_SHIFT);
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-own-node", node->nasid);
@@ -1184,7 +1202,6 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
         sn0_region(node->model, SN0_MODEL_REGION_HUB_REGISTERS_NODE);
     const SN0ModelRegion *hub_local =
         sn0_model_region_alias(node->model, hub_explicit);
-    hwaddr node_base = xtalk->node_stride * node->nasid;
     unsigned int node_index = node->nasid;
     unsigned int widget;
 
@@ -1200,16 +1217,18 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
                                  SN0_XTALK_BASE(widget),
                                  SN0_SMALL_WINDOW_SIZE);
         memory_region_add_subregion(
-            system, xtalk->carrier_base + node_base +
-            SN0_SMALL_WINDOW(widget),
+            system, sn0_model_node_address(node->model, xtalk, node->nasid,
+                                           SN0_SMALL_WINDOW(widget)),
             &node->small_window[widget]);
     }
 
     memory_region_add_subregion(
-        system, xtalk->carrier_base + node_base + SN0_BIG_WINDOW_BASE,
+        system, sn0_model_node_address(node->model, xtalk, node->nasid,
+                                       SN0_BIG_WINDOW_BASE),
         &node->hub.bwin);
     memory_region_add_subregion(
-        system, xtalk->carrier_base + node_base + hub_local->offset,
+        system, sn0_model_region_address(node->model, xtalk, node->nasid,
+                                         hub_local, 0),
         &node->hub.regs);
 
     {
@@ -1221,7 +1240,8 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
                                  hub_explicit->size);
     }
     memory_region_add_subregion(
-        system, xtalk->carrier_base + node_base + hub_explicit->offset,
+        system, sn0_model_region_address(node->model, xtalk, node->nasid,
+                                         hub_explicit, 0),
         &node->hub_regs_node_view);
 }
 
@@ -1236,29 +1256,30 @@ static void sn0_init(MachineState *machine)
                               machine->numa_state->num_nodes : 0;
     uint64_t ram_offset = 0;
     g_autofree unsigned int *profile_cpus = NULL;
-    unsigned int node_count, node_index;
+    unsigned int max_nodes = sn0_model_max_nodes(model);
+    unsigned int node_count, node_index, cpu_index = 0;
 
     /* A product class must supply its static description and QOM adapters. */
     g_assert(model && smc->populate_io);
-    g_assert(model->max_nodes > 0);
+    g_assert(max_nodes > 0);
     g_assert(model->cpu_slots_per_node <= SN0_MAX_CPUS_PER_NODE);
     g_assert(model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
     g_assert(model->memory.architectural_banks <= SN0_MAX_MEMORY_BANKS);
-    profile_cpus = g_new0(unsigned int, model->max_nodes);
+    profile_cpus = g_new0(unsigned int, max_nodes);
 
     /*
      * One SMP socket is one chassis; -numa still owns the memory split
      * and must agree with the socket count.
      */
-    if (numa_nodes > model->max_nodes) {
+    if (numa_nodes > max_nodes) {
         error_report("%s: at most %u NUMA nodes are supported",
-                     mc->name, model->max_nodes);
+                     mc->name, max_nodes);
         exit(EXIT_FAILURE);
     }
     node_count = numa_nodes ? numa_nodes : machine->smp.sockets;
-    if (node_count > model->max_nodes) {
+    if (node_count > max_nodes) {
         error_report("%s: at most %u chassis are supported, and each -smp "
-                     "socket is one chassis", mc->name, model->max_nodes);
+                     "socket is one chassis", mc->name, max_nodes);
         exit(EXIT_FAILURE);
     }
 
@@ -1308,7 +1329,7 @@ static void sn0_init(MachineState *machine)
         for (node_index = 0; node_index < machine->smp.cpus; node_index++) {
             CPUArchId *cpu_slot = &machine->possible_cpus->cpus[node_index];
             unsigned int expected =
-                node_index / model->cpu_slots_per_node;
+                sn0_get_default_cpu_node_id(machine, node_index);
 
             if (!cpu_slot->props.has_node_id ||
                 cpu_slot->props.node_id != expected) {
@@ -1346,11 +1367,13 @@ static void sn0_init(MachineState *machine)
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
+        const SN0ModelNodeInstance *node_model =
+            sn0_model_profile_node(profile, node_index);
         uint64_t ram_size = numa_nodes ?
             machine->numa_state->nodes[node_index].node_mem :
             machine->ram_size / node_count;
-        unsigned int cpu_base = node_index * model->cpu_slots_per_node;
-        unsigned int cpu_count = profile->cpus_per_node[node_index];
+        unsigned int cpu_base = node_model->cpu_first_id;
+        unsigned int cpu_count = node_model->cpu_count;
         uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
         unsigned int populated_banks;
         QList *banks_mb;
@@ -1372,7 +1395,7 @@ static void sn0_init(MachineState *machine)
             qlist_append_int(banks_mb, bank_mb[bank]);
         }
 
-        qdev_prop_set_uint32(DEVICE(node), "nasid", node_index);
+        qdev_prop_set_uint32(DEVICE(node), "nasid", node_model->nasid);
         node->model = model;
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
@@ -1381,7 +1404,8 @@ static void sn0_init(MachineState *machine)
                                  &error_abort);
         qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
         qdev_prop_set_uint64(DEVICE(node), "local-memory-base",
-                             sn0_node_local_memory_base(machine, node_index));
+                             sn0_node_local_memory_base(machine,
+                                                        node_model->nasid));
         qdev_prop_set_bit(DEVICE(node), "promdata-filter",
                           !(s->synthesized_firmware &&
                             machine->kernel_filename));
@@ -1402,7 +1426,7 @@ static void sn0_init(MachineState *machine)
          * keeping it on the console node avoids the same collision.
          */
         qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
-                             s->synthesized_firmware ? node_index : 0);
+                             s->synthesized_firmware ? node_model->nasid : 0);
         qdev_prop_set_bit(DEVICE(&node->hub), "slave-module",
                           node_index != 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
@@ -1418,7 +1442,7 @@ static void sn0_init(MachineState *machine)
                                      OBJECT(&s->nodes[1 - node_index]->hub),
                                      &error_fatal);
             qdev_prop_set_uint32(DEVICE(&node->hub), "claim-peer-node",
-                                 1 - node_index);
+                sn0_model_profile_node(profile, 1 - node_index)->nasid);
         }
         qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
                           node_index == 0 && s->junk_uart_present);
@@ -1434,11 +1458,12 @@ static void sn0_init(MachineState *machine)
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
 
         for (slice = 0; slice < cpu_count; slice++) {
-            machine->possible_cpus->cpus[cpu_base + slice].cpu =
+            machine->possible_cpus->cpus[cpu_index++].cpu =
                 CPU(node->cpu[slice]);
         }
         ram_offset += ram_size;
     }
+    g_assert(cpu_index == machine->smp.cpus);
     g_assert(ram_offset == machine->ram_size);
 
     for (node_index = 0; node_index < node_count; node_index++) {
@@ -1626,15 +1651,12 @@ static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(obj)->model;
-    const SN0ModelDevice *bridge;
 
     g_assert(model);
-    bridge = sn0_model_find_device(model, SN0_MODEL_DEVICE_BRIDGE, 0);
-    g_assert(bridge);
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
     s->debug_leds = true;
-    s->widget0_revision = bridge->revision;
+    s->widget0_revision = model->base_io.default_revision;
 }
 
 static void sn0_instance_finalize(Object *obj)
