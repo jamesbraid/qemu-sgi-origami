@@ -6,9 +6,20 @@
 
 /*
  * The DS2502-family add-only EPROM: the DS2502 itself (four programmable
- * pages) and its DS2501 sibling (two). Both decode the same 0000h-007Fh
- * address space; see docs/library/dallas-1wire-part-specs.md section C.1
- * for the command set this implements.
+ * pages) and its DS2501 sibling (two).
+ *
+ * Both are modelled as decoding the same 0000h-007Fh space, the smaller
+ * part answering 0xff above the pages it has. That is an inference from two
+ * datasheet passages, not a quoted fact: the competing reading is that the
+ * smaller part's space ends at 003Fh, and the datasheets describe only
+ * pages that always read FFh without saying whether those pages are still
+ * addressed. No guest on this machine reads far enough to tell the two
+ * apart. A plain DS2501 datasheet, or a read past 003Fh on real silicon,
+ * would settle it.
+ *
+ * The command set this implements is recorded in the DS2502-family section
+ * of docs/library/dallas-1wire-part-specs.md, which also carries the
+ * provenance for the reading above.
  */
 #define TYPE_ONEWIRE_DS2501 "ds2501"
 #define TYPE_ONEWIRE_DS2502 "ds2502"

@@ -1071,9 +1071,14 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     s->dma_as = pci_get_address_space(dev);
 
     /*
-     * The MicroLAN bus exists on every board; what varies is whether
-     * anything hangs off it. An empty one answers a reset slot the way a
-     * disconnected wire does, which is what a board with no ethernet has.
+     * The MicroLAN bus exists on every board; what varies is whether a part
+     * hangs off it. Creating it unconditionally keeps one object graph and
+     * one migration shape across board variants rather than two.
+     *
+     * It is not created so that an empty bus can answer: a board with no
+     * ethernet carries no station-address part, and the slot handler
+     * answers that case before it ever reaches the bus. The empty bus is
+     * never driven from here.
      */
     s->onewire_bus = onewire_create_bus(DEVICE(dev), "onewire");
 
@@ -1097,12 +1102,18 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         /*
          * The station-address part, a DS2501: the 512-bit sibling of the
          * DS2502, which is what the family byte 0x91 -- the custom bit over
-         * base type 0x11 -- identifies. It is composed here rather than in
-         * reset because the record is fixed once the ethernet has realized
-         * and settled its address, and because QEMU resets a device's
-         * children before the device itself, so a controller that rebuilt
-         * an image in its own reset would write into a part that had
-         * already reset from the previous one.
+         * base type 0x11 -- identifies.
+         *
+         * The record is composed here and never again. It is fixed once the
+         * ethernet has realized and settled its address, and an EPROM keeps
+         * its contents across a reset -- that is what the technology is --
+         * so a chip that rebuilt the bytes on every reset would model
+         * something the hardware does not do. Those bytes are the part's own
+         * migrated state as well, and state with one owner wants one writer.
+         * Reaching into a child device's storage from a parent's reset is the
+         * wrong shape whichever order the phases run in, and they run in the
+         * safe one: hw/core/resettable.c holds children before the object
+         * itself, so the ordering was never the hazard.
          */
         sgi_ioc3_onewire_build_page(s, page);
         part = qdev_new(TYPE_ONEWIRE_DS2501);
