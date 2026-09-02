@@ -144,6 +144,13 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 /* Register-file offsets with modelled behaviour. */
 #define BCM570X_MAC_MODE            0x0400
 /*
+ * The MAC's status word. Its change bits are latches the driver clears by
+ * writing them back, so storing what it wrote leaves every bit it tried to
+ * clear reading as set -- the driver then sees the same condition it just
+ * acknowledged, and keeps handling it.
+ */
+#define BCM570X_MAC_STATUS          0x0404
+/*
  * MAC address filter slot 0. The chip loads the station address here from the
  * serial EEPROM at power-on, so a driver may read it back straight from these
  * registers instead of the SRAM mailbox: the high word holds the first two
@@ -1083,6 +1090,10 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
         break;
+    case BCM570X_MAC_STATUS:
+        /* Write one to clear: the bits written are the ones acknowledged. */
+        bcm570x_regfile_write(s, off, bcm570x_regfile_read(s, off) & ~val);
+        return;
     case BCM570X_HCC_MODE:
         val &= ~BCM570X_MODE_RESET;
         bcm570x_regfile_write(s, off, val);
