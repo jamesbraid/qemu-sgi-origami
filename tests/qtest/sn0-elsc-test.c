@@ -1565,6 +1565,64 @@ static void test_pwr_query_reports_cold_power_on(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "hbt" is the heartbeat / NMI-watchdog control the kernel enables during
+ * system-controller init (datasheet: firmware-facing command contracts).
+ * "hbt <interval> <delay>" enables it, "hbt 0" disables it, and "hbt" alone
+ * sends one heartbeat; all answer a plain "ok". The two arguments are
+ * decimal, unlike the hex arguments elsewhere, so a malformed argument is
+ * "err arg".
+ */
+static void test_hbt_watchdog_control(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    const char *ok_forms[] = { "hbt", "hbt 0", "hbt 1000 5" };
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(ok_forms); i++) {
+        req_len = build_request(req, ok_forms[i]);
+        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+        g_assert_cmpuint(resp[0], ==, 2);
+        g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    }
+
+    /* A non-decimal argument is rejected. */
+    req_len = build_request(req, "hbt xy");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /* A single non-zero argument is not a valid form -- only "hbt 0" is. */
+    req_len = build_request(req, "hbt 5");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /*
+     * A two-argument form with a non-decimal delay reaches the two-arg
+     * validator and is rejected.
+     */
+    req_len = build_request(req, "hbt 1000 xy");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /* Junk after the mnemonic with no delimiter is an unknown command. */
+    req_len = build_request(req, "hbtx");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1635,6 +1693,8 @@ int main(int argc, char **argv)
                         test_info_elsc_dump_shows_queued_input);
     qtest_add_data_func("sn0/elsc/pwr-query-reports-cold-power-on", NULL,
                         test_pwr_query_reports_cold_power_on);
+    qtest_add_data_func("sn0/elsc/hbt-watchdog-control", NULL,
+                        test_hbt_watchdog_control);
 
     ret = g_test_run();
 

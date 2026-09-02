@@ -94,6 +94,18 @@ Command vocabulary
     result. Whether a multi-module cold-power latch is per-module or
     machine-wide is not settled by the datasheet.
 
+``hbt [<interval> <delay>]``
+    Heartbeat / NMI-watchdog control, which the kernel enables during
+    controller init. ``hbt <interval> <delay>`` enables monitoring so a
+    missed heartbeat raises a non-maskable interrupt after the delay,
+    ``hbt 0`` disables it, and ``hbt`` alone sends one heartbeat; all
+    answer a plain ``ok``. The only valid one-argument form is ``hbt 0``;
+    a single non-zero argument is ``err arg``. The two arguments are
+    decimal, unlike the hex arguments elsewhere, and a malformed one is
+    ``err arg``. The model validates the request and arms no timer -- the
+    kernel only enables the watchdog, so no missed-heartbeat interrupt is
+    modelled.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
