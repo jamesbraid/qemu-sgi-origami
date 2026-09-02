@@ -54,6 +54,9 @@ test_mips64_timeouts = {
   # in test_irix_tg.py keeps a margin under this, with the bring-up steps on
   # their own fixed timeouts on top.
   'irix_tg' : 1800,
+  # Same boot, then bulk transfers on top of it: throughput needs the traffic
+  # to run long enough to be worth timing.
+  'irix_tg_perf' : 2700,
   # Boot to the POD prompt plus sixteen immediate commands; BOOT_TIMEOUT
   # in test_prom_pod.py keeps the usual 60s margin under this.
   'prom_pod' : 900,
@@ -154,6 +157,7 @@ tests_mips64_system_thorough = [
   'irix_eg_net',
   'irix_eg_perf',
   'irix_tg',
+  'irix_tg_perf',
   'openbsd_login',
   'linux_kernel',
   'linux_multiuser',
@@ -176,6 +180,7 @@ tests_mips64_unit = [
   'irix_eg_net_verdict',
   'irix_eg_perf_verdict',
   'irix_tg_verdict',
+  'irix_tg_perf_verdict',
   'linux_kernel_verdict',
   'linux_multiuser_verdict',
   'openbsd_install_verdict',
