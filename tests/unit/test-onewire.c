@@ -27,7 +27,13 @@ static void test_crc16_accumulates(void)
     const uint8_t b[1] = { 0x00 };
     uint16_t split = onewire_crc16(onewire_crc16(0, a, 2), b, 1);
     const uint8_t all[3] = { 0xf0, 0x00, 0x00 };
-    g_assert_cmpuint(split, ==, onewire_crc16(0, all, 3));
+    uint16_t whole = onewire_crc16(0, all, 3);
+    g_assert_cmpuint(split, ==, whole);
+    /* This is the UN-inverted value: our crc16 deliberately does not invert,
+     * and callers invert when transmitting. The test asserts what the
+     * function returns, not what goes on the wire.
+     */
+    g_assert_cmpuint(whole, ==, 0x3300);
 }
 
 /* CRC-8 against externally verified catalogue value (CRC-8/MAXIM-DOW). */
