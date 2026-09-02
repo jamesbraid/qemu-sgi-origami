@@ -1,6 +1,7 @@
 #include "qemu/osdep.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/onewire.h"
+#include "hw/1wire/ds2502.h"
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
@@ -200,6 +201,41 @@ static OneWireBus *onewire_test_bus_with_reply_part(uint8_t family,
     OneWireBus *bus = onewire_test_bus();
 
     onewire_test_add_reply_part(bus, family, serial);
+    return bus;
+}
+
+/*
+ * Adds a DS2501 or DS2502 to a bus, optionally loading an EPROM image
+ * before realize -- ds2502_set_image() must run before the device is
+ * realized, matching how a real machine model provisions one of these
+ * parts.
+ */
+static DeviceState *onewire_test_add_ds2502_variant(OneWireBus *bus,
+                                                      const char *type_name,
+                                                      uint8_t family,
+                                                      uint64_t serial,
+                                                      const uint8_t *image,
+                                                      size_t image_len)
+{
+    DeviceState *dev = qdev_new(type_name);
+
+    qdev_prop_set_uint8(dev, "family", family);
+    qdev_prop_set_uint64(dev, "serial", serial);
+    if (image) {
+        ds2502_set_image(dev, image, image_len);
+    }
+    qdev_realize_and_unref(dev, BUS(bus), &error_fatal);
+    return dev;
+}
+
+/* A blank (unprogrammed) DS2501, the 512-bit sibling the IOC3 carries. */
+static OneWireBus *onewire_test_bus_with_ds2501(uint8_t family,
+                                                 uint64_t serial)
+{
+    OneWireBus *bus = onewire_test_bus();
+
+    onewire_test_add_ds2502_variant(bus, TYPE_ONEWIRE_DS2501, family, serial,
+                                     NULL, 0);
     return bus;
 }
 
@@ -429,6 +465,244 @@ static void test_search_rom_arbitrates_two_parts(void)
     g_assert_cmpuint(reply, ==, 0x0b);
 }
 
+/*
+ * DS2502-family (docs/library/dallas-1wire-part-specs.md section C.1).
+ * The IOC3's part is a DS2501 -- family 0x91, two programmable pages,
+ * sharing the DS2502's 128-byte 0000h-007Fh address space and command set.
+ */
+
+static void test_ds2502_plain_read_has_no_page_crc(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    uint8_t page[32];
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);                 /* Skip ROM */
+    bus_touch_byte(bus, 0xf0);                 /* Read Memory */
+    bus_touch_byte(bus, 0x00);
+    bus_touch_byte(bus, 0x00);
+
+    /* Leading CRC-8 over command and both address bytes. */
+    const uint8_t hdr[3] = { 0xf0, 0x00, 0x00 };
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+
+    for (unsigned i = 0; i < sizeof(page); i++) {
+        page[i] = bus_touch_byte(bus, 0xff);
+    }
+    /*
+     * Page zero is not the end of memory either way, so no CRC follows here.
+     * The next byte is page one's first byte, unprogrammed. This is the
+     * assertion that fails on a model that copies 0xc3's per-page framing
+     * onto 0xf0. It deliberately does not read as far as end-of-memory,
+     * because where that lies on a DS2501 is still open.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+static void test_ds2502_status_serves_the_real_field(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xaa);                 /* Read Status */
+    bus_touch_byte(bus, 0x01);                 /* redirection byte, page 0 */
+    bus_touch_byte(bus, 0x00);
+    (void)bus_touch_byte(bus, 0xff);           /* header CRC-8 */
+
+    /*
+     * 0x0001 is page zero's redirection byte, and 0xff is its unprogrammed
+     * value meaning "not redirected". This is the byte OpenBSD's redirection
+     * walk stops on, and it must fall out of blank status memory rather than
+     * a coded special case.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+/*
+ * The behaviour this task exists to get right: unlike F0h, C3h closes
+ * every 32-byte page with a device-generated CRC-8 over that page's data.
+ * A model that copied F0h's framing onto C3h -- the exact bug flagged in
+ * the datasheet extraction's "Contradictions" section -- would answer
+ * 0xff for byte 33 here instead, the same wrong answer
+ * test_ds2502_plain_read_has_no_page_crc's F0h case correctly gives.
+ */
+static void test_ds2502_read_data_crc_emits_page_crc_every_32_bytes(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    uint8_t page[32];
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xc3);       /* Read Data / Generate 8-bit CRC */
+    bus_touch_byte(bus, 0x00);
+    bus_touch_byte(bus, 0x00);
+
+    const uint8_t hdr[3] = { 0xc3, 0x00, 0x00 };
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+
+    for (unsigned i = 0; i < sizeof(page); i++) {
+        page[i] = bus_touch_byte(bus, 0xff);
+    }
+
+    /* Byte 33 is a real CRC-8 over the 32 page bytes just read. */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==,
+                      onewire_crc8(0, page, sizeof(page)));
+
+    /*
+     * The 33-byte cycle repeats: this is page one's first data byte, not
+     * a second CRC.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+/*
+ * Read Memory's one CRC-8 only appears if the read actually runs through
+ * the last byte of memory (007Fh) -- unlike C3h, which never stops.
+ */
+static void test_ds2502_read_memory_emits_one_crc_at_end_of_memory(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    uint8_t tail[2];
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xf0);
+    bus_touch_byte(bus, 0x7e);       /* TA1: two bytes from the end */
+    bus_touch_byte(bus, 0x00);       /* TA2 */
+
+    const uint8_t hdr[3] = { 0xf0, 0x7e, 0x00 };
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+
+    tail[0] = bus_touch_byte(bus, 0xff);    /* 007Eh */
+    tail[1] = bus_touch_byte(bus, 0xff);    /* 007Fh: the last byte of memory */
+
+    /*
+     * Only now, having read through 007Fh, does the DS2501 answer a
+     * closing CRC-8 over the data actually read. A model that added this
+     * CRC unconditionally would already fail
+     * test_ds2502_plain_read_has_no_page_crc; one that never adds it
+     * would fail here instead.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==,
+                      onewire_crc8(0, tail, sizeof(tail)));
+
+    /*
+     * Nothing further is defined past the closing CRC; the part floats
+     * high rather than restarting or repeating it.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+/*
+ * "A start address above 007Fh has its 9 most significant bits forced to
+ * zero" (docs/library/dallas-1wire-part-specs.md section C.1). TA1=TA2=
+ * 0xff sends a raw 16-bit start address of 0xffff; masked to 7 bits that
+ * lands on 007Fh, the single last byte of memory. A model using the raw,
+ * unmasked address would never satisfy the addr==007Fh check that
+ * produces the closing CRC below, and so would answer 0xff forever
+ * instead -- a different, and wrong, failure than getting the mask width
+ * wrong (which would land somewhere else in 0000h-007Fh instead of at the
+ * very end, and also never trip this same check).
+ */
+static void test_ds2502_start_address_above_top_is_masked(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    const uint8_t hdr[3] = { 0xf0, 0xff, 0xff };
+    uint8_t last_byte;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xf0);
+    bus_touch_byte(bus, 0xff);       /* TA1 */
+    bus_touch_byte(bus, 0xff);       /* TA2: raw start address 0xffff */
+
+    /*
+     * The echoed header CRC-8 covers the raw bytes actually sent, not the
+     * masked address -- the datasheet's own "deliberate checksum
+     * mismatch" note is about exactly this gap.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+
+    last_byte = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(last_byte, ==, 0xff);      /* blank EPROM at 007Fh */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==,
+                      onewire_crc8(0, &last_byte, 1));
+}
+
+/*
+ * Both parts decode the full 0000h-007Fh space; they differ only in how
+ * many pages are programmable. A DS2501 (two pages) must read 0xff at
+ * byte 64 even when handed a full 128-byte image, while a DS2502 (four
+ * pages) must read the real programmed byte there. Getting either part a
+ * shortened address space, or failing to bound the programmable area by
+ * page count, would pass one of these two assertions and fail the other.
+ */
+static void test_ds2502_pages_bound_the_programmable_area(void)
+{
+    uint8_t image[DS2502_DATA_SIZE];
+    OneWireBus *bus2501, *bus2502;
+
+    memset(image, 0x5a, sizeof(image));
+
+    bus2501 = onewire_test_bus();
+    onewire_test_add_ds2502_variant(bus2501, TYPE_ONEWIRE_DS2501,
+                                     0x91, 0x5e7000000001ULL,
+                                     image, sizeof(image));
+
+    bus2502 = onewire_test_bus();
+    onewire_test_add_ds2502_variant(bus2502, TYPE_ONEWIRE_DS2502,
+                                     0x09, 0x0102030405ULL,
+                                     image, sizeof(image));
+
+    /*
+     * Skip ROM, Read Memory from 0x0040 (start of page 2), consume the
+     * header CRC, and read the first data byte.
+     */
+    g_assert_true(onewire_reset(bus2501));
+    bus_touch_byte(bus2501, 0xcc);
+    bus_touch_byte(bus2501, 0xf0);
+    bus_touch_byte(bus2501, 0x40);
+    bus_touch_byte(bus2501, 0x00);
+    bus_touch_byte(bus2501, 0xff);              /* header CRC, discarded */
+    g_assert_cmpuint(bus_touch_byte(bus2501, 0xff), ==, 0xff);
+
+    g_assert_true(onewire_reset(bus2502));
+    bus_touch_byte(bus2502, 0xcc);
+    bus_touch_byte(bus2502, 0xf0);
+    bus_touch_byte(bus2502, 0x40);
+    bus_touch_byte(bus2502, 0x00);
+    bus_touch_byte(bus2502, 0xff);
+    g_assert_cmpuint(bus_touch_byte(bus2502, 0xff), ==, 0x5a);
+}
+
+/*
+ * These parts are modelled add-only: Write Memory (0Fh) and Write Status
+ * (55h) must be refused rather than misread as a Read Memory or Read
+ * Status. If either were instead accepted and treated as though it needed
+ * TA1/TA2, the next two bytes here would be consumed as a bogus address
+ * instead of a fresh command, and the header CRC checked below would not
+ * come back matching {0xf0,0x00,0x00}.
+ */
+static void test_ds2502_write_commands_are_refused_not_misread(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    const uint8_t hdr[3] = { 0xf0, 0x00, 0x00 };
+    const uint8_t write_cmds[2] = { 0x0f, 0x55 };
+
+    for (unsigned i = 0; i < 2; i++) {
+        g_assert_true(onewire_reset(bus));
+        bus_touch_byte(bus, 0xcc);
+        bus_touch_byte(bus, write_cmds[i]);
+
+        bus_touch_byte(bus, 0xf0);
+        bus_touch_byte(bus, 0x00);
+        bus_touch_byte(bus, 0x00);
+        g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==,
+                          onewire_crc8(0, hdr, 3));
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -462,6 +736,21 @@ int main(int argc, char **argv)
                      test_match_rom_drops_at_first_mismatch);
     g_test_add_func("/onewire/bus/search-rom-arbitrates-two-parts",
                      test_search_rom_arbitrates_two_parts);
+
+    g_test_add_func("/onewire/ds2502/plain-read-has-no-page-crc",
+                     test_ds2502_plain_read_has_no_page_crc);
+    g_test_add_func("/onewire/ds2502/status-serves-the-real-field",
+                     test_ds2502_status_serves_the_real_field);
+    g_test_add_func("/onewire/ds2502/read-data-crc-emits-page-crc",
+                     test_ds2502_read_data_crc_emits_page_crc_every_32_bytes);
+    g_test_add_func("/onewire/ds2502/read-memory-emits-one-crc-at-end",
+                     test_ds2502_read_memory_emits_one_crc_at_end_of_memory);
+    g_test_add_func("/onewire/ds2502/start-address-above-top-is-masked",
+                     test_ds2502_start_address_above_top_is_masked);
+    g_test_add_func("/onewire/ds2502/pages-bound-the-programmable-area",
+                     test_ds2502_pages_bound_the_programmable_area);
+    g_test_add_func("/onewire/ds2502/write-commands-are-refused",
+                     test_ds2502_write_commands_are_refused_not_misread);
 
     return g_test_run();
 }
