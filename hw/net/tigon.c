@@ -92,6 +92,7 @@
 #define TI_EVENT_RING_CNT       256
 #define TI_RETURN_RING_CNT      2048
 #define TI_STD_RX_RING_CNT      512
+#define TI_JUMBO_RX_RING_CNT    256
 #define TI_TX_RING_CNT          512
 #define TI_EV_FIRMWARE_UP       0x01
 #define TI_EV_LINKSTAT_CHANGED  0x06
@@ -121,11 +122,15 @@
 #define TI_BDFLAG_MCAST_PKT     0x0040
 #define TI_BDFLAG_BCAST_PKT     0x0060
 #define TI_BDTYPE_RECV_BD       0x0002
+#define TI_BDTYPE_RECV_JUMBO_BD 0x0003
+#define TI_BDFLAG_JUMBO_RING    0x0010
 
 /* Largest frame the model assembles (jumbo, with slack). */
 #define TIGON_MAX_FRAME_SIZE    9600
 /* Smallest buffer that can hold one: below this the descriptor is not real. */
 #define TIGON_MIN_FRAME_SIZE    60
+/* Largest frame the standard ring's buffers are sized for. */
+#define TIGON_STD_FRAME_SIZE    1518
 
 /*
  * Field offsets inside the general information block (struct ti_gib): a 1 KB
@@ -135,6 +140,7 @@
 #define TI_GIB_EV_RCB           0x400
 #define TI_GIB_TX_RCB           0x420
 #define TI_GIB_STD_RX_RCB       0x430
+#define TI_GIB_JUMBO_RX_RCB     0x440
 #define TI_GIB_RETURN_RCB       0x460
 #define TI_GIB_EV_PRODIDX_PTR   0x470
 #define TI_GIB_RETURN_PRODIDX_PTR 0x478
@@ -470,6 +476,8 @@ static void tigon_parse_gib(TigonState *s)
         (tigon_dma_ld32(s, tx_rcb + 8) & TI_RCB_FLAG_HOST_RING) != 0;
 
     s->std_rx_ring_base = tigon_dma_ld_addr(s, g + TI_GIB_STD_RX_RCB);
+    s->jumbo_rx_ring_base =
+        tigon_dma_ld_addr(s, g + TI_GIB_JUMBO_RX_RCB);
 
     s->return_ring_base = tigon_dma_ld_addr(s, ret_rcb);
     ret_word = tigon_dma_ld32(s, ret_rcb + 8);
@@ -509,12 +517,6 @@ static void tigon_try_firmware_up(TigonState *s)
     }
     tigon_parse_gib(s);
     s->firmware_up = true;
-    fprintf(stderr, "TIGON-UP gib=%016llx stdrx=%016llx tx=%016llx ev=%016llx "
-            "ret=%016llx\n", (unsigned long long)s->gib_base,
-            (unsigned long long)s->std_rx_ring_base,
-            (unsigned long long)s->tx_ring_base,
-            (unsigned long long)s->ev_ring_base,
-            (unsigned long long)s->return_ring_base);
     tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0);
 }
 
@@ -734,6 +736,7 @@ static void tigon_reset_state(TigonState *s)
     s->tx_ring_base = 0;
     s->tx_host_ring = false;
     s->std_rx_ring_base = 0;
+    s->jumbo_rx_ring_base = 0;
     s->return_ring_base = 0;
     s->return_ring_max = 0;
     s->return_prodidx_ptr = 0;
@@ -743,6 +746,8 @@ static void tigon_reset_state(TigonState *s)
     s->tx_considx = 0;
     s->std_rx_considx = 0;
     s->std_rx_prodidx = 0;
+    s->jumbo_rx_considx = 0;
+    s->jumbo_rx_prodidx = 0;
     s->cmd_considx = 0;
     s->irq_asserted = false;
     memset(&s->eeprom, 0, sizeof(s->eeprom));
@@ -887,10 +892,19 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
     case TI_MB_CMDPROD_IDX:
         tigon_run_commands(s, val);
         return;
+    case TI_MB_JUMBORXPROD_IDX:
+        if (val >= TI_JUMBO_RX_RING_CNT) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "tigon: jumbo-rx producer index %u out of range\n",
+                          (uint32_t)val);
+        }
+        s->jumbo_rx_prodidx = val % TI_JUMBO_RX_RING_CNT;
+        /* A frame too big for the standard ring can now be delivered. */
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        return;
     case TI_WINDATA:
     case TI_SRAM_ADDR:
     case TI_SRAM_DATA:
-    case TI_MB_JUMBORXPROD_IDX:
     case TI_MB_MINIRXPROD_IDX:
         qemu_log_mask(LOG_UNIMP, "tigon: write 0x%08x to unimplemented "
                       "register 0x%03" HWADDR_PRIx "\n", (uint32_t)val, addr);
@@ -998,7 +1012,9 @@ static bool tigon_can_receive(NetClientState *nc)
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
 
     /* Operational, and at least one standard receive buffer is posted. */
-    return s->firmware_up && s->std_rx_considx != s->std_rx_prodidx;
+    return s->firmware_up &&
+           (s->std_rx_considx != s->std_rx_prodidx ||
+            s->jumbo_rx_considx != s->jumbo_rx_prodidx);
 }
 
 /*
@@ -1039,6 +1055,7 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     uint32_t rx_word;
     uint16_t buf_idx, buf_len;
     size_t landed;
+    bool jumbo;
 
     if (!s->firmware_up) {
         return size;   /* not operational: consumed, not queued */
@@ -1050,18 +1067,36 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
          */
         return size;
     }
-    if (s->std_rx_considx == s->std_rx_prodidx) {
+    /*
+     * A frame larger than the standard ring's buffers belongs in the jumbo
+     * ring, which the driver posts separately and only once it has been told
+     * a larger frame size. Choosing by size is what lets a guest raise its
+     * frame size at all: served only from the standard ring, the card can
+     * never carry one.
+     */
+    jumbo = size > TIGON_STD_FRAME_SIZE && s->jumbo_rx_ring_base != 0 &&
+            s->jumbo_rx_considx != s->jumbo_rx_prodidx;
+    if (!jumbo && s->std_rx_considx == s->std_rx_prodidx) {
         return 0;      /* genuine no-buffer flow control */
     }
 
-    /* Take the next posted standard receive buffer. */
-    rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
+    /* Take the next posted buffer from whichever ring carries this frame. */
+    if (jumbo) {
+        rx_desc = s->jumbo_rx_ring_base + (uint64_t)s->jumbo_rx_considx * 32;
+    } else {
+        rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
+    }
     buf_addr = tigon_dma_ld_addr(s, rx_desc);
     /* Big-endian word: buffer index in the high half, length in the low. */
     rx_word = tigon_dma_ld32(s, rx_desc + 8);
     buf_idx = rx_word >> 16;
     buf_len = rx_word & 0xffff;
-    s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
+    if (jumbo) {
+        s->jumbo_rx_considx =
+            (s->jumbo_rx_considx + 1) % TI_JUMBO_RX_RING_CNT;
+    } else {
+        s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
+    }
 
     /*
      * A descriptor claiming a buffer too small to hold an ethernet frame, or
@@ -1073,10 +1108,11 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
      */
     if (buf_len < TIGON_MIN_FRAME_SIZE || buf_len > TIGON_MAX_FRAME_SIZE) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "tigon: standard-rx descriptor %u offers a %u-byte "
-                      "buffer at 0x%" PRIx64 ", which is not a posted "
-                      "receive buffer; dropping the frame\n",
-                      buf_idx, buf_len, buf_addr);
+                      "tigon: %s-rx descriptor %u offers a %u-byte buffer "
+                      "at 0x%" PRIx64 ", which is not a posted receive "
+                      "buffer; dropping the frame\n",
+                      jumbo ? "jumbo" : "standard", buf_idx, buf_len,
+                      buf_addr);
         return size;
     }
 
@@ -1096,8 +1132,10 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     tigon_dma_st32(s, ret_desc + 8,
                    ((uint32_t)buf_idx << 16) | (landed & 0xffff));
     tigon_dma_st32(s, ret_desc + 12,
-                   ((uint32_t)TI_BDTYPE_RECV_BD << 16) |
-                   flags | TI_BDFLAG_END);
+                   ((uint32_t)(jumbo ? TI_BDTYPE_RECV_JUMBO_BD
+                                     : TI_BDTYPE_RECV_BD) << 16) |
+                   flags | TI_BDFLAG_END |
+                   (jumbo ? TI_BDFLAG_JUMBO_RING : 0));
     tigon_dma_st32(s, ret_desc + 16, 0);   /* ip / tcp-udp checksum */
     tigon_dma_st32(s, ret_desc + 20, 0);   /* error flags / vlan tag */
     tigon_dma_st32(s, ret_desc + 24, 0);   /* reserved */
@@ -1252,6 +1290,7 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT64(tx_ring_base, TigonState),
         VMSTATE_BOOL(tx_host_ring, TigonState),
         VMSTATE_UINT64(std_rx_ring_base, TigonState),
+        VMSTATE_UINT64(jumbo_rx_ring_base, TigonState),
         VMSTATE_UINT64(return_ring_base, TigonState),
         VMSTATE_UINT32(return_ring_max, TigonState),
         VMSTATE_UINT64(return_prodidx_ptr, TigonState),
@@ -1261,6 +1300,8 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT32(tx_considx, TigonState),
         VMSTATE_UINT32(std_rx_considx, TigonState),
         VMSTATE_UINT32(std_rx_prodidx, TigonState),
+        VMSTATE_UINT32(jumbo_rx_considx, TigonState),
+        VMSTATE_UINT32(jumbo_rx_prodidx, TigonState),
         VMSTATE_UINT32(cmd_considx, TigonState),
         VMSTATE_BOOL(irq_asserted, TigonState),
         VMSTATE_TIMER_PTR(link_timer, TigonState),
