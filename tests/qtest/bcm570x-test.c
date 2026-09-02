@@ -140,6 +140,8 @@
 #define BCM_HCC_STATUSBLK_HI    0x3c38u
 #define BCM_HCC_STATUSBLK_LO    0x3c3cu
 #define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* receive coalescing: microseconds */
+#define BCM_HCC_TX_COAL_TICKS   0x3c0cu
+#define BCM_HCC_TX_MAX_COAL_BDS 0x3c14u
 #define BCM_HCC_RX_MAX_COAL_BDS 0x3c10u        /* receive coalescing: descriptors */
 #define BCM_MODE_CTL            0x6800u
 #define BCM_DMA_SWAP_OPTIONS    0x36u          /* the driver's MODE_CTL swap arm */
@@ -1213,6 +1215,138 @@ static void test_transmit_no_segmentation(const void *data)
     bcm_close(&b);
     close(sv[0]);
     g_free(frame);
+}
+
+/*
+ * Transmit interrupt coalescing. The driver says how many completed descriptors
+ * it will wait for; reporting each one as it happens spends an interrupt per
+ * frame on a saving nobody asked for.
+ */
+#define TXC_FRAMES      16u
+#define TXC_COAL        4u
+#define TXC_RING        64u
+
+static void txc_setup(Bcm *b, unsigned int coal, unsigned int ticks)
+{
+    ind_reg_writel(b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 8, TXC_RING << 16);
+    bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(b, BCM_HCC_TX_MAX_COAL_BDS, coal);
+    bar_writel(b, BCM_HCC_TX_COAL_TICKS, ticks);
+    bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+}
+
+/*
+ * Post frames the way a driver does: one descriptor, one doorbell, per frame.
+ * That is what makes coalescing worth anything -- a driver that handed the card
+ * a whole burst on one doorbell would get one completion either way.
+ */
+static void txc_post(Bcm *b, const uint8_t *frame, unsigned int len,
+                     unsigned int frames)
+{
+    uint8_t bd[16];
+    unsigned int i;
+
+    for (i = 0; i < frames; i++) {
+        uint64_t buf = TX_BUF_PHYS + (uint64_t)i * 2048;
+
+        qtest_memwrite(b->qts, buf, frame, len);
+        memset(bd, 0, sizeof(bd));
+        put32le(bd + 0, buf >> 32);
+        put32le(bd + 4, buf & 0xffffffff);
+        put16le(bd + 8, BCM_TXBDFLAG_END);
+        put16le(bd + 10, (uint16_t)len);
+        qtest_memwrite(b->qts, TX_RING_PHYS + (uint64_t)i * 16, bd, sizeof(bd));
+        bar_writel(b, BCM_MBX_TX_PROD_LO, i + 1);
+    }
+}
+
+static void test_transmit_coalescing(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint32_t before, after;
+    unsigned int i;
+
+    memset(frame, 0x5a, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    /* Tick budget parked far out, so the frame count is what triggers. */
+    txc_setup(&b, TXC_COAL, 0x10000000);
+
+    before = read_status_tag(&b);
+    txc_post(&b, frame, sizeof(frame), TXC_FRAMES);
+
+    /* Every frame still reaches the wire. */
+    for (i = 0; i < TXC_FRAMES; i++) {
+        g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                        sizeof(frame));
+    }
+    after = read_status_tag(&b);
+
+    /* N frames grouped K at a time is N/K updates, not N. */
+    g_assert_cmpuint(after - before, ==, TXC_FRAMES / TXC_COAL);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * The other half, and the one that matters more: a burst that does not fill a
+ * group must still be reported. A count with no clock behind it holds the tail
+ * of every transfer back for an interrupt that never comes.
+ */
+static void test_transmit_coalescing_timer(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint32_t before, after;
+    unsigned int i;
+    const unsigned int ticks = 50;
+
+    memset(frame, 0x3c, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    /* A group of eight asked for, but only three frames sent. */
+    txc_setup(&b, 8, ticks);
+
+    before = read_status_tag(&b);
+    txc_post(&b, frame, sizeof(frame), 3);
+    for (i = 0; i < 3; i++) {
+        g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                        sizeof(frame));
+    }
+
+    /* Nothing reported yet: the group is short. */
+    g_assert_cmpuint(read_status_tag(&b) - before, ==, 0);
+
+    /* The tick budget elapses and the short group is reported anyway. */
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    after = read_status_tag(&b);
+    g_assert_cmpuint(after - before, ==, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
 }
 
 /* The one's-complement sum an IP or TCP checksum field is meant to hold. */
@@ -2756,6 +2890,10 @@ int main(int argc, char **argv)
                         test_transmit_round_trip);
     qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
                         test_transmit_throughput);
+    qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
+                        test_transmit_coalescing);
+    qtest_add_data_func("/bcm570x/transmit-coalescing-timer", NULL,
+                        test_transmit_coalescing_timer);
     qtest_add_data_func("/bcm570x/receive-coalescing-cost", NULL,
                         test_receive_coalescing_cost);
     qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,

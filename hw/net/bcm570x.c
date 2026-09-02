@@ -281,7 +281,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_HCC_STATUSBLK_ADDR_HI 0x3c38
 #define BCM570X_HCC_STATUSBLK_ADDR_LO 0x3c3c
 #define BCM570X_HCC_RX_COAL_TICKS   0x3c08  /* receive coalescing tick budget */
+#define BCM570X_HCC_TX_COAL_TICKS   0x3c0c  /* transmit coalescing tick budget */
 #define BCM570X_HCC_RX_MAX_COAL_BDS 0x3c10  /* receive coalescing frame count */
+#define BCM570X_HCC_TX_MAX_COAL_BDS 0x3c14  /* transmit coalescing frame count */
 #define BCM570X_STATUS_BLK_SIZE     0x50
 #define BCM570X_STATFLAG_UPDATED    0x00000001u
 /* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
@@ -392,6 +394,8 @@ struct Bcm570xState {
      * DMA, and the timer that flushes a partial group so the tail of a burst is
      * never stranded past the driver's programmed tick budget. */
     uint16_t rx_coal_pending;
+    uint16_t tx_coal_pending;
+    QEMUTimer tx_coal_timer;
     QEMUTimer status_tick_timer;
     QEMUTimer coal_timer;
 
@@ -520,6 +524,8 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->irq_pending = false;
     s->status_kick_done = false;
     s->status_tag = 0;
+    s->tx_coal_pending = 0;
+    timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_MAGIC);
     bcm570x_load_station_address(s);
@@ -772,6 +778,59 @@ static void bcm570x_coal_timer(void *opaque)
  * max-BDs of zero or one is the un-coalesced case the model shipped with -- one
  * update per frame -- so a driver that programs neither register is unchanged.
  */
+/*
+ * The transmit side of the same arrangement. The driver programs how many
+ * completed descriptors, or how long, it is prepared to wait before being told
+ * about them, and reporting each one as it happens costs an interrupt per frame
+ * for a saving the driver did not ask for.
+ */
+static void bcm570x_tx_coal_flush(Bcm570xState *s)
+{
+    if (s->tx_coal_pending == 0) {
+        return;
+    }
+    s->tx_coal_pending = 0;
+    timer_del(&s->tx_coal_timer);
+    bcm570x_dma_status_block(s);
+}
+
+static void bcm570x_tx_coal_timer(void *opaque)
+{
+    bcm570x_tx_coal_flush(opaque);
+}
+
+/*
+ * Count the frames this doorbell completed and report the group once it is as
+ * large as the driver asked for. The tick timer is what stops the tail of a
+ * burst waiting for a frame that never comes: a count on its own would hold
+ * the last few completions back for an interrupt that never arrives, which is
+ * a stall wearing a saving's clothes.
+ */
+static void bcm570x_tx_coalesce(Bcm570xState *s, unsigned int frames)
+{
+    uint32_t max_bds = bcm570x_regfile_read(s, BCM570X_HCC_TX_MAX_COAL_BDS);
+    uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
+
+    if (frames == 0) {
+        /*
+         * A doorbell that completed nothing still moves the consumer the driver
+         * reads, and bring-up leans on the update arriving: report it rather
+         * than folding it into a group that may never fill.
+         */
+        bcm570x_dma_status_block(s);
+        return;
+    }
+    s->tx_coal_pending += frames;
+    if (max_bds <= 1 || s->tx_coal_pending >= max_bds) {
+        bcm570x_tx_coal_flush(s);
+    } else if (ticks != 0 && !timer_pending(&s->tx_coal_timer)) {
+        timer_mod(&s->tx_coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  (int64_t)ticks * BCM570X_COAL_TICK_NS);
+    } else if (ticks == 0) {
+        bcm570x_tx_coal_flush(s);
+    }
+}
+
 static void bcm570x_rx_coalesce(Bcm570xState *s)
 {
     uint32_t max_bds = bcm570x_regfile_read(s, BCM570X_HCC_RX_MAX_COAL_BDS);
@@ -930,6 +989,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     uint8_t frame[BCM570X_MAX_FRAME];
     unsigned int frame_len = 0;
     unsigned int walked = 0;
+    unsigned int sent = 0;
     uint16_t frame_flags = 0;
     unsigned int frame_mss = 0;
     bool frame_dropped = false;
@@ -986,6 +1046,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         if (flags & BCM570X_TXBDFLAG_END) {
             if (!frame_dropped && frame_len) {
                 bcm570x_tx_segment(s, frame, frame_len, frame_mss, frame_flags);
+                sent++;
             }
             frame_len = 0;
             frame_flags = 0;
@@ -999,7 +1060,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     s->tx_busy = false;
 
     s->status_tx_cons = prod;
-    bcm570x_dma_status_block(s);
+    bcm570x_tx_coalesce(s, sent);
 }
 
 /*
@@ -1742,6 +1803,8 @@ static void bcm570x_init(Object *obj)
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
     timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_coal_timer, s);
+    timer_init_ns(&s->tx_coal_timer, QEMU_CLOCK_VIRTUAL,
+                  bcm570x_tx_coal_timer, s);
     timer_init_ns(&s->status_tick_timer, QEMU_CLOCK_VIRTUAL,
                   bcm570x_status_tick, s);
 }
