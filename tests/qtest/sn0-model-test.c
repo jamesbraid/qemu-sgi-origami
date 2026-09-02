@@ -1704,6 +1704,23 @@ static void test_reject_split_one_node_topology(const void *data)
                            "2 cores and one thread each"));
 }
 
+static void test_reject_split_numa_topology(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "128M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=64M",
+        "-numa", "node,nodeid=0,cpus=0,memdev=ram0",
+        "-numa", "node,nodeid=1,cpus=1,memdev=ram1",
+        "-smp", "2,sockets=2,cores=1,threads=1",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: 2 chassis require 4 CPUs as 2 sockets "
+                        "with 2 cores and one thread each");
+}
+
 static void test_reject_three_cores_one_chassis(const void *data)
 {
     const char *args[] = {
@@ -1822,6 +1839,8 @@ int main(int argc, char **argv)
                         test_reject_invalid_node_memory);
     qtest_add_data_func("sn0/model/reject-split-one-node-topology", NULL,
                         test_reject_split_one_node_topology);
+    qtest_add_data_func("sn0/model/reject-split-numa-topology", NULL,
+                        test_reject_split_numa_topology);
 
     return g_test_run();
 }

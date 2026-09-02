@@ -623,11 +623,34 @@ static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
             machine->smp.cores * machine->smp.threads;
     }
     profile = sn0_model_find_profile(model, node_count, cpus);
-    g_assert(profile);
 
     machine->possible_cpus = g_malloc0(sizeof(CPUArchIdList) +
                                        sizeof(CPUArchId) * max_cpus);
     machine->possible_cpus->len = max_cpus;
+    if (!profile) {
+        /*
+         * NUMA parsing asks for CPU properties before sn0_init() can reject
+         * an unsupported geometry.  Preserve the physical slot mapping long
+         * enough for that validation to report the user-facing error.
+         */
+        for (index = 0; index < max_cpus; index++) {
+            CPUArchId *slot = &machine->possible_cpus->cpus[index];
+            unsigned int node = index / model->cpu_slots_per_node;
+            unsigned int slice = index % model->cpu_slots_per_node;
+
+            slot->type = machine->cpu_type;
+            slot->vcpus_count = 1;
+            slot->arch_id = (node << 1) | slice;
+            slot->props.has_socket_id = true;
+            slot->props.socket_id = node;
+            slot->props.has_core_id = true;
+            slot->props.core_id = slice;
+            slot->props.has_thread_id = true;
+            slot->props.thread_id = 0;
+        }
+        return machine->possible_cpus;
+    }
+
     for (node_index = 0; node_index < profile->node_count; node_index++) {
         const SN0ModelNodeInstance *node =
             sn0_model_profile_node(profile, node_index);
@@ -678,7 +701,9 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
             machine->smp.cores * machine->smp.threads;
     }
     profile = sn0_model_find_profile(model, node_count, cpus);
-    g_assert(profile);
+    if (!profile) {
+        return index / model->cpu_slots_per_node;
+    }
     for (node_index = 0; node_index < profile->node_count; node_index++) {
         const SN0ModelNodeInstance *node =
             sn0_model_profile_node(profile, node_index);
