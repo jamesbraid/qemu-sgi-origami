@@ -12,7 +12,6 @@ typedef enum SN0ModelAddressSpaceKind {
 } SN0ModelAddressSpaceKind;
 
 typedef enum SN0ModelRegionRole {
-    SN0_MODEL_REGION_NONE,
     SN0_MODEL_REGION_NODE_MEMORY,
     SN0_MODEL_REGION_HUB_REGISTERS_LOCAL,
     SN0_MODEL_REGION_HUB_REGISTERS_NODE,
