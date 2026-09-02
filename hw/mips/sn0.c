@@ -739,6 +739,8 @@ static hwaddr sn0_node_local_memory_base(MachineState *machine,
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
+    const SN0ModelRegion *memory_region =
+        sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
     const SN0ModelAddressSpace *hub_special =
         sn0_space(node->model, SN0_MODEL_SPACE_HUB_SPECIAL);
     hwaddr node_base = sn0_space_node_base(
@@ -778,9 +780,10 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                             &node->claim_view[slice], -1);
 
         /*
-         * NASID-less addresses name the reading processor's node only
-         * within a bounded window; beyond it, like every explicit
-         * NASID, they fall to the Hub's claim layer underneath.
+         * NASID-less addresses name the reading processor's node -- in
+         * the memory space only within the cached-alias bound, beyond
+         * which, like every explicit NASID, they fall to the Hub's
+         * claim layer underneath.
          */
         for (space_index = 0;
              space_index < node->model->address_space_count; space_index++) {
@@ -793,19 +796,26 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                 space_model->kind == SN0_MODEL_SPACE_MEMORY ?
                 node->local_memory_base : node_base;
             hwaddr local_offset = 0;
-            hwaddr local_size = SGI_HUB_CALIAS_MAX_SIZE;
+            hwaddr local_size = memory_region->size;
 
             /*
-             * The crosstalk space self-decodes the Hub's own
-             * eight-megabyte window, always. In every other space the
-             * nameless window is the cached-alias window: pre-created
-             * here at the largest size the register encodes, then
-             * resized and gated by this node's Hub, which gets the
-             * regions at wiring time. Below the bound an access stays
-             * local even while the programmed numbers are in motion --
-             * retiring these windows outright put mid-renumbering local
-             * accesses into claim transients and broke the two-node
-             * firmware boot.
+             * Per space, the public alias table (Linux asm/sn/addrs.h
+             * and sn0/addrs.h): the crosstalk space self-decodes the
+             * IALIAS, the Hub's own eight-megabyte register window,
+             * always. The memory space's nameless window is the CALIAS
+             * -- "the first n bytes of memory on the reader's node",
+             * based at the cached base -- pre-created here at the
+             * largest size the register encodes, then resized and gated
+             * by this node's Hub, which gets the region at wiring time.
+             * Below the bound an access stays local even while the
+             * programmed numbers are in motion -- retiring the window
+             * outright put mid-renumbering local accesses into claim
+             * transients and broke the two-node firmware boot. The
+             * Hub-special space is the UALIAS, uncached references to
+             * the memory of the reader's node, position-independent by
+             * definition and register-independent; the memory-special
+             * space and the LBOOT path are likewise local. Those keep
+             * the wide reader-local window.
              */
             if (space_model->kind == SN0_MODEL_SPACE_XTALK) {
                 const SN0ModelRegion *hub_region = sn0_region(
@@ -813,6 +823,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 
                 local_offset = hub_region->offset;
                 local_size = hub_region->size;
+            } else if (space_model->kind == SN0_MODEL_SPACE_MEMORY) {
+                local_size = SGI_HUB_CALIAS_MAX_SIZE;
             }
 
             memory_region_init_alias(&node->local_space[slice][space_index],
@@ -1205,20 +1217,19 @@ static void sn0_node_create_hub(SN0NodeState *node)
                                  &error_fatal);
 
         /*
-         * The nameless low windows the cached-alias size bounds: one per
-         * non-crosstalk space per view. The crosstalk space stays out --
-         * its nameless half is the Hub's fixed eight-megabyte window.
+         * The one nameless window the cached-alias size bounds: the
+         * memory space's, per view. The other spaces' windows are
+         * position-independent aliases the register never moves.
          */
         for (space_index = 0;
              space_index < node->model->address_space_count; space_index++) {
             g_autofree char *window_prop = NULL;
 
-            if (node->model->address_spaces[space_index].kind ==
-                SN0_MODEL_SPACE_XTALK) {
+            if (node->model->address_spaces[space_index].kind !=
+                SN0_MODEL_SPACE_MEMORY) {
                 continue;
             }
-            window_prop = g_strdup_printf("calias-window%u-%u", slice,
-                                          space_index);
+            window_prop = g_strdup_printf("calias-window%u", slice);
             object_property_set_link(
                 OBJECT(&node->hub), window_prop,
                 OBJECT(&node->local_space[slice][space_index]),

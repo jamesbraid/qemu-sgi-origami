@@ -396,21 +396,30 @@ a Hub answers to is programmed, not fixed" section of
 docs/datasheets/address-map.md in the origami project tree.
 
 The cached-alias size register bounds each processor view's nameless
-low window in every non-crosstalk space: zero disables it, one is
-4 KiB, and each further code doubles it, up to 64 MiB at fifteen --
-the public encoding in Linux's sn0 hubpi.h. Within the window a
-node-field-zero access names the reader's own node; beyond it the
-access falls to the claim overlays, which route stride zero by
-programmed number -- the node's own Hub before assignment, the
-global master's after. The machine pre-creates the windows at the
-largest encodable size and hands them over at build time; the Hub
-resizes and gates them inside one memory transaction whenever the
-register is stored, at reset exit, and after a migration load. Every
-guest we hold drives the register: the PROM stores the 4 KiB code
-once in its earliest per-processor bring-up and never reads it back,
-OpenBSD disables it at kernel initialisation, and Linux zeroes every
-node's copy before bringing processors up, then sets 8 KiB per node
-to switch to node-local exception handlers.
+low window in the memory space, and only there: the register's
+domain is the cached space alone -- Linux's sn0 addrs.h defines
+CALIAS as "the first n bytes of memory on the reader's node" based
+at the cached base. Zero disables the window, one is 4 KiB, and each
+further code doubles it, up to 64 MiB at fifteen (sn0 hubpi.h).
+Within the window a node-field-zero memory access names the reader's
+own node; beyond it the access falls to the claim overlays, which
+route stride zero by programmed number -- the node's own Hub before
+assignment, the global master's after. The machine pre-creates one
+window per view at the largest encodable size and hands it over at
+build time; the Hub resizes and gates it inside one memory
+transaction whenever the register is stored, at reset exit, and
+after a migration load. The other spaces' nameless windows are the
+position-independent aliases of asm/sn/addrs.h and stay wide and
+reader-local regardless of the register: the Hub-special space is
+the UALIAS (uncached references to the memory of the reader's node,
+its bottom 128 KiB flipped per processor), the crosstalk space's
+window is the IALIAS (the local Hub's registers), and the
+memory-special and LBOOT paths are likewise local. Every guest we
+hold drives the register: the PROM stores the 4 KiB code once in its
+earliest per-processor bring-up and never reads it back, OpenBSD
+disables it at kernel initialisation, and Linux zeroes every node's
+copy before bringing processors up, then sets 8 KiB per node to
+switch to node-local exception handlers.
 
 Diagnostic indicators and the boot-status word
 ==============================================
@@ -432,7 +441,7 @@ Migration
 The big-window table field is version-gated, so a stream from before
 the table existed loads with the windows at their reset aim. The
 big-window aim is re-derived from the restored table entries, and
-the nameless low windows from the restored cached-alias size;
+the cached-alias windows from the restored size code;
 the BTE registers are the whole of an engine's state, so nothing is
 in flight to carry. The interrupt outputs are re-driven on load,
 which is sound here because each drives an idempotent level input on

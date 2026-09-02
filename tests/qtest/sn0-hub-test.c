@@ -2791,34 +2791,50 @@ static void test_calias_overflow_stays_local_before_numbering(
 }
 
 /*
- * The Hub-special space's nameless window follows the same bound; its
- * bottom of local memory mirrors node RAM, which makes the routing
- * visible by value. The per-slice 128 KiB at the very bottom sits above
- * the window and never leaves the node.
+ * The Hub-special space is the UALIAS: uncached references to the
+ * memory of the reader's node, position-independent by definition --
+ * Linux asm/sn/addrs.h's alias table, verbatim -- so the cached-alias
+ * size register never moves it. The firmware renumbers a Hub while
+ * running its stack through this window precisely because it stays
+ * reader-local through the flip. The mirrored bottom of local memory
+ * makes the routing visible by value; the per-slice 128 KiB at the
+ * very bottom stays unique to each processor.
  */
-static void test_the_calias_bounds_the_hub_special_window(const void *data)
+static void test_the_hub_special_window_stays_reader_local(const void *data)
 {
     QTestState *qts = qtest_init_dual_node();
+    uint64_t node1_status;
 
     calias_plant_both_nodes(qts);
 
-    /* At the reset size the mirror shows the reader's own node. */
-    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
-                                    SPACE_HUB + CALIAS_PROBE), ==,
-                    CALIAS_PLANT_NODE1);
-
-    /* Beyond a shrunken window it shows the claimant of zero's. */
+    /* Shrunk, and even disabled, the register moves nothing here. */
     qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE,
                  PI_CALIAS_SIZE_4K);
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
                                     SPACE_HUB + CALIAS_PROBE), ==,
-                    CALIAS_PLANT_NODE0);
-
-    /* The per-slice bottom outranks the bound, even fully disabled. */
+                    CALIAS_PLANT_NODE1);
     qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE, 0);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    SPACE_HUB + CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
                                     SPACE_HUB + CALIAS_LOW_PROBE), ==,
                     CALIAS_LOW_PLANT_NODE1);
+
+    /*
+     * The firmware's renumbering sequence issues trial stores of the
+     * unchanged node id before the real one; re-aiming to the same
+     * values must disturb nothing.
+     */
+    node1_status = qtest_readq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS);
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS, node1_status);
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS, node1_status);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    SPACE_HUB + CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    NODE_STRIDE + CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
 
     qtest_quit(qts);
 }
@@ -3499,8 +3515,8 @@ int main(int argc, char **argv)
         "sn0/hub/calias-overflow-stays-local-before-numbering", NULL,
         test_calias_overflow_stays_local_before_numbering);
     qtest_add_data_func(
-        "sn0/hub/calias-bounds-the-hub-special-window", NULL,
-        test_the_calias_bounds_the_hub_special_window);
+        "sn0/hub/hub-special-window-stays-reader-local", NULL,
+        test_the_hub_special_window_stays_reader_local);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);
