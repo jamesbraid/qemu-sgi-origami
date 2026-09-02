@@ -27,6 +27,10 @@
  * -- no datasheet gives real pulse widths in register-write units, and the
  * three existing hand-written responders already agreed on these two
  * numbers, so the decode preserves them rather than inventing new ones.
+ *
+ * `sample` names the register's own sample-offset field (the Hub's
+ * MD_ONEWIRE_SAMPLE) and is accepted so all three masters can pass their
+ * raw register bits uniformly; this synchronous decode has no use for it.
  */
 static inline bool sgi_onewire_slot(OneWireBus *bus, uint32_t pulse,
                                     uint32_t sample)

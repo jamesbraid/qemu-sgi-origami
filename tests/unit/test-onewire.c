@@ -866,6 +866,41 @@ static void test_sgi_slot_mid_pulse_writes_zero(void)
     g_assert_cmpint(s->phase, ==, ONEWIRE_IDLE);
 }
 
+/*
+ * The reset threshold is a closed boundary: pulse width exactly 400 must
+ * already read as a reset, and 399 -- one below it -- must not. Both are
+ * checked on an empty bus, where the two outcomes are unambiguous: a reset
+ * with nobody answering samples high (true), while a write-zero always
+ * drives the wire low regardless of what is on the bus (false). A `pulse >
+ * 400` off-by-one, instead of `pulse >= 400`, would misclassify exactly 400
+ * as a write-zero and return false here too -- collapsing what should be
+ * two different outcomes onto the same value is exactly what this test
+ * exists to catch.
+ */
+static void test_sgi_slot_reset_threshold_is_closed_at_400(void)
+{
+    OneWireBus *bus = onewire_test_bus();
+
+    g_assert_true(sgi_onewire_slot(bus, 400, 0));     /* reset: no presence */
+    g_assert_false(sgi_onewire_slot(bus, 399, 0));    /* write-zero: low */
+}
+
+/*
+ * The write-zero/read boundary is closed on the write-zero side: pulse
+ * width exactly 40 must already hold the wire down, and 39 -- one below it
+ * -- must release it. Checked on an empty bus, where a write-zero always
+ * samples low (drive false) and a read always samples high with nobody
+ * pulling. A `pulse <= 40` off-by-one, instead of `pulse < 40`, would
+ * misclassify exactly 40 as a read and return true here too.
+ */
+static void test_sgi_slot_zero_threshold_is_closed_at_40(void)
+{
+    OneWireBus *bus = onewire_test_bus();
+
+    g_assert_false(sgi_onewire_slot(bus, 40, 0));     /* write-zero: low */
+    g_assert_true(sgi_onewire_slot(bus, 39, 0));      /* read: released, high */
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -925,6 +960,10 @@ int main(int argc, char **argv)
                      test_sgi_slot_short_pulse_reads);
     g_test_add_func("/onewire/sgi-slot/mid-pulse-writes-zero",
                      test_sgi_slot_mid_pulse_writes_zero);
+    g_test_add_func("/onewire/sgi-slot/reset-threshold-is-closed-at-400",
+                     test_sgi_slot_reset_threshold_is_closed_at_400);
+    g_test_add_func("/onewire/sgi-slot/zero-threshold-is-closed-at-40",
+                     test_sgi_slot_zero_threshold_is_closed_at_40);
 
     return g_test_run();
 }
