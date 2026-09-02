@@ -35,6 +35,7 @@
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
+#include "net/checksum.h"
 #include "qapi/error.h"
 
 /*
@@ -1275,6 +1276,20 @@ static const MemoryRegionOps xframe_pif_ops = {
 #define XFRAME_TXD_BUF_LEN_MASK     0xffffULL
 
 /*
+ * Transmit checksum offload, in the second control word. The driver hands the
+ * card a frame whose IPv4, TCP or UDP checksum field is not yet valid and asks
+ * for it to be inserted here (Linux s2io TXD_TX_CKO_IPV4_EN, _TCP_EN, _UDP_EN,
+ * the driver's own MSB-first bit numbering: bits 5, 6 and 7).
+ */
+#define XFRAME_TXD_CKO_IPV4         (1ULL << 58)
+#define XFRAME_TXD_CKO_TCP          (1ULL << 57)
+#define XFRAME_TXD_CKO_UDP          (1ULL << 56)
+
+#define XFRAME_ETH_HDR_LEN          14
+#define XFRAME_ETHERTYPE_IPV4       0x0800
+#define XFRAME_IPV4_MIN_HDR_LEN     20
+
+/*
  * Run a transmit descriptor list: fetch up to NUMTXD+1 descriptors from the
  * FIFO's pending list pointer, gather their buffers into one frame, hand the
  * first descriptor back to the host, and put the frame on the wire.
@@ -1343,6 +1358,33 @@ static void xframe_desc_stq(XframeState *s, uint8_t *p, uint64_t val, bool rxd)
     }
 }
 
+/*
+ * net_checksum_calculate believes the lengths in the frame it is handed, and
+ * the guest composed them: a header length under the twenty-byte minimum, or
+ * lengths reaching past what was gathered, walks it off the end of the buffer.
+ * A descriptor asking for insertion is not proof the frame is the IPv4 packet
+ * the request claims, so check before offering it one.
+ */
+static bool xframe_tx_frame_is_ipv4(const uint8_t *frame, size_t len)
+{
+    unsigned ihl, total;
+
+    if (len < XFRAME_ETH_HDR_LEN + XFRAME_IPV4_MIN_HDR_LEN) {
+        return false;
+    }
+    if (lduw_be_p(frame + 12) != XFRAME_ETHERTYPE_IPV4) {
+        return false;
+    }
+    if ((frame[XFRAME_ETH_HDR_LEN] >> 4) != 4) {
+        return false;
+    }
+    ihl = (frame[XFRAME_ETH_HDR_LEN] & 0x0f) * 4;
+    total = lduw_be_p(frame + XFRAME_ETH_HDR_LEN + 2);
+
+    return ihl >= XFRAME_IPV4_MIN_HDR_LEN && total >= ihl &&
+           XFRAME_ETH_HDR_LEN + (size_t)total <= len;
+}
+
 /* Not gated on ADAPTER_EN: drivers enable the adapter before any doorbell. */
 static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
 {
@@ -1350,6 +1392,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     uint64_t par = s->txdl_par[fifo];
     unsigned count = ((lcr >> 56) & 0xff) + 1;   /* NUMTXD + 1, 1..256 */
     uint64_t first_control1 = 0;
+    uint64_t first_control2 = 0;
     size_t frame_len = 0;
     bool have_first = false;
     unsigned i;
@@ -1378,6 +1421,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
                 return;
             }
             first_control1 = control1;
+            first_control2 = xframe_desc_ldq(s, raw + 8, false);
             have_first = true;
         }
 
@@ -1411,6 +1455,26 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     }
 
     if (frame_len > 0) {
+        int csum = 0;
+
+        if (first_control2 & XFRAME_TXD_CKO_IPV4) {
+            csum |= CSUM_IP;
+        }
+        if (first_control2 & XFRAME_TXD_CKO_TCP) {
+            csum |= CSUM_TCP;
+        }
+        if (first_control2 & XFRAME_TXD_CKO_UDP) {
+            csum |= CSUM_UDP;
+        }
+        if (csum && !xframe_tx_frame_is_ipv4(s->tx_frame, frame_len)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: checksum insertion asked for a frame that "
+                          "is not a well-formed IPv4 packet; sent unchanged\n");
+            csum = 0;
+        }
+        if (csum) {
+            net_checksum_calculate(s->tx_frame, frame_len, csum);
+        }
         qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
     }
 
