@@ -750,6 +750,50 @@ static void test_ds2502_start_address_above_top_is_masked(void)
 }
 
 /*
+ * The masking above belongs to the memory commands only. The DS2502
+ * family's eight-byte status field has no documented mask of its own
+ * (docs/library/dallas-1wire-part-specs.md section C.1 states the 007Fh
+ * forcing for memory, and nothing for status), so AAh keeps the address
+ * as sent -- unlike the DS2505, whose status field the datasheet does
+ * mask, and which has its own test for that.
+ *
+ * The difference only shows above 007Fh, so this asks for 0087h: it masks
+ * onto 0007h, the one status address whose byte is factory-programmed 00h
+ * and the one that closes the field with a CRC-8. A part that masked the
+ * status address would therefore answer a completely different stream --
+ * an echo over 0007h, then 00h, then a closing CRC -- while the real part
+ * reads unprogrammed EPROM at 0087h and never reaches the end of the
+ * field at all. Both halves are asserted for the same reason the
+ * memory-address test asserts both: only the pair distinguishes a part
+ * that masks from one that does not.
+ */
+static void test_ds2502_status_start_address_is_not_masked(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    const uint8_t sent_hdr[3] = { 0xaa, 0x87, 0x00 };
+    const uint8_t masked_hdr[3] = { 0xaa, 0x07, 0x00 };
+    uint8_t echo;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xaa);       /* Read Status */
+    bus_touch_byte(bus, 0x87);       /* TA1: 0087h, above the memory top */
+    bus_touch_byte(bus, 0x00);       /* TA2 */
+
+    echo = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(echo, ==, onewire_crc8(0, sent_hdr, 3));
+    g_assert_cmpuint(echo, !=, onewire_crc8(0, masked_hdr, 3));
+
+    /*
+     * 0087h is not 0007h, so this is unprogrammed status EPROM, not the
+     * factory 00h; and nothing closes the field, so the byte after it is
+     * more of the same rather than a CRC-8 over what came before.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+/*
  * Both parts decode the full 0000h-007Fh space; they differ only in how
  * many pages are programmable. A DS2501 (two pages) must read 0xff at
  * byte 64 even when handed a full 128-byte image, while a DS2502 (four
@@ -1440,6 +1484,8 @@ int main(int argc, char **argv)
                      test_ds2502_read_memory_emits_one_crc_at_end_of_memory);
     g_test_add_func("/onewire/ds2502/start-address-above-top-is-masked",
                      test_ds2502_start_address_above_top_is_masked);
+    g_test_add_func("/onewire/ds2502/status-start-address-is-not-masked",
+                     test_ds2502_status_start_address_is_not_masked);
     g_test_add_func("/onewire/ds2502/pages-bound-the-programmable-area",
                      test_ds2502_pages_bound_the_programmable_area);
     g_test_add_func("/onewire/ds2502/write-commands-are-refused",
