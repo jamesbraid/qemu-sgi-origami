@@ -130,7 +130,7 @@ struct DS2505State {
     uint8_t hdr_pos;        /* header bytes captured so far, 0..3 */
 
     uint16_t addr;          /* address of the byte/segment now in progress */
-    uint16_t page_end;      /* last address of the page/status unit in progress */
+    uint16_t page_end;      /* last address of the page/status unit in play */
     uint16_t crc_acc;       /* running CRC-16 of the segment now in progress */
     uint16_t crc_pending;   /* the full CRC-16, split across its two windows */
     uint8_t sent_byte;      /* the data/status/redirection byte last sent */
