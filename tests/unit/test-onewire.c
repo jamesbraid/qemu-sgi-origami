@@ -127,28 +127,19 @@ static OneWireBus *onewire_test_bus(void)
     return onewire_create_bus(host, "test");
 }
 
-/* A minimal slave with no memory function: it exercises the ROM layer alone. */
+/*
+ * A minimal slave with no memory function: it exercises the ROM layer
+ * alone. It needs no realize of its own -- the abstract onewire-slave's
+ * own realize computes the identity from the family/serial properties
+ * automatically, which is exactly the behaviour that makes this type
+ * trivial to add.
+ */
 #define TYPE_ONEWIRE_TEST_STUB "onewire-test-stub"
-
-static void onewire_test_stub_realize(DeviceState *dev, Error **errp)
-{
-    OneWireSlave *s = ONEWIRE_SLAVE(dev);
-
-    onewire_slave_set_identity(s, s->family, s->serial);
-}
-
-static void onewire_test_stub_class_init(ObjectClass *oc, const void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(oc);
-
-    dc->realize = onewire_test_stub_realize;
-}
 
 static const TypeInfo onewire_test_stub_info = {
     .name = TYPE_ONEWIRE_TEST_STUB,
     .parent = TYPE_ONEWIRE_SLAVE,
     .instance_size = sizeof(OneWireSlave),
-    .class_init = onewire_test_stub_class_init,
 };
 
 static OneWireBus *onewire_test_bus_with_part(uint8_t family, uint64_t serial)
@@ -159,6 +150,56 @@ static OneWireBus *onewire_test_bus_with_part(uint8_t family, uint64_t serial)
     qdev_prop_set_uint8(dev, "family", family);
     qdev_prop_set_uint64(dev, "serial", serial);
     qdev_realize_and_unref(dev, BUS(bus), &error_fatal);
+    return bus;
+}
+
+/*
+ * A slave whose memory function always answers its own family byte,
+ * regardless of what it is asked. It exists so a test can tell both
+ * whether ONEWIRE_FUNCTION was ever reached at all -- an unselected or
+ * IDLE part never calls function_byte, so the bus floats back whatever the
+ * caller drove instead of a real reply -- and, with two of these on one
+ * bus, which specific part answered.
+ */
+#define TYPE_ONEWIRE_TEST_REPLY "onewire-test-reply"
+
+static bool onewire_test_reply_function_byte(OneWireSlave *s, uint8_t in,
+                                              uint8_t *out)
+{
+    *out = s->family;
+    return true;
+}
+
+static void onewire_test_reply_class_init(ObjectClass *oc, const void *data)
+{
+    OneWireSlaveClass *k = ONEWIRE_SLAVE_CLASS(oc);
+
+    k->function_byte = onewire_test_reply_function_byte;
+}
+
+static const TypeInfo onewire_test_reply_info = {
+    .name = TYPE_ONEWIRE_TEST_REPLY,
+    .parent = TYPE_ONEWIRE_SLAVE,
+    .instance_size = sizeof(OneWireSlave),
+    .class_init = onewire_test_reply_class_init,
+};
+
+static void onewire_test_add_reply_part(OneWireBus *bus, uint8_t family,
+                                         uint64_t serial)
+{
+    DeviceState *dev = qdev_new(TYPE_ONEWIRE_TEST_REPLY);
+
+    qdev_prop_set_uint8(dev, "family", family);
+    qdev_prop_set_uint64(dev, "serial", serial);
+    qdev_realize_and_unref(dev, BUS(bus), &error_fatal);
+}
+
+static OneWireBus *onewire_test_bus_with_reply_part(uint8_t family,
+                                                     uint64_t serial)
+{
+    OneWireBus *bus = onewire_test_bus();
+
+    onewire_test_add_reply_part(bus, family, serial);
     return bus;
 }
 
@@ -190,16 +231,28 @@ static void test_read_rom_returns_the_identity(void)
 
 static void test_match_rom_selects_only_on_an_exact_identity(void)
 {
-    OneWireBus *bus = onewire_test_bus_with_part(0x0b, 0x010203040506ULL);
+    OneWireBus *bus = onewire_test_bus_with_reply_part(0x0b, 0x010203040506ULL);
     const uint8_t wrong[8] = { 0x0b, 0x99, 0x02, 0x03, 0x04, 0x05, 0x06, 0x00 };
+    uint8_t reply;
 
     g_assert_true(onewire_reset(bus));
     bus_touch_byte(bus, 0x55);
     for (unsigned i = 0; i < 8; i++) {
         bus_touch_byte(bus, wrong[i]);
     }
-    /* Deselected, so the part drives nothing and the wire floats high. */
-    g_assert_true(onewire_touch_bit(bus, true));
+
+    /*
+     * Deselected, so a function byte now must float rather than answer.
+     * A part freshly reached FUNCTION also has out == 0xff before its
+     * first function_byte call, so a bare "does it pull" check right after
+     * Match ROM cannot tell selected-but-silent-so-far apart from
+     * deselected -- and a model that ignored the mismatch and selected
+     * anyway would pass such a check too. Priming and reading back a real
+     * function byte is the only way to tell them apart.
+     */
+    bus_touch_byte(bus, 0xaa);
+    reply = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(reply, ==, 0xff);
 }
 
 static void test_a_driven_zero_differs_from_a_driven_one(void)
@@ -216,50 +269,6 @@ static void test_a_driven_zero_differs_from_a_driven_one(void)
     g_assert_true(onewire_touch_bit(bus, true));
     g_assert_true(onewire_touch_bit(bus, true));
     g_assert_false(onewire_touch_bit(bus, true));
-}
-
-/*
- * A slave whose memory function always answers a fixed byte, regardless of
- * what it is asked. It exists only so a test can tell whether
- * ONEWIRE_FUNCTION was ever reached at all: an unselected or IDLE part
- * never calls function_byte, so the bus floats back whatever the caller
- * drove instead of this constant.
- */
-#define TYPE_ONEWIRE_TEST_REPLY "onewire-test-reply"
-
-static bool onewire_test_reply_function_byte(OneWireSlave *s, uint8_t in,
-                                              uint8_t *out)
-{
-    *out = 0x3c;
-    return true;
-}
-
-static void onewire_test_reply_class_init(ObjectClass *oc, const void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(oc);
-    OneWireSlaveClass *k = ONEWIRE_SLAVE_CLASS(oc);
-
-    dc->realize = onewire_test_stub_realize;
-    k->function_byte = onewire_test_reply_function_byte;
-}
-
-static const TypeInfo onewire_test_reply_info = {
-    .name = TYPE_ONEWIRE_TEST_REPLY,
-    .parent = TYPE_ONEWIRE_SLAVE,
-    .instance_size = sizeof(OneWireSlave),
-    .class_init = onewire_test_reply_class_init,
-};
-
-static OneWireBus *onewire_test_bus_with_reply_part(uint8_t family,
-                                                     uint64_t serial)
-{
-    OneWireBus *bus = onewire_test_bus();
-    DeviceState *dev = qdev_new(TYPE_ONEWIRE_TEST_REPLY);
-
-    qdev_prop_set_uint8(dev, "family", family);
-    qdev_prop_set_uint64(dev, "serial", serial);
-    qdev_realize_and_unref(dev, BUS(bus), &error_fatal);
-    return bus;
 }
 
 /*
@@ -286,26 +295,35 @@ static void test_search_rom_completes_and_reaches_function(void)
     bus_touch_byte(bus, 0xf0);                  /* Search ROM */
 
     /*
-     * Only one part on the bus: drive its own identity bit at every
-     * triplet's direction slot, so it survives the whole search.
+     * Only one part on the bus: it must transmit its own identity bit on
+     * the identify slot and the bit's inverse on the complement slot, in
+     * that order -- a model with the two slots swapped would transmit the
+     * identity inverted and still finish the search, since nothing here
+     * checked what was actually said until now. Driving the identity bit
+     * back on the direction slot keeps the part alive for the whole
+     * search; checking it too, rather than discarding it, is what catches
+     * a model that dropped the open-drain "master AND no pull" term from
+     * the direction slot's result (the part itself never pulls there, so
+     * an implementation that instead always reported "no pull" as a bare
+     * high would echo every driven 0 back as a 1).
      */
     for (unsigned bitn = 0; bitn < 64; bitn++) {
         bool bitval = (id[bitn / 8] >> (bitn % 8)) & 1;
 
-        onewire_touch_bit(bus, true);            /* identify slot */
-        onewire_touch_bit(bus, true);            /* complement slot */
-        onewire_touch_bit(bus, bitval);          /* direction slot */
+        g_assert_cmpint(onewire_touch_bit(bus, true), ==, bitval);
+        g_assert_cmpint(onewire_touch_bit(bus, true), ==, !bitval);
+        g_assert_cmpint(onewire_touch_bit(bus, bitval), ==, bitval);
     }
 
-    bus_touch_byte(bus, 0xaa);                   /* prime the constant reply */
+    bus_touch_byte(bus, 0xaa);                   /* prime the reply */
     reply = bus_touch_byte(bus, 0xff);           /* read it back */
 
     /*
      * A model that instead dropped a surviving part to ONEWIRE_IDLE after
      * Search ROM would never call function_byte, and this read would float
-     * the driven 0xff back unchanged instead of the part's constant 0x3c.
+     * the driven 0xff back unchanged instead of the part's own family byte.
      */
-    g_assert_cmpuint(reply, ==, 0x3c);
+    g_assert_cmpuint(reply, ==, 0x0b);
 }
 
 /*
@@ -341,6 +359,76 @@ static void test_match_rom_drops_at_first_mismatch(void)
     g_assert_cmpint(s->phase, ==, ONEWIRE_IDLE);
 }
 
+/*
+ * The bus is a bus because more than one part can be on it, and Search ROM
+ * is the one ROM command where that actually shows: every other command is
+ * entirely master-driven, so a single-part test cannot exercise the
+ * wired-AND arbitration at all. Two parts here differ only in the low bit
+ * of the family byte, so the very first identity bit is a genuine
+ * discrepancy -- both parts are still alive and drive opposite values, so
+ * the wired AND of "pull low" from either one produces 0 on both the
+ * identify and complement slots, unlike a single live part which always
+ * shows the two slots as complements of each other. A model that
+ * short-circuited the per-slave OR (stopping at the first slave that
+ * pulled, rather than always polling every slave so a migratable part
+ * never falls behind bit-for-bit) or dropped the open-drain "master AND
+ * every slave" term entirely would not reproduce this 0/0 signature.
+ *
+ * After that one discrepancy this test always steers toward the part
+ * whose family byte is 0x0b, so the OTHER part must go silent from there
+ * on -- covered by the remaining 63 bits landing on ordinary, single-part
+ * values instead of more (0,0) discrepancies, even though the two parts'
+ * identities keep differing in their CRC bytes. If the dropped part failed
+ * to go silent and kept driving, those later bits would show spurious
+ * discrepancies instead.
+ */
+static void test_search_rom_arbitrates_two_parts(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_reply_part(0x0b, 0x010203040506ULL);
+    const uint8_t bodyA[7] = { 0x0b, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 };
+    const uint8_t bodyB[7] = { 0x0a, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 };
+    uint8_t idA[8], idB[8];
+    bool b_alive = true;
+    uint8_t reply;
+
+    onewire_test_add_reply_part(bus, 0x0a, 0x010203040506ULL);
+
+    memcpy(idA, bodyA, sizeof(bodyA));
+    idA[7] = onewire_crc8(0, bodyA, sizeof(bodyA));
+    memcpy(idB, bodyB, sizeof(bodyB));
+    idB[7] = onewire_crc8(0, bodyB, sizeof(bodyB));
+    /*
+     * Confirms the CRC bytes really do differ too, so the second half of
+     * this search exercises silence at a position neither part was
+     * explicitly steered on, not just the one forced discrepancy.
+     */
+    g_assert_cmpuint(idA[7], !=, idB[7]);
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xf0);                   /* Search ROM */
+
+    for (unsigned bitn = 0; bitn < 64; bitn++) {
+        bool bitA = (idA[bitn / 8] >> (bitn % 8)) & 1;
+        bool bitB = (idB[bitn / 8] >> (bitn % 8)) & 1;
+
+        if (b_alive && bitA != bitB) {
+            g_assert_false(onewire_touch_bit(bus, true));   /* identify */
+            g_assert_false(onewire_touch_bit(bus, true));   /* complement */
+            onewire_touch_bit(bus, bitA);                   /* steer to A */
+            b_alive = false;
+        } else {
+            g_assert_cmpint(onewire_touch_bit(bus, true), ==, bitA);
+            g_assert_cmpint(onewire_touch_bit(bus, true), ==, !bitA);
+            g_assert_cmpint(onewire_touch_bit(bus, bitA), ==, bitA);
+        }
+    }
+    g_assert_false(b_alive);
+
+    bus_touch_byte(bus, 0xaa);
+    reply = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(reply, ==, 0x0b);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -372,6 +460,8 @@ int main(int argc, char **argv)
                      test_search_rom_completes_and_reaches_function);
     g_test_add_func("/onewire/bus/match-rom-drops-at-first-mismatch",
                      test_match_rom_drops_at_first_mismatch);
+    g_test_add_func("/onewire/bus/search-rom-arbitrates-two-parts",
+                     test_search_rom_arbitrates_two_parts);
 
     return g_test_run();
 }

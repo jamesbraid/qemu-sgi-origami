@@ -24,13 +24,43 @@ typedef enum {
 struct OneWireSlaveClass {
     DeviceClass parent_class;
 
+    /*
+     * Called by the base realize (hw/1wire/core.c: onewire_slave_realize)
+     * after it has already computed the identity from the family/serial
+     * properties. A concrete part implements this instead of DeviceClass's
+     * own realize, matching hw/ssi/ssi.c's ssi_peripheral_realize chain --
+     * the base always runs first, so a part can never forget the identity
+     * computation the way a raw DeviceClass::realize override could.
+     */
+    void (*realize)(OneWireSlave *s, Error **errp);
+
     /* A bus reset reached this part: drop any memory-function state. */
     void (*function_reset)(OneWireSlave *s);
 
     /*
-     * One byte of a memory function, once the part is selected. `in` is what
-     * the master drove; store the part's reply in `*out`. Return false to
-     * refuse the byte, which the base logs as unimplemented.
+     * One byte of a memory function, once the part is selected. `in` is
+     * what the master drove during this byte's eight slots; store the
+     * part's reply for the NEXT byte's eight slots in `*out`. Return false
+     * to refuse the byte, which the base logs as unimplemented.
+     *
+     * The reply set by call N appears on the wire during window N+1, not
+     * during the byte that produced it: on real silicon the part's first
+     * answer bit is already on the wire before the master has driven the
+     * rest of that byte's bits, so a real part cannot make its own answer
+     * depend on `in` from the same window either. This one-window lag is
+     * the hardware, not a modelling shortcut -- do not try to remove it.
+     *
+     * A device must leave `*out` at 0xff for any window the master itself
+     * drives (a command or address byte): any other value pulls the wire
+     * low during a master write slot, which no real part ever does.
+     * During a window the master reads, `in` is 0xff filler -- the master
+     * releases the bus throughout -- so a device must track its own
+     * position in the transaction rather than key off `in` to decide what
+     * to send next.
+     *
+     * The model assumes byte-aligned framing: every command, address, and
+     * data byte of a memory function is a whole 8-bit window. Every
+     * DS2502/DS2505/DS2506 sequence in the extraction satisfies this.
      */
     bool (*function_byte)(OneWireSlave *s, uint8_t in, uint8_t *out);
 };
@@ -60,7 +90,12 @@ bool onewire_reset(OneWireBus *bus);
  */
 bool onewire_touch_bit(OneWireBus *bus, bool drive);
 
-/* Set before realize; the base computes the identity CRC-8. */
+/*
+ * Computes the identity CRC-8 from family and serial. The base realize
+ * calls this automatically from the family/serial properties before
+ * OneWireSlaveClass::realize runs; exposed for a part that must derive its
+ * identity from something other than those two properties.
+ */
 void onewire_slave_set_identity(OneWireSlave *s, uint8_t family,
                                  uint64_t serial);
 

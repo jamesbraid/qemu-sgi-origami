@@ -2,6 +2,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "hw/1wire/onewire.h"
 #include "hw/1wire/crc.h"
@@ -36,6 +37,25 @@ bool onewire_touch_bit(OneWireBus *bus, bool drive)
     return drive && !pulled;
 }
 
+/*
+ * The state a part returns to on either kind of reset: the long low pulse
+ * that starts a 1-Wire transaction, and QEMU's own machine/device reset.
+ * Shared so the two can never drift apart -- see onewire_reset() and
+ * onewire_slave_reset_hold() below.
+ */
+static void onewire_slave_reset_state(OneWireSlave *s)
+{
+    OneWireSlaveClass *k = ONEWIRE_SLAVE_GET_CLASS(s);
+
+    s->phase = ONEWIRE_ROM_COMMAND;
+    s->bit = 0;
+    s->shift = 0;
+    s->out = 0xff;          /* idle high: no function byte answered yet */
+    if (k->function_reset) {
+        k->function_reset(s);
+    }
+}
+
 bool onewire_reset(OneWireBus *bus)
 {
     BusState *b = BUS(bus);
@@ -43,16 +63,7 @@ bool onewire_reset(OneWireBus *bus)
     BusChild *kid;
 
     QTAILQ_FOREACH(kid, &b->children, sibling) {
-        OneWireSlave *s = ONEWIRE_SLAVE(kid->child);
-        OneWireSlaveClass *k = ONEWIRE_SLAVE_GET_CLASS(s);
-
-        s->phase = ONEWIRE_ROM_COMMAND;
-        s->bit = 0;
-        s->shift = 0;
-        s->out = 0xff;          /* idle high: no function byte answered yet */
-        if (k->function_reset) {
-            k->function_reset(s);
-        }
+        onewire_slave_reset_state(ONEWIRE_SLAVE(kid->child));
         present = true;
     }
     return present;
@@ -212,6 +223,60 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
     }
 }
 
+/*
+ * The base realize: compute the identity from the family/serial properties
+ * -- already applied by the time realize runs -- then chain to the
+ * concrete part's own realize, if it has one. A concrete part can never
+ * forget this the way it could forget to call onewire_slave_set_identity()
+ * itself, because it no longer has a DeviceClass::realize of its own to
+ * forget it in (hw/ssi/ssi.c: ssi_peripheral_realize is the same shape).
+ */
+static void onewire_slave_realize(DeviceState *dev, Error **errp)
+{
+    OneWireSlave *s = ONEWIRE_SLAVE(dev);
+    OneWireSlaveClass *k = ONEWIRE_SLAVE_GET_CLASS(s);
+
+    onewire_slave_set_identity(s, s->family, s->serial);
+    if (k->realize) {
+        k->realize(s, errp);
+    }
+}
+
+/* QEMU's own reset reaches the same state a 1-Wire reset pulse does. */
+static void onewire_slave_reset_hold(Object *obj, ResetType type)
+{
+    onewire_slave_reset_state(ONEWIRE_SLAVE(obj));
+}
+
+static int onewire_slave_post_load(void *opaque, int version_id)
+{
+    OneWireSlave *s = opaque;
+    uint32_t limit;
+
+    switch ((OneWirePhase)s->phase) {
+    case ONEWIRE_ROM_COMMAND:
+    case ONEWIRE_FUNCTION:
+        limit = 8;
+        break;
+    case ONEWIRE_ROM_READ:
+    case ONEWIRE_ROM_MATCH:
+        limit = 64;
+        break;
+    case ONEWIRE_ROM_SEARCH:
+        limit = 64 * 3;
+        break;
+    case ONEWIRE_IDLE:
+        limit = 1;           /* bit is always reset to 0 in ONEWIRE_IDLE */
+        break;
+    default:
+        return -EINVAL;      /* not one of the phases this bus defines */
+    }
+    if (s->bit >= limit) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static const Property onewire_slave_properties[] = {
     DEFINE_PROP_UINT8("family", OneWireSlave, family, 0),
     DEFINE_PROP_UINT64("serial", OneWireSlave, serial, 0),
@@ -220,8 +285,11 @@ static const Property onewire_slave_properties[] = {
 static void onewire_slave_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->bus_type = TYPE_ONEWIRE_BUS;
+    dc->realize = onewire_slave_realize;
+    rc->phases.hold = onewire_slave_reset_hold;
     device_class_set_props(dc, onewire_slave_properties);
 }
 
@@ -238,6 +306,7 @@ const VMStateDescription vmstate_onewire_slave = {
     .name = "onewire-slave",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = onewire_slave_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(phase, OneWireSlave),
         VMSTATE_UINT32(bit, OneWireSlave),

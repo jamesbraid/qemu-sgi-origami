@@ -1485,6 +1485,7 @@ S: Maintained
 F: docs/devel/sgi-byte-order.rst
 F: docs/specs/sgi-*
 F: hw/mips/sn0*
+F: hw/1wire/
 F: hw/i2c/pcf8584.c
 F: hw/input/sgi-ioc3-kbc.c
 F: hw/misc/sgi-*.c
@@ -1493,6 +1494,7 @@ F: hw/net/sgi-ioc3-eth.c
 F: hw/pci-host/sgi-bridge.c
 F: hw/rtc/m48t35.c
 F: hw/scsi/qlogic-isp.c
+F: include/hw/1wire/
 F: include/hw/i2c/pcf8584.h
 F: include/hw/input/sgi-ioc3-kbc.h
 F: include/hw/misc/sgi-*.h
