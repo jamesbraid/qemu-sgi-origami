@@ -40,6 +40,13 @@ test_mips64_timeouts = {
   # login); LOGIN_BUDGET_SECONDS in test_irix_eg_net.py keeps a margin
   # under this, with the transfer legs on their own fixed timeouts on top.
   'irix_eg_net' : 1800,
+  # The same full multiuser boot of the installed IRIX 6.5.30 disk as
+  # irix_eg_net, with more on top: a byte-checked 1 MiB TCP transfer, then
+  # bulk TCP and UDP throughput runs through ttcp. The boot is still the long
+  # pole -- LOGIN_BUDGET_SECONDS in test_irix_eg_perf.py keeps a margin under
+  # this -- and the three traffic legs carry their own fixed timeouts on top
+  # of it, so this sits above irix_eg_net's budget rather than at it.
+  'irix_eg_perf' : 2400,
   # The same full multiuser boot of the installed IRIX 6.5.30 disk, with the
   # tg (Broadcom BCM570x) adapter brought up instead, its link awaited, and
   # the SLIRP gateway pinged so tg1's own packet counters can be read back.
@@ -145,6 +152,7 @@ tests_mips64_system_thorough = [
   'prom_mdk_router',
   'irix_miniroot',
   'irix_eg_net',
+  'irix_eg_perf',
   'irix_tg',
   'openbsd_login',
   'linux_kernel',
@@ -166,6 +174,7 @@ tests_mips64_unit = [
   'lib_matrix',
   'lib_prom',
   'irix_eg_net_verdict',
+  'irix_eg_perf_verdict',
   'irix_tg_verdict',
   'linux_kernel_verdict',
   'linux_multiuser_verdict',
