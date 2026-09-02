@@ -1040,6 +1040,17 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             return;
         }
         bcm570x_regfile_write(s, off, val);
+        /*
+         * Taking a completion frees the entry it sat in, and the back end may be
+         * holding a frame this device refused while the ring was full. Nothing
+         * else will offer it again: a refusal leaves the frame queued until the
+         * device says it is ready, and the only other place that says so is the
+         * standard-ring doorbell -- which a driver that is draining rather than
+         * refilling need not write. Without this the interface takes one ring's
+         * worth and then goes quiet for good, which looks like the link dying
+         * partway through a transfer.
+         */
+        aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
         return;
     }
     case BCM570X_MI_COMM: {
