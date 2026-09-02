@@ -819,6 +819,107 @@ static void test_receive(const void *data)
 }
 
 /*
+ * Build an IPv4 frame of a given protocol and total payload length, with the
+ * L4 checksum field left zero. Returns the frame length. The caller owns the
+ * buffer; it must hold 14 + 20 + l4_len bytes.
+ */
+static size_t build_ipv4_frame(uint8_t *f, uint8_t proto, size_t l4_len,
+                               uint8_t seed)
+{
+    size_t ip_len = 20 + l4_len;
+    size_t i;
+
+    /*
+     * Addressed to our own MAC so the same frame serves both directions: the
+     * transmit path does not inspect the destination, and the receive filter
+     * requires it.
+     */
+    memcpy(f, rx_frame_ours, 14);          /* dst = us, src, ethertype IPv4 */
+    f[14] = 0x45;                          /* version 4, header length 5 */
+    f[15] = 0x00;
+    f[16] = (uint8_t)(ip_len >> 8);
+    f[17] = (uint8_t)ip_len;
+    f[18] = 0x00; f[19] = 0x00;            /* identification */
+    f[20] = 0x40; f[21] = 0x00;            /* don't fragment */
+    f[22] = 0x40;                          /* ttl */
+    f[23] = proto;
+    f[24] = 0x00; f[25] = 0x00;            /* header checksum, left zero */
+    f[26] = 10; f[27] = 0; f[28] = 2; f[29] = 15;    /* 10.0.2.15 */
+    f[30] = 10; f[31] = 0; f[32] = 2; f[33] = 2;     /* 10.0.2.2 */
+    for (i = 0; i < l4_len; i++) {
+        f[34 + i] = (uint8_t)(seed + i);
+    }
+    return 14 + ip_len;
+}
+
+/*
+ * IP carriage in both directions, for each transport the guest actually uses.
+ * The other tests drive ARP-shaped or hand-written frames; this one puts real
+ * IPv4 datagrams -- TCP, UDP, and a bare non-transport protocol -- through the
+ * transmit ring and back in through the receive ring, and compares them byte
+ * for byte at both ends. A model that mangles the IP header, or that treats
+ * one protocol differently from another on a path that should not care, fails
+ * here rather than in a guest weeks later.
+ */
+static void test_ip_carriage_both_directions(const void *data)
+{
+    static const struct { uint8_t proto; size_t l4_len; const char *what; }
+    cases[] = {
+        { 6,   20,  "TCP" },       /* a bare TCP header */
+        { 17,  8,   "UDP" },       /* a bare UDP header */
+        { 17,  512, "UDP bulk" },  /* a datagram past one word-copy chunk */
+        { 6,   1400, "TCP bulk" }, /* close to a full-size frame */
+        { 89,  40,  "OSPF" },      /* neither TCP nor UDP: still just carried */
+    };
+    unsigned c;
+
+    for (c = 0; c < ARRAY_SIZE(cases); c++) {
+        int sv[2];
+        QTestState *qts;
+        uint8_t frame[2048];
+        uint8_t got[2048];
+        uint8_t landed[2048];
+        size_t flen;
+        uint32_t word2;
+
+        flen = build_ipv4_frame(frame, cases[c].proto, cases[c].l4_len,
+                                (uint8_t)(0x30 + c));
+
+        g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+        qts = tigon_init_netdev(sv[1]);
+        close(sv[1]);
+        net_recv_timeout(sv[0], 5);
+        go_operational(qts);
+
+        /* Transmit: the frame leaves the card exactly as the guest wrote it. */
+        qtest_memwrite(qts, TX_BUF_PHYS, frame, flen);
+        write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+        qtest_writel(qts, TX_RING_PHYS + 8,
+                     ((uint32_t)flen << 16) | TI_BDFLAG_END);
+        qtest_writel(qts, TX_RING_PHYS + 12, 0);
+        qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+        g_assert_cmpint(net_recv_frame(sv[0], got, sizeof(got)), ==, (int)flen);
+        g_assert_cmpmem(got, flen, frame, flen);
+
+        /* Receive: the same datagram lands in the posted buffer intact. */
+        qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+        post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+        qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+        net_send_frame(sv[0], frame, flen);
+
+        g_assert_cmphex(wait_return_prod(qts), ==, 1);
+        word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+        g_assert_cmphex(word2 & 0xffff, ==, flen);
+        qtest_memread(qts, RX_BUF_PHYS, landed, flen);
+        g_assert_cmpmem(landed, flen, frame, flen);
+
+        qtest_quit(qts);
+        close(sv[0]);
+    }
+}
+
+/*
  * A full-size frame, transmitted and compared byte for byte. The payload copy
  * runs over 1500 bytes rather than the 60 the other transmit tests use, so a
  * copy that is correct only for short frames, or only at the start of one,
@@ -1037,13 +1138,14 @@ static void test_receive_recovers_when_ring_appears(const void *data)
 }
 
 /*
- * A doorbell rung while the ring control block is still unset flushes the
- * back end's queue, which reaches the receive path directly rather than
- * through can_receive(). A frame waiting there must survive that flush: if
- * the receive path consumed it, the frame would be dropped for good and the
- * guest would never see it once the ring did appear.
+ * A flush reaches the receive path directly, without the can-receive
+ * predicate, so it can arrive while the ring control block is still unset.
+ * The frame is dropped there rather than refused: refusing it would wedge the
+ * back end's queue head behind a frame no retry can pass. What must hold is
+ * that the drop is not permanent damage -- once the guest does populate the
+ * block and post a buffer, receive works again.
  */
-static void test_receive_survives_flush_with_unset_ring(const void *data)
+static void test_receive_not_wedged_by_flush_with_unset_ring(const void *data)
 {
     int sv[2];
     QTestState *qts;
@@ -1060,22 +1162,21 @@ static void test_receive_survives_flush_with_unset_ring(const void *data)
     publish_gib(qts);
     release_cpu(qts);
 
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-
-    /*
-     * Post the buffer the frame will land in first, then ring the doorbell
-     * twice with the ring control block still unset: each rings a flush that
-     * reaches the receive path while the base is zero.
-     */
+    /* A frame offered and then flushed at while the ring is still unset. */
     qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
     post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    /* Nothing was delivered: no descriptor was written through a zero ring. */
     g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
 
-    /* Now establish the ring: the frame must still be there to deliver. */
+    /* The guest sets the ring up, posts a buffer, and receives again. */
     write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, STD_RX_RING_PHYS);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
 
     g_assert_cmphex(wait_return_prod(qts), ==, 1);
     qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
@@ -1608,6 +1709,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/ip-carriage-both-directions", NULL,
+                        test_ip_carriage_both_directions);
     qtest_add_data_func("/sn0/tigon/transmit-full-size-frame", NULL,
                         test_transmit_full_size_frame);
     qtest_add_data_func("/sn0/tigon/transmit-checksum-offload", NULL,
@@ -1625,8 +1728,8 @@ int main(int argc, char **argv)
                         test_receive_refuses_unset_ring);
     qtest_add_data_func("/sn0/tigon/receive-recovers-when-ring-appears", NULL,
                         test_receive_recovers_when_ring_appears);
-    qtest_add_data_func("/sn0/tigon/receive-survives-flush-with-unset-ring",
-                        NULL, test_receive_survives_flush_with_unset_ring);
+    qtest_add_data_func("/sn0/tigon/receive-not-wedged-by-flush-unset-ring",
+                        NULL, test_receive_not_wedged_by_flush_with_unset_ring);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
     qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
