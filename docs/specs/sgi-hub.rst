@@ -421,3 +421,17 @@ which is sound here because each drives an idempotent level input on
 the CPU that migrates its own cause bits -- the same re-drive was
 rejected for the IOC3's line into the Bridge, whose consumer
 edge-detects.
+
+The one-wire responder's protocol state used to travel in this
+stream and now belongs to the part on the bus, which migrates its
+own. Unused spans of the original size hold its place so an older
+stream still loads, and a conversation half-finished when such a
+stream was written is discarded rather than translated. Discarding
+is not what a bus reset does -- a reset resets the master too, and a
+load does not -- so a guest resumed from one of those older streams
+keeps talking to a part that is now idle and has its next read slots
+sampled as a command byte of all ones. That produces one "unknown
+ROM command 0xff" on resume. It is benign and self-clearing at the
+guest's next reset pulse, and it is absent from streams written
+since the part became a device, which carry the part's own section
+and preserve the conversation intact.

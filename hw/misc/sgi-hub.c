@@ -2956,7 +2956,16 @@ static const VMStateDescription vmstate_sgi_hub = {
          * phase, bit, command and match ahead of the level; address bytes,
          * staged answer, cursor and end pair behind it. A half-finished
          * conversation in such a stream is discarded rather than
-         * translated, which is what a bus reset does to one anyway.
+         * translated.
+         *
+         * Discarding is not what a bus reset does. A reset resets the master
+         * too; a load does not. A guest resumed from a stream written before
+         * the move keeps talking to a part that is now idle, and its next
+         * read slots are sampled as a command byte of all ones -- measured,
+         * one "unknown ROM command 0xff" on resume, absent from every boot
+         * that did not migrate. It is benign: the guest recovers at its next
+         * reset pulse. Streams written since the move carry the part's own
+         * section and preserve the conversation intact.
          */
         VMSTATE_UNUSED_V(23, 11),
         VMSTATE_BOOL_V(onewire_level, SGIHubState, 23),
