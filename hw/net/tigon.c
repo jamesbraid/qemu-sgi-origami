@@ -978,12 +978,19 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
         /*
          * The receive ring control block is still unset, so its descriptors
          * would be read from physical address 0 and the frame written over
-         * arbitrary guest memory. Keep the frame queued rather than consuming
-         * it: a flush reaches this path directly, without can_receive(), and
-         * a frame consumed here would be dropped rather than delivered once
-         * the ring appears.
+         * arbitrary guest memory. A flush reaches this path directly, without
+         * can_receive(), so look once more in case the guest has populated the
+         * block since -- and if it still has not, drop the frame rather than
+         * returning 0. Returning 0 here would wedge the back end's queue head
+         * behind a frame no retry can pass, the same hazard the filtered case
+         * below avoids, and it also latches the peer's receive-disabled flag
+         * until something flushes the queue.
          */
-        return 0;
+        s->std_rx_ring_base =
+            tigon_dma_ld_addr(s, s->gib_base + TI_GIB_STD_RX_RCB);
+        if (s->std_rx_ring_base == 0) {
+            return size;
+        }
     }
     if (!tigon_rx_filter(s, buf, size, &flags)) {
         /*
