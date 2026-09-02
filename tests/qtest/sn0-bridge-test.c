@@ -2443,26 +2443,89 @@ static void test_the_status_memory_reads_back_by_the_page(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * Past the status memory the part leaves the wire alone -- asserted,
- * because a model that answered would hand back plausible bytes with an
- * agreeing check.
- */
-static void test_status_past_the_end_answers_nothing(const void *data)
+/* A skip-addressed status read from one address, keeping the request. */
+static void nic_status_request(QTestState *qts, uint16_t addr, uint8_t *hdr)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
     unsigned int i;
 
     g_assert_false(NIC_RESET(qts));
     nic_write_byte(qts, 0xcc);
 
-    nic_write_byte(qts, 0xaa);
-    nic_write_byte(qts, 0x00);
-    nic_write_byte(qts, 0x02);          /* 0x200, past the last status byte */
+    hdr[0] = 0xaa;
+    hdr[1] = addr & 0xff;
+    hdr[2] = addr >> 8;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, hdr[i]);
+    }
+}
 
-    for (i = 0; i < 12; i++) {
+/*
+ * One whole eight-byte status page and its check from a page-aligned
+ * start, then ten further slots -- a whole page and check pair. All ones
+ * across those ten says the field ended here rather than carrying on: a
+ * page that really followed would close with 0xbe 0x7b, not with ones.
+ */
+static void nic_status_final_page(QTestState *qts, uint16_t addr)
+{
+    uint8_t page[13];
+    unsigned int i;
+
+    nic_status_request(qts, addr, page);
+    for (i = 3; i < 11; i++) {
+        page[i] = nic_read_byte(qts);
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    page[11] = nic_read_byte(qts);
+    page[12] = nic_read_byte(qts);
+    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+
+    for (i = 0; i < 10; i++) {
         g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
     }
+}
+
+/*
+ * The status field is decoded across the same 0x7ff of address the data
+ * memory is, and only four small regions inside it are ever programmed.
+ * Every other address reads unprogrammed ones, still framed by a check
+ * every eight bytes -- so past the programmed regions the part keeps
+ * answering instead of going quiet, which is the one thing a guest cannot
+ * tell apart from a part that is not fitted.
+ */
+static void test_status_past_the_programmed_regions(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t first[13];
+    uint8_t next[10];
+    unsigned int i;
+
+    /* Past every programmed region, and well inside the address field. */
+    nic_status_request(qts, 0x200, first);
+    for (i = 3; i < 11; i++) {
+        first[i] = nic_read_byte(qts);
+        g_assert_cmphex(first[i], ==, 0xff);
+    }
+    first[11] = nic_read_byte(qts);
+    first[12] = nic_read_byte(qts);
+    g_assert_cmphex(nic_crc(0, first, sizeof(first)), ==, NIC_CRC_RESIDUE);
+
+    /* And on into the next page, whose check starts from a cleared basis. */
+    for (i = 0; i < 8; i++) {
+        next[i] = nic_read_byte(qts);
+        g_assert_cmphex(next[i], ==, 0xff);
+    }
+    next[8] = nic_read_byte(qts);
+    next[9] = nic_read_byte(qts);
+    g_assert_cmphex(nic_crc(0, next, sizeof(next)), ==, NIC_CRC_RESIDUE);
+
+    /*
+     * The top page of the field, then that same page named from above the
+     * top: a start address past 0x7ff has its high address bits forced to
+     * zero, so both end after one page rather than being refused or
+     * running on.
+     */
+    nic_status_final_page(qts, 0x7f8);
+    nic_status_final_page(qts, 0xff8);
 
     qtest_quit(qts);
 }
@@ -2602,6 +2665,82 @@ static void test_the_data_past_the_image_is_unprogrammed(const void *data)
     for (i = 0; i < 32; i++) {
         g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
     }
+
+    qtest_quit(qts);
+}
+
+/*
+ * And the framed read pads the same way. It used to serve page zero's
+ * bytes for an address the image does not cover, which hands a guest a
+ * second, spurious copy of the part number at an address that has none.
+ * The framing is asserted alongside the bytes, so a model that padded by
+ * falling silent fails too.
+ */
+static void test_the_framed_read_past_the_image_is_unprogrammed(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t exchange[6];
+    uint8_t page[34];
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+
+    exchange[0] = 0xa5;
+    exchange[1] = 0x40;                 /* the first page after the image */
+    exchange[2] = 0x00;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, exchange[i]);
+    }
+
+    for (i = 3; i < 6; i++) {
+        exchange[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(exchange[3], ==, 0xff);
+    g_assert_cmphex(nic_crc(0, exchange, 6), ==, NIC_CRC_RESIDUE);
+
+    for (i = 0; i < sizeof(page); i++) {
+        page[i] = nic_read_byte(qts);
+    }
+    for (i = 0; i < 32; i++) {
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A plain read that runs through the last byte of the memory is followed
+ * by a check over the request and every byte read -- the one check the
+ * unframed path has, and the reason a guest can trust an unframed read at
+ * all. Started near the top so the exchange is short.
+ */
+static void test_the_unframed_read_ends_with_its_check(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t exchange[13];
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);
+
+    exchange[0] = 0xf0;
+    exchange[1] = 0xf8;                 /* 0x07f8: the last eight bytes */
+    exchange[2] = 0x07;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, exchange[i]);
+    }
+
+    for (i = 3; i < 11; i++) {
+        exchange[i] = nic_read_byte(qts);
+        g_assert_cmphex(exchange[i], ==, 0xff);
+    }
+    exchange[11] = nic_read_byte(qts);
+    exchange[12] = nic_read_byte(qts);
+    g_assert_cmphex(nic_crc(0, exchange, sizeof(exchange)), ==,
+                    NIC_CRC_RESIDUE);
 
     qtest_quit(qts);
 }
@@ -3026,12 +3165,17 @@ int main(int argc, char **argv)
                         test_naming_another_part_deselects_this_one);
     qtest_add_data_func("sn0/bridge/one-wire-status-reads-by-page", NULL,
                         test_the_status_memory_reads_back_by_the_page);
-    qtest_add_data_func("sn0/bridge/one-wire-status-past-the-end", NULL,
-                        test_status_past_the_end_answers_nothing);
+    qtest_add_data_func(
+        "sn0/bridge/one-wire-status-past-the-programmed-regions", NULL,
+        test_status_past_the_programmed_regions);
     qtest_add_data_func("sn0/bridge/one-wire-unframed-matches-framed", NULL,
                         test_the_unframed_read_matches_the_framed_one);
+    qtest_add_data_func("sn0/bridge/one-wire-unframed-read-ends-with-its-check",
+                        NULL, test_the_unframed_read_ends_with_its_check);
     qtest_add_data_func("sn0/bridge/one-wire-data-past-the-image", NULL,
                         test_the_data_past_the_image_is_unprogrammed);
+    qtest_add_data_func("sn0/bridge/one-wire-framed-read-past-the-image", NULL,
+                        test_the_framed_read_past_the_image_is_unprogrammed);
     qtest_add_data_func("sn0/bridge/dma-page-mapped-swap-clear", NULL,
                         test_dma_page_mapped_swap_clear);
     qtest_add_data_func("sn0/bridge/dma-page-mapped-swap-set", NULL,

@@ -224,28 +224,42 @@ values -- Linux resets with a 520 microsecond pulse where OpenBSD
 uses 500, and a read uses the same short slot as a written one, so
 the part answers whatever the conversation expects next.
 
-The part answers both discovery forms: a search (each identity bit
-offered with its complement, the guest's choice written back) and a
-direct match against the 64-bit identity -- family code, six serial
-bytes from the machine, and the standard Dallas/Maxim CRC-8. The
-family code is what a guest matches to decide it knows how to read
-the memory. An unimplemented command, or a match against an identity
-that is not present, leaves the wire idling high; the mismatch is
-logged because it is otherwise indistinguishable from an absent
-part.
+The part is a DS2505, the 2 kbit member of the Dallas add-only EPROM
+family, which is what its family code 0x0b names. It answers both
+discovery forms: a search (each identity bit offered with its
+complement, the guest's choice written back) and a direct match
+against the 64-bit identity -- family code, six serial bytes from
+the machine, and the standard Dallas/Maxim CRC-8. The family code is
+what a guest matches to decide it knows how to read the memory.
+Either form leaves the part selected, so a memory function follows
+without a second reset. An unimplemented command leaves the wire
+idling high and is logged, because silence is otherwise
+indistinguishable from an absent part; a match naming some other
+identity is not logged, since dropping out is exactly how every part
+but the named one is meant to behave.
 
-The data memory is 64 pages of 32 bytes -- a size cross-constrained
-by the status memory, which carries exactly one redirection byte per
-page and has 64 of them. Two commands read it with
-different framing: the extended read sends, per page, a redirection
-byte, a check pair over the request, the page, and a check pair over
-the page; the plain read sends nothing but stored bytes to the end
-of memory with one check at the very end. A page's own embedded
-check -- the one the board-identity reader validates before trusting
-a part number -- is therefore *stored* in the page's last two bytes,
-not framing either command adds. The check is the reflected CRC-16
-with the result stored inverted: the guest runs the check across the
-whole exchange and requires a fixed residue.
+The data memory is 2048 bytes, 64 pages of 32. The board record
+occupies the first two pages and every byte past it reads
+unprogrammed. Two commands read it with different framing. The
+extended read sends, per page, a redirection byte, a check pair over
+the request and that byte, the page's 32 bytes, and a check pair
+over the page -- then carries straight on into the next page's
+redirection byte for as long as the guest keeps reading, to the end
+of the memory. The plain read sends nothing but stored bytes, and
+only a read that runs through the last byte of the memory is
+followed by a check, over the command, both address bytes and every
+byte read. Neither command wraps: an address the record does not
+cover reads unprogrammed, and a start address above the memory has
+its high address bits forced to zero.
+
+A page's own embedded check -- the one the board-identity reader
+validates before trusting a part number -- is *stored* in the page's
+last two bytes, and is not framing that either command adds. A
+part's own check always covers a whole page, so a check embedded
+inside one is a software record convention rather than anything the
+silicon computes. The check is the reflected CRC-16 with the result
+stored inverted: the guest runs the check across the whole exchange
+and requires a fixed residue.
 
 The identity page serves two readers at once: one takes the part
 number positionally from offset 11, the other scans for
@@ -257,13 +271,19 @@ manufacturing-data format and must be 1 or the PROM rejects the page
 before constructing fields. The part number is the one a real
 Origin 200 reports, traced through the firmware that reads it.
 
-The status memory is separate, read by its own command a page at a
-time with per-page check pairs (the first page's check also covers
-the command and address; later pages are checked over data alone,
-because status memory is field-programmable and a stored check could
-not stay valid). Every byte of it reads unprogrammed -- this is
-EPROM, bits leave the factory set -- and an all-ones redirection
-byte is exactly the value that says a page is valid where it sits.
+The status memory is separate, read by its own command eight bytes
+at a time with a check pair after each (the first page's check also
+covers the command and address; later pages are checked over data
+alone, because status memory is field-programmable and a stored
+check could not stay valid). It is decoded across the same 2048
+bytes of address the data memory is, of which only four small
+regions are physically programmable. This model can program none of
+them, so every status byte reads unprogrammed -- this is EPROM, bits
+leave the factory set -- and an all-ones redirection byte is exactly
+the value that says a page is valid where it sits. Past the
+programmable regions the part keeps answering framed pages of ones
+rather than falling silent, and a start address above the field has
+its high address bits forced to zero the way the data memory's does.
 
 External SSRAM window
 =====================
@@ -282,6 +302,8 @@ aim and enable state are re-derived from it on load, exactly as
 reset derives them from reset values. A stream from before the pin
 word split into its two source domains attributes the carried levels
 to the PCI side -- a wire level is re-driven by its source device's
-own restored state. The one-wire conversation state migrates; the
-stored identity image does not, because the destination assembles
-the same bytes from constant data at reset.
+own restored state. The one-wire conversation and the stored
+identity image both migrate, in the identity part's own stream
+rather than the chip's. The chip's stream keeps sixty bytes of
+padding where its own responder's state used to sit, so a stream
+written before the part became a device of its own still loads.
