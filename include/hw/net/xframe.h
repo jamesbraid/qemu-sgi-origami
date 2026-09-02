@@ -127,6 +127,7 @@ struct XframeState {
     uint64_t tx_traffic_mask;   /* TX_TRAFFIC_MASK: gates TX_TRAFFIC_INT */
     uint64_t rx_traffic_mask;   /* RX_TRAFFIC_MASK: gates RX_TRAFFIC_INT */
     uint64_t mac_int_mask;      /* MAC_INT_MASK: gates the RMAC block roll-up */
+    uint64_t rmac_max_pyld_len; /* RMAC_MAX_PYLD_LEN: largest payload accepted */
     uint64_t mac_rmac_err_mask; /* MAC_RMAC_ERR_MASK: gates link-state-change */
     uint64_t mac_rmac_err;      /* MAC_RMAC_ERR_REG: RMAC link-state-change */
     uint64_t gpio_int_reg;      /* GPIO_INT_REG: PIC/GPIO-block link-state */

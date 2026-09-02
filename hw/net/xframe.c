@@ -72,6 +72,16 @@
 #define XFRAME_MAC_RMAC_ERR_REG     0x2028
 #define XFRAME_MAC_RMAC_ERR_MASK    0x2030
 #define XFRAME_MAC_CFG              0x2100
+/*
+ * Largest receive payload the MAC will accept, in the field the driver writes
+ * (Linux s2io RMAC_MAX_PYLD_LEN(val) = vBIT(val,2,14), so the value sits in
+ * bits 61:48; its reset default is 1500). A guest raises this to run jumbo.
+ */
+#define XFRAME_RMAC_MAX_PYLD_LEN    0x2110
+#define XFRAME_MAX_PYLD_SHIFT       48
+#define XFRAME_MAX_PYLD_MASK        0x3fffULL
+#define XFRAME_MAX_PYLD_DEFAULT     1500
+
 #define XFRAME_RMAC_CFG_KEY         0x2120
 #define XFRAME_RMAC_ADDR_CMD_MEM    0x2128
 #define XFRAME_RMAC_ADDR_DATA0_MEM  0x2130
@@ -576,6 +586,8 @@ static void xframe_soft_reset(XframeState *s)
     s->tx_traffic_mask = XFRAME_INT_MASK_RESET;
     s->rx_traffic_mask = XFRAME_INT_MASK_RESET;
     s->mac_int_mask = XFRAME_INT_MASK_RESET;
+    s->rmac_max_pyld_len =
+        (uint64_t)XFRAME_MAX_PYLD_DEFAULT << XFRAME_MAX_PYLD_SHIFT;
     s->mac_rmac_err_mask = XFRAME_INT_MASK_RESET;
     /*
      * Reset tears the ring down, so a recovery poll left running from before
@@ -779,6 +791,8 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
         return s->tx_traffic_mask;
     case XFRAME_RX_TRAFFIC_MASK:
         return s->rx_traffic_mask;
+    case XFRAME_RMAC_MAX_PYLD_LEN:
+        return s->rmac_max_pyld_len;
     case XFRAME_MAC_INT_MASK:
         return s->mac_int_mask;
     case XFRAME_MAC_RMAC_ERR_MASK:
@@ -1146,6 +1160,10 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         /* Second-level mask: gates RX_TRAFFIC_INT -> INTx. Recompute. */
         s->rx_traffic_mask = full;
         xframe_update_irq(s);
+        return;
+    case XFRAME_RMAC_MAX_PYLD_LEN:
+        /* The guest raises this to run jumbo; the receive path honours it. */
+        s->rmac_max_pyld_len = full;
         return;
     case XFRAME_MAC_INT_MASK:
         /* Gates the RMAC block roll-up for the link source. Recompute. */
@@ -1859,6 +1877,14 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     copy_len = size;
     if (copy_len > XFRAME_MAX_FRAME) {
+        /*
+         * Past what the card can hold at all. Say so rather than quietly
+         * handing the guest a short frame -- a truncation nothing reports is
+         * indistinguishable downstream from data that was never sent.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: received frame of %zu bytes exceeds the %u-byte "
+                      "maximum; truncated\n", size, XFRAME_MAX_FRAME);
         copy_len = XFRAME_MAX_FRAME;
     }
     xcode = XFRAME_RXD_XCODE_OK;
@@ -2096,6 +2122,17 @@ static int xframe_post_load(void *opaque, int version_id)
     XframeState *s = opaque;
 
     /*
+     * A stream older than version 3 never carried RMAC_MAX_PYLD_LEN, so it
+     * arrives zero -- which would read back as "accept a payload of nothing".
+     * Present the reset default instead: a source that predates the field was
+     * running the 1500-byte default anyway, since nothing could have raised it.
+     */
+    if (version_id < 3) {
+        s->rmac_max_pyld_len =
+            (uint64_t)XFRAME_MAX_PYLD_DEFAULT << XFRAME_MAX_PYLD_SHIFT;
+    }
+
+    /*
      * A version-1 stream predates this branch's per-block interrupt masks
      * (VMSTATE_UINT64_V at version 2 below): v1 gated every source through
      * the single GENERAL_INT_MASK, so a v1 source never programmed -- and
@@ -2180,7 +2217,7 @@ static int xframe_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -2190,6 +2227,7 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(sw_reset, XframeState),
         VMSTATE_UINT64(adapter_control, XframeState),
         VMSTATE_UINT64(general_int_mask, XframeState),
+        VMSTATE_UINT64_V(rmac_max_pyld_len, XframeState, 3),
         VMSTATE_UINT64_V(pic_int_mask, XframeState, 2),
         VMSTATE_UINT64_V(txpic_int_mask, XframeState, 2),
         VMSTATE_UINT64_V(rxpic_int_mask, XframeState, 2),

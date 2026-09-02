@@ -3305,6 +3305,33 @@ static void test_transmit_inserts_requested_tcp_checksum(void)
 }
 
 /*
+ * The largest receive payload the MAC accepts. A guest raises this to run
+ * jumbo, so the card has to keep what it is told and read it back -- a value
+ * the model drops leaves the driver unable to confirm the size it asked for.
+ * Reset presents the 1500-byte default (Linux s2io RMAC_MAX_PYLD_LEN_DEF).
+ */
+#define RMAC_MAX_PYLD_LEN_OFF   0x2110
+#define MAX_PYLD_SHIFT          48
+
+static void test_rmac_max_payload_defaults_and_holds(void)
+{
+    XframeTx t;
+    uint64_t v;
+
+    xframe_tx_start(&t);
+
+    v = sock_pif_readq(&t, RMAC_MAX_PYLD_LEN_OFF);
+    g_assert_cmpint((v >> MAX_PYLD_SHIFT) & 0x3fff, ==, 1500);
+
+    sock_pif_writeq(&t, RMAC_MAX_PYLD_LEN_OFF,
+                    (uint64_t)9000 << MAX_PYLD_SHIFT);
+    v = sock_pif_readq(&t, RMAC_MAX_PYLD_LEN_OFF);
+    g_assert_cmpint((v >> MAX_PYLD_SHIFT) & 0x3fff, ==, 9000);
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * A gather list must come back to the host in full. The card consumes every
  * descriptor it walks, so it owes ownership on every one of them -- returning
  * only the first leaves the rest permanently owned by the card, and a driver
@@ -3708,6 +3735,8 @@ int main(int argc, char **argv)
                    test_transmit_checksum_request_on_non_ipv4_declined);
     qtest_add_func("xframe/transmit-gather-list-releases-every-descriptor",
                    test_transmit_gather_list_releases_every_descriptor);
+    qtest_add_func("xframe/rmac-max-payload-defaults-and-holds",
+                   test_rmac_max_payload_defaults_and_holds);
     qtest_add_func("xframe/transmit-frame-sizes-byte-exact",
                    test_transmit_frame_sizes_byte_exact);
     qtest_add_func("xframe/receive-frame-sizes-byte-exact",
