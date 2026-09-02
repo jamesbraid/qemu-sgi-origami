@@ -1058,6 +1058,90 @@ static void test_misc_conf_reads_back(const void *data)
     qtest_quit(qts);
 }
 
+
+/*
+ * A ones-complement sum, written out here rather than shared with the device
+ * so the test does not confirm the implementation against itself.
+ */
+static uint16_t ones_sum(const uint8_t *p, size_t len)
+{
+    uint32_t sum = 0;
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)p[i] << 8) | p[i + 1];
+    }
+    if (i < len) {
+        sum += (uint32_t)p[i] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)sum;
+}
+
+/*
+ * The card reports what it summed over a received frame, and the driver uses
+ * it instead of summing the bytes again on the processor. The public driver
+ * reads both fields for any IP frame with no flag to gate them and inverts
+ * them itself -- "the Tigon firmware does not invert the checksum for us" --
+ * so a well-formed header must arrive here as 0xffff, and a card reporting
+ * zero is telling every driver of that shape that every packet is corrupt.
+ */
+static void test_receive_reports_checksums(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[74];
+    uint32_t word4;
+    uint16_t want_ip, want_l4;
+    unsigned i;
+
+    /* Ethernet + IPv4 + TCP, with a correct header checksum. */
+    memcpy(frame, rx_frame_ours, 14);
+    frame[12] = 0x08; frame[13] = 0x00;              /* IPv4 */
+    memset(frame + 14, 0, sizeof(frame) - 14);
+    frame[14] = 0x45;                                 /* v4, 5-word header */
+    frame[16] = 0x00; frame[17] = sizeof(frame) - 14; /* total length */
+    frame[22] = 64;                                   /* ttl */
+    frame[23] = 6;                                    /* TCP */
+    frame[26] = 10; frame[27] = 0; frame[28] = 2; frame[29] = 2;
+    frame[30] = 10; frame[31] = 0; frame[32] = 2; frame[33] = 15;
+    for (i = 34; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7);
+    }
+    /* Complete the header checksum so the header is genuinely well-formed. */
+    frame[24] = 0; frame[25] = 0;
+    {
+        uint16_t hs = ones_sum(frame + 14, 20) ^ 0xffff;
+        frame[24] = hs >> 8; frame[25] = hs & 0xff;
+    }
+    want_ip = ones_sum(frame + 14, 20);
+    want_l4 = ones_sum(frame + 34, sizeof(frame) - 34);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], frame, sizeof(frame));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    /* Big-endian word: header sum in the high half, payload sum in the low. */
+    word4 = qtest_readl(qts, RETURN_RING_PHYS + 16);
+    g_assert_cmphex(word4 >> 16, ==, 0xffff);
+    g_assert_cmphex(word4 >> 16, ==, want_ip);
+    g_assert_cmphex(word4 & 0xffff, ==, want_l4);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_receive(const void *data)
 {
     int sv[2];
@@ -1902,6 +1986,8 @@ int main(int argc, char **argv)
                         test_interrupt_coalesce_by_time);
     qtest_add_data_func("/sn0/tigon/misc-conf-reads-back", NULL,
                         test_misc_conf_reads_back);
+    qtest_add_data_func("/sn0/tigon/receive-reports-checksums", NULL,
+                        test_receive_reports_checksums);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);

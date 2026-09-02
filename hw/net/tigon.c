@@ -1128,6 +1128,60 @@ static const MemoryRegionOps tigon_sram_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4 },
 };
 
+
+/* A ones-complement sum, folded to 16 bits. */
+static uint16_t tigon_ones_sum(const uint8_t *p, size_t len)
+{
+    uint32_t sum = 0;
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)p[i] << 8) | p[i + 1];
+    }
+    if (i < len) {
+        sum += (uint32_t)p[i] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)sum;
+}
+
+/*
+ * What the card summed over a received frame, for the driver to use instead of
+ * summing the bytes again on the processor. Two 16-bit fields: the sum over the
+ * IP header and the sum over what follows it.
+ *
+ * The sums are NOT inverted -- the driver does that itself, and reads both
+ * fields for any IP frame with nothing to gate them, so a well-formed header
+ * must come back as 0xffff here. Reporting zero tells a driver of that shape
+ * that every packet it receives is corrupt.
+ *
+ * Returns 0 for anything not a plain IPv4 frame, which is what the driver
+ * ignores anyway.
+ */
+static uint32_t tigon_rx_checksums(const uint8_t *frame, size_t len)
+{
+    size_t ihl, ip_len;
+
+    if (len < 14 + 20 || frame[12] != 0x08 || frame[13] != 0x00) {
+        return 0;                       /* not IPv4 */
+    }
+    if ((frame[14] >> 4) != 4) {
+        return 0;
+    }
+    ihl = (frame[14] & 0x0f) * 4;
+    if (ihl < 20 || len < 14 + ihl) {
+        return 0;
+    }
+    ip_len = ((size_t)frame[16] << 8) | frame[17];
+    if (ip_len < ihl || len < 14 + ip_len) {
+        return 0;                       /* truncated or lying about itself */
+    }
+    return ((uint32_t)tigon_ones_sum(frame + 14, ihl) << 16) |
+           tigon_ones_sum(frame + 14 + ihl, ip_len - ihl);
+}
+
 static bool tigon_can_receive(NetClientState *nc)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
@@ -1270,7 +1324,7 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
                                      : TI_BDTYPE_RECV_BD) << 16) |
                    flags | TI_BDFLAG_END |
                    (jumbo ? TI_BDFLAG_JUMBO_RING : 0));
-    tigon_dma_st32(s, ret_desc + 16, 0);   /* ip / tcp-udp checksum */
+    tigon_dma_st32(s, ret_desc + 16, tigon_rx_checksums(buf, size));
     tigon_dma_st32(s, ret_desc + 20, 0);   /* error flags / vlan tag */
     tigon_dma_st32(s, ret_desc + 24, 0);   /* reserved */
     tigon_dma_st32(s, ret_desc + 28, 0);   /* opaque cookie */
