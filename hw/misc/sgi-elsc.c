@@ -68,6 +68,10 @@ static const char *elsc_action_name(uint8_t action)
     switch (action) {
     case ELSC_ACTION_RESET:
         return "reset";
+    case ELSC_ACTION_CYCLE:
+        return "power-cycle";
+    case ELSC_ACTION_SHUTDOWN:
+        return "shutdown";
     default:
         return "deferred action";
     }
@@ -191,6 +195,37 @@ static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
 }
 
 /*
+ * Parse a run of ASCII hex digits into *out; the text is not NUL-terminated.
+ * Rejects an empty run and anything wider than 32 bits, so a caller can range
+ * check the result. Most arguments in this protocol are hex.
+ */
+static bool elsc_parse_hex(const char *p, unsigned n, uint32_t *out)
+{
+    uint32_t v = 0;
+    unsigned i;
+
+    if (n == 0 || n > 8) {
+        return false;
+    }
+    for (i = 0; i < n; i++) {
+        char c = p[i];
+
+        v <<= 4;
+        if (c >= '0' && c <= '9') {
+            v |= c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            v |= c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'F') {
+            v |= c - 'A' + 10;
+        } else {
+            return false;
+        }
+    }
+    *out = v;
+    return true;
+}
+
+/*
  * "pwr <sub>": the power subcommands share the "pwr" mnemonic and select on
  * the letter after the space. Only the power-on query is boot-driven; the
  * datasheet lists the rest (delayed power-down, power-cycle, redundant
@@ -234,6 +269,111 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             s->cold_power_on = false;
             elsc_frame_response_str(s, resp);
         }
+        return;
+    case 'd': {
+        /*
+         * "pwr d <sec>": delayed power-down, a destructive command --
+         * supervisor-gated like "rst". The delay is hex seconds: 0 is
+         * immediate, otherwise the guide's range 0x5 to 0x258 (5 to 600
+         * seconds). A malformed form, a non-hex delay or an out-of-range
+         * delay is "err arg", and all three are checked before the supervisor
+         * gate: a bad argument is a bad argument whether or not the caller has
+         * authenticated, and must not be reported as "err perm". Answer "ok",
+         * then shut the machine down; like "rst" the action is deferred until
+         * the ack is read (the deferred-action state machine). The scheduled
+         * delay is not modelled -- the shutdown follows the ack.
+         */
+        uint32_t sec;
+
+        if (len < 6 || text[5] != ' ' ||
+            !elsc_parse_hex(&text[6], len - 6, &sec)) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        if (sec != 0 && (sec < 5 || sec > 0x258)) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        if (!s->supervisor) {
+            elsc_frame_response_str(s, "err perm");
+            return;
+        }
+        elsc_frame_response_str(s, "ok");
+        /*
+         * Arm only if nothing is committed yet. A committed action is past
+         * the point of no return; clearing deferred_committed here would
+         * demote it to ARMED and the fetch-seam commit would be lost. The
+         * committed action fires regardless; when it is weaker than this
+         * request the returned "ok" does not describe the action performed,
+         * and that mismatch is logged rather than passed over silently.
+         */
+        if (!s->deferred_committed) {
+            s->deferred_action = ELSC_ACTION_SHUTDOWN;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-elsc: \"pwr d\" while a %s is already "
+                          "committed; that action fires and this \"ok\" may "
+                          "not match it\n",
+                          elsc_action_name(s->deferred_action));
+        }
+        return;
+    }
+    case 'c':
+        /*
+         * "pwr c": power-cycle, destructive -- supervisor-gated like "rst".
+         * Answer "ok", then reset the machine, deferred until the ack is read
+         * (the deferred-action state machine). A power-cycle is a cold
+         * restart, not a warm reset, so its bottom half also re-arms the
+         * cold-power latch -- distinguished from "rst" by the CYCLE action.
+         * Doing it when the action fires, not here, means a superseded
+         * "pwr c" leaves no trace: no reset and no false cold-power latch.
+         */
+        if (len != 5) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        if (!s->supervisor) {
+            elsc_frame_response_str(s, "err perm");
+            return;
+        }
+        elsc_frame_response_str(s, "ok");
+        /*
+         * Arm only if nothing is committed yet. A committed action is past
+         * the point of no return; clearing deferred_committed here would
+         * demote it to ARMED and the fetch-seam commit would be lost. The
+         * committed action fires regardless; when it is weaker than this
+         * request the returned "ok" does not describe the action performed,
+         * and that mismatch is logged rather than passed over silently.
+         */
+        if (!s->deferred_committed) {
+            s->deferred_action = ELSC_ACTION_CYCLE;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-elsc: \"pwr c\" while a %s is already "
+                          "committed; that action fires and this \"ok\" may "
+                          "not match it\n",
+                          elsc_action_name(s->deferred_action));
+        }
+        return;
+    case 'r':
+        /*
+         * "pwr r": redundant-supply query, read-only and ungated. The wire
+         * response is a per-module record for each supply, tagged
+         * tag:present:health -- "m:y:ok"/"m:y:fl"/"m:n" for the master and
+         * "s:y:ok"/"s:y:fl"/"s:n" for the slave. The present flag (y/n)
+         * separates an absent supply ("m:n") from a failed one ("m:y:fl"),
+         * and health is "ok" or "fl". Both supplies are modelled present and
+         * healthy. The response payload is identical on the operator and wire
+         * interfaces -- only the command framing differs -- so this is what
+         * the Origin 200 diagnostics guide documents (datasheet PR #602). It
+         * supersedes an earlier one-colon "ok m:ok s:ok" that came from the
+         * driver's test-fixture mock rather than the firmware wire format.
+         */
+        if (len != 5) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        elsc_frame_response_str(s, "ok m:y:ok s:y:ok");
         return;
     default:
         /* An unrecognised subcommand letter is an unknown command. */
@@ -521,16 +661,19 @@ static void elsc_request_complete(SGIElscState *s)
  * fetch-seam commit (elsc_fire_committed_action, from a NACK, a STOP or a
  * following request) or, after a migration, by elsc_post_load.
  *
- * A reset releases the I2C bus first. A response the master ends by NACKing
- * the last byte with no STOP -- it may fetch the byte in a later transaction,
- * or issue a same-address repeated START -- leaves this controller matched on
- * the bus: the STOP that would call i2c_end_transfer never comes.
- * qemu_system_reset_request resets the PCF8584 but not the bus, so the stale
- * match would misroute the first post-reset transaction -- an identity-EEPROM
- * read answered by this controller. i2c_end_transfer walks the bus's slave
- * list and cannot run from inside an I2C callback, and the reset must not run
- * while the guest is still reading the frame, which is why the whole action is
- * deferred to this bottom half rather than run when it is committed.
+ * Every destructive action releases the I2C bus first. A response the master
+ * ends by NACKing the last byte with no STOP -- it may fetch the byte in a
+ * later transaction, or issue a same-address repeated START -- leaves this
+ * controller matched on the bus: the STOP that would call i2c_end_transfer
+ * never comes. The reset, cycle or shutdown resets the PCF8584 but not the
+ * bus, so the stale match would misroute the next transaction -- an
+ * identity-EEPROM read answered by this controller. A shutdown that
+ * -no-shutdown or -action shutdown=pause turns into machine survival keeps
+ * that wedged bus alive, so it needs the release just as a reset does.
+ * i2c_end_transfer walks the bus's slave list and cannot run from inside an
+ * I2C callback, and the reset must not run while the guest is still reading
+ * the frame, which is why the whole action is deferred to this bottom half
+ * rather than run when it is committed.
  *
  * The gate makes a stale schedule a no-op: only a committed action fires, and
  * firing clears the state, so a second scheduling -- another boundary of the
@@ -549,13 +692,36 @@ static void elsc_deferred_action_bh(void *opaque)
     s->deferred_committed = false;
     s->deferred_scheduled = false;
 
+    /*
+     * Release the bus for every destructive action, before it fires. All
+     * three leave this controller matched (the NACK-without-STOP path never
+     * ended the transfer) and none of them ends it themselves, so a survived
+     * shutdown wedges the bus exactly as a reset would.
+     */
+    i2c_end_transfer(s->bus);
+
     switch (action) {
+    case ELSC_ACTION_CYCLE:
+        /*
+         * A power-cycle is a cold restart, so re-arm the cold-power latch
+         * for the post-reset "pwr q". elsc_reset_hold leaves the latch alone
+         * (a warm "rst" must not re-arm it), so setting it here, just before
+         * the reset, carries it through. Then fall through to the reset.
+         */
+        s->cold_power_on = true;
+        /* fall through */
     case ELSC_ACTION_RESET:
-        i2c_end_transfer(s->bus);
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         break;
-    default:
+    case ELSC_ACTION_SHUTDOWN:
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
         break;
+    default:
+        /*
+         * Only the three actions above can be committed; post_load rejects
+         * any other value, so reaching here is a model bug.
+         */
+        g_assert_not_reached();
     }
 }
 
@@ -1071,6 +1237,21 @@ static void elsc_unrealize(DeviceState *dev)
 static int elsc_post_load(void *opaque, int version_id)
 {
     SGIElscState *s = opaque;
+
+    /*
+     * Reject an inconsistent stream before it can drive the bottom half. A
+     * pairing the model never produces -- an action past ELSC_ACTION_SHUTDOWN,
+     * the committed flag set with no action, or the scheduled flag set without
+     * the committed flag (scheduled is only ever set while committed) -- means
+     * a corrupt or foreign stream, so fail the load rather than schedule a
+     * bottom half that would hit g_assert_not_reached() or fire a phantom
+     * action.
+     */
+    if (s->deferred_action > ELSC_ACTION_SHUTDOWN ||
+        (s->deferred_committed && s->deferred_action == ELSC_ACTION_NONE) ||
+        (s->deferred_scheduled && !s->deferred_committed)) {
+        return -EINVAL;
+    }
 
     if (s->deferred_scheduled) {
         replay_bh_schedule_oneshot_event(qemu_get_aio_context(),

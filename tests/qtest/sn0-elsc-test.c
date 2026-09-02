@@ -2248,6 +2248,201 @@ static void test_tas_lock_nul_owner(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The remaining power subcommands (datasheet: firmware-facing command
+ * contracts), none boot-driven. This covers the response contract with no
+ * real action: the read-only "pwr r" (redundant-supply query) is ungated,
+ * the destructive "pwr d <sec>"/"pwr c" are supervisor-gated like "rst", and
+ * out-of-range or extra arguments are "err arg". The actions themselves are
+ * checked in the shutdown and power-cycle tests below.
+ */
+static void test_pwr_control_subcommands(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /*
+     * The read-only supply query needs no supervisor. The wire response is a
+     * per-module record per supply, tagged tag:present:health --
+     * "ok m:y:ok s:y:ok" with both supplies modelled present and healthy.
+     */
+    req_len = build_request(req, "pwr r");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 16);
+    g_assert(memcmp(&resp[1], "ok m:y:ok s:y:ok", 16) == 0);
+
+    /* Destructive power-down/cycle are refused before authenticating. */
+    req_len = build_request(req, "pwr d 3c");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 8);
+    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+
+    req_len = build_request(req, "pwr c");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 8);
+    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+
+    /* Authenticate with the factory-default password. */
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /*
+     * Out-of-range (below 5, above 0x258) and non-hex delays are err arg, as
+     * are extra arguments to a known subcommand letter (a bad argument, not
+     * an unknown command). None of these arm an action.
+     */
+    {
+        const char *bad_forms[] = { "pwr d 1", "pwr d 4", "pwr d 259",
+                                    "pwr d zz", "pwr c extra", "pwr r x" };
+        unsigned i;
+
+        for (i = 0; i < ARRAY_SIZE(bad_forms); i++) {
+            req_len = build_request(req, bad_forms[i]);
+            resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+            g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+            g_assert_cmpuint(resp[0], ==, 7);
+            g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A supervised "pwr d <sec>" answers "ok" and then, once the ack is read,
+ * shuts the machine down -- verified by QEMU's SHUTDOWN event. "-no-shutdown"
+ * keeps QEMU alive in the shutdown state so the event can be observed.
+ */
+static void test_pwr_down_shuts_down(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Immediate power-down: "ok", then the shutdown fires. */
+    req_len = build_request(req, "pwr d 0");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+
+    qtest_quit(qts);
+}
+
+/*
+ * A supervised "pwr c" answers "ok" and then, once the ack is read,
+ * power-cycles the machine -- a machine reset, verified by the RESET event.
+ */
+static void test_pwr_cycle_resets(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    req_len = build_request(req, "pwr c");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    qtest_qmp_eventwait(qts, "RESET");
+
+    qtest_quit(qts);
+}
+
+/*
+ * "pwr d" validates the delay range before the supervisor gate, consistent
+ * with the non-hex delay check. So an out-of-range delay is "err arg" whether
+ * or not the caller has authenticated -- a bad argument is not disguised as
+ * "err perm". An in-range delay from an unauthenticated caller is still
+ * "err perm". Boundaries: 5..0x258 inclusive is in range, and 0 (immediate)
+ * skips the range check.
+ */
+static void test_pwr_down_range_checked_before_auth(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len, i;
+    /* Below 5 or above 0x258: err arg, before the gate is even consulted. */
+    const char *out_of_range[] = { "pwr d 1", "pwr d 4", "pwr d 259" };
+    /* In range (and 0), so the gate applies: err perm without a password. */
+    const char *in_range[] = { "pwr d 0", "pwr d 5", "pwr d 258" };
+
+    for (i = 0; i < ARRAY_SIZE(out_of_range); i++) {
+        req_len = build_request(req, out_of_range[i]);
+        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+        g_assert_cmpuint(resp[0], ==, 7);
+        g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    }
+    for (i = 0; i < ARRAY_SIZE(in_range); i++) {
+        req_len = build_request(req, in_range[i]);
+        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+        g_assert_cmpuint(resp[0], ==, 8);
+        g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A "pwr c" power-cycle is a cold restart, not a warm reset: it re-arms the
+ * cold-power latch, so the first "pwr q" after the cycle reads "ok 1" even
+ * though an earlier query had cleared the latch. A warm "rst" leaves it
+ * cleared.
+ */
+static void test_pwr_cycle_rearms_cold_power(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /* Clear the cold-power latch: the first query reads 1, the next 0. */
+    req_len = build_request(req, "pwr q");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+    req_len = build_request(req, "pwr q");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+
+    /* Authenticate and power-cycle. */
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    req_len = build_request(req, "pwr c");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    qtest_qmp_eventwait(qts, "RESET");
+
+    /* The cycle re-armed the latch: the first post-cycle query reads 1. */
+    req_len = build_request(req, "pwr q");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2341,6 +2536,16 @@ int main(int argc, char **argv)
                         test_tas_lock_cell);
     qtest_add_data_func("sn0/elsc/tas-lock-nul-owner", NULL,
                         test_tas_lock_nul_owner);
+    qtest_add_data_func("sn0/elsc/pwr-control-subcommands", NULL,
+                        test_pwr_control_subcommands);
+    qtest_add_data_func("sn0/elsc/pwr-down-shuts-down", NULL,
+                        test_pwr_down_shuts_down);
+    qtest_add_data_func("sn0/elsc/pwr-cycle-resets", NULL,
+                        test_pwr_cycle_resets);
+    qtest_add_data_func("sn0/elsc/pwr-down-range-checked-before-auth", NULL,
+                        test_pwr_down_range_checked_before_auth);
+    qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
+                        test_pwr_cycle_rearms_cold_power);
 
     ret = g_test_run();
 

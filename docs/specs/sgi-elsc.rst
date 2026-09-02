@@ -94,6 +94,31 @@ Command vocabulary
     result. Whether a multi-module cold-power latch is per-module or
     machine-wide is not settled by the datasheet.
 
+``pwr d <sec>`` / ``pwr c`` / ``pwr r``
+    The remaining power control, none boot-driven. ``pwr d <sec>``
+    schedules a delayed power-down and ``pwr c`` power-cycles, both
+    answered a bare ``ok``; both are destructive and supervisor-gated
+    like ``rst`` (``err perm`` without supervisor mode). The power-down
+    delay is hex seconds: 0 is immediate, otherwise the guide's range
+    0x5 to 0x258 (5 to 600 seconds); an out-of-range or non-hex delay is
+    ``err arg``. ``pwr r`` queries the redundant supplies, is read-only
+    and ungated, and answers a per-module record for each supply tagged
+    ``tag:present:health`` -- ``m:y:ok`` / ``m:y:fl`` / ``m:n`` for the
+    master and ``s:y:ok`` / ``s:y:fl`` / ``s:n`` for the slave. The present
+    flag (``y``/``n``) separates an absent supply (``m:n``) from a failed one
+    (``m:y:fl``), and health is ``ok`` or ``fl``. Both supplies are modelled
+    present and healthy, so ``ok m:y:ok s:y:ok``. The response payload is
+    identical on the operator and wire interfaces -- only the command framing
+    differs -- so this is the format the Origin 200 diagnostics guide
+    documents (datasheet PR #602); it supersedes an earlier one-colon
+    ``ok m:ok s:ok`` that came from the driver's test-fixture mock rather than
+    the firmware wire format. ``pwr d`` and ``pwr c`` then act, like
+    ``rst`` deferred until the caller has read the ``ok``: ``pwr d`` shuts
+    the machine down, ``pwr c`` resets it (a power-cycle). The scheduled
+    delay is not modelled -- the shutdown follows the ack. Both supplies
+    are modelled healthy. An unknown subcommand letter is ``err cmd``, but
+    a known letter with a bad or extra argument is ``err arg``.
+
 ``hbt [<interval> <delay>]``
     Heartbeat / NMI-watchdog control, which the kernel enables during
     controller init. ``hbt <interval> <delay>`` enables monitoring so a
@@ -121,6 +146,16 @@ Command vocabulary
     per-module reset -- QEMU provides no per-module reset and the model
     keeps the whole-machine reset rather than refuse.
 
+    ``pwr c`` performs that same whole-machine reset, and inherits one
+    further multi-node limitation. A power-cycle is a cold restart, so the
+    initiating controller re-arms its cold-power latch and its own post-cycle
+    ``pwr q`` then answers ``ok 1``. On a two-chassis machine the reset
+    re-arms only the initiating controller's latch, so the non-initiating
+    module's post-reset ``pwr q`` answers ``ok 0`` -- warm, not cold.
+    Single-module (the default) is correct; a machine-wide cold-latch re-arm
+    needs cross-device machinery and is a follow-up for the multi-node
+    machine model.
+
 ``tas <ch>`` / ``tas 0``
     The test-and-set lock cell, which the 6.5.30 firmware drives in its
     arbitration path. ``tas <ch>`` takes the lock if it is free; ``tas 0``
@@ -145,6 +180,94 @@ Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
 a negative reply but not a stalled bus.
+
+Deferred destructive actions
+----------------------------
+
+``rst``, ``pwr d`` and ``pwr c`` do not act when they answer ``ok``.
+Each arms a deferred action that the model carries out only once the
+caller has read the whole ``ok``, through a two-phase state machine:
+
+ARMED
+    The command was accepted and its ``ok`` framed, but the ack has not
+    been fully delivered. A later request on the bus supersedes the
+    pending response and cancels the armed action -- a caller that walks
+    away without reading its ``ok`` gets nothing.
+
+COMMITTED
+    The guest has read the ack to its end. The action is past the point
+    of no return: it survives a superseding request and a live migration,
+    and it fires.
+
+The transition is the *fetch* of the response's last byte -- the read
+that hands the guest everything through the last text byte of the ack --
+not a bus STOP or NACK. Committing there is what keeps the action when a
+master NACKs the last text byte and then issues a same-address repeated
+START with no STOP: neither terminal event sees the whole ack delivered,
+yet the guest has it. The committed action then fires from a bottom half,
+which releases the I2C bus -- so the controller is not left matched and
+misrouting the next transaction -- before requesting the reset,
+power-cycle or shutdown.
+
+The bottom half is scheduled at the transaction's next boundary -- a NACK,
+a STOP, or the next request's START -- rather than at the commit, so the
+reset never runs while the guest is still reading the frame. One path
+therefore never schedules at all: a guest that reads through the last text
+byte and then abandons the bus -- taking no checksum, sending no STOP and
+no repeated START -- commits the action but reaches no boundary, so it
+never fires. The IRIX driver cannot leave a transaction that way: every
+ELSC exchange ends with a STOP, after the datasheet's closing
+invalid-address resync step, so a committed action always reaches a
+boundary. A stream migrated in this window is handled the same way -- a
+committed action is re-armed on load only once its frame was consumed
+(txlen zero); one still open waits for the destination's boundary.
+
+A destructive command that arrives while another is already *committed*
+cannot change it: the committed action wins and fires. The new command
+still answers ``ok``, deliberately -- refusing would make the IRIX caller
+fall back to its own hardware reset and race the committed action, which
+is worse than a stale ``ok``. But that ``ok`` then describes a command the
+machine will not perform. The action carried out is always the committed
+one; the nine combinations resolve as:
+
+.. list-table::
+   :header-rows: 1
+
+   * - committed vs requested
+     - ``rst`` (reset)
+     - ``pwr c`` (cycle)
+     - ``pwr d`` (shutdown)
+   * - reset
+     - exact
+     - restarts; name only
+     - restart, not off
+   * - power-cycle
+     - restarts; name only
+     - exact
+     - restart, not off
+   * - shutdown
+     - off, not restart
+     - off, not restart
+     - exact
+
+On the diagonal the ``ok`` is exact. Between ``reset`` and ``power-cycle``
+the machine restarts either way, so the ``ok`` names the wrong action but
+not the wrong outcome. In the four cells where a committed ``shutdown``
+meets a requested restart, or a committed restart meets a requested
+``shutdown``, the outcome itself differs -- the machine ends up off when
+the caller asked it to come back, or the reverse. Every absorbed command
+is logged (``LOG_GUEST_ERROR``) naming the committed action and the new
+command, so the mismatch is never silent.
+
+**This table is model behaviour that no hardware capture has confirmed.**
+The window in which the collision arises is host-scheduling latency
+between the fetch-seam commit and the bottom half -- not a sub-instruction
+gap -- and no firmware this project runs issues two destructive commands
+back to back, so no guest reaches it. What would settle whether real
+hardware resolves the collision the same way is a bus trace of two
+destructive commands issued back to back, which nobody is likely to take.
+It is recorded as what the model does, held distinct from what the
+hardware is known to do.
 
 Alphanumeric display
 --------------------
