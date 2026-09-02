@@ -228,6 +228,78 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
     }
 }
 
+/* A non-empty run of ASCII decimal digits; the text is not NUL-terminated. */
+static bool elsc_all_digits(const char *p, unsigned n)
+{
+    unsigned i;
+
+    if (n == 0) {
+        return false;
+    }
+    for (i = 0; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * "hbt [<interval> <delay>]": heartbeat / NMI-watchdog control. "hbt" alone
+ * sends one heartbeat, "hbt 0" disables monitoring, and "hbt <interval>
+ * <delay>" enables it so a missed heartbeat raises a non-maskable interrupt
+ * after the delay. The two arguments are decimal, unlike the hex arguments
+ * elsewhere in this protocol. The kernel only enables the watchdog during
+ * controller init, so validating the request and answering "ok" without
+ * arming a timer carries a boot; no missed-heartbeat interrupt is modelled.
+ */
+static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
+{
+    const char *args;
+    const char *sp;
+    unsigned rem;
+
+    if (len == 3) {
+        elsc_frame_response_str(s, "ok");   /* a single heartbeat */
+        return;
+    }
+    if (text[3] != ' ') {
+        /* "hbtx": junk after the mnemonic with no delimiter is not "hbt". */
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+
+    args = &text[4];
+    rem = len - 4;
+    sp = memchr(args, ' ', rem);
+    if (sp == NULL) {
+        /* The only valid one-argument form is "hbt 0" (disable). */
+        if (rem != 1 || args[0] != '0') {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+    } else {
+        /* "hbt <interval> <delay>": two args split on the space. */
+        unsigned first = sp - args;
+
+        if (!elsc_all_digits(args, first) ||
+            !elsc_all_digits(sp + 1, rem - first - 1)) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        /*
+         * The enable form arms an NMI watchdog the model does not
+         * implement. Answering "ok" without arming a timer carries a boot
+         * (the datasheet's own note), but flag that it is unmodelled.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-elsc: heartbeat/NMI watchdog enable is not "
+                      "modelled; answering ok without arming it\n");
+    }
+
+    elsc_frame_response_str(s, "ok");
+}
+
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -264,6 +336,10 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len >= 3 && memcmp(text, "pwr", 3) == 0) {
         elsc_handle_pwr(s, text, len);
+        return;
+    }
+    if (len >= 3 && memcmp(text, "hbt", 3) == 0) {
+        elsc_handle_hbt(s, text, len);
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
