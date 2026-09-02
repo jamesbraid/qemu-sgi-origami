@@ -1044,6 +1044,12 @@ static void assert_component(QTestState *qts, uint64_t base, uint64_t offset,
     g_assert_cmphex(read_field(qts, base + offset + 0x28, 8), ==, 0);
 }
 
+static uint8_t hub_ni_revision(QTestState *qts, unsigned int nasid)
+{
+    return (qtest_readq(qts, SN0_HUB_BY_NODE(nasid) + SN0_NI_STATUS) >> 4) &
+           0xf;
+}
+
 static void assert_cpu_record(QTestState *qts, uint64_t base, uint64_t offset,
                               unsigned int slice, unsigned int virtual_id,
                               unsigned int nasid)
@@ -1079,13 +1085,23 @@ static void assert_memory_record(QTestState *qts, uint64_t base,
 static void assert_base_io_records(QTestState *qts, uint64_t base,
                                    uint64_t first, unsigned int nasid)
 {
+    uint8_t scsi0_revision =
+        qtest_readl(qts, SN0_CFG0(nasid, SN0_SCSI_DEVICE0) +
+                         SN0_PCI_REVISION_ID) & 0xff;
+    uint8_t scsi1_revision =
+        qtest_readl(qts, SN0_CFG0(nasid, SN0_SCSI_DEVICE1) +
+                         SN0_PCI_REVISION_ID) & 0xff;
+    uint8_t ioc3_revision =
+        qtest_readl(qts, SN0_CFG0(nasid, SN0_IOC3_DEVICE) +
+                         SN0_PCI_REVISION_ID) & 0xff;
+
     assert_component(qts, base, first, SN0_COMP_BRIDGE, 4, 8, 0, 8, nasid);
-    assert_component(qts, base, first + 0x80, SN0_COMP_SCSI, 5, 0, 0, 8,
-                     nasid);
-    assert_component(qts, base, first + 0x100, SN0_COMP_SCSI, 5, 1, 1, 8,
-                     nasid);
-    assert_component(qts, base, first + 0x180, SN0_COMP_IO_CONTROLLER, 1, 2,
-                     0, 8, nasid);
+    assert_component(qts, base, first + 0x80, SN0_COMP_SCSI,
+                     scsi0_revision, 0, 0, 8, nasid);
+    assert_component(qts, base, first + 0x100, SN0_COMP_SCSI,
+                     scsi1_revision, 1, 1, 8, nasid);
+    assert_component(qts, base, first + 0x180, SN0_COMP_IO_CONTROLLER,
+                     ioc3_revision, 2, 0, 8, nasid);
 }
 
 static void test_bridge_revision_matches_config_graph(const void *data)
@@ -1107,7 +1123,8 @@ static void assert_one_cpu_graph(QTestState *qts, uint16_t total_mb,
     g_assert_cmphex(read_field(qts, 0x4128, 4), ==, 0x4480);
     g_assert_cmphex(read_field(qts, 0x412c, 4), ==, 0x4500);
     assert_cpu_record(qts, 0, 0x4400, 0, 0, 0);
-    assert_component(qts, 0, 0x4480, SN0_COMP_HUB, 3, 0, 0, 0, 0);
+    assert_component(qts, 0, 0x4480, SN0_COMP_HUB,
+                     hub_ni_revision(qts, 0), 0, 0, 0, 0);
     g_assert_cmphex(read_field(qts, 0x44bc, 8), ==,
                     0xffff000000000000ULL);
     g_assert_cmpuint(read_field(qts, 0x44d8, 8), ==, 90000000);
@@ -1137,8 +1154,8 @@ static void assert_two_cpu_graph(QTestState *qts, unsigned int nasid,
     g_assert_cmphex(read_field(qts, base + 0x4130, 4), ==, 0x4580);
     assert_cpu_record(qts, base, 0x4400, 0, first_virtual_id, nasid);
     assert_cpu_record(qts, base, 0x4480, 1, first_virtual_id + 1, nasid);
-    assert_component(qts, base, 0x4500, SN0_COMP_HUB, 3, nasid, 0, 0,
-                     nasid);
+    assert_component(qts, base, 0x4500, SN0_COMP_HUB,
+                     hub_ni_revision(qts, nasid), nasid, 0, 0, nasid);
     g_assert_cmphex(read_field(qts, base + 0x453c, 8), ==,
                     0xffff000000000000ULL);
     g_assert_cmpuint(read_field(qts, base + 0x4558, 8), ==, 90000000);

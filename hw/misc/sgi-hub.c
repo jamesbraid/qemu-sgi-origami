@@ -444,9 +444,10 @@ enum {
 #define NI_STATUS_REGION_SIZE   (1ULL << 17)
 #define NI_STATUS_NODE_SHIFT    8
 #define NI_STATUS_NODE_MASK     (0x1ffULL << NI_STATUS_NODE_SHIFT)
-#define NI_STATUS_REVISION      (3ULL << 4)
+#define NI_STATUS_REVISION_SHIFT 4
+#define NI_STATUS_REVISION_MAX  0xf
 
-#define NI_STATUS_RESET         (NI_STATUS_REGION_SIZE | NI_STATUS_REVISION)
+#define NI_STATUS_RESET         NI_STATUS_REGION_SIZE
 #define NI_STATUS_WRITABLE      (NI_STATUS_MORE_NODES | \
                                  NI_STATUS_REGION_SIZE | \
                                  NI_STATUS_NODE_MASK)
@@ -2943,6 +2944,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->pi_err_spool_size = 0;
     memset(s->pi_err_status0, 0, sizeof(s->pi_err_status0));
     s->ni_status = NI_STATUS_RESET |
+                   ((uint64_t)s->ni_revision << NI_STATUS_REVISION_SHIFT) |
                    (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
     s->ni_scratch[0] = 0;
@@ -3035,6 +3037,11 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     if (s->onewire_serial & ~MD_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "the Hub one-wire serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
+        return;
+    }
+    if (s->ni_revision > NI_STATUS_REVISION_MAX) {
+        error_setg(errp, "the Hub NI revision is a four-bit field, so at "
+                         "most %u", NI_STATUS_REVISION_MAX);
         return;
     }
     s->onewire_identity = sgi_hub_onewire_rom_id(s->onewire_serial);
@@ -3355,6 +3362,7 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_LINK("network-peer", SGIHubState, network_peer, TYPE_SGI_HUB,
                      SGIHubState *),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
+    DEFINE_PROP_UINT8("ni-revision", SGIHubState, ni_revision, 3),
     DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
                       elsc_dip_switches, 0),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
