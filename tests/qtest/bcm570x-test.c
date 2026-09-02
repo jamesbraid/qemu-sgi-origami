@@ -1349,6 +1349,40 @@ static void test_transmit_coalescing_timer(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The MAC status word's change bits are latches, and the driver clears one by
+ * writing it back. Storing what it wrote instead leaves every bit it tried to
+ * clear reading as set, so the driver sees the condition it just acknowledged
+ * still standing and handles it again -- on IRIX that was the carrier being
+ * re-announced once a second for the life of the interface.
+ */
+#define BCM_MAC_STATUS          0x0404u
+#define BCM_MACSTAT_CFG_CHANGED  0x00000008u
+#define BCM_MACSTAT_SYNC_CHANGED 0x00000010u
+
+static void test_mac_status_write_one_clears(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, bcm_init());
+
+    /* Nothing latched to begin with. */
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_STATUS), ==, 0);
+
+    /* Acknowledging bits that are not set leaves it clear rather than
+     * recording the acknowledgement as the state. */
+    bar_writel(&b, BCM_MAC_STATUS,
+               BCM_MACSTAT_CFG_CHANGED | BCM_MACSTAT_SYNC_CHANGED);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_STATUS), ==, 0);
+
+    /* And again, the way a driver polls: the write must never be readable
+     * back as the register's value. */
+    bar_writel(&b, BCM_MAC_STATUS, 0xffffffffu);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_STATUS), ==, 0);
+
+    bcm_close(&b);
+}
+
 /* The one's-complement sum an IP or TCP checksum field is meant to hold. */
 static uint16_t inet_csum(const uint8_t *b, size_t len, uint32_t sum)
 {
@@ -2880,6 +2914,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/mac-address-registers", NULL,
                         test_mac_address_registers);
     qtest_add_data_func("/bcm570x/phy-readback", NULL, test_phy_readback);
+    qtest_add_data_func("/bcm570x/mac-status-write-one-clears", NULL,
+                        test_mac_status_write_one_clears);
     qtest_add_data_func("/bcm570x/phy-aux-status-link-up", NULL,
                         test_phy_aux_status_link_up);
     qtest_add_data_func("/bcm570x/status-block-byte-order", NULL,
