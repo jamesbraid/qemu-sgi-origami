@@ -285,6 +285,7 @@ config SGI_IOC3
     select SERIAL
     select SGI_IOC3_ETH
     select SGI_IOC3_KBC
+    select SGI_IOC3_PARALLEL
 
 config SGI_XBOW
     bool

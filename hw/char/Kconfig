@@ -43,6 +43,9 @@ config SERIAL_PCI_MULTI
     depends on PCI
     select SERIAL
 
+config SGI_IOC3_PARALLEL
+    bool
+
 config VIRTIO_SERIAL
     bool
     default y
