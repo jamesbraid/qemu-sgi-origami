@@ -2,6 +2,7 @@
 #include "hw/1wire/crc.h"
 #include "hw/1wire/onewire.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
@@ -772,6 +773,99 @@ static void test_ds2502_write_commands_are_refused_not_misread(void)
     }
 }
 
+/*
+ * SGI's MicroLAN slot decode (include/hw/misc/sgi-onewire-slot.h). One write
+ * of a control register, decoded by pulse width into a reset, a read, or a
+ * write-zero. Each of the following pins one of those three outcomes against
+ * the others, because a decode that collapsed any two together would be a
+ * real defect a wrong-but-plausible implementation could still pass.
+ */
+
+/*
+ * A long pulse resets the bus and reports presence. onewire_reset() returns
+ * true when a part answers, and a presence pulse pulls the wire LOW, so the
+ * sampled level sgi_onewire_slot() returns is the negation: false here. An
+ * implementation that forgot to invert, or that treated every pulse as a
+ * reset, would return true instead.
+ */
+static void test_sgi_slot_reset_reports_presence_with_a_part(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_part(0x0b, 0x010203040506ULL);
+
+    g_assert_false(sgi_onewire_slot(bus, 500, 0));
+}
+
+/*
+ * The same long pulse on an empty bus: nothing answers, so the wire stays
+ * released and the sampled level is high. Together with the test above,
+ * this is what tells presence-detected apart from presence-absent rather
+ * than a decode that returns a fixed value regardless of the bus.
+ */
+static void test_sgi_slot_reset_reports_absence_on_empty_bus(void)
+{
+    OneWireBus *bus = onewire_test_bus();
+
+    g_assert_true(sgi_onewire_slot(bus, 500, 0));
+}
+
+/*
+ * A short pulse is a read: it releases the wire and samples whatever a part
+ * drives back. Skip ROM selects the reply part, whose function_byte always
+ * answers its own family byte; per the one-window lag (include/hw/1wire/
+ * onewire.h), that reply appears starting the byte AFTER the one that
+ * primes it, so a command byte is written first. Reading the primed reply
+ * back eight short-pulse slots at a time must reproduce the family byte. An
+ * implementation that instead read sgi_onewire_slot(bus, pulse,
+ * sample)'s short-pulse branch as a write-zero -- driving the wire low
+ * instead of releasing it -- would read back 0x00 regardless of what the
+ * part sends, not the real 0x0b.
+ */
+static void test_sgi_slot_short_pulse_reads(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_reply_part(0x0b, 0x010203040506ULL);
+    uint8_t reply = 0;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);                  /* Skip ROM */
+    bus_touch_byte(bus, 0xaa);                  /* prime the reply */
+
+    for (unsigned i = 0; i < 8; i++) {
+        if (sgi_onewire_slot(bus, 1, 0)) {
+            reply |= 1u << i;
+        }
+    }
+    g_assert_cmpuint(reply, ==, 0x0b);
+}
+
+/*
+ * A mid-range pulse holds the wire down: a write-zero. Family byte 0x0b is
+ * 00001011b, LSB first, so its first identity bit is 1 -- driving a zero
+ * there mismatches on the very first bit of Match ROM, which drops the part
+ * to ONEWIRE_IDLE immediately (test_match_rom_drops_at_first_mismatch
+ * exercises the same mechanism directly against onewire_touch_bit). This
+ * observes that the part actually received a zero, not merely that
+ * sgi_onewire_slot() returned some value: an implementation that instead
+ * decoded a mid-range pulse as a read or a write-one would drive/echo a 1
+ * on that slot, the part would keep matching, and the phase would still be
+ * ONEWIRE_ROM_MATCH here rather than IDLE.
+ */
+static void test_sgi_slot_mid_pulse_writes_zero(void)
+{
+    OneWireBus *bus = onewire_test_bus();
+    DeviceState *dev = qdev_new(TYPE_ONEWIRE_TEST_STUB);
+    OneWireSlave *s = ONEWIRE_SLAVE(dev);
+
+    qdev_prop_set_uint8(dev, "family", 0x0b);
+    qdev_prop_set_uint64(dev, "serial", 0x010203040506ULL);
+    qdev_realize_and_unref(dev, BUS(bus), &error_fatal);
+
+    g_assert_false(sgi_onewire_slot(bus, 500, 0));    /* reset: presence */
+    bus_touch_byte(bus, 0x55);                        /* Match ROM */
+    sgi_onewire_slot(bus, 100, 0);                    /* write-zero */
+
+    g_assert_cmpint(s->phase, ==, ONEWIRE_IDLE);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -822,6 +916,15 @@ int main(int argc, char **argv)
                      test_ds2502_pages_bound_the_programmable_area);
     g_test_add_func("/onewire/ds2502/write-commands-are-refused",
                      test_ds2502_write_commands_are_refused_not_misread);
+
+    g_test_add_func("/onewire/sgi-slot/reset-reports-presence-with-a-part",
+                     test_sgi_slot_reset_reports_presence_with_a_part);
+    g_test_add_func("/onewire/sgi-slot/reset-reports-absence-on-empty-bus",
+                     test_sgi_slot_reset_reports_absence_on_empty_bus);
+    g_test_add_func("/onewire/sgi-slot/short-pulse-reads",
+                     test_sgi_slot_short_pulse_reads);
+    g_test_add_func("/onewire/sgi-slot/mid-pulse-writes-zero",
+                     test_sgi_slot_mid_pulse_writes_zero);
 
     return g_test_run();
 }
