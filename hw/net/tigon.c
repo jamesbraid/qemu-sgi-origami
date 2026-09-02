@@ -124,6 +124,8 @@
 
 /* Largest frame the model assembles (jumbo, with slack). */
 #define TIGON_MAX_FRAME_SIZE    9600
+/* Smallest buffer that can hold one: below this the descriptor is not real. */
+#define TIGON_MIN_FRAME_SIZE    60
 
 /*
  * Field offsets inside the general information block (struct ti_gib): a 1 KB
@@ -996,6 +998,23 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     buf_idx = rx_word >> 16;
     buf_len = rx_word & 0xffff;
     s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
+
+    /*
+     * A descriptor claiming a buffer too small to hold an ethernet frame, or
+     * larger than the biggest frame the card assembles, is not a buffer the
+     * guest posted -- the ring is not where the card believes it is. Writing
+     * the frame to whatever address sits beside that length lands it in
+     * arbitrary guest memory, which faults the kernel a long way from here and
+     * with nothing pointing back. Say so and drop the frame instead.
+     */
+    if (buf_len < TIGON_MIN_FRAME_SIZE || buf_len > TIGON_MAX_FRAME_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: standard-rx descriptor %u offers a %u-byte "
+                      "buffer at 0x%" PRIx64 ", which is not a posted "
+                      "receive buffer; dropping the frame\n",
+                      buf_idx, buf_len, buf_addr);
+        return size;
+    }
 
     /*
      * Never write past the buffer the guest sized: a frame larger than it is
