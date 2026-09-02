@@ -103,6 +103,12 @@ struct TigonState {
     uint64_t tx_ring_base;
     bool tx_host_ring;
     uint64_t std_rx_ring_base;
+    /*
+     * The jumbo receive ring. The driver sizes the frames it will accept by
+     * what the card can take, so a card that never serves this ring keeps the
+     * guest at the standard maximum however it is configured.
+     */
+    uint64_t jumbo_rx_ring_base;
     uint64_t return_ring_base;
     uint32_t return_ring_max;
     uint64_t return_prodidx_ptr;
@@ -114,6 +120,8 @@ struct TigonState {
     uint32_t tx_considx;
     uint32_t std_rx_considx;
     uint32_t std_rx_prodidx;
+    uint32_t jumbo_rx_considx;
+    uint32_t jumbo_rx_prodidx;
     uint32_t cmd_considx;
 
     /* Internal pending-interrupt latch. */
