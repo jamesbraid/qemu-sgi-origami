@@ -335,6 +335,18 @@ static void put32le(uint8_t *b, uint32_t v)
     b[0] = v; b[1] = v >> 8; b[2] = v >> 16; b[3] = v >> 24;
 }
 
+/* Big-endian helpers: frame headers are big-endian wherever they appear. */
+static void stw_be_p_test(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static uint16_t get16be_test(const uint8_t *p)
+{
+    return (uint16_t)((p[0] << 8) | p[1]);
+}
+
 static void put16le(uint8_t *b, uint16_t v)
 {
     b[0] = v; b[1] = v >> 8;
@@ -1065,6 +1077,142 @@ static void test_transmit_round_trip(const void *data)
 
     bcm_close(&b);
     close(sv[0]);
+}
+
+/*
+ * Segmentation offload. The driver hands down one buffer holding several
+ * segments' worth of payload and names the segment size in the descriptor; the
+ * card cuts it up. Sending it whole puts a frame on the wire no peer accepts,
+ * and the sender then waits out a retransmission timeout for each one, which
+ * reads as a link stalling rather than as a malformed frame.
+ */
+#define LSO_MSS         512u
+#define LSO_SEGMENTS    3u
+#define LSO_HDR         54u     /* ethernet + IPv4 + TCP, all minimum length */
+
+static void build_lso_frame(uint8_t *f, unsigned int payload)
+{
+    static const uint8_t head[] = {
+        0x52, 0x54, 0x00, 0x11, 0x22, 0x33,
+        0x52, 0x54, 0x00, 0xbc, 0x57, 0x01,
+        0x08, 0x00,
+    };
+    unsigned int i;
+
+    memset(f, 0, LSO_HDR + payload);
+    memcpy(f, head, sizeof(head));
+    f[14] = 0x45;
+    stw_be_p_test(f + 16, (uint16_t)(20 + 20 + payload));
+    stw_be_p_test(f + 18, 0x1234);
+    f[22] = 64;
+    f[23] = 6;
+    f[26] = 10; f[27] = 0; f[28] = 2; f[29] = 15;
+    f[30] = 10; f[31] = 0; f[32] = 2; f[33] = 2;
+    stw_be_p_test(f + 34, 0x3039);
+    stw_be_p_test(f + 36, 0x0017);
+    f[38] = 0x00; f[39] = 0x00; f[40] = 0x10; f[41] = 0x00;
+    f[46] = 0x50;
+    f[47] = 0x18;               /* PSH and ACK */
+    stw_be_p_test(f + 48, 0x2000);
+    for (i = 0; i < payload; i++) {
+        f[LSO_HDR + i] = (uint8_t)(i & 0xff);
+    }
+}
+
+static void lso_open(Bcm *b, int fd, uint8_t *frame, unsigned int len,
+                     unsigned int mss)
+{
+    uint8_t bd[16];
+
+    ind_reg_writel(b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, TX_BUF_PHYS >> 32);
+    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_END);
+    put16le(bd + 10, (uint16_t)len);
+    put16le(bd + 14, (uint16_t)mss);
+    qtest_memwrite(b->qts, TX_RING_PHYS, bd, sizeof(bd));
+    qtest_memwrite(b->qts, TX_BUF_PHYS, frame, len);
+    bar_writel(b, BCM_MBX_TX_PROD_LO, 1);
+    (void)fd;
+}
+
+static void test_transmit_segmentation(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    unsigned int payload = LSO_MSS * LSO_SEGMENTS;
+    uint8_t *frame = g_malloc(LSO_HDR + payload);
+    uint8_t got[2048];
+    unsigned int i;
+
+    build_lso_frame(frame, payload);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    lso_open(&b, sv[0], frame, LSO_HDR + payload, LSO_MSS);
+
+    for (i = 0; i < LSO_SEGMENTS; i++) {
+        size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+        uint32_t seq;
+
+        g_assert_cmpint(len, ==, LSO_HDR + LSO_MSS);
+        g_assert_cmphex(get16be_test(got + 16), ==, 20 + 20 + LSO_MSS);
+        seq = ((uint32_t)got[38] << 24) | ((uint32_t)got[39] << 16) |
+              ((uint32_t)got[40] << 8) | got[41];
+        g_assert_cmphex(seq, ==, 0x1000 + i * LSO_MSS);
+        g_assert_cmpmem(got + LSO_HDR, LSO_MSS,
+                        frame + LSO_HDR + i * LSO_MSS, LSO_MSS);
+        if (i < LSO_SEGMENTS - 1) {
+            g_assert_cmphex(got[47] & 0x08, ==, 0);
+        } else {
+            g_assert_cmphex(got[47] & 0x08, ==, 0x08);
+        }
+    }
+
+    bcm_close(&b);
+    close(sv[0]);
+    g_free(frame);
+}
+
+/* A descriptor naming no segment size is the ordinary path, untouched. */
+static void test_transmit_no_segmentation(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    unsigned int payload = 200;
+    uint8_t *frame = g_malloc(LSO_HDR + payload);
+    uint8_t got[2048];
+    size_t len;
+
+    build_lso_frame(frame, payload);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    lso_open(&b, sv[0], frame, LSO_HDR + payload, 0);
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, LSO_HDR + payload);
+    g_assert_cmpmem(got, 34, frame, 34);
+
+    bcm_close(&b);
+    close(sv[0]);
+    g_free(frame);
 }
 
 /* The one's-complement sum an IP or TCP checksum field is meant to hold. */
@@ -2612,6 +2760,10 @@ int main(int argc, char **argv)
                         test_receive_coalescing_cost);
     qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,
                         test_transmit_checksum_offload);
+    qtest_add_data_func("/bcm570x/transmit-segmentation", NULL,
+                        test_transmit_segmentation);
+    qtest_add_data_func("/bcm570x/transmit-no-segmentation", NULL,
+                        test_transmit_no_segmentation);
     qtest_add_data_func("/bcm570x/transmit-checksum-bad-header", NULL,
                         test_transmit_checksum_bad_header);
     qtest_add_data_func("/bcm570x/transmit-frame-wordswap", NULL,

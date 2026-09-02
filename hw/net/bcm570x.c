@@ -253,6 +253,14 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_TXBD_FLAGS          0x08
 #define BCM570X_TXBD_LEN            0x0a
 /*
+ * The last word of a transmit descriptor carries the maximum segment size in
+ * its high half. A non-zero value is the driver asking the card to cut one
+ * large buffer into segments of that size -- what IRIX advertises on the
+ * interface as L2TCPSEG -- rather than handing down one segment per frame. The
+ * work saved is the guest's, which is where the time goes on an emulated CPU.
+ */
+#define BCM570X_TXBD_MSS            0x0e
+/*
  * The offload the driver asks for in a transmit descriptor. It hands the frame
  * over with the checksum fields still placeholders when it sets these, so a
  * model that ignores them puts frames on the wire that every receiver discards
@@ -840,6 +848,76 @@ static void bcm570x_tx_offload_checksum(uint8_t *frame, unsigned int len,
     net_checksum_calculate(frame, len, csum);
 }
 
+/*
+ * Cut one oversized TCP buffer into segments the peer will accept. The guest
+ * hands down a single frame holding many segments' worth of payload; each piece
+ * goes out with its own copy of the headers, its own sequence number, and the
+ * finishing flags only on the last. Transmitting the buffer whole instead puts
+ * a frame on the wire no receiver takes, and the sender then waits out a
+ * retransmission timeout for every one of them.
+ *
+ * Anything that does not look like the IPv4 TCP frame this is for -- a short
+ * header, lengths that do not fit inside what arrived, a segment size that
+ * would not divide it -- is sent unchanged rather than guessed at.
+ */
+static void bcm570x_tx_segment(Bcm570xState *s, uint8_t *frame,
+                               unsigned int len, unsigned int mss,
+                               uint16_t flags)
+{
+    unsigned int ihl, thl, hdr, payload, off, ip_id;
+    uint8_t seg[BCM570X_MAX_FRAME];
+    uint32_t seq;
+
+    if (len < 14 + 20 + 20 || lduw_be_p(frame + 12) != 0x0800 ||
+        (frame[14] >> 4) != 4 || frame[23] != 6) {
+        goto send_whole;
+    }
+    ihl = (frame[14] & 0x0f) * 4;
+    if (ihl < 20 || 14 + ihl + 20 > len) {
+        goto send_whole;
+    }
+    thl = (frame[14 + ihl + 12] >> 4) * 4;
+    hdr = 14 + ihl + thl;
+    if (thl < 20 || hdr > len || mss == 0 || hdr + mss > sizeof(seg)) {
+        goto send_whole;
+    }
+    payload = len - hdr;
+    if (payload <= mss) {
+        goto send_whole;
+    }
+
+    seq = ldl_be_p(frame + 14 + ihl + 4);
+    ip_id = lduw_be_p(frame + 18);
+
+    for (off = 0; off < payload; off += mss) {
+        unsigned int piece = MIN(mss, payload - off);
+        bool last = (off + piece >= payload);
+
+        memcpy(seg, frame, hdr);
+        memcpy(seg + hdr, frame + hdr + off, piece);
+
+        stw_be_p(seg + 16, ihl + thl + piece);      /* IP total length */
+        stw_be_p(seg + 18, ip_id + (off / mss));    /* a fresh identifier */
+        stl_be_p(seg + 14 + ihl + 4, seq + off);    /* sequence number */
+        if (!last) {
+            /* Only the final piece finishes the sender's message. */
+            seg[14 + ihl + 13] &= ~0x09;            /* clear FIN and PSH */
+        }
+        stw_be_p(seg + 24, 0);                      /* checksums to recompute */
+        stw_be_p(seg + 14 + ihl + 16, 0);
+        net_checksum_calculate(seg, hdr + piece, CSUM_IP | CSUM_TCP);
+
+        qemu_send_packet(qemu_get_queue(s->nic), seg, hdr + piece);
+    }
+    return;
+
+send_whole:
+    if (flags & (BCM570X_TXBDFLAG_IP_CKSUM | BCM570X_TXBDFLAG_TCP_UDP_CKSUM)) {
+        bcm570x_tx_offload_checksum(frame, len, flags);
+    }
+    qemu_send_packet(qemu_get_queue(s->nic), frame, len);
+}
+
 static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -853,6 +931,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     unsigned int frame_len = 0;
     unsigned int walked = 0;
     uint16_t frame_flags = 0;
+    unsigned int frame_mss = 0;
     bool frame_dropped = false;
 
     if (ring_len == 0 || prod >= ring_len) {
@@ -901,16 +980,16 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         }
 
         frame_flags |= flags;
+        if (frame_mss == 0) {
+            frame_mss = lduw_le_p(bd + BCM570X_TXBD_MSS);
+        }
         if (flags & BCM570X_TXBDFLAG_END) {
             if (!frame_dropped && frame_len) {
-                if (frame_flags & (BCM570X_TXBDFLAG_IP_CKSUM |
-                                   BCM570X_TXBDFLAG_TCP_UDP_CKSUM)) {
-                    bcm570x_tx_offload_checksum(frame, frame_len, frame_flags);
-                }
-                qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
+                bcm570x_tx_segment(s, frame, frame_len, frame_mss, frame_flags);
             }
             frame_len = 0;
             frame_flags = 0;
+            frame_mss = 0;
             frame_dropped = false;
         }
 
