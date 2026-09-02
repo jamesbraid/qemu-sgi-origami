@@ -1183,6 +1183,45 @@ static void test_ds2505_start_address_masked_to_top(void)
 }
 
 /*
+ * The same masking rule, but for Read Status: unlike the two existing
+ * hand-written responders this device replaces (both of which refuse a
+ * status read outright above a fixed offset instead of masking it -- see
+ * the task report), this class masks the status start address exactly
+ * like the data field's. Every status byte is blank 0xff regardless of
+ * address, so the byte value alone can't tell "masked, then answered"
+ * apart from "refused, floating high" -- the closing CRC can: a refusal
+ * would leave the CRC floating 0xff too, not this specific computed
+ * value.
+ */
+static void test_ds2505_status_start_address_masked_to_top(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t hdr[3] = { 0xaa, 0xff, 0xff };
+    uint8_t last_byte;
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xaa);
+
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA1 */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA2 */
+
+    last_byte = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(last_byte, ==, 0xff);      /* status: always blank */
+
+    crc = onewire_crc16(onewire_crc16(0, hdr, 3), &last_byte, 1);
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    /*
+     * As with the plain-read case, the header CRC covers the raw bytes
+     * actually sent (0xff, 0xff), not the masked address.
+     */
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+}
+
+/*
  * Add-only: Write Memory, Speed Write Memory, Write Status and Speed
  * Write Status are all refused rather than misread as a read. 0xC3 (the
  * DS2502-family CRC-read command) does not exist on this class either,
@@ -1407,6 +1446,8 @@ int main(int argc, char **argv)
                      test_ds2505_out_of_range_read_pads_not_wraps);
     g_test_add_func("/onewire/ds2505/start-address-masked-to-top",
                      test_ds2505_start_address_masked_to_top);
+    g_test_add_func("/onewire/ds2505/status-start-address-masked-to-top",
+                     test_ds2505_status_start_address_masked_to_top);
     g_test_add_func("/onewire/ds2505/write-commands-are-refused",
                      test_ds2505_write_commands_are_refused_not_misread);
 
