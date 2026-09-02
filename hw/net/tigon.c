@@ -328,61 +328,125 @@ static void tigon_dma_st_addr(TigonState *s, uint64_t addr, uint64_t v)
  * partial word still goes through a full aligned word access and only the
  * bytes actually wanted are picked out of (or folded into) it.
  */
+/*
+ * Reverse the bytes of every aligned four-byte group in place. This is the
+ * byte-lane swap the card applies when the descriptor byte-swap is off, done
+ * over a whole buffer rather than one word at a time.
+ */
+static void tigon_swap_words(uint8_t *p, uint32_t len)
+{
+    uint32_t i;
+
+    for (i = 0; i + 4 <= len; i += 4) {
+        uint8_t b0 = p[i], b1 = p[i + 1];
+
+        p[i] = p[i + 3];
+        p[i + 1] = p[i + 2];
+        p[i + 2] = b1;
+        p[i + 3] = b0;
+    }
+}
+
 static void tigon_dma_read_frame(TigonState *s, uint64_t addr, uint8_t *dst,
                                  uint32_t len)
 {
+    uint8_t staging[TIGON_MAX_FRAME_SIZE + 8];
+    uint64_t first = addr & ~3ULL;
+    uint32_t skew, span;
+
     /*
-     * Big-endian is the identity here: the word load assembles the bytes in
-     * memory order and the loop below writes them back out in that same
-     * order. Copy the payload in one transfer rather than one per word --
-     * a full-size frame costs 375 of them otherwise.
+     * With the descriptor byte-swap on, the word load assembles the bytes in
+     * memory order and the old loop wrote them straight back out in that
+     * order: the identity, so the payload moves in a single transfer.
      */
     if (tigon_bd_bigendian(s)) {
         pci_dma_read(PCI_DEVICE(s), addr, dst, len);
         return;
     }
 
-    while (len) {
-        uint64_t word_addr = addr & ~3ULL;
-        uint32_t off = addr & 3;
-        uint32_t word = tigon_dma_ld32(s, word_addr);
-        uint32_t take = MIN(4 - off, len);
-        uint32_t i;
+    /*
+     * With it off -- which is how IRIX runs the card -- each aligned word
+     * arrives byte-reversed. That is still one transfer plus a swap over the
+     * result, rather than a transfer per word: a full-size frame costs 375 of
+     * them otherwise, and this is the path the guest actually uses.
+     */
+    skew = addr - first;
+    span = skew + len;
+    span = (span + 3) & ~3u;
+    if (span > sizeof(staging)) {
+        /*
+         * Longer than any frame the card assembles: fall back rather than
+         * overrun the staging buffer.
+         */
+        while (len) {
+            uint32_t off = addr & 3;
+            uint32_t word = tigon_dma_ld32(s, addr & ~3ULL);
+            uint32_t take = MIN(4 - off, len);
+            uint32_t i;
 
-        for (i = 0; i < take; i++) {
-            dst[i] = word >> (24 - 8 * (off + i));
+            for (i = 0; i < take; i++) {
+                dst[i] = word >> (24 - 8 * (off + i));
+            }
+            addr += take;
+            dst += take;
+            len -= take;
         }
-        addr += take;
-        dst += take;
-        len -= take;
+        return;
     }
+
+    pci_dma_read(PCI_DEVICE(s), first, staging, span);
+    tigon_swap_words(staging, span);
+    memcpy(dst, staging + skew, len);
 }
 
 static void tigon_dma_write_frame(TigonState *s, uint64_t addr,
                                   const uint8_t *src, uint32_t len)
 {
+    uint8_t staging[TIGON_MAX_FRAME_SIZE + 8];
+    uint64_t first = addr & ~3ULL;
+    uint32_t skew, span;
+
     /* The same identity as the read side: one transfer, not one per word. */
     if (tigon_bd_bigendian(s)) {
         pci_dma_write(PCI_DEVICE(s), addr, src, len);
         return;
     }
 
-    while (len) {
-        uint64_t word_addr = addr & ~3ULL;
-        uint32_t off = addr & 3;
-        uint32_t take = MIN(4 - off, len);
-        uint32_t word = take < 4 ? tigon_dma_ld32(s, word_addr) : 0;
-        uint32_t i;
+    skew = addr - first;
+    span = skew + len;
+    span = (span + 3) & ~3u;
+    if (span > sizeof(staging)) {
+        while (len) {
+            uint64_t word_addr = addr & ~3ULL;
+            uint32_t off = addr & 3;
+            uint32_t take = MIN(4 - off, len);
+            uint32_t word = take < 4 ? tigon_dma_ld32(s, word_addr) : 0;
+            uint32_t i;
 
-        for (i = 0; i < take; i++) {
-            uint32_t shift = 24 - 8 * (off + i);
-            word = (word & ~(0xffu << shift)) | ((uint32_t)src[i] << shift);
+            for (i = 0; i < take; i++) {
+                uint32_t shift = 24 - 8 * (off + i);
+                word = (word & ~(0xffu << shift)) | ((uint32_t)src[i] << shift);
+            }
+            tigon_dma_st32(s, word_addr, word);
+            addr += take;
+            src += take;
+            len -= take;
         }
-        tigon_dma_st32(s, word_addr, word);
-        addr += take;
-        src += take;
-        len -= take;
+        return;
     }
+
+    /*
+     * Read back only when the range does not cover whole words: the bytes
+     * outside it belong to the guest and have to survive the write, which is
+     * what the old loop's read-modify-write was for.
+     */
+    if (skew || (span != skew + len)) {
+        pci_dma_read(PCI_DEVICE(s), first, staging, span);
+        tigon_swap_words(staging, span);
+    }
+    memcpy(staging + skew, src, len);
+    tigon_swap_words(staging, span);
+    pci_dma_write(PCI_DEVICE(s), first, staging, span);
 }
 
 /*
