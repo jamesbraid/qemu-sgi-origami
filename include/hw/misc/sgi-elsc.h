@@ -39,12 +39,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 
 /*
  * A destructive command whose effect is deferred until the guest reads its
- * "ok" (see deferred_action/deferred_committed). "rst" is the only one here;
- * the power subcommands add ELSC_ACTION_CYCLE and ELSC_ACTION_SHUTDOWN.
+ * "ok" (see deferred_action/deferred_committed): "rst" resets, "pwr c"
+ * power-cycles (a reset that also re-arms the cold-power latch) and "pwr d"
+ * shuts down.
  */
 enum {
     ELSC_ACTION_NONE = 0,
     ELSC_ACTION_RESET,
+    ELSC_ACTION_CYCLE,
+    ELSC_ACTION_SHUTDOWN,
 };
 
 struct SGIElscState {
@@ -138,7 +141,8 @@ struct SGIElscState {
      * had scheduled and not yet run (deferred_scheduled), without reasoning
      * about the frame state at all.
      *
-     * "rst" is the only action here; the power subcommands add their own.
+     * The actions are "rst" (reset), "pwr c" (power-cycle) and "pwr d"
+     * (shutdown).
      */
     uint8_t deferred_action;
     bool deferred_committed;
