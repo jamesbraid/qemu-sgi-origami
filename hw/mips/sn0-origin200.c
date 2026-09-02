@@ -276,7 +276,6 @@ static void origin200_create_bridge(SN0MachineState *s,
         model, SN0_MODEL_DEVICE_IOC3, 0);
     MemoryRegion *system = get_system_memory();
     SGIBridgeState *bridge;
-    uint64_t exempt;
     g_autofree char *bridge_name = node_index == 0 ?
         g_strdup("bridge") : g_strdup_printf("bridge%u", node_index);
     g_autofree char *widget0_name = node_index == 0 ?
@@ -308,12 +307,13 @@ static void origin200_create_bridge(SN0MachineState *s,
     qdev_prop_set_uint32(DEVICE(bridge), "fabric-node-shift",
                          ctz64(xtalk->node_stride));
 
-    /* The IOC3 is byte-lane exempt; OR, so a -global exemption survives. */
-    exempt = object_property_get_uint(OBJECT(bridge), "byte-lane-exempt",
-                                      &error_abort);
-    object_property_set_uint(OBJECT(bridge), "byte-lane-exempt",
-                             exempt | (1u << ioc3_model->pci_device),
-                             &error_abort);
+    /*
+     * Nothing here says which slots are byte-lane exempt. The controller
+     * declares that for itself and the bridge reads it as the card is
+     * plugged, so a board that moved the chip -- or a second one added on
+     * the command line -- cannot leave a slot number behind here to go
+     * stale.
+     */
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
 
     /*

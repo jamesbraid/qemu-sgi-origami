@@ -29,6 +29,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
 void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
                               hwaddr pci_base, bool memory_space);
 
+/*
+ * What a device plugged into this bridge says about itself: "my transfers
+ * already carry the guest's byte order, so hand me bytes uncorrected". A
+ * device that models its own big-endian view of guest memory -- SGI's own
+ * silicon does -- must not have this chip's byte lanes applied on top, on
+ * either the DMA path or its register window. The declaration says nothing
+ * about PCI identity and nothing about what the guest programmed; a device
+ * that does not make it is corrected, which is the safe default for an
+ * ordinary little-endian card.
+ */
+#define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
+
 /* The whole of the widget's crosstalk space belongs to this chip. */
 #define SGI_BRIDGE_WIDGET_SIZE  (16 * MiB)
 
@@ -103,7 +115,15 @@ struct SGIBridgeState {
     /* Where each window aims: an I/O region cannot hold an alias offset. */
     hwaddr device_window_base[SGI_BRIDGE_DEVICES];
 
-    /* Slots exempt from byte-lane correction: board policy, per slot. */
+    /*
+     * Slots whose device declared itself byte-lane self-ordered, collected
+     * as it was plugged so that every access is one mask test rather than a
+     * walk of the bus. Not migrated: the destination plugs the same devices
+     * into the same slots before any transfer runs.
+     */
+    uint32_t self_ordered_slots;
+
+    /* Slots forced exempt whatever is plugged in them: a test override. */
     uint32_t byte_lane_exempt;
 
     /* Per-window context: which slot a callback serves, set at realize. */

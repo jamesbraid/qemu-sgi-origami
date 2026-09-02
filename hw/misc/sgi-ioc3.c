@@ -14,6 +14,7 @@
 #include "qapi/error.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
@@ -1523,6 +1524,19 @@ static const Property sgi_ioc3_properties[] = {
                        SGI_IOC3_SUBSYSTEM_ID),
 };
 
+/*
+ * Read-only, because it is a fact about this model rather than a setting:
+ * the ethernet engine reaches its descriptors and buffers with explicit
+ * big-endian accessors and the serial blocks place their own byte lanes, so
+ * the chip already sees guest memory the way the guest wrote it. A bridge
+ * that corrected the bytes on top would reverse every word this device
+ * reads. True in whichever slot a board fits the chip into.
+ */
+static bool sgi_ioc3_byte_lane_self_ordered(Object *obj, Error **errp)
+{
+    return true;
+}
+
 static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -1530,6 +1544,9 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "SGI IOC3 base I/O controller";
+
+    object_class_property_add_bool(oc, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+                                   sgi_ioc3_byte_lane_self_ordered, NULL);
 
     pc->realize = sgi_ioc3_realize;
     pc->exit = sgi_ioc3_exit;

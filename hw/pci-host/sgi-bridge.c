@@ -15,6 +15,7 @@
 #include "qemu/log.h"
 #include "qemu/units.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/pci/pci.h"
@@ -577,13 +578,15 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
 /*
  * Two callers: the programmed-access windows (the byte-lane tables land a
  * narrow access reversed with swap disabled, the state both guests run
- * in) and the DMA path. Exemption is board policy handed down per slot --
- * real silicon cannot read a PCI vendor ID.
+ * in) and the DMA path. A slot is exempt when the device plugged into it
+ * declared that it orders these byte lanes itself, which is a fact about
+ * the model on the other end of the wires and travels with it from slot to
+ * slot; the property beside it forces the answer for tests and debugging.
  */
 static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
                                              unsigned int slot)
 {
-    return !(s->byte_lane_exempt & (1u << slot));
+    return !((s->self_ordered_slots | s->byte_lane_exempt) & (1u << slot));
 }
 
 /* Only the low two bits move: lanes are defined within one word. */
@@ -1857,6 +1860,56 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
     sgi_bridge_aim_all_windows(s);
 }
 
+/*
+ * The one place a device's byte-lane declaration is read: at plug time, into
+ * a slot mask, so that every later access is a mask test rather than a walk
+ * of the bus. Reading it here also means a card carries its own answer into
+ * whatever slot it is put in, which a mask the board computed cannot.
+ */
+static void sgi_bridge_plug(HotplugHandler *handler, DeviceState *dev,
+                            Error **errp)
+{
+    SGIBridgeState *s = SGI_BRIDGE(handler);
+    Object *obj = OBJECT(dev);
+    Error *local_err = NULL;
+    bool self_ordered;
+
+    /* Saying nothing is the answer an ordinary card gives: correct it. */
+    if (!object_dynamic_cast(obj, TYPE_PCI_DEVICE) ||
+        !object_property_find(obj, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED)) {
+        return;
+    }
+
+    self_ordered = object_property_get_bool(obj,
+                                            SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+                                            &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    if (self_ordered) {
+        /* Folded the way the DMA attributes are, for a slot past the eight. */
+        s->self_ordered_slots |=
+            1u << (PCI_SLOT(PCI_DEVICE(dev)->devfn) % SGI_BRIDGE_DEVICES);
+    }
+}
+
+/* A declaration must not outlive the card that made it. */
+static void sgi_bridge_unplug(HotplugHandler *handler, DeviceState *dev,
+                              Error **errp)
+{
+    SGIBridgeState *s = SGI_BRIDGE(handler);
+
+    if (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
+        unsigned int slot =
+            PCI_SLOT(PCI_DEVICE(dev)->devfn) % SGI_BRIDGE_DEVICES;
+
+        s->self_ordered_slots &= ~(1u << slot);
+    }
+    qdev_unrealize(dev);
+}
+
 static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 {
     SGIBridgeState *s = SGI_BRIDGE(dev);
@@ -1942,6 +1995,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * in the interrupt core the first time it drives an unwired pin.
      */
     pci_bus_set_slot_reserved_mask(phb->bus, ~((1u << SGI_BRIDGE_PINS) - 1));
+
+    /* Every card passes through here, so each one's declaration is read. */
+    qbus_set_hotplug_handler(BUS(phb->bus), obj);
 
     /*
      * The same pins, directly wired: both domains can drive one pin, so
@@ -2051,12 +2107,18 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
     DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
+    /*
+     * Forces slots exempt whatever their cards say, for a test or a debug
+     * run that wants the answer a card cannot be asked for. Cards declare
+     * themselves; this is the override, not the mechanism.
+     */
     DEFINE_PROP_UINT32("byte-lane-exempt", SGIBridgeState, byte_lane_exempt, 0),
 };
 
 static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "SGI Bridge crosstalk-to-PCI host bridge";
@@ -2064,6 +2126,8 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     dc->realize = sgi_bridge_realize;
     dc->vmsd = &vmstate_sgi_bridge;
     dc->user_creatable = false;
+    hc->plug = sgi_bridge_plug;
+    hc->unplug = sgi_bridge_unplug;
     rc->phases.hold = sgi_bridge_reset_hold;
     device_class_set_props(dc, sgi_bridge_properties);
 }
@@ -2074,6 +2138,10 @@ static const TypeInfo sgi_bridge_types[] = {
         .parent = TYPE_PCI_HOST_BRIDGE,
         .instance_size = sizeof(SGIBridgeState),
         .class_init = sgi_bridge_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_HOTPLUG_HANDLER },
+            { },
+        },
     },
     {
         .name = TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION,

@@ -1293,8 +1293,9 @@ static void test_dma_swap_bits_reset_clear(const void *data)
 
 
 /*
- * The exemption is a per-slot board property; the non-exempt twin is what
- * makes bytes-identical mean something.
+ * The property that forces a slot exempt whatever is plugged into it, kept
+ * as a test and debug override of what the card itself says. The non-exempt
+ * twin is what makes bytes-identical mean something.
  */
 #define MASQ_SLOT               7
 #define MASQ_CARD               " -device sgi-bridge-dma-test,addr=" \
@@ -1302,21 +1303,33 @@ static void test_dma_swap_bits_reset_clear(const void *data)
 /* Exempt slot 7 -- bit 7 -- from the Bridge's byte-lane correction. */
 #define MASQ_EXEMPT             " -global sgi-bridge.byte-lane-exempt=0x80"
 
+/* Bus mastering too: these cards initiate transfers as well as answer them. */
+static void card_start(QTestState *qts, unsigned int slot)
+{
+    qtest_writel(qts, CFG0(slot, 0) + 0x10, CARD_MMIO(slot));
+    qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | 0x0004);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
+}
+
+static void card_transfer(QTestState *qts, unsigned int slot, uint32_t addr,
+                          uint32_t len)
+{
+    qtest_writel(qts, WINDOW(slot) + DMA_REG_ADDRESS, addr);
+    qtest_writel(qts, WINDOW(slot) + DMA_REG_LENGTH, len);
+    qtest_writel(qts, WINDOW(slot) + DMA_REG_SEED, SWAP_SEED);
+    qtest_writel(qts, WINDOW(slot) + DMA_REG_GO, 1);
+}
+
 static void masq_start(QTestState *qts)
 {
-    qtest_writel(qts, CFG0(MASQ_SLOT, 0) + 0x10, CARD_MMIO(MASQ_SLOT));
-    qtest_writel(qts, CFG0(MASQ_SLOT, 0) + PCI_COMMAND,
-                 PCI_COMMAND_MEMORY | 0x0004);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(MASQ_SLOT)),
-                 DEV_MEMORY_SPACE | (CARD_MMIO(MASQ_SLOT) >> 20));
+    card_start(qts, MASQ_SLOT);
 }
 
 static void masq_transfer(QTestState *qts, uint32_t addr, uint32_t len)
 {
-    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_ADDRESS, addr);
-    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_LENGTH, len);
-    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_SEED, SWAP_SEED);
-    qtest_writel(qts, WINDOW(MASQ_SLOT) + DMA_REG_GO, 1);
+    card_transfer(qts, MASQ_SLOT, addr, len);
 }
 
 static void test_dma_exempt_slot_is_never_swapped(const void *data)
@@ -1387,8 +1400,9 @@ static void test_dma_unexempt_slot_is_swapped(const void *data)
  */
 #define UNIMP_FRAGMENT  "exempts from the DMA byte swap"
 
-static bool bridge_log_has_the_message(const char *extra_device,
-                                       uint32_t swap_bits)
+static bool bridge_log_has_the_message_at(const char *extra_device,
+                                          unsigned int slot,
+                                          uint32_t swap_bits)
 {
     g_autofree char *path = g_strdup_printf("%s/sn0-bridge-swap-XXXXXX.log",
                                             g_get_tmp_dir());
@@ -1402,14 +1416,20 @@ static bool bridge_log_has_the_message(const char *extra_device,
 
     qts = qtest_initf("%s%s -d unimp -D %s", MACHINE_WITH_BRIDGE,
                       extra_device, path);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(MASQ_SLOT)),
-                 DEV_MEMORY_SPACE | (CARD_MMIO(MASQ_SLOT) >> 20) | swap_bits);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20) | swap_bits);
     qtest_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
     seen = strstr(found, UNIMP_FRAGMENT) != NULL;
     g_assert_cmpint(g_unlink(path), ==, 0);
     return seen;
+}
+
+static bool bridge_log_has_the_message(const char *extra_device,
+                                       uint32_t swap_bits)
+{
+    return bridge_log_has_the_message_at(extra_device, MASQ_SLOT, swap_bits);
 }
 
 static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
@@ -1568,6 +1588,155 @@ static void test_dma_local_space_is_never_swapped(const void *data)
 
         qtest_quit(qts);
     }
+}
+
+
+/*
+ * The exemption belongs to the card, not to the slot. Two cards of the same
+ * type in two slots the board's own controller never occupies: one declares
+ * that it orders this chip's byte lanes itself and one says nothing. Holding
+ * both in one machine is what makes the answer about the declaration rather
+ * than about a slot a board happened to name.
+ */
+#define SELF_SLOT               4
+#define PLAIN_SLOT              5
+#define SELF_CARD               " -device sgi-bridge-dma-test,addr=" \
+                                stringify(SELF_SLOT) \
+                                ",byte-lane-self-ordered=on"
+#define PLAIN_CARD              " -device sgi-bridge-dma-test,addr=" \
+                                stringify(PLAIN_SLOT)
+#define BOTH_CARDS              SELF_CARD PLAIN_CARD
+
+/*
+ * The direct window, which is where an ethernet engine's descriptors and
+ * buffers actually travel. It has to be this window or the translated one:
+ * a transfer below the translated base crosses no swapper at all, so a ring
+ * put there would pass on a model that never read the declaration.
+ */
+static void test_dma_a_self_ordered_card_is_never_swapped(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE BOTH_CARDS);
+    uint8_t seen[SWAP_LEN];
+    unsigned int i;
+
+    card_start(qts, SELF_SLOT);
+    card_start(qts, PLAIN_SLOT);
+    bridge_clear_the_direct_map(qts);
+
+    /* The card that orders its own bytes: the guest's stream, as written. */
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+    card_transfer(qts, SELF_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+
+    /*
+     * And with the guest asking for the swap the model does not reproduce
+     * for such a card. The declaration is the card's, so the guest cannot
+     * reach past it -- and a model keyed on the register would differ here.
+     */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(SELF_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(SELF_SLOT) >> 20) |
+                 DEV_SWAP_DIRECT);
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+    card_transfer(qts, SELF_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+
+    /* The card beside it, which said nothing: permuted within each word. */
+    bridge_fill_sentinel(qts, TARGET_PAGE_A);
+    card_transfer(qts, PLAIN_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (i = 0; i < SWAP_LEN; i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same decision governs the register windows, so a card outside the slot
+ * the board named had its narrow accesses mis-addressed too. The card's
+ * 64-bit register block holds a constant whose bytes all differ, and the
+ * slot is left 32-bit so that a byte lands on the narrow path: which byte
+ * answers says which offset the bridge addressed. Stated, not computed --
+ * the four low bytes of 0x0123456789abcdef, which the byte-lane rule reaches
+ * at the offset itself or at offset xor three.
+ */
+#define CARD_WIDE_MMIO(slot)    (CARD_MMIO(slot) + 0x100000u)
+#define WIDE_LOW_BYTES          { 0xef, 0xcd, 0xab, 0x89 }
+
+static void card_aim_at_its_wide_window(QTestState *qts, unsigned int slot)
+{
+    qtest_writel(qts, CFG0(slot, 0) + PCI_BAR1, CARD_WIDE_MMIO(slot));
+    qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
+                 DEV_MEMORY_SPACE | (CARD_WIDE_MMIO(slot) >> 20));
+}
+
+static void test_a_self_ordered_card_reads_narrow_straight(const void *data)
+{
+    static const uint8_t byte[4] = WIDE_LOW_BYTES;
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE BOTH_CARDS);
+    unsigned int i;
+
+    card_aim_at_its_wide_window(qts, SELF_SLOT);
+    card_aim_at_its_wide_window(qts, PLAIN_SLOT);
+
+    for (i = 0; i < 4; i++) {
+        g_assert_cmphex(qtest_readb(qts, WINDOW(SELF_SLOT) + WIDE_FIXED + i),
+                        ==, byte[i]);
+        g_assert_cmphex(qtest_readb(qts, WINDOW(PLAIN_SLOT) + WIDE_FIXED + i),
+                        ==, byte[i ^ 3]);
+    }
+
+    /*
+     * A word is one whole cycle, so the byte lanes do not move it: both
+     * cards read the same word through the same windows. Without this a
+     * window aimed somewhere else would look like a byte-lane answer.
+     */
+    g_assert_cmphex(qtest_readl(qts, WINDOW(SELF_SLOT) + WIDE_FIXED), ==,
+                    qtest_readl(qts, WINDOW(PLAIN_SLOT) + WIDE_FIXED));
+
+    qtest_quit(qts);
+}
+
+/*
+ * And the chip the board actually carries, in a slot no board puts it in.
+ * The card above declares itself because a test told it to; this one
+ * declares itself because of what it is, which is the whole point -- an
+ * IOC3 added on the command line must be exempt in slot 5 exactly as the
+ * board's own is in slot 2. The model reports the decision when a guest
+ * asks for a swap it will not reproduce, which is where this reads it.
+ */
+#define SPARE_IOC3_SLOT         5
+#define SPARE_IOC3              " -device sgi-ioc3,addr=" \
+                                stringify(SPARE_IOC3_SLOT)
+
+static void test_an_ioc3_is_exempt_in_any_slot(const void *data)
+{
+    g_assert_true(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
+                                                DEV_SWAP_DIRECT));
+    g_assert_true(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
+                                                DEV_SWAP_TRANSLATED));
+
+    /*
+     * And the board's own controller, in the slot the board really uses.
+     * Nothing on the machine's side names that slot any more, so this is
+     * where the default configuration's exemption is now pinned.
+     */
+    g_assert_true(bridge_log_has_the_message_at("", IOC3_SLOT,
+                                                DEV_SWAP_DIRECT));
+
+    /*
+     * The same slot with an ordinary card in it, so this is about the chip
+     * and not about slot 5 having become exempt some other way.
+     */
+    g_assert_false(bridge_log_has_the_message_at(PLAIN_CARD, PLAIN_SLOT,
+                                                 DEV_SWAP_DIRECT));
 }
 
 /*
@@ -2889,6 +3058,13 @@ int main(int argc, char **argv)
                         NULL, test_dma_the_two_swap_bits_are_independent);
     qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
                         test_dma_local_space_is_never_swapped);
+    qtest_add_data_func("sn0/bridge/dma-a-self-ordered-card-is-never-swapped",
+                        NULL, test_dma_a_self_ordered_card_is_never_swapped);
+    qtest_add_data_func("sn0/bridge/self-ordered-card-narrow-reads-straight",
+                        NULL,
+                        test_a_self_ordered_card_reads_narrow_straight);
+    qtest_add_data_func("sn0/bridge/an-ioc3-is-exempt-in-any-slot", NULL,
+                        test_an_ioc3_is_exempt_in_any_slot);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reaches-the-second-node",
                         NULL, test_dma_direct_window_reaches_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",

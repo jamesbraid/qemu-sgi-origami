@@ -9,6 +9,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
@@ -53,6 +54,13 @@ struct SGIBridgeDMATestState {
     /* The identity this device presents, which a test may override. */
     uint16_t vendor_id;
     uint16_t device_id;
+
+    /*
+     * Whether this card tells the bridge it orders its own byte lanes, so a
+     * test can stand one in for SGI silicon that does. Off by default,
+     * which is what an ordinary card says.
+     */
+    bool byte_lane_self_ordered;
 
     /* Settable: the four-onto-eight pin fold needs more than one pin. */
     uint8_t interrupt_pin;
@@ -243,13 +251,19 @@ static void sgi_bridge_dma_test_wide_write(void *opaque, hwaddr addr,
     s->wide_scratch = deposit64(s->wide_scratch, (addr & 7) * 8, size * 8, val);
 }
 
+/*
+ * Down to a byte, because the constant's eight bytes all differ: a narrow
+ * read through a device window says which byte of the register it reached,
+ * which is what makes the bridge's byte-lane addressing assertable. A wide
+ * access still arrives whole, so the doubleword tests are unaffected.
+ */
 static const MemoryRegionOps sgi_bridge_dma_test_wide_ops = {
     .read = sgi_bridge_dma_test_wide_read,
     .write = sgi_bridge_dma_test_wide_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 4,
+    .valid.min_access_size = 1,
     .valid.max_access_size = 8,
-    .impl.min_access_size = 4,
+    .impl.min_access_size = 1,
     .impl.max_access_size = 8,
 };
 
@@ -305,11 +319,14 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
 
 static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_UINT8("interrupt-pin", SGIBridgeDMATestState, interrupt_pin, 1),
-    /* The byte-lane exemption keys on PCI identity; make it wearable. */
+    /* The part a test stands this card in for is named by its identity. */
     DEFINE_PROP_UINT16("vendor-id", SGIBridgeDMATestState, vendor_id,
                        SGI_BRIDGE_DMA_TEST_VENDOR),
     DEFINE_PROP_UINT16("device-id", SGIBridgeDMATestState, device_id,
                        SGI_BRIDGE_DMA_TEST_DEVICE),
+    /* Settable, so one card type covers both sides of the exemption. */
+    DEFINE_PROP_BOOL(SGI_BRIDGE_BYTE_LANE_SELF_ORDERED, SGIBridgeDMATestState,
+                     byte_lane_self_ordered, false),
 };
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
