@@ -196,6 +196,14 @@
 #define RX_RING_LEN           4u
 #define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
+/* A ring and buffer area big enough to time a burst rather than a packet. */
+#define BENCH_RING_PHYS       0x00300000ULL
+#define BENCH_BUF_PHYS        0x00400000ULL
+#define BENCH_RING_LEN        256u
+#define BENCH_FRAMES          255u
+#define BENCH_FRAME_LEN       1472u
+#define BENCH_BUF_STRIDE      1536u
+
 /*
  * A live card: the PCI bus, the device at its slot, and BAR0 mapped and
  * enabled for MMIO and bus-master DMA. Config-space-only tests still map the
@@ -1230,6 +1238,175 @@ static void test_transmit_checksum_bad_header(const void *data)
 }
 
 /*
+ * How fast the send path moves a burst. The driver hands the card a run of
+ * descriptors and rings the doorbell once, so this times exactly that: the whole
+ * burst leaves on one doorbell, and the frames are counted off the backend. It
+ * reports the rate rather than asserting one -- what a host manages depends on
+ * the host -- but it fails if a frame is lost or malformed, so the number is
+ * never quoted for a run that did not actually carry the traffic.
+ */
+static void test_transmit_throughput(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t *ring, *bufs, *frame;
+    uint8_t got[2048];
+    unsigned int i;
+    gint64 t0, t1;
+    guint64 bytes = 0;
+    double secs, mbps;
+
+    ring = g_malloc0(BENCH_RING_LEN * 16);
+    bufs = g_malloc0(BENCH_FRAMES * BENCH_BUF_STRIDE);
+    frame = g_malloc0(BENCH_FRAME_LEN);
+
+    for (i = 0; i < BENCH_FRAME_LEN; i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    for (i = 0; i < BENCH_FRAMES; i++) {
+        uint64_t buf = BENCH_BUF_PHYS + (uint64_t)i * BENCH_BUF_STRIDE;
+        uint8_t *bd = ring + i * 16;
+
+        memcpy(bufs + i * BENCH_BUF_STRIDE, frame, BENCH_FRAME_LEN);
+        put32le(bd + 0, buf >> 32);
+        put32le(bd + 4, buf & 0xffffffff);
+        put16le(bd + 8, BCM_TXBDFLAG_END);
+        put16le(bd + 10, BENCH_FRAME_LEN);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 30);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    ind_reg_writel(&b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, BENCH_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   BENCH_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, BENCH_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    qtest_memwrite(b.qts, BENCH_RING_PHYS, ring, BENCH_RING_LEN * 16);
+    qtest_memwrite(b.qts, BENCH_BUF_PHYS, bufs,
+                   BENCH_FRAMES * BENCH_BUF_STRIDE);
+
+    /* One doorbell hands the whole burst over. */
+    t0 = g_get_monotonic_time();
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, BENCH_FRAMES);
+    for (i = 0; i < BENCH_FRAMES; i++) {
+        size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+
+        g_assert_cmpint(len, ==, BENCH_FRAME_LEN);
+        g_assert_cmpmem(got, len, frame, BENCH_FRAME_LEN);
+        bytes += len;
+    }
+    t1 = g_get_monotonic_time();
+
+    secs = (double)(t1 - t0) / G_USEC_PER_SEC;
+    mbps = secs > 0 ? ((double)bytes * 8) / (secs * 1000000.0) : 0;
+    g_test_message("transmit burst: %u frames, %" G_GUINT64_FORMAT " bytes in "
+                   "%.4f s = %.1f Mbit/s, %.0f frames/s",
+                   BENCH_FRAMES, bytes, secs, mbps,
+                   secs > 0 ? BENCH_FRAMES / secs : 0);
+
+    bcm_close(&b);
+    close(sv[0]);
+    g_free(ring);
+    g_free(bufs);
+    g_free(frame);
+}
+
+/*
+ * What coalescing is worth on the receive side. The same burst is taken twice,
+ * once with an update per frame and once with a group per K frames, and both the
+ * interrupt count and the wall time are reported. The interrupt count is the
+ * honest measure -- the model's own cost per update -- and the timing says
+ * whether that saving shows up in how fast the burst clears.
+ */
+static void receive_burst_cost(unsigned int coal, unsigned int frames,
+                               uint32_t *updates, double *secs)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[128];
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint32_t tag_before, tag_after;
+    unsigned int i;
+    gint64 t0, t1;
+
+    memset(frame, 0xa5, sizeof(frame));
+    memset(frame, 0xff, 6);          /* broadcast: always accepted */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, COAL_RING_LEN << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
+    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0x10000000);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < frames; i++) {
+        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b.qts, RET_RING_PHYS, 0,
+                 (uint64_t)COAL_RING_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, frames);
+
+    tag_before = read_status_tag(&b);
+    t0 = g_get_monotonic_time();
+    for (i = 0; i < frames; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    wait_for_rx_prod(&b, frames);
+    t1 = g_get_monotonic_time();
+    tag_after = read_status_tag(&b);
+
+    *updates = tag_after - tag_before;
+    *secs = (double)(t1 - t0) / G_USEC_PER_SEC;
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+static void test_receive_coalescing_cost(const void *data)
+{
+    const unsigned int frames = 48;   /* whole groups at either setting */
+    uint32_t per_frame, grouped;
+    double t_per_frame, t_grouped;
+
+    receive_burst_cost(1, frames, &per_frame, &t_per_frame);
+    receive_burst_cost(16, frames, &grouped, &t_grouped);
+
+    g_test_message("receive burst of %u frames: per-frame updates %u in %.4f s; "
+                   "coalesced-by-16 updates %u in %.4f s (%.1fx fewer updates)",
+                   frames, per_frame, t_per_frame, grouped, t_grouped,
+                   grouped ? (double)per_frame / grouped : 0);
+
+    /* Whatever the host timing, the saving in updates is the contract. */
+    g_assert_cmpuint(per_frame, ==, frames);
+    g_assert_cmpuint(grouped, <, per_frame);
+}
+
+/*
  * Frame payload byte order under the endian word-swap. With ENDIAN_WORDSWAP set,
  * the big-endian driver lays each 32-bit DMA word down byte-reversed -- the same
  * reversal that lets it write descriptors little-endian -- so a payload it stores
@@ -2044,6 +2221,10 @@ int main(int argc, char **argv)
                         test_status_block_hostaddr_wordswap);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
+    qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
+                        test_transmit_throughput);
+    qtest_add_data_func("/bcm570x/receive-coalescing-cost", NULL,
+                        test_receive_coalescing_cost);
     qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,
                         test_transmit_checksum_offload);
     qtest_add_data_func("/bcm570x/transmit-checksum-bad-header", NULL,
