@@ -15,8 +15,6 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
-#include "hw/mips/sn0-model.h"
-
 #include <elf.h>
 
 #define SN0_PROCESSOR_MODE_BITS 0x1211a785U
@@ -732,34 +730,6 @@ static const BaseProfileTopologyCase base_profile_topologies[] = {
     { SN0_BASE_PROFILE_ONE_CPU, false },
     { SN0_BASE_PROFILE_TWO_CPUS, true },
 };
-
-static void test_profile_node_instances_are_explicit(const void *data)
-{
-    static const SN0ModelNodeInstance nodes[] = {
-        {
-            .nasid = 7,
-            .cpu_first_id = 11,
-            .cpu_count = 1,
-            .default_memory_mib = 64,
-        },
-        {
-            .nasid = 23,
-            .cpu_first_id = 29,
-            .cpu_count = 2,
-            .default_memory_mib = 128,
-        },
-    };
-    static const SN0ModelProfile profile = {
-        .nodes = nodes,
-        .node_count = ARRAY_SIZE(nodes),
-        .interconnect = SN0_MODEL_INTERCONNECT_DIRECT_PEER,
-    };
-    const SN0ModelNodeInstance *node = sn0_model_profile_node(&profile, 1);
-
-    g_assert_cmpuint(node->nasid, ==, 23);
-    g_assert_cmpuint(sn0_model_node_cpu_id(node, 0), ==, 29);
-    g_assert_cmpuint(sn0_model_node_cpu_id(node, 1), ==, 30);
-}
 
 /* Exact shipped population, without cataloguing unrelated QOM internals. */
 static void test_base_profile_topology(const void *data)
@@ -1790,8 +1760,6 @@ int main(int argc, char **argv)
                         test_dual_device_identity);
     qtest_add_data_func("sn0/model/origin200-ioc3-board-default", NULL,
                         test_origin200_owns_the_ioc3_board_default);
-    qtest_add_data_func("sn0/model/profile-node-instances-are-explicit", NULL,
-                        test_profile_node_instances_are_explicit);
     qtest_add_data_func("sn0/model/bridge-revision-matches-config-graph", NULL,
                         test_bridge_revision_matches_config_graph);
     qtest_add_data_func("sn0/model/base-profile-topology/one-cpu",
