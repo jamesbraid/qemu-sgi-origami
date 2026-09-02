@@ -1895,19 +1895,15 @@ static void sgi_bridge_plug(HotplugHandler *handler, DeviceState *dev,
     }
 }
 
-/* A declaration must not outlive the card that made it. */
-static void sgi_bridge_unplug(HotplugHandler *handler, DeviceState *dev,
-                              Error **errp)
+/*
+ * The slots are soldered on this machine, so the handler serves cold plug
+ * only. Admitting hot plug would let a card appear that the firmware's
+ * configuration, built once at startup, never describes -- a state the real
+ * machine cannot reach.
+ */
+static bool sgi_bridge_is_hotpluggable_bus(HotplugHandler *handler, BusState *bus)
 {
-    SGIBridgeState *s = SGI_BRIDGE(handler);
-
-    if (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
-        unsigned int slot =
-            PCI_SLOT(PCI_DEVICE(dev)->devfn) % SGI_BRIDGE_DEVICES;
-
-        s->self_ordered_slots &= ~(1u << slot);
-    }
-    qdev_unrealize(dev);
+    return false;
 }
 
 static void sgi_bridge_realize(DeviceState *dev, Error **errp)
@@ -2127,7 +2123,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &vmstate_sgi_bridge;
     dc->user_creatable = false;
     hc->plug = sgi_bridge_plug;
-    hc->unplug = sgi_bridge_unplug;
+    hc->is_hotpluggable_bus = sgi_bridge_is_hotpluggable_bus;
     rc->phases.hold = sgi_bridge_reset_hold;
     device_class_set_props(dc, sgi_bridge_properties);
 }
