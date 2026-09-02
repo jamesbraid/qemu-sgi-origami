@@ -1227,7 +1227,20 @@ static void assert_ethernet_address_page(QTestState *qts,
     g_assert_cmpmem(got_mac, sizeof(got_mac), expected_mac, sizeof(got_mac));
 
     g_assert_cmphex(onewire_crc16(0, page, 13), ==, 0xb001);
-    g_assert_cmphex(trailing, ==, onewire_crc8(0, page, 32));
+
+    /*
+     * What follows the thirty-second byte is the whole difference between
+     * the two read commands, and they are not interchangeable on this part.
+     * 0xc3 closes every 32-byte page with a CRC-8 over that page's data.
+     * Plain 0xf0 carries no per-page CRC at all -- its only data CRC comes
+     * at the end of memory -- so it runs straight on into the next page,
+     * and the part holds one programmed page, the rest unprogrammed EPROM.
+     */
+    if (cmd == 0xc3) {
+        g_assert_cmphex(trailing, ==, onewire_crc8(0, page, 32));
+    } else {
+        g_assert_cmphex(trailing, ==, 0xff);
+    }
 }
 
 static void test_reading_the_page_via_read_memory(const void *data)
@@ -1348,8 +1361,17 @@ static void test_a_device_supplied_mac_survives(const void *data)
 }
 
 /*
- * The redirection status OpenBSD reads before trusting a page: four bytes
- * of 0xff, which stops owmem_redirect()'s loop rather than failing it.
+ * The redirection bytes OpenBSD reads before trusting a page: it starts a
+ * Read Status at 0x0001, page zero's redirection byte, and takes four --
+ * one per page. A redirection byte of 0xff means "this page is where it
+ * says it is", and it is what ends owmem_redirect()'s walk rather than
+ * failing it.
+ *
+ * The value is pinned here because nothing in the model produces it on
+ * purpose: 0xff is what an unprogrammed EPROM byte reads as, and the
+ * station-address record programs only page zero's data, never the status
+ * field. An initialisation that filled status memory with anything else
+ * would leave every other one-wire test passing and stop OpenBSD dead.
  */
 static void test_read_status_returns_no_redirection(const void *data)
 {
@@ -1375,10 +1397,56 @@ static void test_read_status_returns_no_redirection(const void *data)
     for (i = 0; i < 4; i++) {
         status[i] = onewire_read_byte(qts);
     }
+    /* The first is page zero's, the page the station address lives in. */
     g_assert_cmphex(status[0], ==, 0xff);
     g_assert_cmphex(status[1], ==, 0xff);
     g_assert_cmphex(status[2], ==, 0xff);
     g_assert_cmphex(status[3], ==, 0xff);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The whole status field, which is not flat. A DS2502-class part serves
+ * eight bytes -- the write-protect byte, four redirection bytes, two
+ * reserved bytes, and a factory-programmed 0x00 at 0x0007 -- and then a
+ * CRC-8 over the bytes it just sent. Only 0x0007 is programmed, so the
+ * seven before it read as unprogrammed EPROM; a readout that runs to the
+ * end of the field is therefore never all ones.
+ */
+static void test_read_status_serves_the_whole_field(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t leading, crc;
+    uint8_t status[8];
+    uint8_t echo[3] = { 0xaa, 0x00, 0x00 };
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = sn0_ioc3_attach_with_mac(sv[1], ONEWIRE_TEST_MAC_STR);
+
+    ONEWIRE_RESET(qts);
+    onewire_write_byte(qts, 0xcc);   /* one part on the bus */
+    onewire_write_byte(qts, 0xaa);   /* Read Status */
+    onewire_write_byte(qts, 0x00);   /* from the first byte of the field */
+    onewire_write_byte(qts, 0x00);
+
+    leading = onewire_read_byte(qts);
+    g_assert_cmphex(leading, ==, onewire_crc8(0, echo, sizeof(echo)));
+
+    for (i = 0; i < sizeof(status); i++) {
+        status[i] = onewire_read_byte(qts);
+    }
+    crc = onewire_read_byte(qts);
+
+    for (i = 0; i < 7; i++) {
+        g_assert_cmphex(status[i], ==, 0xff);
+    }
+    g_assert_cmphex(status[7], ==, 0x00);
+
+    g_assert_cmphex(crc, ==, onewire_crc8(0, status, sizeof(status)));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -4570,6 +4638,8 @@ int main(int argc, char **argv)
                         test_a_device_supplied_mac_survives);
     qtest_add_data_func("sn0/ioc3/one-wire-read-status-no-redirection", NULL,
                         test_read_status_returns_no_redirection);
+    qtest_add_data_func("sn0/ioc3/one-wire-read-status-whole-field", NULL,
+                        test_read_status_serves_the_whole_field);
     qtest_add_data_func("sn0/ioc3/pin-control-two-aliases", NULL,
                         test_pin_control_has_two_write_aliases);
     qtest_add_data_func("sn0/ioc3/pin-register-reaches-data-word", NULL,

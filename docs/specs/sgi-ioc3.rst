@@ -115,8 +115,9 @@ block tolerates the write.
 Station-address one-wire part
 =============================
 
-A MicroLAN engine drives a DS2502-class part holding the station
-address. Time slots complete synchronously within the register
+A MicroLAN engine drives a one-wire bus carrying one DS2501, the
+512-bit sibling of the DS2502, which holds the station address in its
+first page. Time slots complete synchronously within the register
 write; a guest's read-after-write polling cannot observe real
 timing. The part answers Search ROM (SGI's PROM continues straight
 from search to a function command), Match ROM (OpenBSD's ``owmac``),
@@ -124,15 +125,28 @@ and Skip ROM (Linux's w1 core, whenever a bus has one device); an
 unimplemented command leaves the wire idling high and is logged,
 because it is otherwise indistinguishable from an absent part.
 
-The ROM identity is family 0x91 with the serial's required top
-twelve bits 0x5e7; the serial's remainder comes from the machine.
-Two CRCs are in play and differ: the CRC-8 over ROM bytes is sent as
-computed, while the page's embedded CRC-16 is stored inverted so the
-guest's running check lands on the fixed residue 0xb001. The two
-memory-read commands (checked and unchecked framing) both return the
-same stored page; redirection status reads all ones, which is the
-value that tells OpenBSD's redirect walk the page is valid where it
-sits.
+The ROM identity is family 0x91 -- the custom bit over base type
+0x11 -- with the serial's required top twelve bits 0x5e7; the
+serial's remainder comes from the machine. The two memory-read
+commands are not interchangeable: Read Data with CRC closes every
+32-byte page with a CRC-8 over that page's data, while plain Read
+Memory carries no per-page CRC at all and emits a single CRC-8 only
+where a read reaches the end of memory. Read Status serves the
+eight-byte status field -- the write-protect byte, four page
+redirection bytes, two reserved bytes and a factory-programmed 0x00
+-- closed by a CRC-8 over the bytes read. Only that last byte is
+programmed, so the redirection byte OpenBSD's redirect walk reads is
+unprogrammed EPROM, and its all-ones value is what tells the walk the
+page is valid where it sits.
+
+The station-address record in page zero is image content rather than
+device behaviour: a marker byte, the address reversed into bytes 5
+through 10, and a checksum over the first eleven bytes at bytes 11
+and 12. That checksum is the record format's own, not a CRC the part
+computes -- an embedded page checksum is a software file-structure
+convention, and a part's own CRCs always cover a whole page. It is
+stored inverted so a guest's running check lands on the fixed residue
+0xb001.
 
 Ethernet engine
 ===============

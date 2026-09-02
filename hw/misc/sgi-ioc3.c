@@ -12,7 +12,10 @@
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "hw/1wire/crc.h"
+#include "hw/1wire/ds2502.h"
 #include "hw/misc/sgi-ioc3.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
@@ -112,106 +115,38 @@ static void sgi_ioc3_parallel_irq(void *opaque, int n, int level)
 }
 
 /*
- * The one-wire ethernet-address part behind the MicroLAN engine; protocol
- * per the ioc3 datasheet (docs/datasheets/ioc3.md in the origami project
- * tree the fork is developed inside, not this repository).
+ * The station-address record the guests read out of the part's first page.
+ * This is image content, not device behaviour: the marker and the reversed
+ * address are the record's own format, and so is the checksum at bytes 11
+ * and 12, which a DS2502-class part never computes -- an embedded page
+ * checksum is a software file-structure convention, while the part's own
+ * CRCs always cover a whole page. It is stored inverted so a guest shifting
+ * the record and its checksum through the generator lands on the fixed
+ * residue every one-wire CRC-16 stream ends on.
  */
-
-/* Standard one-wire CRC-8, sent as computed -- unlike the CRC-16 below. */
-static uint8_t sgi_ioc3_onewire_crc8(uint8_t crc, const uint8_t *data,
-                                     unsigned int len)
+static void sgi_ioc3_onewire_build_page(SGIIOC3State *s,
+                                        uint8_t page[DS2502_PAGE_SIZE])
 {
-    unsigned int i, bit;
-
-    for (i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (bit = 0; bit < 8; bit++) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
-        }
-    }
-    return crc;
-}
-
-/* Standard one-wire CRC-16; stored inverted for the 0xb001 residue. */
-static uint16_t sgi_ioc3_onewire_crc16(uint16_t crc, const uint8_t *data,
-                                       unsigned int len)
-{
-    unsigned int i, bit;
-
-    for (i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (bit = 0; bit < 8; bit++) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
-        }
-    }
-    return crc;
-}
-
-static uint64_t sgi_ioc3_onewire_rom_id(uint64_t serial)
-{
-    uint8_t rom[7];
-    unsigned int i;
-    uint8_t crc;
-
-    rom[0] = SGI_IOC3_ONEWIRE_FAMILY;
-    for (i = 0; i < 6; i++) {
-        rom[1 + i] = (serial >> (8 * i)) & 0xff;
-    }
-    crc = sgi_ioc3_onewire_crc8(0, rom, sizeof(rom));
-
-    return (uint64_t)rom[0] | ((uint64_t)rom[1] << 8) |
-           ((uint64_t)rom[2] << 16) | ((uint64_t)rom[3] << 24) |
-           ((uint64_t)rom[4] << 32) | ((uint64_t)rom[5] << 40) |
-           ((uint64_t)rom[6] << 48) | ((uint64_t)crc << 56);
-}
-
-/* All three function commands share the CRC-8-of-echo framing. */
-static void sgi_ioc3_onewire_answer(SGIIOC3State *s)
-{
-    uint8_t echo[3];
-    uint8_t page[SGI_IOC3_ONEWIRE_PAGE_SIZE];
     uint16_t crc16;
     unsigned int i;
 
-    echo[0] = s->onewire_command;
-    echo[1] = s->onewire_args[0];
-    echo[2] = s->onewire_args[1];
-    s->onewire_out[0] = sgi_ioc3_onewire_crc8(0, echo, sizeof(echo));
-
-    if (s->onewire_command == SGI_IOC3_ONEWIRE_FN_READ_STATUS) {
-        /* 0xff status bytes stop owmem_redirect()'s loop on its first look. */
-        memset(&s->onewire_out[1], 0xff, SGI_IOC3_ONEWIRE_STATUS_SIZE);
-        s->onewire_out_len = 1 + SGI_IOC3_ONEWIRE_STATUS_SIZE;
-        s->onewire_outbit = 0;
-        s->onewire_phase = SGI_IOC3_ONEWIRE_ANSWER;
-        return;
-    }
-
-    /* Both guests only ever ask for page zero, the only page held. */
-    page[0] = 0x0a;                       /* the fixed marker both guests require */
-    memset(&page[1], 0, 4);               /* unconstrained by either guest */
+    memset(page, 0, DS2502_PAGE_SIZE);   /* unconstrained by either guest */
+    page[0] = 0x0a;                      /* the marker both guests require */
     for (i = 0; i < 6; i++) {
         page[10 - i] = s->eth.conf.macaddr.a[i];
     }
-    crc16 = ~sgi_ioc3_onewire_crc16(0, page, 11);
+    crc16 = ~onewire_crc16(0, page, 11);
     page[11] = crc16 & 0xff;
     page[12] = crc16 >> 8;
-    memset(&page[13], 0, SGI_IOC3_ONEWIRE_PAGE_SIZE - 13);
-
-    memcpy(&s->onewire_out[1], page, sizeof(page));
-    s->onewire_out[1 + sizeof(page)] =
-        sgi_ioc3_onewire_crc8(0, page, sizeof(page));
-
-    s->onewire_out_len = SGI_IOC3_ONEWIRE_ANSWER_SIZE;
-    s->onewire_outbit = 0;
-    s->onewire_phase = SGI_IOC3_ONEWIRE_ANSWER;
 }
 
-/* One bit slot; phases follow the slot sequence, never its timing. */
+/* One bit slot, reported finished inside the write the guest polls after. */
 static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
 {
     uint32_t pulse = val >> SGI_IOC3_ONEWIRE_PULSE_SHIFT;
-    bool level = true;
+    uint32_t sample = (val >> SGI_IOC3_ONEWIRE_SAMPLE_SHIFT) &
+                      SGI_IOC3_ONEWIRE_SAMPLE_MASK;
+    bool level;
 
     if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE) || !s->board->eth) {
         /*
@@ -222,118 +157,9 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
          * way no part answers: the wire reads high and the slot advances no
          * conversation.
          */
-        s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
-                              SGI_IOC3_MICROLAN_DONE |
-                              SGI_IOC3_MICROLAN_LEVEL;
-        return;
-    }
-
-    if (pulse >= SGI_IOC3_ONEWIRE_PULSE_RESET) {
-        /* Reset: the part pulls the wire low and forgets the conversation. */
-        s->onewire_phase = SGI_IOC3_ONEWIRE_COMMAND;
-        s->onewire_bit = 0;
-        s->onewire_command = 0;
-        s->onewire_outbit = 0;
-        level = false;
-    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_COMMAND) {
-        /* A ROM command, least-significant bit first. */
-        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
-            s->onewire_command |= 1u << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 8) {
-            s->onewire_bit = 0;
-            switch (s->onewire_command) {
-            case SGI_IOC3_ONEWIRE_ROM_SEARCH:
-                s->onewire_phase = SGI_IOC3_ONEWIRE_SEARCH;
-                break;
-            case SGI_IOC3_ONEWIRE_ROM_SKIP:
-                /* Linux's w1 core: Skip ROM with one device registered. */
-                s->onewire_command = 0;
-                s->onewire_phase = SGI_IOC3_ONEWIRE_FUNCTION;
-                break;
-            case SGI_IOC3_ONEWIRE_ROM_MATCH:
-                /* OpenBSD's owmac always selects by Match ROM. */
-                s->onewire_match = 0;
-                s->onewire_phase = SGI_IOC3_ONEWIRE_MATCH;
-                break;
-            default:
-                s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
-                break;
-            }
-        }
-    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_SEARCH) {
-        /*
-         * Three slots per identity bit. The part stays selected after the
-         * search; SGI's PROM sends no second ROM command.
-         */
-        unsigned int step = s->onewire_bit % 3;
-        unsigned int index = s->onewire_bit / 3;
-        bool bit = (sgi_ioc3_onewire_rom_id(s->onewire_serial) >> index) & 1;
-
-        if (step == 0) {
-            level = bit;
-        } else if (step == 1) {
-            level = !bit;
-        }
-
-        if (++s->onewire_bit == 64 * 3) {
-            s->onewire_bit = 0;
-            s->onewire_command = 0;
-            s->onewire_phase = SGI_IOC3_ONEWIRE_FUNCTION;
-        }
-    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_MATCH) {
-        /* A part that does not match stops answering until the next reset. */
-        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
-            s->onewire_match |= 1ULL << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 64) {
-            s->onewire_bit = 0;
-            s->onewire_command = 0;
-            s->onewire_phase =
-                (s->onewire_match == sgi_ioc3_onewire_rom_id(s->onewire_serial))
-                ? SGI_IOC3_ONEWIRE_FUNCTION : SGI_IOC3_ONEWIRE_IDLE;
-        }
-    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_FUNCTION) {
-        /* The function asked of the selected part, a bit at a time. */
-        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
-            s->onewire_command |= 1u << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 8) {
-            s->onewire_bit = 0;
-            s->onewire_argn = 0;
-            s->onewire_args[0] = 0;
-            s->onewire_args[1] = 0;
-            switch (s->onewire_command) {
-            case SGI_IOC3_ONEWIRE_FN_READ_MEMORY:
-            case SGI_IOC3_ONEWIRE_FN_READ_MEMORY_CRC:
-            case SGI_IOC3_ONEWIRE_FN_READ_STATUS:
-                s->onewire_phase = SGI_IOC3_ONEWIRE_OFFSET;
-                break;
-            default:
-                s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
-                break;
-            }
-        }
-    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_OFFSET) {
-        /* Two bytes of target address, low first, still one slot per bit. */
-        if (pulse < SGI_IOC3_ONEWIRE_PULSE_ZERO) {
-            s->onewire_args[s->onewire_argn] |= 1u << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 8) {
-            s->onewire_bit = 0;
-            if (++s->onewire_argn == 2) {
-                sgi_ioc3_onewire_answer(s);
-            }
-        }
-    } else if (s->onewire_phase == SGI_IOC3_ONEWIRE_ANSWER) {
-        /* Shifting the answer back, LSB of each byte first. */
-        unsigned int byte = s->onewire_outbit / 8;
-
-        level = (s->onewire_out[byte] >> (s->onewire_outbit % 8)) & 1;
-        if (++s->onewire_outbit == (unsigned int)s->onewire_out_len * 8) {
-            s->onewire_outbit = 0;
-            s->onewire_phase = SGI_IOC3_ONEWIRE_IDLE;
-        }
+        level = true;
+    } else {
+        level = sgi_onewire_slot(s->onewire_bus, pulse, sample);
     }
 
     s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
@@ -1244,7 +1070,17 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     /* All child DMA goes through this function's bus-master view. */
     s->dma_as = pci_get_address_space(dev);
 
+    /*
+     * The MicroLAN bus exists on every board; what varies is whether
+     * anything hangs off it. An empty one answers a reset slot the way a
+     * disconnected wire does, which is what a board with no ethernet has.
+     */
+    s->onewire_bus = onewire_create_bus(DEVICE(dev), "onewire");
+
     if (s->board->eth) {
+        uint8_t page[DS2502_PAGE_SIZE];
+        DeviceState *part;
+
         object_property_set_link(OBJECT(&s->eth), "dma-memory",
                                  OBJECT(&dev->bus_master_container_region),
                                  &error_abort);
@@ -1257,6 +1093,26 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                                         SYS_BUS_DEVICE(&s->eth), 0));
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
                            qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
+
+        /*
+         * The station-address part, a DS2501: the 512-bit sibling of the
+         * DS2502, which is what the family byte 0x91 -- the custom bit over
+         * base type 0x11 -- identifies. It is composed here rather than in
+         * reset because the record is fixed once the ethernet has realized
+         * and settled its address, and because QEMU resets a device's
+         * children before the device itself, so a controller that rebuilt
+         * an image in its own reset would write into a part that had
+         * already reset from the previous one.
+         */
+        sgi_ioc3_onewire_build_page(s, page);
+        part = qdev_new(TYPE_ONEWIRE_DS2501);
+        object_property_add_child(OBJECT(dev), "onewire-part", OBJECT(part));
+        qdev_prop_set_uint8(part, "family", SGI_IOC3_ONEWIRE_FAMILY);
+        qdev_prop_set_uint64(part, "serial", s->onewire_serial);
+        ds2502_set_image(part, page, sizeof(page));
+        if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
+            return;
+        }
     } else {
         object_unparent(OBJECT(&s->eth));
     }
@@ -1438,17 +1294,6 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->pin_data = 0;
     s->chip_control = 0;
     s->int_out = 0;
-
-    s->onewire_phase = 0;
-    s->onewire_bit = 0;
-    s->onewire_command = 0;
-    s->onewire_match = 0;
-    s->onewire_args[0] = 0;
-    s->onewire_args[1] = 0;
-    s->onewire_argn = 0;
-    memset(s->onewire_out, 0, sizeof(s->onewire_out));
-    s->onewire_out_len = 0;
-    s->onewire_outbit = 0;
 }
 
 static void sgi_ioc3_init(Object *obj)

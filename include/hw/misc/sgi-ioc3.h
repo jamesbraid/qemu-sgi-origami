@@ -6,6 +6,7 @@
 #ifndef HW_MISC_SGI_IOC3_H
 #define HW_MISC_SGI_IOC3_H
 
+#include "hw/1wire/onewire.h"
 #include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
@@ -91,38 +92,20 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_MICROLAN_TIMING (~(SGI_IOC3_MICROLAN_LEVEL | \
                                     SGI_IOC3_MICROLAN_DONE))
 
-/* Slot kinds by pulse-width threshold; both guests fall well clear. */
+/*
+ * A slot write carries two times in microseconds: how long to hold the
+ * bus low from bit 10 up, and the rest of the slot from bit 2 up. The
+ * shared slot decode reads the kind of slot out of the low-drive time.
+ */
 #define SGI_IOC3_ONEWIRE_PULSE_SHIFT  10
-#define SGI_IOC3_ONEWIRE_PULSE_RESET  400 /* at or above: a reset */
-#define SGI_IOC3_ONEWIRE_PULSE_ZERO   40  /* at or above (below reset): a zero */
-
-/* ROM selection: Linux sends Skip, OpenBSD Match; both must work. */
-#define SGI_IOC3_ONEWIRE_ROM_SEARCH   0xf0
-#define SGI_IOC3_ONEWIRE_ROM_SKIP     0xcc
-#define SGI_IOC3_ONEWIRE_ROM_MATCH    0x55
-
-#define SGI_IOC3_ONEWIRE_FN_READ_MEMORY      0xf0
-#define SGI_IOC3_ONEWIRE_FN_READ_MEMORY_CRC  0xc3
-#define SGI_IOC3_ONEWIRE_FN_READ_STATUS      0xaa
+#define SGI_IOC3_ONEWIRE_SAMPLE_SHIFT 2
+#define SGI_IOC3_ONEWIRE_SAMPLE_MASK  0xffu
 
 /* Family and serial top bits are required by OpenBSD's owmac_match(). */
 #define SGI_IOC3_ONEWIRE_FAMILY  0x91
 #define SGI_IOC3_ONEWIRE_SERIAL  0x5e7000000001ULL
 
 #define SGI_IOC3_ONEWIRE_SERIAL_MASK 0xffffffffffffULL
-
-#define SGI_IOC3_ONEWIRE_PAGE_SIZE   32
-#define SGI_IOC3_ONEWIRE_STATUS_SIZE 4
-#define SGI_IOC3_ONEWIRE_ANSWER_SIZE (1 + SGI_IOC3_ONEWIRE_PAGE_SIZE + 1)
-
-/* One-wire transaction phases, reset to reset. */
-#define SGI_IOC3_ONEWIRE_IDLE      0
-#define SGI_IOC3_ONEWIRE_COMMAND   1
-#define SGI_IOC3_ONEWIRE_SEARCH    2
-#define SGI_IOC3_ONEWIRE_MATCH     3
-#define SGI_IOC3_ONEWIRE_FUNCTION  4
-#define SGI_IOC3_ONEWIRE_OFFSET    5
-#define SGI_IOC3_ONEWIRE_ANSWER    6
 
 /* Bit 21 routes the MicroLAN engine onto pin 8; drivers set it first. */
 #define SGI_IOC3_PIN_CONTROL_SET 0x34
@@ -374,16 +357,12 @@ struct SGIIOC3State {
     /* A property: the firmware must not merge nodes that answer alike. */
     uint64_t onewire_serial;
 
-    /* Not migrated: a transaction caught mid-slot retries from a reset. */
-    uint8_t onewire_phase;
-    uint8_t onewire_bit;
-    uint8_t onewire_command;
-    uint64_t onewire_match;
-    uint8_t onewire_args[2];
-    uint8_t onewire_argn;
-    uint8_t onewire_out[SGI_IOC3_ONEWIRE_ANSWER_SIZE];
-    uint8_t onewire_out_len;
-    uint16_t onewire_outbit;
+    /*
+     * The MicroLAN bus. It carries the station-address part on a board
+     * that fits ethernet and nothing at all on one that does not, since
+     * the part is wired up with the ethernet rather than on its own.
+     */
+    OneWireBus *onewire_bus;
 
     SGIIOC3EthState eth;
 
