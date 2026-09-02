@@ -619,7 +619,7 @@ static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
 
     cpus = g_new0(unsigned int, node_count);
     for (node_index = 0; node_index < node_count; node_index++) {
-        cpus[node_index] = node_count == 1 ? machine->smp.cpus :
+        cpus[node_index] = node_count == 1 ? machine->smp.max_cpus :
             machine->smp.cores * machine->smp.threads;
     }
     profile = sn0_model_find_profile(model, node_count, cpus);

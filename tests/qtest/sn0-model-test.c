@@ -798,6 +798,23 @@ static void test_base_profile_topology(const void *data)
     qtest_quit(qts);
 }
 
+static void test_one_active_cpu_with_two_possible_cpus(const void *data)
+{
+    static const QOMChildExpectation node_children[] = {
+        { "cpu0", "child<R10000-mips64-cpu>" },
+        { "hub", "child<sgi-hub>" },
+        { "ioc3", "child<sgi-ioc3>" },
+        { "isp0", "child<qlogic-isp1040>" },
+        { "isp1", "child<qlogic-isp1040>" },
+    };
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -smp 1,maxcpus=2");
+
+    assert_qom_child_set(qts, "/machine/node0", node_children,
+                         ARRAY_SIZE(node_children));
+    qtest_quit(qts);
+}
+
 static void test_dual_profile_topology(const void *data)
 {
     static const QOMChildExpectation machine_children[] = {
@@ -1783,6 +1800,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/model/base-profile-topology/two-cpus",
                         &base_profile_topologies[1],
                         test_base_profile_topology);
+    qtest_add_data_func("sn0/model/one-active-cpu-two-possible", NULL,
+                        test_one_active_cpu_with_two_possible_cpus);
     qtest_add_data_func("sn0/model/dual-profile-topology", NULL,
                         test_dual_profile_topology);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
