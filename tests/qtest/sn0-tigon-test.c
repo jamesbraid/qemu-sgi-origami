@@ -116,6 +116,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_GENINFO_LO   0x60c
 #define TI_GCR_OPMODE       0x618
 #define TI_GCR_EVENTCONS_IDX 0x628
+#define TI_GCR_MASK_INTRS  0x664
 #define TI_GCR_RXRETURNCONS_IDX 0x680
 #define TI_MHC_BYTE_SWAP_ENB 0x00000010
 #define TI_MHC_WORD_SWAP_ENB 0x00000020
@@ -1561,6 +1562,33 @@ static void test_interrupt_hostintr_ack(const void *data)
 }
 
 /*
+ * The interrupt mask. The public driver writes 0 here under the comment "Turn
+ * interrupts on", so zero permits and a non-zero value holds the line down.
+ * Modelled because a register that is stored and never consulted answers reads
+ * faithfully while ignoring what it was written for -- the card would deliver
+ * an interrupt into a driver that had just asked for silence.
+ */
+static void test_interrupt_mask_holds_the_line(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    go_operational(qts);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_MASK_INTRS, 1);
+    g_assert_false(irq_asserted(qts));
+
+    /* Reads back what was written whether or not it is acted on. */
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_MASK_INTRS), ==, 1);
+
+    /* The pending cause is held, not lost: unmasking delivers it. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_MASK_INTRS, 0);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+}
+
+/*
  * The IRIX "eg" driver's actual acknowledge protocol, observed live across a
  * 33 million line trace: it never writes TI_GCR_EVENTCONS_IDX or
  * TI_GCR_RXRETURNCONS_IDX, and it writes TI_MB_HOSTINTR only with 0, never
@@ -1774,6 +1802,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/hang-guard", NULL, test_hang_guard);
     qtest_add_data_func("/sn0/tigon/interrupt-mask-ack", NULL,
                         test_interrupt_mask_ack);
+    qtest_add_data_func("/sn0/tigon/interrupt-mask-holds-the-line", NULL,
+                        test_interrupt_mask_holds_the_line);
     qtest_add_data_func("/sn0/tigon/interrupt-hostintr-ack", NULL,
                         test_interrupt_hostintr_ack);
     qtest_add_data_func("/sn0/tigon/interrupt-irix-ack-protocol", NULL,
