@@ -180,23 +180,31 @@ void bcm570x_phy_write(Bcm570xPhyState *s, int reg, uint16_t val)
         }
 
         /*
-         * Any other write configures the interface to carry traffic --
-         * restarting autonegotiation, or forcing a speed and duplex. Isolating
-         * the part takes it off the link; either way the settle is free to
-         * re-arm on the next status read.
+         * Isolating the part takes it off the link. A restart begins a fresh
+         * negotiation, which the driver waits to observe completing, so it
+         * cannot complete synchronously here or a driver polling for that
+         * transition waits on one that already happened.
          *
-         * A restart negotiates, it does not arrive: the driver waits to observe
-         * the completion it asked for, so completing synchronously here leaves
-         * a driver that polls for the transition waiting on one that already
-         * happened, and bring-up hangs with the link never announced. Clearing
-         * completion and re-arming the settle gives it the transition to see.
+         * Only a restart restarts it. A driver rewrites this register for
+         * other reasons -- checking the link, setting a mode -- and treating
+         * every write as a restart drops a working link each time, which the
+         * driver sees as the carrier coming back and announces again and
+         * again.
          */
-        s->autoneg_done = false;
-        s->settle_armed = false;
-        timer_del(s->settle_timer);
+        if (val & BCM570X_PHY_BMCR_ISOLATE) {
+            s->autoneg_done = false;
+            s->settle_armed = false;
+            timer_del(s->settle_timer);
+        } else if (val & BCM570X_PHY_BMCR_STARTNEG) {
+            s->autoneg_done = false;
+            s->settle_armed = false;
+            timer_del(s->settle_timer);
+        }
 
         s->bmcr = val & ~(BCM570X_PHY_BMCR_RESET | BCM570X_PHY_BMCR_STARTNEG);
-        bcm570x_phy_arm_settle(s);
+        if (!(val & BCM570X_PHY_BMCR_ISOLATE)) {
+            bcm570x_phy_arm_settle(s);
+        }
         return;
 
     case BCM570X_PHY_ANAR:
