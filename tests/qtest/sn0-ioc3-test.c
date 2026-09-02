@@ -4146,12 +4146,53 @@ static void test_pci_status_reset_value(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The board this chip is fitted to, which a guest learns from the subsystem
+ * dword at config offset 0x2c. Mainline Linux's IOC3 driver dispatches on it
+ * and registers a different set of sub-devices for each board
+ * (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8), so the identifier is the
+ * whole of what selects a population.
+ */
+#define PCI_SUBSYSTEM    0x2c
+#define SUBSYSTEM_SGI    0x10a9u  /* the vendor half, the same on every board */
+#define SUBSYSTEM(id)    (((uint32_t)(id) << 16) | SUBSYSTEM_SGI)
+
+static void test_the_default_board_is_the_system_board(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+
+    /*
+     * Asserted as the whole dword rather than its top half: the driver
+     * matches all 32 bits, so a model with the vendor half wrong falls
+     * through to the catch-all population with nothing else looking amiss.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_SUBSYSTEM),
+                    ==, SUBSYSTEM(0xc303));
+
+    qtest_quit(qts);
+}
+
+static void test_the_board_is_a_property(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+                                 "-global sgi-ioc3.subsystem-id=0xc305");
+
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_SUBSYSTEM),
+                    ==, SUBSYSTEM(0xc305));
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/ioc3/pci-status-reset-value", NULL,
                         test_pci_status_reset_value);
+    qtest_add_data_func("sn0/ioc3/default-board-is-the-system-board", NULL,
+                        test_the_default_board_is_the_system_board);
+    qtest_add_data_func("sn0/ioc3/board-is-a-property", NULL,
+                        test_the_board_is_a_property);
     qtest_add_data_func("sn0/ioc3/phy-answers-at-one-address", NULL,
                         test_the_transceiver_answers_at_one_address);
     qtest_add_data_func("sn0/ioc3/phy-identity", NULL,

@@ -36,7 +36,23 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_DEVICE_ID      0x0003
 #define SGI_IOC3_CLASS_ID       0xFF00  /* no defined class */
 #define SGI_IOC3_REVISION       0x01    /* the fitted Origin 200 part */
-#define SGI_IOC3_SUBSYSTEM_ID   0xC303  /* IP29 System Board */
+
+/*
+ * The board the chip is fitted to, named by the subsystem identity in its
+ * PCI configuration space. A guest reads the subsystem dword and decides
+ * from it which sub-devices the board wires up, so this identity is not
+ * decoration: it selects a population. The vendor half is SGI's on every
+ * board and never varies.
+ */
+#define SGI_IOC3_SUBSYS_IP27_BASEIO6G   0xC300
+#define SGI_IOC3_SUBSYS_IP27_MIO        0xC301
+#define SGI_IOC3_SUBSYS_IP27_BASEIO     0xC302
+#define SGI_IOC3_SUBSYS_IP29_SYSBOARD   0xC303  /* the Origin 200's board */
+#define SGI_IOC3_SUBSYS_IP30_SYSBOARD   0xC304
+#define SGI_IOC3_SUBSYS_MENET           0xC305
+#define SGI_IOC3_SUBSYS_MENET4          0xC306
+
+#define SGI_IOC3_SUBSYSTEM_ID   SGI_IOC3_SUBSYS_IP29_SYSBOARD
 
 #define SGI_IOC3_BAR_SIZE       (1 * MiB)
 
@@ -287,6 +303,9 @@ struct SGIIOC3State {
 
     /* The chip's own bus; the sub-devices below realize onto it. */
     SGIIOC3BusState ioc3_bus;
+
+    /* A property: which board this chip is on, presented in config space. */
+    uint16_t subsystem_id;
 
     MemoryRegion bar;
 

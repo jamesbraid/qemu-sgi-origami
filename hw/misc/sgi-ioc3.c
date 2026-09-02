@@ -1094,6 +1094,13 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         return;
     }
 
+    /*
+     * The board identity, over the class-wide default the PCI core has
+     * already written. A guest reads the subsystem dword to decide which
+     * sub-devices the board wires up, so it has to answer per instance.
+     */
+    pci_set_word(dev->config + PCI_SUBSYSTEM_ID, s->subsystem_id);
+
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
     /* IRIX's configuration diagnostic fails the slot on a zero Status. */
@@ -1311,6 +1318,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
 static const Property sgi_ioc3_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIIOC3State, onewire_serial,
                        SGI_IOC3_ONEWIRE_SERIAL),
+    DEFINE_PROP_UINT16("subsystem-id", SGIIOC3State, subsystem_id,
+                       SGI_IOC3_SUBSYSTEM_ID),
 };
 
 static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
