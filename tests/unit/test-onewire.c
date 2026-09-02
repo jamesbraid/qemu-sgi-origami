@@ -711,7 +711,9 @@ static void test_ds2502_read_memory_emits_one_crc_at_end_of_memory(void)
 static void test_ds2502_start_address_above_top_is_masked(void)
 {
     OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
-    const uint8_t hdr[3] = { 0xf0, 0xff, 0xff };
+    const uint8_t masked_hdr[3] = { 0xf0, 0x7f, 0x00 };
+    const uint8_t sent_hdr[3] = { 0xf0, 0xff, 0xff };
+    uint8_t echo;
     uint8_t last_byte;
 
     g_assert_true(onewire_reset(bus));
@@ -730,11 +732,16 @@ static void test_ds2502_start_address_above_top_is_masked(void)
     g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA2 */
 
     /*
-     * The echoed header CRC-8 covers the raw bytes actually sent, not the
-     * masked address -- the datasheet's own "deliberate checksum
-     * mismatch" note is about exactly this gap.
+     * The echoed header CRC-8 covers the address AS MASKED. Both halves
+     * are asserted, because only the pair is the datasheet's "deliberate
+     * checksum mismatch": the echo matches a check over 007Fh, and it
+     * does NOT match one over the FFFFh the master sent, which is how the
+     * master learns it asked out of range rather than being handed 007Fh
+     * as though it were the address it named.
      */
-    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+    echo = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(echo, ==, onewire_crc8(0, masked_hdr, 3));
+    g_assert_cmpuint(echo, !=, onewire_crc8(0, sent_hdr, 3));
 
     last_byte = bus_touch_byte(bus, 0xff);
     g_assert_cmpuint(last_byte, ==, 0xff);      /* blank EPROM at 007Fh */
@@ -1153,7 +1160,8 @@ static void test_ds2505_start_address_masked_to_top(void)
 {
     OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
                                                           0x0102030405ULL);
-    const uint8_t hdr[3] = { 0xf0, 0xff, 0xff };
+    const uint8_t masked_hdr[3] = { 0xf0, 0xff, 0x07 };
+    const uint8_t sent_hdr[3] = { 0xf0, 0xff, 0xff };
     uint8_t last_byte;
     uint16_t crc, got;
 
@@ -1171,15 +1179,20 @@ static void test_ds2505_start_address_masked_to_top(void)
     last_byte = bus_touch_byte(bus, 0xff);
     g_assert_cmpuint(last_byte, ==, 0x3f);      /* page 63's own marker */
 
-    crc = onewire_crc16(onewire_crc16(0, hdr, 3), &last_byte, 1);
     got = bus_touch_byte(bus, 0xff);
     got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
     /*
-     * The header CRC covers the raw bytes actually sent (0xff, 0xff), not
-     * the masked address -- the same deliberate-mismatch behaviour as the
-     * DS2502 family's own start-address masking.
+     * The header CRC covers the address AS MASKED (0xff, 0x07), and both
+     * halves are asserted: it matches a check over 07FFh and does not
+     * match one over the FFFFh the master sent. That gap is the
+     * datasheet's own deliberate mismatch, the same behaviour as the
+     * DS2502 family's start-address masking, and it is what stops an
+     * out-of-range read looking to the master like a successful one.
      */
+    crc = onewire_crc16(onewire_crc16(0, masked_hdr, 3), &last_byte, 1);
     g_assert_cmpuint(got, ==, (uint16_t)~crc);
+    crc = onewire_crc16(onewire_crc16(0, sent_hdr, 3), &last_byte, 1);
+    g_assert_cmpuint(got, !=, (uint16_t)~crc);
 }
 
 /*
@@ -1197,7 +1210,8 @@ static void test_ds2505_status_start_address_masked_to_top(void)
 {
     OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
                                                           0x0102030405ULL);
-    const uint8_t hdr[3] = { 0xaa, 0xff, 0xff };
+    const uint8_t masked_hdr[3] = { 0xaa, 0xff, 0x07 };
+    const uint8_t sent_hdr[3] = { 0xaa, 0xff, 0xff };
     uint8_t last_byte;
     uint16_t crc, got;
 
@@ -1211,14 +1225,18 @@ static void test_ds2505_status_start_address_masked_to_top(void)
     last_byte = bus_touch_byte(bus, 0xff);
     g_assert_cmpuint(last_byte, ==, 0xff);      /* status: always blank */
 
-    crc = onewire_crc16(onewire_crc16(0, hdr, 3), &last_byte, 1);
     got = bus_touch_byte(bus, 0xff);
     got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
     /*
-     * As with the plain-read case, the header CRC covers the raw bytes
-     * actually sent (0xff, 0xff), not the masked address.
+     * As with the plain-read case, the header CRC covers the address as
+     * masked and not as sent, and both halves are asserted. Here that is
+     * the only thing separating "masked, then answered" from "answered at
+     * FFFFh", since every status byte reads blank either way.
      */
+    crc = onewire_crc16(onewire_crc16(0, masked_hdr, 3), &last_byte, 1);
     g_assert_cmpuint(got, ==, (uint16_t)~crc);
+    crc = onewire_crc16(onewire_crc16(0, sent_hdr, 3), &last_byte, 1);
+    g_assert_cmpuint(got, !=, (uint16_t)~crc);
 }
 
 /*

@@ -231,8 +231,13 @@ complement, the guest's choice written back) and a direct match
 against the 64-bit identity -- family code, six serial bytes from
 the machine, and the standard Dallas/Maxim CRC-8. The family code is
 what a guest matches to decide it knows how to read the memory.
+
 Either form leaves the part selected, so a memory function follows
-without a second reset. An unimplemented command leaves the wire
+without a second reset -- the datasheets' ROM-function flow converges
+on that for a search, a match, a Read ROM and a Skip ROM alike. Only
+a match is a decision the part can fail, and it drops out at the
+first identity bit that fails to compare rather than clocking all
+sixty-four before deciding. An unimplemented command leaves the wire
 idling high and is logged, because silence is otherwise
 indistinguishable from an absent part; a match naming some other
 identity is not logged, since dropping out is exactly how every part

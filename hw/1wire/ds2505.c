@@ -63,10 +63,14 @@
  * start address above the implemented top has its high address bits
  * forced to zero" [datasheet, section D.2] -- TA1/TA2 are an 11-bit
  * register regardless of which field they address. As with the DS2502
- * sibling, the header CRC always covers the address bytes as actually
- * sent, not the masked value used for the field access, so an
- * out-of-range start address produces a deliberate CRC mismatch rather
- * than a silent alias.
+ * sibling, the header CRC covers the address AS MASKED, never as sent,
+ * and that is what makes the datasheet's "producing a CRC mismatch"
+ * [section D.2] true: a master that asked for 0800h computes its check
+ * over the bytes it sent, the part computed its over 0000h, and the two
+ * disagree, so the master learns its start address was out of range
+ * instead of quietly accepting page zero's bytes as the ones it wanted.
+ * CRC-ing the raw bytes would make the two agree, which is the silent
+ * alias the rule exists to prevent.
  *
  * Neither existing hand-written DS2505-class responder this device
  * replaces implements that masking rule as written: hw/misc/sgi-hub.c
@@ -122,8 +126,9 @@ struct DS2505State {
 
     /*
      * Header capture: the command byte, then TA1, then TA2, exactly as
-     * received on the wire (never the masked address -- the echoed CRC-16
-     * covers what was actually sent).
+     * received on the wire. The CRC-16 is seeded from the address as
+     * MASKED rather than from these; they are kept because a running
+     * stream still needs the command it was started with.
      */
     uint8_t cmd;
     uint8_t hdr[3];
@@ -198,10 +203,13 @@ static uint8_t ds2505_advance_read_memory(DS2505State *d)
 /*
  * Read Status (AAh): 8-byte pages, each closed by a CRC-16 -- the first
  * covering the header too, later ones cleared -- continuing to the same
- * 07FFh top the data field shares. That shared top is derived, not
- * stated: the extraction caps only F0h explicitly. A literal AAh
- * end-of-field statement, or a guest read that actually reaches this
- * far, would settle it.
+ * 07FFh top the data field shares. The extraction states that top for the
+ * status field as well as the data field (section D.2: status addresses
+ * are masked at 07FFh and 140h-7FFh reads FFh). What it does not state is
+ * that the stream STOPS there rather than running on; that much is
+ * inferred from the data field's own stated end of memory, and a literal
+ * statement about where an AAh stream ends, or a guest read that reaches
+ * this far, would settle it.
  */
 static uint8_t ds2505_advance_read_status(DS2505State *d)
 {
@@ -240,9 +248,11 @@ static uint8_t ds2505_advance_read_status(DS2505State *d)
  * Extended Read Memory (A5h): a redirection byte and its CRC-16, then that
  * page's 32 data bytes and their own CRC-16, page after page, to the same
  * 07FFh top as a plain read -- this is the data field, just framed
- * differently. That shared top is derived, not stated: the extraction
- * caps only F0h explicitly. A literal A5h end-of-field statement, or a
- * guest read that actually reaches this far, would settle it.
+ * differently. A5h reads the data field, whose 07FFh top the extraction
+ * does state; what is derived is that an A5h stream STOPS there rather
+ * than running on, since the extraction spells that ending out only for
+ * F0h. A literal A5h end-of-field statement, or a guest read that
+ * actually reaches this far, would settle it.
  * Redirection is always 0xff (never redirected): this model has no
  * Write Memory/Write Status, so no redirection byte can ever be
  * programmed away from its unprogrammed value, and the hardware never
@@ -322,17 +332,22 @@ static uint8_t ds2505_advance_stream(DS2505State *d)
 /*
  * TA2 has just been captured: this class echoes no header CRC, so the very
  * next window is already the first content byte. Mask the raw address into
- * the field (the header CRC below still covers the raw bytes as sent, not
- * this masked value), seed the running CRC-16 with the header -- every one
- * of this class's first CRCs covers it -- and set up the first byte each
- * command starts with.
+ * the field, seed the running CRC-16 with the header carrying that MASKED
+ * address -- every one of this class's first CRCs covers the header -- and
+ * set up the first byte each command starts with. Masking before the CRC
+ * rather than after is what turns an out-of-range start address into a
+ * check the master watches fail, instead of a silent alias onto page zero.
  */
 static void ds2505_start_stream(DS2505State *d)
 {
     uint16_t raw = ((uint16_t)d->hdr[2] << 8) | d->hdr[1];
+    uint8_t masked_hdr[3];
 
     d->addr = raw & DS2505_ADDR_MASK;
-    d->crc_acc = onewire_crc16(0, d->hdr, 3);
+    masked_hdr[0] = d->hdr[0];
+    masked_hdr[1] = d->addr & 0xff;
+    masked_hdr[2] = d->addr >> 8;
+    d->crc_acc = onewire_crc16(0, masked_hdr, sizeof(masked_hdr));
     d->finished = false;
 
     switch (d->cmd) {
