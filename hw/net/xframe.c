@@ -1318,6 +1318,7 @@ static const MemoryRegionOps xframe_pif_ops = {
 #define XFRAME_IPV4_MIN_HDR_LEN     20
 #define XFRAME_TCP_MIN_HDR_LEN      20
 #define XFRAME_IPPROTO_TCP          6
+#define XFRAME_IPPROTO_UDP          17
 #define XFRAME_TCP_FLAG_FIN         0x01
 #define XFRAME_TCP_FLAG_PSH         0x08
 
@@ -1749,6 +1750,103 @@ static const MemoryRegionOps xframe_txp_ops = {
 #define XFRAME_RXD_BUFSIZ_SHIFT      48
 
 /*
+ * What the card reports about a received frame, in the same first control word
+ * as the transfer code: how it classified the frame, and whether its checksums
+ * verified (Linux s2io.h RXD_FRAME_PROTO_IPV4 s2BIT(27), _IP_FRAG s2BIT(29),
+ * _PROTO_TCP s2BIT(30) and _PROTO_UDP s2BIT(31) -- bits 36, 34, 33 and 32
+ * counting from the low end -- with RXD_GET_L3_CKSUM reading the half at bits
+ * 31:16 and RXD_GET_L4_CKSUM the half at 15:0, each 0xFFFF when the checksum
+ * verified.
+ *
+ * Leaving these zero is not the same as leaving them unimplemented: zero is a
+ * value, and it is the one that says "this frame's checksums did not verify".
+ */
+#define XFRAME_RXD_PROTO_IPV4        (1ULL << 36)
+#define XFRAME_RXD_PROTO_IP_FRAG     (1ULL << 34)
+#define XFRAME_RXD_PROTO_TCP         (1ULL << 33)
+#define XFRAME_RXD_PROTO_UDP         (1ULL << 32)
+#define XFRAME_RXD_L3_CKSUM_SHIFT    16
+#define XFRAME_RXD_CKSUM_OK          0xffffULL
+
+/*
+ * Classify a received frame and check its checksums, in the form the first
+ * control word reports them. A driver that trusts this skips verifying in
+ * software, which is the point: on this machine the guest CPU is emulated and
+ * the check here is not, so every byte checked here is a byte the guest does
+ * not have to walk.
+ *
+ * Report a checksum verified ONLY when it actually verified against the bytes
+ * that arrived. Anything this cannot vouch for -- a frame that is not IPv4, a
+ * truncated one, a fragment (which carries no complete transport header), a
+ * transport this does not parse, or a UDP datagram whose checksum field is zero
+ * and therefore means "not computed" -- leaves the corresponding half zero, and
+ * a driver reading zero verifies for itself.
+ */
+static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len)
+{
+    const uint8_t *ip, *l4;
+    size_t ihl, ip_total, l4_len;
+    uint64_t status = 0;
+    uint8_t pseudo[12];
+    uint32_t sum;
+    uint8_t proto;
+
+    if (len < XFRAME_ETH_HDR_LEN + XFRAME_IPV4_MIN_HDR_LEN ||
+        lduw_be_p(frame + 12) != XFRAME_ETHERTYPE_IPV4 ||
+        (frame[XFRAME_ETH_HDR_LEN] >> 4) != 4) {
+        return 0;
+    }
+    ip = frame + XFRAME_ETH_HDR_LEN;
+    ihl = (ip[0] & 0x0f) * 4;
+    ip_total = lduw_be_p(ip + 2);
+    if (ihl < XFRAME_IPV4_MIN_HDR_LEN || ip_total < ihl ||
+        XFRAME_ETH_HDR_LEN + ip_total > len) {
+        return 0;
+    }
+
+    status |= XFRAME_RXD_PROTO_IPV4;
+    if (net_raw_checksum((uint8_t *)ip, ihl) == 0) {
+        status |= XFRAME_RXD_CKSUM_OK << XFRAME_RXD_L3_CKSUM_SHIFT;
+    }
+
+    /* More-fragments set or a non-zero offset: no complete transport header. */
+    if (lduw_be_p(ip + 6) & 0x3fff) {
+        return status | XFRAME_RXD_PROTO_IP_FRAG;
+    }
+
+    proto = ip[9];
+    if (proto == XFRAME_IPPROTO_TCP) {
+        status |= XFRAME_RXD_PROTO_TCP;
+    } else if (proto == XFRAME_IPPROTO_UDP) {
+        status |= XFRAME_RXD_PROTO_UDP;
+    } else {
+        return status;
+    }
+
+    l4 = ip + ihl;
+    l4_len = ip_total - ihl;
+    if (l4_len < 8) {
+        return status;
+    }
+    /* A zero UDP checksum means "none sent", not "verified". */
+    if (proto == XFRAME_IPPROTO_UDP && lduw_be_p(l4 + 6) == 0) {
+        return status;
+    }
+
+    memcpy(pseudo, ip + 12, 8);          /* source and destination addresses */
+    pseudo[8] = 0;
+    pseudo[9] = proto;
+    stw_be_p(pseudo + 10, (uint16_t)l4_len);
+    sum = net_checksum_add(sizeof(pseudo), pseudo);
+    sum += net_checksum_add(l4_len, (uint8_t *)l4);
+    if (net_checksum_finish(sum) == 0) {
+        status |= XFRAME_RXD_CKSUM_OK;
+    }
+
+    return status;
+}
+
+/*
  * RxDs are laid out 127 to a 4 KB page (if_xgereg.h's NDESC_1BUFMODE),
  * chained by a next-page pointer in the page's last eight bytes. Both public
  * drivers allocate several such pages and link them into a ring, so the walk
@@ -2034,7 +2132,9 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     xframe_desc_stq(s, word, (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT, true);
     pci_dma_write(pdev, desc_addr + 16, word, sizeof(word));
 
-    xframe_desc_stq(s, word, (uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT, true);
+    xframe_desc_stq(s, word,
+                    ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) |
+                    xframe_rx_offload_status(buf, copy_len), true);
     pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
 
     s->rx_desc_idx++;
