@@ -931,6 +931,44 @@ static void test_a_status_read_frames_the_redirection_map(const void *data)
 }
 
 /*
+ * Status memory is addressed at the data field's width, not at the top of
+ * the regions the part implements. The redirection bytes end at 0x13f;
+ * 0x140 through 0x7ff is unimplemented status space, and the part answers
+ * it the same way it answers implemented space it has never programmed --
+ * 0xff bytes in 8-byte pages, each closed by a real CRC16.
+ *
+ * Pinned because it is the one answer this bus's move onto the shared
+ * DS2505 model changes, and nothing else here would notice: the other
+ * status read sits at 0x100, inside the implemented region, so a responder
+ * that fell silent past 0x13f -- which is what this model used to do --
+ * passes every other test in this file. It fails here on the check pair,
+ * whose two bytes are not 0xff, rather than on the data.
+ */
+static void test_a_status_read_past_the_redirection_bytes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t request[3] = { ONEWIRE_CMD_READ_STATUS, 0x40, 0x01 };
+    uint8_t page[8];
+    uint16_t crc;
+    unsigned int i;
+
+    onewire_select(qts, HUB_LOCAL);
+    onewire_write_byte(qts, HUB_LOCAL, request[0]);
+    onewire_write_byte(qts, HUB_LOCAL, request[1]);
+    onewire_write_byte(qts, HUB_LOCAL, request[2]);
+
+    for (i = 0; i < 8; i++) {
+        page[i] = onewire_read_byte(qts, HUB_LOCAL);
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    crc = onewire_crc16(0, request, sizeof(request));
+    onewire_assert_crc16(qts, HUB_LOCAL,
+                         onewire_crc16(crc, page, sizeof(page)));
+
+    qtest_quit(qts);
+}
+
+/*
  * An extended read of page 0 on a blank part: the redirection byte
  * (0xff, no redirection), its request-covering CRC16, the 32-byte
  * page of 0xff, and the page's own CRC16.
@@ -3345,6 +3383,8 @@ int main(int argc, char **argv)
                         test_each_hub_carries_its_own_identity);
     qtest_add_data_func("sn0/hub/one-wire-status-frames-redirection-map",
                         NULL, test_a_status_read_frames_the_redirection_map);
+    qtest_add_data_func("sn0/hub/one-wire-status-past-redirection-bytes",
+                        NULL, test_a_status_read_past_the_redirection_bytes);
     qtest_add_data_func("sn0/hub/one-wire-extended-read-serves-blank-page",
                         NULL, test_an_extended_read_serves_a_blank_page);
     qtest_add_data_func("sn0/hub/one-wire-memory-read-ends-with-crc",

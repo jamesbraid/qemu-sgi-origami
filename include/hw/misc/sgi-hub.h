@@ -8,6 +8,7 @@
 #define HW_MISC_SGI_HUB_H
 
 #include "qemu/units.h"
+#include "hw/1wire/onewire.h"
 #include "hw/core/irq.h"
 #include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
@@ -265,28 +266,16 @@ struct SGIHubState {
     QEMUTimer *md_onewire_timer;
 
     /*
-     * The responder on that wire: the PIMM manufacturing-record part,
-     * DS2505-compatible (the hub one-wire datasheet's settled contract).
-     * The serial is a synthetic per-unit property the machine wires; the
-     * identity is derived from it at realize. The memory reads serve an
-     * unprogrammed part; what the record bytes should say is an open
-     * question.
+     * The wire itself, and the responder on it: the PIMM manufacturing-record
+     * part, DS2505-compatible (the hub one-wire datasheet's settled
+     * contract). The serial is a synthetic per-unit property the machine
+     * wires, from which the part derives its ROM identity at realize. The
+     * part is left unprogrammed, because what the record bytes should say is
+     * an open question.
      */
+    OneWireBus *onewire_bus;
     uint64_t onewire_serial;
-    uint64_t onewire_identity;
-    uint8_t onewire_phase;
-    uint8_t onewire_bit;
-    uint8_t onewire_command;
-    uint64_t onewire_match;
     bool onewire_level;    /* what the wire sampled in the slot underway */
-    uint8_t onewire_args[2];   /* the two address bytes of a read command */
-    uint8_t onewire_argn;
-    uint8_t onewire_out[40];   /* the staged answer chunk, CRC16 included */
-    uint16_t onewire_outbit;
-    uint8_t onewire_outlen;
-    uint16_t onewire_cursor;   /* next data or status address to serve */
-    uint8_t onewire_end[2];    /* a plain read's trailing CRC16 */
-    bool onewire_extended_data; /* extended read: serving page data now */
 
     /* Bring-up UART, off by default: firmware probes it as first console. */
     bool junk_uart_present;
