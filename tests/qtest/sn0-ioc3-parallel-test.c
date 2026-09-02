@@ -27,8 +27,9 @@
                          BRIDGE_DEVICE2)
 
 /*
- * A guest's bus scan: assign the controller a PCI address and aim the
- * bridge's device window at it. The crosstalk-side offset stays fixed.
+ * A guest's bus scan: assign the controller a PCI address, let it master
+ * the bus so its DMA engines can reach memory, and aim the bridge's device
+ * window at it. The crosstalk-side offset stays fixed.
  */
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
@@ -42,6 +43,7 @@
 #define PCI_IOC3_DEVICE  2
 #define PCI_COMMAND      0x04
 #define PCI_COMMAND_MEMORY 0x0002
+#define PCI_COMMAND_MASTER 0x0004
 #define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
 
@@ -52,10 +54,24 @@
 static void sn0_ioc3_attach(QTestState *qts)
 {
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
-    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
 }
+
+/*
+ * The chip's interrupt block, where the port's four sources live: its
+ * service interrupt at bit 18, one per DMA context above that, then the
+ * DMA fault.
+ */
+#define INT_STATUS       (IOC3_BASE + 0x01c)
+#define INT_PAR_SERVICE  (1u << 18)
+#define INT_PAR_CONTEXT_A (1u << 19)
+#define INT_PAR_CONTEXT_B (1u << 20)
+#define INT_PAR_ERROR    (1u << 21)
+#define INT_PARALLEL     (INT_PAR_SERVICE | INT_PAR_CONTEXT_A | \
+                          INT_PAR_CONTEXT_B | INT_PAR_ERROR)
 
 /* The DMA register block, four bytes to a register, in the main block. */
 #define PAR_DMA          (IOC3_BASE + 0x080)
@@ -510,11 +526,14 @@ static void test_the_shared_control_holds_its_own_bits(const void *data)
 }
 
 /*
- * Nothing drives the port on this machine, so the engine never takes a
- * context: both busy flags stay clear however armed and enabled the
- * contexts are. A driver reads these to find which context was active
- * when a transfer failed, and a model reporting one busy forever would
- * send it to recover a transfer that never started.
+ * The engine takes a context only when both enables are set, and the
+ * shared control register's own enable is one of two: the other is the DMA
+ * path bit in the extended control register, which is untouched here. So
+ * the contexts stay armed and the busy flags stay clear.
+ *
+ * A driver reads the busy flags to find which context was active when a
+ * transfer failed, and a model reporting one busy forever would send it to
+ * recover a transfer that never started.
  */
 static void test_the_engine_never_reports_a_busy_context(const void *data)
 {
@@ -535,6 +554,243 @@ static void test_the_engine_never_reports_a_busy_context(const void *data)
                     ==, 0);
 
     qtest_quit(qts);
+}
+
+/*
+ * A buffer in low memory, at the address the serial DMA tests use for their
+ * rings, and the nine bytes IRIX writes when a shell redirects an echo to
+ * the port.
+ */
+#define PLP_BUFFER       0x00100000u
+#define PLP_PAYLOAD      "PLPHELLO\n"
+#define PLP_PAYLOAD_LEN  (sizeof(PLP_PAYLOAD) - 1)
+
+/*
+ * The port with a file behind it, so a test can read what was printed. The
+ * caller owns the returned path and unlinks it.
+ */
+static QTestState *plp_start_with_a_file(char **path)
+{
+    g_autofree char *args = NULL;
+    int fd = g_file_open_tmp("qtest-sn0-plp-XXXXXX", path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    args = g_strdup_printf("-M origin200,io-bridge=on "
+                           "-chardev file,id=plp0,path=%s "
+                           "-parallel chardev:plp0", *path);
+    return qtest_init(args);
+}
+
+static void plp_assert_the_file_holds(const char *path, const char *expected)
+{
+    g_autofree char *printed = NULL;
+    gsize len = 0;
+
+    g_assert_true(g_file_get_contents(path, &printed, &len, NULL));
+    g_assert_cmpint(len, ==, strlen(expected));
+    g_assert_cmpint(memcmp(printed, expected, len), ==, 0);
+}
+
+/*
+ * The transfer IRIX programs for a nine-byte write, register for register
+ * and in its order: the buffer address, a count armed and marked last,
+ * compatibility-FIFO mode with the DMA path and the fault interrupt
+ * enabled, and the engine enabled. The driver then waits. So the engine has
+ * to retire the context by itself, and what it must leave behind is the
+ * count consumed, the context disarmed, the bytes out of the port, and the
+ * service interrupt raised.
+ *
+ * A model that stores these registers and moves nothing is the machine on
+ * which that write never returns; a model that moves the bytes and raises
+ * nothing prints them and never returns either, which is measured rather
+ * than argued -- IRIX stayed blocked with this buffer already on the host.
+ */
+static void test_the_engine_retires_an_armed_transfer(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts = plp_start_with_a_file(&path);
+
+    sn0_ioc3_attach(qts);
+
+    qtest_memwrite(qts, PLP_BUFFER, PLP_PAYLOAD, PLP_PAYLOAD_LEN);
+
+    qtest_writel(qts, DMA_A_ADDR_HI, 0);
+    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
+    qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
+    qtest_writeb(qts, ECP_EXTENDED,
+                 ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE | ECR_NFAULT_INT);
+
+    /* Nothing outstanding: the count field reads back what is left. */
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT) & COUNT_MASK, ==, 0);
+
+    /* Disarmed, from both addresses that report it. */
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT) & COUNT_ARM, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMA_CONTROL) & (DMA_A_ARMED | DMA_A_BUSY),
+                    ==, 0);
+
+    /* The bytes are on the far side of the port, in order. */
+    plp_assert_the_file_holds(path, PLP_PAYLOAD);
+
+    /* The chain ended here, so both its own source and the service one. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_PARALLEL, ==,
+                    INT_PAR_SERVICE | INT_PAR_CONTEXT_A);
+
+    /*
+     * The driver's acknowledgement, in its order. The context's source
+     * latches and a write to the status register clears it; the service
+     * source is a level and a write there cannot, which is why the driver
+     * quiets the port's own register first.
+     */
+    qtest_writel(qts, INT_STATUS, INT_PAR_CONTEXT_A | INT_PAR_SERVICE);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_PARALLEL, ==,
+                    INT_PAR_SERVICE);
+
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_COMPAT_FIFO));
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_PARALLEL, ==, 0);
+
+    qtest_quit(qts);
+    unlink(path);
+}
+
+/*
+ * The service interrupt reports the end of a chain, not the end of any one
+ * context: a descriptor that is not marked last retires and raises its own
+ * source alone. A model raising the service interrupt per descriptor would
+ * wake the driver while its transfer still had buffers to go.
+ */
+static void test_only_the_last_context_completes_the_chain(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts = plp_start_with_a_file(&path);
+
+    sn0_ioc3_attach(qts);
+
+    qtest_memwrite(qts, PLP_BUFFER, PLP_PAYLOAD, PLP_PAYLOAD_LEN);
+
+    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | PLP_PAYLOAD_LEN);
+    qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
+    qtest_writeb(qts, ECP_EXTENDED,
+                 ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE);
+
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT) & COUNT_ARM, ==, 0);
+    plp_assert_the_file_holds(path, PLP_PAYLOAD);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_PARALLEL, ==,
+                    INT_PAR_CONTEXT_A);
+
+    qtest_quit(qts);
+    unlink(path);
+}
+
+/*
+ * Both enables, separately. The engine sits still with either one missing,
+ * so a model that ran on the shared control register alone would start a
+ * transfer the driver has not finished setting up.
+ */
+static void test_the_engine_needs_both_enables(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts = plp_start_with_a_file(&path);
+
+    sn0_ioc3_attach(qts);
+
+    qtest_memwrite(qts, PLP_BUFFER, PLP_PAYLOAD, PLP_PAYLOAD_LEN);
+
+    /* The DMA path enabled in the register file, the engine not enabled. */
+    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
+    qtest_writeb(qts, ECP_EXTENDED,
+                 ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT), ==,
+                    COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
+
+    /* The engine enabled, the DMA path taken back out of the register file. */
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_COMPAT_FIFO));
+    qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT), ==,
+                    COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
+
+    /* Nothing left the port while either enable was missing. */
+    plp_assert_the_file_holds(path, "");
+
+    /* Both, and it goes. */
+    qtest_writeb(qts, ECP_EXTENDED,
+                 ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT) & COUNT_ARM, ==, 0);
+    plp_assert_the_file_holds(path, PLP_PAYLOAD);
+
+    qtest_quit(qts);
+    unlink(path);
+}
+
+/*
+ * A chain across both contexts, which is how the driver moves anything
+ * longer than one descriptor: it loads one context while the other drains
+ * and marks only the end of the chain last. The engine has to take them in
+ * the order they were loaded, or a printed buffer comes out scrambled.
+ */
+static void test_the_engine_takes_a_chain_in_order(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts = plp_start_with_a_file(&path);
+
+    sn0_ioc3_attach(qts);
+
+    qtest_memwrite(qts, PLP_BUFFER, "FIRST", 5);
+    qtest_memwrite(qts, PLP_BUFFER + 0x1000, "SECOND", 6);
+
+    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | 5);
+    qtest_writel(qts, DMA_B_ADDR_LO, PLP_BUFFER + 0x1000);
+    qtest_writel(qts, DMA_B_COUNT, COUNT_ARM | COUNT_LAST | 6);
+    qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
+    qtest_writeb(qts, ECP_EXTENDED,
+                 ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE);
+
+    g_assert_cmphex(qtest_readl(qts, DMA_CONTROL) & 0x3f, ==, DMA_B_LAST);
+    plp_assert_the_file_holds(path, "FIRSTSECOND");
+
+    /* Both contexts drained, and the last of them ended the chain. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_PARALLEL, ==,
+                    INT_PAR_SERVICE | INT_PAR_CONTEXT_A | INT_PAR_CONTEXT_B);
+
+    qtest_quit(qts);
+    unlink(path);
+}
+
+/*
+ * A descriptor pointing where no memory answers. The engine refuses the
+ * fetch rather than printing whatever it read, raises the port's DMA fault,
+ * and leaves the context armed with its count intact -- which is the
+ * residual the driver recovers a failed transfer from.
+ */
+static void test_an_unreadable_buffer_faults_and_keeps_its_count(
+    const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts = plp_start_with_a_file(&path);
+
+    sn0_ioc3_attach(qts);
+
+    /* Past the far end of this machine's memory. */
+    qtest_writel(qts, DMA_A_ADDR_HI, 0x0000ffff);
+    qtest_writel(qts, DMA_A_ADDR_LO, 0xffff0000);
+    qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
+    qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
+    qtest_writeb(qts, ECP_EXTENDED,
+                 ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE);
+
+    g_assert_cmphex(qtest_readl(qts, DMA_A_COUNT), ==,
+                    COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_PARALLEL, ==,
+                    INT_PAR_ERROR);
+    plp_assert_the_file_holds(path, "");
+
+    qtest_quit(qts);
+    unlink(path);
 }
 
 /*
@@ -667,6 +923,16 @@ int main(int argc, char **argv)
                         NULL, test_the_shared_control_holds_its_own_bits);
     qtest_add_data_func("sn0/ioc3/parallel-engine-never-reports-busy", NULL,
                         test_the_engine_never_reports_a_busy_context);
+    qtest_add_data_func("sn0/ioc3/parallel-engine-retires-a-transfer", NULL,
+                        test_the_engine_retires_an_armed_transfer);
+    qtest_add_data_func("sn0/ioc3/parallel-engine-needs-both-enables", NULL,
+                        test_the_engine_needs_both_enables);
+    qtest_add_data_func("sn0/ioc3/parallel-engine-takes-a-chain-in-order",
+                        NULL, test_the_engine_takes_a_chain_in_order);
+    qtest_add_data_func("sn0/ioc3/parallel-only-the-last-context-completes",
+                        NULL, test_only_the_last_context_completes_the_chain);
+    qtest_add_data_func("sn0/ioc3/parallel-unreadable-buffer-faults", NULL,
+                        test_an_unreadable_buffer_faults_and_keeps_its_count);
     qtest_add_data_func("sn0/ioc3/parallel-dma-registers-four-bytes-apart",
                         NULL, test_the_dma_registers_are_four_bytes_apart);
 

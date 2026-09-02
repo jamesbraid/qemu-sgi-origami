@@ -138,6 +138,17 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-b", ioc3_b);
     }
 
+    /*
+     * The parallel connector on the same board, backed from -parallel and
+     * indexed by node for the same reason the serial lines are: every module
+     * has one, and a shared backend would interleave two modules' printing
+     * into one stream.
+     */
+    if (node_index < MAX_PARALLEL_PORTS && parallel_hds[node_index]) {
+        qdev_prop_set_chr(DEVICE(ioc3), "parallel-chardev",
+                          parallel_hds[node_index]);
+    }
+
     /* Distinct per node, or a guest fails the second as a duplicate. */
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
                          ioc3_model->serial_base +
