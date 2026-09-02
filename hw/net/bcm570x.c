@@ -309,6 +309,15 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RX_STD_RCB_HADDR_HI 0x2450
 #define BCM570X_RX_STD_RCB_HADDR_LO 0x2454
 #define BCM570X_RX_STD_RCB_MAXLEN_FLAGS 0x2458
+/*
+ * The standard receive ring holds a fixed number of descriptors. Its control
+ * block's length field is the size of the buffer each descriptor points at --
+ * an MTU, not a count -- while the return ring's really is a ring length. Taking
+ * the buffer size for a ring length wraps this ring somewhere the driver does
+ * not, and the two disagree about which descriptors are posted: the card walks
+ * on into slots the driver has not filled and reads whatever they held.
+ */
+#define BCM570X_RX_STD_RING_LEN     512u
 #define BCM570X_SRAM_RX_RETURN_RCB  0x0200
 #define BCM570X_RXBD_SIZE           32
 #define BCM570X_RXBD_ADDR_HI        0x00    /* offsets within an rx descriptor */
@@ -975,10 +984,11 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         uint16_t std_len =
             bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
 
-        if (std_len == 0 || (val & 0xffff) >= std_len) {
+        if (std_len == 0 || (val & 0xffff) >= BCM570X_RX_STD_RING_LEN) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "bcm570x: receive standard producer %u out of range "
-                          "(ring length %u)\n", val & 0xffff, std_len);
+                          "(ring length %u)\n", val & 0xffff,
+                          BCM570X_RX_STD_RING_LEN);
             return;
         }
         bcm570x_regfile_write(s, off, val);
@@ -1234,10 +1244,22 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
     uint16_t std_prod =
         bcm570x_regfile_read(s, BCM570X_MBX_RX_STD_PROD_LO) & 0xffff;
 
+    /*
+     * A completion the driver has not read yet must not be overwritten. The
+     * driver publishes how far it has consumed the return ring; when the next
+     * completion would land on that entry the ring is full, and a frame is
+     * refused rather than written over one still owed to the driver -- which it
+     * would otherwise follow to a buffer already recycled, faulting somewhere
+     * that looks nothing like this device and only once the ring has wrapped.
+     */
+    uint16_t ret_cons =
+        bcm570x_regfile_read(s, BCM570X_MBX_RX_CONS0_LO) & 0xffff;
+
     return std_len != 0 && ret_len != 0 &&
            (bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
             BCM570X_HCC_MODE_ENABLE) &&
-           std_prod != s->rx_std_cons;
+           std_prod != s->rx_std_cons &&
+           (uint16_t)((s->status_rx_prod + 1) % ret_len) != ret_cons;
 }
 
 static bool bcm570x_can_receive(NetClientState *nc)
@@ -1302,8 +1324,6 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
 {
     Bcm570xState *s = qemu_get_nic_opaque(nc);
     PCIDevice *pci = PCI_DEVICE(s);
-    uint16_t std_len =
-        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
     uint16_t ret_len =
         bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
                           BCM570X_RCB_MAXLEN_FLAGS) >> 16;
@@ -1368,7 +1388,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     pci_dma_write(pci, ret_base + (uint64_t)s->status_rx_prod *
                   BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
 
-    s->rx_std_cons = (s->rx_std_cons + 1) % std_len;
+    s->rx_std_cons = (s->rx_std_cons + 1) % BCM570X_RX_STD_RING_LEN;
     s->status_rx_prod = (s->status_rx_prod + 1) % ret_len;
 
     bcm570x_rx_coalesce(s);
