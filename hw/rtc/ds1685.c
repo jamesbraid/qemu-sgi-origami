@@ -588,13 +588,15 @@ static void ds1685_data_write(void *opaque, hwaddr addr, uint64_t val,
  * address latch's side effect more than once.
  *
  * Each port answers on any byte lane of its word rather than at one exact
- * address, which is what DS1685_PORT_SIZE is for. A byte-wide port is
- * selected by the chip select and not by the low address bits, and the path
- * a guest reaches it over moves those bits: a driver places a narrow access
- * on the lane a big-endian cycle puts the byte on -- both guests compute
- * that offset themselves -- so an access to offset 0 can arrive here at
- * offset 3. A model decoding one exact byte is reached only by whichever
- * lane its path happens to choose, and answers zero to everything else.
+ * address, which is what DS1685_PORT_SIZE is for: the chip select picks a
+ * byte-wide port, not the low address bits, and the two guests land on
+ * different lanes. OpenBSD hands this chip a non-swizzling accessor and
+ * writes offset 0. Linux inverts the low two address bits of every byte
+ * access on this machine, and cancels that by pre-permuting the structures
+ * it lays over the Timekeeper and the serial part; a single-byte port at a
+ * word-aligned base has nothing to permute, so the inversion stands and the
+ * access lands at offset 3. A model decoding one exact byte answers one
+ * guest and returns zero to the other.
  */
 static const MemoryRegionOps ds1685_index_ops = {
     .read = ds1685_index_read,
