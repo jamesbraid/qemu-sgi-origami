@@ -603,7 +603,7 @@ static void test_processor_number(const void *data)
     qtest_quit(qts);
 }
 
-/* The one-wire master; no bus is attached, so no responder is asserted. */
+/* The one-wire master's own register; the part on its bus is tested below. */
 #define MD_ONEWIRE          0x2000a8
 #define MD_ONEWIRE_RXDATA   (1ULL << 0)
 #define MD_ONEWIRE_DONE     (1ULL << 1)

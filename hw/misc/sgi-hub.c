@@ -2788,14 +2788,21 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                                        sgi_hub_onewire_slot_done, s);
 
     /*
-     * The MicroLAN wire and the PIMM record part hanging off it. The part is
-     * hung here rather than at reset because QEMU holds a device's children
-     * before the device itself, so a controller that composed a part's image
-     * in its own reset would write into a part that had already reset from
-     * the previous one. Nothing is composed here either: the record's
-     * contents are an open question, and a DS2505 left unprogrammed reads
-     * 0xff everywhere, which states nothing rather than inventing a serial
-     * number the firmware would parse into this machine's own.
+     * The MicroLAN wire and the PIMM record part hanging off it, hung here
+     * and never again. An EPROM keeps its contents across a reset -- that is
+     * what the technology is -- so a chip that rebuilt a part's bytes on
+     * every reset would be modelling something the hardware does not do.
+     * Those bytes are the part's own migrated state as well, and state with
+     * one owner wants one writer. Reaching into a child device's storage
+     * from a parent's reset is the wrong shape whichever order the phases
+     * run in, and they run in the safe one: hw/core/resettable.c holds
+     * children before the object itself, so the ordering was never the
+     * hazard.
+     *
+     * Nothing is composed here in any case. What the record should say is an
+     * open question, and a DS2505 left unprogrammed reads 0xff everywhere,
+     * which states nothing rather than inventing a serial number the
+     * firmware would parse into this machine's own.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
     {
