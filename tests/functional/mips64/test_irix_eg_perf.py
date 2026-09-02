@@ -46,6 +46,8 @@ UDP_BUFS = 512                            # 4 MiB of datagrams
 UDP_PACE_EVERY = 16                       # datagrams between pauses
 UDP_PACE_SECONDS = 0.02
 VERIFY_BYTES = 1024 * 1024                # byte-checked TCP payload
+TX_PORT = 5003                            # host listener the guest sends to
+TX_BUFS = 64                              # 64 x 64 KiB = 4 MiB out of the guest
 
 # Machine shape. The defaults are what the test asserts against in CI: one CPU
 # on the round-robin scheduler, which is the cheapest thing that boots. Both
@@ -61,6 +63,13 @@ ACCEL = os.environ.get('EG_PERF_ACCEL', 'tcg,thread=single')
 # behaves after far more traffic than any single leg sends.
 SOAK_ROUNDS = int(os.environ.get('EG_PERF_SOAK_ROUNDS', '0'))
 SOAK_BYTES = int(os.environ.get('EG_PERF_SOAK_BYTES', str(4 * 1024 * 1024)))
+
+# How long to wait for a root shell. The default is the one the eg transfer
+# test proved sufficient for a single-CPU boot; a different machine shape, or
+# a busy host, can want more, and a boot that is still making progress when
+# the budget runs out reads as a device failure and is not one.
+LOGIN_BUDGET_SECONDS = int(
+    os.environ.get('EG_PERF_LOGIN_BUDGET', str(base.LOGIN_BUDGET_SECONDS)))
 
 
 def _usernet_hostport(vm, proto, guest_port):
@@ -120,6 +129,36 @@ def _udp_ttcp_stream(host_port, buflen, nbufs):
         time.sleep(0.02)
     s.close()
     return time.monotonic() - t0
+
+
+def _drain_server(port, ready, total):
+    """Accept one connection and count what arrives, so the guest has
+    somewhere to transmit to. The guest reaches the host at the SLIRP gateway
+    address, so a listener here is a listener it can open a connection to."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(1)
+    srv.settimeout(SEND_TIMEOUT_SECONDS)
+    ready.set()
+    try:
+        conn, _ = srv.accept()
+    except OSError:
+        srv.close()
+        return
+    conn.settimeout(SEND_TIMEOUT_SECONDS)
+    n = 0
+    try:
+        while True:
+            b = conn.recv(65536)
+            if not b:
+                break
+            n += len(b)
+    except OSError:
+        pass
+    total.append(n)
+    conn.close()
+    srv.close()
 
 
 def _parse_ttcp_rate(text):
@@ -213,7 +252,7 @@ if base.QemuSystemTest is not None:
                        "udp_mbps": None, "udp_loss": None}
             login = eg_up = False
             try:
-                base._drive_to_shell(con, base.LOGIN_BUDGET_SECONDS)
+                base._drive_to_shell(con, LOGIN_BUDGET_SECONDS)
                 login = True
                 con.run("egconfig -f 1 " + base.IFACE, "egc", timeout=60)
                 con.run(f"ifconfig {base.IFACE} inet {base.GUEST_ADDR} "
@@ -224,6 +263,29 @@ if base.QemuSystemTest is not None:
                     eg_up = True
                 except base._Harness:
                     pass
+
+                # Whether the driver will take a larger frame at all. Fewer,
+                # bigger packets is the one lever that cuts the guest's
+                # per-packet cost without making the emulated CPU faster, so
+                # whether it is available decides what rate is reachable here
+                # at all. Recorded rather than asserted: a driver that refuses
+                # is a fact about the guest, not a failure of the adapter.
+                mtu = {}
+                for want in (9000, 4096, 2048):
+                    try:
+                        rc = con.run(f"ifconfig {base.IFACE} mtu {want}",
+                                     f"mtu{want}", timeout=60)
+                        mtu[want] = ("accepted" if rc == 0
+                                     else "refused (rc %d)" % rc)
+                    except base._Harness:
+                        mtu[want] = "refused"
+                try:
+                    mtu["reported"] = con.capture_value(
+                        "netstat -in | awk '$1 ~ /^%s/ {print \"M=\" $2; exit}'"
+                        % base.IFACE, "mtushow", rb"M=(\d+)", timeout=60)
+                except base._Harness:
+                    mtu["reported"] = None
+                results["mtu"] = mtu
 
                 seg_before = self._netstat_counter(
                     con, "tcp", "packets received", "segb")
@@ -287,6 +349,33 @@ if base.QemuSystemTest is not None:
                 if ubytes is not None:
                     results["udp_loss"] = 1.0 - (ubytes /
                                                  float(UDP_BUFLEN * UDP_BUFS))
+
+                # --- transmit: the guest as sender ---
+                #
+                # Every other leg here has the guest receiving, which leaves
+                # the whole transmit direction untested -- and a transmit ring
+                # that stops releasing descriptors drains after a dozen frames
+                # and then stalls with the connection still established, which
+                # nothing on the receive side would ever notice. The guest
+                # reaches the host at the SLIRP gateway, so a listener here is
+                # somewhere it can send to.
+                import threading
+                ready = threading.Event()
+                got = []
+                srv = threading.Thread(target=_drain_server,
+                                       args=(TX_PORT, ready, got), daemon=True)
+                srv.start()
+                ready.wait(30)
+                con.send(f"ttcp -t -s -l 65536 -n {TX_BUFS} -p {TX_PORT} "
+                         f"{base.GATEWAY} 2>&1; echo \"TX\"\"TP-$?\"")
+                con.expect(rb"TXTP-\d+", LEG_TIMEOUT_SECONDS,
+                           what="ttcp transmit to finish")
+                tx_out = con.buf.decode("utf-8", "replace")
+                tmbps, tbytes, _ = _parse_ttcp_rate(tx_out)
+                srv.join(30)
+                results["tx_mbps"] = tmbps
+                results["tx_bytes_guest"] = tbytes
+                results["tx_bytes_host"] = got[0] if got else 0
 
                 # --- soak: the same checked transfer, over and over ---
                 #

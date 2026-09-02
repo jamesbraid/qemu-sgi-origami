@@ -108,6 +108,25 @@ def eg_perf_verdict(login_reached, eg_up, results):
             "the guest received no UDP payload at all: the datagram path "
             "carried nothing")
 
+    # Transmit, which every other clause here leaves untested because they all
+    # have the guest receiving. A transmit ring that stops releasing
+    # descriptors drains after a handful of frames and then stalls with the
+    # connection still established and no error anywhere -- so the check that
+    # matters is not whether the guest thinks it sent, but whether the bytes
+    # arrived. Comparing the two sides is what catches a stall.
+    if "tx_bytes_host" in results:
+        host_got = results.get("tx_bytes_host") or 0
+        guest_sent = results.get("tx_bytes_guest")
+        if host_got <= 0:
+            problems.append(
+                "the guest transmitted nothing that reached the host")
+        elif guest_sent and host_got < guest_sent:
+            problems.append(
+                f"transmit stalled: the guest reported {guest_sent} bytes "
+                f"sent but {host_got} arrived")
+        if results.get("tx_mbps") is None:
+            problems.append("no transmit throughput was measured")
+
     # Only present when a soak was asked for. Every round carries its own
     # digest and byte count, so a run that degrades partway through -- the
     # shape a ring index or a recycled buffer produces -- names the round it
@@ -209,6 +228,35 @@ class EgPerfVerdictTest(unittest.TestCase):
         res = _good_results()
         res["udp_loss"] = 0.98
         r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "PASS")
+
+    def test_transmit_clean_is_pass(self):
+        res = _good_results()
+        res.update({"tx_mbps": 20.0, "tx_bytes_guest": 4194304,
+                    "tx_bytes_host": 4194304})
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "PASS")
+
+    def test_transmit_stall_is_caught(self):
+        # The shape a ring that stops releasing descriptors produces: the
+        # guest believes it sent, but almost nothing arrived.
+        res = _good_results()
+        res.update({"tx_mbps": 20.0, "tx_bytes_guest": 4194304,
+                    "tx_bytes_host": 18980})
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("transmit stalled" in p for p in r["problems"]))
+
+    def test_transmit_nothing_arrived_is_caught(self):
+        res = _good_results()
+        res.update({"tx_mbps": None, "tx_bytes_guest": 0,
+                    "tx_bytes_host": 0})
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("transmitted nothing" in p for p in r["problems"]))
+
+    def test_absent_transmit_leg_is_not_a_problem(self):
+        r = eg_perf_verdict(True, True, _good_results())
         self.assertEqual(r["verdict"], "PASS")
 
     def test_soak_all_rounds_clean_is_pass(self):
