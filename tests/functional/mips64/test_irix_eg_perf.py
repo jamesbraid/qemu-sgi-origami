@@ -71,6 +71,25 @@ SOAK_BYTES = int(os.environ.get('EG_PERF_SOAK_BYTES', str(4 * 1024 * 1024)))
 LOGIN_BUDGET_SECONDS = int(
     os.environ.get('EG_PERF_LOGIN_BUDGET', str(base.LOGIN_BUDGET_SECONDS)))
 
+# Ask for jumbo frames before measuring. eg has no ifconfig MTU path -- the
+# size is a kernel tunable, eg_mtu[] in /var/sysgen/master.d/if_eg, and it is
+# read when the driver attaches, so it needs autoconfig and a reboot to take
+# effect. SGI's own guidance is that 1500 and 9000 are the only two supported
+# sizes. Off by default because it costs a second boot.
+JUMBO = os.environ.get('EG_PERF_JUMBO', '') not in ('', '0')
+JUMBO_MTU = 9000
+
+# Socket buffer for the ttcp legs, ttcp's -b. Left at the guest's default unless
+# asked for. Worth a knob because throughput on a path with latency is bounded
+# by how much can be in flight unacknowledged, which is this and not the link:
+# an emulated machine's round trip is long enough for that bound to bite well
+# below the interface's own rate.
+SOCKBUF = os.environ.get('EG_PERF_SOCKBUF', '')
+SOCKBUF_ARG = (' -b ' + SOCKBUF) if SOCKBUF else ''
+
+# Trace events to enable, e.g. tigon_rx_ring, written beside the console log.
+TRACE = os.environ.get('EG_PERF_TRACE', '')
+
 
 def _usernet_hostport(vm, proto, guest_port):
     """Host port SLIRP assigned to a hostfwd rule, from 'info usernet'. The
@@ -161,6 +180,18 @@ def _drain_server(port, ready, total):
     srv.close()
 
 
+def _forget_console_history(con):
+    """Drop what expect() is allowed to match, keeping the console log.
+
+    expect() searches the whole accumulated buffer from its start, so after a
+    reboot every prompt the first boot printed is still there to be matched.
+    A drive that expects a menu, a login prompt and a shell prompt in sequence
+    then satisfies all three from history and returns in milliseconds, having
+    moved nothing. The log file is written as bytes arrive and keeps the lot.
+    """
+    del con.buf[:]
+
+
 def _parse_ttcp_rate(text):
     """Pull (megabits_per_sec, bytes, seconds) out of ttcp's report, which
     prints e.g. 'ttcp-r: 16777216 bytes in 3.21 real seconds = ... KB/sec'.
@@ -240,6 +271,14 @@ if base.QemuSystemTest is not None:
                 '-netdev', netdev,
                 '-device', f'tigon,netdev=egnet,addr={base.EG_ADDR}',
                 '-object', f'filter-dump,id=egcap,netdev=egnet,file={pcap}')
+            if TRACE:
+                # Which receive ring carried each frame is invisible from the
+                # guest and from a rate, because a large frame still arrives
+                # through the standard ring when the driver posted nothing to
+                # the jumbo one.
+                vm.add_args('-trace',
+                            'enable=%s,file=%s'
+                            % (TRACE, self.log_file('tigon-trace.log')))
             vm.launch()
 
             tcp_hp = _usernet_hostport(vm, 'tcp', TCP_GUEST_PORT)
@@ -254,7 +293,57 @@ if base.QemuSystemTest is not None:
             try:
                 base._drive_to_shell(con, LOGIN_BUDGET_SECONDS)
                 login = True
-                con.run("egconfig -f 1 " + base.IFACE, "egc", timeout=60)
+
+                if JUMBO:
+                    # The documented way to raise eg's frame size. The driver
+                    # reads eg_mtu[] out of its master.d file when it attaches,
+                    # so the value has to be in place before an attach, which
+                    # means autoconfig and a reboot. This adapter has no
+                    # ifconfig MTU path at all -- that one belongs to tg.
+                    con.run("sed -e 's/= { *1500/= { %d/' "
+                            "/var/sysgen/master.d/if_eg > /tmp/if_eg.new && "
+                            "cp /tmp/if_eg.new /var/sysgen/master.d/if_eg"
+                            % JUMBO_MTU, "jset", timeout=120)
+                    # Tag the count rather than reading a bare number: the
+                    # console echoes the command, so a pattern matching the
+                    # size would match the echo of the command that looked
+                    # for it and report success whatever the file says.
+                    results["jumbo_tunable"] = con.capture_value(
+                        "grep -c %d /var/sysgen/master.d/if_eg | sed 's/^/JC=/'"
+                        % JUMBO_MTU, "jchk", rb"JC=(\d+)", timeout=60)
+                    con.run("autoconfig -f", "jauto", timeout=900)
+                    con.send("reboot")
+                    # The shell keeps echoing for seconds after reboot is
+                    # entered, so wait for the shutdown itself before
+                    # believing anything. This string cannot come from the
+                    # first boot -- nothing has shut down yet.
+                    con.expect(rb"THE SYSTEM IS BEING SHUT DOWN", 300,
+                               what="the shutdown to start")
+                    _forget_console_history(con)
+                    con.expect(rb"IP27 PROM SGI Version", 600,
+                               what="the PROM banner after reboot")
+                    # Not the same drive as the first boot: a reboot comes up
+                    # without stopping at the maintenance menu, so waiting for
+                    # that menu here waits for something that never prints.
+                    con.expect(rb"console login:", LOGIN_BUDGET_SECONDS,
+                               what="the login prompt after reboot")
+                    con.send("root")
+                    # TERM is asked once per console login on some paths and
+                    # not others; treat it as optional rather than assuming.
+                    try:
+                        con.expect(rb"TERM\s*=\s*\(", 120,
+                                   what="the TERM prompt")
+                        con.send("")
+                    except base._Harness:
+                        pass
+                    con.expect(rb"[0-9]# ", 300,
+                               what="the login csh prompt after reboot")
+                    con.send("exec /bin/sh")
+                    con.run("PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:"
+                            "/usr/bsd:$PATH; export PATH", "shinit2",
+                            timeout=120)
+
+                con.run("egconfig -f 1 " + base.IFACE, "egc", timeout=180)
                 con.run(f"ifconfig {base.IFACE} inet {base.GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
                 try:
@@ -263,29 +352,6 @@ if base.QemuSystemTest is not None:
                     eg_up = True
                 except base._Harness:
                     pass
-
-                # Whether the driver will take a larger frame at all. Fewer,
-                # bigger packets is the one lever that cuts the guest's
-                # per-packet cost without making the emulated CPU faster, so
-                # whether it is available decides what rate is reachable here
-                # at all. Recorded rather than asserted: a driver that refuses
-                # is a fact about the guest, not a failure of the adapter.
-                mtu = {}
-                for want in (9000, 4096, 2048):
-                    try:
-                        rc = con.run(f"ifconfig {base.IFACE} mtu {want}",
-                                     f"mtu{want}", timeout=60)
-                        mtu[want] = ("accepted" if rc == 0
-                                     else "refused (rc %d)" % rc)
-                    except base._Harness:
-                        mtu[want] = "refused"
-                try:
-                    mtu["reported"] = con.capture_value(
-                        "netstat -in | awk '$1 ~ /^%s/ {print \"M=\" $2; exit}'"
-                        % base.IFACE, "mtushow", rb"M=(\d+)", timeout=60)
-                except base._Harness:
-                    mtu["reported"] = None
-                results["mtu"] = mtu
 
                 seg_before = self._netstat_counter(
                     con, "tcp", "packets received", "segb")
@@ -322,9 +388,10 @@ if base.QemuSystemTest is not None:
                 # byte to stdout, which here is the serial console: megabytes
                 # through an emulated uart, and the rate measured would be the
                 # console's rather than the interface's.
-                con.send(f"ttcp -r -s -p {TCP_GUEST_PORT} -l 65536 2>&1; "
+                con.send(f"ttcp -r -s -p {TCP_GUEST_PORT} -l 65536{SOCKBUF_ARG} 2>&1; "
                          "echo \"TCP\"\"TP-$?\"")
                 time.sleep(3)
+                _load_tcp = os.getloadavg()[0]
                 _tcp_stream(tcp_hp, os.urandom(TCP_THROUGHPUT_BYTES))
                 con.expect(rb"TCPTP-\d+", LEG_TIMEOUT_SECONDS,
                            what="ttcp TCP to finish")
@@ -332,9 +399,18 @@ if base.QemuSystemTest is not None:
                 mbps, _, _ = _parse_ttcp_rate(
                     tcp_out)
                 results["tcp_mbps"] = mbps
+                # This host is shared, and a rate taken on a busy host is not
+                # comparable to one taken on an idle host. Record what the
+                # machine was doing so a number can be discarded rather than
+                # believed. Sampled either side: the leg itself moves it.
+                results["tcp_load"] = [round(_load_tcp, 1),
+                                       round(os.getloadavg()[0], 1)]
+                results["tcp_write_size"] = 65536
+                results["mtu"] = JUMBO_MTU if JUMBO else 1500
+                results["build"] = os.environ.get("QEMU_TEST_QEMU_BINARY", "")
 
                 # --- UDP throughput (ttcp -u -r) ---
-                con.send(f"ttcp -u -r -s -p {UDP_GUEST_PORT} -l {UDP_BUFLEN} "
+                con.send(f"ttcp -u -r -s -p {UDP_GUEST_PORT} -l {UDP_BUFLEN}{SOCKBUF_ARG} "
                          "2>&1; echo \"UDP\"\"TP-$?\"")
                 time.sleep(3)
                 self.assertIsNotNone(udp_hp, "no UDP hostfwd port")
@@ -422,6 +498,29 @@ if base.QemuSystemTest is not None:
                     (seg_after - seg_before)
                     if (seg_after is not None and seg_before is not None)
                     else None)
+                # Whether the driver will take a larger frame at all. Fewer,
+                # bigger packets is the one lever that cuts the guest's
+                # per-packet cost without making the emulated CPU faster, so
+                # whether it is available decides what rate is reachable here
+                # at all. Recorded rather than asserted: a driver that refuses
+                # is a fact about the guest, not a failure of the adapter.
+                mtu = {}
+                for want in (9000, 4096, 2048):
+                    try:
+                        rc = con.run(f"ifconfig {base.IFACE} mtu {want}",
+                                     f"mtu{want}", timeout=60)
+                        mtu[want] = ("accepted" if rc == 0
+                                     else "refused (rc %d)" % rc)
+                    except base._Harness:
+                        mtu[want] = "refused"
+                try:
+                    mtu["reported"] = con.capture_value(
+                        "netstat -in | awk '$1 ~ /^%s/ {print \"M=\" $2; exit}'"
+                        % base.IFACE, "mtushow", rb"M=(\d+)", timeout=60)
+                except base._Harness:
+                    mtu["reported"] = None
+                results["mtu"] = mtu
+
                 con.send("sync; sync")
                 time.sleep(2)
                 con._pump()
