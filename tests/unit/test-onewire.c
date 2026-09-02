@@ -2,6 +2,7 @@
 #include "hw/1wire/crc.h"
 #include "hw/1wire/onewire.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/1wire/ds2505.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
@@ -237,6 +238,47 @@ static OneWireBus *onewire_test_bus_with_ds2501(uint8_t family,
 
     onewire_test_add_ds2502_variant(bus, TYPE_ONEWIRE_DS2501, family, serial,
                                      NULL, 0);
+    return bus;
+}
+
+/*
+ * A DS2505, optionally loading an EPROM image before realize -- same
+ * ds2505_set_image()-before-realize contract as the DS2502 family's own
+ * helper above.
+ */
+static DeviceState *onewire_test_add_ds2505(OneWireBus *bus, uint8_t family,
+                                             uint64_t serial,
+                                             const uint8_t *image,
+                                             size_t image_len)
+{
+    DeviceState *dev = qdev_new(TYPE_ONEWIRE_DS2505);
+
+    qdev_prop_set_uint8(dev, "family", family);
+    qdev_prop_set_uint64(dev, "serial", serial);
+    if (image) {
+        ds2505_set_image(dev, image, image_len);
+    }
+    qdev_realize_and_unref(dev, BUS(bus), &error_fatal);
+    return dev;
+}
+
+/*
+ * A DS2505 whose 64 pages are each filled with their own page number
+ * (0x00..0x3f): distinct, non-blank content per page, so a test can tell
+ * which page's data actually came back rather than merely that some data
+ * did -- essential for proving Extended Read Memory serves the physically
+ * addressed page rather than a redirected one.
+ */
+static OneWireBus *onewire_test_bus_with_ds2505_paged(uint8_t family,
+                                                       uint64_t serial)
+{
+    OneWireBus *bus = onewire_test_bus();
+    uint8_t image[DS2505_DATA_SIZE];
+
+    for (size_t i = 0; i < sizeof(image); i++) {
+        image[i] = (i / DS2505_PAGE_SIZE) & 0xff;
+    }
+    onewire_test_add_ds2505(bus, family, serial, image, sizeof(image));
     return bus;
 }
 
@@ -774,6 +816,400 @@ static void test_ds2502_write_commands_are_refused_not_misread(void)
 }
 
 /*
+ * DS2505-family (docs/library/dallas-1wire-part-specs.md section C.2/D.2).
+ * The Bridge's board-identity part and the Hub's node-record part are both
+ * DS2505-class. Unlike the DS2502 family, this class echoes no header CRC
+ * after TA2 -- content starts one window earlier -- and its command set
+ * differs: F0h's own CRC-16 covers the header too, AAh serves paged
+ * status with a CRC-16 per page, and A5h replaces C3h entirely.
+ */
+
+static void test_ds2505_plain_read_has_no_page_crc(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    uint8_t bytes[40];
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);                 /* Skip ROM */
+    bus_touch_byte(bus, 0xf0);                 /* Read Memory */
+    bus_touch_byte(bus, 0x00);
+    bus_touch_byte(bus, 0x00);
+
+    /*
+     * Unlike the DS2502 family, this class echoes no header CRC: the very
+     * next window is already the first data byte.
+     */
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = bus_touch_byte(bus, 0xff);
+    }
+
+    for (unsigned i = 0; i < 32; i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x00);          /* page 0 */
+    }
+    /*
+     * Byte 33 (index 32) is page one's first byte, a real data byte -- not
+     * a CRC. A model that copied A5h's or AAh's per-32-byte framing onto
+     * F0h would answer something else here.
+     */
+    for (unsigned i = 32; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x01);
+    }
+}
+
+/*
+ * Read Memory's CRC-16, when it appears, covers the header AND the data
+ * read -- unlike the DS2502-family F0h CRC-8, which covers data only.
+ * Start two bytes from the end of the 2048-byte field so both the header
+ * inclusion and the field's true top (07FFh) are exercised together.
+ */
+static void test_ds2505_read_memory_emits_one_crc16_at_end_of_field(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t hdr[3] = { 0xf0, 0xfe, 0x07 };     /* TA: 07FEh */
+    uint8_t tail[2];
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xf0);
+    bus_touch_byte(bus, 0xfe);
+    bus_touch_byte(bus, 0x07);
+
+    tail[0] = bus_touch_byte(bus, 0xff);    /* 07FEh: page 63 */
+    tail[1] = bus_touch_byte(bus, 0xff);    /* 07FFh: the last byte */
+    g_assert_cmpuint(tail[0], ==, 0x3f);
+    g_assert_cmpuint(tail[1], ==, 0x3f);
+
+    crc = onewire_crc16(onewire_crc16(0, hdr, 3), tail, sizeof(tail));
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+
+    /*
+     * The transmitted value is inverted, and covers the header -- a model
+     * that instead sent the raw (un-inverted) CRC-16, or one that covered
+     * only the data bytes the way the DS2502-family CRC-8 does, would both
+     * fail this check.
+     */
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+
+    /* Nothing further is defined; the part floats high, not repeats. */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+static void test_ds2505_status_page_carries_a_real_crc16(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t hdr[3] = { 0xaa, 0x00, 0x00 };
+    uint8_t status[8];
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xaa);                 /* Read Status */
+    bus_touch_byte(bus, 0x00);
+    bus_touch_byte(bus, 0x00);
+
+    for (unsigned i = 0; i < sizeof(status); i++) {
+        status[i] = bus_touch_byte(bus, 0xff);
+    }
+    /*
+     * This model has no Write Status: every status byte, implemented
+     * region or not, is unprogrammed 0xff.
+     */
+    for (unsigned i = 0; i < sizeof(status); i++) {
+        g_assert_cmpuint(status[i], ==, 0xff);
+    }
+
+    crc = onewire_crc16(onewire_crc16(0, hdr, 3), status, sizeof(status));
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    /*
+     * A model that answered a flat, CRC-less status field -- treating this
+     * class like the DS2502 family's own tiny, single-CRC status field --
+     * would fail this check, even though the FFh data bytes above already
+     * pass either way.
+     */
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+}
+
+/*
+ * The first status page's CRC-16 covers the header; every later page's
+ * covers only that page's own bytes, with the generator cleared in
+ * between. A model that instead carried the running CRC across pages, or
+ * kept including the header on every page, would answer something else
+ * for the second page's CRC.
+ */
+static void test_ds2505_status_second_page_crc_is_cleared(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    uint8_t page2[8];
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xaa);
+    bus_touch_byte(bus, 0x00);
+    bus_touch_byte(bus, 0x00);
+
+    for (unsigned i = 0; i < 8; i++) {
+        bus_touch_byte(bus, 0xff);              /* page one's data */
+    }
+    bus_touch_byte(bus, 0xff);                  /* page one's CRC, low */
+    bus_touch_byte(bus, 0xff);                  /* page one's CRC, high */
+
+    for (unsigned i = 0; i < sizeof(page2); i++) {
+        page2[i] = bus_touch_byte(bus, 0xff);
+    }
+    g_assert_cmpuint(page2[7], ==, 0xff);      /* still blank: 0008h-000Fh */
+
+    crc = onewire_crc16(0, page2, sizeof(page2));
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+}
+
+/*
+ * The behaviour this task exists to get right: A5h presents the
+ * redirection byte for the addressed page, then streams that SAME
+ * physically addressed page's own data regardless of what the byte says.
+ * Page 3 here is loaded with a distinct marker (0x03); a model that
+ * instead "followed" redirection -- treating the unprogrammed 0xff byte
+ * as a jump, or jumping for any other reason -- would serve page 0's
+ * marker (0x00) instead, since 0xff's one's complement is page 0.
+ */
+static void
+test_ds2505_extended_read_surfaces_redirection_without_following(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t hdr[3] = { 0xa5, 0x60, 0x00 };   /* TA: 0060h, page 3 */
+    uint8_t redirect;
+    uint8_t page[DS2505_PAGE_SIZE];
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xa5);                 /* Extended Read Memory */
+    bus_touch_byte(bus, 0x60);
+    bus_touch_byte(bus, 0x00);
+
+    redirect = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(redirect, ==, 0xff);      /* not redirected */
+
+    crc = onewire_crc16(onewire_crc16(0, hdr, 3), &redirect, 1);
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+
+    for (unsigned i = 0; i < sizeof(page); i++) {
+        page[i] = bus_touch_byte(bus, 0xff);
+    }
+    for (unsigned i = 0; i < sizeof(page); i++) {
+        g_assert_cmpuint(page[i], ==, 0x03);
+    }
+
+    crc = onewire_crc16(0, page, sizeof(page));
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+}
+
+/*
+ * Between pages the master reads 24 slots: the next page's redirection
+ * byte, then its CRC-16 -- cleared, covering the redirection byte alone,
+ * not carried over or re-seeded from the header the way the first page's
+ * was. This is the 24-slot cycle the extraction describes.
+ */
+static void test_ds2505_extended_read_inter_page_sequence(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    uint8_t redirect;
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xa5);
+    bus_touch_byte(bus, 0x00);
+    bus_touch_byte(bus, 0x00);
+
+    bus_touch_byte(bus, 0xff);                  /* page 0's redirection */
+    bus_touch_byte(bus, 0xff);                  /* its CRC, low */
+    bus_touch_byte(bus, 0xff);                  /* its CRC, high */
+    for (unsigned i = 0; i < DS2505_PAGE_SIZE; i++) {
+        bus_touch_byte(bus, 0xff);              /* page 0's data */
+    }
+    bus_touch_byte(bus, 0xff);                  /* page 0's data CRC, low */
+    bus_touch_byte(bus, 0xff);                  /* page 0's data CRC, high */
+
+    redirect = bus_touch_byte(bus, 0xff);       /* page 1's redirection */
+    g_assert_cmpuint(redirect, ==, 0xff);
+
+    crc = onewire_crc16(0, &redirect, 1);
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+
+    /* Page one's own data follows, not a repeat of the redirection pair. */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0x01);
+}
+
+/*
+ * A5h's first page can start mid-page too, exactly as C3h's does on the
+ * DS2502 family: the redirection byte and its CRC still cover the page
+ * containing the start address, and the page-data CRC covers only the
+ * bytes actually read, from the start address to that page's own end.
+ */
+static void test_ds2505_extended_read_first_page_can_start_mid_page(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t hdr[3] = { 0xa5, 0x10, 0x00 };   /* TA: 0010h, page 0 */
+    uint8_t redirect;
+    uint8_t partial[16];
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xa5);
+    bus_touch_byte(bus, 0x10);
+    bus_touch_byte(bus, 0x00);
+
+    redirect = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(redirect, ==, 0xff);
+
+    crc = onewire_crc16(onewire_crc16(0, hdr, 3), &redirect, 1);
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+
+    for (unsigned i = 0; i < sizeof(partial); i++) {
+        partial[i] = bus_touch_byte(bus, 0xff);
+    }
+    for (unsigned i = 0; i < sizeof(partial); i++) {
+        g_assert_cmpuint(partial[i], ==, 0x00);   /* still page 0 */
+    }
+
+    /*
+     * Page 0 ends at 001Fh, 16 bytes from the 0010h start -- not 32. A
+     * model that always waited for a full 32-byte count instead of
+     * computing the page boundary from the actual address would answer a
+     * real data byte here instead of this CRC.
+     */
+    crc = onewire_crc16(0, partial, sizeof(partial));
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+
+    /* Page one starts fresh at 0020h: its redirection byte, not more CRC. */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+/*
+ * A part loaded with a short image reads 0xff past the end of that image,
+ * all the way out to the true top of its 2048-byte field -- it never
+ * wraps back into the image and repeats it. Wrapping an out-of-range
+ * offset back to page zero is exactly the defect the Bridge's own
+ * hand-written responder currently has (see the task report); this is the
+ * behaviour Tasks 7/8 depend on this model not reproducing.
+ */
+static void test_ds2505_out_of_range_read_pads_not_wraps(void)
+{
+    const uint8_t short_image[4] = { 0x11, 0x22, 0x33, 0x44 };
+    OneWireBus *bus = onewire_test_bus();
+    uint8_t byte;
+
+    onewire_test_add_ds2505(bus, 0x0b, 0x0102030405ULL,
+                             short_image, sizeof(short_image));
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xf0);
+    bus_touch_byte(bus, 0xf4);      /* TA1: 01F4h = 500, far past 4 bytes */
+    bus_touch_byte(bus, 0x01);      /* TA2 */
+
+    byte = bus_touch_byte(bus, 0xff);
+    /*
+     * A model that indexed the image with addr % image_len instead of a
+     * direct, full-width array read would answer short_image[500 % 4] =
+     * short_image[0] = 0x11 here instead.
+     */
+    g_assert_cmpuint(byte, ==, 0xff);
+}
+
+/*
+ * "A start address above the implemented top has its high address bits
+ * forced to zero" (docs/library/dallas-1wire-part-specs.md section D.2).
+ * TA1=TA2=0xff sends a raw 16-bit start address of 0xffff; masked to the
+ * field's 11-bit width that lands on 07FFh, the field's true last byte --
+ * page 63's own marker, not some other page's, confirming the mask width
+ * as well as its presence.
+ */
+static void test_ds2505_start_address_masked_to_top(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t hdr[3] = { 0xf0, 0xff, 0xff };
+    uint8_t last_byte;
+    uint16_t crc, got;
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xf0);
+
+    /*
+     * Every bit here is a driven write-one: exactly the case that exposes
+     * a part wrongly pulling the line low during a master-write window.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA1 */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA2 */
+
+    last_byte = bus_touch_byte(bus, 0xff);
+    g_assert_cmpuint(last_byte, ==, 0x3f);      /* page 63's own marker */
+
+    crc = onewire_crc16(onewire_crc16(0, hdr, 3), &last_byte, 1);
+    got = bus_touch_byte(bus, 0xff);
+    got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
+    /*
+     * The header CRC covers the raw bytes actually sent (0xff, 0xff), not
+     * the masked address -- the same deliberate-mismatch behaviour as the
+     * DS2502 family's own start-address masking.
+     */
+    g_assert_cmpuint(got, ==, (uint16_t)~crc);
+}
+
+/*
+ * Add-only: Write Memory, Speed Write Memory, Write Status and Speed
+ * Write Status are all refused rather than misread as a read. 0xC3 (the
+ * DS2502-family CRC-read command) does not exist on this class either,
+ * and is refused the same way -- if any were instead accepted and treated
+ * as needing TA1/TA2, the following bytes here would be consumed as a
+ * bogus address instead of a fresh command, and the Read Memory issued
+ * right after would not come back with page three's real marker.
+ */
+static void test_ds2505_write_commands_are_refused_not_misread(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2505_paged(0x0b,
+                                                          0x0102030405ULL);
+    const uint8_t refused_cmds[5] = { 0x0f, 0xf3, 0x55, 0xf5, 0xc3 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(refused_cmds); i++) {
+        g_assert_true(onewire_reset(bus));
+        bus_touch_byte(bus, 0xcc);
+        bus_touch_byte(bus, refused_cmds[i]);
+
+        bus_touch_byte(bus, 0xf0);      /* a fresh Read Memory */
+        bus_touch_byte(bus, 0x60);      /* TA1: 0060h, page 3 */
+        bus_touch_byte(bus, 0x00);      /* TA2 */
+        g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0x03);
+    }
+}
+
+/*
  * SGI's MicroLAN slot decode (include/hw/misc/sgi-onewire-slot.h). One write
  * of a control register, decoded by pulse width into a reset, a read, or a
  * write-zero. Each of the following pins one of those three outcomes against
@@ -951,6 +1387,28 @@ int main(int argc, char **argv)
                      test_ds2502_pages_bound_the_programmable_area);
     g_test_add_func("/onewire/ds2502/write-commands-are-refused",
                      test_ds2502_write_commands_are_refused_not_misread);
+
+    g_test_add_func("/onewire/ds2505/plain-read-has-no-page-crc",
+                     test_ds2505_plain_read_has_no_page_crc);
+    g_test_add_func("/onewire/ds2505/read-memory-emits-one-crc16-at-end",
+                     test_ds2505_read_memory_emits_one_crc16_at_end_of_field);
+    g_test_add_func("/onewire/ds2505/status-page-carries-a-real-crc16",
+                     test_ds2505_status_page_carries_a_real_crc16);
+    g_test_add_func("/onewire/ds2505/status-second-page-crc-is-cleared",
+                     test_ds2505_status_second_page_crc_is_cleared);
+    g_test_add_func(
+        "/onewire/ds2505/extended-read-surfaces-redirection-without-following",
+        test_ds2505_extended_read_surfaces_redirection_without_following);
+    g_test_add_func("/onewire/ds2505/extended-read-inter-page-sequence",
+                     test_ds2505_extended_read_inter_page_sequence);
+    g_test_add_func("/onewire/ds2505/extended-read-first-page-mid-page",
+                     test_ds2505_extended_read_first_page_can_start_mid_page);
+    g_test_add_func("/onewire/ds2505/out-of-range-read-pads-not-wraps",
+                     test_ds2505_out_of_range_read_pads_not_wraps);
+    g_test_add_func("/onewire/ds2505/start-address-masked-to-top",
+                     test_ds2505_start_address_masked_to_top);
+    g_test_add_func("/onewire/ds2505/write-commands-are-refused",
+                     test_ds2505_write_commands_are_refused_not_misread);
 
     g_test_add_func("/onewire/sgi-slot/reset-reports-presence-with-a-part",
                      test_sgi_slot_reset_reports_presence_with_a_part);
