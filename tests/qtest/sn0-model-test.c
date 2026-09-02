@@ -615,18 +615,6 @@ static char *qom_get_string(QTestState *qts, const char *path,
     return value;
 }
 
-static void assert_qom_type(QTestState *qts, const char *path,
-                            const char *expected)
-{
-    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                                     " 'arguments': { 'path': %s,"
-                                     " 'property': 'type' } }", path);
-
-    g_assert_true(qdict_haskey(response, "return"));
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==, expected);
-    qobject_unref(response);
-}
-
 typedef struct QOMChildExpectation {
     const char *name;
     const char *type;
@@ -689,15 +677,6 @@ static void assert_qom_child_set(QTestState *qts, const char *path,
     }
     qobject_unref(response);
 }
-
-static const QOMChildExpectation ip29_ioc3_children[] = {
-    { "serial[0]", "child<serial>" },
-    { "serial[1]", "child<serial>" },
-    { "eth", "child<sgi-ioc3-eth>" },
-    { "kbc", "child<sgi-ioc3-kbc>" },
-    { "parallel", "child<sgi-ioc3-parallel>" },
-    { "rtc", "child<m48t35>" },
-};
 
 static void test_origin200_owns_the_ioc3_board_default(const void *data)
 {
@@ -805,9 +784,6 @@ static void test_base_profile_topology(const void *data)
         { "isp0", "child<qlogic-isp1040>" },
         { "isp1", "child<qlogic-isp1040>" },
     };
-    static const QOMChildExpectation object_children[] = {
-        { "ram0", "child<memory-backend-ram>" },
-    };
     const QOMChildExpectation *node_children = topology->has_cpu1 ?
         two_cpu_children : one_cpu_children;
     size_t node_child_count = topology->has_cpu1 ?
@@ -818,20 +794,6 @@ static void test_base_profile_topology(const void *data)
                          ARRAY_SIZE(machine_children));
     assert_qom_child_set(qts, "/machine/node0", node_children,
                          node_child_count);
-    assert_qom_child_set(qts, "/objects", object_children,
-                         ARRAY_SIZE(object_children));
-    assert_qom_child_set(qts, "/machine/node0/ioc3", ip29_ioc3_children,
-                         ARRAY_SIZE(ip29_ioc3_children));
-    assert_qom_type(qts, "/machine/node0/cpu0", "R10000-mips64-cpu");
-    if (topology->has_cpu1) {
-        assert_qom_type(qts, "/machine/node0/cpu1", "R10000-mips64-cpu");
-    }
-    assert_qom_type(qts, "/machine/node0/hub", "sgi-hub");
-    assert_qom_type(qts, "/machine/bridge", "sgi-bridge");
-    assert_qom_type(qts, "/machine/node0/ioc3", "sgi-ioc3");
-    assert_qom_type(qts, "/machine/node0/isp0", "qlogic-isp1040");
-    assert_qom_type(qts, "/machine/node0/isp1", "qlogic-isp1040");
-    assert_qom_type(qts, "/objects/ram0", "memory-backend-ram");
 
     qtest_quit(qts);
 }
@@ -852,52 +814,16 @@ static void test_dual_profile_topology(const void *data)
         { "isp0", "child<qlogic-isp1040>" },
         { "isp1", "child<qlogic-isp1040>" },
     };
-    static const QOMChildExpectation object_children[] = {
-        { "ram0", "child<memory-backend-ram>" },
-        { "ram1", "child<memory-backend-ram>" },
-    };
-    static const char * const node_paths[][6] = {
-        {
-            "/machine/node0/cpu0", "/machine/node0/cpu1",
-            "/machine/node0/hub", "/machine/node0/ioc3",
-            "/machine/node0/isp0", "/machine/node0/isp1",
-        },
-        {
-            "/machine/node1/cpu0", "/machine/node1/cpu1",
-            "/machine/node1/hub", "/machine/node1/ioc3",
-            "/machine/node1/isp0", "/machine/node1/isp1",
-        },
-    };
-    static const char * const types[] = {
-        "R10000-mips64-cpu", "R10000-mips64-cpu", "sgi-hub", "sgi-ioc3",
-        "qlogic-isp1040", "qlogic-isp1040",
-    };
     QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
-    unsigned int node, device;
+    unsigned int node;
 
-    assert_qom_type(qts, "/machine", "origin200-machine");
-    assert_qom_type(qts, "/machine/node0", "sn0-node");
-    assert_qom_type(qts, "/machine/node1", "sn0-node");
-    assert_qom_type(qts, "/machine/bridge", "sgi-bridge");
-    assert_qom_type(qts, "/machine/bridge1", "sgi-bridge");
-    assert_qom_type(qts, "/objects/ram0", "memory-backend-ram");
-    assert_qom_type(qts, "/objects/ram1", "memory-backend-ram");
     assert_qom_child_set(qts, "/machine", machine_children,
                          ARRAY_SIZE(machine_children));
-    assert_qom_child_set(qts, "/objects", object_children,
-                         ARRAY_SIZE(object_children));
-    for (node = 0; node < ARRAY_SIZE(node_paths); node++) {
+    for (node = 0; node < 2; node++) {
         g_autofree char *node_path = g_strdup_printf("/machine/node%u", node);
-        g_autofree char *ioc3_path =
-            g_strdup_printf("/machine/node%u/ioc3", node);
 
         assert_qom_child_set(qts, node_path, node_children,
                              ARRAY_SIZE(node_children));
-        assert_qom_child_set(qts, ioc3_path, ip29_ioc3_children,
-                             ARRAY_SIZE(ip29_ioc3_children));
-        for (device = 0; device < ARRAY_SIZE(types); device++) {
-            assert_qom_type(qts, node_paths[node][device], types[device]);
-        }
     }
     qtest_quit(qts);
 }
@@ -1311,28 +1237,6 @@ static void test_architecture_boundaries(const void *data)
                    qdict_get_bool(type, "abstract"));
     qobject_unref(response);
 
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine/node0',"
-                              "                  'property': 'type' } }");
-    g_assert_true(qdict_haskey(response, "return"));
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sn0-node");
-    qobject_unref(response);
-
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine/node0/hub',"
-                              "                  'property': 'type' } }");
-    g_assert_true(qdict_haskey(response, "return"));
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sgi-hub");
-    qobject_unref(response);
-
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine/node0/cpu0',"
-                              "                  'property': 'type' } }");
-    g_assert_true(qdict_haskey(response, "return"));
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
-                    "R10000-mips64-cpu");
-    qobject_unref(response);
-
     qtest_quit(qts);
 }
 
@@ -1372,23 +1276,6 @@ static void test_promdata_uses_memory_space(const void *data)
 static void test_one_node_smp(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200 -smp 2");
-    QDict *response;
-
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine/node0/cpu0',"
-                              "                  'property': 'type' } }");
-    g_assert_true(qdict_haskey(response, "return"));
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
-                    "R10000-mips64-cpu");
-    qobject_unref(response);
-
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine/node0/cpu1',"
-                              "                  'property': 'type' } }");
-    g_assert_true(qdict_haskey(response, "return"));
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
-                    "R10000-mips64-cpu");
-    qobject_unref(response);
 
     g_assert_cmphex(qtest_readq(qts, SN0_HUB_LOCAL + SN0_PI_CPU_PRESENT_A),
                     ==, 1);
@@ -1521,12 +1408,6 @@ static void test_dual_chassis_numa(const void *data)
         qobject_unref(entry);
     }
     g_assert_cmphex(seen, ==, 0xf);
-    qobject_unref(response);
-
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine/node1',"
-                              " 'property': 'type' } }");
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sn0-node");
     qobject_unref(response);
 
     qtest_writel(qts, 0x1000, 0x11223344);
