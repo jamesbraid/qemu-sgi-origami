@@ -2462,22 +2462,43 @@ static void nic_status_request(QTestState *qts, uint16_t addr, uint8_t *hdr)
 /*
  * One whole eight-byte status page and its check from a page-aligned
  * start, then ten further slots -- a whole page and check pair. All ones
- * across those ten says the field ended here rather than carrying on: a
+ * across those ten says the stream ended here rather than carrying on: a
  * page that really followed would close with 0xbe 0x7b, not with ones.
+ * The masking and the 0xff fill are both stated in the part
+ * specification; that the stream TERMINATES at the top of the field
+ * rather than running on is inferred from the data memory's stated end,
+ * and a literal statement about a status read's end of field, or a guest
+ * that reads this far, would settle it.
+ *
+ * `masked` is the address the part reads from, which differs from `addr`
+ * only above the top. The check covers the masked address, so where the
+ * two differ the residue over what the master sent does not come out --
+ * that mismatch is how a master learns its start address was out of range
+ * instead of being handed the aliased page as the one it asked for.
  */
-static void nic_status_final_page(QTestState *qts, uint16_t addr)
+static void nic_status_final_page(QTestState *qts, uint16_t addr,
+                                  uint16_t masked)
 {
-    uint8_t page[13];
+    uint8_t sent[13];
+    uint8_t read_from[13];
     unsigned int i;
 
-    nic_status_request(qts, addr, page);
+    nic_status_request(qts, addr, sent);
     for (i = 3; i < 11; i++) {
-        page[i] = nic_read_byte(qts);
-        g_assert_cmphex(page[i], ==, 0xff);
+        sent[i] = nic_read_byte(qts);
+        g_assert_cmphex(sent[i], ==, 0xff);
     }
-    page[11] = nic_read_byte(qts);
-    page[12] = nic_read_byte(qts);
-    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+    sent[11] = nic_read_byte(qts);
+    sent[12] = nic_read_byte(qts);
+
+    memcpy(read_from, sent, sizeof(read_from));
+    read_from[1] = masked & 0xff;
+    read_from[2] = masked >> 8;
+    g_assert_cmphex(nic_crc(0, read_from, sizeof(read_from)), ==,
+                    NIC_CRC_RESIDUE);
+    if (masked != addr) {
+        g_assert_cmphex(nic_crc(0, sent, sizeof(sent)), !=, NIC_CRC_RESIDUE);
+    }
 
     for (i = 0; i < 10; i++) {
         g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
@@ -2490,7 +2511,9 @@ static void nic_status_final_page(QTestState *qts, uint16_t addr)
  * Every other address reads unprogrammed ones, still framed by a check
  * every eight bytes -- so past the programmed regions the part keeps
  * answering instead of going quiet, which is the one thing a guest cannot
- * tell apart from a part that is not fitted.
+ * tell apart from a part that is not fitted. The 0x7ff masking and the
+ * 0xff fill are stated in the part specification; where the stream stops
+ * is not, and is inferred from the data memory's stated end.
  */
 static void test_status_past_the_programmed_regions(const void *data)
 {
@@ -2524,8 +2547,8 @@ static void test_status_past_the_programmed_regions(const void *data)
      * zero, so both end after one page rather than being refused or
      * running on.
      */
-    nic_status_final_page(qts, 0x7f8);
-    nic_status_final_page(qts, 0xff8);
+    nic_status_final_page(qts, 0x7f8, 0x7f8);
+    nic_status_final_page(qts, 0xff8, 0x7f8);
 
     qtest_quit(qts);
 }

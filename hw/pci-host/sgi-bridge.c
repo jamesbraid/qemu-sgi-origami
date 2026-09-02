@@ -1583,11 +1583,17 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 
     /*
      * The MicroLAN bus and the one part on it: the board identity EPROM,
-     * a DS2505, which is what the family code 0x0b names. The record is
-     * composed here rather than in reset because QEMU resets a device's
-     * children before the device itself, so a controller that rebuilt an
-     * image in its own reset would write into a part that had already
-     * reset from the previous one.
+     * a DS2505, which is what the family code 0x0b names.
+     *
+     * The record is composed here and never again. An EPROM keeps its
+     * contents across a reset -- that is what the technology is -- so a
+     * chip that rebuilt the bytes on every reset was modelling something
+     * the hardware does not do. Those bytes are now the part's own
+     * migrated state as well, and state with one owner wants one writer.
+     * Reaching into a child device's storage from a parent's reset is the
+     * wrong shape whichever order the phases run in, and they run in the
+     * safe one: hw/core/resettable.c holds children before the object
+     * itself, so the ordering was never the hazard.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
     sgi_bridge_onewire_build_rom(rom);

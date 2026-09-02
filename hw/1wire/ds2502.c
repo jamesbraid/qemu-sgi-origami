@@ -68,8 +68,10 @@ struct DS2502State {
 
     /*
      * Header capture: the command byte, then TA1, then TA2, exactly as
-     * received on the wire (never the masked address -- the echoed CRC-8
-     * covers what was actually sent).
+     * received on the wire. The echoed CRC-8 is computed over the address
+     * as MASKED rather than over these; they are kept because the mask
+     * width is a property of the command, so the raw bytes are what a
+     * later window has to re-derive the address from.
      */
     uint8_t cmd;
     uint8_t hdr[3];
@@ -196,6 +198,37 @@ static uint8_t ds2502_advance_stream(DS2502State *d)
     }
 }
 
+/*
+ * The address the stream reads from, and the one the echoed CRC-8 covers.
+ * A memory start address above 007Fh has its 9 MSBs forced to zero
+ * (datasheet C.1); no masking is documented for the status field, so AAh
+ * keeps the address as sent.
+ */
+static uint16_t ds2502_start_address(const DS2502State *d)
+{
+    uint16_t raw = ((uint16_t)d->hdr[2] << 8) | d->hdr[1];
+
+    return d->cmd == DS2502_CMD_READ_STATUS
+           ? raw : raw & (DS2502_DATA_SIZE - 1);
+}
+
+/*
+ * Over the address AS MASKED, which is what makes the datasheet's
+ * "deliberate CRC mismatch" true: a master that asked above 007Fh checks
+ * its own echo against the bytes it sent, the part echoed the check over
+ * the address it will actually read, and the disagreement is how the
+ * master finds out. Echoing the check over the raw bytes instead would
+ * agree with the master and hand it aliased data as if it were the data
+ * it asked for.
+ */
+static uint8_t ds2502_header_crc(const DS2502State *d)
+{
+    uint16_t addr = ds2502_start_address(d);
+    const uint8_t hdr[3] = { d->cmd, addr & 0xff, addr >> 8 };
+
+    return onewire_crc8(0, hdr, sizeof(hdr));
+}
+
 static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
 {
     DS2502State *d = ONEWIRE_DS2502_FAMILY(s);
@@ -232,7 +265,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
              * Both address bytes are in hand: the header CRC-8 lands on
              * the wire in the very next window, right after TA2.
              */
-            *out = onewire_crc8(0, d->hdr, 3);
+            *out = ds2502_header_crc(d);
         }
         return true;
     }
@@ -248,23 +281,16 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         d->finished = false;
         d->unit = DS2502_UNIT_DATA;
 
+        d->addr = ds2502_start_address(d);
         if (d->cmd == DS2502_CMD_READ_STATUS) {
             /*
-             * No masking is documented for the status field; an
-             * out-of-range start address leaves the closing CRC
-             * unreachable within any bounded transaction, since addr
-             * would have to wrap the full 16-bit range to reach 0007h
-             * again.
+             * Unmasked, per ds2502_start_address(): an out-of-range
+             * status start leaves the closing CRC unreachable within any
+             * bounded transaction, since addr would have to wrap the full
+             * 16-bit range to reach 0007h again.
              */
-            d->addr = ((uint16_t)d->hdr[2] << 8) | d->hdr[1];
             d->sent_byte = ds2502_status_byte(d->addr);
         } else {
-            /*
-             * A start address above 007Fh has its 9 MSBs forced to zero
-             * (datasheet C.1) -- applied to the address used for memory
-             * access, never to the header bytes the CRC-8 above covers.
-             */
-            d->addr = (((uint16_t)d->hdr[2] << 8) | d->hdr[1]) & 0x7f;
             if (d->cmd == DS2502_CMD_READ_DATA_CRC) {
                 d->page_end = d->addr | (DS2502_PAGE_SIZE - 1);
             }
