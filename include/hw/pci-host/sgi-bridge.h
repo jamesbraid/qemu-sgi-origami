@@ -15,6 +15,7 @@
 #define HW_PCI_HOST_SGI_BRIDGE_H
 
 #include "qemu/units.h"
+#include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
 #include "qom/object.h"
 
@@ -182,37 +183,17 @@ struct SGIBridgeState {
     uint32_t reg[SGI_BRIDGE_REG_SLOTS];
 
     /*
-     * The identity part's serial (machine-supplied: it names the board, not
-     * the chip) and the ROM identity derived from it at realize. Neither
-     * migrates -- the destination constructs the same machine first.
+     * A property: the identity part's serial names the board, not the
+     * chip, so the machine supplies it. It does not migrate -- the
+     * destination constructs the same machine first.
      */
     uint64_t onewire_serial;
-    uint64_t onewire_identity;
 
-    /* One-wire conversation state, one bit per register write. */
-    uint8_t onewire_phase;
-    uint8_t onewire_bit;
-    uint8_t onewire_command;
-    uint8_t onewire_args[2];
-    uint8_t onewire_argn;
-
-    /* A Match ROM's named identity, collected whole before comparing. */
-    uint64_t onewire_match;
-
-    /* The framed answer shifting out, assembled when the request ends. */
-    uint8_t onewire_out[37];
-    uint16_t onewire_outbit;
-    uint8_t onewire_outlen;
-
-    /* A status read's next page, assembled as asked for. */
-    uint16_t onewire_status;
-
-    /* Stored bytes with embedded checks; both read commands return them. */
-    uint8_t onewire_rom[64];
-
-    /* A plain read's start and its end-of-stream check, computed at start. */
-    uint16_t onewire_read;
-    uint8_t onewire_end[2];
+    /*
+     * The MicroLAN bus, carrying the one board identity part. Every
+     * Bridge has both; the part is soldered to the board the chip is on.
+     */
+    OneWireBus *onewire_bus;
 
     /*
      * The eight pins' driven levels -- what the status register reports. It

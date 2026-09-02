@@ -116,4 +116,5 @@ config GT64120
 
 config SGI_BRIDGE
     bool
+    select ONEWIRE
     select PCI

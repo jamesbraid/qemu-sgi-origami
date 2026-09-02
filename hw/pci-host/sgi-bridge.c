@@ -14,6 +14,9 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/units.h"
+#include "hw/1wire/crc.h"
+#include "hw/1wire/ds2505.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
@@ -58,51 +61,15 @@
 #define NIC_PULSE_MASK          (0x3ffu << NIC_PULSE_SHIFT)
 #define NIC_WRITABLE            (NIC_SAMPLE_MASK | NIC_PULSE_MASK)
 
-/* Thresholds, not exact values: guests disagree on the microseconds. */
-#define NIC_PULSE_IS_RESET      400
-
-/* A read and a written one share a slot shape; context tells them apart. */
-#define NIC_PULSE_IS_ZERO       40
-
-/* Conversation state, surviving between the per-bit register writes. */
-#define NIC_PHASE_IDLE          0   /* nothing asked since the last reset */
-#define NIC_PHASE_COMMAND       1   /* taking the eight bits of a command */
-#define NIC_PHASE_SEARCH        2   /* answering a search for parts */
-#define NIC_PHASE_FUNCTION      3   /* selected; taking a function command */
-#define NIC_PHASE_OFFSET        4   /* taking the two bytes of a page offset */
-#define NIC_PHASE_ANSWER        5   /* shifting a page's answer back out */
-#define NIC_PHASE_MATCH         6   /* taking the identity a guest is naming */
-#define NIC_PHASE_STATUS        7   /* shifting the status memory back out */
-#define NIC_PHASE_READ          8   /* streaming the data memory, unframed */
-
-#define NIC_CMD_SEARCH_ROM      0xf0
-#define NIC_CMD_MATCH_ROM       0x55
-#define NIC_CMD_SKIP_ROM        0xcc
-#define NIC_CMD_READ_MEMORY     0xa5
-#define NIC_CMD_READ_PLAIN      0xf0
-#define NIC_CMD_READ_STATUS     0xaa
-
-/* Two commands frame this memory differently; the check is stored. */
-#define NIC_DATA_PAGES          64
-#define NIC_DATA_SIZE           (NIC_DATA_PAGES * NIC_PAGE_SIZE)
-#define NIC_UNPROGRAMMED        0xff
-
-/* EPROM reads unwritten bits set: 0xff redirection means page-in-place. */
-#define NIC_STATUS_UNPROGRAMMED 0xff
-#define NIC_STATUS_PAGE         8
-#define NIC_STATUS_LAST         0x13f
-
+/* The stored record: two pages, each carrying its own check. */
 #define NIC_PAGE_SIZE           32
 #define NIC_PAGES               2
-#define NIC_NOT_REDIRECTED      0xff
-#define NIC_ANSWER_SIZE         (3 + NIC_PAGE_SIZE + 2)
+#define NIC_ROM_SIZE            (NIC_PAGE_SIZE * NIC_PAGES)
 
 /* Guests match on the family code; the serial is the machine's. */
 #define NIC_ROM_FAMILY          0x0b
 #define NIC_ROM_SERIAL_DEFAULT  0x060504030201ULL
 #define NIC_ROM_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
-#define NIC_ROM_BITS            64
-
 
 #define BRIDGE_SSRAM_PARITY_ERR 0x090
 #define BRIDGE_ARBITRATION      0x0a0
@@ -855,48 +822,13 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
-/* The part sends this CRC INVERTED; the guest checks a fixed residue. */
-static uint16_t sgi_bridge_onewire_crc(uint16_t crc, const uint8_t *data,
-                                       unsigned int len)
-{
-    unsigned int i;
-    unsigned int bit;
-
-    for (i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (bit = 0; bit < 8; bit++) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
-        }
-    }
-    return crc;
-}
-
-/* Family, six serial bytes, then the Dallas/Maxim CRC-8 over the seven. */
-static uint64_t sgi_bridge_onewire_rom_id(uint64_t serial)
-{
-    uint64_t identity = NIC_ROM_FAMILY | (serial << 8);
-    uint64_t data = identity;
-    uint8_t crc = 0;
-    unsigned int byte, bit;
-
-    for (byte = 0; byte < 7; byte++) {
-        crc ^= data & 0xff;
-        data >>= 8;
-        for (bit = 0; bit < 8; bit++) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
-        }
-    }
-
-    return identity | ((uint64_t)crc << 56);
-}
-
 /*
  * One page, two readers: one positional from offset 11, one scanning for
  * name:value; fields -- the field name at 6-10 puts its value at 11 for
  * both. Byte 5's semicolon is LOAD-BEARING: without it the scanner
  * overshoots the field name and the lookup silently returns empty.
  */
-static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
+static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
     [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
     [6]  = 'P', 'a', 'r', 't', ':',
     [11] = '0', '3', '0', '-', '1', '2', '4', '4', '-', '0', '0', '1',
@@ -904,308 +836,36 @@ static const char sgi_bridge_onewire_image[NIC_PAGE_SIZE * NIC_PAGES] = {
     [32] = ' ', ' ', ' ', ' ', ' ', ' ',
 };
 
-static void sgi_bridge_onewire_build_rom(SGIBridgeState *s)
+/*
+ * The two pages the identity readers take a part number out of. The check
+ * in each page's last two bytes is image content, not device behaviour: a
+ * part's own check always covers a whole page, so a check stored inside
+ * one is a software record convention. It is stored inverted, so a guest
+ * shifting a page and its check through the generator lands on the fixed
+ * residue every one-wire CRC-16 stream ends on.
+ */
+static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE])
 {
     unsigned int page;
 
-    memset(s->onewire_rom, NIC_UNPROGRAMMED, sizeof(s->onewire_rom));
-    memcpy(s->onewire_rom, sgi_bridge_onewire_image,
-           sizeof(sgi_bridge_onewire_image));
+    memcpy(rom, sgi_bridge_onewire_image, NIC_ROM_SIZE);
 
     for (page = 0; page < NIC_PAGES; page++) {
-        uint8_t *at = &s->onewire_rom[page * NIC_PAGE_SIZE];
-        uint16_t crc = ~sgi_bridge_onewire_crc(0, at, NIC_PAGE_SIZE - 2);
+        uint8_t *at = &rom[page * NIC_PAGE_SIZE];
+        uint16_t crc = ~onewire_crc16(0, at, NIC_PAGE_SIZE - 2);
 
         at[NIC_PAGE_SIZE - 2] = crc & 0xff;
         at[NIC_PAGE_SIZE - 1] = crc >> 8;
     }
 }
 
-/* One byte of the data memory, wherever it falls. */
-static uint8_t sgi_bridge_onewire_data(SGIBridgeState *s, unsigned int at)
-{
-    return at < sizeof(s->onewire_rom) ? s->onewire_rom[at]
-                                       : NIC_UNPROGRAMMED;
-}
-
-static void sgi_bridge_onewire_plain_answer(SGIBridgeState *s)
-{
-    unsigned int at = s->onewire_args[0] | (s->onewire_args[1] << 8);
-    uint8_t request[3];
-    uint16_t crc;
-    unsigned int i;
-
-    request[0] = NIC_CMD_READ_PLAIN;
-    request[1] = s->onewire_args[0];
-    request[2] = s->onewire_args[1];
-
-    trace_sgi_bridge_onewire_plain(at, at < NIC_DATA_SIZE);
-
-    if (at >= NIC_DATA_SIZE) {
-        s->onewire_phase = NIC_PHASE_IDLE;
-        return;
-    }
-
-    crc = sgi_bridge_onewire_crc(0, request, sizeof(request));
-    for (i = at; i < NIC_DATA_SIZE; i++) {
-        uint8_t byte = sgi_bridge_onewire_data(s, i);
-
-        crc = sgi_bridge_onewire_crc(crc, &byte, 1);
-    }
-    crc = ~crc;
-
-    s->onewire_read = at;
-    s->onewire_end[0] = crc & 0xff;
-    s->onewire_end[1] = crc >> 8;
-    s->onewire_outbit = 0;
-    s->onewire_phase = NIC_PHASE_READ;
-}
-
-/* Only the first page's check covers the request: the part's asymmetry. */
-static void sgi_bridge_onewire_status_page(SGIBridgeState *s, bool first)
-{
-    unsigned int end = s->onewire_status | (NIC_STATUS_PAGE - 1);
-    uint8_t request[3];
-    uint16_t crc = 0;
-    unsigned int n = 0;
-
-    while (s->onewire_status + n <= end) {
-        s->onewire_out[n] = NIC_STATUS_UNPROGRAMMED;
-        n++;
-    }
-
-    if (first) {
-        request[0] = NIC_CMD_READ_STATUS;
-        request[1] = s->onewire_args[0];
-        request[2] = s->onewire_args[1];
-        crc = sgi_bridge_onewire_crc(0, request, sizeof(request));
-    }
-    crc = ~sgi_bridge_onewire_crc(crc, s->onewire_out, n);
-    s->onewire_out[n++] = crc & 0xff;
-    s->onewire_out[n++] = crc >> 8;
-
-    trace_sgi_bridge_onewire_status(s->onewire_status, first);
-    s->onewire_status = end + 1;
-    s->onewire_outlen = n;
-    s->onewire_outbit = 0;
-}
-
-/* Past the end of the status memory the part idles and reads as ones. */
-static void sgi_bridge_onewire_status_answer(SGIBridgeState *s)
-{
-    s->onewire_status = s->onewire_args[0] | (s->onewire_args[1] << 8);
-
-    if (s->onewire_status > NIC_STATUS_LAST) {
-        trace_sgi_bridge_onewire_status(s->onewire_status, true);
-        s->onewire_phase = NIC_PHASE_IDLE;
-        return;
-    }
-
-    sgi_bridge_onewire_status_page(s, true);
-    s->onewire_phase = NIC_PHASE_STATUS;
-}
-
-static void sgi_bridge_onewire_answer(SGIBridgeState *s)
-{
-    unsigned int offset = s->onewire_args[0] | (s->onewire_args[1] << 8);
-    uint8_t request[4];
-    uint16_t crc;
-
-    if (offset > sizeof(sgi_bridge_onewire_image) - NIC_PAGE_SIZE) {
-        trace_sgi_bridge_onewire_page(offset, true);
-        offset = 0;             /* a page this part does not have */
-    } else {
-        trace_sgi_bridge_onewire_page(offset, false);
-    }
-
-    request[0] = NIC_CMD_READ_MEMORY;
-    request[1] = s->onewire_args[0];
-    request[2] = s->onewire_args[1];
-    request[3] = NIC_NOT_REDIRECTED;
-
-    s->onewire_out[0] = NIC_NOT_REDIRECTED;
-    crc = ~sgi_bridge_onewire_crc(0, request, sizeof(request));
-    s->onewire_out[1] = crc & 0xff;
-    s->onewire_out[2] = crc >> 8;
-
-    memcpy(&s->onewire_out[3], &s->onewire_rom[offset], NIC_PAGE_SIZE);
-
-    /* The framing pair is a different check from the embedded one. */
-    crc = ~sgi_bridge_onewire_crc(0, &s->onewire_out[3], NIC_PAGE_SIZE);
-    s->onewire_out[3 + NIC_PAGE_SIZE] = crc & 0xff;
-    s->onewire_out[4 + NIC_PAGE_SIZE] = crc >> 8;
-
-    s->onewire_outbit = 0;
-    s->onewire_phase = NIC_PHASE_ANSWER;
-}
-
+/* One bit slot, reported finished inside the write the guest polls after. */
 static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
 {
     uint32_t *held = &s->reg[SGI_BRIDGE_SLOT(BRIDGE_NIC)];
     uint32_t pulse = (val & NIC_PULSE_MASK) >> NIC_PULSE_SHIFT;
-    bool level = true;
-
-    if (pulse >= NIC_PULSE_IS_RESET) {
-        /* A reset: the part pulls the wire down, which reads as presence. */
-        trace_sgi_bridge_onewire_reset(s->onewire_phase, s->onewire_outbit);
-        s->onewire_phase = NIC_PHASE_COMMAND;
-        s->onewire_bit = 0;
-        s->onewire_command = 0;
-        s->onewire_outbit = 0;
-        level = false;
-    } else if (s->onewire_phase == NIC_PHASE_COMMAND) {
-        /* A command, least-significant bit first, one slot per bit. */
-        if (pulse < NIC_PULSE_IS_ZERO) {
-            s->onewire_command |= 1u << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 8) {
-            s->onewire_bit = 0;
-            trace_sgi_bridge_onewire_command(s->onewire_command);
-            switch (s->onewire_command) {
-            case NIC_CMD_SEARCH_ROM:
-                s->onewire_phase = NIC_PHASE_SEARCH;
-                break;
-            case NIC_CMD_MATCH_ROM:
-                s->onewire_match = 0;
-                s->onewire_phase = NIC_PHASE_MATCH;
-                break;
-            case NIC_CMD_SKIP_ROM:
-                s->onewire_command = 0;
-                s->onewire_phase = NIC_PHASE_FUNCTION;
-                break;
-            default:
-                /* Indistinguishable from absence for the guest; say so. */
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-bridge: one-wire rom command 0x%02x is not "
-                              "answered by the board identity part\n",
-                              s->onewire_command);
-                s->onewire_phase = NIC_PHASE_IDLE;
-                break;
-            }
-        }
-    } else if (s->onewire_phase == NIC_PHASE_SEARCH) {
-        /* Bit, complement, choice; with one part the choice always matches. */
-        unsigned int step = s->onewire_bit % 3;
-        unsigned int index = s->onewire_bit / 3;
-        bool bit = (s->onewire_identity >> index) & 1;
-
-        if (step == 0) {
-            level = bit;
-        } else if (step == 1) {
-            level = !bit;
-        }
-
-        if (++s->onewire_bit == NIC_ROM_BITS * 3) {
-            s->onewire_bit = 0;
-            s->onewire_phase = NIC_PHASE_IDLE;
-            trace_sgi_bridge_onewire_search_done(s->onewire_identity);
-        }
-    } else if (s->onewire_phase == NIC_PHASE_MATCH) {
-        /* A mismatch goes silent until reset, so it is reported here. */
-        if (pulse < NIC_PULSE_IS_ZERO) {
-            s->onewire_match |= 1ULL << s->onewire_bit;
-        }
-        if (++s->onewire_bit == NIC_ROM_BITS) {
-            s->onewire_bit = 0;
-            if (s->onewire_match == s->onewire_identity) {
-                s->onewire_phase = NIC_PHASE_FUNCTION;
-                s->onewire_command = 0;
-            } else {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-bridge: one-wire match names identity "
-                              "0x%016" PRIx64 ", but the board identity part "
-                              "is 0x%016" PRIx64 "\n",
-                              s->onewire_match, s->onewire_identity);
-                s->onewire_phase = NIC_PHASE_IDLE;
-            }
-            trace_sgi_bridge_onewire_match(s->onewire_match,
-                                           s->onewire_phase ==
-                                           NIC_PHASE_FUNCTION);
-        }
-    } else if (s->onewire_phase == NIC_PHASE_FUNCTION) {
-        /* The function asked of the selected part, a bit at a time. */
-        if (pulse < NIC_PULSE_IS_ZERO) {
-            s->onewire_command |= 1u << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 8) {
-            s->onewire_bit = 0;
-            trace_sgi_bridge_onewire_function(s->onewire_command);
-            s->onewire_argn = 0;
-            s->onewire_args[0] = 0;
-            s->onewire_args[1] = 0;
-            if (s->onewire_command == NIC_CMD_READ_MEMORY ||
-                s->onewire_command == NIC_CMD_READ_STATUS ||
-                s->onewire_command == NIC_CMD_READ_PLAIN) {
-                s->onewire_phase = NIC_PHASE_OFFSET;
-            } else {
-                /* Same silence as an unanswered rom command, one step later. */
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-bridge: one-wire memory function 0x%02x is "
-                              "not answered by the board identity part\n",
-                              s->onewire_command);
-                s->onewire_phase = NIC_PHASE_IDLE;
-            }
-        }
-    } else if (s->onewire_phase == NIC_PHASE_OFFSET) {
-        /* Two bytes of page offset, low first, still one slot per bit. */
-        if (pulse < NIC_PULSE_IS_ZERO) {
-            s->onewire_args[s->onewire_argn] |= 1u << s->onewire_bit;
-        }
-        if (++s->onewire_bit == 8) {
-            s->onewire_bit = 0;
-            if (++s->onewire_argn == 2) {
-                if (s->onewire_command == NIC_CMD_READ_STATUS) {
-                    sgi_bridge_onewire_status_answer(s);
-                } else if (s->onewire_command == NIC_CMD_READ_PLAIN) {
-                    sgi_bridge_onewire_plain_answer(s);
-                } else {
-                    sgi_bridge_onewire_answer(s);
-                }
-            }
-        }
-    } else if (s->onewire_phase == NIC_PHASE_READ) {
-        /* No framing; the check follows the last stored byte. */
-        unsigned int at = s->onewire_read + s->onewire_outbit / 8;
-        unsigned int bit = s->onewire_outbit % 8;
-        uint8_t byte;
-
-        if (at < NIC_DATA_SIZE) {
-            byte = sgi_bridge_onewire_data(s, at);
-        } else {
-            byte = s->onewire_end[at - NIC_DATA_SIZE];
-        }
-        level = (byte >> bit) & 1;
-
-        if (++s->onewire_outbit ==
-            (NIC_DATA_SIZE + 2 - s->onewire_read) * 8) {
-            s->onewire_outbit = 0;
-            s->onewire_phase = NIC_PHASE_IDLE;
-            trace_sgi_bridge_onewire_plain_done(s->onewire_read);
-        }
-    } else if (s->onewire_phase == NIC_PHASE_STATUS) {
-        /* Page after page, each with its check pair, until the end. */
-        unsigned int byte = s->onewire_outbit / 8;
-
-        level = (s->onewire_out[byte] >> (s->onewire_outbit % 8)) & 1;
-        if (++s->onewire_outbit == s->onewire_outlen * 8) {
-            if (s->onewire_status > NIC_STATUS_LAST) {
-                s->onewire_outbit = 0;
-                s->onewire_phase = NIC_PHASE_IDLE;
-            } else {
-                sgi_bridge_onewire_status_page(s, false);
-            }
-        }
-    } else if (s->onewire_phase == NIC_PHASE_ANSWER) {
-        /* The answer, least-significant bit of each byte first. */
-        unsigned int byte = s->onewire_outbit / 8;
-
-        level = (s->onewire_out[byte] >> (s->onewire_outbit % 8)) & 1;
-        if (++s->onewire_outbit == NIC_ANSWER_SIZE * 8) {
-            s->onewire_outbit = 0;
-            s->onewire_phase = NIC_PHASE_IDLE;
-            trace_sgi_bridge_onewire_answer_done(NIC_ANSWER_SIZE);
-        }
-    }
+    uint32_t sample = (val & NIC_SAMPLE_MASK) >> NIC_SAMPLE_SHIFT;
+    bool level = sgi_onewire_slot(s->onewire_bus, pulse, sample);
 
     *held &= ~NIC_LEVEL;
     *held |= NIC_DONE | (level ? NIC_LEVEL : 0);
@@ -1836,12 +1496,6 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
         s->reg[i] = sgi_bridge_regs[i].reset;
     }
 
-    /* Nothing has been asked of the identity part since the machine started. */
-    s->onewire_phase = NIC_PHASE_IDLE;
-    s->onewire_bit = 0;
-    s->onewire_command = 0;
-    sgi_bridge_onewire_build_rom(s);
-
     /* The one reset value the table cannot hold: the machine's identity. */
     s->reg[SGI_BRIDGE_SLOT(BRIDGE_IDENTIFICATION)] =
         sgi_bridge_identification(s);
@@ -1911,6 +1565,8 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     SGIBridgeState *s = SGI_BRIDGE(dev);
     PCIHostState *phb = PCI_HOST_BRIDGE(dev);
     Object *obj = OBJECT(dev);
+    uint8_t rom[NIC_ROM_SIZE];
+    DeviceState *part;
     unsigned int slot;
 
     /* Refuse property errors before the first region exists. */
@@ -1924,7 +1580,25 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                          "packets travel");
         return;
     }
-    s->onewire_identity = sgi_bridge_onewire_rom_id(s->onewire_serial);
+
+    /*
+     * The MicroLAN bus and the one part on it: the board identity EPROM,
+     * a DS2505, which is what the family code 0x0b names. The record is
+     * composed here rather than in reset because QEMU resets a device's
+     * children before the device itself, so a controller that rebuilt an
+     * image in its own reset would write into a part that had already
+     * reset from the previous one.
+     */
+    s->onewire_bus = onewire_create_bus(dev, "onewire");
+    sgi_bridge_onewire_build_rom(rom);
+    part = qdev_new(TYPE_ONEWIRE_DS2505);
+    object_property_add_child(obj, "onewire-part", OBJECT(part));
+    qdev_prop_set_uint8(part, "family", NIC_ROM_FAMILY);
+    qdev_prop_set_uint64(part, "serial", s->onewire_serial);
+    ds2505_set_image(part, rom, sizeof(rom));
+    if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
+        return;
+    }
 
     memory_region_init(&s->widget, obj, "sgi-bridge.widget",
                        SGI_BRIDGE_WIDGET_SIZE);
@@ -2073,19 +1747,14 @@ static const VMStateDescription vmstate_sgi_bridge = {
         VMSTATE_UINT32_V(int_error, SGIBridgeState, 4),
         VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
                                SGI_BRIDGE_ATE_ENTRIES, 2),
-        /* The stored image is absent: reset rebuilds it identically. */
-        VMSTATE_UINT8_V(onewire_phase, SGIBridgeState, 3),
-        VMSTATE_UINT8_V(onewire_bit, SGIBridgeState, 3),
-        VMSTATE_UINT8_V(onewire_command, SGIBridgeState, 3),
-        VMSTATE_UINT8_ARRAY_V(onewire_args, SGIBridgeState, 2, 3),
-        VMSTATE_UINT8_V(onewire_argn, SGIBridgeState, 3),
-        VMSTATE_UINT64_V(onewire_match, SGIBridgeState, 3),
-        VMSTATE_UINT8_ARRAY_V(onewire_out, SGIBridgeState, 37, 3),
-        VMSTATE_UINT16_V(onewire_outbit, SGIBridgeState, 3),
-        VMSTATE_UINT8_V(onewire_outlen, SGIBridgeState, 3),
-        VMSTATE_UINT16_V(onewire_status, SGIBridgeState, 3),
-        VMSTATE_UINT16_V(onewire_read, SGIBridgeState, 3),
-        VMSTATE_UINT8_ARRAY_V(onewire_end, SGIBridgeState, 2, 3),
+        /*
+         * Sixty bytes of the chip's own one-wire responder state, kept as
+         * padding so streams written before the part became a device on a
+         * bus still load. That responder is gone and the part migrates its
+         * own conversation now, so the bytes are written zero and
+         * discarded rather than translated.
+         */
+        VMSTATE_UNUSED_V(3, 60),
         VMSTATE_END_OF_LIST()
     }
 };
