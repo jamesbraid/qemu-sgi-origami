@@ -365,6 +365,16 @@
 #define RXD_BUFSIZ_SHIFT         48
 
 /*
+ * What the card reports about a received frame in the first control word
+ * (Linux s2io.h RXD_FRAME_PROTO_IPV4 s2BIT(27) and _PROTO_TCP s2BIT(30), so
+ * bits 36 and 33; RXD_GET_L3_CKSUM is the half at 31:16 and RXD_GET_L4_CKSUM
+ * the half at 15:0, each 0xFFFF when that checksum verified).
+ */
+#define RXD_PROTO_IPV4           (1ULL << 36)
+#define RXD_PROTO_TCP            (1ULL << 33)
+#define RXD_CKSUM_OK             0xffffULL
+
+/*
  * Guest RAM for the receive ring and its buffers, page-aligned and clear of
  * the transmit scratch.
  */
@@ -3631,6 +3641,55 @@ static void test_transmit_segments_a_send_larger_than_a_frame(void)
 }
 
 /*
+ * The card reports what it made of a received frame in the first control word:
+ * how it classified it, and whether its checksums verified. A driver that
+ * trusts that skips checking in software, which is real work saved on a machine
+ * whose CPU is emulated and whose card is not.
+ *
+ * Leaving those halves zero is not "unimplemented" -- zero is the value that
+ * says the checksums did NOT verify. So both directions are asserted: a good
+ * frame reports verified, and a frame whose transport checksum has been
+ * corrupted reports layer 4 not verified while still classifying the frame and
+ * still vouching for the intact IP header.
+ */
+static void test_receive_reports_checksum_results(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    size_t len;
+    uint64_t c1;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_TCP, 40, 94);
+
+    xframe_tx_start(&t);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    c1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
+    g_assert_cmphex(c1 & RXD_PROTO_IPV4, ==, RXD_PROTO_IPV4);
+    g_assert_cmphex(c1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
+    g_assert_cmphex((c1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);
+    g_assert_cmphex(c1 & 0xffff, ==, RXD_CKSUM_OK);
+
+    /* Corrupt the transport checksum; the IP header is left intact. */
+    frame[ETH_HDR_LEN + IPV4_HDR_LEN + 16] ^= 0xff;
+
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    c1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
+    g_assert_cmphex(c1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
+    g_assert_cmphex((c1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);
+    g_assert_cmphex(c1 & 0xffff, !=, RXD_CKSUM_OK);
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * A descriptor can ask for insertion on a frame that is not IPv4 at all. The
  * lengths a checksum walk would follow are the guest's own bytes, so the
  * request has to be declined and the frame sent as it stands.
@@ -3935,6 +3994,8 @@ int main(int argc, char **argv)
                    test_transmit_segments_a_large_send);
     qtest_add_func("xframe/transmit-segments-a-send-larger-than-a-frame",
                    test_transmit_segments_a_send_larger_than_a_frame);
+    qtest_add_func("xframe/receive-reports-checksum-results",
+                   test_receive_reports_checksum_results);
     qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
                    test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
