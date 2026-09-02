@@ -153,8 +153,10 @@ static uint8_t ds2502_advance_read_data_crc(DS2502State *d)
 
 /*
  * Read Status (AAh): the 8-byte field 0000h-0007h, one CRC-8 at the end.
- * A start address already past 0007h never reaches it, so it streams
- * 0xff forever instead of ever producing a spurious CRC.
+ * A start address already past 0007h leaves the closing CRC unreachable
+ * within any bounded transaction: addr is a 16-bit counter that only
+ * ever increments, so it would have to wrap all the way through the full
+ * 0000h-FFFFh range before landing on 0007h again.
  */
 static uint8_t ds2502_advance_read_status(DS2502State *d)
 {
@@ -249,7 +251,10 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         if (d->cmd == DS2502_CMD_READ_STATUS) {
             /*
              * No masking is documented for the status field; an
-             * out-of-range start address simply never reaches 0007h.
+             * out-of-range start address leaves the closing CRC
+             * unreachable within any bounded transaction, since addr
+             * would have to wrap the full 16-bit range to reach 0007h
+             * again.
              */
             d->addr = ((uint16_t)d->hdr[2] << 8) | d->hdr[1];
             d->sent_byte = ds2502_status_byte(d->addr);

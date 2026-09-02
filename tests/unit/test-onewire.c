@@ -502,21 +502,38 @@ static void test_ds2502_plain_read_has_no_page_crc(void)
 static void test_ds2502_status_serves_the_real_field(void)
 {
     OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    const uint8_t hdr[3] = { 0xaa, 0x00, 0x00 };
+    uint8_t status[8];
 
     g_assert_true(onewire_reset(bus));
     bus_touch_byte(bus, 0xcc);
     bus_touch_byte(bus, 0xaa);                 /* Read Status */
-    bus_touch_byte(bus, 0x01);                 /* redirection byte, page 0 */
-    bus_touch_byte(bus, 0x00);
-    (void)bus_touch_byte(bus, 0xff);           /* header CRC-8 */
+    bus_touch_byte(bus, 0x00);                 /* TA1: start at 0000h */
+    bus_touch_byte(bus, 0x00);                 /* TA2 */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+
+    for (unsigned i = 0; i < sizeof(status); i++) {
+        status[i] = bus_touch_byte(bus, 0xff);
+    }
 
     /*
      * 0x0001 is page zero's redirection byte, and 0xff is its unprogrammed
-     * value meaning "not redirected". This is the byte OpenBSD's redirection
-     * walk stops on, and it must fall out of blank status memory rather than
-     * a coded special case.
+     * value meaning "not redirected" -- the byte OpenBSD's redirection
+     * walk stops on, and it must fall out of blank status memory rather
+     * than a coded special case. 0x0007 is the one byte that actually
+     * distinguishes this field: factory-programmed 00h, so a genuine
+     * DS2502-class status readout is never all-0xff even on a blank part.
+     * A regression in DS2502_STATUS_FACTORY_ADDR or in
+     * ds2502_status_byte()'s equality check would only show up by reading
+     * this far -- the same reason the closing CRC-8 below is checked too.
      */
-    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+    for (unsigned i = 0; i < 7; i++) {
+        g_assert_cmpuint(status[i], ==, 0xff);
+    }
+    g_assert_cmpuint(status[7], ==, 0x00);
+
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==,
+                      onewire_crc8(0, status, sizeof(status)));
 }
 
 /*
@@ -552,6 +569,49 @@ static void test_ds2502_read_data_crc_emits_page_crc_every_32_bytes(void)
     /*
      * The 33-byte cycle repeats: this is page one's first data byte, not
      * a second CRC.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
+}
+
+/*
+ * C3h's first page can start mid-page, not just page-aligned: the CRC
+ * then covers only the bytes actually read in that partial page, from
+ * the start address to the page's end -- not a fixed 32 bytes. The
+ * page-aligned test above only ever exercises
+ * `page_end = addr | (DS2502_PAGE_SIZE - 1)` in its trivial case, where
+ * the OR happens to be a no-op; this is the case that actually forces
+ * that rounding to do something.
+ */
+static void test_ds2502_read_data_crc_first_page_can_start_mid_page(void)
+{
+    OneWireBus *bus = onewire_test_bus_with_ds2501(0x91, 0x5e7000000001ULL);
+    uint8_t partial[16];
+
+    g_assert_true(onewire_reset(bus));
+    bus_touch_byte(bus, 0xcc);
+    bus_touch_byte(bus, 0xc3);
+    bus_touch_byte(bus, 0x10);       /* TA1: 0010h, 16 bytes into page 0 */
+    bus_touch_byte(bus, 0x00);       /* TA2 */
+
+    const uint8_t hdr[3] = { 0xc3, 0x10, 0x00 };
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
+
+    for (unsigned i = 0; i < sizeof(partial); i++) {
+        partial[i] = bus_touch_byte(bus, 0xff);
+    }
+
+    /*
+     * Page 0 ends at 001Fh, 16 bytes from the 0010h start -- not 32. A
+     * model that only ever waited for a full 32-byte count instead of
+     * computing the page boundary from the actual address would answer a
+     * plain data byte here instead of this CRC.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==,
+                      onewire_crc8(0, partial, sizeof(partial)));
+
+    /*
+     * Page one starts fresh, page-aligned, at 0020h -- real data again,
+     * not a second CRC.
      */
     g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
 }
@@ -614,8 +674,17 @@ static void test_ds2502_start_address_above_top_is_masked(void)
     g_assert_true(onewire_reset(bus));
     bus_touch_byte(bus, 0xcc);
     bus_touch_byte(bus, 0xf0);
-    bus_touch_byte(bus, 0xff);       /* TA1 */
-    bus_touch_byte(bus, 0xff);       /* TA2: raw start address 0xffff */
+
+    /*
+     * Every bit of TA1/TA2 here is a driven write-one, so this is exactly
+     * the case that exposes a part wrongly pulling the line low during a
+     * master-write window (OneWireSlaveClass::function_byte's "*out must
+     * stay 0xff on a window the master drives" rule): a stuck-low device
+     * would sample back something other than 0xff on either of these two
+     * touches.
+     */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA1 */
+    g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);    /* TA2 */
 
     /*
      * The echoed header CRC-8 covers the raw bytes actually sent, not the
@@ -743,6 +812,8 @@ int main(int argc, char **argv)
                      test_ds2502_status_serves_the_real_field);
     g_test_add_func("/onewire/ds2502/read-data-crc-emits-page-crc",
                      test_ds2502_read_data_crc_emits_page_crc_every_32_bytes);
+    g_test_add_func("/onewire/ds2502/read-data-crc-first-page-mid-page",
+                     test_ds2502_read_data_crc_first_page_can_start_mid_page);
     g_test_add_func("/onewire/ds2502/read-memory-emits-one-crc-at-end",
                      test_ds2502_read_memory_emits_one_crc_at_end_of_memory);
     g_test_add_func("/onewire/ds2502/start-address-above-top-is-masked",
