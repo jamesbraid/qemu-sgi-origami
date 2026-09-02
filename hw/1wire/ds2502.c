@@ -318,10 +318,35 @@ static void ds2502_instance_init(Object *obj)
     memset(d->data, 0xff, sizeof(d->data));    /* unprogrammed EPROM */
 }
 
+/*
+ * `cmd` is loaded unvalidated: a migration stream is not trusted input.
+ * ds2502_advance_stream()'s switch on `cmd` only ever reaches its
+ * g_assert_not_reached() default when `cmd` holds something other than
+ * 0 (no command chosen yet) or one of the three read commands -- a state
+ * this device itself never produces, but an incoming stream could claim.
+ * Reject it here instead of aborting QEMU, the same way the base class's
+ * own post_load rejects an out-of-range `bit` (hw/1wire/core.c).
+ */
+static int ds2502_post_load(void *opaque, int version_id)
+{
+    DS2502State *d = opaque;
+
+    switch (d->cmd) {
+    case 0:
+    case DS2502_CMD_READ_MEMORY:
+    case DS2502_CMD_READ_DATA_CRC:
+    case DS2502_CMD_READ_STATUS:
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
 static const VMStateDescription vmstate_ds2502 = {
     .name = "ds2502",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = ds2502_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_ONEWIRE_SLAVE(parent_obj, DS2502State),
         VMSTATE_UINT8_ARRAY(data, DS2502State, DS2502_DATA_SIZE),
