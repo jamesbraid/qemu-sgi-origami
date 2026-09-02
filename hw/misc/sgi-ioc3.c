@@ -191,11 +191,14 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
     uint32_t pulse = val >> SGI_IOC3_ONEWIRE_PULSE_SHIFT;
     bool level = true;
 
-    if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE)) {
+    if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE) || !s->board->eth) {
         /*
-         * Pin-control bit 21 routes the engine onto its pin; with it clear the
-         * bus is disconnected. No part answers: the wire reads high and the
-         * slot advances no conversation.
+         * Two ways to an empty bus. Pin-control bit 21 routes the engine onto
+         * its pin, and with the bit clear the bus is disconnected; and a
+         * board with no ethernet carries no station-address part, that part
+         * being wired up with the ethernet rather than on its own. Either
+         * way no part answers: the wire reads high and the slot advances no
+         * conversation.
          */
         s->microlan_control = (val & SGI_IOC3_MICROLAN_TIMING) |
                               SGI_IOC3_MICROLAN_DONE |
@@ -765,6 +768,11 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 
 static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
 {
+    /* The walk drives a 16550 the board may not have fitted. */
+    if (!s->board->serial[port]) {
+        return;
+    }
+
     /* Loopback re-enters; a second walk would post a half-filled entry. */
     if (s->sdma_busy[port]) {
         return;
@@ -1067,6 +1075,65 @@ static const MemoryRegionOps sgi_ioc3_ssram_ops = {
     .impl.max_access_size = 4,
 };
 
+/*
+ * The sub-devices each board fits, keyed by the subsystem identity a guest
+ * reads out of configuration space. Taken from mainline Linux's per-board
+ * setup routines (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8), which are
+ * the clearest published statement of how much board-to-board variation this
+ * chip sees. The IP29 System Board and the IP27 BaseIO6G share one routine
+ * there and so share a row here.
+ */
+static const struct {
+    uint16_t subsystem_id;
+    SGIIOC3Population board;
+} sgi_ioc3_boards[] = {
+    { SGI_IOC3_SUBSYS_IP27_BASEIO6G,
+      { .eth = true, .serial = { true, true }, .kbc = true, .rtc = true } },
+    { SGI_IOC3_SUBSYS_IP27_MIO,
+      { .serial = { true, true }, .kbc = true } },
+    { SGI_IOC3_SUBSYS_IP27_BASEIO,
+      { .eth = true, .serial = { true, true }, .rtc = true } },
+    { SGI_IOC3_SUBSYS_IP29_SYSBOARD,
+      { .eth = true, .serial = { true, true }, .kbc = true, .rtc = true } },
+    /*
+     * The Octane's clock is a DS1685 at byte-bus devices 1 and 2, not the
+     * M48T35 at device 0, and it is the only board with front-panel LEDs on
+     * two of the general-purpose pins. Neither is modelled: this fork has no
+     * DS1685 yet, and answering the byte bus with an M48T35 instead would
+     * hand a guest a different register layout under the right name. So the
+     * clock and the LEDs are a gap here, and a guest that looks for them
+     * finds nothing rather than the wrong part.
+     */
+    { SGI_IOC3_SUBSYS_IP30_SYSBOARD,
+      { .eth = true, .serial = { true, true }, .kbc = true } },
+    { SGI_IOC3_SUBSYS_MENET,
+      { .eth = true, .serial = { true, true } } },
+    { SGI_IOC3_SUBSYS_MENET4,
+      { .eth = true } },
+};
+
+/*
+ * Everything the table does not name, the CAD DUO. This is a fall-through and
+ * not a row: the driver runs it for any unmatched identity, the later SGI
+ * boards it has no entry for included.
+ */
+static const SGIIOC3Population sgi_ioc3_cad_duo = {
+    .eth = true, .kbc = true,
+};
+
+static const SGIIOC3Population *sgi_ioc3_board(uint16_t subsystem_id)
+{
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(sgi_ioc3_boards); i++) {
+        if (sgi_ioc3_boards[i].subsystem_id == subsystem_id) {
+            return &sgi_ioc3_boards[i].board;
+        }
+    }
+
+    return &sgi_ioc3_cad_duo;
+}
+
 static const hwaddr sgi_ioc3_serial_base[SGI_IOC3_SERIAL_PORTS] = {
     SGI_IOC3_SERIAL_A, SGI_IOC3_SERIAL_B,
 };
@@ -1087,6 +1154,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 {
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
+
+    /*
+     * Before anything that can fail: the teardown path below reads it, and a
+     * board with no sub-devices at all is still a board.
+     */
+    s->board = sgi_ioc3_board(s->subsystem_id);
 
     if (s->onewire_serial & ~SGI_IOC3_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "onewire-serial 0x%" PRIx64
@@ -1113,6 +1186,16 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         SerialState *serial = &s->serial[i];
 
+        /*
+         * A child the board does not fit leaves the composition tree
+         * entirely, rather than sitting in it unrealized: qdev asserts after
+         * machine init that every device object it can reach is realized.
+         */
+        if (!s->board->serial[i]) {
+            object_unparent(OBJECT(serial));
+            continue;
+        }
+
         if (!qdev_realize(DEVICE(serial), NULL, errp)) {
             return;
         }
@@ -1131,37 +1214,67 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     memory_region_add_subregion(&s->bar, 0, &s->main);
 
     /* All child DMA goes through this function's bus-master view. */
-    object_property_set_link(OBJECT(&s->eth), "dma-memory",
-                             OBJECT(&dev->bus_master_container_region),
-                             &error_abort);
     s->dma_as = pci_get_address_space(dev);
-    qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
-    if (!qdev_realize(DEVICE(&s->eth), BUS(&s->ioc3_bus), errp)) {
-        return;
+
+    if (s->board->eth) {
+        object_property_set_link(OBJECT(&s->eth), "dma-memory",
+                                 OBJECT(&dev->bus_master_container_region),
+                                 &error_abort);
+        qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
+        if (!qdev_realize(DEVICE(&s->eth), BUS(&s->ioc3_bus), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s->bar, SGI_IOC3_ENET_BASE,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->eth), 0));
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
+                           qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
+    } else {
+        object_unparent(OBJECT(&s->eth));
     }
-    memory_region_add_subregion(&s->bar, SGI_IOC3_ENET_BASE,
-                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->eth),
-                                                       0));
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
-                       qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
 
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
-    if (!qdev_realize(DEVICE(&s->kbc_dev), BUS(&s->ioc3_bus), errp)) {
-        return;
+    if (s->board->kbc) {
+        if (!qdev_realize(DEVICE(&s->kbc_dev), BUS(&s->ioc3_bus), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->kbc_dev), 0));
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc_dev), 0,
+                           qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
+    } else {
+        object_unparent(OBJECT(&s->kbc_dev));
     }
-    memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE,
-                                sysbus_mmio_get_region(
-                                    SYS_BUS_DEVICE(&s->kbc_dev), 0));
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc_dev), 0,
-                       qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
 
-    memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
-                          "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
-    memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
+    /*
+     * The serial DMA engines belong to the ports: their walk drives a 16550
+     * directly, so a board with no port has nothing behind these registers.
+     */
+    if (s->board->serial[0] || s->board->serial[1]) {
+        memory_region_init_io(&s->sdma, OBJECT(dev), &sgi_ioc3_sdma_ops, s,
+                              "sgi-ioc3.sdma", SGI_IOC3_SDMA_SIZE);
+        memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
+    }
 
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         s->sdma_alias_port[i].chip = s;
         s->sdma_alias_port[i].port = i;
+
+        /*
+         * For both ports whatever the board fits. The reset path deletes
+         * every timer and the migration format carries the array whole, so
+         * leaving one unmade would make an absent port a null dereference
+         * rather than a quiet nothing.
+         */
+        s->sdma_rx_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                           sgi_ioc3_sdma_rx_timer_expired,
+                                           &s->sdma_alias_port[i]);
+
+        if (!s->board->serial[i]) {
+            continue;
+        }
+
         memory_region_init_io(&s->sdma_alias[i], OBJECT(dev),
                               &sgi_ioc3_sdma_alias_ops,
                               &s->sdma_alias_port[i],
@@ -1169,23 +1282,24 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                               SGI_IOC3_SDMA_ALIAS_SIZE);
         memory_region_add_subregion(&s->bar, sgi_ioc3_sdma_alias_base[i],
                                     &s->sdma_alias[i]);
-
-        s->sdma_rx_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                           sgi_ioc3_sdma_rx_timer_expired,
-                                           &s->sdma_alias_port[i]);
     }
 
+    /* The chip's own buffer RAM, which no board leaves off. */
     memory_region_init_io(&s->ssram, OBJECT(dev), &sgi_ioc3_ssram_ops, s,
                           "sgi-ioc3.ssram", SGI_IOC3_SSRAM_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SSRAM_BASE, &s->ssram);
 
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
-    if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
-        return;
+    if (s->board->rtc) {
+        if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s->bar, SGI_IOC3_BYTEBUS_DEV0,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->rtc), 0));
+    } else {
+        object_unparent(OBJECT(&s->rtc));
     }
-    memory_region_add_subregion(&s->bar, SGI_IOC3_BYTEBUS_DEV0,
-                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rtc),
-                                                       0));
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
@@ -1198,14 +1312,26 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
 
-    /* Unrealize children or their reset handlers point at freed state. */
+    /*
+     * Unrealize children or their reset handlers point at freed state. Only
+     * the ones this board realized: unrealizing a device that never was
+     * asserts.
+     */
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
-        qdev_unrealize(DEVICE(&s->serial[i]));
+        if (s->board->serial[i]) {
+            qdev_unrealize(DEVICE(&s->serial[i]));
+        }
         timer_free(s->sdma_rx_timer[i]);
     }
-    qdev_unrealize(DEVICE(&s->eth));
-    qdev_unrealize(DEVICE(&s->kbc_dev));
-    qdev_unrealize(DEVICE(&s->rtc));
+    if (s->board->eth) {
+        qdev_unrealize(DEVICE(&s->eth));
+    }
+    if (s->board->kbc) {
+        qdev_unrealize(DEVICE(&s->kbc_dev));
+    }
+    if (s->board->rtc) {
+        qdev_unrealize(DEVICE(&s->rtc));
+    }
 }
 
 static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
@@ -1278,6 +1404,21 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
 }
 
+/*
+ * The 16550s ride in this device's own migration stream rather than being
+ * children with a stream each, so a board that fits none has to leave them
+ * out. Saving them anyway walks a serial that was never realized, whose
+ * receive-timeout timer is a null pointer the subsection test dereferences.
+ * A board that fits them writes exactly the field it always did, so the
+ * format is unchanged wherever it was ever produced.
+ */
+static bool sgi_ioc3_serial_needed(void *opaque, int version_id)
+{
+    SGIIOC3State *s = opaque;
+
+    return s->board->serial[0] || s->board->serial[1];
+}
+
 static int sgi_ioc3_post_load(void *opaque, int version_id)
 {
     SGIIOC3State *s = opaque;
@@ -1295,8 +1436,9 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32(int_status, SGIIOC3State),
         VMSTATE_UINT32(int_enable, SGIIOC3State),
-        VMSTATE_STRUCT_ARRAY(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS, 0,
-                             vmstate_serial, SerialState),
+        VMSTATE_STRUCT_ARRAY_TEST(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS,
+                                  sgi_ioc3_serial_needed, 0, vmstate_serial,
+                                  SerialState),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
