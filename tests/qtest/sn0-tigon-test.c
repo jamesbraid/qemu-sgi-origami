@@ -1033,6 +1033,31 @@ static void test_interrupt_coalesce_by_time(const void *data)
     close(sv[0]);
 }
 
+
+/*
+ * The SRAM timing configuration register. The driver sets its synchronous-SRAM
+ * bit with a read-modify-write, so a register that answered zero would make it
+ * read back something it had not written. Nothing acts on the value: this
+ * model's SRAM is an array and has no timing to configure.
+ */
+static void test_misc_conf_reads_back(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    /*
+     * Point the window at the BAR and let the device decode memory. Without
+     * this the register block answers nothing at all, and a read-back test
+     * reads the zero of an undecoded access rather than the register.
+     */
+    enable_dma_big_endian(qts);
+
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + 0x050), ==, 0);
+    qtest_writel(qts, WINDOW_TIGON + 0x050, 0x00100000);
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + 0x050), ==, 0x00100000);
+
+    qtest_quit(qts);
+}
+
 static void test_receive(const void *data)
 {
     int sv[2];
@@ -1875,6 +1900,8 @@ int main(int argc, char **argv)
                         test_interrupt_coalesce_by_count);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-by-time", NULL,
                         test_interrupt_coalesce_by_time);
+    qtest_add_data_func("/sn0/tigon/misc-conf-reads-back", NULL,
+                        test_misc_conf_reads_back);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);

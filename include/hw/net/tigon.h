@@ -75,6 +75,13 @@ struct TigonState {
     uint32_t misc_host_ctl;
     uint32_t misc_local_ctl;
     uint32_t pci_state;
+    /*
+     * Card SRAM timing configuration. Stored and returned, and nothing
+     * acts on it: the bit the driver sets selects synchronous SRAM, and
+     * this model's SRAM is an array with no timing to select. Kept so a
+     * read-modify-write sees what it wrote rather than zero.
+     */
+    uint32_t misc_conf;
     uint32_t win_base;
 
     /* Embedded-CPU control latches. */
