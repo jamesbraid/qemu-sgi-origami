@@ -292,6 +292,20 @@ struct SGIIOC3BusState {
 /* The one shared keyboard-and-mouse source, driven by the PS/2 controller. */
 #define SGI_IOC3_INT_KEYBOARD       (1u << 22)
 
+/*
+ * Which sub-devices a board fits. One-wire is not a member here: the
+ * station-address part sits behind the MicroLAN engine and is registered as
+ * part of ethernet setup, so a board with no ethernet has no part on the bus
+ * either. The buffer RAM, the serial DMA registers and the main register
+ * block belong to the chip rather than to a board, and every board has them.
+ */
+typedef struct SGIIOC3Population {
+    bool eth;
+    bool serial[SGI_IOC3_SERIAL_PORTS];
+    bool kbc;
+    bool rtc;       /* the M48T35 timekeeper at byte-bus device 0 */
+} SGIIOC3Population;
+
 /* Handlers learn their port only from this opaque. */
 typedef struct SGIIOC3SerialAlias {
     SGIIOC3State *chip;
@@ -306,6 +320,9 @@ struct SGIIOC3State {
 
     /* A property: which board this chip is on, presented in config space. */
     uint16_t subsystem_id;
+
+    /* What that board fits, resolved once in realize. */
+    const SGIIOC3Population *board;
 
     MemoryRegion bar;
 

@@ -4183,9 +4183,123 @@ static void test_the_board_is_a_property(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * What a board fits, as the bus can see it. Each probe writes a register the
+ * sub-device stores in and reads it back: a window with nothing behind it
+ * swallows the write and reads zero, so one probe answers both ways round and
+ * neither answer is a bare "reads zero", which half the live registers here
+ * also do.
+ */
+static bool serial_port_is_fitted(QTestState *qts, uint64_t port)
+{
+    qtest_writeb(qts, port + REG_SCR, 0x5a);
+    return qtest_readb(qts, port + REG_SCR) == 0x5a;
+}
+
+static bool ps2_is_fitted(QTestState *qts)
+{
+    qtest_writel(qts, KBC_CONTROL, 0xffffffff);
+    return qtest_readl(qts, KBC_CONTROL) == 0x0000ffff;
+}
+
+static bool timekeeper_is_fitted(QTestState *qts)
+{
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x0100, 0xc3);
+    return qtest_readb(qts, BYTEBUS_DEV0 + 0x0100) == 0xc3;
+}
+
+static bool ethernet_is_fitted(QTestState *qts)
+{
+    qtest_writel(qts, ENET_INT_ENABLE, 0x00010001);
+    return qtest_readl(qts, ENET_INT_ENABLE) == 0x00010001;
+}
+
+/*
+ * The station-address part on the one-wire bus, which travels with the
+ * ethernet rather than on its own: the driver registers the MicroLAN master
+ * inside its ethernet setup, so a board with no ethernet has no part either.
+ * A fitted part answers a reset slot by pulling the wire low; an empty bus
+ * reads high.
+ */
+static bool one_wire_part_is_fitted(QTestState *qts)
+{
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
+    qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
+    return (qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL) == 0;
+}
+
+typedef struct BoardPopulation {
+    const char *name;
+    uint16_t subsystem_id;
+    bool eth;           /* the ethernet block, and the one-wire part with it */
+    bool serial_a;
+    bool serial_b;
+    bool ps2;
+    bool timekeeper;    /* the M48T35 at byte-bus device 0 */
+} BoardPopulation;
+
+/*
+ * Every board mainline Linux names, and the catch-all it uses for the rest
+ * (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8). The Octane's own clock is a
+ * DS1685 at a different pair of byte-bus selects, not the M48T35 modelled
+ * here, so its timekeeper column is false: what the model must not do is
+ * answer that window with the wrong part.
+ */
+static const BoardPopulation ioc3_boards[] = {
+    { "ip27-baseio6g", 0xc300, true,  true,  true,  true,  true  },
+    { "ip27-mio",      0xc301, false, true,  true,  true,  false },
+    { "ip27-baseio",   0xc302, true,  true,  true,  false, true  },
+    { "ip29-sysboard", 0xc303, true,  true,  true,  true,  true  },
+    { "ip30-sysboard", 0xc304, true,  true,  true,  true,  false },
+    { "menet",         0xc305, true,  true,  true,  false, false },
+    { "menet4",        0xc306, true,  false, false, false, false },
+    /*
+     * Two unmatched identifiers, because the fall-through is the contract
+     * rather than a row: 0xc307 is a real later SGI board the driver has no
+     * entry for, and 0xbeef is nobody's.
+     */
+    { "cad-duo-io7",   0xc307, true,  false, false, true,  false },
+    { "cad-duo-other", 0xbeef, true,  false, false, true,  false },
+};
+
+static void test_a_board_fits_its_own_sub_devices(const void *data)
+{
+    const BoardPopulation *board = data;
+    g_autofree char *args =
+        g_strdup_printf("-M origin200,io-bridge=on "
+                        "-global sgi-ioc3.subsystem-id=0x%04x",
+                        board->subsystem_id);
+    QTestState *qts = qtest_init(args);
+
+    sn0_ioc3_attach(qts);
+
+    /* The identifier a guest dispatches on, before what it selects. */
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_SUBSYSTEM),
+                    ==, SUBSYSTEM(board->subsystem_id));
+
+    g_assert_cmpint(ethernet_is_fitted(qts), ==, board->eth);
+    g_assert_cmpint(one_wire_part_is_fitted(qts), ==, board->eth);
+    g_assert_cmpint(serial_port_is_fitted(qts, SERIAL_A), ==, board->serial_a);
+    g_assert_cmpint(serial_port_is_fitted(qts, SERIAL_B), ==, board->serial_b);
+    g_assert_cmpint(ps2_is_fitted(qts), ==, board->ps2);
+    g_assert_cmpint(timekeeper_is_fitted(qts), ==, board->timekeeper);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
+    unsigned int i;
+
     g_test_init(&argc, &argv, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(ioc3_boards); i++) {
+        g_autofree char *path = g_strdup_printf("sn0/ioc3/board-%s",
+                                                ioc3_boards[i].name);
+
+        qtest_add_data_func(path, &ioc3_boards[i],
+                            test_a_board_fits_its_own_sub_devices);
+    }
 
     qtest_add_data_func("sn0/ioc3/pci-status-reset-value", NULL,
                         test_pci_status_reset_value);
