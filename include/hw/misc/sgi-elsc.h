@@ -37,6 +37,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 /* The front-panel eight-character alphanumeric display. */
 #define SGI_ELSC_DISPLAY_CHARS 8
 
+/*
+ * A destructive command whose effect is deferred until the guest reads its
+ * "ok" (see deferred_action/deferred_committed). "rst" is the only one here;
+ * the power subcommands add ELSC_ACTION_CYCLE and ELSC_ACTION_SHUTDOWN.
+ */
+enum {
+    ELSC_ACTION_NONE = 0,
+    ELSC_ACTION_RESET,
+};
+
 struct SGIElscState {
     I2CSlave parent_obj;
     DeviceDiagnosticSink *diagnostic;
@@ -110,6 +120,29 @@ struct SGIElscState {
      * unverified on 6.5.30.
      */
     bool cold_power_on;
+
+    /*
+     * A destructive command deferred until the guest reads its "ok": what to
+     * do (an ELSC_ACTION_* value), whether the ack has been read, and whether
+     * its bottom half has been scheduled.
+     *
+     * ARMED (action set, not committed): accepted, ack queued but unread -- a
+     * superseding request cancels it. COMMITTED (action set, committed): the
+     * ack was fully read at the fetch seam; supersession can no longer cancel
+     * it. SCHEDULED (deferred_scheduled): a transaction boundary has queued the
+     * bottom half that carries the effect out; it is set where the bottom half
+     * is scheduled and cleared when it runs. The effect, and any side effect,
+     * fires only from that bottom half, so a canceled command leaves no trace.
+     * All three fields are migrated so an action in flight behaves correctly
+     * across a migration: post_load re-arms exactly the bottom half the source
+     * had scheduled and not yet run (deferred_scheduled), without reasoning
+     * about the frame state at all.
+     *
+     * "rst" is the only action here; the power subcommands add their own.
+     */
+    uint8_t deferred_action;
+    bool deferred_committed;
+    bool deferred_scheduled;
 
     /* The alphanumeric display, written by "dsp" and "dsc". */
     uint8_t display[SGI_ELSC_DISPLAY_CHARS];

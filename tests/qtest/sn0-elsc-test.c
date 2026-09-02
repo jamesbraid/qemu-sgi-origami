@@ -1623,6 +1623,473 @@ static void test_hbt_watchdog_control(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "rst" is the controller's module reset, supervisor-gated. Once
+ * authenticated it performs a real machine reset -- not the no-op the model
+ * used to answer. A panic reboot treats "ok" as "the reset happened" and
+ * does not fall back to its own hardware reset, so the reset must actually
+ * fire; this asserts QEMU's RESET event, the way sn0-hub-test checks a
+ * Hub-driven reset, and that the reset cleared controller state.
+ */
+static void test_rst_performs_machine_reset(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    g_autofree char *out = NULL;
+
+    /* Leave a mark on the display the reset must clear. */
+    req_len = build_request(req, "dsc 4 E");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Refused before authenticating. */
+    req_len = build_request(req, "rst");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 8);
+    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+
+    /* Authenticate with the factory-default password. */
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Now "rst" answers ok and the reset really fires. */
+    req_len = build_request(req, "rst");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* The reset actually happened, not just an "ok". */
+    qtest_qmp_eventwait(qts, "RESET");
+
+    /* And it cleared controller state: the display is blank again. */
+    out = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(out, "display: \"        \""));
+
+    qtest_quit(qts);
+}
+
+/*
+ * The deferred reset must wait for the "ok" to be read, not merely for the
+ * request's write transaction to end. A requester may end its write with
+ * the ack unread and fetch it in a later read-only transaction (the
+ * response outlives its transaction); firing the reset at the write's STOP
+ * would reset the controller and discard the ack the caller is about to
+ * fetch.
+ */
+static void test_rst_reset_waits_for_ack_read(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Write "rst" and end the transaction without reading the response. */
+    elsc_request_without_read(qts, "rst");
+
+    /* The ack survives to be fetched in a separate read transaction. */
+    resp_len = elsc_read_response(qts, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Only now, once the ack has been read, does the reset fire. */
+    qtest_qmp_eventwait(qts, "RESET");
+
+    qtest_quit(qts);
+}
+
+/*
+ * The deferred reset is tied to the specific "rst" ack. If the ack is left
+ * unread and a new request supersedes the pending response, the reset is
+ * dropped -- otherwise consuming the new, unrelated response would fire it.
+ * A mark left on the display survives, proving no reset ran.
+ */
+static void test_rst_reset_dropped_on_supersession(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    g_autofree char *out = NULL;
+
+    req_len = build_request(req, "dsc 4 E");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Issue "rst" but leave its ack unread. */
+    elsc_request_without_read(qts, "rst");
+
+    /* A new request supersedes the ack; its own response reads back clean. */
+    req_len = build_request(req, "ver");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok ", 3) == 0);
+
+    /* No reset ran: the display mark is still there. */
+    out = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(out, "display: \"    E   \""));
+
+    qtest_quit(qts);
+}
+
+/*
+ * The reset fires when the ack is fully read, not at a terminal bus event.
+ * A caller that reads the whole ack and then NACKs and issues a same-address
+ * repeated START (rather than STOP) gets no I2C finish, yet the reset must
+ * still fire. This reads the whole ack and issues no STOP at all, then
+ * expects the RESET event -- proving the firing is tied to consumption.
+ */
+static void test_rst_reset_fires_without_stop(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, i, total;
+
+    req_len = build_request(req, "pas none");
+    elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Issue "rst"; the ack is left pending. */
+    elsc_request_without_read(qts, "rst");
+
+    /* Read the whole ack in a read transaction, issuing no STOP. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* discard stale */
+    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    total = (unsigned)resp[0] + 2;
+    g_assert_cmpuint(total, <=, sizeof(resp));
+    for (i = 1; i < total; i++) {
+        if (i == total - 1) {
+            qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK last */
+        }
+        resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    }
+    g_assert_cmphex(frame_checksum(resp, total), ==, 0);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Reading the last ack byte fired the reset; no STOP was issued. */
+    qtest_qmp_eventwait(qts, "RESET");
+
+    qtest_quit(qts);
+}
+
+/*
+ * The last-text-byte NACK race. A master clears ACK on the last TEXT byte of
+ * the ack -- the byte before the checksum -- and then, without a STOP, issues
+ * a same-address repeated START carrying an unrelated request. The chip fires
+ * I2C_NACK while txpos is still below txlen (the checksum has not been fetched
+ * yet), so a commit tied to the NACK misses it; and because the master issues
+ * a repeated START instead of a STOP, no I2C_FINISH follows either. A commit
+ * tied to those terminal events would therefore never happen, and
+ * elsc_request_complete would then cancel the still-ARMED reset when the
+ * unrelated request arrives -- silently dropping a reset the guest was already
+ * promised, since it has received the whole "ok". Committing at the fetch seam
+ * (the read that advances txpos to txlen, which is exactly the read that hands
+ * over the last text byte) keeps the reset. RED before the seam commit, GREEN
+ * after.
+ */
+static void test_rst_reset_survives_last_text_byte_nack(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, i;
+
+    req_len = build_request(req, "pas none");
+    elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Issue "rst"; the ack is left pending (ARMED). */
+    elsc_request_without_read(qts, "rst");
+
+    /*
+     * Read the ack up to and including the last text byte, NACKing it. The
+     * frame is len,'o','k',checksum: 'k' is the last text byte, and the read
+     * that returns it is the one whose fetch advances txpos to txlen -- the
+     * fetch seam. The checksum is left unread.
+     */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);       /* discard stale */
+    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* length */
+    g_assert_cmpuint(resp[0], ==, 2);
+    resp[1] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'o' */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK the next byte */
+    resp[2] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'k' */
+    /* The whole ack was delivered, though the checksum stays unread. */
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /*
+     * No STOP: a same-address repeated START carrying an unrelated "ver".
+     * Under a terminal-event commit, the direction switch below cancels the
+     * still-ARMED reset.
+     */
+    req_len = build_request(req, "ver");
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
+    for (i = 0; i < req_len; i++) {
+        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, req[i]);
+    }
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+
+    /*
+     * The reset committed at the fetch seam fires; the unrelated request did
+     * not cancel it.
+     */
+    qtest_qmp_eventwait(qts, "RESET");
+
+    qtest_quit(qts);
+}
+
+/*
+ * A "rst" whose ack the master ends by NACKing the last byte with no STOP
+ * leaves this controller matched on the I2C bus: the STOP that would call
+ * i2c_end_transfer never comes. The machine reset the "rst" triggers clears
+ * the PCF8584's own transfer state but not the bus's slave match, so unless
+ * the reset also releases the bus the first post-reset transaction is
+ * misrouted to this controller -- an identity-EEPROM read at page 7 (address
+ * 0x57) is answered by the ELSC instead, its first byte an ELSC response
+ * length rather than the EEPROM's 0x37 marker. This drives that exact
+ * sequence and reads page 7 directly (no arbitration -- the stale match also
+ * wedges the bus permanently busy, which stalls the arbitration broadcast)
+ * and requires the EEPROM's own byte back.
+ */
+static void test_rst_reset_releases_i2c_bus(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, i, total;
+    uint8_t page7_byte0;
+
+    req_len = build_request(req, "pas none");
+    elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Issue "rst"; leave the ack pending. */
+    elsc_request_without_read(qts, "rst");
+
+    /* Read the whole ack, NACK the last byte, issue no STOP. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* discard stale */
+    resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    total = (unsigned)resp[0] + 2;
+    g_assert_cmpuint(total, <=, sizeof(resp));
+    for (i = 1; i < total; i++) {
+        if (i == total - 1) {
+            qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK last */
+        }
+        resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    }
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Reading the last ack byte fired the reset. */
+    qtest_qmp_eventwait(qts, "RESET");
+
+    /*
+     * Re-enable the controller and read identity-EEPROM page 7, offset 0,
+     * directly. With the bus released this routes to the EEPROM and byte 0
+     * is the 0x37 marker; with the ELSC left matched it is misrouted and
+     * answers as the ELSC.
+     */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_NVRAM_PAGE7_ADDR << 1) | 0);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0);   /* byte-address within page */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_NVRAM_PAGE7_ADDR << 1) | 1);
+    (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* discard stale */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);
+    page7_byte0 = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0xfe);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+
+    g_assert_cmphex(page7_byte0, ==, 0x37);
+
+    qtest_quit(qts);
+}
+
+/* Migrate a stopped source to a listening destination; block until done. */
+static void migrate_stopped_vm(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+/*
+ * A "rst" accepted but not yet acknowledged is ARMED: its migrated state
+ * carries what to do and that the ack is still unread. Migrating in that
+ * window must NOT fire the reset on the destination -- post_load re-arms the
+ * bottom half only for a COMMITTED action, so an ARMED one holds its "ok" for
+ * the guest to read. The destination reads the ack back intact (a premature
+ * reset would have discarded it and cleared the response), and reading it
+ * commits the action and fires the reset there. This is the migration half of
+ * the deferred-action state machine; the committed-then-migrate window is a
+ * sub-instruction race qtest cannot stage, so it is covered by construction.
+ */
+static void test_rst_reset_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    tmpfs = g_dir_make_tmp("sn0-elsc-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init("-M origin200");
+
+    req_len = build_request(req, "pas none");
+    elsc_transact(from, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /* Accept "rst" but leave its ack unread: the reset is ARMED, not fired. */
+    elsc_request_without_read(from, "rst");
+
+    dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    /*
+     * The ARMED reset survived migration without firing early: the ack is
+     * still there to read, and reading it (its terminal STOP) commits and
+     * fires the reset on the destination.
+     */
+    resp_len = elsc_read_response(to, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    qtest_qmp_eventwait(to, "RESET");
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+/*
+ * A committed action whose response frame is still OPEN at migration -- the
+ * guest read through the last text byte (the reset committed at the seam) but
+ * has not yet taken the trailing checksum -- must not fire on the destination
+ * until that frame is finished. The bottom half was never scheduled on the
+ * source (no boundary yet), so deferred_scheduled is clear and post_load leaves
+ * it alone; the destination's own closing STOP schedules it.
+ *
+ * The hazard this pins is post_load firing the reset on load: that resets the
+ * PCF8584 while the checksum the guest is about to read still sits in its
+ * read-ahead, corrupting the frame. So the source reads up to and including
+ * "k" (committing), migrates with the checksum unread, and the destination
+ * reads that checksum back INTACT and then STOPs -- and only then does the
+ * reset fire. With post_load keyed on committed rather than on
+ * deferred_scheduled, it fired on load and the checksum came back as the reset
+ * value, failing the frame checksum.
+ */
+static void test_rst_reset_open_frame_defers_across_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len;
+
+    tmpfs = g_dir_make_tmp("sn0-elsc-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init("-M origin200");
+
+    req_len = build_request(req, "pas none");
+    elsc_transact(from, req, req_len, resp, sizeof(resp));
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    /*
+     * Accept "rst" (ARMED), then open a read and take len, 'o', 'k' -- the
+     * last text byte, whose fetch reaches the seam and commits the reset. The
+     * checksum is prefetched into the chip but left unread; no STOP, so the
+     * frame stays open (txlen != 0) and the bottom half is not yet scheduled.
+     */
+    elsc_request_without_read(from, "rst");
+    qtest_writeq(from, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    qtest_writeq(from, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(from) & I2C_PCF_LRB, ==, 0);
+    (void)qtest_readq(from, HUB_LOCAL + I2C_DATA);       /* discard stale */
+    resp[0] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* length */
+    g_assert_cmpuint(resp[0], ==, 2);
+    resp[1] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'o' */
+    resp[2] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'k', seam commits */
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    /*
+     * On the destination the open frame is intact: the checksum reads back its
+     * migrated value (post_load did not reset the chip out from under it), and
+     * the whole frame still sums to zero.
+     */
+    resp[3] = qtest_readq(to, HUB_LOCAL + I2C_DATA);     /* checksum */
+    qtest_writeq(to, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    g_assert_cmphex(frame_checksum(resp, 4), ==, 0);
+
+    /* The closing STOP is the boundary that carries out the committed reset. */
+    qtest_qmp_eventwait(to, "RESET");
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1695,6 +2162,23 @@ int main(int argc, char **argv)
                         test_pwr_query_reports_cold_power_on);
     qtest_add_data_func("sn0/elsc/hbt-watchdog-control", NULL,
                         test_hbt_watchdog_control);
+    qtest_add_data_func("sn0/elsc/rst-performs-machine-reset", NULL,
+                        test_rst_performs_machine_reset);
+    qtest_add_data_func("sn0/elsc/rst-reset-waits-for-ack-read", NULL,
+                        test_rst_reset_waits_for_ack_read);
+    qtest_add_data_func("sn0/elsc/rst-reset-dropped-on-supersession", NULL,
+                        test_rst_reset_dropped_on_supersession);
+    qtest_add_data_func("sn0/elsc/rst-reset-fires-without-stop", NULL,
+                        test_rst_reset_fires_without_stop);
+    qtest_add_data_func("sn0/elsc/rst-reset-survives-last-text-byte-nack",
+                        NULL, test_rst_reset_survives_last_text_byte_nack);
+    qtest_add_data_func("sn0/elsc/rst-reset-releases-i2c-bus", NULL,
+                        test_rst_reset_releases_i2c_bus);
+    qtest_add_data_func("sn0/elsc/rst-reset-survives-migration", NULL,
+                        test_rst_reset_survives_migration);
+    qtest_add_data_func(
+        "sn0/elsc/rst-reset-open-frame-defers-across-migration",
+        NULL, test_rst_reset_open_frame_defers_across_migration);
 
     ret = g_test_run();
 

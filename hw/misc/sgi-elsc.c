@@ -12,12 +12,15 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "monitor/monitor.h"
+#include "system/runstate.h"
+#include "system/replay.h"
 #include "qapi/error.h"
 #include "qapi/type-helpers.h"
 #include "trace.h"
@@ -57,6 +60,17 @@ static void elsc_frame_response(SGIElscState *s, const char *text,
 static void elsc_frame_response_str(SGIElscState *s, const char *text)
 {
     elsc_frame_response(s, text, strlen(text));
+}
+
+/* Name a committed deferred action for a guest-error log. */
+static const char *elsc_action_name(uint8_t action)
+{
+    switch (action) {
+    case ELSC_ACTION_RESET:
+        return "reset";
+    default:
+        return "deferred action";
+    }
 }
 
 /*
@@ -343,14 +357,47 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
-        /* Whether "rst" is the real mnemonic is not established. */
+        /*
+         * Module reset -- panic reboot and fatal-error recovery only, never
+         * a normal boot. No delayed-reset form; the hex delay belongs to
+         * "pwr d". Supervisor-gated. A caller treats "ok" as proof the reset
+         * happened and does not fall back to its own hardware reset, so the
+         * reset must fire. It is deferred until the guest has read "ok" --
+         * committed at the fetch seam that completes the ack
+         * (elsc_response_fully_read) and then run from a bottom half.
+         *
+         * The datasheet's reset is module-scoped. On the single-module
+         * Origin 200 the module is the whole machine, so qemu_system_reset
+         * is exact. A multi-node machine (the two-node bring-up is active)
+         * has one controller per module, and this resets the whole VM --
+         * broader than the hardware's per-module reset. QEMU has no
+         * per-module reset, and the controller cannot even tell from its
+         * own properties whether the machine is multi-node, so the model
+         * keeps the whole-machine reset rather than refuse; a true
+         * module-scoped reset would need a machine-level signal.
+         */
         if (!s->supervisor) {
             elsc_frame_response_str(s, "err perm");
             return;
         }
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-elsc: reset requested, not modelled\n");
         elsc_frame_response_str(s, "ok");
+        /*
+         * Arm only if nothing is committed yet. A committed action is past
+         * the point of no return; clearing deferred_committed here would
+         * demote it to ARMED and the fetch-seam commit would be lost. The
+         * committed action fires regardless; when it is weaker than this
+         * request the returned "ok" does not describe the action performed,
+         * and that mismatch is logged rather than passed over silently.
+         */
+        if (!s->deferred_committed) {
+            s->deferred_action = ELSC_ACTION_RESET;
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-elsc: \"rst\" while a %s is already committed; "
+                          "that action fires and this \"ok\" may not match "
+                          "it\n",
+                          elsc_action_name(s->deferred_action));
+        }
         return;
     }
 
@@ -363,6 +410,19 @@ static void elsc_request_complete(SGIElscState *s)
     if (s->rxlen == 0 && s->txpos < s->txlen) {
         /* No request this transaction: a fetch of the pending response. */
         return;
+    }
+
+    /*
+     * A new request supersedes any pending response. An ARMED action -- its
+     * ack not fully read -- is canceled: consuming this new, unrelated response
+     * must not fire it. A COMMITTED action is past the point of no return and
+     * survives; the new request's own I2C_START_SEND already scheduled it (a
+     * NACK-on-last-text-byte response reaches here that way, without a STOP or
+     * a last-byte NACK). If this request is itself "rst", the dispatch below
+     * sees the committed action and logs rather than re-arming.
+     */
+    if (!s->deferred_committed) {
+        s->deferred_action = ELSC_ACTION_NONE;
     }
 
     /*
@@ -383,16 +443,149 @@ static void elsc_request_complete(SGIElscState *s)
     elsc_dispatch(s, (const char *)&s->rxbuf[1], s->rxbuf[0]);
 }
 
+/*
+ * Carry out a COMMITTED deferred action once its "ok" has been read. Runs
+ * from a bottom half, scheduled at the transaction boundary that follows the
+ * fetch-seam commit (elsc_fire_committed_action, from a NACK, a STOP or a
+ * following request) or, after a migration, by elsc_post_load.
+ *
+ * A reset releases the I2C bus first. A response the master ends by NACKing
+ * the last byte with no STOP -- it may fetch the byte in a later transaction,
+ * or issue a same-address repeated START -- leaves this controller matched on
+ * the bus: the STOP that would call i2c_end_transfer never comes.
+ * qemu_system_reset_request resets the PCF8584 but not the bus, so the stale
+ * match would misroute the first post-reset transaction -- an identity-EEPROM
+ * read answered by this controller. i2c_end_transfer walks the bus's slave
+ * list and cannot run from inside an I2C callback, and the reset must not run
+ * while the guest is still reading the frame, which is why the whole action is
+ * deferred to this bottom half rather than run when it is committed.
+ *
+ * The gate makes a stale schedule a no-op: only a committed action fires, and
+ * firing clears the state, so a second scheduling -- another boundary of the
+ * same response, or a post-migration re-arm racing the original -- does
+ * nothing.
+ */
+static void elsc_deferred_action_bh(void *opaque)
+{
+    SGIElscState *s = opaque;
+    uint8_t action = s->deferred_action;
+
+    if (!s->deferred_committed) {
+        return;
+    }
+    s->deferred_action = ELSC_ACTION_NONE;
+    s->deferred_committed = false;
+    s->deferred_scheduled = false;
+
+    switch (action) {
+    case ELSC_ACTION_RESET:
+        i2c_end_transfer(s->bus);
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        break;
+    default:
+        break;
+    }
+}
+
+/*
+ * The response has been fully handed to the guest: end the announcement and
+ * mark any deferred action COMMITTED. Called from the fetch seam in
+ * elsc_recv_internal -- the read that advances txpos to txlen.
+ *
+ * That seam is the exact point at which the ack is provably delivered. The
+ * PCF8584 prefetches one byte ahead (pcf8584_read_data returns the held byte
+ * and then fetches the next), so txpos reaches txlen precisely as the chip
+ * pulls the frame's last byte -- the trailing checksum -- by which time the
+ * guest has already been handed everything through the last text byte, i.e.
+ * the entire "ok"/"err" ack. The one byte still in the read-ahead is only that
+ * checksum, which carries no ack information.
+ *
+ * Committing at the fetch, not at a terminal event, is what closes the
+ * last-text-byte NACK race: a master that clears ACK on the last text byte
+ * fires I2C_NACK one byte early (txpos < txlen) and, if it then issues a
+ * same-address repeated START with no STOP, produces no I2C_FINISH either --
+ * so a commit tied to those events would miss the action and
+ * elsc_request_complete would cancel it as still-ARMED. The fetch that follows
+ * the NACK still runs (pcf8584_read_data fetches regardless of ACK), so the
+ * seam catches it. An action whose ack was never fully read stays ARMED and a
+ * superseding request cancels it; past this seam it is COMMITTED and survives
+ * supersession and migration.
+ *
+ * Committing is only a flag -- no bus walk, no schedule -- so it is safe from
+ * inside the recv callback. Carrying the action out is separate
+ * (elsc_fire_committed_action, from the transaction's terminal events), so the
+ * bottom half's i2c_end_transfer and reset run only once the guest has taken
+ * the whole frame -- the checksum still sits one byte behind in the read-ahead
+ * at this instant -- rather than resetting the chip mid-read and corrupting
+ * that last byte.
+ */
+static void elsc_response_fully_read(SGIElscState *s)
+{
+    /* The announcement ends: nothing waits for this owner any more. */
+    s->resp_owner = -1;
+
+    /* COMMITTED: the ack is delivered, so the action can no longer cancel. */
+    if (s->deferred_action != ELSC_ACTION_NONE) {
+        s->deferred_committed = true;
+    }
+}
+
+/*
+ * Schedule a COMMITTED deferred action's bottom half. Called at a transaction
+ * boundary -- the master's NACK, the STOP, or a following request -- so it runs
+ * after the guest has taken the whole frame, not from inside the read that
+ * completed the ack. deferred_scheduled records that the bottom half is queued,
+ * so a migration re-arms exactly it (elsc_post_load); it is idempotent, and the
+ * bottom half's own committed-flag guard makes all but the first run a no-op.
+ * Scheduled through the replay-aware helper so a reset lands at the same
+ * instruction under record/replay (docs/devel/replay.rst).
+ */
+static void elsc_fire_committed_action(SGIElscState *s)
+{
+    if (s->deferred_action != ELSC_ACTION_NONE && s->deferred_committed) {
+        s->deferred_scheduled = true;
+        replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                         elsc_deferred_action_bh, s);
+    }
+}
+
 static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 {
+    /*
+     * A committed deferred action is carried out at the first bus event after
+     * the seam that is not part of the recv data path. Every such event
+     * schedules it (the bottom half's own committed-flag guard keeps that
+     * idempotent), so whichever boundary a given response reaches -- a NACK, a
+     * STOP, a repeated START in either direction -- fires it, and none fire it
+     * mid-read. Only the recv data path itself does not schedule, because that
+     * is where the guest is still taking the frame's bytes.
+     */
     switch (event) {
     case I2C_START_SEND:
-        /* A request is arriving. */
+        /* A new request is arriving; its START is one such boundary. */
+        elsc_fire_committed_action(s);
         s->rxlen = 0;
         break;
     case I2C_START_RECV:
-        /* Direction switch: the request just written is complete. */
+        /*
+         * Direction switch: the request just written is complete. A committed
+         * action is not canceled here, so schedule it -- this covers a
+         * same-address repeated START back into the receive direction after a
+         * fully-fetched response, which reaches no other boundary.
+         */
         elsc_request_complete(s);
+        elsc_fire_committed_action(s);
+        break;
+    case I2C_NACK:
+        /*
+         * The master NACKed a byte to end the read; if an action committed at
+         * the seam, the guest has taken the whole frame, so carry it out.
+         * Scheduling at NACK is safe only because pcf8584_read_data captures
+         * the held byte before it raises I2C_NACK, so the checksum reaches the
+         * guest before anything schedules; were that read path reordered, this
+         * boundary would move back inside the frame.
+         */
+        elsc_fire_committed_action(s);
         break;
     case I2C_FINISH:
         s->rxlen = 0;
@@ -401,8 +594,10 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
          * announced by its signal 2 -- until read to its end or
          * superseded. The controller's own broadcasts deliver this
          * event too; discarding here would lose the response before
-         * its owner could poll.
+         * its owner could poll. A committed action fires here too, for a
+         * response the master ends with a STOP rather than a bare NACK.
          */
+        elsc_fire_committed_action(s);
         if (s->txpos >= s->txlen) {
             s->txlen = 0;
             s->txpos = 0;
@@ -496,8 +691,12 @@ static uint8_t elsc_recv_internal(SGIElscState *s)
         uint8_t data = s->txbuf[s->txpos++];
 
         if (s->txpos == s->txlen) {
-            /* Consumed: nothing waits, the announcement ends. */
-            s->resp_owner = -1;
+            /*
+             * The fetch seam: the last byte has just been handed out, so the
+             * whole ack is delivered. End the announcement and commit any
+             * deferred action here (see elsc_response_fully_read).
+             */
+            elsc_response_fully_read(s);
         }
         return data;
     }
@@ -742,6 +941,9 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->diagnostic_arbitration_broadcast = false;
     s->in_escape = false;
     s->supervisor = false;
+    s->deferred_action = ELSC_ACTION_NONE;
+    s->deferred_committed = false;
+    s->deferred_scheduled = false;
     /* The power-on content is unstated; blank spaces are a model choice. */
     memset(s->display, ' ', sizeof(s->display));
 }
@@ -776,9 +978,36 @@ static void elsc_unrealize(DeviceState *dev)
                              true);
 }
 
+/*
+ * The bottom half that carries out a committed action is not migrated. On
+ * load, re-arm exactly the one the source had scheduled and not yet run --
+ * deferred_scheduled records precisely that, and post_load re-arms iff it is
+ * set. No reasoning about the frame is needed: the bit is set where a boundary
+ * schedules the bottom half and cleared when the bottom half runs, so a stream
+ * taken with it set is a bottom half lost in flight and one taken with it clear
+ * is not.
+ *
+ * That leaves an ARMED action (ack unread, never scheduled) and a committed
+ * action still waiting for its boundary (fully read but not yet closed, so not
+ * scheduled) both alone, which is right: the ARMED one is committed and fired
+ * when the guest reads its ack on the destination, and the waiting one is
+ * scheduled by the destination's own closing boundary. Re-arming either here
+ * would fire before its frame is finished.
+ */
+static int elsc_post_load(void *opaque, int version_id)
+{
+    SGIElscState *s = opaque;
+
+    if (s->deferred_scheduled) {
+        replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                         elsc_deferred_action_bh, s);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -819,8 +1048,20 @@ static const VMStateDescription vmstate_sgi_elsc = {
          * after such a migration reads the cold-power-on once.
          */
         VMSTATE_BOOL_V(cold_power_on, SGIElscState, 8),
+        /*
+         * A deferred destructive action, whether its ack has been read, and
+         * whether its bottom half has been scheduled -- migrated so an action
+         * accepted before a migration behaves correctly on the destination:
+         * ARMED waits for the ack read, COMMITTED waits for its boundary, and a
+         * SCHEDULED-but-unrun bottom half is re-armed on load (elsc_post_load).
+         * A pre-version-9 stream loads all three zeroed -- no action pending.
+         */
+        VMSTATE_UINT8_V(deferred_action, SGIElscState, 9),
+        VMSTATE_BOOL_V(deferred_committed, SGIElscState, 9),
+        VMSTATE_BOOL_V(deferred_scheduled, SGIElscState, 9),
         VMSTATE_END_OF_LIST()
     },
+    .post_load = elsc_post_load,
 };
 
 static const Property sgi_elsc_properties[] = {

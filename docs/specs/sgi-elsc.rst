@@ -106,6 +106,21 @@ Command vocabulary
     kernel only enables the watchdog, so no missed-heartbeat interrupt is
     modelled.
 
+``rst``
+    The module reset, reached by a panic reboot or fatal-error
+    recovery, never a normal boot. Supervisor-gated: without supervisor
+    mode it answers ``err perm``. Once authenticated it answers ``ok``
+    and requests an immediate machine reset, deferred until the caller
+    has read the ``ok`` so the ack is never lost. There is no
+    delayed-reset form -- the delay belongs to ``pwr d``. A caller
+    treats ``ok`` as proof the reset happened and does not fall back to
+    its own hardware reset, so the reset is performed rather than
+    logged. The datasheet's reset is module-scoped; on the single-module
+    Origin 200 the module is the whole machine, so this is exact. On a
+    multi-node machine it resets the whole VM, broader than the hardware's
+    per-module reset -- QEMU provides no per-module reset and the model
+    keeps the whole-machine reset rather than refuse.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
