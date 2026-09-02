@@ -1088,24 +1088,29 @@ static const struct {
     SGIIOC3Population board;
 } sgi_ioc3_boards[] = {
     { SGI_IOC3_SUBSYS_IP27_BASEIO6G,
-      { .eth = true, .serial = { true, true }, .kbc = true, .rtc = true } },
+      { .eth = true, .serial = { true, true }, .kbc = true,
+        .clock = SGI_IOC3_CLOCK_M48T35 } },
     { SGI_IOC3_SUBSYS_IP27_MIO,
       { .serial = { true, true }, .kbc = true } },
     { SGI_IOC3_SUBSYS_IP27_BASEIO,
-      { .eth = true, .serial = { true, true }, .rtc = true } },
+      { .eth = true, .serial = { true, true },
+        .clock = SGI_IOC3_CLOCK_M48T35 } },
     { SGI_IOC3_SUBSYS_IP29_SYSBOARD,
-      { .eth = true, .serial = { true, true }, .kbc = true, .rtc = true } },
+      { .eth = true, .serial = { true, true }, .kbc = true,
+        .clock = SGI_IOC3_CLOCK_M48T35 } },
     /*
      * The Octane's clock is a DS1685 at byte-bus devices 1 and 2, not the
-     * M48T35 at device 0, and it is the only board with front-panel LEDs on
-     * two of the general-purpose pins. Neither is modelled: this fork has no
-     * DS1685 yet, and answering the byte bus with an M48T35 instead would
-     * hand a guest a different register layout under the right name. So the
-     * clock and the LEDs are a gap here, and a guest that looks for them
-     * finds nothing rather than the wrong part.
+     * M48T35 at device 0, and substituting the Timekeeper would hand a guest
+     * a different register layout under the right name. That is why the kind
+     * of clock is named here rather than a bare "has one".
+     *
+     * The front-panel LEDs on two of the general-purpose pins are still a
+     * gap: this is the only board that carries them, and a guest that looks
+     * finds nothing rather than the wrong thing.
      */
     { SGI_IOC3_SUBSYS_IP30_SYSBOARD,
-      { .eth = true, .serial = { true, true }, .kbc = true } },
+      { .eth = true, .serial = { true, true }, .kbc = true,
+        .clock = SGI_IOC3_CLOCK_DS1685 } },
     { SGI_IOC3_SUBSYS_MENET,
       { .eth = true, .serial = { true, true } } },
     { SGI_IOC3_SUBSYS_MENET4,
@@ -1289,8 +1294,13 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.ssram", SGI_IOC3_SSRAM_SIZE);
     memory_region_add_subregion(&s->bar, SGI_IOC3_SSRAM_BASE, &s->ssram);
 
-    /* On the chip's own bus, so a reset of the IOC3 reaches it. */
-    if (s->board->rtc) {
+    /*
+     * On the chip's own bus, so a reset of the IOC3 reaches it. Whichever
+     * clock this board does not fit is unparented rather than left realized
+     * but unmapped, so it is absent from the object graph and from the
+     * migration stream too.
+     */
+    if (s->board->clock == SGI_IOC3_CLOCK_M48T35) {
         if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
             return;
         }
@@ -1299,6 +1309,25 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                                         SYS_BUS_DEVICE(&s->rtc), 0));
     } else {
         object_unparent(OBJECT(&s->rtc));
+    }
+
+    if (s->board->clock == SGI_IOC3_CLOCK_DS1685) {
+        if (!qdev_realize(DEVICE(&s->ds1685), BUS(&s->ioc3_bus), errp)) {
+            return;
+        }
+        /*
+         * Two selects, because the part is reached indirectly: a register
+         * number goes to the first and the register itself answers on the
+         * second.
+         */
+        memory_region_add_subregion(&s->bar, SGI_IOC3_BYTEBUS_DEV1,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->ds1685), 0));
+        memory_region_add_subregion(&s->bar, SGI_IOC3_BYTEBUS_DEV2,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->ds1685), 1));
+    } else {
+        object_unparent(OBJECT(&s->ds1685));
     }
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
@@ -1329,8 +1358,11 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     if (s->board->kbc) {
         qdev_unrealize(DEVICE(&s->kbc_dev));
     }
-    if (s->board->rtc) {
+    if (s->board->clock == SGI_IOC3_CLOCK_M48T35) {
         qdev_unrealize(DEVICE(&s->rtc));
+    }
+    if (s->board->clock == SGI_IOC3_CLOCK_DS1685) {
+        qdev_unrealize(DEVICE(&s->ds1685));
     }
 }
 
@@ -1399,7 +1431,13 @@ static void sgi_ioc3_init(Object *obj)
 
     object_initialize_child(obj, "kbc", &s->kbc_dev, TYPE_SGI_IOC3_KBC);
 
+    /*
+     * Both clocks are initialized; realize keeps whichever this board fits
+     * and unparents the other. A subsystem identity is a property, so which
+     * one is wanted is not known until then.
+     */
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
+    object_initialize_child(obj, "ds1685", &s->ds1685, TYPE_DS1685);
 
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
 }
