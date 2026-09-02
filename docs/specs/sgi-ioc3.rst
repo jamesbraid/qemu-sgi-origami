@@ -246,6 +246,55 @@ the byte-level PS/2 command protocol lives in the ps2 devices above
 it, and the control register's write-pending status reads clear, since
 a synchronous transmit completes within the register write.
 
+Parallel port
+=============
+
+The port (``hw/char/sgi-ioc3-parallel.c``) has two faces that sit
+far apart in the chip's window, so the device presents two regions:
+a four-byte-wide DMA register block belonging to the main register
+block, and the byte-wide IEEE-1284/ECP register file belonging to
+the SuperIO window. What is modelled is the register contract,
+because that is all a source establishes. IRIX's driver probes for
+the port by reading the extended control register and taking
+"transmit FIFO empty, not full" as the port answering; without that
+the driver never attaches and opening the device node fails.
+Everything past the probe -- the mode field, the negotiation lines,
+the two DMA contexts -- is a register file a driver writes and reads
+back. The ECP file is byte-wide and declares its implementation
+width: an undeclared maximum would take one four-byte access apart
+into four calls and run the FIFO write four times over.
+
+Nothing is on the cable. Four behaviours follow from that rather than
+from the specified hardware:
+
+* The status register reads a constant idle cable: no fault, no
+  peripheral selected, no paper error, never busy. Only nFault's
+  level is pinned by a source -- clear means a fault -- and
+  never-busy is the level that stops a driver waiting for the
+  printer from waiting forever.
+* The transmit FIFO is bottomless. A byte written to it leaves
+  within the write and is discarded, empty always reads set and full
+  never does, because no source gives the FIFO a depth or a drain
+  rate. A driver polling for room before each byte never waits, and
+  one polling for the queue to drain finishes on its first look.
+* The DMA engine stores its two contexts and moves no bytes: both
+  busy flags stay clear and a count reads back what software loaded,
+  nothing having been subtracted from it, because there is no
+  peripheral to move bytes to.
+* No interrupt is ever raised. The chip reserves four sources for
+  the port and nothing here drives one. The active sense of the
+  extended control register's service and nFault interrupt controls
+  is unresolved in the sources, so the model stores those bits and
+  arms nothing rather than picking a polarity a guest would then be
+  measured against.
+
+Two boards fit the port: the Origin 200's own IP29 system board and
+the IP27 MediaIO daughtercard. No other identity in the table gets
+one, and on a board without it both register regions are holes like
+any other. Mainline Linux's multifunction driver registers no
+parallel sub-device for any identity, so a Linux that drives nothing
+here is not evidence about the block either way.
+
 Board variants
 ==============
 
@@ -255,12 +304,12 @@ identity in configuration space. The ``subsystem-id`` property
 carries that identity and the model selects the population from it:
 the ethernet block and, with it, the one-wire station-address part;
 each 16550 with its DMA registers and alias page; the PS/2
-controller; and the M48T35 on byte-bus device 0. What a board does
-not fit is neither realized nor mapped, and the window it would have
-answered is a hole like any other. An identity the table does not
-name gets the fall-through population rather than a refusal,
-matching the dispatch in mainline Linux's multifunction driver the
-table is taken from.
+controller; the parallel port; and the M48T35 on byte-bus device 0.
+What a board does not fit is neither realized nor mapped, and the
+window it would have answered is a hole like any other. An identity
+the table does not name gets the fall-through population rather than
+a refusal, matching the dispatch in mainline Linux's multifunction
+driver the table is taken from.
 
 One-wire is not selected separately. The station-address part is
 wired up with the ethernet, so a board without ethernet has no part
