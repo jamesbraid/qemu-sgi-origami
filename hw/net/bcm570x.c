@@ -290,8 +290,13 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  */
 #define BCM570X_MBX_IRQ0_LO         0x0204
 
-/* The largest frame the transmit engine assembles across descriptors. */
-#define BCM570X_MAX_FRAME           2048
+/*
+ * The largest frame the engines carry, transmit or receive. The part does jumbo
+ * frames, and the figure here matches what the other two Origin adapters carry
+ * so that a guest configured for jumbo behaves the same whichever card it is
+ * given. It is a model limit, not the hardware's.
+ */
+#define BCM570X_MAX_FRAME           9600
 
 /*
  * The receive rings. The host posts buffers into a standard ring in host
@@ -1341,7 +1346,17 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         return size;
     }
     if (size > BCM570X_MAX_FRAME) {
-        size = BCM570X_MAX_FRAME;
+        /*
+         * Drop it rather than deliver part of it. Handing the guest a frame cut
+         * short leaves it holding something that looks whole and is not, and
+         * nothing anywhere says so -- the failure then surfaces wherever the
+         * truncated payload is finally parsed, which is nowhere near here.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: received frame of %zu bytes exceeds the %u the "
+                      "model carries, dropped\n",
+                      size, (unsigned int)BCM570X_MAX_FRAME);
+        return size;
     }
 
     /*

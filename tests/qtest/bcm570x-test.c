@@ -1517,6 +1517,129 @@ static void test_tx_producer_out_of_range(const void *data)
  * descriptor-write direction, which the round trip alone cannot. Broadcast so
  * the address filter passes it regardless of the station address.
  */
+/* SGI documents two MTUs for this adapter, 1500 and 9000. */
+#define BCM_JUMBO_FRAME_LEN     9000u
+/* Larger than the model carries, so it has to be refused rather than cut. */
+#define BCM_OVERSIZE_FRAME_LEN  9800u
+
+/*
+ * Bring the interface up far enough to receive, with a single posted buffer.
+ * Returns with the standard-ring producer rung for one frame.
+ */
+static void rx_open_one(Bcm *b, int fd)
+{
+    uint8_t bd[BCM_RXBD_SIZE];
+
+    bar_writel(b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(b, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b->qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(b->qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(b, BCM_MBX_RX_STD_PROD_LO, 1);
+    (void)fd;
+}
+
+/*
+ * A jumbo frame arrives whole. SGI's board guide gives this adapter two MTUs,
+ * 1500 and 9000, and the 9000 one is the reason the model has to carry more
+ * than an ordinary frame.
+ */
+static void test_receive_jumbo_frame(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t *frame = g_malloc(BCM_JUMBO_FRAME_LEN);
+    uint8_t *got = g_malloc(BCM_JUMBO_FRAME_LEN);
+    uint8_t ret[BCM_RXBD_SIZE];
+    unsigned int i;
+
+    for (i = 0; i < BCM_JUMBO_FRAME_LEN; i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+    memset(frame, 0xff, 6);     /* broadcast destination */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, BCM_JUMBO_FRAME_LEN);
+
+    net_socket_send_frame(sv[0], frame, BCM_JUMBO_FRAME_LEN);
+    wait_for_rx_prod(&b, 1);
+
+    /* Reported whole, and the payload landed byte for byte. */
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                    BCM_JUMBO_FRAME_LEN + BCM_ETH_FCS_LEN);
+    qtest_memread(b.qts, RX_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
+    g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN, frame, BCM_JUMBO_FRAME_LEN);
+
+    bcm_close(&b);
+    close(sv[0]);
+    g_free(frame);
+    g_free(got);
+}
+
+/*
+ * A frame larger than the model carries is refused, not cut down. Delivering
+ * part of it would hand the guest something that looks whole and is not, and
+ * the damage would surface wherever the payload is finally read rather than
+ * here.
+ */
+static void test_receive_oversize_dropped(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t *frame = g_malloc0(BCM_OVERSIZE_FRAME_LEN);
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint8_t small[64];
+    unsigned int i;
+
+    memset(frame, 0xff, 6);
+    for (i = 0; i < sizeof(small); i++) {
+        small[i] = (uint8_t)(i + 9);
+    }
+    memset(small, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+
+    net_socket_send_frame(sv[0], frame, BCM_OVERSIZE_FRAME_LEN);
+
+    /*
+     * Nothing completes for it. A frame that does fit, sent after, still
+     * arrives and takes descriptor zero -- so the ring was left usable rather
+     * than the oversized frame half-consuming it.
+     */
+    net_socket_send_frame(sv[0], small, sizeof(small));
+    wait_for_rx_prod(&b, 1);
+
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                    sizeof(small) + BCM_ETH_FCS_LEN);
+
+    bcm_close(&b);
+    close(sv[0]);
+    g_free(frame);
+}
+
 static void test_receive_round_trip(const void *data)
 {
     int sv[2];
@@ -2235,6 +2358,10 @@ int main(int argc, char **argv)
                         test_tx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
                         test_receive_round_trip);
+    qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
+                        test_receive_jumbo_frame);
+    qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
+                        test_receive_oversize_dropped);
     qtest_add_data_func("/bcm570x/receive-frame-wordswap", NULL,
                         test_receive_frame_wordswap);
     qtest_add_data_func("/bcm570x/receive-interrupt-coalescing", NULL,
