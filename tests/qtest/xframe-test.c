@@ -275,6 +275,15 @@
 #define TXD_GCL                  (1ULL << 40)
 
 /*
+ * The checksum-insert requests in the second control word (Linux s2io-regs.h
+ * TXD_TX_CKO_IPV4_EN, _TCP_EN and _UDP_EN, that driver's own MSB-first bit
+ * numbering: bits 5, 6 and 7).
+ */
+#define TXD_CKO_IPV4             (1ULL << 58)
+#define TXD_CKO_TCP              (1ULL << 57)
+#define TXD_CKO_UDP              (1ULL << 56)
+
+/*
  * Guest RAM the transmit tests use for descriptors and frame buffers: well
  * above the first megabyte, in RAM nothing under qtest is using.
  */
@@ -3066,6 +3075,21 @@ static size_t traffic_tx_capture(XframeTx *t, const uint8_t *frame, size_t len,
     return emitted;
 }
 
+/* traffic_tx_capture, with checksum insertion asked for in control2. */
+static size_t traffic_tx_capture_cko(XframeTx *t, const uint8_t *frame,
+                                     size_t len, uint8_t *got,
+                                     size_t got_size, uint64_t cko)
+{
+    size_t emitted;
+
+    xframe_program_txd(t, TRAFFIC_TXD_PAR, TRAFFIC_TX_BUF, frame, len);
+    dma_stq_be(t->qs->qts, TRAFFIC_TXD_PAR + 8, cko);
+    xframe_ring_doorbell(t, TRAFFIC_TXD_PAR);
+    emitted = traffic_recv_frame(t->host_fd, got, got_size);
+    g_assert_cmphex(dma_ldq_be(t->qs->qts, TRAFFIC_TXD_PAR) & TXD_OWN, ==, 0);
+    return emitted;
+}
+
 /*
  * Post one card-owned RxD sized for a jumbo frame, inject the frame, wait for
  * its completion, and read the deposited bytes back into landed. Asserts the
@@ -3221,6 +3245,88 @@ static void test_transmit_preserves_checksums_verbatim(void)
     g_assert_cmpmem(got, emitted, frame, len);
     g_assert_cmphex(frame_be16(got, IPV4_CSUM_OFF), ==, 0xdead);
     g_assert_cmphex(frame_be16(got, TCP_CSUM_OFF), ==, 0xbeef);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Checksum insertion when the descriptor asks for it. A driver using offload
+ * hands the card a frame whose checksum fields are still placeholders and sets
+ * the request in control2; the card owes it the finished checksums. IRIX's xg
+ * driver transmits every TCP and UDP segment this way, and a placeholder left
+ * on the wire is dropped by the receiver with no diagnostic anywhere.
+ */
+static void test_transmit_inserts_requested_tcp_checksum(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len, emitted;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, 20, 74);
+    frame[IPV4_CSUM_OFF] = 0xde; frame[IPV4_CSUM_OFF + 1] = 0xad;
+    frame[TCP_CSUM_OFF] = 0xbe; frame[TCP_CSUM_OFF + 1] = 0xef;
+
+    xframe_tx_start(&t);
+    emitted = traffic_tx_capture_cko(&t, frame, len, got, sizeof(got),
+                                     TXD_CKO_IPV4 | TXD_CKO_TCP);
+
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmphex(frame_be16(got, IPV4_CSUM_OFF), !=, 0xdead);
+    g_assert_cmphex(frame_be16(got, TCP_CSUM_OFF), !=, 0xbeef);
+    g_assert_true(ipv4_checksum_valid(got));
+    g_assert_true(l4_checksum_valid(got, IPPROTO_TCP, TCP_HDR_LEN + 20));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A descriptor can ask for insertion on a frame that is not IPv4 at all. The
+ * lengths a checksum walk would follow are the guest's own bytes, so the
+ * request has to be declined and the frame sent as it stands.
+ */
+static void test_transmit_checksum_request_on_non_ipv4_declined(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len = 64, emitted;
+
+    memset(frame, 0xa5, sizeof(frame));
+    memcpy(frame, traffic_remote_mac, 6);
+    frame[12] = 0x08; frame[13] = 0x06;   /* ARP, not IPv4 */
+
+    xframe_tx_start(&t);
+    emitted = traffic_tx_capture_cko(&t, frame, len, got, sizeof(got),
+                                     TXD_CKO_IPV4 | TXD_CKO_TCP);
+
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmpmem(got, emitted, frame, len);
+
+    xframe_tx_stop(&t);
+}
+
+/* The UDP counterpart of the checksum-insertion test. */
+static void test_transmit_inserts_requested_udp_checksum(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len, emitted;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 20, 62);
+    frame[IPV4_CSUM_OFF] = 0xde; frame[IPV4_CSUM_OFF + 1] = 0xad;
+    frame[UDP_CSUM_OFF] = 0xbe; frame[UDP_CSUM_OFF + 1] = 0xef;
+
+    xframe_tx_start(&t);
+    emitted = traffic_tx_capture_cko(&t, frame, len, got, sizeof(got),
+                                     TXD_CKO_IPV4 | TXD_CKO_UDP);
+
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmphex(frame_be16(got, IPV4_CSUM_OFF), !=, 0xdead);
+    g_assert_cmphex(frame_be16(got, UDP_CSUM_OFF), !=, 0xbeef);
+    g_assert_true(ipv4_checksum_valid(got));
+    g_assert_true(l4_checksum_valid(got, IPPROTO_UDP, UDP_HDR_LEN + 20));
 
     xframe_tx_stop(&t);
 }
@@ -3533,6 +3639,12 @@ int main(int argc, char **argv)
                    test_transmit_preserves_checksums_verbatim);
     qtest_add_func("xframe/receive-preserves-checksums-verbatim",
                    test_receive_preserves_checksums_verbatim);
+    qtest_add_func("xframe/transmit-inserts-requested-tcp-checksum",
+                   test_transmit_inserts_requested_tcp_checksum);
+    qtest_add_func("xframe/transmit-inserts-requested-udp-checksum",
+                   test_transmit_inserts_requested_udp_checksum);
+    qtest_add_func("xframe/transmit-checksum-request-on-non-ipv4-declined",
+                   test_transmit_checksum_request_on_non_ipv4_declined);
     qtest_add_func("xframe/transmit-frame-sizes-byte-exact",
                    test_transmit_frame_sizes_byte_exact);
     qtest_add_func("xframe/receive-frame-sizes-byte-exact",
