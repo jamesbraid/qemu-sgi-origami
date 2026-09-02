@@ -154,11 +154,12 @@ static uint8_t ds2505_data_byte(DS2505State *d, uint16_t addr)
  * blank EPROM: every status byte, implemented region or not, reads 0xff.
  *
  * A5h's redirection byte (100h + page number in this same status field)
- * is a second, independent 0xff literal in
- * ds2505_advance_read_extended() rather than a call through here -- they
- * agree today only because both are blank EPROM. If Write Status is ever
- * added, that byte and this function must be kept in step, or 0xAA and
- * 0xA5 will read the same address differently.
+ * is answered by two other, independent 0xff literals instead of a call
+ * through here -- one in ds2505_start_stream() for the start page, one
+ * in ds2505_advance_read_extended() for every page after it. All three
+ * agree today only because all three are blank EPROM. If Write Status
+ * is ever added, this function and both literals must be kept in step,
+ * or 0xAA and 0xA5 will read the same address differently.
  */
 static uint8_t ds2505_status_byte(void)
 {
@@ -245,10 +246,10 @@ static uint8_t ds2505_advance_read_status(DS2505State *d)
  * Redirection is always 0xff (never redirected): this model has no
  * Write Memory/Write Status, so no redirection byte can ever be
  * programmed away from its unprogrammed value, and the hardware never
- * acts on it regardless (see the header comment). The 0xff literals
- * below and ds2505_status_byte()'s answer for the same address (100h +
- * page number) are two independent sources for one byte -- see the
- * comment there.
+ * acts on it regardless (see the header comment). The redirection
+ * byte's literal 0xff below is one of three independent answers for the
+ * same address -- see ds2505_status_byte()'s comment for the other two
+ * and why that matters.
  */
 static uint8_t ds2505_advance_read_extended(DS2505State *d)
 {
@@ -270,7 +271,7 @@ static uint8_t ds2505_advance_read_extended(DS2505State *d)
         d->addr++;                                  /* now page-aligned */
         d->crc_acc = 0;
         d->in_redirect = true;
-        d->sent_byte = 0xff;   /* this page's redirection byte; see above */
+        d->sent_byte = 0xff;   /* redirection byte; see ds2505_status_byte() */
         d->unit = DS2505_UNIT_REDIRECT;
         return d->sent_byte;
     }
@@ -337,7 +338,8 @@ static void ds2505_start_stream(DS2505State *d)
     switch (d->cmd) {
     case DS2505_CMD_READ_EXTENDED:
         d->in_redirect = true;
-        d->sent_byte = 0xff;   /* the start page's redirection byte */
+        /* the start page's redirection byte; see ds2505_status_byte() */
+        d->sent_byte = 0xff;
         d->unit = DS2505_UNIT_REDIRECT;
         break;
     case DS2505_CMD_READ_STATUS:
