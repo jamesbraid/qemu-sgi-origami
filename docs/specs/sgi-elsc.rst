@@ -188,9 +188,11 @@ AUX serial port
 ===============
 
 The controller is the far end of its module's AUX serial port. Every
-tower has its own physical connector, so each node's controller takes
-its own ``-serial`` index: node 0's on index 2, node 1's on index 4
-(index 3 stays the bring-up UART). Its one multiplexing
+module carries the same serial connectors, so the ``-serial`` lines
+are node-major with a fixed stride of four: node *n* owns the block
+``[4n, 4n+4)``, and the AUX port is the third line in each block.
+Node 0's AUX is index 2, node 1's is index 6 (node 0's index 3 is the
+bring-up UART, which exists on node 0 only). Its one multiplexing
 rule (Origin 200 Owner's Guide, page 132): a byte sequence beginning
 0x14 is a command to the controller itself and is never queued for
 ``get``; every other byte is console input. Nothing read for the
