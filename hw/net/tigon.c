@@ -501,6 +501,7 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
  * path is not modelled. The producer index is reduced into range so an
  * out-of-range mailbox write cannot make the walk loop forever.
  */
+
 /*
  * Whether a frame is safe to hand to net_checksum_calculate(). The guest
  * composes these bytes, so a frame flagged for offload need not be the IPv4
@@ -792,6 +793,19 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                           "range\n", (uint32_t)val);
         }
         s->std_rx_prodidx = val % TI_STD_RX_RING_CNT;
+        /*
+         * Posting buffers is what establishes the ring, and a guest may only
+         * populate the ring control block then -- after the firmware-up parse
+         * that would otherwise be the sole chance to read it. Pick the base up
+         * here when it is still unknown, the way the firmware reads the
+         * control block from host memory rather than caching it once. Only
+         * when unknown: re-reading unconditionally would replace a base that
+         * already works with whatever the block happens to hold now.
+         */
+        if (s->std_rx_ring_base == 0) {
+            s->std_rx_ring_base =
+                tigon_dma_ld_addr(s, s->gib_base + TI_GIB_STD_RX_RCB);
+        }
         /* A frame refused before a buffer existed can now be delivered. */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
@@ -890,8 +904,16 @@ static bool tigon_can_receive(NetClientState *nc)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
 
-    /* Operational, and at least one standard receive buffer is posted. */
-    return s->firmware_up && s->std_rx_considx != s->std_rx_prodidx;
+    /*
+     * Operational, the receive ring's base is set, and at least one standard
+     * buffer is posted. A zero ring base means the guest has not populated the
+     * standard-receive ring control block: the descriptors would be read from
+     * physical address 0, so any buffer pointer they yield is garbage and the
+     * frame would be written over arbitrary guest memory. Hold such a frame in
+     * the backend's queue until the ring is real rather than corrupt memory.
+     */
+    return s->firmware_up && s->std_rx_ring_base != 0 &&
+           s->std_rx_considx != s->std_rx_prodidx;
 }
 
 /*
@@ -935,6 +957,17 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
 
     if (!s->firmware_up) {
         return size;   /* not operational: consumed, not queued */
+    }
+    if (s->std_rx_ring_base == 0) {
+        /*
+         * The receive ring control block is still unset, so its descriptors
+         * would be read from physical address 0 and the frame written over
+         * arbitrary guest memory. Keep the frame queued rather than consuming
+         * it: a flush reaches this path directly, without can_receive(), and
+         * a frame consumed here would be dropped rather than delivered once
+         * the ring appears.
+         */
+        return 0;
     }
     if (!tigon_rx_filter(s, buf, size, &flags)) {
         /*
