@@ -1222,6 +1222,118 @@ static void test_supervisor_gating(const void *data)
 }
 
 /*
+ * "dsc N C" sets one character of the eight-character alphanumeric
+ * display (hardware guide, MSC command table). The second node's PROM
+ * slave writes its per-node status character with exactly this command
+ * during bring-up, and "err cmd" left it retrying forever with
+ * processors 2 and 3 never starting. The display is not guest-readable
+ * through any documented command, so content is asserted through
+ * "info elsc", the way the suite already reads queue state.
+ */
+static void test_dsc_sets_display_character(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    g_autofree char *out = NULL;
+
+    req_len = build_request(req, "dsc 4 E");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    out = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(out, "display: \"    E   \""));
+
+    qtest_quit(qts);
+}
+
+/* A position past the eight-character display is an argument error. */
+static void test_dsc_bad_position_gets_err_arg(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, "dsc 8 E");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The character may be any ASCII other than nul -- a space included --
+ * so the parse must be positional, not split on whitespace.
+ */
+static void test_dsc_space_character_is_legal(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    g_autofree char *out = NULL;
+
+    req_len = build_request(req, "dsp AAAAAAAA");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    req_len = build_request(req, "dsc 4  ");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    out = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(out, "display: \"AAAA AAA\""));
+
+    qtest_quit(qts);
+}
+
+/*
+ * "dsp M" overwrites from position 0 and leaves the remaining
+ * positions unaltered: the hardware guide's own example, "dsp testing"
+ * replacing seven characters and leaving the eighth. A message longer
+ * than the display is rejected and must leave the content untouched.
+ */
+static void test_dsp_overwrites_leaving_the_tail(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+    g_autofree char *after_dsp = NULL;
+    g_autofree char *after_reject = NULL;
+
+    req_len = build_request(req, "dsc 7 Z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    req_len = build_request(req, "dsp testing");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    after_dsp = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_dsp, "display: \"testingZ\""));
+
+    req_len = build_request(req, "dsp ninechars");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    after_reject = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_reject, "display: \"testingZ\""));
+
+    qtest_quit(qts);
+}
+
+/*
  * One NVRAM byte as firmware reads it: arbitrated, offset-write then
  * data-read, closed with the invalid-address step, the stale first read
  * discarded.
@@ -1460,6 +1572,14 @@ int main(int argc, char **argv)
                         test_escape_byte_is_not_queued);
     qtest_add_data_func("sn0/elsc/supervisor-gating", NULL,
                         test_supervisor_gating);
+    qtest_add_data_func("sn0/elsc/dsc-sets-display-character", NULL,
+                        test_dsc_sets_display_character);
+    qtest_add_data_func("sn0/elsc/dsc-bad-position-gets-err-arg", NULL,
+                        test_dsc_bad_position_gets_err_arg);
+    qtest_add_data_func("sn0/elsc/dsc-space-character-is-legal", NULL,
+                        test_dsc_space_character_is_legal);
+    qtest_add_data_func("sn0/elsc/dsp-overwrites-leaving-the-tail", NULL,
+                        test_dsp_overwrites_leaving_the_tail);
     qtest_add_data_func("sn0/elsc/boot-acceptance-sequence", NULL,
                         test_boot_acceptance_sequence);
     qtest_add_data_func("sn0/elsc/info-elsc-dump-empty", NULL,

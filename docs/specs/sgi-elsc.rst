@@ -66,10 +66,38 @@ Command vocabulary
     Supervisor-mode gate for protected commands. The factory default
     password is ``none``; the model implements no way to change it.
 
+``dsp <message>``
+    Writes a message onto the alphanumeric display: up to eight
+    ASCII characters other than nul, overwriting from position 0 and
+    leaving the remaining positions unaltered. Answered a plain
+    ``ok``.
+
+``dsc <position> <character>``
+    Writes one display character; the position is a digit from 0 to
+    7, and the character is any ASCII character other than nul -- a
+    space included, so the argument bytes are read by position
+    rather than split on whitespace. Answered a plain ``ok``.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
 a negative reply but not a stalled bus.
+
+Alphanumeric display
+--------------------
+
+The controller drives the module's front-panel eight-character
+alphanumeric display. The SGI Origin2000 and Onyx2 hardware guide
+documents both display commands, neither in its
+supervisor-restricted set, and shows what firmware writes there:
+per-node hex status codes, placed a character at a time -- which is
+how a launching node's slave processor uses ``dsc`` during
+bring-up, so answering ``err cmd`` wedged a two-node boot with the
+slave retrying its status write forever. Malformed arguments are
+answered ``err arg``. The manual does not state the power-on
+content (the model blanks it to spaces) or what an over-length
+``dsp`` message does (the model rejects it); ``info elsc`` shows
+the current content.
 
 Bus arbitration
 ===============
@@ -204,7 +232,7 @@ rather than asked again -- the firmware's closing step, addressed to
 Monitor access
 ==============
 
-``info elsc`` prints each controller's console-input queue, any
-pending response and its owner, and the arbitration signal currently
-presented for the console processor, without requiring a trace
-backend or diagnostic sink.
+``info elsc`` prints each controller's console-input queue, the
+alphanumeric display content, any pending response and its owner,
+and the arbitration signal currently presented for the console
+processor, without requiring a trace backend or diagnostic sink.

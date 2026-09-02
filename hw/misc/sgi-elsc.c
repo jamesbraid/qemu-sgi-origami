@@ -143,6 +143,39 @@ static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
     }
 }
 
+/*
+ * "dsp": overwrite the display from position 0, leaving the remaining
+ * positions unaltered. What an over-length message does is unobserved;
+ * rejecting it whole is the conservative choice.
+ */
+static void elsc_handle_dsp(SGIElscState *s, const char *text, unsigned len)
+{
+    unsigned n = len - 4;
+
+    if (n > SGI_ELSC_DISPLAY_CHARS || memchr(&text[4], '\0', n)) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    memcpy(s->display, &text[4], n);
+    elsc_frame_response_str(s, "ok");
+}
+
+/*
+ * "dsc N C": one display character. Parsed positionally -- the firmware
+ * sends "dsc %x %c", and C may be any ASCII character but nul, a space
+ * included, so splitting on whitespace would reject a legal command.
+ */
+static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
+{
+    if (len != 7 || text[3] != ' ' || text[5] != ' ' ||
+        text[4] < '0' || text[4] > '7' || text[6] == '\0') {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    s->display[text[4] - '0'] = text[6];
+    elsc_frame_response_str(s, "ok");
+}
+
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -163,6 +196,14 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len >= 4 && memcmp(text, "acp ", 4) == 0) {
         elsc_handle_acp_command(s, text, len);
+        return;
+    }
+    if (len >= 4 && memcmp(text, "dsp ", 4) == 0) {
+        elsc_handle_dsp(s, text, len);
+        return;
+    }
+    if (len >= 4 && memcmp(text, "dsc ", 4) == 0) {
+        elsc_handle_dsc(s, text, len);
         return;
     }
     if (len >= 3 && memcmp(text, "pas", 3) == 0) {
@@ -569,6 +610,8 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->diagnostic_arbitration_broadcast = false;
     s->in_escape = false;
     s->supervisor = false;
+    /* The power-on content is unstated; blank spaces are a model choice. */
+    memset(s->display, ' ', sizeof(s->display));
 }
 
 static void elsc_realize(DeviceState *dev, Error **errp)
@@ -596,7 +639,7 @@ static void elsc_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -628,6 +671,9 @@ static const VMStateDescription vmstate_sgi_elsc = {
          * the stream behaved.
          */
         VMSTATE_INT32_V(resp_owner, SGIElscState, 6),
+        /* An older stream loads the display zeroed, not blank. */
+        VMSTATE_UINT8_ARRAY_V(display, SGIElscState,
+                              SGI_ELSC_DISPLAY_CHARS, 7),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -697,6 +743,17 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
         }
         g_string_append(buf, preview < s->rx_queue_len ? "\"...\n" : "\"\n");
     }
+    g_string_append(buf, "  display: \"");
+    for (i = 0; i < SGI_ELSC_DISPLAY_CHARS; i++) {
+        uint8_t c = s->display[i];
+
+        if (c >= 0x20 && c < 0x7f) {
+            g_string_append_c(buf, c);
+        } else {
+            g_string_append_printf(buf, "\\x%02x", c);
+        }
+    }
+    g_string_append(buf, "\"\n");
     if (resp_pending) {
         g_string_append_printf(buf,
                                "  pending response: %u byte(s) for "
