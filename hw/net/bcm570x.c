@@ -948,6 +948,15 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         bcm570x_regfile_write(s, off, val);
         if (val & BCM570X_HCC_MODE_ENABLE) {
             bcm570x_arm_status_tick(s);
+            /*
+             * Enabling the block is the third way the receive path goes from
+             * refusing frames to accepting them, alongside posting buffers and
+             * freeing a return-ring entry. A frame refused before the block was
+             * enabled is still held by the back end, and if the driver enables
+             * the block without going on to ring a doorbell nothing would offer
+             * it again.
+             */
+            aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
         } else {
             timer_del(&s->status_tick_timer);
         }

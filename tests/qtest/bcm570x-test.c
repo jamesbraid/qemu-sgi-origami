@@ -1825,6 +1825,83 @@ static void test_receive_ring_full_recovers(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A frame that arrived before the coalescing block was enabled is still owed to
+ * the guest. Enabling the block is one of the three transitions from refusing
+ * frames to accepting them, and a driver that enables it and then rings no
+ * doorbell -- because its buffers were posted already -- would otherwise never
+ * be offered that frame.
+ */
+static void test_receive_flush_on_enable(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint8_t ret[BCM_RXBD_SIZE];
+    unsigned int i, j;
+    bool got = false;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 11);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    /* Rings and buffers ready, and the doorbell rung -- everything but the
+     * coalescing block, which stays off. */
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, 1518u << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, LAP_RET_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < 8; i++) {
+        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b.qts, RET_RING_PHYS, 0,
+                 (uint64_t)LAP_RET_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 8);
+
+    /* Refused: the block is off. */
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(100000);
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+
+    /* Enable it, and touch nothing else -- no doorbell, no consumer. */
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    for (j = 0; j < 200 && !got; j++) {
+        qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+        if (get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
+            got = true;
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_true(got);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                    sizeof(frame) + BCM_ETH_FCS_LEN);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 static void test_receive_round_trip(const void *data)
 {
     int sv[2];
@@ -2547,6 +2624,8 @@ int main(int argc, char **argv)
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,
                         test_receive_ring_full_recovers);
+    qtest_add_data_func("/bcm570x/receive-flush-on-enable", NULL,
+                        test_receive_flush_on_enable);
     qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
     qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
