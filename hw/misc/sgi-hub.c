@@ -770,32 +770,30 @@ static uint64_t sgi_hub_calias_bytes(uint32_t code)
 }
 
 /*
- * Size the nameless low windows to the programmed cached-alias size:
- * within the window a processor's node-field-zero access stays on its
- * own node; beyond it the access falls through to the claim layer, which
- * routes stride zero by programmed number. One register serves every
- * window of both processors' views (the PAM idiom again: the machine
- * pre-creates each window at the largest encodable size, and a store,
- * reset or load only resizes and gates it).
+ * Size the nameless low memory windows to the programmed cached-alias
+ * size: within the window a processor's node-field-zero memory access
+ * stays on its own node; beyond it the access falls through to the
+ * claim layer, which routes stride zero by programmed number. One
+ * register serves both processors' views (the PAM idiom again: the
+ * machine pre-creates each window at the largest encodable size, and a
+ * store, reset or load only resizes and gates it).
  */
 static void sgi_hub_calias_update(SGIHubState *s)
 {
     uint64_t size = sgi_hub_calias_bytes(s->pi_calias_size);
-    unsigned int view, n;
+    unsigned int view;
 
     memory_region_transaction_begin();
     for (view = 0; view < s->cpus; view++) {
-        for (n = 0; n < SGI_HUB_CALIAS_WINDOWS; n++) {
-            MemoryRegion *window = s->calias_window[view][n];
+        MemoryRegion *window = s->calias_window[view];
 
-            if (!window) {
-                continue;
-            }
-            if (size) {
-                memory_region_set_size(window, size);
-            }
-            memory_region_set_enabled(window, size != 0);
+        if (!window) {
+            continue;
         }
+        if (size) {
+            memory_region_set_size(window, size);
+        }
+        memory_region_set_enabled(window, size != 0);
     }
     memory_region_transaction_commit();
 }
@@ -3093,21 +3091,9 @@ static const Property sgi_hub_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("claim-target", SGIHubState, claim_target,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window0-0", SGIHubState, calias_window[0][0],
+    DEFINE_PROP_LINK("calias-window0", SGIHubState, calias_window[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window0-1", SGIHubState, calias_window[0][1],
-                     TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window0-2", SGIHubState, calias_window[0][2],
-                     TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window0-3", SGIHubState, calias_window[0][3],
-                     TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window1-0", SGIHubState, calias_window[1][0],
-                     TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window1-1", SGIHubState, calias_window[1][1],
-                     TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window1-2", SGIHubState, calias_window[1][2],
-                     TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_LINK("calias-window1-3", SGIHubState, calias_window[1][3],
+    DEFINE_PROP_LINK("calias-window1", SGIHubState, calias_window[1],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT32("claim-node-shift", SGIHubState, claim_node_shift, 0),
     DEFINE_PROP_UINT32("claim-space-shift", SGIHubState, claim_space_shift, 0),
