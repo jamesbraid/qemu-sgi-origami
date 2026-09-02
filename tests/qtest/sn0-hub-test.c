@@ -103,6 +103,7 @@
 #define IO_ICRB_C_STRIDE    0x20
 #define IO_ICRB_C_LAST_OFF  (IO_ICRB_C_BASE + 7 * IO_ICRB_C_STRIDE) /* slot 14 */
 #define IO_LINK_STATUS      0x400128
+#define IO_LLP_LOG          0x400130
 #define IO_ERROR_CLEAR      0x4001f8
 #define IO_PIO_DEALLOC      0x400388
 #define IO_CRB_DEALLOC      0x400390
@@ -1859,6 +1860,27 @@ static void test_a_guest_cannot_write_the_link_state(const void *data)
     qtest_quit(qts);
 }
 
+static void test_the_link_log_serves_a_clean_link(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* Both LLP error counts zero: the emulated link commits no errors. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LLP_LOG), ==, 0);
+
+    /*
+     * The counts feed the 6.5.30 kernel's error-rate evaluation, so a
+     * nonzero write must not seed errors the link never committed.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_LLP_LOG, 0xffff0000ffffULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LLP_LOG), ==, 0);
+
+    /* The consumer's read-then-write-zero interval close stays clean. */
+    qtest_writeq(qts, HUB_LOCAL + IO_LLP_LOG, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LLP_LOG), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -3534,6 +3556,8 @@ int main(int argc, char **argv)
                         test_the_crosstalk_link_reports_up);
     qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,
                         test_a_guest_cannot_write_the_link_state);
+    qtest_add_data_func("sn0/hub/link-log-serves-a-clean-link", NULL,
+                        test_the_link_log_serves_a_clean_link);
     qtest_add_data_func("sn0/hub/link-enabled-bit-is-writable", NULL,
                         test_a_guest_can_write_the_link_enabled_bit);
     qtest_add_data_func("sn0/hub/rt-counter-rate", NULL,
