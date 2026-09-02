@@ -261,6 +261,7 @@ static bool tigon_irq_line(TigonState *s)
      * on the interrupt-mailbox hold-off and the MISC_HOST_CTL mask bit.
      */
     return s->irq_asserted && s->mb_hostintr == 0 &&
+           s->gcr[TIGON_GCR_IDX(TI_GCR_MASK_INTRS)] == 0 &&
            !(s->misc_host_ctl & TI_MHC_MASK_INTS);
 }
 
@@ -920,6 +921,24 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
     default:
         if (addr >= TI_GCR_BASE && addr <= TI_GCR_END) {
             s->gcr[TIGON_GCR_IDX(addr)] = val;
+            if (addr == TI_GCR_MASK_INTRS) {
+                /*
+                 * Zero permits, anything else holds the line down: the public
+                 * driver writes zero here under "Turn interrupts on", and that
+                 * write is the only direct evidence of the polarity. A pending
+                 * cause is held rather than dropped, so unmasking delivers it.
+                 * Note a non-zero write: if a guest ever makes one and then
+                 * waits for an interrupt, this reading is where to look.
+                 */
+                if (val != 0) {
+                    qemu_log_mask(LOG_UNIMP,
+                                  "tigon: interrupt mask set to 0x%08x, read "
+                                  "as masking; only a zero write is attested\n",
+                                  (uint32_t)val);
+                }
+                tigon_update_irq(s);
+                return;
+            }
             /*
              * The two general-information registers hold one 64-bit address.
              * This window is little-endian, so the half at the lower offset is
