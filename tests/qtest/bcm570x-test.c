@@ -144,6 +144,8 @@
 #define BCM_MODE_CTL            0x6800u
 #define BCM_DMA_SWAP_OPTIONS    0x36u          /* the driver's MODE_CTL swap arm */
 #define BCM_SRAM_SEND_RING_RCB  0x0100u
+#define BCM_TXBDFLAG_TCP_UDP_CKSUM 0x0001u
+#define BCM_TXBDFLAG_IP_CKSUM   0x0002u
 #define BCM_TXBDFLAG_END        0x0004u
 #define BCM_STATFLAG_UPDATED    0x00000001u
 #define BCM_STATUS_BLK_SIZE     0x50
@@ -1057,6 +1059,176 @@ static void test_transmit_round_trip(const void *data)
     close(sv[0]);
 }
 
+/* The one's-complement sum an IP or TCP checksum field is meant to hold. */
+static uint16_t inet_csum(const uint8_t *b, size_t len, uint32_t sum)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)b[i] << 8) | b[i + 1];
+    }
+    if (len & 1) {
+        sum += (uint32_t)b[len - 1] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+/* An Ethernet/IPv4/TCP frame with both checksum fields left for the card. */
+#define CKSUM_FRAME_LEN 62
+static void build_cksum_frame(uint8_t *f, uint8_t ihl_byte)
+{
+    static const uint8_t head[] = {
+        0x52, 0x54, 0x00, 0x11, 0x22, 0x33,     /* destination */
+        0x52, 0x54, 0x00, 0xbc, 0x57, 0x01,     /* source */
+        0x08, 0x00,                             /* IPv4 */
+    };
+    unsigned int i;
+
+    memset(f, 0, CKSUM_FRAME_LEN);
+    memcpy(f, head, sizeof(head));
+
+    f[14] = ihl_byte;               /* version and header length */
+    f[16] = 0x00; f[17] = 48;       /* total length: 20 + 20 + 8 */
+    f[22] = 64;                     /* time to live */
+    f[23] = 6;                      /* TCP */
+    /* checksum at 24..25 stays zero -- the card is asked to fill it */
+    f[26] = 10; f[27] = 0; f[28] = 2; f[29] = 15;       /* source address */
+    f[30] = 10; f[31] = 0; f[32] = 2; f[33] = 2;        /* destination */
+
+    f[34] = 0x30; f[35] = 0x39;     /* source port */
+    f[36] = 0x00; f[37] = 0x17;     /* destination port */
+    f[46] = 0x50;                   /* data offset: five words */
+    f[47] = 0x02;                   /* SYN */
+    f[48] = 0x20; f[49] = 0x00;     /* window */
+    /* checksum at 50..51 stays zero, likewise the card's to fill */
+    for (i = 54; i < CKSUM_FRAME_LEN; i++) {
+        f[i] = (uint8_t)(i);
+    }
+}
+
+/* Put one frame on the wire through the send ring and read it back. */
+static size_t transmit_one(Bcm *b, int rx_fd, const uint8_t *frame,
+                           size_t frame_len, uint16_t flags,
+                           uint8_t *got, size_t got_size)
+{
+    uint8_t bd[16];
+
+    ind_reg_writel(b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, TX_BUF_PHYS >> 32);
+    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(bd + 8, flags);
+    put16le(bd + 10, frame_len);
+    qtest_memwrite(b->qts, TX_RING_PHYS, bd, sizeof(bd));
+    qtest_memwrite(b->qts, TX_BUF_PHYS, frame, frame_len);
+
+    bar_writel(b, BCM_MBX_TX_PROD_LO, 1);
+    return net_socket_recv_frame(rx_fd, got, got_size);
+}
+
+/*
+ * The checksums the driver asks the card to finish. IRIX tg hands a frame over
+ * with the IP and TCP checksum fields still empty and the offload bits set in
+ * the descriptor, so a model that transmits them untouched puts a frame on the
+ * wire that every receiver discards in silence -- and the failure hides, because
+ * ICMP and ARP carry checksums the guest computed itself and keep working.
+ */
+static void test_transmit_checksum_offload(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[CKSUM_FRAME_LEN];
+    uint8_t got[128];
+    uint8_t bare[CKSUM_FRAME_LEN];
+    uint16_t ip_expect, tcp_expect;
+    uint32_t pseudo;
+    size_t len;
+
+    build_cksum_frame(frame, 0x45);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    len = transmit_one(&b, sv[0], frame, sizeof(frame),
+                       BCM_TXBDFLAG_END | BCM_TXBDFLAG_IP_CKSUM |
+                       BCM_TXBDFLAG_TCP_UDP_CKSUM, got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+
+    /* What each field should hold, computed over the frame as sent. */
+    memcpy(bare, frame, sizeof(frame));
+    ip_expect = inet_csum(bare + 14, 20, 0);
+
+    pseudo = 0;
+    pseudo += ((uint32_t)bare[26] << 8) | bare[27];
+    pseudo += ((uint32_t)bare[28] << 8) | bare[29];
+    pseudo += ((uint32_t)bare[30] << 8) | bare[31];
+    pseudo += ((uint32_t)bare[32] << 8) | bare[33];
+    pseudo += 6;        /* protocol */
+    pseudo += 28;       /* TCP header and payload */
+    tcp_expect = inet_csum(bare + 34, 28, pseudo);
+
+    /* The card filled both in, and with something, not zero. */
+    g_assert_cmphex((got[24] << 8) | got[25], ==, ip_expect);
+    g_assert_cmphex((got[50] << 8) | got[51], ==, tcp_expect);
+    g_assert_cmpuint((got[24] << 8) | got[25], !=, 0);
+    g_assert_cmpuint((got[50] << 8) | got[51], !=, 0);
+
+    /* Everything else went out untouched. */
+    g_assert_cmpmem(got, 24, frame, 24);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * The lengths in the frame are the guest's bytes, so they are not to be trusted:
+ * a header claiming to be shorter than an IPv4 header can be would run the
+ * checksum arithmetic off the front of the buffer. The offload is declined and
+ * the frame goes out as it came in.
+ */
+static void test_transmit_checksum_bad_header(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[CKSUM_FRAME_LEN];
+    uint8_t got[128];
+    size_t len;
+
+    /* Header length four words: below the twenty bytes IPv4 requires. */
+    build_cksum_frame(frame, 0x44);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    len = transmit_one(&b, sv[0], frame, sizeof(frame),
+                       BCM_TXBDFLAG_END | BCM_TXBDFLAG_IP_CKSUM |
+                       BCM_TXBDFLAG_TCP_UDP_CKSUM, got, sizeof(got));
+
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 /*
  * Frame payload byte order under the endian word-swap. With ENDIAN_WORDSWAP set,
  * the big-endian driver lays each 32-bit DMA word down byte-reversed -- the same
@@ -1872,6 +2044,10 @@ int main(int argc, char **argv)
                         test_status_block_hostaddr_wordswap);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
+    qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,
+                        test_transmit_checksum_offload);
+    qtest_add_data_func("/bcm570x/transmit-checksum-bad-header", NULL,
+                        test_transmit_checksum_bad_header);
     qtest_add_data_func("/bcm570x/transmit-frame-wordswap", NULL,
                         test_transmit_frame_wordswap);
     qtest_add_data_func("/bcm570x/tx-producer-out-of-range", NULL,
