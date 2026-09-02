@@ -1717,6 +1717,66 @@ static void test_transmit_completion_raises_interrupt(void)
 }
 
 /*
+ * A driver does not transmit once, it transmits for as long as traffic lasts:
+ * ring, take the completion, ack it, ring again. The single-cycle test above
+ * cannot see a completion that only goes missing on a later pass -- a source
+ * that latches once and is never cleared again, or a re-assertion the model
+ * never makes -- and a driver that stops being told its frames completed stops
+ * transmitting at all. So run the cycle repeatedly and require the same three
+ * things of every pass: the frame egresses, the completion is raised on THAT
+ * pass, and the ack puts the line back down with nothing latched behind it.
+ *
+ * The check that earns this test its place is the one at the top of each
+ * cycle: the line must be low before the doorbell. A stuck source would leave
+ * it high, and every later completion would then land on an already-asserted
+ * line where it can no longer be told apart from the one before it.
+ */
+static void test_transmit_completion_survives_repeated_cycles(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint64_t par = TX_RAM_SCRATCH;
+    uint64_t buf = TX_RAM_SCRATCH + 0x1000;
+    uint64_t pending;
+    size_t len;
+    unsigned cycle, i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+    memset(frame, 0xff, 6);  /* broadcast destination */
+
+    xframe_tx_start(&t);
+    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
+    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
+
+    for (cycle = 0; cycle < 8; cycle++) {
+        /* Nothing left asserted by the previous cycle's ack. */
+        g_assert_false(xframe_intx_asserted(t.dev));
+
+        xframe_program_txd(&t, par, buf, frame, sizeof(frame));
+        xframe_ring_doorbell(&t, par);
+
+        len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
+        g_assert_cmpint(len, ==, sizeof(frame));
+        g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+        g_assert_true(xframe_intx_asserted(t.dev));
+        pending = sock_pif_readq(&t, TX_TRAFFIC_INT);
+        g_assert_cmphex(pending & TX_TRAFFIC_FIFO0, ==, TX_TRAFFIC_FIFO0);
+
+        /* The descriptor comes back to the host on every cycle, not just one. */
+        g_assert_cmphex(dma_ldq_be(t.qs->qts, par) & TXD_OWN, ==, 0);
+
+        sock_pif_writeq(&t, TX_TRAFFIC_INT, pending);
+        g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+    }
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * SWAPPER_CTRL-conditional descriptor byte order: a little-endian guest
  * (Linux s2io / OpenBSD xge on an LE host) sets the TxD/RxD _SE bits and
  * writes little-endian descriptors, and the device must honor that -- not
@@ -3305,6 +3365,51 @@ static void test_transmit_inserts_requested_tcp_checksum(void)
 }
 
 /*
+ * What the card does with the masks AS RESET, which is the question the
+ * completion test above cannot ask because it opens them itself. A driver that
+ * never writes TX_TRAFFIC_MASK gets whatever this says: the reset value is
+ * all-ones (masked), so the transmit-completion interrupt is gated off until
+ * the guest asks for it. Whether that is right depends on the guest, but the
+ * model's behaviour should be pinned rather than assumed -- a restrictive
+ * reset value turns a missing guest write into silence, and silence is what a
+ * driver waiting to reclaim descriptors never recovers from.
+ */
+static void test_transmit_completion_with_masks_as_reset(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint64_t par = TX_RAM_SCRATCH;
+    uint64_t buf = TX_RAM_SCRATCH + 0x1000;
+    size_t len = sizeof(frame);
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+    memset(frame, 0xff, 6);
+
+    xframe_tx_start(&t);
+
+    /* Deliberately touch NEITHER mask: this is the reset state a driver meets. */
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    xframe_program_txd(&t, par, buf, frame, len);
+    xframe_ring_doorbell(&t, par);
+    (void)traffic_recv_frame(t.host_fd, got, sizeof(got));
+
+    /*
+     * The frame goes out either way -- egress is not gated on the masks. What
+     * is pinned here is the INTERRUPT: with the masks as reset, none is
+     * delivered, so a driver that reclaims on completion is never told.
+     */
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, par) & TXD_OWN, ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * The largest receive payload the MAC accepts. A guest raises this to run
  * jumbo, so the card has to keep what it is told and read it back -- a value
  * the model drops leaves the driver unable to confirm the size it asked for.
@@ -3667,6 +3772,8 @@ int main(int argc, char **argv)
                    test_transmit_out_of_range_pointer_is_safe);
     qtest_add_func("xframe/transmit-completion-raises-interrupt",
                    test_transmit_completion_raises_interrupt);
+    qtest_add_func("xframe/transmit-completion-survives-repeated-cycles",
+                   test_transmit_completion_survives_repeated_cycles);
     qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
                    test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
@@ -3737,6 +3844,8 @@ int main(int argc, char **argv)
                    test_transmit_gather_list_releases_every_descriptor);
     qtest_add_func("xframe/rmac-max-payload-defaults-and-holds",
                    test_rmac_max_payload_defaults_and_holds);
+    qtest_add_func("xframe/transmit-completion-with-masks-as-reset",
+                   test_transmit_completion_with_masks_as_reset);
     qtest_add_func("xframe/transmit-frame-sizes-byte-exact",
                    test_transmit_frame_sizes_byte_exact);
     qtest_add_func("xframe/receive-frame-sizes-byte-exact",
