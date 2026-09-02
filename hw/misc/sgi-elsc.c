@@ -314,6 +314,74 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response_str(s, "ok");
 }
 
+/*
+ * "tas <ch>" / "tas 0": the test-and-set lock cell. A distinct service
+ * carried over the bus -- not the arbitration, which every command passes
+ * through, this one included. "tas <ch>" takes the lock if it is free;
+ * "tas 0" releases it.
+ *
+ * <ch> is a LITERAL character, not a hex value: the client stores the owner
+ * and compares it byte for byte, so "tas A" acquires with owner 'A' and a
+ * retry reads back "ok A" -- not "ok a" -- and any non-'0' byte is a valid
+ * channel, with nothing to reject as a bad argument. Classic test-and-set:
+ * "ok <held>" reports the byte the cell held BEFORE this request, so an
+ * acquire of a free cell reads back "ok 0" and a caller polls until it reads
+ * 0 (was free) or its own <ch> (already holds it). ASCII '0' is reserved as
+ * the release channel, so it is never an owner and the free cell is
+ * unambiguous.
+ *
+ * Occupancy (tas_held) is tracked apart from the owner byte (tas_lock): any
+ * byte is a legal owner, NUL (0x00) included, so the owner value alone cannot
+ * mean "free". A NUL owner must round-trip in the response, so the reply is
+ * framed with an explicit length rather than as a C string, whose strlen
+ * would truncate "ok \0" back to "ok ".
+ *
+ * The literal-byte round-trip is the test-and-set semantic the client's byte
+ * comparison needs, regardless of the datasheet's "hex" wording, which is
+ * flagged for the source owner. Read from the 6.5.7 driver's lock wrappers,
+ * dead code there; confirm against 6.5.30.
+ */
+static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
+{
+    uint8_t ch;
+    bool was_held;
+    uint8_t held;
+    char buf[4];
+
+    if (len >= 4 && text[3] != ' ') {
+        /* "tasx": junk after the mnemonic with no delimiter is not "tas". */
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    if (len != 5) {
+        /* "tas" takes exactly one channel character. */
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    ch = (uint8_t)text[4];
+
+    was_held = s->tas_held;             /* occupancy before this request */
+    held = s->tas_lock;                 /* owner before this request, if held */
+    if (ch == '0') {
+        s->tas_held = false;            /* release */
+        s->tas_lock = 0;
+    } else if (!s->tas_held) {
+        s->tas_held = true;             /* free: this caller takes it */
+        s->tas_lock = ch;
+    }
+    /* else: already held (by this caller or another); the cell is unchanged. */
+
+    /*
+     * "ok <held>": the owner byte before this request, or '0' if it was
+     * free.
+     */
+    buf[0] = 'o';
+    buf[1] = 'k';
+    buf[2] = ' ';
+    buf[3] = was_held ? held : '0';
+    elsc_frame_response(s, buf, sizeof(buf));
+}
+
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -354,6 +422,10 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len >= 3 && memcmp(text, "hbt", 3) == 0) {
         elsc_handle_hbt(s, text, len);
+        return;
+    }
+    if (len >= 3 && memcmp(text, "tas", 3) == 0) {
+        elsc_handle_tas(s, text, len);
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
@@ -944,6 +1016,8 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
     s->deferred_scheduled = false;
+    s->tas_held = false;
+    s->tas_lock = 0;
     /* The power-on content is unstated; blank spaces are a model choice. */
     memset(s->display, ' ', sizeof(s->display));
 }
@@ -1007,7 +1081,7 @@ static int elsc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 9,
+    .version_id = 11,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -1059,6 +1133,15 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8_V(deferred_action, SGIElscState, 9),
         VMSTATE_BOOL_V(deferred_committed, SGIElscState, 9),
         VMSTATE_BOOL_V(deferred_scheduled, SGIElscState, 9),
+        /*
+         * The lock cell. tas_held is the occupancy and tas_lock the owner
+         * byte; both are needed because any byte -- NUL included -- is a
+         * legal owner, so the owner value alone cannot mean "free". A
+         * pre-version-11 stream loads tas_held false (the cell free),
+         * regardless of any tas_lock byte a version-10 stream carried.
+         */
+        VMSTATE_UINT8_V(tas_lock, SGIElscState, 10),
+        VMSTATE_BOOL_V(tas_held, SGIElscState, 11),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,

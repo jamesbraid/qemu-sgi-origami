@@ -121,6 +121,26 @@ Command vocabulary
     per-module reset -- QEMU provides no per-module reset and the model
     keeps the whole-machine reset rather than refuse.
 
+``tas <ch>`` / ``tas 0``
+    The test-and-set lock cell, which the 6.5.30 firmware drives in its
+    arbitration path. ``tas <ch>`` takes the lock if it is free; ``tas 0``
+    releases it. Classic test-and-set: ``ok <held>`` reports the value
+    the cell held *before* the request, so acquiring a free cell reads
+    ``ok 0`` and a caller polls until it reads 0 (was free) or its own
+    ``<ch>`` (already holds it). ``<ch>`` is a *literal* character, not a
+    hex value: the client stores and compares the owner byte for byte, so
+    ``tas A`` reads back ``ok A`` and any single non-``0`` character is a
+    valid channel -- including NUL (``0x00``), so occupancy is tracked apart
+    from the owner byte and a NUL owner round-trips in the response frame
+    rather than being read as the free cell. ASCII ``0`` is reserved as the
+    release channel. This is
+    a distinct byte, not the bus arbitration below -- a service carried
+    over the bus that itself passes through the arbitration wait like any
+    command. The literal-byte round-trip is the test-and-set semantic the
+    client needs; the datasheet's "hex" wording is flagged for the source
+    owner, and the pre-write value is 6.5.7-derived and unverified on
+    6.5.30.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates

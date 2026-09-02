@@ -2090,6 +2090,164 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     qtest_quit(from);
 }
 
+/*
+ * "tas <ch>" / "tas 0" is the test-and-set lock cell (datasheet:
+ * firmware-facing command contracts), driven by the 6.5.30 firmware in its
+ * arbitration path -- a distinct byte, not the bus arbitration. <ch> is a
+ * LITERAL character: the client compares the owner byte for byte, so the
+ * response echoes the exact byte held before the request, and any single
+ * non-'0' character is a valid channel. Acquiring a free cell reads back
+ * "ok 0"; a caller polls until it reads 0 (was free) or its own byte. ASCII
+ * '0' releases. (Literal-byte round-trip; the datasheet's "hex" wording is
+ * flagged for the source owner, and the pre-write value is 6.5.7-derived,
+ * unverified on 6.5.30.)
+ */
+static void test_tas_lock_cell(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /* Free cell: the pre-acquisition value is 0, then 'A' installs. */
+    req_len = build_request(req, "tas A");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+
+    /* Re-acquiring reads the owner back literally -- "ok A", not "ok a". */
+    req_len = build_request(req, "tas A");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok A", 4) == 0);
+
+    /* Held by 'A': a different caller reads the holder, not its own byte. */
+    req_len = build_request(req, "tas z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok A", 4) == 0);
+
+    /* Release: the pre-release value is the holder, and the cell frees. */
+    req_len = build_request(req, "tas 0");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok A", 4) == 0);
+
+    /* 'z' is a valid non-hex channel: the free cell reads 0 and installs it. */
+    req_len = build_request(req, "tas z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+
+    /* And it reads back as itself. */
+    req_len = build_request(req, "tas z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok z", 4) == 0);
+
+    /* More than one channel character is a bad argument. */
+    req_len = build_request(req, "tas zz");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /* Junk after the mnemonic with no delimiter is an unknown command. */
+    req_len = build_request(req, "tasx");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A NUL (0x00) owner is a legal channel and must not be read as the free
+ * cell. Acquiring the free cell with owner 0x00 leaves it HELD; a later
+ * caller then reads the 0x00 owner back rather than acquiring, and that
+ * owner byte round-trips through the response frame -- which a strlen-framed
+ * "ok \0" reply would truncate to "ok ". (datasheet: firmware-facing command
+ * contracts; any byte but the release channel '0' is a valid owner.)
+ */
+static void test_tas_lock_nul_owner(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /*
+     * "tas " with a NUL owner byte: text length 5. Built by hand because
+     * build_request() takes a C string and would stop at the NUL.
+     */
+    req[0] = 5;
+    req[1] = 't';
+    req[2] = 'a';
+    req[3] = 's';
+    req[4] = ' ';
+    req[5] = 0x00;
+    req[6] = (uint8_t)(-(int)frame_checksum(req, 6));
+    req_len = 7;
+
+    /* Acquire the free cell: the pre-acquisition value is the free sentinel. */
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+
+    /*
+     * A different caller now finds the cell HELD -- the buggy free-sentinel
+     * conflation would let it acquire and read "ok 0" instead. It reads the
+     * 0x00 owner back, and that owner byte survives the response framing.
+     */
+    req_len = build_request(req, "tas z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert_cmpuint(resp[1], ==, 'o');
+    g_assert_cmpuint(resp[2], ==, 'k');
+    g_assert_cmpuint(resp[3], ==, ' ');
+    g_assert_cmpuint(resp[4], ==, 0x00);
+
+    /*
+     * And 'z' did not steal it: the NUL owner still holds. Re-reading with
+     * the NUL owner reads its own byte back, so the cell is occupied.
+     */
+    req[0] = 5;
+    req[1] = 't';
+    req[2] = 'a';
+    req[3] = 's';
+    req[4] = ' ';
+    req[5] = 0x00;
+    req[6] = (uint8_t)(-(int)frame_checksum(req, 6));
+    req_len = 7;
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert_cmpuint(resp[4], ==, 0x00);
+
+    /* Release frees it; the pre-release value is the NUL owner. */
+    req_len = build_request(req, "tas 0");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert_cmpuint(resp[4], ==, 0x00);
+
+    /* Free again: 'z' acquires and reads the free sentinel back. */
+    req_len = build_request(req, "tas z");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2179,6 +2337,10 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/elsc/rst-reset-open-frame-defers-across-migration",
         NULL, test_rst_reset_open_frame_defers_across_migration);
+    qtest_add_data_func("sn0/elsc/tas-lock-cell", NULL,
+                        test_tas_lock_cell);
+    qtest_add_data_func("sn0/elsc/tas-lock-nul-owner", NULL,
+                        test_tas_lock_nul_owner);
 
     ret = g_test_run();
 
