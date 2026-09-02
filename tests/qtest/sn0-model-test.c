@@ -1,25 +1,10 @@
 /*
- * The Origin 200 machine, checked against the model it is supposed to be.
+ * Origin 200 machine topology and synthesized-firmware qtests.
  *
- * The architecture contract says the configuration graph the firmware
- * synthesises and the devices the machine instantiates come from one topology
- * and cannot disagree. Until now nothing checked that: it held as long as
- * whoever edited the machine file remembered to edit the firmware builder to
- * match, and the failure it guards against is a guest that boots, discovers a
- * machine slightly unlike the one that was built, and dies somewhere unrelated
- * with nothing in the log.
- *
- * This is that check. Both descriptions are read back out of a running machine
- * and compared against the model they are both supposed to be projections of:
- *
- *   - the configuration graph, read straight out of node memory, field by
- *     field, against what tools/gen-klconfig generates from the model;
- *   - the object graph, walked over the monitor, against the devices the model
- *     says this machine has.
- *
- * The expectations are generated rather than written here, so this file cannot
- * drift from the model by being edited: see sn0-model.h, which
- * tools/check-model-header proves is what regenerating produces.
+ * The expected values here are deliberately independent literals.  The model
+ * compiler supplies the machine description consumed by QEMU, so using its
+ * generated output as the expected side would let one compiler bug satisfy
+ * both the machine and its test.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -30,9 +15,6 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
-
-#include "sn0-model.h"
-#include "sn0-model-dual-assert.h"
 
 #include <elf.h>
 
@@ -55,8 +37,17 @@
 #define SN0_GRAPH_BASE_IO       (SN0_GRAPH_MIDPLANE + SN0_GRAPH_BOARD_SIZE)
 #define SN0_GRAPH_COMPONENTS    0x4400
 #define SN0_GRAPH_COMP_STRIDE   0x80
+#define SN0_GRAPH_MAGIC         0xbeedbabeULL
+#define SN0_BOARD_NODE          0x11
+#define SN0_BOARD_MIDPLANE      0x41
 #define SN0_BOARD_BASE_IO       0x21
 #define SN0_COMP_PROCESSOR      1
+#define SN0_COMP_HUB            2
+#define SN0_COMP_MEMORY         3
+#define SN0_COMP_BRIDGE         5
+#define SN0_COMP_IO_CONTROLLER  6
+#define SN0_COMP_SCSI           11
+#define SN0_COMP_MODULE_SERIAL  26
 #define SN0_COMP_ENABLED        1
 
 #define SN0_DUAL_CHASSIS_TOPOLOGY \
@@ -71,6 +62,17 @@
     "-M origin200,synthesized-firmware=off " SN0_DUAL_CHASSIS_TOPOLOGY
 #define SN0_DUAL_CHASSIS_FIRMWARE_ARGS \
     "-M origin200 " SN0_DUAL_CHASSIS_TOPOLOGY
+#define SN0_BASE_PROFILE_MEMORY \
+    "-M origin200,synthesized-firmware=off -m 64M " \
+    "-object memory-backend-ram,id=ram0,size=64M "
+#define SN0_BASE_PROFILE_ONE_CPU \
+    SN0_BASE_PROFILE_MEMORY \
+    "-numa node,nodeid=0,cpus=0,memdev=ram0 " \
+    "-smp 1,sockets=1,cores=1,threads=1"
+#define SN0_BASE_PROFILE_TWO_CPUS \
+    SN0_BASE_PROFILE_MEMORY \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-smp 2,sockets=1,cores=2,threads=1"
 
 #define SN0_SPACE_XTALK         0x20000000000ULL
 #define SN0_HUB_BY_NODE(node)   (SN0_SPACE_XTALK + \
@@ -99,6 +101,7 @@
 
 #define SN0_PCI_COMMAND         0x04
 #define SN0_PCI_REVISION_ID     0x08
+#define SN0_PCI_SUBSYSTEM       0x2c
 #define SN0_PCI_COMMAND_IO      0x0001
 #define SN0_PCI_COMMAND_MEMORY  0x0002
 #define SN0_PCI_COMMAND_MASTER  0x0004
@@ -107,6 +110,7 @@
 #define SN0_PCI_SCSI0_MEM       0x08200000U
 #define SN0_PCI_SCSI1_MEM       0x08400000U
 #define SN0_PCI_IOC3_MEM        0x08600000U
+#define SN0_IOC3_SUBSYSTEM      0xc30310a9U
 #define SN0_TEST_IOC3_MEM       0x10000000U
 #define SN0_CPU_ID_ADDR         0x00030000U
 #define SN0_FPU_ID_ADDR         0x00030004U
@@ -354,7 +358,7 @@ static void test_a_32_bit_kernel_entry_is_sign_extended(const void *data)
         g_usleep(1000);
     }
 
-    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    g_assert_cmphex(prid, ==, 0x0926);
     qtest_quit(qts);
     g_unlink(kernel);
 }
@@ -397,7 +401,7 @@ static void test_a_64_bit_kernel_entry_is_left_alone(const void *data)
         g_usleep(1000);
     }
 
-    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    g_assert_cmphex(prid, ==, 0x0926);
     qtest_quit(qts);
     g_unlink(elf32);
 }
@@ -467,14 +471,13 @@ static void test_baseline_cpu_identity(const void *data)
         g_usleep(1000);
     }
 
-    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
-    g_assert_cmphex(fpu_prid, ==, SN0_MODEL_FPU_PRID);
+    g_assert_cmphex(prid, ==, 0x0926);
+    g_assert_cmphex(fpu_prid, ==, 0x0900);
     qtest_quit(qts);
     g_unlink(kernel);
 }
 
-void sn0_model_assert_device_identity(QTestState *qts, unsigned int node,
-                                      const SN0ModelDeviceIdentity *expected)
+static void assert_device_identity(QTestState *qts, unsigned int node)
 {
     uint64_t hub = SN0_HUB_BY_NODE(node);
     uint64_t ni = qtest_readq(qts, hub + SN0_NI_STATUS);
@@ -482,28 +485,28 @@ void sn0_model_assert_device_identity(QTestState *qts, unsigned int node,
                                       hub + SN0_IO_WIDGET_ID);
     uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(node) + 4);
 
-    g_assert_cmpuint((ni >> 4) & 0xf, ==, expected->hub_ni_revision);
-    g_assert_cmpuint((hub_widget >> 28) & 0xf, ==,
-                     expected->hub_widget_revision);
-    g_assert_cmpuint(bridge >> 28, ==, expected->bridge_revision);
+    g_assert_cmpuint((ni >> 4) & 0xf, ==, 3);
+    g_assert_cmpuint((hub_widget >> 28) & 0xf, ==, 1);
+    g_assert_cmpuint(bridge >> 28, ==, 4);
     g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) +
                                       SN0_PCI_REVISION_ID) & 0xff, ==,
-                     expected->ioc3_pci_revision);
+                     1);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) +
+                                     SN0_PCI_SUBSYSTEM), ==,
+                    SN0_IOC3_SUBSYSTEM);
     g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_SCSI_DEVICE0) +
                                       SN0_PCI_REVISION_ID) & 0xff, ==,
-                     expected->isp1040_pci_revision);
+                     5);
     g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_SCSI_DEVICE1) +
                                       SN0_PCI_REVISION_ID) & 0xff, ==,
-                     expected->isp1040_pci_revision);
+                     5);
 }
 
 static void test_baseline_device_identity(const void *data)
 {
-    const SN0ModelDeviceIdentity expected =
-        SN0_MODEL_DEVICE_IDENTITY_INIT;
     QTestState *qts = qtest_init("-M origin200");
 
-    sn0_model_assert_device_identity(qts, 0, &expected);
+    assert_device_identity(qts, 0);
     qtest_quit(qts);
 }
 
@@ -609,6 +612,265 @@ static char *qom_get_string(QTestState *qts, const char *path,
     value = g_strdup(qdict_get_str(response, "return"));
     qobject_unref(response);
     return value;
+}
+
+static void assert_qom_type(QTestState *qts, const char *path,
+                            const char *expected)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                                     " 'arguments': { 'path': %s,"
+                                     " 'property': 'type' } }", path);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, expected);
+    qobject_unref(response);
+}
+
+typedef struct QOMChildExpectation {
+    const char *name;
+    const char *type;
+} QOMChildExpectation;
+
+static bool is_qom_infrastructure_child(const char *type)
+{
+    return g_str_equal(type, "child<container>") ||
+           g_str_equal(type, "child<memory-region>") ||
+           g_str_equal(type, "child<clock>") ||
+           g_str_equal(type, "child<irq>") ||
+           g_str_equal(type, "child<sgi-ioc3-bus>") ||
+           g_str_equal(type, "child<qtest>") ||
+           g_str_equal(type, "child<monitor-qmp>");
+}
+
+static void assert_qom_child_set(QTestState *qts, const char *path,
+                                 const QOMChildExpectation *expected,
+                                 size_t expected_count)
+{
+    g_autofree bool *seen = g_new0(bool, expected_count);
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     path);
+    QList *entries;
+    const QListEntry *entry;
+    size_t child_count = 0;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    entries = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(entries); entry; entry = qlist_next(entry)) {
+        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *name = qdict_get_str(child, "name");
+        const char *type = qdict_get_str(child, "type");
+        size_t expected_index;
+
+        if (!g_str_has_prefix(type, "child<") ||
+            is_qom_infrastructure_child(type)) {
+            continue;
+        }
+        child_count++;
+        for (expected_index = 0; expected_index < expected_count;
+             expected_index++) {
+            if (g_str_equal(name, expected[expected_index].name) &&
+                g_str_equal(type, expected[expected_index].type)) {
+                g_assert_false(seen[expected_index]);
+                seen[expected_index] = true;
+                break;
+            }
+        }
+        if (expected_index == expected_count) {
+            g_test_message("unexpected QOM child %s with type %s below %s",
+                           name, type, path);
+        }
+        g_assert_cmpuint(expected_index, <, expected_count);
+    }
+    g_assert_cmpuint(child_count, ==, expected_count);
+    for (child_count = 0; child_count < expected_count; child_count++) {
+        g_assert_true(seen[child_count]);
+    }
+    qobject_unref(response);
+}
+
+static const QOMChildExpectation ip29_ioc3_children[] = {
+    { "serial[0]", "child<serial>" },
+    { "serial[1]", "child<serial>" },
+    { "eth", "child<sgi-ioc3-eth>" },
+    { "kbc", "child<sgi-ioc3-kbc>" },
+    { "parallel", "child<sgi-ioc3-parallel>" },
+    { "rtc", "child<m48t35>" },
+};
+
+static void test_origin200_owns_the_ioc3_board_default(const void *data)
+{
+    QTestState *qts = qtest_init("-machine none");
+    QDict *response = qtest_qmp(
+        qts, "{ 'execute': 'query-machines',"
+             " 'arguments': { 'compat-props': true } }");
+    QList *machines = qdict_get_qlist(response, "return");
+    const QListEntry *machine_entry;
+    bool found_machine = false;
+    bool found_property = false;
+
+    for (machine_entry = qlist_first(machines); machine_entry;
+         machine_entry = qlist_next(machine_entry)) {
+        QDict *machine = qobject_to(
+            QDict, qlist_entry_obj(machine_entry));
+        QList *properties;
+        const QListEntry *property_entry;
+
+        if (!g_str_equal(qdict_get_str(machine, "name"), "origin200")) {
+            continue;
+        }
+        found_machine = true;
+        properties = qdict_get_qlist(machine, "compat-props");
+        for (property_entry = qlist_first(properties); property_entry;
+             property_entry = qlist_next(property_entry)) {
+            QDict *property = qobject_to(
+                QDict, qlist_entry_obj(property_entry));
+
+            if (g_str_equal(qdict_get_str(property, "qom-type"),
+                            "sgi-ioc3") &&
+                g_str_equal(qdict_get_str(property, "property"),
+                            "subsystem-id")) {
+                g_assert_false(found_property);
+                g_assert_cmpstr(qdict_get_str(property, "value"), ==,
+                                "0xc303");
+                found_property = true;
+            }
+        }
+    }
+    g_assert_true(found_machine);
+    g_assert_true(found_property);
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
+typedef struct BaseProfileTopologyCase {
+    const char *args;
+    bool has_cpu1;
+} BaseProfileTopologyCase;
+
+static const BaseProfileTopologyCase base_profile_topologies[] = {
+    { SN0_BASE_PROFILE_ONE_CPU, false },
+    { SN0_BASE_PROFILE_TWO_CPUS, true },
+};
+
+/* Exact shipped population, without cataloguing unrelated QOM internals. */
+static void test_base_profile_topology(const void *data)
+{
+    const BaseProfileTopologyCase *topology = data;
+    static const QOMChildExpectation machine_children[] = {
+        { "node0", "child<sn0-node>" },
+        { "bridge", "child<sgi-bridge>" },
+    };
+    static const QOMChildExpectation one_cpu_children[] = {
+        { "cpu0", "child<R10000-mips64-cpu>" },
+        { "hub", "child<sgi-hub>" },
+        { "ioc3", "child<sgi-ioc3>" },
+        { "isp0", "child<qlogic-isp1040>" },
+        { "isp1", "child<qlogic-isp1040>" },
+    };
+    static const QOMChildExpectation two_cpu_children[] = {
+        { "cpu0", "child<R10000-mips64-cpu>" },
+        { "cpu1", "child<R10000-mips64-cpu>" },
+        { "hub", "child<sgi-hub>" },
+        { "ioc3", "child<sgi-ioc3>" },
+        { "isp0", "child<qlogic-isp1040>" },
+        { "isp1", "child<qlogic-isp1040>" },
+    };
+    static const QOMChildExpectation object_children[] = {
+        { "ram0", "child<memory-backend-ram>" },
+    };
+    const QOMChildExpectation *node_children = topology->has_cpu1 ?
+        two_cpu_children : one_cpu_children;
+    size_t node_child_count = topology->has_cpu1 ?
+        ARRAY_SIZE(two_cpu_children) : ARRAY_SIZE(one_cpu_children);
+    QTestState *qts = qtest_init(topology->args);
+
+    assert_qom_child_set(qts, "/machine", machine_children,
+                         ARRAY_SIZE(machine_children));
+    assert_qom_child_set(qts, "/machine/node0", node_children,
+                         node_child_count);
+    assert_qom_child_set(qts, "/objects", object_children,
+                         ARRAY_SIZE(object_children));
+    assert_qom_child_set(qts, "/machine/node0/ioc3", ip29_ioc3_children,
+                         ARRAY_SIZE(ip29_ioc3_children));
+    assert_qom_type(qts, "/machine/node0/cpu0", "R10000-mips64-cpu");
+    if (topology->has_cpu1) {
+        assert_qom_type(qts, "/machine/node0/cpu1", "R10000-mips64-cpu");
+    }
+    assert_qom_type(qts, "/machine/node0/hub", "sgi-hub");
+    assert_qom_type(qts, "/machine/bridge", "sgi-bridge");
+    assert_qom_type(qts, "/machine/node0/ioc3", "sgi-ioc3");
+    assert_qom_type(qts, "/machine/node0/isp0", "qlogic-isp1040");
+    assert_qom_type(qts, "/machine/node0/isp1", "qlogic-isp1040");
+    assert_qom_type(qts, "/objects/ram0", "memory-backend-ram");
+
+    qtest_quit(qts);
+}
+
+static void test_dual_profile_topology(const void *data)
+{
+    static const QOMChildExpectation machine_children[] = {
+        { "node0", "child<sn0-node>" },
+        { "node1", "child<sn0-node>" },
+        { "bridge", "child<sgi-bridge>" },
+        { "bridge1", "child<sgi-bridge>" },
+    };
+    static const QOMChildExpectation node_children[] = {
+        { "cpu0", "child<R10000-mips64-cpu>" },
+        { "cpu1", "child<R10000-mips64-cpu>" },
+        { "hub", "child<sgi-hub>" },
+        { "ioc3", "child<sgi-ioc3>" },
+        { "isp0", "child<qlogic-isp1040>" },
+        { "isp1", "child<qlogic-isp1040>" },
+    };
+    static const QOMChildExpectation object_children[] = {
+        { "ram0", "child<memory-backend-ram>" },
+        { "ram1", "child<memory-backend-ram>" },
+    };
+    static const char * const node_paths[][6] = {
+        {
+            "/machine/node0/cpu0", "/machine/node0/cpu1",
+            "/machine/node0/hub", "/machine/node0/ioc3",
+            "/machine/node0/isp0", "/machine/node0/isp1",
+        },
+        {
+            "/machine/node1/cpu0", "/machine/node1/cpu1",
+            "/machine/node1/hub", "/machine/node1/ioc3",
+            "/machine/node1/isp0", "/machine/node1/isp1",
+        },
+    };
+    static const char * const types[] = {
+        "R10000-mips64-cpu", "R10000-mips64-cpu", "sgi-hub", "sgi-ioc3",
+        "qlogic-isp1040", "qlogic-isp1040",
+    };
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
+    unsigned int node, device;
+
+    assert_qom_type(qts, "/machine", "origin200-machine");
+    assert_qom_type(qts, "/machine/node0", "sn0-node");
+    assert_qom_type(qts, "/machine/node1", "sn0-node");
+    assert_qom_type(qts, "/machine/bridge", "sgi-bridge");
+    assert_qom_type(qts, "/machine/bridge1", "sgi-bridge");
+    assert_qom_type(qts, "/objects/ram0", "memory-backend-ram");
+    assert_qom_type(qts, "/objects/ram1", "memory-backend-ram");
+    assert_qom_child_set(qts, "/machine", machine_children,
+                         ARRAY_SIZE(machine_children));
+    assert_qom_child_set(qts, "/objects", object_children,
+                         ARRAY_SIZE(object_children));
+    for (node = 0; node < ARRAY_SIZE(node_paths); node++) {
+        g_autofree char *node_path = g_strdup_printf("/machine/node%u", node);
+        g_autofree char *ioc3_path =
+            g_strdup_printf("/machine/node%u/ioc3", node);
+
+        assert_qom_child_set(qts, node_path, node_children,
+                             ARRAY_SIZE(node_children));
+        assert_qom_child_set(qts, ioc3_path, ip29_ioc3_children,
+                             ARRAY_SIZE(ip29_ioc3_children));
+        for (device = 0; device < ARRAY_SIZE(types); device++) {
+            assert_qom_type(qts, node_paths[node][device], types[device]);
+        }
+    }
+    qtest_quit(qts);
 }
 
 /*
@@ -775,406 +1037,191 @@ static uint64_t read_field(QTestState *qts, uint64_t at, unsigned width)
     }
 }
 
-static bool valid_graph_field_width(unsigned int width)
+static void assert_graph_header(QTestState *qts, uint64_t base,
+                                unsigned int nasid)
 {
-    return width == 1 || width == 2 || width == 4 || width == 8;
+    g_assert_cmphex(read_field(qts, base + 0x4000, 8), ==, SN0_GRAPH_MAGIC);
+    g_assert_cmphex(read_field(qts, base + 0x4008, 4), ==, 0);
+    g_assert_cmphex(read_field(qts, base + 0x400c, 4), ==, 0x48);
+    g_assert_cmphex(read_field(qts, base + 0x4010, 4), ==, 0x18);
+    g_assert_cmphex(read_field(qts, base + 0x4014, 4), ==, 0x4100);
+    g_assert_cmphex(read_field(qts, base + 0x4018, 8), ==,
+                    0x9200000008620178ULL);
+    g_assert_cmphex(read_field(qts, base + 0x4020, 8), ==,
+                    0x9200000008022000ULL);
+    g_assert_cmphex(read_field(qts, base + 0x4028, 8), ==,
+                    0x9200000008600000ULL);
+    g_assert_cmpuint(read_field(qts, base + 0x4030, 2), ==, 9600);
+    g_assert_cmpuint(read_field(qts, base + 0x4038, 2), ==, nasid);
+    g_assert_cmpuint(read_field(qts, base + 0x403a, 1), ==, 8);
+    g_assert_cmpuint(read_field(qts, base + 0x403b, 1), ==, 2);
 }
 
-bool sn0_model_reconstruct_graph(const SN0ModelConfigGraph *graph,
-                                 uint8_t *image, size_t image_size)
+static void assert_board(QTestState *qts, uint64_t base, uint64_t offset,
+                         uint32_t next, uint8_t type, uint8_t version,
+                         uint8_t declared_components, unsigned int nasid)
 {
-    g_autofree bool *written = NULL;
-    size_t i;
-
-    if (graph->span == 0 || graph->size < graph->span ||
-        image_size < graph->span) {
-        g_test_message("node %u has an invalid graph span", graph->nasid);
-        return false;
-    }
-
-    memset(image, 0, graph->span);
-    written = g_new0(bool, graph->span);
-    for (i = 0; i < graph->field_count; i++) {
-        const SN0ModelField *field = &graph->fields[i];
-        uint64_t at;
-        unsigned int byte;
-
-        if (!valid_graph_field_width(field->width)) {
-            g_test_message("node %u %s has unsupported width %u",
-                           graph->nasid, field->field, field->width);
-            return false;
-        }
-        if (field->offset < graph->base || field->width > graph->span ||
-            field->offset - graph->base > graph->span - field->width) {
-            g_test_message("node %u %s is outside the generated graph span",
-                           graph->nasid, field->field);
-            return false;
-        }
-        if (field->width < sizeof(field->value) &&
-            field->value >> (field->width * 8)) {
-            g_test_message("node %u %s value 0x%" PRIx64
-                           " does not fit width %u",
-                           graph->nasid, field->field, field->value,
-                           field->width);
-            return false;
-        }
-
-        at = field->offset - graph->base;
-        for (byte = 0; byte < field->width; byte++) {
-            if (written[at + byte]) {
-                g_test_message("node %u %s overlaps another generated field "
-                               "at 0x%" PRIx64,
-                               graph->nasid, field->field,
-                               field->offset + byte);
-                return false;
-            }
-        }
-        for (byte = 0; byte < field->width; byte++) {
-            image[at + field->width - byte - 1] =
-                field->value >> (byte * 8);
-            written[at + byte] = true;
-        }
-    }
-    return true;
+    g_assert_cmphex(read_field(qts, base + offset, 4), ==, next);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x04, 1), ==, 1);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x05, 1), ==, type);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x06, 1), ==, version);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x17, 1), ==,
+                     declared_components);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x20, 2), ==, nasid);
 }
 
-static const SN0ModelField *find_divergent_field(
-    const SN0ModelConfigGraph *graph, const SN0ModelDivergence *divergence)
+static void assert_component(QTestState *qts, uint64_t base, uint64_t offset,
+                             uint8_t type, uint8_t revision,
+                             uint8_t physical_id, uint32_t virtual_id,
+                             uint8_t widget, unsigned int nasid)
 {
-    size_t i;
-
-    for (i = 0; i < graph->field_count; i++) {
-        const SN0ModelField *field = &graph->fields[i];
-
-        if (field->offset == divergence->offset &&
-            field->width == divergence->width &&
-            g_str_equal(field->field, divergence->field)) {
-            return field;
-        }
-    }
-    return NULL;
+    g_assert_cmpuint(read_field(qts, base + offset + 0x00, 1), ==, type);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x01, 1), ==, 1);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x02, 1), ==,
+                     SN0_COMP_ENABLED);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x03, 1), ==, revision);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x18, 1), ==,
+                     physical_id);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x1c, 4), ==,
+                     virtual_id);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x20, 1), ==, widget);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x22, 2), ==, nasid);
+    g_assert_cmphex(read_field(qts, base + offset + 0x28, 8), ==, 0);
 }
 
-bool sn0_model_apply_graph_divergences(
-    const SN0ModelConfigGraph *graph,
-    const SN0ModelDivergence *divergences,
-    const uint8_t *got, uint8_t *expected)
+static void assert_cpu_record(QTestState *qts, uint64_t base, uint64_t offset,
+                              unsigned int slice, unsigned int virtual_id,
+                              unsigned int nasid)
 {
-    size_t i;
-
-    for (i = 0; divergences[i].field != NULL; i++) {
-        const SN0ModelDivergence *divergence = &divergences[i];
-        const SN0ModelField *field;
-        uint64_t at;
-        uint64_t machine = 0;
-        unsigned int byte;
-
-        if (!valid_graph_field_width(divergence->width) ||
-            divergence->offset < graph->base ||
-            divergence->width > graph->span ||
-            divergence->offset - graph->base >
-            graph->span - divergence->width) {
-            g_test_message("known divergence %s is outside this graph span",
-                           divergence->field);
-            return false;
-        }
-        field = find_divergent_field(graph, divergence);
-        if (!field) {
-            g_test_message("known divergence %s no longer identifies an "
-                           "exact generated field", divergence->field);
-            return false;
-        }
-        if (field->value == divergence->machine_value) {
-            g_test_message("known divergence %s is stale: model and machine "
-                           "value are both 0x%" PRIx64,
-                           divergence->field, field->value);
-            return false;
-        }
-
-        at = divergence->offset - graph->base;
-        for (byte = 0; byte < divergence->width; byte++) {
-            machine = (machine << 8) | got[at + byte];
-        }
-        if (machine != divergence->machine_value) {
-            g_test_message("known divergence %s expects machine value 0x%"
-                           PRIx64 ", but the machine now has 0x%" PRIx64,
-                           divergence->field, divergence->machine_value,
-                           machine);
-            return false;
-        }
-        for (byte = 0; byte < divergence->width; byte++) {
-            expected[at + divergence->width - byte - 1] =
-                divergence->machine_value >> (byte * 8);
-        }
-    }
-    return true;
+    assert_component(qts, base, offset, SN0_COMP_PROCESSOR, 0xff, slice,
+                     virtual_id, 0, nasid);
+    g_assert_cmphex(read_field(qts, base + offset + 0x38, 2), ==, 0x0926);
+    g_assert_cmphex(read_field(qts, base + offset + 0x3a, 2), ==, 0x0900);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x3c, 2), ==, 180);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x3e, 2), ==, 1);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x40, 2), ==, 90);
 }
 
-static uint64_t expected_machine_value(
-    const SN0ModelField *field, const SN0ModelDivergence *divergences)
+static void assert_memory_record(QTestState *qts, uint64_t base,
+                                 uint64_t offset, unsigned int nasid,
+                                 uint16_t total_mb, uint16_t bank0_mb,
+                                 uint16_t bank1_mb)
 {
-    size_t i;
+    unsigned int bank;
 
-    for (i = 0; divergences[i].field != NULL; i++) {
-        const SN0ModelDivergence *divergence = &divergences[i];
-
-        if (divergence->offset == field->offset) {
-            g_assert_cmpuint(divergence->width, ==, field->width);
-            g_assert_cmpstr(divergence->field, ==, field->field);
-            g_assert_cmphex(divergence->machine_value, !=, field->value);
-            return divergence->machine_value;
-        }
-    }
-    return field->value;
-}
-
-void sn0_model_assert_graph_fields(
-    QTestState *qts, const SN0ModelConfigGraph *graph,
-    const SN0ModelDivergence *divergences)
-{
-    uint64_t node_base = graph->nasid * SN0_NODE_STRIDE;
-    g_autofree uint8_t *validation = g_malloc0(graph->span);
-    unsigned int memory_records = 0;
-    size_t i;
-
-    g_assert_true(sn0_model_reconstruct_graph(graph, validation,
-                                               graph->span));
-    for (i = 0; i < graph->field_count; i++) {
-        const SN0ModelField *field = &graph->fields[i];
-        uint64_t got = read_field(qts, node_base + field->offset,
-                                  field->width);
-        uint64_t wanted = expected_machine_value(field, divergences);
-
-        if (got != wanted) {
-            g_test_message("node %u %s at 0x%" PRIx64
-                           ": model says 0x%" PRIx64
-                           ", machine has 0x%" PRIx64,
-                           graph->nasid, field->field,
-                           node_base + field->offset, wanted, got);
-        }
-        g_assert_cmphex(got, ==, wanted);
-        if (g_str_equal(field->field, "memory_bank.total_mb")) {
-            g_assert_cmpuint(field->value, ==, 64);
-            memory_records++;
-        }
-    }
-    g_assert_cmpuint(memory_records, ==, 1);
-}
-
-void sn0_model_assert_graph_image(
-    QTestState *qts, const SN0ModelConfigGraph *graph,
-    const SN0ModelDivergence *divergences)
-{
-    uint64_t node_base = graph->nasid * SN0_NODE_STRIDE;
-    g_autofree uint8_t *got = g_malloc0(graph->span);
-    g_autofree uint8_t *expected = g_malloc0(graph->span);
-    uint64_t off;
-
-    g_assert_true(sn0_model_reconstruct_graph(graph, expected,
-                                               graph->span));
-    qtest_memread(qts, node_base + graph->base, got, graph->span);
-
-    /* A zero-filled failed read must not pass against zero-filled gaps. */
-    g_assert_cmpuint(graph->span, >, 4);
-    g_assert_cmpuint(got[4], ==, 0xbe);
-    g_assert_true(sn0_model_apply_graph_divergences(graph, divergences,
-                                                    got, expected));
-    for (off = 0; off < graph->span; off++) {
-        if (got[off] != expected[off]) {
-            g_test_message("node %u graph byte at 0x%" PRIx64
-                           ": model says 0x%x, machine has 0x%x",
-                           graph->nasid, node_base + graph->base + off,
-                           expected[off], got[off]);
-        }
-        g_assert_cmphex(got[off], ==, expected[off]);
-    }
-
-    for (off = graph->span; off < graph->size; off += 4096) {
-        size_t len = MIN(4096, graph->size - off);
-        g_autofree uint8_t *tail = g_malloc0(len);
-        size_t i;
-
-        qtest_memread(qts, node_base + graph->base + off, tail, len);
-        for (i = 0; i < len; i++) {
-            if (tail[i] != 0) {
-                g_test_message("node %u graph byte at 0x%" PRIx64
-                               " is 0x%x; the model says the populated span "
-                               "ends at 0x%" PRIx64,
-                               graph->nasid,
-                               node_base + graph->base + off + i, tail[i],
-                               graph->span);
-            }
-            g_assert_cmpuint(tail[i], ==, 0);
-        }
+    assert_component(qts, base, offset, SN0_COMP_MEMORY, 0xff, 0, 0, 0,
+                     nasid);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x38, 2), ==, total_mb);
+    g_assert_cmphex(read_field(qts, base + offset + 0x3a, 2), ==, 0);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x3c, 2), ==, bank0_mb);
+    g_assert_cmpuint(read_field(qts, base + offset + 0x3e, 2), ==, bank1_mb);
+    for (bank = 2; bank < 8; bank++) {
+        g_assert_cmphex(read_field(qts, base + offset + 0x3c + bank * 2, 2),
+                        ==, 0);
     }
 }
 
-/*
- * Every field the model says the graph carries, read back from where the
- * machine actually put it. A mismatch names the record and field rather than
- * the address, because an address alone sends the reader hunting.
- */
+static void assert_base_io_records(QTestState *qts, uint64_t base,
+                                   uint64_t first, unsigned int nasid)
+{
+    assert_component(qts, base, first, SN0_COMP_BRIDGE, 4, 8, 0, 8, nasid);
+    assert_component(qts, base, first + 0x80, SN0_COMP_SCSI, 5, 0, 0, 8,
+                     nasid);
+    assert_component(qts, base, first + 0x100, SN0_COMP_SCSI, 5, 1, 1, 8,
+                     nasid);
+    assert_component(qts, base, first + 0x180, SN0_COMP_IO_CONTROLLER, 1, 2,
+                     0, 8, nasid);
+}
+
+static void assert_one_cpu_graph(QTestState *qts, uint16_t total_mb,
+                                 uint16_t bank0_mb, uint16_t bank1_mb)
+{
+    assert_graph_header(qts, 0, 0);
+    assert_board(qts, 0, 0x4100, 0x41c0, SN0_BOARD_NODE, 3, 3, 0);
+    g_assert_cmphex(read_field(qts, 0x4124, 4), ==, 0x4400);
+    g_assert_cmphex(read_field(qts, 0x4128, 4), ==, 0x4480);
+    g_assert_cmphex(read_field(qts, 0x412c, 4), ==, 0x4500);
+    assert_cpu_record(qts, 0, 0x4400, 0, 0, 0);
+    assert_component(qts, 0, 0x4480, SN0_COMP_HUB, 3, 0, 0, 0, 0);
+    g_assert_cmphex(read_field(qts, 0x44bc, 8), ==,
+                    0xffff000000000000ULL);
+    g_assert_cmpuint(read_field(qts, 0x44d8, 8), ==, 90000000);
+    assert_memory_record(qts, 0, 0x4500, 0, total_mb, bank0_mb, bank1_mb);
+    assert_board(qts, 0, 0x41c0, 0x4280, SN0_BOARD_MIDPLANE, 2, 0, 0);
+    g_assert_cmphex(read_field(qts, 0x41e4, 4), ==, 0x4580);
+    assert_component(qts, 0, 0x4580, SN0_COMP_MODULE_SERIAL, 0xff, 0, 0,
+                     0, 0);
+    assert_board(qts, 0, 0x4280, 0, SN0_BOARD_BASE_IO, 2, 4, 0);
+    g_assert_cmphex(read_field(qts, 0x42a4, 4), ==, 0x4600);
+    g_assert_cmphex(read_field(qts, 0x42a8, 4), ==, 0x4680);
+    g_assert_cmphex(read_field(qts, 0x42ac, 4), ==, 0x4700);
+    g_assert_cmphex(read_field(qts, 0x42b0, 4), ==, 0x4780);
+    assert_base_io_records(qts, 0, 0x4600, 0);
+}
+
+static void assert_two_cpu_graph(QTestState *qts, unsigned int nasid,
+                                 unsigned int first_virtual_id)
+{
+    uint64_t base = (uint64_t)nasid * SN0_NODE_STRIDE;
+
+    assert_graph_header(qts, base, nasid);
+    assert_board(qts, base, 0x4100, 0x41c0, SN0_BOARD_NODE, 3, 4, nasid);
+    g_assert_cmphex(read_field(qts, base + 0x4124, 4), ==, 0x4400);
+    g_assert_cmphex(read_field(qts, base + 0x4128, 4), ==, 0x4480);
+    g_assert_cmphex(read_field(qts, base + 0x412c, 4), ==, 0x4500);
+    g_assert_cmphex(read_field(qts, base + 0x4130, 4), ==, 0x4580);
+    assert_cpu_record(qts, base, 0x4400, 0, first_virtual_id, nasid);
+    assert_cpu_record(qts, base, 0x4480, 1, first_virtual_id + 1, nasid);
+    assert_component(qts, base, 0x4500, SN0_COMP_HUB, 3, nasid, 0, 0,
+                     nasid);
+    g_assert_cmphex(read_field(qts, base + 0x453c, 8), ==,
+                    0xffff000000000000ULL);
+    g_assert_cmpuint(read_field(qts, base + 0x4558, 8), ==, 90000000);
+    assert_memory_record(qts, base, 0x4580, nasid, 64, 64, 0);
+    assert_board(qts, base, 0x41c0, 0x4280, SN0_BOARD_MIDPLANE, 2, 0,
+                 nasid);
+    g_assert_cmphex(read_field(qts, base + 0x41e4, 4), ==, 0x4600);
+    assert_component(qts, base, 0x4600, SN0_COMP_MODULE_SERIAL, 0xff, 0, 0,
+                     0, nasid);
+    assert_board(qts, base, 0x4280, 0, SN0_BOARD_BASE_IO, 2, 4, nasid);
+    g_assert_cmphex(read_field(qts, base + 0x42a4, 4), ==, 0x4680);
+    g_assert_cmphex(read_field(qts, base + 0x42a8, 4), ==, 0x4700);
+    g_assert_cmphex(read_field(qts, base + 0x42ac, 4), ==, 0x4780);
+    g_assert_cmphex(read_field(qts, base + 0x42b0, 4), ==, 0x4800);
+    assert_base_io_records(qts, base, 0x4680, nasid);
+}
+
 static void test_config_graph(const void *data)
 {
-    QTestState *qts = qtest_initf("-M %s -m %dM",
-                                  SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
+    QTestState *qts = qtest_init("-M origin200 -m 64M");
 
-    g_assert_cmpuint(SN0_MODEL_CONFIG_GRAPH_COUNT, ==, 1);
-    g_assert_cmpuint(ARRAY_SIZE(sn0_model_config_graphs), ==, 1);
-    g_assert_cmpuint(sn0_model_config_graphs[0].nasid, ==, 0);
-    sn0_model_assert_graph_fields(qts, &sn0_model_config_graphs[0],
-                                  sn0_model_divergences);
-
+    assert_one_cpu_graph(qts, 64, 64, 0);
     qtest_quit(qts);
 }
 
-/*
- * Every byte of the graph region, not only the fields the model names. A field
- * the model forgets and the machine also leaves zero would agree trivially, and
- * prove nothing; comparing the whole region instead catches anything the
- * machine writes that the model does not account for.
- *
- * Where the two are known to differ, the model says so and says who owns the
- * decision. Those exceptions are honoured here and are also checked in the
- * other direction, so an exception that has stopped being true fails the test
- * rather than sitting in the file forever.
- */
-static void test_graph_whole_region(const void *data)
+static void test_larger_memory_config_graph(const void *data)
 {
-    QTestState *qts = qtest_initf("-M %s -m %dM",
-                                  SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
+    QTestState *qts = qtest_init("-M origin200 -m 512M");
 
-    sn0_model_assert_graph_image(qts, &sn0_model_config_graphs[0],
-                                 sn0_model_divergences);
-
+    assert_one_cpu_graph(qts, 512, 256, 256);
     qtest_quit(qts);
 }
 
-static void increment_type_count(GHashTable *counts, const char *type)
+static void test_dual_config_graphs(const void *data)
 {
-    unsigned int count = GPOINTER_TO_UINT(g_hash_table_lookup(counts, type));
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_FIRMWARE_ARGS);
 
-    g_hash_table_replace(counts, g_strdup(type), GUINT_TO_POINTER(count + 1));
+    assert_two_cpu_graph(qts, 0, 0);
+    assert_two_cpu_graph(qts, 1, 2);
+    qtest_quit(qts);
 }
 
-/* Count every "type" in the object graph under one path, recursively. */
-static void collect_type_counts(QTestState *qts, const char *path,
-                                GHashTable *counts, int depth)
+static void test_dual_device_identity(const void *data)
 {
-    QDict *response;
-    QList *children;
-    const QListEntry *entry;
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_FIRMWARE_ARGS);
 
-    /*
-     * The tree is shallow. Running out of depth means it is not the tree this
-     * test thinks it is, which is a failure rather than a reason to stop and
-     * check whatever was collected so far.
-     */
-    g_assert_cmpint(depth, <=, 8);
-
-    response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
-                              " 'arguments': { 'path': %s } }", path);
-    /*
-     * A path that came out of qom-list must answer qom-list. Treating a failure
-     * here as "nothing to add" would let a missing subtree pass silently, which
-     * is exactly the kind of hole that makes a green test meaningless.
-     */
-    if (!qdict_haskey(response, "return")) {
-        g_test_message("qom-list failed for '%s'", path);
-    }
-    g_assert_true(qdict_haskey(response, "return"));
-    children = qdict_get_qlist(response, "return");
-
-    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
-        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
-        const char *name = qdict_get_try_str(child, "name");
-        const char *type = qdict_get_try_str(child, "type");
-        g_autofree char *sub = NULL;
-
-        if (!name || !type) {
-            continue;
-        }
-        /*
-         * A link is a reference to an object that lives elsewhere in the tree,
-         * so following it would walk the same objects twice and could loop.
-         */
-        if (g_str_has_prefix(type, "link<")) {
-            continue;
-        }
-        if (g_str_has_prefix(type, "child<")) {
-            g_autofree char *bare = g_strndup(type + 6, strlen(type) - 7);
-
-            increment_type_count(counts, bare);
-            sub = g_strdup_printf("%s/%s", path, name);
-            collect_type_counts(qts, sub, counts, depth + 1);
-        }
-    }
-    qobject_unref(response);
-}
-
-void sn0_model_assert_object_graph(QTestState *qts, const char *machine_type,
-                                   const SN0ModelDevice *expected_devices,
-                                   size_t expected_count)
-{
-    GHashTable *actual = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                               g_free, NULL);
-    GHashTable *expected = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                                 g_free, NULL);
-    QDict *response;
-    const char *root;
-    GHashTableIter iter;
-    gpointer key;
-    gpointer value;
-    size_t i;
-
-    /*
-     * The machine itself, first. Without this the test would accept any machine
-     * that happened to contain the right device types among its children.
-     */
-    response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                              " 'arguments': { 'path': '/machine',"
-                              " 'property': 'type' } }");
-    g_assert_true(qdict_haskey(response, "return"));
-    root = qdict_get_str(response, "return");
-    g_assert_cmpstr(root, ==, machine_type);
-    qobject_unref(response);
-
-    collect_type_counts(qts, "/machine", actual, 0);
-    for (i = 0; i < expected_count; i++) {
-        increment_type_count(expected, expected_devices[i].qom_type);
-    }
-
-    g_hash_table_iter_init(&iter, expected);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        const char *type = key;
-        unsigned int wanted = GPOINTER_TO_UINT(value);
-        unsigned int got = GPOINTER_TO_UINT(g_hash_table_lookup(actual, type));
-
-        if (got != wanted) {
-            g_test_message("the selected model profile requires %u instances "
-                           "of QOM type '%s', and the object graph has %u",
-                           wanted, type, got);
-        }
-        g_assert_cmpuint(got, ==, wanted);
-    }
-
-    g_hash_table_destroy(expected);
-    g_hash_table_destroy(actual);
-}
-
-/*
- * Every device type selected by the model, at the exact frequency selected
- * by this machine profile. The test checks the machine type separately and
- * leaves internal object paths free to change.
- */
-static void test_object_graph(const void *data)
-{
-    QTestState *qts = qtest_initf("-M %s -m %dM",
-                                  SN0_MODEL_MACHINE, SN0_MODEL_RAM_MB);
-
-    sn0_model_assert_object_graph(qts, SN0_MODEL_MACHINE_TYPE,
-                                  sn0_model_devices,
-                                  ARRAY_SIZE(sn0_model_devices));
+    assert_device_identity(qts, 0);
+    assert_device_identity(qts, 1);
     qtest_quit(qts);
 }
 
@@ -1219,7 +1266,7 @@ static void test_architecture_boundaries(const void *data)
                               "                  'abstract': true } }");
     g_assert_true(qdict_haskey(response, "return"));
     types = qdict_get_qlist(response, "return");
-    type = find_qom_type(types, SN0_MODEL_MACHINE_TYPE);
+    type = find_qom_type(types, "origin200-machine");
     g_assert_nonnull(type);
     g_assert_false(qdict_haskey(type, "abstract") &&
                    qdict_get_bool(type, "abstract"));
@@ -1581,7 +1628,7 @@ static void test_an_ecoff_kernel_boots(const void *data)
         g_usleep(1000);
     }
 
-    g_assert_cmphex(prid, ==, SN0_MODEL_CPU_PRID);
+    g_assert_cmphex(prid, ==, 0x0926);
     qtest_quit(qts);
     g_unlink(kernel);
 }
@@ -1743,7 +1790,7 @@ static void test_reject_three_cores_one_chassis(const void *data)
 
     assert_qemu_rejects(args,
                         "origin200: one chassis requires one socket with "
-                        "at most two cores and one thread per core");
+                        "at most 2 cores and one thread per core");
 }
 
 static void test_reject_three_sockets(const void *data)
@@ -1781,17 +1828,22 @@ int main(int argc, char **argv)
                         test_baseline_device_identity);
     qtest_add_data_func("sn0/model/baseline-cpu-identity", NULL,
                         test_baseline_cpu_identity);
-    qtest_add_data_func("sn0/model/graph-whole-region", NULL,
-                        test_graph_whole_region);
-    qtest_add_data_func("sn0/model/object-graph", NULL, test_object_graph);
+    qtest_add_data_func("sn0/model/larger-memory-config-graph", NULL,
+                        test_larger_memory_config_graph);
     qtest_add_data_func("sn0/model/dual-config-graphs", NULL,
-                        sn0_model_test_dual_config_graph);
+                        test_dual_config_graphs);
     qtest_add_data_func("sn0/model/dual-device-identity", NULL,
-                        sn0_model_test_dual_device_identity);
-    qtest_add_data_func("sn0/model/dual-object-graph", NULL,
-                        sn0_model_test_dual_object_graph);
-    qtest_add_data_func("sn0/model/dual-divergence-masking", NULL,
-                        sn0_model_test_dual_divergence_masking);
+                        test_dual_device_identity);
+    qtest_add_data_func("sn0/model/origin200-ioc3-board-default", NULL,
+                        test_origin200_owns_the_ioc3_board_default);
+    qtest_add_data_func("sn0/model/base-profile-topology/one-cpu",
+                        &base_profile_topologies[0],
+                        test_base_profile_topology);
+    qtest_add_data_func("sn0/model/base-profile-topology/two-cpus",
+                        &base_profile_topologies[1],
+                        test_base_profile_topology);
+    qtest_add_data_func("sn0/model/dual-profile-topology", NULL,
+                        test_dual_profile_topology);
     qtest_add_data_func("sn0/model/architecture-boundaries", NULL,
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,

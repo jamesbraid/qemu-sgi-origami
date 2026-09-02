@@ -47,6 +47,33 @@
 
 DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
 
+static const SN0ModelAddressSpace *sn0_space(const SN0MachineModel *model,
+                                             SN0ModelAddressSpaceKind kind)
+{
+    const SN0ModelAddressSpace *space = sn0_model_find_space(model, kind);
+
+    g_assert(space);
+    return space;
+}
+
+static hwaddr sn0_space_node_base(const SN0MachineModel *model,
+                                  SN0ModelAddressSpaceKind kind,
+                                  unsigned int nasid)
+{
+    const SN0ModelAddressSpace *space = sn0_space(model, kind);
+
+    return space->carrier_base + space->node_stride * nasid;
+}
+
+static const SN0ModelRegion *sn0_region(const SN0MachineModel *model,
+                                        SN0ModelRegionRole role)
+{
+    const SN0ModelRegion *region = sn0_model_find_region(model, role);
+
+    g_assert(region);
+    return region;
+}
+
 /* The AMD 29F080's two unlock-cycle command addresses. */
 #define SN0_FLASH_CMD_ADDR1   0x5555
 #define SN0_FLASH_CMD_ADDR2   0x2aaa
@@ -65,6 +92,12 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
  */
 static bool sn0_promdata_pc_in_prom(SN0PromDataState *s)
 {
+    const SN0MachineModel *model =
+        SN0_MACHINE_GET_CLASS(qdev_get_machine())->model;
+    const SN0ModelRegion *memory_region =
+        sn0_region(model, SN0_MODEL_REGION_NODE_MEMORY);
+    const SN0ModelRegion *flash =
+        sn0_region(model, SN0_MODEL_REGION_PFLASH_RESET);
     TranslateForDebugResult r;
     uint64_t phys;
 
@@ -76,14 +109,13 @@ static bool sn0_promdata_pc_in_prom(SN0PromDataState *s)
      * uncached-attribute window above the address, then the node.
      */
     phys = r.physaddr & ((1ULL << MIPS_UNCACHED_WINDOW_SHIFT) - 1);
-    if (phys - s->node_base < SN0_NODE_SIZE) {
+    if (phys - s->node_base < memory_region->size) {
         phys -= s->node_base;
     }
 
-    return (phys >= SN0_FLASH_LOCAL &&
-            phys < SN0_FLASH_LOCAL + SN0_FLASH_SIZE) ||
+    return (phys >= flash->offset && phys < flash->offset + flash->size) ||
            (phys >= SN0_PROM_COPY_PADDR &&
-            phys < SN0_PROM_COPY_PADDR + SN0_FLASH_SIZE);
+            phys < SN0_PROM_COPY_PADDR + flash->size);
 }
 
 /*
@@ -279,7 +311,7 @@ static int sn0_promdata_post_load(void *opaque, int version_id)
     unsigned int slice;
 
     /* Reapply how far each processor's cache-only phase had got. */
-    for (slice = 0; slice < SN0_CPUS_PER_NODE; slice++) {
+    for (slice = 0; slice < SN0_MAX_CPUS_PER_NODE; slice++) {
         SN0PromDataState *s = &node->promdata[slice];
 
         if (s->present) {
@@ -307,7 +339,7 @@ static const VMStateDescription vmstate_sn0_promdata = {
     .needed = sn0_promdata_needed,
     .post_load = sn0_promdata_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_STRUCT_ARRAY(promdata, SN0NodeState, SN0_CPUS_PER_NODE, 1,
+        VMSTATE_STRUCT_ARRAY(promdata, SN0NodeState, SN0_MAX_CPUS_PER_NODE, 1,
                              vmstate_sn0_promdata_slice, SN0PromDataState),
         VMSTATE_END_OF_LIST()
     }
@@ -339,8 +371,8 @@ static const VMStateDescription vmstate_sn0_flash = {
 
 /*
  * The Hub's flash controller: the decode between the 64-bit junk bus and
- * the byte-wide chip. Reads pack the chip 1:1 and repeat the 1 MB image
- * across the 256 MB windows; command writes present the byte-wide command
+ * the byte-wide chip. Reads pack the chip 1:1 and repeat its image across
+ * each decoded window; command writes present the byte-wide command
  * port on 64-bit cycles only, chip byte N at bus offset 8N, the mapping
  * the vendor flash programmer states directly.
  */
@@ -355,8 +387,7 @@ static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
     for (i = 0; i < size; i++) {
         uint64_t byte = 0;
 
-        memory_region_dispatch_read(chip,
-                                    (addr + i) & (SN0_FLASH_SIZE - 1),
+        memory_region_dispatch_read(chip, (addr + i) % node->flash_size,
                                     &byte, MO_8, MEMTXATTRS_UNSPECIFIED);
         value = (value << 8) | (byte & 0xff);
     }
@@ -374,7 +405,7 @@ static void sn0_boot_mirror_write(void *opaque, hwaddr addr, uint64_t val,
     if (size != 8) {
         return;
     }
-    memory_region_dispatch_write(chip, (addr / 8) & (SN0_FLASH_SIZE - 1),
+    memory_region_dispatch_write(chip, (addr / 8) % node->flash_size,
                                  val & 0xff, MO_8, MEMTXATTRS_UNSPECIFIED);
 }
 
@@ -427,8 +458,8 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
  */
 static uint8_t *sn0_backdoor_byte(SN0BackdoorState *s, hwaddr addr)
 {
-    unsigned int bank = addr / SN0_BACKDOOR_BANK_STRIDE;
-    uint64_t within_bank = addr % SN0_BACKDOOR_BANK_STRIDE;
+    unsigned int bank = addr / s->bank_stride;
+    uint64_t within_bank = addr % s->bank_stride;
 
     g_assert(bank < s->populated_banks);
     return s->data + s->bank_offset[bank] +
@@ -479,17 +510,20 @@ static const MemoryRegionOps sn0_backdoor_populated_ops = {
 };
 
 static void sn0_backdoor_configure(SN0BackdoorState *s,
-                                   const SN0NodeState *node)
+                                   const SN0NodeState *node,
+                                   uint64_t bank_stride)
 {
     uint64_t total = 0;
     unsigned int bank;
 
     s->populated_banks = node->populated_banks;
+    s->bank_stride = bank_stride;
     for (bank = 0; bank < node->populated_banks; bank++) {
         s->bank_offset[bank] = total;
         s->bank_span[bank] = (uint64_t)node->bank_mb[bank] * MiB / 4;
         total += s->bank_span[bank];
     }
+    g_assert(total <= UINT32_MAX);
     s->data = g_malloc0(total);
     s->data_size = total;
 }
@@ -521,7 +555,7 @@ void sn0_mode_bits_reset(void *opaque)
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(qdev_get_machine());
 
     env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
-                       (smc->cpu_module.mode_bits & SN0_PROCESSOR_MODE_MASK);
+                       (smc->model->cpu_mode_bits & SN0_PROCESSOR_MODE_MASK);
 }
 
 /*
@@ -570,6 +604,7 @@ static void sn0_show_indicator_codes(Error **errp)
 
 static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
 {
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
     unsigned int max_cpus = machine->smp.max_cpus;
     unsigned int index;
 
@@ -583,8 +618,8 @@ static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
     machine->possible_cpus->len = max_cpus;
     for (index = 0; index < max_cpus; index++) {
         CPUArchId *slot = &machine->possible_cpus->cpus[index];
-        unsigned int node = index / SN0_CPUS_PER_NODE;
-        unsigned int slice = index % SN0_CPUS_PER_NODE;
+        unsigned int node = index / model->cpu_slots_per_node;
+        unsigned int slice = index % model->cpu_slots_per_node;
 
         slot->type = machine->cpu_type;
         slot->vcpus_count = 1;
@@ -613,7 +648,9 @@ sn0_cpu_index_to_props(MachineState *machine, unsigned int cpu_index)
 static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
                                            int index)
 {
-    return index / SN0_CPUS_PER_NODE;
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
+
+    return index / model->cpu_slots_per_node;
 }
 
 /*
@@ -625,20 +662,32 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
 static hwaddr sn0_node_local_memory_base(MachineState *machine,
                                          unsigned int node_index)
 {
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
+
     if (node_index != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
         machine->kernel_filename) {
-        return SN0_NODE_BASE(0);
+        return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, 0);
     }
-    return SN0_NODE_BASE(node_index);
+    return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, node_index);
 }
 
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    const SN0ModelDevice *cpu_model = sn0_model_find_device(
+        node->model, SN0_MODEL_DEVICE_CPU_R10000, 0);
+    const SN0ModelRegion *memory_region =
+        sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
+    const SN0ModelAddressSpace *hub_special =
+        sn0_space(node->model, SN0_MODEL_SPACE_HUB_SPECIAL);
+    hwaddr node_base = sn0_space_node_base(
+        node->model, SN0_MODEL_SPACE_MEMORY, node->nasid);
     unsigned int node_index = node->nasid;
-    unsigned int slice, half, space;
+    unsigned int slice, half, space_index;
 
+    g_assert(cpu_model && cpu_model->bus == SN0_MODEL_BUS_SYSAD &&
+             cpu_model->parent == SN0_MODEL_DEVICE_HUB);
+    g_assert(node->model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *alias_name =
             g_strdup_printf("sn0.node%u.cpu%u.system", node_index, slice);
@@ -673,13 +722,18 @@ static void sn0_node_create_cpus(SN0NodeState *node)
          * NASID-less addresses name the reading processor's node;
          * explicit NASIDs fall to the Hub's claim layer underneath.
          */
-        for (space = 0; space < SN0_UNCACHED_SPACES; space++) {
+        for (space_index = 0;
+             space_index < node->model->address_space_count; space_index++) {
+            const SN0ModelAddressSpace *space_model =
+                &node->model->address_spaces[space_index];
             g_autofree char *local_name = g_strdup_printf(
-                "sn0.node%u.cpu%u.local-space%u", node_index, slice, space);
-            hwaddr alias_node_base = space == 0 ?
+                "sn0.node%u.cpu%u.local-space%u", node_index, slice,
+                space_model->selector);
+            hwaddr alias_node_base =
+                space_model->kind == SN0_MODEL_SPACE_MEMORY ?
                 node->local_memory_base : node_base;
             hwaddr local_offset = 0;
-            hwaddr local_size = SN0_NODE_SIZE;
+            hwaddr local_size = memory_region->size;
 
             /*
              * Self-decode only the Hub's own eight-megabyte window: the
@@ -688,20 +742,24 @@ static void sn0_node_create_cpus(SN0NodeState *node)
              * is the claim layer's to route by programmed number. Other
              * spaces keep the wide alias.
              */
-            if (SN0_SPACE(space) == SN0_SPACE_XTALK) {
-                local_offset = SN0_HUB_LOCAL_WINDOW;
-                local_size = SGI_HUB_WINDOW_SIZE;
+            if (space_model->kind == SN0_MODEL_SPACE_XTALK) {
+                const SN0ModelRegion *hub_region = sn0_region(
+                    node->model, SN0_MODEL_REGION_HUB_REGISTERS_LOCAL);
+
+                local_offset = hub_region->offset;
+                local_size = hub_region->size;
             }
 
-            memory_region_init_alias(&node->local_space[slice][space],
+            memory_region_init_alias(&node->local_space[slice][space_index],
                                      OBJECT(node), local_name, system,
-                                     SN0_SPACE(space) + alias_node_base +
+                                     space_model->carrier_base +
+                                     alias_node_base +
                                      local_offset,
                                      local_size);
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice],
-                SN0_SPACE(space) + local_offset,
-                &node->local_space[slice][space], 0);
+                space_model->carrier_base + local_offset,
+                &node->local_space[slice][space_index], 0);
         }
 
         /* The bottom 128 KiB of Hub-local space: bit 16 flips per slice. */
@@ -716,7 +774,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                      private_offset, SN0_HUB_PRIVATE_HALF);
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice],
-                SN0_SPACE_HUB + half * SN0_HUB_PRIVATE_HALF,
+                hub_special->carrier_base + half * SN0_HUB_PRIVATE_HALF,
                 &node->hub_private[slice][half], 1);
         }
 
@@ -747,7 +805,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             /* Intercept the PROM's cached carrier window before node RAM. */
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice],
-                SN0_SPACE_MEMORY + SN0_PROMDATA_PADDR,
+                sn0_space(node->model, SN0_MODEL_SPACE_MEMORY)->carrier_base +
+                SN0_PROMDATA_PADDR,
                 &node->promdata[slice].filter, 2);
         }
         object_property_add_child(OBJECT(node), name,
@@ -768,24 +827,51 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    const SN0ModelMemory *geometry = &node->model->memory;
+    const SN0ModelDevice *memory_model = sn0_model_find_device(
+        node->model, SN0_MODEL_DEVICE_MEMORY, 0);
+    const SN0ModelRegion *local_memory =
+        sn0_region(node->model, SN0_MODEL_REGION_HUB_LOCAL_MEMORY);
+    const SN0ModelRegion *remote_memory =
+        sn0_region(node->model, SN0_MODEL_REGION_HUB_REMOTE_MEMORY);
+    hwaddr node_base = sn0_space_node_base(
+        node->model, SN0_MODEL_SPACE_MEMORY, node->nasid);
+    hwaddr hub_base = sn0_space_node_base(
+        node->model, SN0_MODEL_SPACE_HUB_SPECIAL, node->nasid);
     uint64_t ram_offset = node->ram_start;
     unsigned int node_index = node->nasid;
     unsigned int bank, segment;
 
+    g_assert(memory_model &&
+             memory_model->bus == SN0_MODEL_BUS_DIRECTORY &&
+             memory_model->parent == SN0_MODEL_DEVICE_HUB);
+    g_assert(geometry->architectural_banks <= SN0_MAX_MEMORY_BANKS);
+    g_assert(geometry->physical_banks <= geometry->architectural_banks);
+    g_assert(geometry->bank_stride_mib > 0);
+    g_assert(geometry->interleave_slot_stride_mib > 0);
+    g_assert(geometry->interleave_slots_per_bank > 0);
+    g_assert(geometry->interleave_slots_per_bank <= SN0_MAX_MEMORY_SLOTS);
+    g_assert((uint64_t)geometry->interleave_slot_stride_mib *
+             geometry->interleave_slots_per_bank <=
+             geometry->bank_stride_mib);
     /*
-     * Banks of 128 MiB or less use their stride's first slot; larger
-     * banks interleave quarters on a 128 MiB stride.
+     * A bank no larger than one interleave slot occupies only its first
+     * slot. Larger banks are split evenly over every slot in the bank.
      */
     for (bank = 0; bank < node->populated_banks; bank++) {
         uint64_t bank_size = (uint64_t)node->bank_mb[bank] * MiB;
-        unsigned int segments = bank_size <= SN0_MEM_SLOT_SIZE ?
-                                1 : SN0_MEM_BANK_SLOTS;
+        uint64_t bank_stride = (uint64_t)geometry->bank_stride_mib * MiB;
+        uint64_t slot_stride =
+            (uint64_t)geometry->interleave_slot_stride_mib * MiB;
+        unsigned int segments = bank_size <= slot_stride ?
+            1 : geometry->interleave_slots_per_bank;
         uint64_t segment_size = bank_size / segments;
 
+        g_assert(bank_size <= bank_stride);
+        g_assert(segments > 0 && bank_size % segments == 0);
         for (segment = 0; segment < segments; segment++) {
-            hwaddr segment_addr = (hwaddr)bank * SN0_MEM_BANK_SIZE +
-                                  (hwaddr)segment * SN0_MEM_SLOT_SIZE;
+            hwaddr segment_addr = (hwaddr)bank * bank_stride +
+                                  (hwaddr)segment * slot_stride;
             g_autofree char *name = g_strdup_printf(
                 "sn0.node%u.ram.bank%u.slot%u", node_index, bank, segment);
 
@@ -796,23 +882,36 @@ static void sn0_node_map_memory(SN0NodeState *node)
                                         &node->mem_slot[bank][segment]);
 
             /*
-             * Hub-special offset zero mirrors the first 256 MiB of local
-             * memory; mirror each run separately to keep the slot holes.
+             * The Hub-local region mirrors the bottom of local memory;
+             * mirror each run separately to keep the slot holes.
              */
-            if (segment_addr < SN0_HUB_LOCAL_MEM_SIZE) {
+            if (segment_addr < local_memory->size) {
                 uint64_t alias_size = MIN(segment_size,
-                                          SN0_HUB_LOCAL_MEM_SIZE -
-                                              segment_addr);
-                g_autofree char *alias_name = g_strdup_printf(
+                                          local_memory->size - segment_addr);
+                g_autofree char *local_name = g_strdup_printf(
                     "sn0.node%u.hub-local-ram.bank%u.slot%u",
                     node_index, bank, segment);
 
                 memory_region_init_alias(
                     &node->hub_local_mem_slot[bank][segment], OBJECT(node),
-                    alias_name, node->ram, ram_offset, alias_size);
+                    local_name, node->ram, ram_offset, alias_size);
                 memory_region_add_subregion(
-                    system, SN0_SPACE_HUB + node_base + segment_addr,
+                    system, hub_base + local_memory->offset + segment_addr,
                     &node->hub_local_mem_slot[bank][segment]);
+            }
+            if (segment_addr < remote_memory->size) {
+                uint64_t alias_size = MIN(segment_size,
+                                          remote_memory->size - segment_addr);
+                g_autofree char *remote_name = g_strdup_printf(
+                    "sn0.node%u.hub-remote-ram.bank%u.slot%u",
+                    node_index, bank, segment);
+
+                memory_region_init_alias(
+                    &node->hub_remote_mem_slot[bank][segment], OBJECT(node),
+                    remote_name, node->ram, ram_offset, alias_size);
+                memory_region_add_subregion(
+                    system, hub_base + remote_memory->offset + segment_addr,
+                    &node->hub_remote_mem_slot[bank][segment]);
             }
             ram_offset += segment_size;
         }
@@ -822,7 +921,24 @@ static void sn0_node_map_memory(SN0NodeState *node)
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    const SN0ModelDevice *flash_model = sn0_model_find_device(
+        node->model, SN0_MODEL_DEVICE_PFLASH, 0);
+    const SN0ModelRegion *flash_hub =
+        sn0_region(node->model, SN0_MODEL_REGION_PFLASH_LBOOT);
+    const SN0ModelRegion *flash_reset =
+        sn0_model_region_alias(node->model, flash_hub);
+    const SN0ModelRegion *flash_rboot =
+        sn0_region(node->model, SN0_MODEL_REGION_PFLASH_RBOOT);
+    const SN0ModelRegion *rboot_storage =
+        sn0_model_region_alias(node->model, flash_rboot);
+    const SN0ModelRegion *ecc =
+        sn0_region(node->model, SN0_MODEL_REGION_BACKDOOR_ECC);
+    const SN0ModelRegion *directory =
+        sn0_region(node->model, SN0_MODEL_REGION_BACKDOOR_DIRECTORY);
+    hwaddr node_base = sn0_space_node_base(
+        node->model, SN0_MODEL_SPACE_MEMORY, node->nasid);
+    hwaddr hub_base = sn0_space_node_base(
+        node->model, SN0_MODEL_SPACE_HUB_SPECIAL, node->nasid);
     unsigned int node_index = node->nasid;
     g_autofree char *flash_name =
         g_strdup_printf("sn0.node%u.flash", node_index);
@@ -843,14 +959,27 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     g_autofree char *dir_name =
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
+    g_assert(flash_model &&
+             flash_model->bus == SN0_MODEL_BUS_DIRECTORY &&
+             flash_model->parent == SN0_MODEL_DEVICE_HUB);
+    g_assert(flash_reset &&
+             flash_reset->space == SN0_MODEL_SPACE_MEMORY);
+    g_assert(rboot_storage == flash_reset);
+    g_assert(flash_reset->size > 0 &&
+             flash_reset->size % SN0_FLASH_SECTOR_SIZE == 0);
+    g_assert(flash_reset->size / SN0_FLASH_SECTOR_SIZE <= UINT32_MAX);
+    g_assert(node->model->memory.architectural_banks > 0);
+    g_assert(ecc->size % node->model->memory.architectural_banks == 0);
+    g_assert(directory->size % node->model->memory.architectural_banks == 0);
+
     /*
-     * An Am29F080: 1 MB in sixteen 64 KB sectors, byte-wide, with no
-     * backing drive -- the firmware builder seeds the image after
-     * realize. Never mapped directly; every view goes through the Hub.
+     * An Am29F080, byte-wide, with no backing drive -- the firmware builder
+     * seeds the image after realize. Never mapped directly; every view goes
+     * through the Hub.
      */
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
     qdev_prop_set_uint32(flash_dev, "num-blocks",
-                         SN0_FLASH_SIZE / SN0_FLASH_SECTOR_SIZE);
+                         flash_reset->size / SN0_FLASH_SECTOR_SIZE);
     qdev_prop_set_uint32(flash_dev, "sector-length", SN0_FLASH_SECTOR_SIZE);
     qdev_prop_set_uint8(flash_dev, "width", 1);
     qdev_prop_set_uint8(flash_dev, "mappings", 1);
@@ -862,6 +991,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     qdev_prop_set_string(flash_dev, "name", flash_name);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(flash_dev), &error_fatal);
     node->flash = PFLASH_CFI02(flash_dev);
+    node->flash_size = flash_reset->size;
 
     MemoryRegion *chip =
         sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_dev), 0);
@@ -872,14 +1002,13 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
      */
     memory_region_init_io(&node->flash_hub_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, hub_name,
-                          SN0_LBOOT_SIZE);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_HUB + node_base + SN0_FLASH_HUB,
+                          flash_hub->size);
+    memory_region_add_subregion(system, hub_base + flash_hub->offset,
                                 &node->flash_hub_view);
     memory_region_init_alias(&node->flash_hub_fast, OBJECT(node),
-                             hub_fast_name, chip, 0, SN0_FLASH_SIZE);
+                             hub_fast_name, chip, 0, flash_reset->size);
     memory_region_add_subregion_overlap(
-        system, SN0_SPACE_HUB + node_base + SN0_FLASH_LOCAL,
+        system, hub_base + flash_reset->offset,
         &node->flash_hub_fast, 1);
 
     /*
@@ -891,61 +1020,69 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
      */
     memory_region_init_alias(&node->flash_reset_view, OBJECT(node),
                              reset_name, system,
-                             SN0_SPACE_HUB + node_base + SN0_FLASH_LOCAL,
-                             SN0_FLASH_SIZE);
-    memory_region_add_subregion_overlap(system, node_base + SN0_FLASH_LOCAL,
+                             hub_base + flash_reset->offset,
+                             flash_reset->size);
+    memory_region_add_subregion_overlap(system,
+                                        node_base + flash_reset->offset,
                                         &node->flash_reset_view, 1);
 
     /* RBOOT is a maintenance path, never a fetch path: no romd overlay. */
     memory_region_init_io(&node->flash_rboot_view, OBJECT(node),
                           &sn0_boot_mirror_ops, node, rboot_name,
-                          SN0_RBOOT_SIZE);
-    memory_region_add_subregion(system,
-                                SN0_SPACE_HUB + node_base + SN0_FLASH_RBOOT,
+                          flash_rboot->size);
+    memory_region_add_subregion(system, hub_base + flash_rboot->offset,
                                 &node->flash_rboot_view);
 
     /* Absent floors cover the whole windows; populated storage overlays. */
     memory_region_init_io(&node->backdoor_ecc_absent, OBJECT(node),
                           &sn0_backdoor_absent_ops, NULL, ecc_absent_name,
-                          SN0_BACKDOOR_ECC_SIZE);
+                          ecc->size);
     memory_region_add_subregion_overlap(
-        system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_ECC_HUB,
+        system, hub_base + ecc->offset,
         &node->backdoor_ecc_absent, -1);
     if (node->populated_banks > 0) {
-        uint64_t size = (uint64_t)node->populated_banks *
-                        SN0_BACKDOOR_BANK_STRIDE;
+        uint64_t bank_stride = ecc->size /
+            node->model->memory.architectural_banks;
+        uint64_t size = (uint64_t)node->populated_banks * bank_stride;
 
-        sn0_backdoor_configure(&node->backdoor_ecc_state, node);
+        sn0_backdoor_configure(&node->backdoor_ecc_state, node,
+                               bank_stride);
         memory_region_init_io(&node->backdoor_ecc, OBJECT(node),
                               &sn0_backdoor_populated_ops,
                               &node->backdoor_ecc_state, ecc_name, size);
         memory_region_add_subregion(
-            system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_ECC_HUB,
+            system, hub_base + ecc->offset,
             &node->backdoor_ecc);
     }
 
     memory_region_init_io(&node->backdoor_dir_absent, OBJECT(node),
                           &sn0_backdoor_absent_ops, NULL, dir_absent_name,
-                          SN0_BACKDOOR_DIR_SIZE);
+                          directory->size);
     memory_region_add_subregion_overlap(
-        system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_DIR_HUB,
+        system, hub_base + directory->offset,
         &node->backdoor_dir_absent, -1);
     if (node->populated_banks > 0) {
-        uint64_t size = (uint64_t)node->populated_banks *
-                        SN0_BACKDOOR_BANK_STRIDE;
+        uint64_t bank_stride = directory->size /
+            node->model->memory.architectural_banks;
+        uint64_t size = (uint64_t)node->populated_banks * bank_stride;
 
-        sn0_backdoor_configure(&node->backdoor_dir_state, node);
+        sn0_backdoor_configure(&node->backdoor_dir_state, node,
+                               bank_stride);
         memory_region_init_io(&node->backdoor_dir, OBJECT(node),
                               &sn0_backdoor_populated_ops,
                               &node->backdoor_dir_state, dir_name, size);
         memory_region_add_subregion(
-            system, SN0_SPACE_HUB + node_base + SN0_BACKDOOR_DIR_HUB,
+            system, hub_base + directory->offset,
             &node->backdoor_dir);
     }
 }
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
+    const SN0ModelRegion *memory_region =
+        sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
+    const SN0ModelDevice *hub_model = sn0_model_find_device(
+        node->model, SN0_MODEL_DEVICE_HUB, 0);
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
@@ -959,6 +1096,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
     MIPSCPU *cpu;
     unsigned int slice;
 
+    g_assert(hub_model && hub_model->bus == SN0_MODEL_BUS_NONE &&
+             hub_model->parent == SN0_MODEL_DEVICE_NONE);
     memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
                        SN0_XTALK_SIZE);
 
@@ -976,9 +1115,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
                                         &node->hub_memory_system, -1);
     memory_region_init_alias(&node->hub_memory_local, OBJECT(node),
                              memory_local_name, system,
-                             SN0_SPACE_MEMORY + node->local_memory_base,
-                             SN0_NODE_SIZE);
-    memory_region_add_subregion_overlap(&node->hub_memory, SN0_SPACE_MEMORY,
+                             node->local_memory_base,
+                             memory_region->size);
+    memory_region_add_subregion_overlap(
+        &node->hub_memory,
+        sn0_space(node->model, SN0_MODEL_SPACE_MEMORY)->carrier_base,
                                         &node->hub_memory_local, 0);
     object_property_set_link(OBJECT(&node->hub), "memory",
                              OBJECT(&node->hub_memory), &error_fatal);
@@ -990,7 +1131,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         0x0c0b0a090807ULL + node->nasid);
+                         hub_model->serial_base +
+                         hub_model->serial_stride * node->nasid);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",
@@ -1011,7 +1153,9 @@ static void sn0_node_create_hub(SN0NodeState *node)
     object_property_set_link(OBJECT(&node->hub), "claim-target",
                              OBJECT(system), &error_fatal);
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-node-shift",
-                         SN0_NODE_SHIFT);
+                         ctz64(sn0_space(
+                             node->model,
+                             SN0_MODEL_SPACE_MEMORY)->node_stride));
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-space-shift",
                          MIPS_UNCACHED_WINDOW_SHIFT);
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-own-node", node->nasid);
@@ -1034,12 +1178,19 @@ static void sn0_node_create_hub(SN0NodeState *node)
 static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    hwaddr node_base = SN0_NODE_BASE(node->nasid);
+    const SN0ModelAddressSpace *xtalk =
+        sn0_space(node->model, SN0_MODEL_SPACE_XTALK);
+    const SN0ModelRegion *hub_explicit =
+        sn0_region(node->model, SN0_MODEL_REGION_HUB_REGISTERS_NODE);
+    const SN0ModelRegion *hub_local =
+        sn0_model_region_alias(node->model, hub_explicit);
+    hwaddr node_base = xtalk->node_stride * node->nasid;
     unsigned int node_index = node->nasid;
     unsigned int widget;
 
-    for (widget = SN0_WIDGET0;
-         widget <= SN0_XTALK_PORT_LAST; widget++) {
+    g_assert(hub_local && hub_local->space == SN0_MODEL_SPACE_XTALK);
+
+    for (widget = 0; widget <= SN0_XTALK_PORT_LAST; widget++) {
         g_autofree char *name =
             g_strdup_printf("sn0.node%u.xtalk.small%u",
                             node_index, widget);
@@ -1049,15 +1200,16 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
                                  SN0_XTALK_BASE(widget),
                                  SN0_SMALL_WINDOW_SIZE);
         memory_region_add_subregion(
-            system, SN0_SPACE_XTALK + node_base + SN0_SMALL_WINDOW(widget),
+            system, xtalk->carrier_base + node_base +
+            SN0_SMALL_WINDOW(widget),
             &node->small_window[widget]);
     }
 
     memory_region_add_subregion(
-        system, SN0_SPACE_XTALK + node_base + SN0_BIG_WINDOW_BASE,
+        system, xtalk->carrier_base + node_base + SN0_BIG_WINDOW_BASE,
         &node->hub.bwin);
     memory_region_add_subregion(
-        system, SN0_SPACE_XTALK + node_base + SN0_HUB_LOCAL_WINDOW,
+        system, xtalk->carrier_base + node_base + hub_local->offset,
         &node->hub.regs);
 
     {
@@ -1066,10 +1218,10 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 
         memory_region_init_alias(&node->hub_regs_node_view, OBJECT(node),
                                  name, &node->hub.regs, 0,
-                                 SGI_HUB_WINDOW_SIZE);
+                                 hub_explicit->size);
     }
     memory_region_add_subregion(
-        system, SN0_SPACE_XTALK + node_base + SN0_HUB_NODE_WINDOW,
+        system, xtalk->carrier_base + node_base + hub_explicit->offset,
         &node->hub_regs_node_view);
 }
 
@@ -1077,47 +1229,69 @@ static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
+    const SN0MachineModel *model = smc->model;
+    const SN0ModelProfile *profile;
     MachineClass *mc = MACHINE_GET_CLASS(machine);
     unsigned int numa_nodes = machine->numa_state ?
                               machine->numa_state->num_nodes : 0;
     uint64_t ram_offset = 0;
+    g_autofree unsigned int *profile_cpus = NULL;
     unsigned int node_count, node_index;
 
-    /* A product class must say how memory fits and what I/O it carries. */
-    g_assert(smc->node_memory_layout && smc->populate_io);
+    /* A product class must supply its static description and QOM adapters. */
+    g_assert(model && smc->populate_io);
+    g_assert(model->max_nodes > 0);
+    g_assert(model->cpu_slots_per_node <= SN0_MAX_CPUS_PER_NODE);
+    g_assert(model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
+    g_assert(model->memory.architectural_banks <= SN0_MAX_MEMORY_BANKS);
+    profile_cpus = g_new0(unsigned int, model->max_nodes);
 
     /*
      * One SMP socket is one chassis; -numa still owns the memory split
      * and must agree with the socket count.
      */
-    if (numa_nodes > smc->max_nodes) {
+    if (numa_nodes > model->max_nodes) {
         error_report("%s: at most %u NUMA nodes are supported",
-                     mc->name, smc->max_nodes);
+                     mc->name, model->max_nodes);
         exit(EXIT_FAILURE);
     }
     node_count = numa_nodes ? numa_nodes : machine->smp.sockets;
-    if (node_count > smc->max_nodes) {
+    if (node_count > model->max_nodes) {
         error_report("%s: at most %u chassis are supported, and each -smp "
-                     "socket is one chassis", mc->name, smc->max_nodes);
+                     "socket is one chassis", mc->name, model->max_nodes);
         exit(EXIT_FAILURE);
     }
 
     if (node_count == 1) {
         if (machine->smp.sockets != 1 ||
-            machine->smp.cores > SN0_CPUS_PER_NODE ||
+            machine->smp.cores > model->cpu_slots_per_node ||
             machine->smp.threads != 1) {
-            error_report("%s: one chassis requires one socket with at "
-                         "most two cores and one thread per core", mc->name);
+            error_report("%s: one chassis requires one socket with at most "
+                         "%u cores and one thread per core", mc->name,
+                         model->cpu_slots_per_node);
             exit(EXIT_FAILURE);
         }
-    } else if (machine->smp.cpus != node_count * SN0_CPUS_PER_NODE ||
+        profile_cpus[0] = machine->smp.cpus;
+    } else if (machine->smp.cpus !=
+                   node_count * model->cpu_slots_per_node ||
                machine->smp.sockets != node_count ||
-               machine->smp.cores != SN0_CPUS_PER_NODE ||
+               machine->smp.cores != model->cpu_slots_per_node ||
                machine->smp.threads != 1) {
         error_report("%s: %u chassis require %u CPUs as %u sockets with "
                      "%u cores and one thread each", mc->name, node_count,
-                     node_count * SN0_CPUS_PER_NODE, node_count,
-                     SN0_CPUS_PER_NODE);
+                     node_count * model->cpu_slots_per_node, node_count,
+                     model->cpu_slots_per_node);
+        exit(EXIT_FAILURE);
+    } else {
+        for (node_index = 0; node_index < node_count; node_index++) {
+            profile_cpus[node_index] = model->cpu_slots_per_node;
+        }
+    }
+
+    profile = sn0_model_find_profile(model, node_count, profile_cpus);
+    if (!profile) {
+        error_report("%s: the requested CPU and chassis population is not "
+                     "described by the machine model", mc->name);
         exit(EXIT_FAILURE);
     }
 
@@ -1133,7 +1307,8 @@ static void sn0_init(MachineState *machine)
     if (numa_nodes) {
         for (node_index = 0; node_index < machine->smp.cpus; node_index++) {
             CPUArchId *cpu_slot = &machine->possible_cpus->cpus[node_index];
-            unsigned int expected = node_index / SN0_CPUS_PER_NODE;
+            unsigned int expected =
+                node_index / model->cpu_slots_per_node;
 
             if (!cpu_slot->props.has_node_id ||
                 cpu_slot->props.node_id != expected) {
@@ -1167,23 +1342,25 @@ static void sn0_init(MachineState *machine)
     }
 
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk, smc->cpu_module.clock_hz);
+    clock_set_hz(s->cpu_refclk, model->cpu_clock_hz);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
         uint64_t ram_size = numa_nodes ?
             machine->numa_state->nodes[node_index].node_mem :
             machine->ram_size / node_count;
-        unsigned int cpu_base = node_index * SN0_CPUS_PER_NODE;
-        unsigned int cpu_count = node_count == 1 ? machine->smp.cpus :
-                                 SN0_CPUS_PER_NODE;
-        uint16_t bank_mb[SN0_MEM_BANKS];
+        unsigned int cpu_base = node_index * model->cpu_slots_per_node;
+        unsigned int cpu_count = profile->cpus_per_node[node_index];
+        uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
         unsigned int populated_banks;
         QList *banks_mb;
         Chardev *aux_chr;
         unsigned int slice, bank;
 
-        if (!smc->node_memory_layout(ram_size, bank_mb, &populated_banks)) {
+        g_assert(model->memory.architectural_banks <=
+                 SN0_MAX_MEMORY_BANKS);
+        if (!sn0_model_memory_layout(model, ram_size, bank_mb,
+                                     &populated_banks)) {
             error_report("%s: node %u's %" PRIu64 " MiB cannot be "
                          "populated from IP29 memory banks without "
                          "overlapping firmware regions",
@@ -1196,6 +1373,7 @@ static void sn0_init(MachineState *machine)
         }
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_index);
+        node->model = model;
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
         qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
@@ -1234,7 +1412,7 @@ static void sn0_init(MachineState *machine)
             object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                      OBJECT(aux_chr), &error_fatal);
         }
-        if (node_count == 2) {
+        if (profile->interconnect == SN0_MODEL_INTERCONNECT_DIRECT_PEER) {
             qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
             object_property_set_link(OBJECT(&node->hub), "network-peer",
                                      OBJECT(&s->nodes[1 - node_index]->hub),
@@ -1374,14 +1552,17 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
     SN0NodeState *node = SN0_NODE(dev);
     unsigned int bank;
 
-    if (node->nr_cpus < 1 || node->nr_cpus > SN0_CPUS_PER_NODE) {
-        error_setg(errp, "a node carries one or two processors, not %u",
-                   node->nr_cpus);
+    g_assert(node->model);
+    if (node->nr_cpus < 1 ||
+        node->nr_cpus > node->model->cpu_slots_per_node) {
+        error_setg(errp, "a node carries one to %u processors, not %u",
+                   node->model->cpu_slots_per_node, node->nr_cpus);
         return;
     }
-    if (node->nr_banks_mb < 1 || node->nr_banks_mb > SN0_MEM_BANKS) {
+    if (node->nr_banks_mb < 1 ||
+        node->nr_banks_mb > node->model->memory.physical_banks) {
         error_setg(errp, "a node fills one to %u memory banks, not %u",
-                   SN0_MEM_BANKS, node->nr_banks_mb);
+                   node->model->memory.physical_banks, node->nr_banks_mb);
         return;
     }
     if (!node->ram || !node->cpu_type) {
@@ -1444,11 +1625,16 @@ static void sn0_node_class_init(ObjectClass *oc, const void *data)
 static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(obj)->model;
+    const SN0ModelDevice *bridge;
 
+    g_assert(model);
+    bridge = sn0_model_find_device(model, SN0_MODEL_DEVICE_BRIDGE, 0);
+    g_assert(bridge);
     s->synthesized_firmware = true;
     s->io_bridge_present = true;
     s->debug_leds = true;
-    s->widget0_revision = SN0_WIDGET0_REVISION;
+    s->widget0_revision = bridge->revision;
 }
 
 static void sn0_instance_finalize(Object *obj)

@@ -28,7 +28,7 @@
 #define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
 #define DEV_MEMORY_SPACE (1u << 12)
 
-#define PCI_IOC3_DEVICE  2         /* SN0_IOC3_DEVICE, restated for the test */
+#define PCI_IOC3_DEVICE  2         /* IP29 slot, restated for the test */
 #define PCI_COMMAND      0x04
 #define PCI_COMMAND_MEMORY 0x0002
 #define PCI_COMMAND_MASTER 0x0004
@@ -100,7 +100,7 @@ static void sn0_ioc3_attach(QTestState *qts)
  * interrupt lands; a whole-register access needs no byte-lane correction.
  */
 #define BRIDGE_INT_STATUS (BRIDGE_BASE + 0x100 + REG_DATA)
-#define BRIDGE_PIN_SUPERIO (1u << 3)   /* SN0_IOC3_SUPERIO_PIN, restated */
+#define BRIDGE_PIN_SUPERIO (1u << 3)   /* IP29 routing, restated here */
 /*
  * The ethernet interrupt travels the chip's PCI pin through the Bridge's
  * INTx routing: slot 2, pin A, lands on Bridge pin 2 -- a restatement of

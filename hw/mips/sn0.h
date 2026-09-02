@@ -17,32 +17,11 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
+#include "sn0-model.h"
 
-/* M mode: node number in bits 39:32, 4 GB per node. N mode is unused. */
-#define SN0_NODE_SHIFT      32
-#define SN0_NODE_SIZE       (4 * GiB)
-#define SN0_NODE_BASE(nasid) ((hwaddr)(nasid) << SN0_NODE_SHIFT)
-
-/* The four uncached spaces, shifted so that memory lands at zero. */
-#define SN0_SPACE(n)        ((hwaddr)(n) << MIPS_UNCACHED_WINDOW_SHIFT)
-#define SN0_SPACE_MEMORY    SN0_SPACE(0)  /* uncached attribute 3 */
-#define SN0_SPACE_HUB       SN0_SPACE(1)  /* uncached attribute 0 */
-#define SN0_SPACE_XTALK     SN0_SPACE(2)  /* uncached attribute 1 */
-#define SN0_SPACE_MEMSPEC   SN0_SPACE(3)  /* uncached attribute 2 */
-
-/* Node memory: up to eight banks of 512 MB at the bottom of the window. */
-#define SN0_MEM_BANK_SIZE   (512 * MiB)
-
-/*
- * A bank is four 128 MB slots: larger than one slot, a quarter goes to
- * each on the 128 MB stride; one slot or less sits wholly in the first.
- */
-#define SN0_MEM_SLOT_SIZE   (128 * MiB)
-#define SN0_MEM_BANK_SLOTS  (SN0_MEM_BANK_SIZE / SN0_MEM_SLOT_SIZE)
-#define SN0_MEM_BANKS       8
-
-/* An uncached local view of the node's own memory, before the boot window. */
-#define SN0_HUB_LOCAL_MEM_SIZE (256 * MiB)
+/* Fixed storage capacities; each product supplies its active geometry. */
+#define SN0_MAX_MEMORY_BANKS 8
+#define SN0_MAX_MEMORY_SLOTS 4
 
 /* The Hub's processor lines, named by the Cause bit each one raises. */
 #define SN0_HUB_BANK0_CAUSE_BIT 10
@@ -70,20 +49,11 @@
  */
 #define SN0_SMALL_WINDOW_SIZE    (16 * MiB)
 #define SN0_SMALL_WINDOW(widget) ((hwaddr)(widget) * SN0_SMALL_WINDOW_SIZE)
-#define SN0_XTALK_PORT_FIRST     8
 #define SN0_XTALK_PORT_LAST      15
 
 /* The seven big windows follow; their aim is the translation table's. */
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
-/*
- * Widget 0 is the I/O bridge seen again -- no crossbar routes by widget
- * number -- so its identity lives on the bridge, not here. The revision
- * varies between real machines (3 and 4 are both captured), so it is a
- * settable option, and guests act on it below revision four.
- */
-#define SN0_WIDGET0              0
-#define SN0_WIDGET0_REVISION     4
 /* The identification field is four bits wide. */
 #define SN0_WIDGET0_REVISION_MAX 0xf
 
@@ -105,12 +75,6 @@
 
 /* Term by term: each address error here was a dropped term in a sum. */
 #define SN0_FIRMWARE_WIDGET0_SLICE  0
-#define SN0_FIRMWARE_WIDGET0_ENTRY  (SN0_HUB_IO_BWIN_WIDGET(SN0_WIDGET0) | \
-                                     SN0_HUB_IO_BWIN_SLICE( \
-                                         SN0_FIRMWARE_WIDGET0_SLICE))
-
-/* No valid bit: a window is disabled by aiming it at absent widget 3. */
-#define SN0_XTALK_INVALID_WIDGET    3
 
 /*
  * The Hub's widget-1 window: the lower half resolves to the reading
@@ -118,37 +82,6 @@
  * compatibility segment reaches node-local physical zero.
  */
 #define SN0_COMPAT_CACHED 0xffffffff80000000ull
-
-#define SN0_HUB_LOCAL_WINDOW 0x01000000
-#define SN0_HUB_NODE_WINDOW  0x01800000
-
-/*
- * The boot flash, seen three ways over one backing store: the reset
- * vector through the compatibility segments, Hub-special LBOOT, and
- * node-explicit RBOOT. Both Hub views are 256 MB -- the decode is a
- * chip select, not the PROM's size.
- */
-#define SN0_FLASH_SIZE      (1 * MiB)
-#define SN0_FLASH_LOCAL     0x1fc00000  /* node offset, reset vector view */
-#define SN0_FLASH_HUB       0x10000000  /* node offset within Hub special */
-#define SN0_FLASH_RBOOT     0x30000000  /* explicit node's Hub-special view */
-#define SN0_LBOOT_SIZE      (256 * MiB) /* the Hub special view's real size */
-#define SN0_RBOOT_SIZE      (256 * MiB) /* explicit-node view's real size */
-
-/*
- * The directory and ECC back doors. Firmware's probe reads a written
- * pattern back against two masks to learn whether a bank exists and
- * which directory format it carries: an absent bank's share keeps
- * nothing, a populated bank's only the plain format's low sixteen bits
- * (the Origin 200 has no premium directory memory).
- */
-#define SN0_BACKDOOR_ECC_HUB  0x80000000  /* node offset within Hub special */
-#define SN0_BACKDOOR_ECC_SIZE (1 * GiB)
-#define SN0_BACKDOOR_DIR_HUB  0xc0000000  /* node offset within Hub special */
-#define SN0_BACKDOOR_DIR_SIZE (1 * GiB)
-
-/* An even eight-way split, 128 MB per bank, per the public Linux headers. */
-#define SN0_BACKDOOR_BANK_STRIDE (SN0_BACKDOOR_ECC_SIZE / SN0_MEM_BANKS)
 
 /* Ten entry points at the start of the flash, eight bytes apart. */
 #define SN0_FLASH_ENTRIES   10
@@ -168,8 +101,6 @@
 #define SN0_HW_DIR_FREEMEM      4
 #define SN0_HW_DIR_DEBUG_STACKS 5
 #define SN0_HW_DIR_PI_ERROR     6
-#define SN0_CONFIG_GRAPH        0x4000
-#define SN0_CONFIG_GRAPH_SIZE   0xc000
 
 /* The directory's size field spans both launch blocks together. */
 #define SN0_LAUNCH_BLOCKS       0x2400
@@ -193,84 +124,12 @@
 #define SN0_HWDIR_PI_ERROR_BASE       0x12000
 #define SN0_HWDIR_PI_ERROR_SIZE       0x4000
 
-/* Every graph link is a 32-bit offset from the start of node memory. */
-#define SN0_GRAPH_MAGIC         0xbeedbabeULL
-#define SN0_GRAPH_CONSOLE_OFF   0x18    /* where the descriptor is embedded */
-#define SN0_GRAPH_BOARDS        0x4100
-#define SN0_GRAPH_BOARD_SIZE    0xc0
-#define SN0_GRAPH_COMPONENTS    0x4400
-#define SN0_GRAPH_COMP_STRIDE   0x80
-
-/* Board types: the high nibble is the class, the low nibble the type in it. */
-#define SN0_BOARD_NODE          0x11
-#define SN0_BOARD_MIDPLANE      0x41
-#define SN0_BOARD_BASE_IO       0x21
-#define SN0_BOARD_LOCAL         1       /* record kind */
-
-/* IRIX treats a version below two as unnamed; the node board gets 3. */
-#define SN0_BOARD_VERSION_NODE  3
-#define SN0_BOARD_VERSION       2       /* every other board */
-
-/* Component types, and the flag that stops a consumer skipping one. */
-#define SN0_COMP_PROCESSOR      1
-#define SN0_COMP_HUB            2
-#define SN0_COMP_MEMORY         3
-#define SN0_COMP_BRIDGE         5
-#define SN0_COMP_IO_CONTROLLER  6
-#define SN0_COMP_SCSI           11
-#define SN0_COMP_MODULE_SERIAL  26
+/* KLCONFIG component-format constants, independent of product contents. */
 #define SN0_COMP_ENABLED        1
-#define SN0_COMP_REV_UNKNOWN    0xff
-#define SN0_COMP_REV_HUB        3
-#define SN0_COMP_REV_BRIDGE     4
-#define SN0_COMP_REV_SCSI       5
-#define SN0_COMP_REV_IOC3       1
-
-/* A disk controller's PCI device number; a guest's boot walk checks it. */
 #define SN0_COMP_PHYSICAL_ID    0x18
 
-/*
- * The console serial port, composed term by term: widget 8's window,
- * plus the bridge's third-device window, plus port A in the controller.
- * A guest drives the low twenty bits and reads the low twelve as the
- * controller's generation -- two masks, two different meanings.
- */
-#define SN0_BRIDGE_DEVICE2      0x600000  /* the third device's window */
-
-/*
- * The base I/O board fills devices 0-2. The second-interrupt pin is 3
- * because 3 is the first empty device: OpenBSD scans upward, stops at
- * the first empty slot, and uses that index as the pin.
- */
-#define SN0_SCSI_DEVICE0        0         /* first SCSI adapter's PCI device */
-#define SN0_SCSI_DEVICE1        1         /* second SCSI adapter's PCI device */
-#define SN0_SCSI_ADAPTERS       2         /* what the base I/O board carries */
-#define SN0_IOC3_DEVICE         2         /* the I/O controller's PCI device */
-
-/* Board wiring, not the Bridge's slot-equals-pin default. */
-#define SN0_IOC3_SUPERIO_PIN    3         /* its second interrupt's Bridge pin */
-
-/*
- * Where firmware places each device's resources. Linux is the source
- * for what a guest requires: PCI_PROBE_ONLY trusts firmware's BARs, and
- * its claimable window starts at the widget base, so each device's PCI
- * address is the widget base plus its own slot's window offset. Every
- * window is pre-aimed -- Linux never aims one itself -- and none of the
- * addresses may be zero: generic PCI code refuses a zero BAR.
- */
-#define SN0_PCI_WIDGET_BASE     ((uint32_t)SN0_CONSOLE_WIDGET << 24)
-#define SN0_PCI_SCSI0_WINDOW    0x00200000  /* slot 0's own 2 MB window */
-#define SN0_PCI_SCSI1_WINDOW    0x00400000  /* slot 1's own 2 MB window */
-#define SN0_PCI_IOC3_MEM        (SN0_PCI_WIDGET_BASE + SN0_BRIDGE_DEVICE2)
-#define SN0_PCI_SCSI0_MEM       (SN0_PCI_WIDGET_BASE + SN0_PCI_SCSI0_WINDOW)
-#define SN0_PCI_SCSI1_MEM       (SN0_PCI_WIDGET_BASE + SN0_PCI_SCSI1_WINDOW)
-#define SN0_PCI_SCSI0_IO        SN0_PCI_SCSI0_MEM
-#define SN0_PCI_SCSI1_IO        SN0_PCI_SCSI1_MEM
-#define SN0_IOC3_SERIAL_A       0x020178  /* serial port A in the controller */
-#define SN0_CONSOLE_PORT_OFFSET (SN0_BRIDGE_DEVICE2 + SN0_IOC3_SERIAL_A)
-#define SN0_CONSOLE_PORT_MASK   0xfffff   /* the part the guest drives */
-#define SN0_CONSOLE_WIDGET      8
-#define SN0_CONSOLE_BAUD        9600
+/* Fixed state capacity; the product model supplies the installed rows. */
+#define SN0_MAX_SCSI_ADAPTERS   2
 
 /* The -serial line assignment lives in hw/misc/sgi-hub.h; both units see it. */
 #define SN0_GDA                 0x11000
@@ -336,15 +195,16 @@
 /* The Am29F080's erase sector, shared by chip model and image builder. */
 #define SN0_FLASH_SECTOR_SIZE (64 * KiB)
 
-/* One chassis is one node: two processor slots beside one Hub. */
-#define SN0_CPUS_PER_NODE 2
-#define SN0_UNCACHED_SPACES 4
+/* Fixed state capacities; the product model supplies the active counts. */
+#define SN0_MAX_CPUS_PER_NODE 2
+#define SN0_MAX_ADDRESS_SPACES 4
 
 typedef struct SN0BackdoorState {
     uint8_t *data;
     uint32_t data_size;
-    uint64_t bank_offset[SN0_MEM_BANKS];
-    uint64_t bank_span[SN0_MEM_BANKS];
+    uint64_t bank_stride;
+    uint64_t bank_offset[SN0_MAX_MEMORY_BANKS];
+    uint64_t bank_span[SN0_MAX_MEMORY_BANKS];
     unsigned int populated_banks;
 } SN0BackdoorState;
 
@@ -360,6 +220,9 @@ typedef struct SN0PromDataState {
 
 typedef struct SN0NodeState {
     SysBusDevice parent_obj;
+
+    /* Static product description supplied by the owning machine. */
+    const SN0MachineModel *model;
 
     /*
      * Properties. local-memory-base is where a NASID-less memory-space
@@ -379,13 +242,14 @@ typedef struct SN0NodeState {
     uint16_t *banks_mb;
 
     Clock *cpuclk;
-    MIPSCPU *cpu[SN0_CPUS_PER_NODE];
-    MemoryRegion cpu_sysmem[SN0_CPUS_PER_NODE];
-    MemoryRegion sysmem_alias[SN0_CPUS_PER_NODE];
-    MemoryRegion claim_view[SN0_CPUS_PER_NODE];
-    MemoryRegion local_space[SN0_CPUS_PER_NODE][SN0_UNCACHED_SPACES];
-    MemoryRegion hub_private[SN0_CPUS_PER_NODE][2];
-    SN0PromDataState promdata[SN0_CPUS_PER_NODE];
+    MIPSCPU *cpu[SN0_MAX_CPUS_PER_NODE];
+    MemoryRegion cpu_sysmem[SN0_MAX_CPUS_PER_NODE];
+    MemoryRegion sysmem_alias[SN0_MAX_CPUS_PER_NODE];
+    MemoryRegion claim_view[SN0_MAX_CPUS_PER_NODE];
+    MemoryRegion local_space[SN0_MAX_CPUS_PER_NODE]
+                                  [SN0_MAX_ADDRESS_SPACES];
+    MemoryRegion hub_private[SN0_MAX_CPUS_PER_NODE][2];
+    SN0PromDataState promdata[SN0_MAX_CPUS_PER_NODE];
     SGIHubState hub;
 
     /* The Hub's own view of memory, for its block transfer engines. */
@@ -394,6 +258,7 @@ typedef struct SN0NodeState {
     MemoryRegion hub_memory_local;
 
     PFlashCFI02 *flash;
+    uint64_t flash_size;
     MemoryRegion flash_reset_view;
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
@@ -412,9 +277,12 @@ typedef struct SN0NodeState {
     MemoryRegion prom_pi_probe;
     SGIBridgeState *prom_pi_probe_bridge;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
-    MemoryRegion mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
-    MemoryRegion hub_local_mem_slot[SN0_MEM_BANKS][SN0_MEM_BANK_SLOTS];
-    uint16_t bank_mb[SN0_MEM_BANKS];
+    MemoryRegion mem_slot[SN0_MAX_MEMORY_BANKS][SN0_MAX_MEMORY_SLOTS];
+    MemoryRegion hub_local_mem_slot[SN0_MAX_MEMORY_BANKS]
+                                          [SN0_MAX_MEMORY_SLOTS];
+    MemoryRegion hub_remote_mem_slot[SN0_MAX_MEMORY_BANKS]
+                                           [SN0_MAX_MEMORY_SLOTS];
+    uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
     unsigned int populated_banks;
 
     uint64_t mem_addr;
@@ -486,7 +354,7 @@ struct SN0MachineState {
 
     /* The devices whose resources firmware reassigns on every reset. */
     PCIDevice **pci_ioc3;
-    PCIDevice *(*pci_scsi)[SN0_SCSI_ADAPTERS];
+    PCIDevice *(*pci_scsi)[SN0_MAX_SCSI_ADAPTERS];
 
     /*
      * Candidate values: derived facts, settable so two runs can differ
@@ -503,44 +371,15 @@ typedef struct SN0MachineClass SN0MachineClass;
 DECLARE_OBJ_CHECKERS(SN0MachineState, SN0MachineClass,
                      SN0_MACHINE, TYPE_SN0_MACHINE)
 
-/*
- * What a concrete product's class_init fills in (the PowerNV and Aspeed
- * shape); the processor module is not product identity.
- */
 struct SN0MachineClass {
     /*< private >*/
     MachineClass parent_class;
 
     /*< public >*/
-    /* How many chassis the product couples over CrayLink. */
-    unsigned int max_nodes;
+    /* Static product facts compiled from the canonical machine model. */
+    const SN0MachineModel *model;
 
-    /* The node board's clocks, advertised through the configuration block. */
-    uint64_t hub_hz;
-    uint64_t rtc_hz;
-
-    /* The machine-type word (0: Origin 2000, 1: Origin 200) and timings. */
-    uint32_t fw_machine_type;
-    uint32_t fprom_cyc;
-    uint32_t fprom_wr;
-
-    /*
-     * The installed module, not product identity. The mode bits are what
-     * the board drives at reset and the block advertises; firmware
-     * compares the two, so one place holds both.
-     */
-    struct {
-        uint64_t clock_hz;
-        uint32_t scache_clock_mhz;
-        uint32_t mode_bits;
-    } cpu_module;
-
-    /* Fit a node's memory into the board's banks; false when it cannot. */
-    bool (*node_memory_layout)(uint64_t ram_size,
-                               uint16_t bank_mb[SN0_MEM_BANKS],
-                               unsigned int *populated_banks);
-
-    /* Build the product's I/O topology on one node. */
+    /* Apply the product-specific QOM adapters to the generated topology. */
     void (*populate_io)(SN0MachineState *s, unsigned int node_index);
 };
 

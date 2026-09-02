@@ -459,7 +459,7 @@ static void test_128m_memory(const void *data)
     qtest_quit(qts);
 }
 
-/* One bank's stride, matching hw/mips/sn0.h's SN0_MEM_BANK_SIZE. */
+/* One bank's address stride, kept as an independent literal. */
 #define MEM_BANK_SIZE   0x20000000ULL
 #define MEM_SLOT_SIZE   0x08000000ULL
 
@@ -558,7 +558,7 @@ static void test_invalid_memory_size(const void *data)
 
 /*
  * One bank's stride within a back-door window: an even eight-way split of
- * the 1 GB window, matching hw/mips/sn0.h's SN0_BACKDOOR_BANK_STRIDE.
+ * the 1 GB window, restated independently from the compiled product model.
  */
 #define BACKDOOR_BANK_STRIDE   0x8000000ULL  /* 128 MiB */
 

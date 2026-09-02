@@ -241,7 +241,7 @@
 #define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + BRIDGE_REG_DATA)
 #define DEV_MEMORY_SPACE (1u << 12)
 
-#define PCI_IOC3_DEVICE     2      /* SN0_IOC3_DEVICE, restated for the test */
+#define PCI_IOC3_DEVICE     2      /* IP29 slot, restated for the test */
 #define PCI_COMMAND         0x04
 #define PCI_COMMAND_MEMORY  0x0002
 #define PCI_BAR0            0x10

@@ -5,8 +5,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/units.h"
 #include "qemu/error-report.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -20,74 +20,21 @@
 #include "hw/scsi/qlogic-isp.h"
 #include "system/blockdev.h"
 
-#define SN0_BRIDGE_ONEWIRE_SERIAL_BASE 0x060504030201ULL
-
-/* IP29 has four banks, each made from one matched DIMM pair. */
-#define IP29_MEM_BANKS 4
-
-/* One chassis, or two coupled over CrayLink. */
-#define SN0_ORIGIN200_MAX_NODES 2
-
-/*
- * Derive a deterministic DIMM population from -m. Bank zero stays at 256 MiB
- * or less -- a larger one would cover the fixed boot-flash addresses at the
- * top of its stride; a model limitation, not an IP29 rule.
- */
-static bool sn0_ip29_layout_from(uint64_t remaining_mb, unsigned int bank,
-                                 uint16_t bank_mb[SN0_MEM_BANKS])
-{
-    static const uint16_t supported_mb[] = { 512, 256, 128, 64 };
-    unsigned int i;
-
-    if (remaining_mb == 0) {
-        return bank > 0;
-    }
-    if (bank == IP29_MEM_BANKS) {
-        return false;
-    }
-
-    for (i = 0; i < G_N_ELEMENTS(supported_mb); i++) {
-        uint16_t size_mb = supported_mb[i];
-
-        if ((bank == 0 && size_mb > 256) || size_mb > remaining_mb) {
-            continue;
-        }
-        bank_mb[bank] = size_mb;
-        if (sn0_ip29_layout_from(remaining_mb - size_mb, bank + 1,
-                                 bank_mb)) {
-            return true;
-        }
-        bank_mb[bank] = 0;
-    }
-    return false;
-}
-
-static bool sn0_ip29_memory_layout(uint64_t ram_size,
-                                   uint16_t bank_mb[SN0_MEM_BANKS],
-                                   unsigned int *populated_banks)
-{
-    unsigned int i;
-
-    memset(bank_mb, 0, sizeof(uint16_t) * SN0_MEM_BANKS);
-    if (ram_size == 0 || ram_size % MiB != 0 ||
-        !sn0_ip29_layout_from(ram_size / MiB, 0, bank_mb)) {
-        return false;
-    }
-
-    i = 0;
-    while (i < SN0_MEM_BANKS && bank_mb[i] != 0) {
-        i++;
-    }
-    *populated_banks = i;
-    return true;
-}
-
 #define SN0_PROM_PI_PROBE_WIDGET 2
 #define SN0_PROM_PI_PROBE_OFFSET 0x400208
 #define SN0_PROM_PI_PROBE_WINDOW_OFFSET 0x208
 
 /* Preserve the CPU's byte order across the nested Bridge dispatch. */
 #define SN0_PROM_PI_PROBE_MEMOP(size) (size_memop(size) | MO_BE)
+
+static char origin200_ioc3_subsystem_id[sizeof("0xffff")];
+static GlobalProperty origin200_compat[] = {
+    {
+        .driver = TYPE_SGI_IOC3,
+        .property = "subsystem-id",
+        .value = origin200_ioc3_subsystem_id,
+    },
+};
 
 static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
                                           uint64_t *data, unsigned size,
@@ -127,13 +74,48 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
     .impl.max_access_size = 8,
 };
 
+static const char *origin200_qom_type(SN0ModelDeviceKind kind)
+{
+    switch (kind) {
+    case SN0_MODEL_DEVICE_BRIDGE:
+        return TYPE_SGI_BRIDGE;
+    case SN0_MODEL_DEVICE_IOC3:
+        return TYPE_SGI_IOC3;
+    case SN0_MODEL_DEVICE_ISP1040:
+        return "qlogic-isp1040";
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void origin200_require_attachment(const SN0ModelDevice *device,
+                                         SN0ModelBusKind bus,
+                                         SN0ModelDeviceKind parent)
+{
+    g_assert(device->bus == bus);
+    g_assert(device->parent == parent);
+}
+
 static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 {
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
+    const SN0ModelDevice *ioc3_model = sn0_model_find_device(
+        model, SN0_MODEL_DEVICE_IOC3, 0);
+    const SN0ModelDevice *bridge_model = sn0_model_find_device(
+        model, SN0_MODEL_DEVICE_BRIDGE, 0);
+    unsigned int isp_count = sn0_model_device_count(
+        model, SN0_MODEL_DEVICE_ISP1040);
     PCIDevice *ioc3;
     Chardev *ioc3_a, *ioc3_b;
     unsigned int slot;
 
-    ioc3 = pci_new(PCI_DEVFN(SN0_IOC3_DEVICE, 0), TYPE_SGI_IOC3);
+    g_assert(ioc3_model && bridge_model);
+    g_assert(isp_count <= SN0_MAX_SCSI_ADAPTERS);
+    origin200_require_attachment(ioc3_model, SN0_MODEL_BUS_PCI,
+                                 SN0_MODEL_DEVICE_BRIDGE);
+    ioc3 = pci_new(PCI_DEVFN(ioc3_model->pci_device,
+                             ioc3_model->pci_function),
+                   origin200_qom_type(ioc3_model->kind));
     /* A child of the node that carries the board, not of the machine. */
     object_property_add_child(OBJECT(s->nodes[node_index]), "ioc3",
                               OBJECT(ioc3));
@@ -158,7 +140,8 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 
     /* Distinct per node, or a guest fails the second as a duplicate. */
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
-                         SGI_IOC3_ONEWIRE_SERIAL + node_index);
+                         ioc3_model->serial_base +
+                         ioc3_model->serial_stride * node_index);
 
     /* The timekeeper's battery, optional and per node. */
     {
@@ -183,7 +166,7 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
      */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
                           qdev_get_gpio_in(DEVICE(s->io_bridge[node_index]),
-                                           SN0_IOC3_SUPERIO_PIN));
+                                           ioc3_model->irq_input));
 
     if (s->io_bridge_present) {
         MemoryRegion *bridge_face =
@@ -191,14 +174,17 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
         unsigned int widget;
 
         memory_region_add_subregion_overlap(
-            &s->nodes[node_index]->xtalk, SN0_XTALK_BASE(SN0_CONSOLE_WIDGET),
+            &s->nodes[node_index]->xtalk,
+            SN0_XTALK_BASE(bridge_model->widget),
             bridge_face, -1);
 
         /* No crossbar: alias the bridge's face at every free widget number. */
-        for (widget = SN0_WIDGET0 + 2; widget < SN0_XTALK_WIDGETS; widget++) {
+        for (widget = 0; widget < SN0_XTALK_WIDGETS; widget++) {
             g_autofree char *name = NULL;
 
-            if (widget == SN0_CONSOLE_WIDGET) {
+            if (!(model->bridge.decoded_widget_mask & (1u << widget)) ||
+                widget == model->bridge.discovery_widget ||
+                widget == bridge_model->widget) {
                 continue;
             }
 
@@ -226,10 +212,18 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
             &s->nodes[node_index]->prom_pi_probe, 1);
 
         /* Bridge-only reachable; disks arrive on the command line. */
-        for (slot = 0; slot < SN0_SCSI_ADAPTERS; slot++) {
+        for (slot = 0; slot < isp_count; slot++) {
+            const SN0ModelDevice *isp_model = sn0_model_find_device(
+                model, SN0_MODEL_DEVICE_ISP1040, slot);
             g_autofree char *isp_name = g_strdup_printf("isp%u", slot);
-            PCIDevice *isp = pci_new(
-                PCI_DEVFN(SN0_SCSI_DEVICE0 + slot, 0), "qlogic-isp1040");
+            PCIDevice *isp;
+
+            g_assert(isp_model);
+            origin200_require_attachment(isp_model, SN0_MODEL_BUS_PCI,
+                                         SN0_MODEL_DEVICE_BRIDGE);
+            isp = pci_new(PCI_DEVFN(isp_model->pci_device,
+                                    isp_model->pci_function),
+                          origin200_qom_type(isp_model->kind));
 
             /* Under the node that carries the board, as the controller is. */
             object_property_add_child(OBJECT(s->nodes[node_index]), isp_name,
@@ -257,7 +251,8 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
         /* Multi-byte registers read byte-swapped here (the interim above). */
         memory_region_add_subregion(
             &s->nodes[node_index]->xtalk,
-            SN0_XTALK_BASE(SN0_CONSOLE_WIDGET) + SN0_BRIDGE_DEVICE2,
+            SN0_XTALK_BASE(bridge_model->widget) +
+            model->klconfig.console_device_window,
             &SGI_IOC3(ioc3)->bar);
     }
 }
@@ -272,6 +267,13 @@ static void sn0_create_base_io(SN0MachineState *s, unsigned int node_index)
 static void origin200_create_bridge(SN0MachineState *s,
                                     unsigned int node_index)
 {
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
+    const SN0ModelAddressSpace *xtalk = sn0_model_find_space(
+        model, SN0_MODEL_SPACE_XTALK);
+    const SN0ModelDevice *bridge_model = sn0_model_find_device(
+        model, SN0_MODEL_DEVICE_BRIDGE, 0);
+    const SN0ModelDevice *ioc3_model = sn0_model_find_device(
+        model, SN0_MODEL_DEVICE_IOC3, 0);
     MemoryRegion *system = get_system_memory();
     SGIBridgeState *bridge;
     uint64_t exempt;
@@ -281,7 +283,10 @@ static void origin200_create_bridge(SN0MachineState *s,
         g_strdup("sn0.xtalk.widget0") :
         g_strdup_printf("sn0.node%u.xtalk.widget0", node_index);
 
-    bridge = SGI_BRIDGE(object_new(TYPE_SGI_BRIDGE));
+    g_assert(xtalk && bridge_model && ioc3_model);
+    origin200_require_attachment(bridge_model, SN0_MODEL_BUS_XTALK,
+                                 SN0_MODEL_DEVICE_HUB);
+    bridge = SGI_BRIDGE(object_new(origin200_qom_type(bridge_model->kind)));
     object_property_add_child(OBJECT(s), bridge_name, OBJECT(bridge));
     object_unref(OBJECT(bridge));
     s->io_bridge[node_index] = bridge;
@@ -289,7 +294,8 @@ static void origin200_create_bridge(SN0MachineState *s,
     qdev_prop_set_uint32(DEVICE(bridge), "revision", s->widget0_revision);
     /* Per-node one-wire serial, as on a physical BaseIO board. */
     qdev_prop_set_uint64(DEVICE(bridge), "onewire-serial",
-                         SN0_BRIDGE_ONEWIRE_SERIAL_BASE + node_index);
+                         bridge_model->serial_base +
+                         bridge_model->serial_stride * node_index);
     if (node_index != 0) {
         g_autofree char *bus_name = g_strdup_printf("pci.%u", node_index);
 
@@ -298,14 +304,16 @@ static void origin200_create_bridge(SN0MachineState *s,
     /* Interrupt packets are real transfers, not calls into the Hub. */
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(system),
                              &error_fatal);
-    qdev_prop_set_uint64(DEVICE(bridge), "fabric-base", SN0_SPACE_XTALK);
-    qdev_prop_set_uint32(DEVICE(bridge), "fabric-node-shift", SN0_NODE_SHIFT);
+    qdev_prop_set_uint64(DEVICE(bridge), "fabric-base", xtalk->carrier_base);
+    qdev_prop_set_uint32(DEVICE(bridge), "fabric-node-shift",
+                         ctz64(xtalk->node_stride));
 
     /* The IOC3 is byte-lane exempt; OR, so a -global exemption survives. */
     exempt = object_property_get_uint(OBJECT(bridge), "byte-lane-exempt",
                                       &error_abort);
     object_property_set_uint(OBJECT(bridge), "byte-lane-exempt",
-                             exempt | (1u << SN0_IOC3_DEVICE), &error_abort);
+                             exempt | (1u << ioc3_model->pci_device),
+                             &error_abort);
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
 
     /*
@@ -316,7 +324,7 @@ static void origin200_create_bridge(SN0MachineState *s,
                              sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
                              0, SGI_BRIDGE_WIDGET_SIZE);
     memory_region_add_subregion(&s->nodes[node_index]->xtalk,
-                                SN0_XTALK_BASE(SN0_WIDGET0),
+                                SN0_XTALK_BASE(model->bridge.discovery_widget),
                                 &s->widget0[node_index]);
 }
 
@@ -330,9 +338,21 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SN0MachineClass *smc = SN0_MACHINE_CLASS(oc);
+    const SN0ModelDevice *ioc3_model;
 
-    mc->desc = "SGI Origin 200 (IP27)";
-    mc->default_ram_size = 64 * MiB;
+    smc->model = &sn0_origin200_model;
+    g_assert(strcmp(smc->model->machine_name, mc->name) == 0);
+    ioc3_model = sn0_model_find_device(smc->model,
+                                      SN0_MODEL_DEVICE_IOC3, 0);
+    g_assert(ioc3_model);
+    g_snprintf(origin200_ioc3_subsystem_id,
+               sizeof(origin200_ioc3_subsystem_id), "0x%04x",
+               (unsigned int)ioc3_model->pci_subsystem_id);
+    compat_props_add(mc->compat_props, origin200_compat,
+                     ARRAY_SIZE(origin200_compat));
+    mc->desc = smc->model->description;
+    mc->default_ram_size = smc->model->default_ram_mib * MiB;
+    mc->default_cpus = smc->model->default_cpus;
     mc->default_ram_id = "sn0.node0.ram";
     /* -hda and if=default drives belong on the first SCSI adapter. */
     mc->block_default_type = IF_SCSI;
@@ -340,20 +360,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     /* Node memory is memdev-backed -numa nodes; bare mem= has no backend. */
     mc->numa_mem_supported = false;
 
-    /* One chassis or two coupled over CrayLink, two processor slots each. */
-    smc->max_nodes = SN0_ORIGIN200_MAX_NODES;
-    mc->max_cpus = SN0_CPUS_PER_NODE * smc->max_nodes;
-    smc->hub_hz = 90000000;
-    smc->rtc_hz = 1250000;          /* an 800 ns tick */
-    smc->fw_machine_type = 1;       /* 0 is Origin 2000, 1 is Origin 200 */
-    smc->fprom_cyc = 15;
-    smc->fprom_wr = 4;
-
-    /* A captured 180 MHz R10000 module population. */
-    smc->cpu_module.clock_hz = 180000000;
-    smc->cpu_module.scache_clock_mhz = 90;
-    smc->cpu_module.mode_bits = 0x1211a785;
-    smc->node_memory_layout = sn0_ip29_memory_layout;
+    mc->max_cpus = smc->model->cpu_slots_per_node * smc->model->max_nodes;
     smc->populate_io = origin200_populate_io;
 }
 
