@@ -45,6 +45,7 @@ typedef enum SN0KlRecordKind {
 
 typedef enum SN0KlComponentSource {
     SN0_KL_COMPONENT_SOURCE_LITERAL,
+    SN0_KL_COMPONENT_SOURCE_HUB,
     SN0_KL_COMPONENT_SOURCE_BASE_IO,
     SN0_KL_COMPONENT_SOURCE_PCI_FUNCTION,
 } SN0KlComponentSource;
@@ -89,7 +90,8 @@ typedef struct SN0ModelRegion {
 } SN0ModelRegion;
 
 typedef struct SN0ModelHub {
-    uint8_t default_revision;
+    uint8_t kl_type;
+    uint8_t ni_revision;
     uint64_t serial_base;
     uint8_t serial_stride;
 } SN0ModelHub;
@@ -105,7 +107,7 @@ typedef struct SN0ModelPciFunction {
     uint8_t serial_stride;
     int8_t irq_input;
     uint8_t kl_type;
-    uint8_t kl_revision;
+    uint8_t pci_revision;
 } SN0ModelPciFunction;
 
 typedef struct SN0ModelBaseIO {

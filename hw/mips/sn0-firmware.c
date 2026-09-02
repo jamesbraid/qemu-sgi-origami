@@ -15,6 +15,7 @@
 #include "hw/core/cpu.h"
 #include "hw/core/loader.h"
 #include "hw/mips/bootloader.h"
+#include "hw/pci/pci_device.h"
 #include "elf.h"
 #include "chardev/char-fe.h"
 #include "system/system.h"
@@ -817,14 +818,21 @@ static void sn0_kl_board(uint8_t *graph,
 }
 
 static SN0KlComponentModel sn0_kl_resolve_component(
-    const SN0MachineState *s, const SN0KlComponentModel *template)
+    const SN0MachineState *s, unsigned int node_index,
+    const SN0KlComponentModel *template)
 {
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
     const SN0ModelBaseIO *base_io = &model->base_io;
+    const SN0NodeState *node = s->nodes[node_index];
     SN0KlComponentModel component = *template;
 
     switch (template->source) {
     case SN0_KL_COMPONENT_SOURCE_LITERAL:
+        break;
+    case SN0_KL_COMPONENT_SOURCE_HUB:
+        g_assert(template->source_ordinal == 0);
+        component.type = model->hub.kl_type;
+        component.revision = node->hub.ni_revision;
         break;
     case SN0_KL_COMPONENT_SOURCE_BASE_IO:
         g_assert(template->source_ordinal == 0);
@@ -836,10 +844,36 @@ static SN0KlComponentModel sn0_kl_resolve_component(
     case SN0_KL_COMPONENT_SOURCE_PCI_FUNCTION: {
         const SN0ModelPciFunction *function = sn0_model_find_pci_function(
             base_io, template->pci_kind, template->source_ordinal);
+        PCIDevice *device = NULL;
 
         g_assert(function);
+        switch (template->pci_kind) {
+        case SN0_MODEL_PCI_IOC3:
+            g_assert(template->source_ordinal == 0);
+            device = s->pci_ioc3[node_index];
+            break;
+        case SN0_MODEL_PCI_ISP1040:
+            g_assert(template->source_ordinal < SN0_MAX_SCSI_ADAPTERS);
+            device = s->pci_scsi[node_index][template->source_ordinal];
+            break;
+        default:
+            g_assert_not_reached();
+        }
         component.type = function->kl_type;
-        component.revision = function->kl_revision;
+        if (device) {
+            component.revision =
+                pci_get_byte(device->config + PCI_REVISION_ID);
+        } else {
+            /*
+             * The bring-up-only no-Bridge topology deliberately omits both
+             * ISPs but has always retained their synthesized graph records.
+             * Keep that compatibility case separate from installed devices,
+             * whose revision comes from live PCI configuration above.
+             */
+            g_assert(!s->io_bridge_present);
+            g_assert(template->pci_kind == SN0_MODEL_PCI_ISP1040);
+            component.revision = function->pci_revision;
+        }
         component.physical_id = function->device;
         component.widget = base_io->widget;
         break;
@@ -922,7 +956,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
         for (template_index = 0; template_index < board->component_count;
              template_index++) {
             SN0KlComponentModel live_component = sn0_kl_resolve_component(
-                s, &board->components[template_index]);
+                s, node_index, &board->components[template_index]);
             const SN0KlComponentModel *component = &live_component;
             unsigned int instances = component->record_kind ==
                 SN0_KL_RECORD_PROCESSOR ? node->nr_cpus : 1;

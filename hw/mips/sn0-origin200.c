@@ -148,6 +148,7 @@ static void origin200_create_ioc3(SN0MachineState *s,
     pci_realize_and_unref(ioc3,
                           PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
+    pci_set_byte(ioc3->config + PCI_REVISION_ID, function->pci_revision);
     s->pci_ioc3[node_index] = ioc3;
 
     /*
@@ -175,6 +176,7 @@ static void origin200_create_isp(SN0MachineState *s,
     pci_realize_and_unref(isp,
                           PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
+    pci_set_byte(isp->config + PCI_REVISION_ID, function->pci_revision);
     s->pci_scsi[node_index][instance] = isp;
     qlogic_isp_handle_legacy_cmdline(DEVICE(isp));
 }
