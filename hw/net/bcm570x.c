@@ -1253,16 +1253,37 @@ static bool bcm570x_can_receive(NetClientState *nc)
  * (the device's network configuration); a guest that reprograms the MAC filter
  * registers to a different address is not modelled here.
  */
+/*
+ * The address the part filters on is the one in MAC address filter slot 0, which
+ * the driver programs -- not the address the command line gave the device. The
+ * two are the same only until a driver installs its own, and IRIX tg installs
+ * the system Ethernet address over whatever the card came up with. Filtering on
+ * the command-line address instead dropped every reply the peer sent back to the
+ * address the guest had actually announced, silently, since a rejected frame is
+ * indistinguishable from one that never arrived.
+ */
 static bool bcm570x_frame_accepted(Bcm570xState *s, const uint8_t *buf,
                                    size_t size)
 {
+    uint32_t hi = bcm570x_regfile_read(s, BCM570X_MAC_ADDR_0_HIGH);
+    uint32_t lo = bcm570x_regfile_read(s, BCM570X_MAC_ADDR_0_LOW);
+    uint8_t addr[6];
+
     if (size < 6) {
         return false;
     }
-    if (buf[0] & 0x01) {
+    if (buf[0] & 0x01) {       /* broadcast and multicast */
         return true;
     }
-    return memcmp(buf, s->conf.macaddr.a, 6) == 0;
+
+    addr[0] = hi >> 8;
+    addr[1] = hi;
+    addr[2] = lo >> 24;
+    addr[3] = lo >> 16;
+    addr[4] = lo >> 8;
+    addr[5] = lo;
+
+    return memcmp(buf, addr, sizeof(addr)) == 0;
 }
 
 /*
