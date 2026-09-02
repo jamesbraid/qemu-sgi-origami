@@ -24,6 +24,7 @@
 #include "hw/net/tigon.h"
 #include "hw/pci/pci.h"
 #include "hw/core/qdev-properties.h"
+#include "trace.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "net/checksum.h"
@@ -1086,6 +1087,19 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     if (!jumbo && s->std_rx_considx == s->std_rx_prodidx) {
         return 0;      /* genuine no-buffer flow control */
     }
+    /*
+     * Which ring carried the frame is not visible from a throughput figure,
+     * because a large frame still arrives out of the standard ring when the
+     * driver posted nothing to the jumbo one. Trace it, so the question of
+     * whether a given guest uses the jumbo ring has an answer that is not a
+     * guess.
+     */
+    trace_tigon_rx_ring(jumbo ? "jumbo" : "standard", (uint32_t)size,
+                        jumbo
+                        ? (s->jumbo_rx_prodidx - s->jumbo_rx_considx)
+                          % TI_JUMBO_RX_RING_CNT
+                        : (s->std_rx_prodidx - s->std_rx_considx)
+                          % TI_STD_RX_RING_CNT);
 
     /* Take the next posted buffer from whichever ring carries this frame. */
     if (jumbo) {
