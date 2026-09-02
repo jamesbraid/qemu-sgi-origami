@@ -36,6 +36,7 @@
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "net/checksum.h"
+
 #include "qapi/error.h"
 
 /*
@@ -1391,7 +1392,6 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     PCIDevice *pdev = PCI_DEVICE(s);
     uint64_t par = s->txdl_par[fifo];
     unsigned count = ((lcr >> 56) & 0xff) + 1;   /* NUMTXD + 1, 1..256 */
-    uint64_t first_control1 = 0;
     uint64_t first_control2 = 0;
     size_t frame_len = 0;
     bool have_first = false;
@@ -1400,6 +1400,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     for (i = 0; i < count; i++) {
         uint64_t txd_addr = par + (uint64_t)i * XFRAME_TXD_SIZE;
         uint8_t raw[XFRAME_TXD_SIZE];
+        uint8_t word[8];
         uint64_t control1, bufaddr;
         unsigned seg_len;
 
@@ -1420,7 +1421,6 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
                               "card does not own; ignored\n");
                 return;
             }
-            first_control1 = control1;
             first_control2 = xframe_desc_ldq(s, raw + 8, false);
             have_first = true;
         }
@@ -1441,17 +1441,20 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
         }
         frame_len += seg_len;
 
+        /*
+         * Give this descriptor back before the frame goes out, and give back
+         * EVERY descriptor the card walks rather than only the list's first.
+         * A driver reclaims transmit descriptors by their ownership bit, so
+         * one left owned by the card is one its ring never recovers: holding
+         * the gathered descriptors drained IRIX's xg ring after about a dozen
+         * frames and stopped it transmitting altogether.
+         */
+        xframe_desc_stq(s, word, control1 & ~XFRAME_TXD_OWN, false);
+        pci_dma_write(pdev, txd_addr, word, sizeof(word));
+
         if ((control1 & XFRAME_TXD_GCL) || frame_len >= XFRAME_MAX_FRAME) {
             break;  /* last segment of this frame */
         }
-    }
-
-    /* Release the first descriptor to the host (clear its ownership bit). */
-    if (have_first) {
-        uint8_t word[8];
-
-        xframe_desc_stq(s, word, first_control1 & ~XFRAME_TXD_OWN, false);
-        pci_dma_write(pdev, par, word, sizeof(word));
     }
 
     if (frame_len > 0) {
