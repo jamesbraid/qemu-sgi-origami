@@ -583,6 +583,41 @@ static void test_the_ps2_keyboard_round_trips(const void *data)
 }
 
 /*
+ * IRIX sends the scan-code-set-3 "set all keys" command on every open of the
+ * keyboard device. A real keyboard acknowledges the whole family: 0xF7 to
+ * 0xFA take no argument, and 0xFB to 0xFD take one key code and acknowledge
+ * that too. Answering RESEND (0xFE) instead would tell a driver its command
+ * never arrived.
+ */
+static void test_the_ps2_keyboard_acks_set_key_type(const void *data)
+{
+    /* One ACK packed alone: bits 16-23 with its valid flag in bit 31. */
+    const uint32_t one_ack = 0x80fa0000;
+    const uint8_t all_keys[] = { 0xf7, 0xf8, 0xf9, 0xfa };
+    const uint8_t one_key[] = { 0xfb, 0xfc, 0xfd };
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    unsigned int i;
+
+    sn0_ioc3_attach(qts);
+
+    for (i = 0; i < ARRAY_SIZE(all_keys); i++) {
+        qtest_writel(qts, KBC_KBD_TRANSMIT, all_keys[i]);
+        g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
+    }
+
+    for (i = 0; i < ARRAY_SIZE(one_key); i++) {
+        qtest_writel(qts, KBC_KBD_TRANSMIT, one_key[i]);
+        g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
+
+        /* The key code that follows is consumed, not read back as a command. */
+        qtest_writel(qts, KBC_KBD_TRANSMIT, 0x1c);
+        g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
  * The receive register packs "bytes since the last read", so reading it
  * pops the queue and a second read finds nothing left.
  */
@@ -4350,6 +4385,8 @@ int main(int argc, char **argv)
                         test_the_ps2_ports_read_empty);
     qtest_add_data_func("sn0/ioc3/ps2-keyboard-round-trip", NULL,
                         test_the_ps2_keyboard_round_trips);
+    qtest_add_data_func("sn0/ioc3/ps2-keyboard-acks-set-key-type", NULL,
+                        test_the_ps2_keyboard_acks_set_key_type);
     qtest_add_data_func("sn0/ioc3/ps2-receive-drains-on-read", NULL,
                         test_the_ps2_receive_drains_on_read);
     qtest_add_data_func("sn0/ioc3/ps2-interrupt-latches", NULL,
