@@ -1117,6 +1117,67 @@ static void test_a_search_finds_the_ethernet_address_part(const void *data)
 }
 
 /*
+ * Read ROM, and the identity down to its last bit. Two things no qtest
+ * reaches otherwise.
+ *
+ * Nothing drives 0x33 here at all -- the one-command path a master takes once
+ * it knows the bus holds a single part. tests/unit/test-onewire.c does drive
+ * it against the shared bus, but neither the pipeline nor tools/pre-flight
+ * runs the unit suite, so no check a change must pass before it lands has an
+ * opinion about Read ROM.
+ *
+ * And the identity arrives only partly checked.
+ * test_a_search_finds_the_ethernet_address_part pins the family byte and the
+ * twelve serial bits OpenBSD's owmac_match() compares;
+ * test_each_node_has_its_own_onewire_identity pins the ROM CRC. That leaves
+ * thirty-six of the forty-eight serial bits unchecked.
+ *
+ * Both gaps are measured rather than argued: making Read ROM answer nothing
+ * at all, and handing the part a serial the machine never chose, each leave
+ * every other test in this file passing.
+ *
+ * The value pinned is the machine's rather than the chip's.
+ * hw/mips/sn0-origin200.c gives each node's chip a serial one higher than the
+ * last, so a guest counts two parts instead of rejecting a duplicate, and the
+ * chip's own property default is only what a bare -device gets. Pinning what
+ * a master reads is what ties that per-node choice to something a guest sees.
+ *
+ * The arbitrated path is deliberately not repeated here, having been measured
+ * as covered: a search that delivers a wrong identity trips the family and
+ * prefix checks in test_a_search_finds_the_ethernet_address_part, and one
+ * plausible enough to slip past them still fails the CRC
+ * test_each_node_has_its_own_onewire_identity computes over the bytes its own
+ * search returned.
+ */
+#define ONEWIRE_NODE0_SERIAL 0x5e7000000001ULL
+
+static void test_read_rom_returns_the_whole_identity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t expected[8], id[8];
+    unsigned int i;
+
+    sn0_ioc3_attach(qts);
+    /* Route the MicroLAN engine onto its pin, as a driver does before use. */
+    qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
+
+    expected[0] = 0x91;                                  /* family */
+    for (i = 0; i < 6; i++) {                            /* serial, LSB first */
+        expected[1 + i] = (ONEWIRE_NODE0_SERIAL >> (8 * i)) & 0xff;
+    }
+    expected[7] = onewire_crc8(0, expected, 7);
+
+    g_assert_false(ONEWIRE_RESET(qts));    /* pulled low: the part is there */
+    onewire_write_byte(qts, 0x33);         /* Read ROM */
+    for (i = 0; i < 8; i++) {
+        id[i] = onewire_read_byte(qts);
+    }
+    g_assert_cmpmem(id, sizeof(id), expected, sizeof(expected));
+
+    qtest_quit(qts);
+}
+
+/*
  * A Match ROM naming another part leaves this one unselected; a
  * Skip-ROM-only model never answers OpenBSD's owmac.
  */
@@ -4620,6 +4681,8 @@ int main(int argc, char **argv)
                         test_one_wire_slot_preserves_the_timing_written);
     qtest_add_data_func("sn0/ioc3/one-wire-search-finds-the-part", NULL,
                         test_a_search_finds_the_ethernet_address_part);
+    qtest_add_data_func("sn0/ioc3/one-wire-read-rom-whole-identity", NULL,
+                        test_read_rom_returns_the_whole_identity);
     qtest_add_data_func("sn0/ioc3/one-wire-each-node-distinct-identity", NULL,
                         test_each_node_has_its_own_onewire_identity);
     qtest_add_data_func("sn0/ioc3/one-wire-wrong-match-rom-unselects", NULL,
