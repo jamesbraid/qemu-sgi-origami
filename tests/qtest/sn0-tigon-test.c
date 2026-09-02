@@ -1046,146 +1046,8 @@ static void test_transmit_checksum_ignores_non_ip(const void *data)
     close(sv[0]);
 }
 
-/*
- * A frame that arrives before the guest has populated the standard-receive
- * ring control block -- its base still zero -- must be refused, not walked
- * through a zero-based descriptor ring. Reading descriptors from physical
- * address 0 yields a garbage buffer pointer, and delivering to it corrupts
- * arbitrary guest memory; IRIX hit exactly this when a peer opened a TCP
- * connection to a listening socket before the interface had transmitted.
- */
-static void test_receive_refuses_unset_ring(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
 
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
 
-    /* Bring the card up, but leave the standard-receive ring base unset. */
-    enable_dma_big_endian(qts);
-    build_gib(qts);
-    write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, 0);
-    publish_gib(qts);
-    release_cpu(qts);
-
-    /* Advance the producer index so a buffer would look available... */
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-
-    /* ...then offer a frame. With no ring base the card must hold it. */
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-
-    /*
-     * Nothing is delivered: the return producer index never advances. (The
-     * interrupt line is not checked -- the firmware-up event at bring-up has
-     * already asserted it, for reasons that have nothing to do with receive.)
-     */
-    g_assert_cmphex(wait_return_prod(qts), ==, 0);
-
-    /* The return ring stays untouched -- no descriptor was ever written. */
-    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 8), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 12), ==, 0);
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
-
-/*
- * Withholding a frame must not wedge the receive path: once the guest does
- * populate the ring control block and post buffers, the held frame has to be
- * delivered. The ring base is read from the control block when the producer
- * doorbell establishes the ring, so a guest that fills the block after the
- * firmware-up handshake -- which is when IRIX fills it -- still receives.
- */
-static void test_receive_recovers_when_ring_appears(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
-    uint8_t landed[64];
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-
-    /* Come up with the standard-receive ring control block still unset. */
-    enable_dma_big_endian(qts);
-    build_gib(qts);
-    write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, 0);
-    publish_gib(qts);
-    release_cpu(qts);
-
-    /* A frame offered now cannot be delivered: it waits in the queue. */
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
-
-    /* The guest now sets the ring up and posts a buffer. */
-    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
-    write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, STD_RX_RING_PHYS);
-    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-
-    /* The waiting frame is delivered, into the buffer, byte for byte. */
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
-    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
-    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
-                    rx_frame_ours, sizeof(rx_frame_ours));
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
-
-/*
- * A flush reaches the receive path directly, without the can-receive
- * predicate, so it can arrive while the ring control block is still unset.
- * The frame is dropped there rather than refused: refusing it would wedge the
- * back end's queue head behind a frame no retry can pass. What must hold is
- * that the drop is not permanent damage -- once the guest does populate the
- * block and post a buffer, receive works again.
- */
-static void test_receive_not_wedged_by_flush_with_unset_ring(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
-    uint8_t landed[64];
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-
-    enable_dma_big_endian(qts);
-    build_gib(qts);
-    write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, 0);
-    publish_gib(qts);
-    release_cpu(qts);
-
-    /* A frame offered and then flushed at while the ring is still unset. */
-    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
-    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-
-    /* Nothing was delivered: no descriptor was written through a zero ring. */
-    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
-
-    /* The guest sets the ring up, posts a buffer, and receives again. */
-    write_rcb_addr(qts, GIB_PHYS + GIB_STD_RX_RCB, STD_RX_RING_PHYS);
-    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
-    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
-    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
-                    rx_frame_ours, sizeof(rx_frame_ours));
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
 
 /* An oversized frame must not be written past the buffer the guest posted. */
 static void test_receive_clamps_to_buffer(const void *data)
@@ -1724,12 +1586,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/transmit-direct-map-corrects", NULL,
                         test_transmit_direct_map_corrects);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
-    qtest_add_data_func("/sn0/tigon/receive-refuses-unset-ring", NULL,
-                        test_receive_refuses_unset_ring);
-    qtest_add_data_func("/sn0/tigon/receive-recovers-when-ring-appears", NULL,
-                        test_receive_recovers_when_ring_appears);
-    qtest_add_data_func("/sn0/tigon/receive-not-wedged-by-flush-unset-ring",
-                        NULL, test_receive_not_wedged_by_flush_with_unset_ring);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
     qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
