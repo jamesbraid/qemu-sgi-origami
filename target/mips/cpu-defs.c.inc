@@ -571,11 +571,11 @@ const mips_def_t mips_defs[] =
     },
     {
         /*
-         * The processor every SGI Origin shipped with. Config0 uses the
-         * R10000's own layout, whose bits 24..0 come from the reset mode bits
-         * the board drives. On the Origin 200 machine the board does drive
-         * them: its ratified mode word (SN0_PROCESSOR_MODE_BITS, hw/mips/
-         * sn0.h) is latched over bits 24..0 at every reset, so of this
+         * The Origin 200 model uses this R10000. Config0 uses the processor's
+         * own layout, whose bits 24..0 come from the reset mode bits the board
+         * drives. On the Origin 200 machine the board does drive
+         * them: the board's ratified mode word is latched over bits 24..0
+         * at every reset, so of this
          * default only the hardwired cache size fields above them reach a
          * guest there. The mode-bit values below are a fallback for a bare
          * R10000 on some other machine, and they are not the Origin 200's:

@@ -994,6 +994,7 @@ static void assert_graph_header(QTestState *qts, uint64_t base,
     g_assert_cmphex(read_field(qts, base + 0x4028, 8), ==,
                     0x9200000008600000ULL);
     g_assert_cmpuint(read_field(qts, base + 0x4030, 2), ==, 9600);
+    g_assert_cmpuint(read_field(qts, base + 0x4034, 4), ==, 0);
     g_assert_cmpuint(read_field(qts, base + 0x4038, 2), ==, nasid);
     g_assert_cmpuint(read_field(qts, base + 0x403a, 1), ==, 8);
     g_assert_cmpuint(read_field(qts, base + 0x403b, 1), ==, 2);
@@ -1162,7 +1163,7 @@ static void assert_two_cpu_graph(QTestState *qts, unsigned int nasid,
 
 static void test_config_graph(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200 -m 64M");
+    QTestState *qts = qtest_init("-M origin200");
 
     assert_one_cpu_graph(qts, 64, 64, 0);
     qtest_quit(qts);
@@ -1436,6 +1437,16 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     g_assert_nonnull(strstr(error_output, message));
+}
+
+static void test_reject_non_r10000_cpu(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-cpu", "R4000",
+        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args, "Invalid CPU model: R4000");
 }
 
 /*
@@ -1811,6 +1822,8 @@ int main(int argc, char **argv)
                         test_explicit_one_node_numa);
     qtest_add_data_func("sn0/model/dual-chassis-numa", NULL,
                         test_dual_chassis_numa);
+    qtest_add_data_func("sn0/model/reject-non-r10000-cpu", NULL,
+                        test_reject_non_r10000_cpu);
     qtest_add_data_func("sn0/model/reject-three-cores-one-chassis", NULL,
                         test_reject_three_cores_one_chassis);
     qtest_add_data_func("sn0/model/reject-three-sockets", NULL,

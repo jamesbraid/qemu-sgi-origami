@@ -939,7 +939,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
              widget + console_device_window);
     stw_be_p(console + SN0_KL_CONSOLE_BAUD_OFFSET,
              klconfig->console_baud);
-    stl_be_p(console + SN0_KL_CONSOLE_TYPE_OFFSET, 0);
+    stl_be_p(console + SN0_KL_CONSOLE_TYPE_OFFSET,
+             klconfig->console_type);
     stw_be_p(console + SN0_KL_CONSOLE_NASID_OFFSET, node->nasid);
     console[SN0_KL_CONSOLE_WIDGET_OFFSET] = base_io->widget;
     console[SN0_KL_CONSOLE_PCI_DEVICES_OFFSET] = ioc3->device;

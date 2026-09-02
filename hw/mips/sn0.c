@@ -640,7 +640,7 @@ static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
 
             slot->type = machine->cpu_type;
             slot->vcpus_count = 1;
-            slot->arch_id = (node << 1) | slice;
+            slot->arch_id = node * model->cpu_slots_per_node + slice;
             slot->props.has_socket_id = true;
             slot->props.socket_id = node;
             slot->props.has_core_id = true;
@@ -1272,6 +1272,8 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
     unsigned int widget;
 
     g_assert(hub_local && hub_local->space == SN0_MODEL_SPACE_XTALK);
+    g_assert(hub_local->size == hub_explicit->size);
+    g_assert(memory_region_size(&node->hub.regs) == hub_local->size);
 
     for (widget = 0; widget <= SN0_XTALK_PORT_LAST; widget++) {
         g_autofree char *name =
@@ -1502,13 +1504,19 @@ static void sn0_init(MachineState *machine)
             object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                      OBJECT(aux_chr), &error_fatal);
         }
-        if (profile->interconnect == SN0_MODEL_INTERCONNECT_DIRECT_PEER) {
+        if (node_model->peer_index >= 0) {
+            int peer_index = node_model->peer_index;
+            const SN0ModelNodeInstance *peer;
+
+            g_assert((size_t)peer_index < profile->node_count);
+            g_assert((unsigned int)peer_index != node_index);
+            peer = sn0_model_profile_node(profile, peer_index);
             qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
             object_property_set_link(OBJECT(&node->hub), "network-peer",
-                                     OBJECT(&s->nodes[1 - node_index]->hub),
+                                     OBJECT(&s->nodes[peer_index]->hub),
                                      &error_fatal);
             qdev_prop_set_uint32(DEVICE(&node->hub), "claim-peer-node",
-                sn0_model_profile_node(profile, 1 - node_index)->nasid);
+                                 peer->nasid);
         }
         qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
                           node_index == 0 && s->junk_uart_present);
@@ -1748,7 +1756,6 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
     mc->reset = sn0_machine_reset;
 
     mc->init = sn0_init;
-    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
     mc->possible_cpu_arch_ids = sn0_possible_cpu_arch_ids;
     mc->cpu_index_to_instance_props = sn0_cpu_index_to_props;
     mc->get_default_cpu_node_id = sn0_get_default_cpu_node_id;
