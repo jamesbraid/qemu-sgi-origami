@@ -797,9 +797,19 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
              template_index++) {
             const SN0KlComponentModel *component =
                 &board->components[template_index];
+            SN0KlComponentModel live_component;
             unsigned int instances = component->record_kind ==
                 SN0_KL_RECORD_PROCESSOR ? node->nr_cpus : 1;
             unsigned int instance;
+
+            if (component->record_kind == SN0_KL_RECORD_COMPONENT &&
+                component->physical_id == model->base_io.widget &&
+                component->widget == model->base_io.widget &&
+                component->revision == model->base_io.default_revision) {
+                live_component = *component;
+                live_component.revision = s->widget0_revision;
+                component = &live_component;
+            }
 
             for (instance = 0; instance < instances; instance++) {
                 unsigned int virtual_id = type_ordinals[component->type]++;

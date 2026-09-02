@@ -1162,6 +1162,16 @@ static void assert_base_io_records(QTestState *qts, uint64_t base,
                      0, 8, nasid);
 }
 
+static void test_bridge_revision_matches_config_graph(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,widget0-revision=3 -m 64M");
+    uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(0) + 4);
+
+    g_assert_cmpuint(bridge >> 28, ==, 3);
+    assert_component(qts, 0, 0x4600, SN0_COMP_BRIDGE, 3, 8, 0, 8, 0);
+    qtest_quit(qts);
+}
+
 static void assert_one_cpu_graph(QTestState *qts, uint16_t total_mb,
                                  uint16_t bank0_mb, uint16_t bank1_mb)
 {
@@ -1867,6 +1877,8 @@ int main(int argc, char **argv)
                         test_origin200_owns_the_ioc3_board_default);
     qtest_add_data_func("sn0/model/profile-node-instances-are-explicit", NULL,
                         test_profile_node_instances_are_explicit);
+    qtest_add_data_func("sn0/model/bridge-revision-matches-config-graph", NULL,
+                        test_bridge_revision_matches_config_graph);
     qtest_add_data_func("sn0/model/base-profile-topology/one-cpu",
                         &base_profile_topologies[0],
                         test_base_profile_topology);
