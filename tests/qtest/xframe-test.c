@@ -3075,6 +3075,30 @@ static size_t traffic_tx_capture(XframeTx *t, const uint8_t *frame, size_t len,
     return emitted;
 }
 
+/*
+ * A gather list: the frame split across two descriptors, first and last, the
+ * shape a guest produces whenever its stack hands down a header and a payload
+ * in separate buffers. Both descriptors are owned by the card on entry.
+ */
+static void xframe_program_txd_pair(XframeTx *t, uint64_t par, uint64_t buf,
+                                    const uint8_t *frame, size_t len,
+                                    size_t split)
+{
+    qtest_memwrite(t->qs->qts, buf, frame, split);
+    qtest_memwrite(t->qs->qts, buf + 0x1000, frame + split, len - split);
+
+    dma_stq_be(t->qs->qts, par + 0, (uint64_t)split | TXD_OWN | TXD_GCF);
+    dma_stq_be(t->qs->qts, par + 8, 0);
+    dma_stq_be(t->qs->qts, par + 16, buf);
+    dma_stq_be(t->qs->qts, par + 24, 0);
+
+    dma_stq_be(t->qs->qts, par + TXD_SIZE + 0,
+               (uint64_t)(len - split) | TXD_OWN | TXD_GCL);
+    dma_stq_be(t->qs->qts, par + TXD_SIZE + 8, 0);
+    dma_stq_be(t->qs->qts, par + TXD_SIZE + 16, buf + 0x1000);
+    dma_stq_be(t->qs->qts, par + TXD_SIZE + 24, 0);
+}
+
 /* traffic_tx_capture, with checksum insertion asked for in control2. */
 static size_t traffic_tx_capture_cko(XframeTx *t, const uint8_t *frame,
                                      size_t len, uint8_t *got,
@@ -3276,6 +3300,43 @@ static void test_transmit_inserts_requested_tcp_checksum(void)
     g_assert_cmphex(frame_be16(got, TCP_CSUM_OFF), !=, 0xbeef);
     g_assert_true(ipv4_checksum_valid(got));
     g_assert_true(l4_checksum_valid(got, IPPROTO_TCP, TCP_HDR_LEN + 20));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A gather list must come back to the host in full. The card consumes every
+ * descriptor it walks, so it owes ownership on every one of them -- returning
+ * only the first leaves the rest permanently owned by the card, and a driver
+ * that cannot reclaim them runs its transmit ring down to nothing and stops
+ * sending. IRIX's xg driver does exactly that after about a dozen frames.
+ */
+static void test_transmit_gather_list_releases_every_descriptor(void)
+{
+    XframeTx t;
+    uint8_t frame[256];
+    uint8_t got[256];
+    size_t len, emitted;
+    uint64_t d0, d1;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, 40, 94);
+
+    xframe_tx_start(&t);
+    xframe_program_txd_pair(&t, TRAFFIC_TXD_PAR, TRAFFIC_TX_BUF, frame, len, 32);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, TRAFFIC_TXD_PAR);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
+                   TXDL_NUMTXD(1) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+    emitted = traffic_recv_frame(t.host_fd, got, sizeof(got));
+
+    /* The frame is the two buffers joined, in order. */
+    g_assert_cmpint(emitted, ==, (int)len);
+    g_assert_cmpmem(got, emitted, frame, len);
+
+    /* Both descriptors are back with the host. */
+    d0 = dma_ldq_be(t.qs->qts, TRAFFIC_TXD_PAR);
+    d1 = dma_ldq_be(t.qs->qts, TRAFFIC_TXD_PAR + TXD_SIZE);
+    g_assert_cmphex(d0 & TXD_OWN, ==, 0);
+    g_assert_cmphex(d1 & TXD_OWN, ==, 0);
 
     xframe_tx_stop(&t);
 }
@@ -3645,6 +3706,8 @@ int main(int argc, char **argv)
                    test_transmit_inserts_requested_udp_checksum);
     qtest_add_func("xframe/transmit-checksum-request-on-non-ipv4-declined",
                    test_transmit_checksum_request_on_non_ipv4_declined);
+    qtest_add_func("xframe/transmit-gather-list-releases-every-descriptor",
+                   test_transmit_gather_list_releases_every_descriptor);
     qtest_add_func("xframe/transmit-frame-sizes-byte-exact",
                    test_transmit_frame_sizes_byte_exact);
     qtest_add_func("xframe/receive-frame-sizes-byte-exact",
