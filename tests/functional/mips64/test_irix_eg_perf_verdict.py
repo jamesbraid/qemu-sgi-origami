@@ -108,6 +108,21 @@ def eg_perf_verdict(login_reached, eg_up, results):
             "the guest received no UDP payload at all: the datagram path "
             "carried nothing")
 
+    # Only present when a soak was asked for. Every round carries its own
+    # digest and byte count, so a run that degrades partway through -- the
+    # shape a ring index or a recycled buffer produces -- names the round it
+    # went wrong on rather than just failing at the end.
+    soak = results.get("soak")
+    if soak:
+        failed = soak.get("failed") or []
+        if not soak.get("rounds"):
+            problems.append("a soak was asked for but no round ran")
+        elif failed:
+            where = ", ".join(str(r.get("round")) for r in failed)
+            problems.append(
+                f"{len(failed)} of {len(soak['rounds'])} soak rounds did not "
+                f"match byte for byte (round {where})")
+
     return {
         "verdict": "PASS" if not problems else "FAIL",
         "problems": problems,
@@ -194,6 +209,38 @@ class EgPerfVerdictTest(unittest.TestCase):
         res = _good_results()
         res["udp_loss"] = 0.98
         r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "PASS")
+
+    def test_soak_all_rounds_clean_is_pass(self):
+        res = _good_results()
+        res["soak"] = {"rounds": [{"round": i + 1, "ok": True}
+                                  for i in range(20)],
+                       "bytes_total": 20 * 4 * 1024 * 1024, "failed": []}
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "PASS")
+
+    def test_soak_names_the_round_that_broke(self):
+        # The shape a slowly-going-wrong ring index produces: fine for a
+        # while, then not.
+        rounds = [{"round": i + 1, "ok": True} for i in range(20)]
+        rounds[13]["ok"] = False
+        res = _good_results()
+        res["soak"] = {"rounds": rounds, "bytes_total": 0,
+                       "failed": [rounds[13]]}
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("round 14" in p for p in r["problems"]))
+
+    def test_soak_asked_for_but_never_ran_fails(self):
+        res = _good_results()
+        res["soak"] = {"rounds": [], "bytes_total": 0, "failed": []}
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("no round ran" in p for p in r["problems"]))
+
+    def test_absent_soak_is_not_a_problem(self):
+        # The ordinary run does not soak; its absence must not fail anything.
+        r = eg_perf_verdict(True, True, _good_results())
         self.assertEqual(r["verdict"], "PASS")
 
     def test_every_broken_clause_is_reported_at_once(self):

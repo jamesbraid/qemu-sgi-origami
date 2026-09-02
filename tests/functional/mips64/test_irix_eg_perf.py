@@ -39,12 +39,28 @@ from test_irix_eg_perf_verdict import eg_perf_verdict  # noqa: E402
 TCP_GUEST_PORT = 5001
 UDP_GUEST_PORT = 5002
 TCP_THROUGHPUT_BYTES = 4 * 1024 * 1024    # bulk TCP stream
-SEND_TIMEOUT_SECONDS = 600                # a bulk send drains at guest speed
+SEND_TIMEOUT_SECONDS = 900                # a bulk send drains at guest speed
+LEG_TIMEOUT_SECONDS = 900                 # and the guest reports after that
 UDP_BUFLEN = 8192
 UDP_BUFS = 512                            # 4 MiB of datagrams
 UDP_PACE_EVERY = 16                       # datagrams between pauses
 UDP_PACE_SECONDS = 0.02
 VERIFY_BYTES = 1024 * 1024                # byte-checked TCP payload
+
+# Machine shape. The defaults are what the test asserts against in CI: one CPU
+# on the round-robin scheduler, which is the cheapest thing that boots. Both
+# are overridable so the same test can be pointed at a faster configuration
+# when the question is how quickly the adapter can be driven rather than
+# whether it is correct.
+SMP = os.environ.get('EG_PERF_SMP', '1')
+ACCEL = os.environ.get('EG_PERF_ACCEL', 'tcg,thread=single')
+
+# Soak: repeat the checked transfer this many times after the measured legs.
+# Off by default, because the point of the ordinary run is to be short enough
+# to sit in the thorough suite. A soak is for asking whether the adapter still
+# behaves after far more traffic than any single leg sends.
+SOAK_ROUNDS = int(os.environ.get('EG_PERF_SOAK_ROUNDS', '0'))
+SOAK_BYTES = int(os.environ.get('EG_PERF_SOAK_BYTES', str(4 * 1024 * 1024)))
 
 
 def _usernet_hostport(vm, proto, guest_port):
@@ -172,8 +188,8 @@ if base.QemuSystemTest is not None:
                       % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
                          base.GUEST_ADDR, UDP_GUEST_PORT))
             vm.add_args(
-                '-accel', 'tcg,thread=single',
-                '-cpu', 'R10000', '-smp', '1', '-m', str(base.MEMORY_MIB),
+                '-accel', ACCEL,
+                '-cpu', 'R10000', '-smp', SMP, '-m', str(base.MEMORY_MIB),
                 '-bios', prom, '-audio', 'none',
                 '-chardev', f'file,id=elsc,path={elsc}',
                 '-serial', 'none', '-serial', 'chardev:elsc',
@@ -248,7 +264,8 @@ if base.QemuSystemTest is not None:
                          "echo \"TCP\"\"TP-$?\"")
                 time.sleep(3)
                 _tcp_stream(tcp_hp, os.urandom(TCP_THROUGHPUT_BYTES))
-                con.expect(rb"TCPTP-\d+", 240, what="ttcp TCP to finish")
+                con.expect(rb"TCPTP-\d+", LEG_TIMEOUT_SECONDS,
+                           what="ttcp TCP to finish")
                 tcp_out = con.buf.decode("utf-8", "replace")
                 mbps, _, _ = _parse_ttcp_rate(
                     tcp_out)
@@ -260,7 +277,8 @@ if base.QemuSystemTest is not None:
                 time.sleep(3)
                 self.assertIsNotNone(udp_hp, "no UDP hostfwd port")
                 _udp_ttcp_stream(udp_hp, UDP_BUFLEN, UDP_BUFS)
-                con.expect(rb"UDPTP-\d+", 240, what="ttcp UDP to finish")
+                con.expect(rb"UDPTP-\d+", LEG_TIMEOUT_SECONDS,
+                           what="ttcp UDP to finish")
                 udp_out = con.buf.decode("utf-8", "replace")
                 umbps, ubytes, _ = _parse_ttcp_rate(
                     udp_out)
@@ -269,6 +287,45 @@ if base.QemuSystemTest is not None:
                 if ubytes is not None:
                     results["udp_loss"] = 1.0 - (ubytes /
                                                  float(UDP_BUFLEN * UDP_BUFS))
+
+                # --- soak: the same checked transfer, over and over ---
+                #
+                # One 4 MiB transfer is already about 2800 frames, which laps
+                # the default 2048-entry return ring once. Repeating it is what
+                # turns a fault that needs a lap into one that shows up
+                # reliably, and it is the only leg here that would notice a
+                # ring index or a buffer that goes wrong slowly.
+                if SOAK_ROUNDS:
+                    rounds = []
+                    for r in range(SOAK_ROUNDS):
+                        soak_file = os.path.join(served_dir, 'soak.bin')
+                        with open(soak_file, 'wb') as sf:
+                            sf.write(os.urandom(SOAK_BYTES))
+                        s_crc, s_bytes = base._host_cksum(soak_file)
+                        with open(soak_file, 'rb') as sf:
+                            soak_payload = sf.read()
+                        con.send(f"ttcp -r -p {TCP_GUEST_PORT} -l 65536 "
+                                 ">/tmp/soak.bin 2>/dev/null; "
+                                 "echo \"SK\"\"-$?\"")
+                        time.sleep(3)
+                        _tcp_stream(tcp_hp, soak_payload)
+                        con.expect(rb"SK-\d+", 600,
+                                   what=f"soak round {r + 1} to finish")
+                        gc2, gb2 = con.two_values(
+                            "dd if=/tmp/soak.bin bs=8192 count=%d 2>/dev/null "
+                            "| cksum | sed 's/^/CK=/'" % (SOAK_BYTES // 8192),
+                            f"soak{r}", rb"CK=(\d+)\s+(\d+)", timeout=300)
+                        rounds.append({"round": r + 1,
+                                       "host_cksum": s_crc,
+                                       "guest_cksum": gc2,
+                                       "host_bytes": s_bytes,
+                                       "guest_bytes": gb2,
+                                       "ok": (gc2 == s_crc and gb2 == s_bytes)})
+                    results["soak"] = {
+                        "rounds": rounds,
+                        "bytes_total": SOAK_ROUNDS * SOAK_BYTES,
+                        "failed": [r for r in rounds if not r["ok"]],
+                    }
 
                 seg_after = self._netstat_counter(
                     con, "tcp", "packets received", "sega")
