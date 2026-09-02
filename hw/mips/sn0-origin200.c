@@ -86,27 +86,6 @@ static const char *origin200_pci_qom_type(SN0ModelPciKind kind)
     }
 }
 
-static const SN0ModelPciFunction *
-origin200_find_pci_function(const SN0ModelBaseIO *base_io,
-                            SN0ModelPciKind kind, unsigned int instance)
-{
-    size_t function_index;
-
-    for (function_index = 0; function_index < base_io->function_count;
-         function_index++) {
-        const SN0ModelPciFunction *function =
-            &base_io->functions[function_index];
-
-        if (function->kind == kind) {
-            if (instance == 0) {
-                return function;
-            }
-            instance--;
-        }
-    }
-    return NULL;
-}
-
 static void origin200_create_ioc3(SN0MachineState *s,
                                   unsigned int node_index,
                                   const SN0ModelPciFunction *function)
@@ -385,7 +364,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     smc->model = &sn0_origin200_model;
     g_assert(smc->model->profile_count > 0);
     default_profile = &smc->model->profiles[0];
-    ioc3 = origin200_find_pci_function(&smc->model->base_io,
+    ioc3 = sn0_model_find_pci_function(&smc->model->base_io,
                                        SN0_MODEL_PCI_IOC3, 0);
     g_assert(ioc3);
     for (node_index = 0; node_index < default_profile->node_count;

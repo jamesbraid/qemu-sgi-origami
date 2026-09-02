@@ -6,6 +6,27 @@
 #include "qemu/units.h"
 #include "sn0-model.h"
 
+const SN0ModelPciFunction *sn0_model_find_pci_function(
+    const SN0ModelBaseIO *base_io, SN0ModelPciKind kind,
+    unsigned int instance)
+{
+    size_t function_index;
+
+    for (function_index = 0; function_index < base_io->function_count;
+         function_index++) {
+        const SN0ModelPciFunction *function =
+            &base_io->functions[function_index];
+
+        if (function->kind == kind) {
+            if (instance == 0) {
+                return function;
+            }
+            instance--;
+        }
+    }
+    return NULL;
+}
+
 const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
                                               unsigned int nodes,
                                               const unsigned int *cpus)

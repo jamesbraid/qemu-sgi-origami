@@ -22,6 +22,7 @@
 #include "exec/cpu-common.h"
 #include "cpu.h"
 #include "sn0.h"
+#include "sn0-klconfig-layout.h"
 
 static hwaddr sn0_firmware_node_base(const SN0MachineModel *model,
                                      unsigned int nasid)
@@ -532,11 +533,79 @@ static uint8_t *sn0_kl_component_at(uint8_t *graph,
            index * klconfig->component_stride;
 }
 
-#define SN0_KL_HEADER_SIZE       0x18
-#define SN0_KL_CONSOLE_SIZE      0x24
-#define SN0_KL_BOARD_HEADER_SIZE 0x24
-#define SN0_KL_COMPONENT_SIZE    0x60
-#define SN0_KL_MEMORY_BANK_CAPACITY 8
+#define SN0_KL_CHECK_WIDTH(record, field, type) \
+    QEMU_BUILD_BUG_ON(SN0_KL_##record##_##field##_WIDTH != sizeof(type))
+
+static void sn0_kl_check_layout(void)
+{
+    SN0_KL_CHECK_WIDTH(CONFIG_HEADER, SIGNATURE, uint64_t);
+    SN0_KL_CHECK_WIDTH(CONFIG_HEADER, VERSION, uint32_t);
+    SN0_KL_CHECK_WIDTH(CONFIG_HEADER, ARENA_OFFSET, uint32_t);
+    SN0_KL_CHECK_WIDTH(CONFIG_HEADER, CONSOLE_OFFSET, uint32_t);
+    SN0_KL_CHECK_WIDTH(CONFIG_HEADER, FIRST_BOARD_OFFSET, uint32_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, UART_BASE, uint64_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, CONFIG_BASE, uint64_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, MEMORY_BASE, uint64_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, BAUD, uint16_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, TYPE, uint32_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, NASID, uint16_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, WIDGET, uint8_t);
+    SN0_KL_CHECK_WIDTH(CONSOLE, PCI_DEVICES, uint8_t);
+    SN0_KL_CHECK_WIDTH(BOARD, NEXT, uint32_t);
+    SN0_KL_CHECK_WIDTH(BOARD, RECORD_KIND, uint8_t);
+    SN0_KL_CHECK_WIDTH(BOARD, BOARD_TYPE, uint8_t);
+    SN0_KL_CHECK_WIDTH(BOARD, RECORD_VERSION, uint8_t);
+    SN0_KL_CHECK_WIDTH(BOARD, SLOT, uint8_t);
+    SN0_KL_CHECK_WIDTH(BOARD, COMPONENT_COUNT, uint8_t);
+    SN0_KL_CHECK_WIDTH(BOARD, NASID, uint16_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, COMPONENT_TYPE, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, RECORD_VERSION, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, FLAGS, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, REVISION, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, PHYSICAL_ID, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, VIRTUAL_ID, uint32_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, WIDGET, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, NASID, uint16_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, PAD_LOW, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, PAD_HIGH, uint8_t);
+    SN0_KL_CHECK_WIDTH(COMPONENT, FIRMWARE_BACK, uint64_t);
+    SN0_KL_CHECK_WIDTH(PROCESSOR, IDENTIFICATION, uint16_t);
+    SN0_KL_CHECK_WIDTH(PROCESSOR, FP_IDENTIFICATION, uint16_t);
+    SN0_KL_CHECK_WIDTH(PROCESSOR, CLOCK_MHZ, uint16_t);
+    SN0_KL_CHECK_WIDTH(PROCESSOR, CACHE_MB, uint16_t);
+    SN0_KL_CHECK_WIDTH(PROCESSOR, CACHE_CLOCK_MHZ, uint16_t);
+    SN0_KL_CHECK_WIDTH(HUB, PORT, uint64_t);
+    SN0_KL_CHECK_WIDTH(HUB, CLOCK_HZ, uint64_t);
+    SN0_KL_CHECK_WIDTH(MEMORY_BANK, TOTAL_MB, uint16_t);
+    SN0_KL_CHECK_WIDTH(MEMORY_BANK, BANK_MAPPING, uint16_t);
+    QEMU_BUILD_BUG_ON(SN0_KL_CONFIG_HEADER_CONSOLE_WIDTH !=
+                      SN0_KL_CONSOLE_SIZE);
+    QEMU_BUILD_BUG_ON(SN0_KL_BOARD_COMPONENTS_STRIDE != sizeof(uint32_t));
+    QEMU_BUILD_BUG_ON(SN0_KL_BOARD_COMPONENTS_WIDTH !=
+                      SN0_KL_BOARD_COMPONENTS_COUNT *
+                      SN0_KL_BOARD_COMPONENTS_STRIDE);
+    QEMU_BUILD_BUG_ON(SN0_KL_MEMORY_BANK_BANK_SIZES_STRIDE !=
+                      sizeof(uint16_t));
+    QEMU_BUILD_BUG_ON(SN0_KL_MEMORY_BANK_BANK_SIZES_WIDTH !=
+                      SN0_KL_MEMORY_BANK_BANK_SIZES_COUNT *
+                      SN0_KL_MEMORY_BANK_BANK_SIZES_STRIDE);
+}
+
+static size_t sn0_kl_component_record_size(SN0KlRecordKind kind)
+{
+    switch (kind) {
+    case SN0_KL_RECORD_COMPONENT:
+        return SN0_KL_COMPONENT_SIZE;
+    case SN0_KL_RECORD_PROCESSOR:
+        return SN0_KL_PROCESSOR_SIZE;
+    case SN0_KL_RECORD_HUB:
+        return SN0_KL_HUB_SIZE;
+    case SN0_KL_RECORD_MEMORY_BANK:
+        return SN0_KL_MEMORY_BANK_SIZE;
+    default:
+        g_assert_not_reached();
+    }
+}
 
 static bool sn0_kl_span_fits(uint64_t offset, uint64_t length,
                              uint64_t total)
@@ -588,16 +657,18 @@ static unsigned int sn0_kl_validate(const SN0KlConfigModel *klconfig,
     unsigned int component_count = 0;
     size_t board_index;
 
+    sn0_kl_check_layout();
     g_assert(klconfig->size <= SIZE_MAX);
     g_assert(node->model->memory.architectural_banks <=
-             SN0_KL_MEMORY_BANK_CAPACITY);
-    g_assert(sn0_kl_span_fits(0, SN0_KL_HEADER_SIZE, klconfig->size));
+             SN0_KL_MEMORY_BANK_BANK_SIZES_COUNT);
+    g_assert(sn0_kl_span_fits(0, SN0_KL_CONFIG_HEADER_SIZE,
+                             klconfig->size));
     g_assert(klconfig->arena_offset <= klconfig->size);
-    g_assert(sn0_kl_span_fits(klconfig->console_offset,
+    g_assert(sn0_kl_span_fits(SN0_KL_CONFIG_HEADER_CONSOLE_OFFSET,
                              SN0_KL_CONSOLE_SIZE, klconfig->size));
     g_assert(klconfig->boards && klconfig->board_count > 0);
     g_assert(klconfig->board_base >= klconfig->base);
-    g_assert(klconfig->board_stride >= SN0_KL_BOARD_HEADER_SIZE);
+    g_assert(klconfig->board_stride >= SN0_KL_BOARD_SIZE);
     g_assert(klconfig->board_count <=
              UINT32_MAX / klconfig->board_stride);
     board_offset = klconfig->board_base - klconfig->base;
@@ -610,22 +681,26 @@ static unsigned int sn0_kl_validate(const SN0KlConfigModel *klconfig,
          board_index++) {
         const SN0KlBoardModel *board = &klconfig->boards[board_index];
         unsigned int board_components;
+        size_t template_index;
 
         g_assert(board->components || board->component_count == 0);
+        for (template_index = 0; template_index < board->component_count;
+             template_index++) {
+            g_assert(klconfig->component_stride >=
+                     sn0_kl_component_record_size(
+                         board->components[template_index].record_kind));
+        }
         board_components = sn0_kl_board_component_count(board, node);
         g_assert(board_components <= UINT8_MAX);
         g_assert(board->declared_count == -1 ||
                  (board->declared_count >= 0 &&
                   board->declared_count <= UINT8_MAX));
-        g_assert(board_components <=
-                 (klconfig->board_stride - SN0_KL_BOARD_HEADER_SIZE) /
-                 sizeof(uint32_t));
+        g_assert(board_components <= SN0_KL_BOARD_COMPONENTS_COUNT);
         g_assert(component_count <= UINT_MAX - board_components);
         component_count += board_components;
     }
 
     g_assert(klconfig->component_base >= klconfig->base);
-    g_assert(klconfig->component_stride >= SN0_KL_COMPONENT_SIZE);
     g_assert(component_count <= UINT32_MAX / klconfig->component_stride);
     component_offset = klconfig->component_base - klconfig->base;
     component_span = component_count * klconfig->component_stride;
@@ -635,18 +710,9 @@ static unsigned int sn0_kl_validate(const SN0KlConfigModel *klconfig,
         g_assert(klconfig->component_base <= UINT32_MAX -
                  (component_count - 1) * klconfig->component_stride);
     }
-    g_assert(!sn0_kl_spans_overlap(0, SN0_KL_HEADER_SIZE,
-                                  klconfig->console_offset,
-                                  SN0_KL_CONSOLE_SIZE));
-    g_assert(!sn0_kl_spans_overlap(0, SN0_KL_HEADER_SIZE,
+    g_assert(!sn0_kl_spans_overlap(0, SN0_KL_CONFIG_HEADER_SIZE,
                                   board_offset, board_span));
-    g_assert(!sn0_kl_spans_overlap(0, SN0_KL_HEADER_SIZE,
-                                  component_offset, component_span));
-    g_assert(!sn0_kl_spans_overlap(klconfig->console_offset,
-                                  SN0_KL_CONSOLE_SIZE,
-                                  board_offset, board_span));
-    g_assert(!sn0_kl_spans_overlap(klconfig->console_offset,
-                                  SN0_KL_CONSOLE_SIZE,
+    g_assert(!sn0_kl_spans_overlap(0, SN0_KL_CONFIG_HEADER_SIZE,
                                   component_offset, component_span));
     g_assert(!sn0_kl_spans_overlap(board_offset, board_span,
                                   component_offset, component_span));
@@ -664,42 +730,53 @@ static void sn0_kl_component(uint8_t *graph,
     uint64_t total_mb = 0;
     unsigned int bank;
 
-    component[0x00] = model->type;
-    component[0x01] = 1;                       /* record version */
-    component[0x02] = SN0_COMP_ENABLED;
-    component[0x03] = model->revision;
-    component[SN0_COMP_PHYSICAL_ID] = physical_id;
-    stl_be_p(component + 0x1c, virtual_id);
-    component[0x20] = model->widget;
-    stw_be_p(component + 0x22, node->nasid);
-    stw_be_p(component + 0x24, 0);              /* PCI routing flags */
-    stq_be_p(component + 0x28, 0);              /* firmware back-pointer */
+    component[SN0_KL_COMPONENT_COMPONENT_TYPE_OFFSET] = model->type;
+    component[SN0_KL_COMPONENT_RECORD_VERSION_OFFSET] = 1;
+    component[SN0_KL_COMPONENT_FLAGS_OFFSET] = SN0_COMP_ENABLED;
+    component[SN0_KL_COMPONENT_REVISION_OFFSET] = model->revision;
+    component[SN0_KL_COMPONENT_PHYSICAL_ID_OFFSET] = physical_id;
+    stl_be_p(component + SN0_KL_COMPONENT_VIRTUAL_ID_OFFSET, virtual_id);
+    component[SN0_KL_COMPONENT_WIDGET_OFFSET] = model->widget;
+    stw_be_p(component + SN0_KL_COMPONENT_NASID_OFFSET, node->nasid);
+    component[SN0_KL_COMPONENT_PAD_LOW_OFFSET] = 0;
+    component[SN0_KL_COMPONENT_PAD_HIGH_OFFSET] = 0;
+    stq_be_p(component + SN0_KL_COMPONENT_FIRMWARE_BACK_OFFSET, 0);
 
     switch (model->record_kind) {
     case SN0_KL_RECORD_COMPONENT:
         break;
     case SN0_KL_RECORD_PROCESSOR:
-        stw_be_p(component + 0x38, model->identification);
-        stw_be_p(component + 0x3a, model->fp_identification);
-        stw_be_p(component + 0x3c, model->clock_mhz);
-        stw_be_p(component + 0x3e, model->cache_mib);
-        stw_be_p(component + 0x40, model->cache_clock_mhz);
+        g_assert(model->clock_mhz <= UINT16_MAX);
+        stw_be_p(component + SN0_KL_PROCESSOR_IDENTIFICATION_OFFSET,
+                 model->identification);
+        stw_be_p(component + SN0_KL_PROCESSOR_FP_IDENTIFICATION_OFFSET,
+                 model->fp_identification);
+        stw_be_p(component + SN0_KL_PROCESSOR_CLOCK_MHZ_OFFSET,
+                 model->clock_mhz);
+        stw_be_p(component + SN0_KL_PROCESSOR_CACHE_MB_OFFSET,
+                 model->cache_mib);
+        stw_be_p(component + SN0_KL_PROCESSOR_CACHE_CLOCK_MHZ_OFFSET,
+                 model->cache_clock_mhz);
         break;
     case SN0_KL_RECORD_HUB:
-        stq_be_p(component + 0x3c, model->port);
-        stq_be_p(component + 0x58, model->clock_hz);
+        stq_be_p(component + SN0_KL_HUB_PORT_OFFSET, model->port);
+        stq_be_p(component + SN0_KL_HUB_CLOCK_HZ_OFFSET, model->clock_hz);
         break;
     case SN0_KL_RECORD_MEMORY_BANK:
         g_assert(node->model->memory.architectural_banks <=
-                 SN0_KL_MEMORY_BANK_CAPACITY);
+                 SN0_KL_MEMORY_BANK_BANK_SIZES_COUNT);
         for (bank = 0; bank < node->populated_banks; bank++) {
             total_mb += node->bank_mb[bank];
         }
-        stw_be_p(component + 0x38, total_mb);
-        stw_be_p(component + 0x3a, model->bank_mapping);
+        g_assert(total_mb <= UINT16_MAX);
+        stw_be_p(component + SN0_KL_MEMORY_BANK_TOTAL_MB_OFFSET, total_mb);
+        stw_be_p(component + SN0_KL_MEMORY_BANK_BANK_MAPPING_OFFSET,
+                 model->bank_mapping);
         for (bank = 0;
              bank < node->model->memory.architectural_banks; bank++) {
-            stw_be_p(component + 0x3c + bank * 2, node->bank_mb[bank]);
+            stw_be_p(component + SN0_KL_MEMORY_BANK_BANK_SIZES_OFFSET +
+                     bank * SN0_KL_MEMORY_BANK_BANK_SIZES_STRIDE,
+                     node->bank_mb[bank]);
         }
         break;
     default:
@@ -722,20 +799,55 @@ static void sn0_kl_board(uint8_t *graph,
         component_count : model->declared_count;
     unsigned int component_index;
 
-    stl_be_p(board + 0x00, next);
-    board[0x04] = model->record_kind;
-    board[0x05] = model->type;
-    board[0x06] = model->version;
-    board[0x07] = model->slot;
-    board[0x17] = declared_count;
-    stw_be_p(board + 0x20, node->nasid);
+    stl_be_p(board + SN0_KL_BOARD_NEXT_OFFSET, next);
+    board[SN0_KL_BOARD_RECORD_KIND_OFFSET] = model->record_kind;
+    board[SN0_KL_BOARD_BOARD_TYPE_OFFSET] = model->type;
+    board[SN0_KL_BOARD_RECORD_VERSION_OFFSET] = model->version;
+    board[SN0_KL_BOARD_SLOT_OFFSET] = model->slot;
+    board[SN0_KL_BOARD_COMPONENT_COUNT_OFFSET] = declared_count;
+    stw_be_p(board + SN0_KL_BOARD_NASID_OFFSET, node->nasid);
     for (component_index = 0; component_index < component_count;
          component_index++) {
-        stl_be_p(board + 0x24 + component_index * 4,
+        stl_be_p(board + SN0_KL_BOARD_COMPONENTS_OFFSET +
+                 component_index * SN0_KL_BOARD_COMPONENTS_STRIDE,
                  klconfig->component_base +
                  (first_component + component_index) *
                  klconfig->component_stride);
     }
+}
+
+static SN0KlComponentModel sn0_kl_resolve_component(
+    const SN0MachineState *s, const SN0KlComponentModel *template)
+{
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
+    const SN0ModelBaseIO *base_io = &model->base_io;
+    SN0KlComponentModel component = *template;
+
+    switch (template->source) {
+    case SN0_KL_COMPONENT_SOURCE_LITERAL:
+        break;
+    case SN0_KL_COMPONENT_SOURCE_BASE_IO:
+        g_assert(template->source_ordinal == 0);
+        component.type = base_io->kl_type;
+        component.revision = s->widget0_revision;
+        component.physical_id = base_io->widget;
+        component.widget = base_io->widget;
+        break;
+    case SN0_KL_COMPONENT_SOURCE_PCI_FUNCTION: {
+        const SN0ModelPciFunction *function = sn0_model_find_pci_function(
+            base_io, template->pci_kind, template->source_ordinal);
+
+        g_assert(function);
+        component.type = function->kl_type;
+        component.revision = function->kl_revision;
+        component.physical_id = function->device;
+        component.widget = base_io->widget;
+        break;
+    }
+    default:
+        g_assert_not_reached();
+    }
+    return component;
 }
 
 /* Interpret the generated product templates using this node's live values. */
@@ -744,6 +856,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     SN0MachineState *s = SN0_MACHINE(machine);
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
     const SN0KlConfigModel *klconfig = &model->klconfig;
+    const SN0ModelBaseIO *base_io = &model->base_io;
+    const SN0ModelPciFunction *ioc3 = sn0_model_find_pci_function(
+        base_io, SN0_MODEL_PCI_IOC3, 0);
     const SN0ModelAddressSpace *memory = sn0_model_find_space(
         model, SN0_MODEL_SPACE_MEMORY);
     const SN0ModelAddressSpace *xtalk = sn0_model_find_space(
@@ -755,34 +870,45 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     uint8_t *graph;
     uint8_t *console;
     uint64_t widget;
+    uint64_t console_device_window;
     unsigned int component_index = 0;
     unsigned int expected_components;
     unsigned int board_index;
     unsigned int type_ordinals[UINT8_MAX + 1] = { };
 
-    g_assert(memory && xtalk && bridge);
+    g_assert(memory && xtalk && bridge && ioc3);
+    g_assert(ioc3->bridge_window_base >= bridge->offset);
+    console_device_window = ioc3->bridge_window_base - bridge->offset;
     node_base = sn0_model_node_address(model, memory, node->nasid,
                                        klconfig->base);
     expected_components = sn0_kl_validate(klconfig, node);
     graph = g_malloc0(klconfig->size);
-    console = graph + klconfig->console_offset;
+    console = graph + SN0_KL_CONFIG_HEADER_CONSOLE_OFFSET;
 
-    stq_be_p(graph + 0x00, klconfig->signature);
-    stl_be_p(graph + 0x08, klconfig->version);
-    stl_be_p(graph + 0x0c, klconfig->arena_offset);
-    stl_be_p(graph + 0x10, klconfig->console_offset);
-    stl_be_p(graph + 0x14, klconfig->board_base);
+    stq_be_p(graph + SN0_KL_CONFIG_HEADER_SIGNATURE_OFFSET,
+             klconfig->signature);
+    stl_be_p(graph + SN0_KL_CONFIG_HEADER_VERSION_OFFSET,
+             klconfig->version);
+    stl_be_p(graph + SN0_KL_CONFIG_HEADER_ARENA_OFFSET_OFFSET,
+             klconfig->arena_offset);
+    stl_be_p(graph + SN0_KL_CONFIG_HEADER_CONSOLE_OFFSET_OFFSET,
+             SN0_KL_CONFIG_HEADER_CONSOLE_OFFSET);
+    stl_be_p(graph + SN0_KL_CONFIG_HEADER_FIRST_BOARD_OFFSET_OFFSET,
+             klconfig->board_base);
 
     widget = xtalk->unmapped_base | bridge->offset;
-    stq_be_p(console + 0x00, widget + klconfig->console_device_window +
-             klconfig->console_port_offset);
-    stq_be_p(console + 0x08, widget + klconfig->console_config_window);
-    stq_be_p(console + 0x10, widget + klconfig->console_device_window);
-    stw_be_p(console + 0x18, klconfig->console_baud);
-    stl_be_p(console + 0x1c, 0);                /* console type */
-    stw_be_p(console + 0x20, node->nasid);
-    console[0x22] = klconfig->console_widget;
-    console[0x23] = klconfig->console_pci_device;
+    stq_be_p(console + SN0_KL_CONSOLE_UART_BASE_OFFSET,
+             widget + console_device_window + klconfig->console_port_offset);
+    stq_be_p(console + SN0_KL_CONSOLE_CONFIG_BASE_OFFSET,
+             widget + klconfig->console_config_window);
+    stq_be_p(console + SN0_KL_CONSOLE_MEMORY_BASE_OFFSET,
+             widget + console_device_window);
+    stw_be_p(console + SN0_KL_CONSOLE_BAUD_OFFSET,
+             klconfig->console_baud);
+    stl_be_p(console + SN0_KL_CONSOLE_TYPE_OFFSET, 0);
+    stw_be_p(console + SN0_KL_CONSOLE_NASID_OFFSET, node->nasid);
+    console[SN0_KL_CONSOLE_WIDGET_OFFSET] = base_io->widget;
+    console[SN0_KL_CONSOLE_PCI_DEVICES_OFFSET] = ioc3->device;
 
     for (board_index = 0; board_index < klconfig->board_count;
          board_index++) {
@@ -795,21 +921,12 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                      component_index, board_components);
         for (template_index = 0; template_index < board->component_count;
              template_index++) {
-            const SN0KlComponentModel *component =
-                &board->components[template_index];
-            SN0KlComponentModel live_component;
+            SN0KlComponentModel live_component = sn0_kl_resolve_component(
+                s, &board->components[template_index]);
+            const SN0KlComponentModel *component = &live_component;
             unsigned int instances = component->record_kind ==
                 SN0_KL_RECORD_PROCESSOR ? node->nr_cpus : 1;
             unsigned int instance;
-
-            if (component->record_kind == SN0_KL_RECORD_COMPONENT &&
-                component->physical_id == model->base_io.widget &&
-                component->widget == model->base_io.widget &&
-                component->revision == model->base_io.default_revision) {
-                live_component = *component;
-                live_component.revision = s->widget0_revision;
-                component = &live_component;
-            }
 
             for (instance = 0; instance < instances; instance++) {
                 unsigned int virtual_id = type_ordinals[component->type]++;
