@@ -169,23 +169,45 @@ static void test_registers_are_a_byte_apart(const void *data)
     qtest_quit(qts);
 }
 
-static void test_a_wide_access_is_not_narrowed(const void *data)
+/*
+ * The port's file is byte-wide, and a four-byte access to it is four
+ * registers rather than one. Nothing rejects the wide access -- the address
+ * space splits it into byte accesses on the way in, because the region says
+ * a byte is the widest it takes -- so what this pins is that every lane
+ * comes from its own register. A model declaring a four-byte width answers
+ * the whole access out of the first register instead, which on the write
+ * side would run that register's side effect once for four bytes.
+ *
+ * The upper half of the port: the four the split reaches, since the split
+ * only goes as far as the address is aligned, and the four with no receive
+ * register among them, since reading that one would empty the port. The
+ * modem control and the scratch register take values of their own, so an
+ * access answered from one register cannot match by accident. The two
+ * status registers between them are read before the wide access rather
+ * than asserted, so that reading the modem status has already cleared its
+ * delta bits by the time the wide access reads it again.
+ */
+static void test_the_port_answers_a_byte_at_a_time(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    uint8_t lane[4];
     uint32_t wide;
+    unsigned int i;
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * No source establishes the wide-access behaviour, so the model refuses
-     * it; the assertion is only that the answer is not the narrowed one.
-     */
-    qtest_writeb(qts, SERIAL_A + REG_LCR, 0x03);
     qtest_writeb(qts, SERIAL_A + REG_MCR, 0x05);
+    qtest_writeb(qts, SERIAL_A + REG_SCR, 0x5a);
 
-    wide = qtest_readl(qts, SERIAL_A + REG_LCR);
-    g_assert_cmphex(wide, !=, 0x03);
-    g_assert_cmphex(wide, !=, 0x03000000);
+    for (i = 0; i < ARRAY_SIZE(lane); i++) {
+        lane[i] = qtest_readb(qts, SERIAL_A + REG_MCR + i);
+    }
+    g_assert_cmphex(lane[0], ==, 0x05);
+    g_assert_cmphex(lane[3], ==, 0x5a);
+
+    wide = qtest_readl(qts, SERIAL_A + REG_MCR);
+    g_assert_cmphex(wide, ==, lane[0] | (lane[1] << 8) | (lane[2] << 16) |
+                              ((uint32_t)lane[3] << 24));
 
     qtest_quit(qts);
 }
@@ -4468,8 +4490,8 @@ int main(int argc, char **argv)
                         test_ports_are_distinct);
     qtest_add_data_func("sn0/ioc3/registers-are-a-byte-apart", NULL,
                         test_registers_are_a_byte_apart);
-    qtest_add_data_func("sn0/ioc3/wide-access-is-not-narrowed", NULL,
-                        test_a_wide_access_is_not_narrowed);
+    qtest_add_data_func("sn0/ioc3/port-answers-a-byte-at-a-time", NULL,
+                        test_the_port_answers_a_byte_at_a_time);
     qtest_add_data_func("sn0/ioc3/enable-mask-two-aliases", NULL,
                         test_the_enable_mask_has_two_write_aliases);
     qtest_add_data_func("sn0/ioc3/arbiter-reports-idle", NULL,
