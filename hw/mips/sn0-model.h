@@ -43,6 +43,12 @@ typedef enum SN0KlRecordKind {
     SN0_KL_RECORD_MEMORY_BANK,
 } SN0KlRecordKind;
 
+typedef enum SN0KlComponentSource {
+    SN0_KL_COMPONENT_SOURCE_LITERAL,
+    SN0_KL_COMPONENT_SOURCE_BASE_IO,
+    SN0_KL_COMPONENT_SOURCE_PCI_FUNCTION,
+} SN0KlComponentSource;
+
 typedef struct SN0ModelNodeInstance {
     uint8_t nasid;
     uint8_t cpu_first_id;
@@ -103,6 +109,7 @@ typedef struct SN0ModelPciFunction {
 } SN0ModelPciFunction;
 
 typedef struct SN0ModelBaseIO {
+    uint8_t kl_type;
     uint8_t widget;
     uint8_t discovery_widget;
     uint8_t default_revision;
@@ -115,6 +122,9 @@ typedef struct SN0ModelBaseIO {
 
 typedef struct SN0KlComponentModel {
     SN0KlRecordKind record_kind;
+    SN0KlComponentSource source;
+    SN0ModelPciKind pci_kind;
+    uint8_t source_ordinal;
     uint8_t type;
     uint8_t revision;
     uint8_t physical_id;
@@ -145,14 +155,10 @@ typedef struct SN0KlConfigModel {
     uint64_t signature;
     uint32_t version;
     uint32_t arena_offset;
-    uint32_t console_offset;
     uint32_t board_base;
     uint32_t board_stride;
     uint32_t component_base;
     uint32_t component_stride;
-    uint8_t console_widget;
-    uint8_t console_pci_device;
-    uint32_t console_device_window;
     uint32_t console_config_window;
     uint32_t console_port_offset;
     uint16_t console_baud;
@@ -188,6 +194,9 @@ extern const SN0MachineModel sn0_origin200_model;
 const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
                                               unsigned int nodes,
                                               const unsigned int *cpus);
+const SN0ModelPciFunction *sn0_model_find_pci_function(
+    const SN0ModelBaseIO *base_io, SN0ModelPciKind kind,
+    unsigned int instance);
 unsigned int sn0_model_max_nodes(const SN0MachineModel *model);
 unsigned int sn0_model_max_cpus(const SN0MachineModel *model);
 uint64_t sn0_model_node_offset(const SN0MachineModel *model,

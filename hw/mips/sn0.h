@@ -124,9 +124,8 @@
 #define SN0_HWDIR_PI_ERROR_BASE       0x12000
 #define SN0_HWDIR_PI_ERROR_SIZE       0x4000
 
-/* KLCONFIG component-format constants, independent of product contents. */
+/* KLCONFIG component state, independent of product contents. */
 #define SN0_COMP_ENABLED        1
-#define SN0_COMP_PHYSICAL_ID    0x18
 
 /* Fixed state capacity; the product model supplies the installed rows. */
 #define SN0_MAX_SCSI_ADAPTERS   2
