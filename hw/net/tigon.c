@@ -853,6 +853,13 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
              * The address is completed by the write to the upper half, which is
              * where the card is handed a usable block.
              */
+            if (addr == TI_GCR_RXRETURNCONS_IDX) {
+                /*
+                 * Room in the return ring: a frame held for want of it can
+                 * now be delivered.
+                 */
+                qemu_flush_queued_packets(qemu_get_queue(s->nic));
+            }
             if (addr == TI_GCR_GENINFO_HI || addr == TI_GCR_GENINFO_LO) {
                 uint32_t low = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
                 uint32_t high = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_LO)];
@@ -929,12 +936,36 @@ static const MemoryRegionOps tigon_sram_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4 },
 };
 
+/*
+ * Whether a receive-return descriptor can be produced without overwriting one
+ * the driver has not consumed yet. The driver publishes how far it has read in
+ * the return-consumer register, and the card must not lap it: a descriptor
+ * written over an unread one sends the driver to a buffer that has already
+ * been recycled, which faults the guest kernel far from here and only under
+ * sustained receive, once enough frames have arrived to go the whole way
+ * round. Full is one short of the consumer, so a full and an empty ring stay
+ * distinguishable.
+ */
+static bool tigon_return_ring_has_room(TigonState *s)
+{
+    uint32_t considx = s->gcr[TIGON_GCR_IDX(TI_GCR_RXRETURNCONS_IDX)];
+
+    if (s->return_ring_max == 0) {
+        return false;
+    }
+    return (s->return_prodidx + 1) % s->return_ring_max != considx;
+}
+
 static bool tigon_can_receive(NetClientState *nc)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
 
-    /* Operational, and at least one standard receive buffer is posted. */
-    return s->firmware_up && s->std_rx_considx != s->std_rx_prodidx;
+    /*
+     * Operational, at least one standard receive buffer is posted, and the
+     * return ring has room for the descriptor that reports the frame.
+     */
+    return s->firmware_up && s->std_rx_considx != s->std_rx_prodidx &&
+           tigon_return_ring_has_room(s);
 }
 
 /*
@@ -988,6 +1019,14 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     }
     if (s->std_rx_considx == s->std_rx_prodidx) {
         return 0;      /* genuine no-buffer flow control */
+    }
+    if (!tigon_return_ring_has_room(s)) {
+        /*
+         * The driver has not caught up with the return ring. Hold the frame
+         * rather than lapping it; the write that advances its consumer index
+         * flushes the queue.
+         */
+        return 0;
     }
 
     /* Take the next posted standard receive buffer. */
