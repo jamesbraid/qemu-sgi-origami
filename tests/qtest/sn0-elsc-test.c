@@ -2443,6 +2443,50 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "nic <p> <s> <d>" is the one-wire identity passthrough (datasheet:
+ * firmware-facing command contracts), an interactive-monitor command, not
+ * boot-driven. Three hex arguments bit-bang the midplane one-wire line; it
+ * answers "ok <hex>" with the sampled bit. No one-wire device is modelled,
+ * so the open-drain line idles high and every sample reads 1.
+ */
+static void test_nic_onewire_identity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    /* Three hex arguments: the idle line samples high. */
+    req_len = build_request(req, "nic 1 2 3");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 4);
+    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+
+    /* Too few arguments to a known command is a bad argument. */
+    req_len = build_request(req, "nic 1 2");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /* A non-hex argument. */
+    req_len = build_request(req, "nic 1 2 zz");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+
+    /* Junk after the mnemonic with no delimiter is an unknown command. */
+    req_len = build_request(req, "nicx");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2546,6 +2590,8 @@ int main(int argc, char **argv)
                         test_pwr_down_range_checked_before_auth);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/nic-onewire-identity", NULL,
+                        test_nic_onewire_identity);
 
     ret = g_test_run();
 

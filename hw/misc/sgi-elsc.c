@@ -522,6 +522,46 @@ static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response(s, buf, sizeof(buf));
 }
 
+/*
+ * "nic <p> <s> <d>": one-wire identity passthrough. Three hex arguments
+ * (pulse, sample, delay) bit-bang the midplane one-wire line; answers
+ * "ok <hex>" with the sampled bit. No one-wire device is modelled, so the
+ * open-drain line idles high and every sample reads 1. Interactive-monitor
+ * command, not boot-driven.
+ */
+static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
+{
+    const char *end = &text[len];
+    const char *arg, *sp1, *sp2;
+    uint32_t v;
+
+    if (len < 4 || text[3] != ' ') {
+        /* "nic", "nicx": no space-delimited argument list -- not "nic". */
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    arg = &text[4];
+    sp1 = memchr(arg, ' ', end - arg);
+    if (sp1 == NULL) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    sp2 = memchr(sp1 + 1, ' ', end - (sp1 + 1));
+    if (sp2 == NULL) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    /* Parse all three as hex to validate; the sampled value is fixed. */
+    if (!elsc_parse_hex(arg, sp1 - arg, &v) ||
+        !elsc_parse_hex(sp1 + 1, sp2 - (sp1 + 1), &v) ||
+        !elsc_parse_hex(sp2 + 1, end - (sp2 + 1), &v)) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+
+    elsc_frame_response_str(s, "ok 1");
+}
+
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
@@ -566,6 +606,10 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len >= 3 && memcmp(text, "tas", 3) == 0) {
         elsc_handle_tas(s, text, len);
+        return;
+    }
+    if (len >= 3 && memcmp(text, "nic", 3) == 0) {
+        elsc_handle_nic(s, text, len);
         return;
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {

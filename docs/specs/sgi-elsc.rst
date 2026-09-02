@@ -176,6 +176,18 @@ Command vocabulary
     owner, and the pre-write value is 6.5.7-derived and unverified on
     6.5.30.
 
+``nic <p> <s> <d>``
+    One-wire identity passthrough, an interactive-monitor command, not
+    boot-driven. Its wire contract is from the controller datasheet's
+    firmware-facing command section: three hex arguments (pulse, sample,
+    delay) bit-bang the midplane one-wire line, and it answers ``ok
+    <hex>`` with the sampled bit, over which a one-wire ROM read is
+    layered by repeated calls. No one-wire device is modelled, so the
+    open-drain line idles high and every sample reads ``1`` -- a
+    modelling choice, not a datasheet value. A malformed argument list
+    is ``err arg``; a bare ``nic`` or junk with no space delimiter
+    (``nicx``) is ``err cmd``.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
