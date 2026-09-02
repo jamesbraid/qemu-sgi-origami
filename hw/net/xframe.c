@@ -1304,9 +1304,22 @@ static const MemoryRegionOps xframe_pif_ops = {
 #define XFRAME_TXD_CKO_TCP          (1ULL << 57)
 #define XFRAME_TXD_CKO_UDP          (1ULL << 56)
 
+/*
+ * Segmentation offload, in the FIRST control word alongside the buffer length
+ * and the gather code (Linux s2io TXD_TCP_LSO_EN is s2BIT(30), i.e. bit 33,
+ * and TXD_TCP_LSO_MSS is vBIT(val,34,14), i.e. bits 29:16).
+ */
+#define XFRAME_TXD_LSO_EN           (1ULL << 33)
+#define XFRAME_TXD_LSO_MSS_SHIFT    16
+#define XFRAME_TXD_LSO_MSS_MASK     0x3fffULL
+
 #define XFRAME_ETH_HDR_LEN          14
 #define XFRAME_ETHERTYPE_IPV4       0x0800
 #define XFRAME_IPV4_MIN_HDR_LEN     20
+#define XFRAME_TCP_MIN_HDR_LEN      20
+#define XFRAME_IPPROTO_TCP          6
+#define XFRAME_TCP_FLAG_FIN         0x01
+#define XFRAME_TCP_FLAG_PSH         0x08
 
 /*
  * Run a transmit descriptor list: fetch up to NUMTXD+1 descriptors from the
@@ -1404,14 +1417,97 @@ static bool xframe_tx_frame_is_ipv4(const uint8_t *frame, size_t len)
            XFRAME_ETH_HDR_LEN + (size_t)total <= len;
 }
 
+/*
+ * Segmentation offload: send one oversized TCP buffer as a run of MSS-sized
+ * frames. IRIX enables this on the adapter -- xg1's interface flags carry
+ * L2TCPSEG -- and then hands the card a single buffer holding several segments'
+ * worth of payload with the segment size in the descriptor, expecting the card
+ * to do the cutting. Each frame gets its own copy of the headers, its own
+ * sequence number and its own checksums, and only the last one keeps the
+ * sender's FIN and PSH: those mark the end of the data, which the earlier
+ * segments are not.
+ *
+ * Returns false for anything this cannot legally split -- not IPv4/TCP, headers
+ * that do not fit, or a payload no larger than one segment -- leaving the caller
+ * to send the frame unchanged, which is the right answer in every one of those
+ * cases.
+ */
+static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
+{
+    const uint8_t *frame = s->tx_frame;
+    const uint8_t *ip, *tcp;
+    size_t ihl, thl, hdr_len, payload_len, off;
+    uint32_t seq;
+    uint16_t ip_id;
+    unsigned index;
+
+    if (mss == 0 || !xframe_tx_frame_is_ipv4(frame, frame_len)) {
+        return false;
+    }
+    ip = frame + XFRAME_ETH_HDR_LEN;
+    if (ip[9] != XFRAME_IPPROTO_TCP) {
+        return false;
+    }
+    ihl = (ip[0] & 0x0f) * 4;
+    if (frame_len < XFRAME_ETH_HDR_LEN + ihl + XFRAME_TCP_MIN_HDR_LEN) {
+        return false;
+    }
+    tcp = ip + ihl;
+    thl = (tcp[12] >> 4) * 4;
+    if (thl < XFRAME_TCP_MIN_HDR_LEN) {
+        return false;
+    }
+    hdr_len = XFRAME_ETH_HDR_LEN + ihl + thl;
+    if (frame_len <= hdr_len) {
+        return false;
+    }
+    payload_len = frame_len - hdr_len;
+    if (payload_len <= mss) {
+        return false;
+    }
+
+    seq = ldl_be_p(tcp + 4);
+    ip_id = lduw_be_p(ip + 4);
+
+    for (off = 0, index = 0; off < payload_len; off += mss, index++) {
+        size_t chunk = MIN((size_t)mss, payload_len - off);
+        uint8_t *seg = s->tx_segment;
+        uint8_t *seg_ip = seg + XFRAME_ETH_HDR_LEN;
+        uint8_t *seg_tcp = seg_ip + ihl;
+
+        memcpy(seg, frame, hdr_len);
+        memcpy(seg + hdr_len, frame + hdr_len + off, chunk);
+
+        /* Each segment's headers describe that segment, not the whole send. */
+        stw_be_p(seg_ip + 2, (uint16_t)(ihl + thl + chunk));
+        stw_be_p(seg_ip + 4, (uint16_t)(ip_id + index));
+        stl_be_p(seg_tcp + 4, seq + (uint32_t)off);
+
+        if (off + chunk < payload_len) {
+            seg_tcp[13] &= (uint8_t)~(XFRAME_TCP_FLAG_FIN | XFRAME_TCP_FLAG_PSH);
+        }
+
+        /*
+         * The guest cannot have checksummed segments it never built, so these
+         * are computed here whatever the descriptor's checksum bits asked for.
+         */
+        net_checksum_calculate(seg, hdr_len + chunk, CSUM_IP | CSUM_TCP);
+        qemu_send_packet(qemu_get_queue(s->nic), seg, hdr_len + chunk);
+    }
+
+    return true;
+}
+
 /* Not gated on ADAPTER_EN: drivers enable the adapter before any doorbell. */
 static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
 {
     PCIDevice *pdev = PCI_DEVICE(s);
     uint64_t par = s->txdl_par[fifo];
     unsigned count = ((lcr >> 56) & 0xff) + 1;   /* NUMTXD + 1, 1..256 */
+    uint64_t first_control1 = 0;
     uint64_t first_control2 = 0;
     size_t frame_len = 0;
+    size_t cap = XFRAME_MAX_FRAME;
     bool have_first = false;
     unsigned i;
 
@@ -1439,15 +1535,25 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
                               "card does not own; ignored\n");
                 return;
             }
+            first_control1 = control1;
             first_control2 = xframe_desc_ldq(s, raw + 8, false);
             have_first = true;
+            /*
+             * A segmentation-offload buffer is one IP datagram's worth of
+             * payload waiting to be cut up, so it is bounded by the datagram
+             * the guest is describing rather than by what one frame may carry.
+             * IRIX hands this adapter buffers of about 32 KB.
+             */
+            if (control1 & XFRAME_TXD_LSO_EN) {
+                cap = XFRAME_MAX_TSO_FRAME;
+            }
         }
 
-        if (seg_len > XFRAME_MAX_FRAME - frame_len) {
+        if (seg_len > cap - frame_len) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "xframe: transmit frame exceeds %u bytes; truncated\n",
-                          XFRAME_MAX_FRAME);
-            seg_len = XFRAME_MAX_FRAME - frame_len;
+                          "xframe: transmit frame exceeds %zu bytes; "
+                          "truncated\n", cap);
+            seg_len = cap - frame_len;
         }
         if (seg_len > 0 &&
             pci_dma_read(pdev, bufaddr, s->tx_frame + frame_len, seg_len)
@@ -1470,33 +1576,49 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
         xframe_desc_stq(s, word, control1 & ~XFRAME_TXD_OWN, false);
         pci_dma_write(pdev, txd_addr, word, sizeof(word));
 
-        if ((control1 & XFRAME_TXD_GCL) || frame_len >= XFRAME_MAX_FRAME) {
+        if ((control1 & XFRAME_TXD_GCL) || frame_len >= cap) {
             break;  /* last segment of this frame */
         }
     }
 
     if (frame_len > 0) {
+        uint16_t mss = (first_control1 >> XFRAME_TXD_LSO_MSS_SHIFT) &
+                       XFRAME_TXD_LSO_MSS_MASK;
+        bool segmented = false;
         int csum = 0;
 
-        if (first_control2 & XFRAME_TXD_CKO_IPV4) {
-            csum |= CSUM_IP;
+        /*
+         * Segmentation offload is asked for in the first control word, and it
+         * rebuilds and rechecksums every frame it sends -- so it runs instead
+         * of the whole-buffer checksum insertion below, which would otherwise
+         * compute over a frame that never reaches the wire.
+         */
+        if (first_control1 & XFRAME_TXD_LSO_EN) {
+            segmented = xframe_tx_segment(s, frame_len, mss);
         }
-        if (first_control2 & XFRAME_TXD_CKO_TCP) {
-            csum |= CSUM_TCP;
+
+        if (!segmented) {
+            if (first_control2 & XFRAME_TXD_CKO_IPV4) {
+                csum |= CSUM_IP;
+            }
+            if (first_control2 & XFRAME_TXD_CKO_TCP) {
+                csum |= CSUM_TCP;
+            }
+            if (first_control2 & XFRAME_TXD_CKO_UDP) {
+                csum |= CSUM_UDP;
+            }
+            if (csum && !xframe_tx_frame_is_ipv4(s->tx_frame, frame_len)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "xframe: checksum insertion asked for a frame "
+                              "that is not a well-formed IPv4 packet; sent "
+                              "unchanged\n");
+                csum = 0;
+            }
+            if (csum) {
+                net_checksum_calculate(s->tx_frame, frame_len, csum);
+            }
+            qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
         }
-        if (first_control2 & XFRAME_TXD_CKO_UDP) {
-            csum |= CSUM_UDP;
-        }
-        if (csum && !xframe_tx_frame_is_ipv4(s->tx_frame, frame_len)) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "xframe: checksum insertion asked for a frame that "
-                          "is not a well-formed IPv4 packet; sent unchanged\n");
-            csum = 0;
-        }
-        if (csum) {
-            net_checksum_calculate(s->tx_frame, frame_len, csum);
-        }
-        qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
     }
 
     /*

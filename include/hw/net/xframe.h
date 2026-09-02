@@ -87,6 +87,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
  */
 #define XFRAME_MAX_FRAME                9600
 
+/*
+ * The largest buffer a descriptor asking for segmentation offload may hand
+ * over. That buffer is not a frame: it is one IP datagram's worth of payload
+ * for the card to cut into frames, so it is bounded by the largest datagram a
+ * guest can describe (a 16-bit IP total length) plus its Ethernet header, not
+ * by the wire's frame limit. IRIX hands this adapter about 32 KB at a time;
+ * clamping such a buffer to the frame limit truncates the datagram and puts a
+ * malformed remnant on the wire.
+ */
+#define XFRAME_MAX_TSO_FRAME            (65535 + 14)
+
 struct XframeState {
     PCIDevice parent_obj;
 
@@ -151,10 +162,17 @@ struct XframeState {
     uint64_t tx_traffic_int;    /* TX_TRAFFIC_INT: transmit completion status */
 
     /*
-     * Scratch for assembling one outgoing frame from a descriptor list.
+     * Scratch for assembling one outgoing frame from a descriptor list, or the
+     * whole datagram when the descriptor asks for segmentation offload.
      * Transient within a doorbell; not migrated.
      */
-    uint8_t tx_frame[XFRAME_MAX_FRAME];
+    uint8_t tx_frame[XFRAME_MAX_TSO_FRAME];
+
+    /*
+     * Scratch for one segment cut from tx_frame when the descriptor asks for
+     * segmentation offload. Transient within a doorbell; not migrated.
+     */
+    uint8_t tx_segment[XFRAME_MAX_FRAME];
 
     /*
      * RxDMA ring state -- docs/datasheets/xframe.md's RxDMA register bank and

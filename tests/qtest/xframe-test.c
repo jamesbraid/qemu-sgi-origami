@@ -275,6 +275,17 @@
 #define TXD_GCL                  (1ULL << 40)
 
 /*
+ * Segmentation offload, in the same first control word (Linux s2io.h
+ * TXD_TCP_LSO_EN is s2BIT(30), i.e. bit 33, and TXD_TCP_LSO_MSS is
+ * vBIT(val,34,14), i.e. bits 29:16).
+ */
+#define TXD_LSO_EN               (1ULL << 33)
+#define TXD_LSO_MSS(v)           (((uint64_t)(v) & 0x3fff) << 16)
+
+/* The card's jumbo frame limit; an unsegmented buffer arrives at this size. */
+#define XFRAME_MAX_FRAME_FOR_TEST 9600
+
+/*
  * The checksum-insert requests in the second control word (Linux s2io-regs.h
  * TXD_TX_CKO_IPV4_EN, _TCP_EN and _UDP_EN, that driver's own MSB-first bit
  * numbering: bits 5, 6 and 7).
@@ -3474,6 +3485,152 @@ static void test_transmit_gather_list_releases_every_descriptor(void)
 }
 
 /*
+ * Segmentation offload. IRIX turns this on for the adapter -- xg1's interface
+ * flags carry L2TCPSEG -- and then hands the card ONE buffer holding several
+ * maximum segments' worth of payload, with the descriptor's LSO enable set and
+ * the segment size it wants in the descriptor's MSS field. The card owes it one
+ * frame per segment, each with its own headers.
+ *
+ * Sending the buffer whole instead puts a single oversized frame on the wire
+ * carrying a TCP segment no receiver will accept: measured from inside IRIX,
+ * 2920-byte segments (two maximum segments under one header) went out with
+ * checksums covering a length the peer disagreed with, were discarded, and were
+ * followed by correctly sized retransmissions of the same sequence number. A
+ * bulk transfer collapses into retransmission timeouts and crawls to a stop,
+ * which is what "the adapter stalls after about a dozen frames" actually was.
+ *
+ * Drive a four-segment send and require the wire to carry four properly formed
+ * frames: right sizes, headers rebuilt per segment, sequence numbers advancing
+ * by the segment size, and the payloads reassembling into what was handed over.
+ */
+static void test_transmit_segments_a_large_send(void)
+{
+    XframeTx t;
+    uint8_t frame[ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN + 1736];
+    uint8_t got[2048];
+    uint8_t rebuilt[1736];
+    const size_t mss = 512;
+    const size_t payload = 1736;              /* 512 + 512 + 512 + 200 */
+    const size_t expect[4] = { 512, 512, 512, 200 };
+    const uint8_t *sent_payload;
+    const uint8_t *sent_tcp;
+    uint32_t base_seq;
+    size_t len, off, i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, payload,
+                           sizeof(frame));
+    sent_tcp = frame + ETH_HDR_LEN + IPV4_HDR_LEN;
+    sent_payload = sent_tcp + TCP_HDR_LEN;
+    base_seq = ((uint32_t)sent_tcp[4] << 24) | ((uint32_t)sent_tcp[5] << 16) |
+               ((uint32_t)sent_tcp[6] << 8) | sent_tcp[7];
+
+    xframe_tx_start(&t);
+
+    qtest_memwrite(t.qs->qts, TRAFFIC_TX_BUF, frame, len);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 0,
+               (uint64_t)len | TXD_OWN | TXD_GCF | TXD_GCL |
+               TXD_LSO_EN | TXD_LSO_MSS(mss));
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 8, 0);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 16, TRAFFIC_TX_BUF);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 24, 0);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, TRAFFIC_TXD_PAR);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
+                   TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+
+    off = 0;
+    for (i = 0; i < 4; i++) {
+        size_t seg = expect[i];
+        size_t want = ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN + seg;
+        const uint8_t *ip = got + ETH_HDR_LEN;
+        const uint8_t *tcp = ip + IPV4_HDR_LEN;
+        uint32_t seq;
+
+        len = traffic_recv_frame(t.host_fd, got, sizeof(got));
+
+        /* One frame per segment, none of them oversized. */
+        g_assert_cmpuint(len, ==, want);
+
+        /* The IPv4 header describes THIS segment, not the whole send. */
+        g_assert_cmpuint((ip[2] << 8) | ip[3], ==,
+                         IPV4_HDR_LEN + TCP_HDR_LEN + seg);
+
+        /* Sequence numbers advance from the sender's by what has gone out. */
+        seq = ((uint32_t)tcp[4] << 24) | ((uint32_t)tcp[5] << 16) |
+              ((uint32_t)tcp[6] << 8) | tcp[7];
+        g_assert_cmpuint(seq, ==, base_seq + (uint32_t)off);
+
+        memcpy(rebuilt + off, got + want - seg, seg);
+        off += seg;
+    }
+
+    /* Nothing added, dropped or reordered on the way out. */
+    g_assert_cmpuint(off, ==, payload);
+    g_assert_cmpmem(rebuilt, payload, sent_payload, payload);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A segmentation-offload buffer is not a frame, and must not be clamped like
+ * one. It is a whole IP datagram waiting to be cut up, so it is routinely
+ * larger than anything the wire can carry: IRIX hands this adapter about 32 KB
+ * at a time, well past the card's 9600-byte jumbo limit. Clamping it to that
+ * limit truncates the datagram, and the truncated remnant then fails the check
+ * that its IP total length fits inside it -- so segmentation declines and a
+ * malformed 9600-byte frame goes out whole. Measured on the wire before this
+ * was fixed: four such frames, each claiming an IP total length of about 32 KB,
+ * and each one of the four bad checksums in the run.
+ *
+ * Drive a datagram larger than the frame limit and require every byte of it to
+ * come out in properly sized frames.
+ */
+static void test_transmit_segments_a_send_larger_than_a_frame(void)
+{
+    XframeTx t;
+    const size_t mss = 1460;
+    const size_t payload = 20000;         /* well past XFRAME_MAX_FRAME */
+    const size_t hdr = ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN;
+    g_autofree uint8_t *frame = g_malloc0(hdr + payload);
+    /* Large enough to hold an unsegmented buffer, so an oversized frame is
+     * caught by this test's own size assertion rather than by the receive
+     * helper running out of room. */
+    uint8_t got[XFRAME_MAX_FRAME_FOR_TEST];
+    size_t len, seen = 0, frames = 0;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, payload,
+                           hdr + payload);
+
+    xframe_tx_start(&t);
+
+    qtest_memwrite(t.qs->qts, TRAFFIC_TX_BUF, frame, len);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 0,
+               (uint64_t)len | TXD_OWN | TXD_GCF | TXD_GCL |
+               TXD_LSO_EN | TXD_LSO_MSS(mss));
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 8, 0);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 16, TRAFFIC_TX_BUF);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 24, 0);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, TRAFFIC_TXD_PAR);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
+                   TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+
+    while (seen < payload) {
+        size_t got_len = traffic_recv_frame(t.host_fd, got, sizeof(got));
+
+        /* Nothing oversized: every frame is headers plus at most one segment. */
+        g_assert_cmpuint(got_len, >, hdr);
+        g_assert_cmpuint(got_len, <=, hdr + mss);
+        seen += got_len - hdr;
+        frames++;
+    }
+
+    /* The whole datagram came out, and in the number of frames it needs. */
+    g_assert_cmpuint(seen, ==, payload);
+    g_assert_cmpuint(frames, ==, (payload + mss - 1) / mss);
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * A descriptor can ask for insertion on a frame that is not IPv4 at all. The
  * lengths a checksum walk would follow are the guest's own bytes, so the
  * request has to be declined and the frame sent as it stands.
@@ -3774,6 +3931,10 @@ int main(int argc, char **argv)
                    test_transmit_completion_raises_interrupt);
     qtest_add_func("xframe/transmit-completion-survives-repeated-cycles",
                    test_transmit_completion_survives_repeated_cycles);
+    qtest_add_func("xframe/transmit-segments-a-large-send",
+                   test_transmit_segments_a_large_send);
+    qtest_add_func("xframe/transmit-segments-a-send-larger-than-a-frame",
+                   test_transmit_segments_a_send_larger_than_a_frame);
     qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
                    test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
