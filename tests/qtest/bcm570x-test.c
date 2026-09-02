@@ -1640,6 +1640,191 @@ static void test_receive_oversize_dropped(const void *data)
     g_free(frame);
 }
 
+/*
+ * Many laps of the return ring, driven the way the driver drives it: take each
+ * completion, then publish the consumer index so the card knows the entry is
+ * free again. A ring short enough to wrap several times over a modest burst is
+ * the point -- the faults this catches only appear once the producer has been
+ * round at least once, which is why a transfer that fits in one lap passes
+ * happily and a longer one stops dead.
+ */
+#define LAP_RET_LEN     8u
+#define LAP_FRAMES      40u     /* five times round */
+#define LAP_STD_POSTED  64u
+
+static void test_receive_ring_laps(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint8_t ret[BCM_RXBD_SIZE];
+    unsigned int i, j;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 2);
+    }
+    memset(frame, 0xff, 6);     /* broadcast: always accepted */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, 1518u << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, LAP_RET_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* Post standard-ring buffers, all pointing at one scratch buffer. */
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < LAP_STD_POSTED; i++) {
+        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b.qts, RET_RING_PHYS, 0,
+                 (uint64_t)LAP_RET_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, LAP_STD_POSTED);
+
+    for (i = 0; i < LAP_FRAMES; i++) {
+        unsigned int idx = i % LAP_RET_LEN;
+        uint64_t slot = RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE;
+        bool got = false;
+
+        /* Clear the entry so its completion cannot be mistaken for an older
+         * one still sitting there from the previous lap. */
+        qtest_memset(b.qts, slot, 0, BCM_RXBD_SIZE);
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+        for (j = 0; j < 200 && !got; j++) {
+            qtest_memread(b.qts, slot, ret, sizeof(ret));
+            if (get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
+                got = true;
+                break;
+            }
+            g_usleep(5000);
+        }
+        g_assert_true(got);
+        g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                        sizeof(frame) + BCM_ETH_FCS_LEN);
+
+        /* Release the entry, as the driver does once it has taken it. */
+        bar_writel(&b, BCM_MBX_RX_CONS0_LO, (idx + 1) % LAP_RET_LEN);
+        /* And keep buffers posted, the way a driver refills as it consumes. */
+        bar_writel(&b, BCM_MBX_RX_STD_PROD_LO,
+                   (LAP_STD_POSTED + i + 1) % 512u);
+    }
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * The ring fills, and then it recovers. Refusing a frame while the driver still
+ * owes itself every entry is right; staying refused after the driver has caught
+ * up is the failure that looks like a link going dead mid-transfer, and it is
+ * the one worth pinning, because a full ring is reached on any sustained
+ * transfer and a card that never comes back from it is a card that works until
+ * it is used.
+ */
+static void test_receive_ring_full_recovers(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint8_t ret[BCM_RXBD_SIZE];
+    unsigned int i, j;
+    bool got;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 3);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, 1518u << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, LAP_RET_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < LAP_STD_POSTED; i++) {
+        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b.qts, RET_RING_PHYS, 0,
+                 (uint64_t)LAP_RET_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, LAP_STD_POSTED);
+
+    /* Send a whole ring's worth without ever taking one, so it fills. */
+    for (i = 0; i < LAP_RET_LEN + 4; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    g_usleep(200000);
+
+    /* The last entry is still free: a full ring keeps one, so the producer
+     * cannot be mistaken for the consumer. */
+    qtest_memread(b.qts, RET_RING_PHYS +
+                  (uint64_t)(LAP_RET_LEN - 1) * BCM_RXBD_SIZE,
+                  ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+
+    /* The driver now takes everything and says so. */
+    for (i = 0; i < LAP_RET_LEN; i++) {
+        qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
+                     BCM_RXBD_SIZE);
+    }
+    bar_writel(&b, BCM_MBX_RX_CONS0_LO, LAP_RET_LEN - 1);
+
+    /* And the card starts delivering again. */
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    got = false;
+    for (j = 0; j < 200 && !got; j++) {
+        unsigned int k;
+
+        for (k = 0; k < LAP_RET_LEN; k++) {
+            qtest_memread(b.qts, RET_RING_PHYS + (uint64_t)k * BCM_RXBD_SIZE,
+                          ret, sizeof(ret));
+            if (get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
+                got = true;
+                break;
+            }
+        }
+        if (!got) {
+            g_usleep(5000);
+        }
+    }
+    g_assert_true(got);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 static void test_receive_round_trip(const void *data)
 {
     int sv[2];
@@ -2358,6 +2543,10 @@ int main(int argc, char **argv)
                         test_tx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
                         test_receive_round_trip);
+    qtest_add_data_func("/bcm570x/receive-ring-laps", NULL,
+                        test_receive_ring_laps);
+    qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,
+                        test_receive_ring_full_recovers);
     qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
     qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
