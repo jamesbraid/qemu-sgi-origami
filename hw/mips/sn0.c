@@ -720,7 +720,9 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
  * Which node a NASID-less address names in memory space: normally the
  * node's own, but after synthesized firmware hands a kernel control,
  * remote processors' unqualified addresses name node zero (Linux
- * disables PI_CALIAS_SIZE first). Shared with the Hub's engines.
+ * disables PI_CALIAS_SIZE first). For a processor this aims only the
+ * cached-alias window -- beyond the bound the claim layer routes by
+ * programmed number; the Hub's engines use it for their whole low view.
  */
 static hwaddr sn0_node_local_memory_base(MachineState *machine,
                                          unsigned int nasid)
@@ -737,8 +739,6 @@ static hwaddr sn0_node_local_memory_base(MachineState *machine,
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelRegion *memory_region =
-        sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
     const SN0ModelAddressSpace *hub_special =
         sn0_space(node->model, SN0_MODEL_SPACE_HUB_SPECIAL);
     hwaddr node_base = sn0_space_node_base(
@@ -778,8 +778,9 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                             &node->claim_view[slice], -1);
 
         /*
-         * NASID-less addresses name the reading processor's node;
-         * explicit NASIDs fall to the Hub's claim layer underneath.
+         * NASID-less addresses name the reading processor's node only
+         * within a bounded window; beyond it, like every explicit
+         * NASID, they fall to the Hub's claim layer underneath.
          */
         for (space_index = 0;
              space_index < node->model->address_space_count; space_index++) {
@@ -792,14 +793,19 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                 space_model->kind == SN0_MODEL_SPACE_MEMORY ?
                 node->local_memory_base : node_base;
             hwaddr local_offset = 0;
-            hwaddr local_size = memory_region->size;
+            hwaddr local_size = SGI_HUB_CALIAS_MAX_SIZE;
 
             /*
-             * Self-decode only the Hub's own eight-megabyte window: the
-             * nameless half names the reader's node, and every explicit
-             * node-qualified crosstalk reference -- node zero included --
-             * is the claim layer's to route by programmed number. Other
-             * spaces keep the wide alias.
+             * The crosstalk space self-decodes the Hub's own
+             * eight-megabyte window, always. In every other space the
+             * nameless window is the cached-alias window: pre-created
+             * here at the largest size the register encodes, then
+             * resized and gated by this node's Hub, which gets the
+             * regions at wiring time. Below the bound an access stays
+             * local even while the programmed numbers are in motion --
+             * retiring these windows outright put mid-renumbering local
+             * accesses into claim transients and broke the two-node
+             * firmware boot.
              */
             if (space_model->kind == SN0_MODEL_SPACE_XTALK) {
                 const SN0ModelRegion *hub_region = sn0_region(
@@ -1192,10 +1198,32 @@ static void sn0_node_create_hub(SN0NodeState *node)
      */
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *view_prop = g_strdup_printf("claim-view%u", slice);
+        unsigned int space_index;
 
         object_property_set_link(OBJECT(&node->hub), view_prop,
                                  OBJECT(&node->claim_view[slice]),
                                  &error_fatal);
+
+        /*
+         * The nameless low windows the cached-alias size bounds: one per
+         * non-crosstalk space per view. The crosstalk space stays out --
+         * its nameless half is the Hub's fixed eight-megabyte window.
+         */
+        for (space_index = 0;
+             space_index < node->model->address_space_count; space_index++) {
+            g_autofree char *window_prop = NULL;
+
+            if (node->model->address_spaces[space_index].kind ==
+                SN0_MODEL_SPACE_XTALK) {
+                continue;
+            }
+            window_prop = g_strdup_printf("calias-window%u-%u", slice,
+                                          space_index);
+            object_property_set_link(
+                OBJECT(&node->hub), window_prop,
+                OBJECT(&node->local_space[slice][space_index]),
+                &error_fatal);
+        }
     }
     object_property_set_link(OBJECT(&node->hub), "claim-target",
                              OBJECT(system), &error_fatal);

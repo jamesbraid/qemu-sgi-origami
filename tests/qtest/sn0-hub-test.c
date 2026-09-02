@@ -13,6 +13,9 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 
+/* The Hub's special space, one uncached window up from plain memory. */
+#define SPACE_HUB       0x10000000000ULL
+
 /* Crosstalk space, and the two halves of the crossbar's widget 1 window. */
 #define SPACE_XTALK     0x20000000000ULL
 #define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
@@ -29,6 +32,11 @@
 #define PI_PROCESSOR_NUMBER 0x000020
 #define PI_CALIAS_SIZE      0x000028
 #define PI_CALIAS_SIZE_RESET 15
+
+/* Size codes from the public table: zero disables, one is 4 KiB, doubling. */
+#define PI_CALIAS_SIZE_4K   1
+#define PI_CALIAS_SIZE_16M  13
+#define PI_CALIAS_SIZE_32M  14
 #define PI_CPU_ENABLE_A     0x000050
 #define PI_CPU_ENABLE_B     0x000058
 
@@ -2609,8 +2617,9 @@ static void test_unclaimed_node_number_fails(const void *data)
  * The memory windows follow the same claim: a node-qualified memory read
  * never returns the other node's word, in any programmed-number state.
  * The complement of the address-map suite's two-node agreement case.
- * Node-field-zero reads from node 1's own processor stay under the
- * nameless local windows, which name the reader's node throughout.
+ * Node-field-zero reads from node 1's own processor stay inside the
+ * reset-size cached-alias window, which names the reader's node in
+ * every programmed-number state.
  */
 static void test_qualified_memory_follows_the_programmed_number(
     const void *data)
@@ -2647,6 +2656,169 @@ static void test_qualified_memory_follows_the_programmed_number(
                     ==, MEM_PLANT_NODE1);
     g_assert_cmphex(cpu_view_word64(qts, 0, NODE_STRIDE + MEM_PROBE), ==,
                     MEM_PLANT_NODE1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The offset node 1's firmware walks the master's configuration table at,
+ * in its node-field-zero form: below the reset-size window, above every
+ * smaller one. The low probe sits under even the smallest window.
+ */
+#define CALIAS_PROBE            0x01b00000ULL
+#define CALIAS_LOW_PROBE        0x00000ff8ULL
+#define CALIAS_PLANT_NODE0      0xaaaa0000000c0de0ULL
+#define CALIAS_PLANT_NODE1      0xbbbb1111111c0de1ULL
+#define CALIAS_LOW_PLANT_NODE0  0xcccc2222222c0de2ULL
+#define CALIAS_LOW_PLANT_NODE1  0xdddd3333333c0de3ULL
+
+/* Both nodes' words at both probes; the plants ride the claimed strides. */
+static void calias_plant_both_nodes(QTestState *qts)
+{
+    qtest_writeq(qts, CALIAS_PROBE, CALIAS_PLANT_NODE0);
+    qtest_writeq(qts, NODE_STRIDE + CALIAS_PROBE, CALIAS_PLANT_NODE1);
+    qtest_writeq(qts, CALIAS_LOW_PROBE, CALIAS_LOW_PLANT_NODE0);
+    qtest_writeq(qts, NODE_STRIDE + CALIAS_LOW_PROBE,
+                 CALIAS_LOW_PLANT_NODE1);
+}
+
+/*
+ * The cached-alias size bounds the nameless local memory window: within
+ * it a node-field-zero access names the reader's own node, beyond it the
+ * access belongs to whichever Hub claims node number zero. An unbounded
+ * window is the measured two-node defect: node 1's firmware, walking the
+ * master's configuration table through the zero-field form, read its own
+ * table instead and copied its own sentinel over the master's record.
+ */
+static void test_the_calias_bounds_the_nameless_memory_window(
+    const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+
+    calias_plant_both_nodes(qts);
+
+    /* At the reset size the probe is inside the window: the reader's own. */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+
+    /* Shrunk to 4 KiB, the same access reaches the claimant of zero. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE,
+                 PI_CALIAS_SIZE_4K);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE0);
+
+    /* One register serves both of the node's processor views. */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU + 1, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE0);
+
+    /* Inside the shrunken window the access never leaves the node. */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_LOW_PROBE), ==,
+                    CALIAS_LOW_PLANT_NODE1);
+
+    /* Node 1's register does not move node 0's window. */
+    g_assert_cmphex(cpu_view_word64(qts, 0, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE0);
+
+    /*
+     * The destination side of the observed copy -- the node-one-qualified
+     * form -- still names node 1: the bound must not overshoot into the
+     * claimed strides.
+     */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    NODE_STRIDE + CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+
+    qtest_quit(qts);
+}
+
+/* The boundary follows the size code, and reset restores the full window. */
+static void test_the_calias_window_tracks_the_register(const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+
+    calias_plant_both_nodes(qts);
+
+    /* At 32 MiB the probe is inside; one step down puts it outside. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE,
+                 PI_CALIAS_SIZE_32M);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE,
+                 PI_CALIAS_SIZE_16M);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE0);
+
+    /* Disabled, even the lowest addresses belong to the claimant of zero. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE, 0);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_LOW_PROBE), ==,
+                    CALIAS_LOW_PLANT_NODE0);
+
+    /* A machine reset returns the register, and the window, to largest. */
+    qtest_system_reset(qts);
+    calias_plant_both_nodes(qts);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Before the numbers are programmed both Hubs claim zero and every node's
+ * node-field-zero access stays on its own Hub -- so a bounded, or even
+ * disabled, window still leaves the memory-test era decoding locally.
+ * Retiring the wide windows without this fall-through is what broke the
+ * two-node firmware boot in the first attempt on this defect.
+ */
+static void test_calias_overflow_stays_local_before_numbering(
+    const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+
+    /* Plant while node 1 is still addressable by its real number. */
+    calias_plant_both_nodes(qts);
+
+    /* Shrink node 1's window first, then return its Hub to zero. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE,
+                 PI_CALIAS_SIZE_4K);
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_STATUS, 0);
+
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+    g_assert_cmphex(cpu_view_word64(qts, 0, CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The Hub-special space's nameless window follows the same bound; its
+ * bottom of local memory mirrors node RAM, which makes the routing
+ * visible by value. The per-slice 128 KiB at the very bottom sits above
+ * the window and never leaves the node.
+ */
+static void test_the_calias_bounds_the_hub_special_window(const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+
+    calias_plant_both_nodes(qts);
+
+    /* At the reset size the mirror shows the reader's own node. */
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    SPACE_HUB + CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE1);
+
+    /* Beyond a shrunken window it shows the claimant of zero's. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE,
+                 PI_CALIAS_SIZE_4K);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    SPACE_HUB + CALIAS_PROBE), ==,
+                    CALIAS_PLANT_NODE0);
+
+    /* The per-slice bottom outranks the bound, even fully disabled. */
+    qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + PI_CALIAS_SIZE, 0);
+    g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
+                                    SPACE_HUB + CALIAS_LOW_PROBE), ==,
+                    CALIAS_LOW_PLANT_NODE1);
 
     qtest_quit(qts);
 }
@@ -3318,6 +3490,17 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/hub/qualified-memory-follows-the-programmed-number", NULL,
         test_qualified_memory_follows_the_programmed_number);
+    qtest_add_data_func(
+        "sn0/hub/calias-bounds-the-nameless-memory-window", NULL,
+        test_the_calias_bounds_the_nameless_memory_window);
+    qtest_add_data_func("sn0/hub/calias-window-tracks-the-register", NULL,
+                        test_the_calias_window_tracks_the_register);
+    qtest_add_data_func(
+        "sn0/hub/calias-overflow-stays-local-before-numbering", NULL,
+        test_calias_overflow_stays_local_before_numbering);
+    qtest_add_data_func(
+        "sn0/hub/calias-bounds-the-hub-special-window", NULL,
+        test_the_calias_bounds_the_hub_special_window);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);

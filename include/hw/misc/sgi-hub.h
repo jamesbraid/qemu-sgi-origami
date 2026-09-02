@@ -85,6 +85,14 @@ typedef struct SGIHubCounterLine {
  */
 #define SGI_HUB_CLAIM_STRIDES 2
 
+/*
+ * The nameless low windows the cached-alias size bounds: at most one per
+ * uncached space per processor view. The machine pre-creates each at the
+ * largest size the register encodes; the Hub only resizes and gates them.
+ */
+#define SGI_HUB_CALIAS_WINDOWS SGI_HUB_CLAIM_SPACES
+#define SGI_HUB_CALIAS_MAX_SIZE (64 * MiB)
+
 struct SGIHubState {
     SysBusDevice parent_obj;
 
@@ -132,6 +140,13 @@ struct SGIHubState {
                             [SGI_HUB_CLAIM_STRIDES];
     MemoryRegion claim_error[SGI_HUB_PROCESSORS][SGI_HUB_CLAIM_SPACES]
                             [SGI_HUB_CLAIM_STRIDES];
+
+    /*
+     * The nameless low windows this Hub's cached-alias size bounds,
+     * pre-created and placed by the machine; an unwired slot means the
+     * machine keeps that space's window out of the register's reach.
+     */
+    MemoryRegion *calias_window[SGI_HUB_PROCESSORS][SGI_HUB_CALIAS_WINDOWS];
 
     /*
      * One level-triggered line per processor per pending bank, published

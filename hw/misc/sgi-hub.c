@@ -431,7 +431,12 @@ uint32_t sgi_hub_programmed_nasid(const SGIHubState *s)
 #define PI_INT_MODIFY_NUMBER    0x7f
 #define PI_INT_MODIFY_SET       0x100
 
-/* The cached-alias size is a four-bit code, and resets to the largest. */
+/*
+ * The cached-alias size is a four-bit code, and resets to the largest.
+ * The reset value covers only the pre-store window: the real PROM
+ * stores the 4 KiB code in its earliest per-processor bring-up, before
+ * anything cross-node, and never reads the register back.
+ */
 #define PI_CALIAS_SIZE_MASK     0xf
 #define PI_CALIAS_SIZE_RESET    15
 
@@ -750,6 +755,46 @@ static void sgi_hub_claim_update(SGIHubState *s)
                     memory_region_set_enabled(alias, false);
                 }
             }
+        }
+    }
+    memory_region_transaction_commit();
+}
+
+/*
+ * The public size table: zero disables the window, one is 4 KiB, and
+ * every further code doubles it, up to 64 MiB at fifteen.
+ */
+static uint64_t sgi_hub_calias_bytes(uint32_t code)
+{
+    return code ? 4 * KiB << (code - 1) : 0;
+}
+
+/*
+ * Size the nameless low windows to the programmed cached-alias size:
+ * within the window a processor's node-field-zero access stays on its
+ * own node; beyond it the access falls through to the claim layer, which
+ * routes stride zero by programmed number. One register serves every
+ * window of both processors' views (the PAM idiom again: the machine
+ * pre-creates each window at the largest encodable size, and a store,
+ * reset or load only resizes and gates it).
+ */
+static void sgi_hub_calias_update(SGIHubState *s)
+{
+    uint64_t size = sgi_hub_calias_bytes(s->pi_calias_size);
+    unsigned int view, n;
+
+    memory_region_transaction_begin();
+    for (view = 0; view < s->cpus; view++) {
+        for (n = 0; n < SGI_HUB_CALIAS_WINDOWS; n++) {
+            MemoryRegion *window = s->calias_window[view][n];
+
+            if (!window) {
+                continue;
+            }
+            if (size) {
+                memory_region_set_size(window, size);
+            }
+            memory_region_set_enabled(window, size != 0);
         }
     }
     memory_region_transaction_commit();
@@ -1870,6 +1915,14 @@ static void sgi_hub_store_ni_status(SGIHubState *s, unsigned arg,
     sgi_hub_claim_update_pair(s);
 }
 
+static void sgi_hub_store_pi_calias_size(SGIHubState *s, unsigned arg,
+                                         uint64_t val)
+{
+    s->pi_calias_size = val & PI_CALIAS_SIZE_MASK;
+    /* The size moved: the nameless low windows resize with it. */
+    sgi_hub_calias_update(s);
+}
+
 static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
@@ -1965,7 +2018,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .write = sgi_hub_write_processor_number },
     { .offset = HUB_PI_CALIAS_SIZE,
       .field = offsetof(SGIHubState, pi_calias_size), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_CALIAS_SIZE_MASK },
+      .flags = HUB_REG_DIAG, .store = sgi_hub_store_pi_calias_size },
     { .offset = HUB_PI_CPU_PRESENT_A, .arg = 0,
       .read = sgi_hub_read_cpu_present },
     { .offset = HUB_PI_CPU_PRESENT_B, .arg = 1,
@@ -2637,10 +2690,14 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
  * The claim overlays re-derive once every Hub's programmed number is
  * back at its seeded value -- the exit phase, because a Hub's claims
  * depend on the peer's number too, and every enter phase has run by now.
+ * The nameless low windows re-derive with them, back to the reset size.
  */
 static void sgi_hub_reset_exit(Object *obj, ResetType type)
 {
-    sgi_hub_claim_update_pair(SGI_HUB(obj));
+    SGIHubState *s = SGI_HUB(obj);
+
+    sgi_hub_claim_update_pair(s);
+    sgi_hub_calias_update(s);
 }
 
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
@@ -2999,6 +3056,8 @@ static int sgi_hub_post_load(void *opaque, int version_id)
      * loads second leaves both aimed by restored state.
      */
     sgi_hub_claim_update_pair(s);
+    /* The nameless low windows re-derive from the restored size code. */
+    sgi_hub_calias_update(s);
     /*
      * Re-driving outputs from post_load is sound here only because each
      * drives an idempotent level input on the CPU, whose cause bits migrate
@@ -3033,6 +3092,22 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_LINK("claim-view1", SGIHubState, claim_view[1],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("claim-target", SGIHubState, claim_target,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window0-0", SGIHubState, calias_window[0][0],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window0-1", SGIHubState, calias_window[0][1],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window0-2", SGIHubState, calias_window[0][2],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window0-3", SGIHubState, calias_window[0][3],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window1-0", SGIHubState, calias_window[1][0],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window1-1", SGIHubState, calias_window[1][1],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window1-2", SGIHubState, calias_window[1][2],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("calias-window1-3", SGIHubState, calias_window[1][3],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT32("claim-node-shift", SGIHubState, claim_node_shift, 0),
     DEFINE_PROP_UINT32("claim-space-shift", SGIHubState, claim_space_shift, 0),
