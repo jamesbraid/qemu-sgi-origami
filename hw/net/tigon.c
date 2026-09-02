@@ -443,6 +443,12 @@ static void tigon_try_firmware_up(TigonState *s)
     }
     tigon_parse_gib(s);
     s->firmware_up = true;
+    fprintf(stderr, "TIGON-UP gib=%016llx stdrx=%016llx tx=%016llx ev=%016llx "
+            "ret=%016llx\n", (unsigned long long)s->gib_base,
+            (unsigned long long)s->std_rx_ring_base,
+            (unsigned long long)s->tx_ring_base,
+            (unsigned long long)s->ev_ring_base,
+            (unsigned long long)s->return_ring_base);
     tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0);
 }
 
@@ -827,15 +833,33 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         if (addr >= TI_GCR_BASE && addr <= TI_GCR_END) {
             s->gcr[TIGON_GCR_IDX(addr)] = val;
             /*
-             * Writing GENINFO_LO hands the card the GIB address. GENINFO_HI is
-             * documented as always zero, so the low word decides validity.
+             * The two general-information registers hold one 64-bit address.
+             * This window is little-endian, so the half at the lower offset is
+             * the least significant one -- whether the guest writes the pair as
+             * two words or as a single 64-bit store that is split on the way
+             * in. The public header's names read from the other convention, so
+             * TI_GCR_GENINFO_HI is the offset of the *low* half here; taking
+             * the names literally builds the address backwards.
+             *
+             * IRIX's eg gives it as 0x00f80000 then 0xa3000000, which assembled
+             * this way is 0xa300000000f80000: a target widget of 0xa and an
+             * offset inside memory, matching what every working device on this
+             * machine puts on the bus. Assembled the other way it names widget
+             * 0 and an offset past the end of memory, and every ring the card
+             * reads through it comes back zero.
+             *
+             * The address is completed by the write to the upper half, which is
+             * where the card is handed a usable block.
              */
-            if (addr == TI_GCR_GENINFO_LO) {
-                uint32_t hi = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
+            if (addr == TI_GCR_GENINFO_HI || addr == TI_GCR_GENINFO_LO) {
+                uint32_t low = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
+                uint32_t high = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_LO)];
 
-                s->gib_base = ((uint64_t)hi << 32) | (uint32_t)val;
-                s->gib_valid = val != 0;
-                tigon_try_firmware_up(s);
+                s->gib_base = ((uint64_t)high << 32) | low;
+                if (addr == TI_GCR_GENINFO_LO) {
+                    s->gib_valid = s->gib_base != 0;
+                    tigon_try_firmware_up(s);
+                }
             }
             return;
         }

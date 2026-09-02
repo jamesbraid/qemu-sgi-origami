@@ -407,10 +407,21 @@ static void build_gib(QTestState *qts)
     write_rcb_addr(qts, GIB_PHYS + GIB_TX_CONS_PTR, TX_CONS_PHYS);
 }
 
+/*
+ * Hand the card a general-information-block address. The register window is
+ * little-endian, so the half at the lower offset -- the one the public header
+ * calls GENINFO_HI -- is the least significant one, which is where a guest
+ * writing the pair puts the low half, as IRIX does.
+ */
+static void publish_gib_at(QTestState *qts, uint64_t gib)
+{
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI, (uint32_t)gib);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, gib >> 32);
+}
+
 static void publish_gib(QTestState *qts)
 {
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI, 0);
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    publish_gib_at(qts, GIB_PHYS);
 }
 
 static void release_cpu(QTestState *qts)
@@ -485,6 +496,48 @@ static bool irq_asserted(QTestState *qts)
 {
     return (qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
             TI_MHC_INTSTATE) != 0;
+}
+
+/*
+ * A general-information-block address whose upper half is not zero -- the
+ * shape IRIX uses, where the top bits name the target widget and the low bits
+ * are the offset. Assembling the two halves the wrong way round produces an
+ * address naming the wrong widget and pointing past the end of memory, so
+ * every ring the card reads through it comes back zero and the interface
+ * carries nothing while looking configured. Every other test here publishes a
+ * block below 4 GiB, where the two orderings differ only in bits that are
+ * zero, so this is the one that can tell them apart.
+ */
+static void test_geninfo_upper_half(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    uint64_t gib = 0xa300000000000000ULL | GIB_PHYS;
+
+    enable_dma_big_endian(qts);
+    /*
+     * Unlike the block addresses the other tests publish, this one is above
+     * 4 GiB, so it leaves local space and crosses the bridge's byte swapper.
+     * Let it through untouched, so what the test measures is the assembly of
+     * the address rather than a swap the card has already been told to do.
+     */
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) | DEV_SWAP_DIRECT);
+    build_gib(qts);
+
+    /*
+     * The block stays where build_gib() put it: this machine's DMA passes the
+     * offset through, so an address carrying widget bits on top still reaches
+     * it. What has to survive is the assembly of the two halves.
+     */
+    publish_gib_at(qts, gib);
+    release_cpu(qts);
+
+    /* Firmware-up only happens if the card read the block it was given. */
+    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==,
+                    (uint32_t)TI_EV_FIRMWARE_UP << 24);
+    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 1);
+
+    qtest_quit(qts);
 }
 
 static void test_firmware_up_requires_gib(const void *data)
@@ -713,9 +766,7 @@ static void transmit_direct_map_check(bool bridge_transparent)
                  (512u << 16) | TI_RCB_FLAG_HOST_RING);
     qtest_writeq(qts, GIB_PHYS + GIB_TX_CONS_PTR, IOVA(TX_CONS_PHYS));
 
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI,
-                 (uint32_t)(IOVA_PREFIX >> 32));
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    publish_gib_at(qts, IOVA(GIB_PHYS));
     release_cpu(qts);
 
     qtest_memwrite(qts, TX_BUF_DIRECT_PHYS, test_frame_direct,
@@ -1185,9 +1236,7 @@ static void receive_direct_map_check(bool bridge_transparent, uint32_t opmode)
     qtest_writel(qts, GIB_PHYS + GIB_RETURN_RCB + 8, (2048u << 16));
     qtest_writeq(qts, GIB_PHYS + GIB_RETURN_PROD_PTR, IOVA(RETURN_PROD_PHYS));
 
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI,
-                 (uint32_t)(IOVA_PREFIX >> 32));
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    publish_gib_at(qts, IOVA(GIB_PHYS));
     release_cpu(qts);
 
     qtest_memset(qts, RX_BUF_DIRECT_PHYS, 0, 2048);
@@ -1272,9 +1321,7 @@ static void byte_order_check(bool bridge_transparent)
     qtest_writeq(qts, GIB_PHYS + GIB_EV_RCB, IOVA(EVENT_RING_PHYS));
     qtest_writeq(qts, GIB_PHYS + GIB_EV_PROD_PTR, IOVA(EV_PROD_PHYS));
 
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI,
-                 (uint32_t)(IOVA_PREFIX >> 32));
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, GIB_PHYS);
+    publish_gib_at(qts, IOVA(GIB_PHYS));
     release_cpu(qts);
 
     /*
@@ -1566,6 +1613,8 @@ int main(int argc, char **argv)
                         test_station_addr_par);
     qtest_add_data_func("/sn0/tigon/station-addr-eeprom", NULL,
                         test_station_addr_eeprom);
+    qtest_add_data_func("/sn0/tigon/geninfo-upper-half", NULL,
+                        test_geninfo_upper_half);
     qtest_add_data_func("/sn0/tigon/firmware-up-requires-gib", NULL,
                         test_firmware_up_requires_gib);
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
