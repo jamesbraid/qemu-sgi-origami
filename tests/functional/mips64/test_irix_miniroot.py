@@ -45,8 +45,28 @@ crosstalk-widget bridge fix the boot needs to clear power-on diagnostics
 but not every later kernel-console fix, and the banner is reached well
 before any of those matter.
 
-reached_banner() below is the one pure function this file factors the
-success check into.
+The banner alone is a late, generic marker, though: many unrelated
+failures keep it from printing. So this test also checks an earlier,
+generic progress marker -- the kernel's own first line of console output
+(reached_first_console() below), printed once the kernel has brought up
+early state and its IOC3 port-A console, well before the release banner.
+
+Reaching that first line is a positive proof worth checking on its own:
+it requires the boot to clear everything between kernel entry and first
+kernel console output. The system-controller (MSC/ELSC) console path is
+in that stretch, and is where the boot historically stalled -- the
+miniroot once loaded into a dark console at what the record calls the
+ELSC "dark point" (a harness gap on the firmware's diagnostic console;
+the IRIX console itself is the IOC3 serial, not the ELSC). A regression
+that re-darkened the console would fail this check. But the marker's
+ABSENCE does not by itself name a cause: the FrameMask kernel-handoff and
+the IOC3 serial-init paths also sit between entry and first console
+output, and any of them could keep that line from printing. So the
+failure message reports only what was observed and names the historical
+dark point as one known context, not the cause.
+
+reached_banner() and reached_first_console() below are the two pure
+functions this file factors its progress checks into.
 """
 
 import datetime
@@ -80,6 +100,64 @@ def reached_banner(transcript):
     if isinstance(transcript, str):
         transcript = transcript.encode("utf-8", errors="replace")
     return bool(MINIROOT_BANNER_RE.search(transcript))
+
+
+# The kernel's first line of its own console output, read on the IOC3 port-A
+# console. The miniroot kernel prints nothing between PROM entry and this line
+# while it brings up early CPU state and its console; this warning is the
+# first thing it emits, ahead of the release banner. Reaching it proves the
+# boot cleared that whole entry-to-console stretch -- the system-controller
+# (MSC/ELSC) console path among it, where the boot once stalled at the "dark
+# point" -- so it is an earlier progress check than the banner and a
+# regression that re-darkens the console fails it. Matched on the kernel's
+# unconditional date-sanity warning, the earliest line present in every
+# recorded miniroot-to-banner boot (docs/boot-logs/irix.boot.2026-08-24T08:24
+# -07:00 and the later captures) and absent at the dark point (the 2026-08-22
+# wedge).
+MINIROOT_FIRST_CONSOLE_RE = re.compile(
+    rb"WARNING: Check the date to make sure it is correct")
+
+
+def reached_first_console(transcript):
+    """Whether the kernel produced its first line of console output.
+
+    A str or bytes transcript both work: the marker is ASCII, so a str is
+    encoded before the search. The marker is the kernel's first console line,
+    printed once it has brought up early state and its IOC3 console, well
+    before the release banner. It is strictly earlier than reached_banner():
+    reaching the banner implies this too, but this can be true when the banner
+    is not, localizing a failure that let the kernel speak but never reached
+    the banner. Its presence proves the boot cleared everything between kernel
+    entry and first console output, including the MSC/ELSC console path; its
+    absence does not by itself name which of those stalled.
+    """
+    if isinstance(transcript, str):
+        transcript = transcript.encode("utf-8", errors="replace")
+    return bool(MINIROOT_FIRST_CONSOLE_RE.search(transcript))
+
+
+# The PROM's kernel-entry line ("entry: 0x<addr>"), printed right before it
+# jumps into the loaded kernel image. The ELSC console exchange sits just past
+# this boundary -- it runs only after the PROM enters the kernel -- so this
+# line tells a pre-entry failure (power-on diagnostics, the SLIRP netboot, or
+# the kernel never loading), where the exchange never ran, from a boot that
+# reached entry and then wedged at the exchange (the dark point). Present in
+# every recorded boot that loaded a kernel, the 2026-08-22 wedge included, and
+# absent from the PROM's own pre-entry diagnostics and menu.
+MINIROOT_KERNEL_ENTRY_RE = re.compile(rb"entry: 0x[0-9a-fA-F]+")
+
+
+def reached_kernel_entry(transcript):
+    """Whether the PROM printed its kernel-entry line ("entry: 0x...").
+
+    A str or bytes transcript both work. Used to attribute a missing
+    ELSC-exchange marker correctly: the exchange runs only after the PROM
+    enters the kernel, so a transcript that never reached this line failed
+    before the exchange could run and must not be blamed on it.
+    """
+    if isinstance(transcript, str):
+        transcript = transcript.encode("utf-8", errors="replace")
+    return bool(MINIROOT_KERNEL_ENTRY_RE.search(transcript))
 
 
 # The release this test's real boot drives. 6.5.30 is the miniroot the
@@ -309,12 +387,22 @@ class IrixMiniroot(QemuSystemTest):
                 'emulator built, and that nothing ended the machine '
                 'before it printed anything.')
 
+        # reached_first is the earlier of the two progress markers: the
+        # kernel's first console line. It is OR-ed with the banner, which is
+        # downstream of it, so a fully successful boot never fails it on a
+        # warning-text change. reached_entry only disambiguates the failure
+        # message -- a pre-entry failure from a post-entry, pre-console stall.
+        reached_entry = reached_kernel_entry(transcript)
+        reached_first = reached_first_console(transcript) or reached
+
         run_path = self.log_file('run.json')
         with open(run_path, 'w', encoding='utf-8') as run_file:
             json.dump({
                 'schema': 1,
                 'started_utc': started,
                 'ended_utc': ended,
+                'reached_kernel_entry': reached_entry,
+                'reached_first_console': reached_first,
                 'reached_banner': reached,
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                 'command': {
@@ -336,6 +424,33 @@ class IrixMiniroot(QemuSystemTest):
                 },
             }, run_file, indent=2, sort_keys=True)
             run_file.write('\n')
+
+        # Checked first, and separately from the banner, reporting only what
+        # was observed. reached_first's absence means the kernel never printed
+        # its first console line; many things between kernel entry and first
+        # console output could cause that, so the message names the observed
+        # stall, not a cause, and cites the historical dark point (the
+        # system-controller/console path) as one known context. Gated on
+        # kernel entry so a pre-entry failure, where the kernel never ran, is
+        # reported as itself rather than as a console stall.
+        if reached_entry:
+            first_console_failure = (
+                'the miniroot kernel reached PROM entry ("entry: 0x...") but '
+                'never produced its first line of console output within '
+                f'{BOOT_TIMEOUT_SECONDS}s. Something between kernel entry and '
+                'first kernel console output stalled the boot; the '
+                'system-controller (MSC/ELSC) console path, where it once '
+                'wedged dark at the "dark point", is one known cause, as are '
+                'the early CPU-state and IOC3 serial-init paths. This names '
+                f'the observed stall, not its cause (full transcript: '
+                f'{log_path}).')
+        else:
+            first_console_failure = (
+                'the boot never reached kernel entry ("entry: 0x...") within '
+                f'{BOOT_TIMEOUT_SECONDS}s: a pre-entry failure (power-on '
+                'diagnostics, the SLIRP netboot, or the kernel load), before '
+                f'the kernel ran at all (full transcript: {log_path}).')
+        self.assertTrue(reached_first, first_console_failure)
 
         self.assertTrue(
             reached,
