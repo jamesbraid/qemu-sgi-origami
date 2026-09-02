@@ -90,6 +90,12 @@ SOCKBUF_ARG = (' -b ' + SOCKBUF) if SOCKBUF else ''
 # Trace events to enable, e.g. tigon_rx_ring, written beside the console log.
 TRACE = os.environ.get('EG_PERF_TRACE', '')
 
+# Emulator log classes. 'unimp' is off by default because it is noisy, but it
+# is the only way to see which registers the driver touches that this model
+# does not implement -- a gate the guest programs and the model never reads
+# breaks nothing and so goes unnoticed indefinitely.
+DFLAGS = os.environ.get('EG_PERF_DFLAGS', 'guest_errors')
+
 
 def _usernet_hostport(vm, proto, guest_port):
     """Host port SLIRP assigned to a hostfwd rule, from 'info usernet'. The
@@ -266,19 +272,26 @@ if base.QemuSystemTest is not None:
                 '-drive', f'if=none,id=disk0,file={disk},format=qcow2',
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
                 '-snapshot', '-nic', 'none',
-                '-d', 'guest_errors',
+                '-d', DFLAGS,
                 '-D', self.log_file('qemu-dbg.log'),
                 '-netdev', netdev,
                 '-device', f'tigon,netdev=egnet,addr={base.EG_ADDR}',
                 '-object', f'filter-dump,id=egcap,netdev=egnet,file={pcap}')
             if TRACE:
-                # Which receive ring carried each frame is invisible from the
-                # guest and from a rate, because a large frame still arrives
-                # through the standard ring when the driver posted nothing to
-                # the jumbo one.
+                # Which receive ring carried each frame, and how the interrupt
+                # line moves, are invisible from the guest and from a rate: a
+                # large frame still arrives through the standard ring when the
+                # driver posted nothing to the jumbo one.
+                #
+                # One -trace per event. The option's own parameter separator is
+                # a comma, so a comma-joined list makes the second name look
+                # like a new parameter and the emulator refuses to start --
+                # which reads as a launch failure, not as a bad argument.
+                events = [e for e in TRACE.split(',') if e]
+                for event in events:
+                    vm.add_args('-trace', 'enable=' + event)
                 vm.add_args('-trace',
-                            'enable=%s,file=%s'
-                            % (TRACE, self.log_file('tigon-trace.log')))
+                            'file=' + self.log_file('tigon-trace.log'))
             vm.launch()
 
             tcp_hp = _usernet_hostport(vm, 'tcp', TCP_GUEST_PORT)
