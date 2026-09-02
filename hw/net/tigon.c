@@ -35,6 +35,7 @@
 /* Register offsets inside the BAR (if_tireg.h). */
 #define TI_MISC_HOST_CTL        0x040
 #define TI_MISC_LOCAL_CTL       0x044
+#define TI_MISC_CONF            0x050
 #define TI_PCI_STATE            0x05c
 #define TI_WINBASE              0x068
 #define TI_WINDATA              0x06c
@@ -793,6 +794,7 @@ static void tigon_reset_state(TigonState *s)
     s->misc_host_ctl = 0;
     s->misc_local_ctl = 0;
     s->pci_state = 0;
+    s->misc_conf = 0;
     s->win_base = 0;
     s->cpu_state_a = TI_CPUSTATE_HALT;
     s->cpu_pc_a = 0;
@@ -873,6 +875,8 @@ static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
                (tigon_irq_line(s) ? TI_MHC_INTSTATE : 0);
     case TI_MISC_LOCAL_CTL:
         return s->misc_local_ctl | (s->eeprom.din ? TI_MLC_EE_DIN : 0);
+    case TI_MISC_CONF:
+        return s->misc_conf;
     case TI_PCI_STATE:
         return s->pci_state;
     case TI_WINBASE:
@@ -912,6 +916,9 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case TI_MISC_LOCAL_CTL:
         tigon_eeprom_step(s, val);
+        return;
+    case TI_MISC_CONF:
+        s->misc_conf = val;
         return;
     case TI_PCI_STATE:
         s->pci_state = val;
@@ -1401,6 +1408,7 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT32(misc_host_ctl, TigonState),
         VMSTATE_UINT32(misc_local_ctl, TigonState),
         VMSTATE_UINT32(pci_state, TigonState),
+        VMSTATE_UINT32(misc_conf, TigonState),
         VMSTATE_UINT32(win_base, TigonState),
         VMSTATE_UINT32(cpu_state_a, TigonState),
         VMSTATE_UINT32(cpu_pc_a, TigonState),
