@@ -282,6 +282,7 @@ config SGI_IOC3
     depends on PCI
     select DS1685
     select M48T35
+    select ONEWIRE
     select SERIAL
     select SGI_IOC3_ETH
     select SGI_IOC3_KBC
