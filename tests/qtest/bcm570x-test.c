@@ -205,6 +205,7 @@
 #define BENCH_FRAMES          255u
 #define BENCH_FRAME_LEN       1472u
 #define BENCH_BUF_STRIDE      1536u
+#define BENCH_ROUNDS          40u    /* enough frames to be a rate, not a sample */
 
 /*
  * A live card: the PCI bus, the device at its slot, and BAR0 mapped and
@@ -1567,7 +1568,7 @@ static void test_transmit_throughput(const void *data)
     Bcm b;
     uint8_t *ring, *bufs, *frame;
     uint8_t got[2048];
-    unsigned int i;
+    unsigned int i, round;
     gint64 t0, t1;
     guint64 bytes = 0;
     double secs, mbps;
@@ -1610,24 +1611,35 @@ static void test_transmit_throughput(const void *data)
     qtest_memwrite(b.qts, BENCH_BUF_PHYS, bufs,
                    BENCH_FRAMES * BENCH_BUF_STRIDE);
 
-    /* One doorbell hands the whole burst over. */
+    /*
+     * Repeat the burst so the figure is a sustained rate rather than one
+     * doorbell's worth. A single burst can flatter a device: the ring is cold,
+     * nothing has wrapped, and the sample is too short for the cost of the
+     * steady state to show.
+     */
     t0 = g_get_monotonic_time();
-    bar_writel(&b, BCM_MBX_TX_PROD_LO, BENCH_FRAMES);
-    for (i = 0; i < BENCH_FRAMES; i++) {
-        size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    for (round = 0; round < BENCH_ROUNDS; round++) {
+        unsigned int j;
 
-        g_assert_cmpint(len, ==, BENCH_FRAME_LEN);
-        g_assert_cmpmem(got, len, frame, BENCH_FRAME_LEN);
-        bytes += len;
+        bar_writel(&b, BCM_MBX_TX_PROD_LO, BENCH_FRAMES);
+        for (j = 0; j < BENCH_FRAMES; j++) {
+            size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+
+            g_assert_cmpint(len, ==, BENCH_FRAME_LEN);
+            g_assert_cmpmem(got, len, frame, BENCH_FRAME_LEN);
+            bytes += len;
+        }
+        /* Hand the ring back to the start for the next round. */
+        bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     }
     t1 = g_get_monotonic_time();
 
     secs = (double)(t1 - t0) / G_USEC_PER_SEC;
     mbps = secs > 0 ? ((double)bytes * 8) / (secs * 1000000.0) : 0;
-    g_test_message("transmit burst: %u frames, %" G_GUINT64_FORMAT " bytes in "
-                   "%.4f s = %.1f Mbit/s, %.0f frames/s",
-                   BENCH_FRAMES, bytes, secs, mbps,
-                   secs > 0 ? BENCH_FRAMES / secs : 0);
+    g_test_message("transmit sustained: %u frames, %" G_GUINT64_FORMAT " bytes "
+                   "in %.4f s = %.1f Mbit/s, %.0f frames/s",
+                   BENCH_FRAMES * BENCH_ROUNDS, bytes, secs, mbps,
+                   secs > 0 ? (BENCH_FRAMES * BENCH_ROUNDS) / secs : 0);
 
     bcm_close(&b);
     close(sv[0]);
