@@ -386,7 +386,8 @@ static void test_reset_state(const void *data)
 
 /*
  * Slots firmware assigns after every reset, so their registers never show
- * the raw reset value (hw/mips/sn0.h has the account).
+ * the raw reset value. These are independent expected values for the
+ * compiled product model.
  */
 #define IOC3_SLOT 2
 #define SCSI0_SLOT 0
