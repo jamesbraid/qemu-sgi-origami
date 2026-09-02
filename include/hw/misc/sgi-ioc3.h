@@ -13,6 +13,7 @@
 #include "hw/rtc/m48t35.h"
 #include "hw/net/sgi-ioc3-eth.h"
 #include "hw/input/sgi-ioc3-kbc.h"
+#include "hw/char/sgi-ioc3-parallel.h"
 #include "hw/core/qdev.h"
 #include "qom/object.h"
 
@@ -324,6 +325,7 @@ typedef struct SGIIOC3Population {
     bool eth;
     bool serial[SGI_IOC3_SERIAL_PORTS];
     bool kbc;
+    bool parallel;
     SGIIOC3ClockKind clock;
 } SGIIOC3Population;
 
@@ -399,6 +401,8 @@ struct SGIIOC3State {
     uint32_t int_out;
 
     SGIIOC3KBCState kbc_dev;
+
+    SGIIOC3ParallelState parallel_dev;
 
     MemoryRegion ssram;
     uint32_t ssram_word[SGI_IOC3_SSRAM_WORDS];

@@ -1091,13 +1091,13 @@ static const struct {
       { .eth = true, .serial = { true, true }, .kbc = true,
         .clock = SGI_IOC3_CLOCK_M48T35 } },
     { SGI_IOC3_SUBSYS_IP27_MIO,
-      { .serial = { true, true }, .kbc = true } },
+      { .serial = { true, true }, .kbc = true, .parallel = true } },
     { SGI_IOC3_SUBSYS_IP27_BASEIO,
       { .eth = true, .serial = { true, true },
         .clock = SGI_IOC3_CLOCK_M48T35 } },
     { SGI_IOC3_SUBSYS_IP29_SYSBOARD,
       { .eth = true, .serial = { true, true }, .kbc = true,
-        .clock = SGI_IOC3_CLOCK_M48T35 } },
+        .clock = SGI_IOC3_CLOCK_M48T35, .parallel = true } },
     /*
      * The Octane's clock is a DS1685 at byte-bus devices 1 and 2, not the
      * M48T35 at device 0, and substituting the Timekeeper would hand a guest
@@ -1252,6 +1252,21 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         object_unparent(OBJECT(&s->kbc_dev));
     }
 
+    /* On the chip's own bus, so a reset of the IOC3 reaches it. */
+    if (s->board->parallel) {
+        if (!qdev_realize(DEVICE(&s->parallel_dev), BUS(&s->ioc3_bus), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s->bar, SGI_IOC3_PARALLEL_DMA_BASE,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->parallel_dev), 0));
+        memory_region_add_subregion(&s->bar, SGI_IOC3_PARALLEL_ECP_BASE,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->parallel_dev), 1));
+    } else {
+        object_unparent(OBJECT(&s->parallel_dev));
+    }
+
     /*
      * The serial DMA engines belong to the ports: their walk drives a 16550
      * directly, so a board with no port has nothing behind these registers.
@@ -1358,6 +1373,9 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     if (s->board->kbc) {
         qdev_unrealize(DEVICE(&s->kbc_dev));
     }
+    if (s->board->parallel) {
+        qdev_unrealize(DEVICE(&s->parallel_dev));
+    }
     if (s->board->clock == SGI_IOC3_CLOCK_M48T35) {
         qdev_unrealize(DEVICE(&s->rtc));
     }
@@ -1430,6 +1448,9 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
 
     object_initialize_child(obj, "kbc", &s->kbc_dev, TYPE_SGI_IOC3_KBC);
+
+    object_initialize_child(obj, "parallel", &s->parallel_dev,
+                            TYPE_SGI_IOC3_PARALLEL);
 
     /*
      * Both clocks are initialized; realize keeps whichever this board fits
