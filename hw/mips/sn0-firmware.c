@@ -30,7 +30,7 @@ static hwaddr sn0_firmware_node_base(const SN0MachineModel *model,
         sn0_model_find_space(model, SN0_MODEL_SPACE_MEMORY);
 
     g_assert(memory);
-    return memory->carrier_base + memory->node_stride * nasid;
+    return sn0_model_node_address(model, memory, nasid, 0);
 }
 
 /* The kernel argument vector, below the firmware structures. */
@@ -761,7 +761,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     unsigned int type_ordinals[UINT8_MAX + 1] = { };
 
     g_assert(memory && xtalk && bridge);
-    node_base = memory->carrier_base + memory->node_stride * node->nasid;
+    node_base = sn0_model_node_address(model, memory, node->nasid,
+                                       klconfig->base);
     expected_components = sn0_kl_validate(klconfig, node);
     graph = g_malloc0(klconfig->size);
     console = graph + klconfig->console_offset;
@@ -809,8 +810,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                 case SN0_KL_RECORD_MEMORY_BANK:
                     break;
                 case SN0_KL_RECORD_PROCESSOR:
-                    virtual_id = node_index * model->cpu_slots_per_node +
-                                 instance;
+                    virtual_id = node->cpu_base + instance;
                     physical_id = instance;
                     break;
                 case SN0_KL_RECORD_HUB:
@@ -830,8 +830,7 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
         g_autofree char *name =
             g_strdup_printf("sn0.node%u.graph", node_index);
 
-        rom_add_blob_fixed(name, graph, klconfig->size,
-                           node_base + klconfig->base);
+        rom_add_blob_fixed(name, graph, klconfig->size, node_base);
     }
     g_free(graph);
 }
@@ -1019,7 +1018,7 @@ void sn0_firmware_reset(void *opaque)
                       SN0_HUB_IO_BWIN_ENTRY(
                           SN0_FIRMWARE_WIDGET0_WINDOW),
                       SN0_HUB_IO_BWIN_WIDGET(
-                          model->bridge.discovery_widget) |
+                          model->base_io.discovery_widget) |
                       SN0_HUB_IO_BWIN_SLICE(
                           SN0_FIRMWARE_WIDGET0_SLICE),
                       MEMTXATTRS_UNSPECIFIED, NULL);
@@ -1034,41 +1033,41 @@ static void sn0_assign_node_pci_resources(SN0MachineState *s,
                                           unsigned int node_index)
 {
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
-    const SN0ModelDevice *ioc3 = sn0_model_find_device(
-        model, SN0_MODEL_DEVICE_IOC3, 0);
-    unsigned int isp_count = sn0_model_device_count(
-        model, SN0_MODEL_DEVICE_ISP1040);
-    unsigned int slot;
+    const SN0ModelBaseIO *base_io = &model->base_io;
+    unsigned int scsi_index = 0;
+    size_t function_index;
 
-    g_assert(ioc3 && ioc3->pci_bar0 <= UINT32_MAX &&
-             ioc3->bridge_window_base <= UINT32_MAX);
-    g_assert(isp_count <= SN0_MAX_SCSI_ADAPTERS);
-    pci_default_write_config(s->pci_ioc3[node_index], PCI_BASE_ADDRESS_0,
-                             ioc3->pci_bar0, 4);
-    pci_default_write_config(s->pci_ioc3[node_index], PCI_COMMAND,
-                             PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, 2);
-    sgi_bridge_assign_window(s->io_bridge[node_index], ioc3->pci_device,
-                             ioc3->bridge_window_base, true);
+    for (function_index = 0; function_index < base_io->function_count;
+         function_index++) {
+        const SN0ModelPciFunction *function =
+            &base_io->functions[function_index];
+        PCIDevice *pci;
+        uint16_t command;
 
-    for (slot = 0; slot < isp_count; slot++) {
-        const SN0ModelDevice *isp = sn0_model_find_device(
-            model, SN0_MODEL_DEVICE_ISP1040, slot);
-        g_assert(isp && isp->pci_bar0 <= UINT32_MAX &&
-                 isp->pci_bar1 <= UINT32_MAX &&
-                 isp->bridge_window_base <= UINT32_MAX);
-
-        pci_default_write_config(s->pci_scsi[node_index][slot],
-                                 PCI_BASE_ADDRESS_0,
-                                 isp->pci_bar0, 4);
-        pci_default_write_config(s->pci_scsi[node_index][slot],
-                                 PCI_BASE_ADDRESS_1,
-                                 isp->pci_bar1, 4);
-        pci_default_write_config(s->pci_scsi[node_index][slot], PCI_COMMAND,
-                                 PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
-                                 PCI_COMMAND_MASTER, 2);
-        sgi_bridge_assign_window(s->io_bridge[node_index],
-                                 isp->pci_device,
-                                 isp->bridge_window_base, true);
+        switch (function->kind) {
+        case SN0_MODEL_PCI_IOC3:
+            pci = s->pci_ioc3[node_index];
+            command = PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER;
+            break;
+        case SN0_MODEL_PCI_ISP1040:
+            g_assert(scsi_index < SN0_MAX_SCSI_ADAPTERS);
+            pci = s->pci_scsi[node_index][scsi_index++];
+            command = PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
+                      PCI_COMMAND_MASTER;
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        g_assert(pci);
+        pci_default_write_config(pci, PCI_BASE_ADDRESS_0,
+                                 function->bar[0], 4);
+        if (function->bar[1]) {
+            pci_default_write_config(pci, PCI_BASE_ADDRESS_1,
+                                     function->bar[1], 4);
+        }
+        pci_default_write_config(pci, PCI_COMMAND, command, 2);
+        sgi_bridge_assign_window(s->io_bridge[node_index], function->device,
+                                 function->bridge_window_base, true);
     }
 }
 

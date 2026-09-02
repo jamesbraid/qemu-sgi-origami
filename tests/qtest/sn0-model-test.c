@@ -15,6 +15,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
+#include "hw/mips/sn0-model.h"
 
 #include <elf.h>
 
@@ -753,6 +754,34 @@ static const BaseProfileTopologyCase base_profile_topologies[] = {
     { SN0_BASE_PROFILE_TWO_CPUS, true },
 };
 
+static void test_profile_node_instances_are_explicit(const void *data)
+{
+    static const SN0ModelNodeInstance nodes[] = {
+        {
+            .nasid = 7,
+            .cpu_first_id = 11,
+            .cpu_count = 1,
+            .default_memory_mib = 64,
+        },
+        {
+            .nasid = 23,
+            .cpu_first_id = 29,
+            .cpu_count = 2,
+            .default_memory_mib = 128,
+        },
+    };
+    static const SN0ModelProfile profile = {
+        .nodes = nodes,
+        .node_count = ARRAY_SIZE(nodes),
+        .interconnect = SN0_MODEL_INTERCONNECT_DIRECT_PEER,
+    };
+    const SN0ModelNodeInstance *node = sn0_model_profile_node(&profile, 1);
+
+    g_assert_cmpuint(node->nasid, ==, 23);
+    g_assert_cmpuint(sn0_model_node_cpu_id(node, 0), ==, 29);
+    g_assert_cmpuint(sn0_model_node_cpu_id(node, 1), ==, 30);
+}
+
 /* Exact shipped population, without cataloguing unrelated QOM internals. */
 static void test_base_profile_topology(const void *data)
 {
@@ -889,10 +918,10 @@ static void test_dual_chassis_ioc3_network_identity(const void *data)
     QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS
                                  " -nic user,id=n0");
 
-    mac0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "mac");
-    mac1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "mac");
-    netdev0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "netdev");
-    netdev1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "netdev");
+    mac0 = qom_get_string(qts, "/machine/node0/ioc3", "mac");
+    mac1 = qom_get_string(qts, "/machine/node1/ioc3", "mac");
+    netdev0 = qom_get_string(qts, "/machine/node0/ioc3", "netdev");
+    netdev1 = qom_get_string(qts, "/machine/node1/ioc3", "netdev");
 
     g_assert_true(g_str_has_prefix(mac0, "08:00:69:"));
     g_assert_true(g_str_has_prefix(mac1, "08:00:69:"));
@@ -911,10 +940,10 @@ static void test_dual_chassis_ioc3_network_identity(const void *data)
                      " -nic user,id=n0,mac=02:11:22:33:44:50"
                      " -nic user,id=n1,mac=02:11:22:33:44:51");
 
-    mac0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "mac");
-    mac1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "mac");
-    netdev0 = qom_get_string(qts, "/machine/bridge/pci/child[0]", "netdev");
-    netdev1 = qom_get_string(qts, "/machine/bridge1/pci.1/child[0]", "netdev");
+    mac0 = qom_get_string(qts, "/machine/node0/ioc3", "mac");
+    mac1 = qom_get_string(qts, "/machine/node1/ioc3", "mac");
+    netdev0 = qom_get_string(qts, "/machine/node0/ioc3", "netdev");
+    netdev1 = qom_get_string(qts, "/machine/node1/ioc3", "netdev");
 
     g_assert_cmpstr(mac0, ==, "02:11:22:33:44:50");
     g_assert_cmpstr(mac1, ==, "02:11:22:33:44:51");
@@ -1836,6 +1865,8 @@ int main(int argc, char **argv)
                         test_dual_device_identity);
     qtest_add_data_func("sn0/model/origin200-ioc3-board-default", NULL,
                         test_origin200_owns_the_ioc3_board_default);
+    qtest_add_data_func("sn0/model/profile-node-instances-are-explicit", NULL,
+                        test_profile_node_instances_are_explicit);
     qtest_add_data_func("sn0/model/base-profile-topology/one-cpu",
                         &base_profile_topologies[0],
                         test_base_profile_topology);
