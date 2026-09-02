@@ -34,6 +34,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
  */
 #define SGI_ELSC_RX_QUEUE_SIZE 256
 
+/* The front-panel eight-character alphanumeric display. */
+#define SGI_ELSC_DISPLAY_CHARS 8
+
 struct SGIElscState {
     I2CSlave parent_obj;
     DeviceDiagnosticSink *diagnostic;
@@ -98,6 +101,9 @@ struct SGIElscState {
      * Origin 200 Owner's Guide); "pas" sets it, factory default "none".
      */
     bool supervisor;
+
+    /* The alphanumeric display, written by "dsp" and "dsc". */
+    uint8_t display[SGI_ELSC_DISPLAY_CHARS];
 
     /* Warn once per dark-console boot, not once per dropped flush. */
     bool aux_no_backend_warned;
