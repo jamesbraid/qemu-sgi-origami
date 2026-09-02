@@ -350,47 +350,36 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 }
 
 /*
- * A comparator at or behind the count matches at once. Under wrap semantics
- * the pend stayed clear for a 114-year revolution, silently.
+ * Linux's guard: a behind write is answered by a rewrite further out a few
+ * instructions later, once set_next_event reads the counter back and sees
+ * -ETIME. The rewrite must re-aim the deadline the behind write left
+ * parked at the wrap.
  */
-static void test_a_behind_comparator_matches_at_once(const void *data)
+static void test_a_guarded_rewrite_rearms_the_deadline(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
 
-    /* One millisecond in, name a deadline the counter passed long ago. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 1);
+    /* The guard's retry, a millisecond out from the counter. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 2 * PI_RT_MS);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
 
     qtest_quit(qts);
 }
 
 /*
- * The match is applied inside the write, not queued: Linux's guard rewrites
- * the comparator within a few instructions, which cancels a queued match.
+ * Linux advertises the whole 52-bit space as its maximum tick interval,
+ * which only works if a deadline behind by one -- ahead by the space -- arms
+ * for the revolution instead of matching at once.
  */
-static void test_a_behind_match_survives_an_immediate_rewrite(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
-    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
-
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 1);
-    /* The guard's retry, arriving before any queued callback could run. */
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_HZ);
-
-    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
-
-    qtest_quit(qts);
-}
-
-/* A maximum-interval arm is a tick behind in 52 bits, so it matches at once. */
-static void test_a_maximum_interval_arm_matches_at_once(const void *data)
+static void test_a_maximum_interval_arm_waits(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t count;
@@ -402,6 +391,29 @@ static void test_a_maximum_interval_arm_matches_at_once(const void *data)
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A,
                  (count + PI_RT_MASK) & PI_RT_MASK);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A parked comparator holds a deadline at the wrap, not no deadline: a
+ * counter close to the top reaches zero shortly, and the match fires
+ * there. This is what separates the modular arm from a deleted timer.
+ */
+static void test_the_wrap_reaches_a_zeroed_comparator(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* A millisecond short of the counter's wrap to zero. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_MASK + 1 - PI_RT_MS);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0);
+
+    qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
 
     qtest_quit(qts);
@@ -417,6 +429,84 @@ static void test_moving_the_counter_past_a_comparator_pends_nothing(
     /* Comparators still at their reset value; step the origin past them. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
 
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * IRIX quiesces a processor's tick by writing zero to its comparator with
+ * the counter high and no guard after: silence until the wrap is the
+ * contract. A model that matches a behind comparator at once turns that
+ * write into a permanent interrupt storm.
+ */
+static void test_a_zeroed_comparator_stays_silent(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* A second up the counter, as any running guest is. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_HZ);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0);
+
+    /* A few milliseconds is a few hundred of the measured storm's periods. */
+    qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The tick a guest actually programs: a deadline ahead fires at its match,
+ * once, and the write-zero acknowledgement clears it for good.
+ */
+static void test_an_ahead_deadline_fires_once_and_the_ack_clears(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t count;
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A,
+                 (count + PI_RT_MS) & PI_RT_MASK);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    /* Once: nothing pends again after the acknowledgement. */
+    qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Zero is not the special case, behind is the general one: a comparator a
+ * little behind the counter waits for the counter to come around to it,
+ * and does not match on being merely past.
+ */
+static void test_a_behind_comparator_does_not_match(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t count;
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A,
+                 (count - PI_RT_MS) & PI_RT_MASK);
+
+    qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
 
     qtest_quit(qts);
@@ -533,30 +623,6 @@ static void test_the_comparator_pends_with_its_interrupt_off(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
     g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
-
-    qtest_quit(qts);
-}
-
-/*
- * A behind comparator matches once: nothing re-arms, so a model firing
- * immediately and repeatedly passes the matches-at-once test and fails this.
- */
-static void test_a_behind_comparator_matches_once_not_repeatedly(
-    const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_MS);
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_ENABLE_A, 1);
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, PI_RT_MS / 2);
-
-    /* The match is immediate. */
-    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
-
-    /* Acknowledge, then let a full second of counter run past it. */
-    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
-    qtest_clock_step(qts, PI_RT_NS_PER_SEC);
-    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
 
     qtest_quit(qts);
 }
@@ -3705,12 +3771,18 @@ int main(int argc, char **argv)
                         test_the_real_time_counter_is_writable_and_keeps_running);
     qtest_add_data_func("sn0/hub/rt-counter-width", NULL,
                         test_the_real_time_counter_is_fifty_two_bits);
-    qtest_add_data_func("sn0/hub/behind-comparator-matches-at-once", NULL,
-                        test_a_behind_comparator_matches_at_once);
-    qtest_add_data_func("sn0/hub/behind-match-survives-rewrite", NULL,
-                        test_a_behind_match_survives_an_immediate_rewrite);
-    qtest_add_data_func("sn0/hub/maximum-interval-arm-matches", NULL,
-                        test_a_maximum_interval_arm_matches_at_once);
+    qtest_add_data_func("sn0/hub/rt-guarded-rewrite-rearms", NULL,
+                        test_a_guarded_rewrite_rearms_the_deadline);
+    qtest_add_data_func("sn0/hub/rt-maximum-interval-arm-waits", NULL,
+                        test_a_maximum_interval_arm_waits);
+    qtest_add_data_func("sn0/hub/rt-wrap-reaches-zeroed-comparator", NULL,
+                        test_the_wrap_reaches_a_zeroed_comparator);
+    qtest_add_data_func("sn0/hub/rt-zeroed-comparator-stays-silent", NULL,
+                        test_a_zeroed_comparator_stays_silent);
+    qtest_add_data_func("sn0/hub/rt-ahead-deadline-fires-once", NULL,
+                        test_an_ahead_deadline_fires_once_and_the_ack_clears);
+    qtest_add_data_func("sn0/hub/rt-behind-comparator-does-not-match", NULL,
+                        test_a_behind_comparator_does_not_match);
     qtest_add_data_func("sn0/hub/counter-move-pends-nothing", NULL,
                         test_moving_the_counter_past_a_comparator_pends_nothing);
     qtest_add_data_func("sn0/hub/rt-comparator-raises-line", NULL,
@@ -3719,8 +3791,6 @@ int main(int argc, char **argv)
                         test_the_second_processors_comparator_raises_its_own_line);
     qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
                         test_the_comparator_pends_with_its_interrupt_off);
-    qtest_add_data_func("sn0/hub/behind-comparator-matches-once", NULL,
-                        test_a_behind_comparator_matches_once_not_repeatedly);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
                         test_interrupt_modify_sets_and_clears);
     qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,

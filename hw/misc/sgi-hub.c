@@ -1190,10 +1190,6 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
                          muldiv64(val, NANOSECONDS_PER_SECOND, PI_RT_HZ);
 }
 
-/*
- * A comparator the counter has already passed matches at once. Whether
- * silicon does or waits a revolution is unobserved; this failure is visible.
- */
 static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
 {
     s->pi_rt_pending[index] = 1;
@@ -1209,11 +1205,13 @@ static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
 }
 
 /*
- * Only a guest-programmed deadline counts as already passed: moving the
- * counter under a reset-zero comparator is a change of origin, not a
- * deadline. The split at half a revolution is the modular space's limit.
+ * The comparator fires when the counter reaches the compare value, never
+ * on being merely past it: IRIX parks a processor's tick by writing a
+ * value behind the counter and depends on the silence. The next match is
+ * the modular distance forward -- a whole revolution when the write lands
+ * on equality -- and is the same arithmetic as an ordinary short deadline.
  */
-static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index, bool programmed)
+static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 {
     uint64_t ticks = ((s->pi_rt_compare[index] -
                        sgi_hub_rt_count(s) - 1) &
@@ -1221,13 +1219,6 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index, bool programmed)
 
     /* An unpopulated slice has no line wired. */
     if (index >= s->cpus) {
-        return;
-    }
-
-    if (programmed && ticks > (PI_RT_MASK >> 1)) {
-        /* Delete, or the wrap deadline pends a second time. */
-        timer_del(s->rt_timer[index]);
-        sgi_hub_rt_match(s, index);
         return;
     }
 
@@ -1644,8 +1635,8 @@ static void sgi_hub_write_rt_count(SGIHubState *s, hwaddr addr,
 {
     sgi_hub_rt_set(s, val);
     /* Moving the counter moves every deadline standing against it. */
-    sgi_hub_rt_arm(s, 0, false);
-    sgi_hub_rt_arm(s, 1, false);
+    sgi_hub_rt_arm(s, 0);
+    sgi_hub_rt_arm(s, 1);
 }
 
 static uint64_t sgi_hub_peek_rt_count(SGIHubState *s, unsigned arg)
@@ -1677,7 +1668,7 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
     CPUState *peer;
 
     s->pi_rt_compare[arg] = val & PI_RT_MASK;
-    sgi_hub_rt_arm(s, arg, true);
+    sgi_hub_rt_arm(s, arg);
 
     /*
      * A progress mailbox only while the slice's interrupt is disabled: the
