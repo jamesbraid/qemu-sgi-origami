@@ -262,6 +262,7 @@
 
 /* I/O interface: the crossbar link. */
 #define HUB_IO_LINK_STATUS      0x400128
+#define HUB_IO_LLP_LOG          0x400130
 #define HUB_IO_ERROR_CLEAR      0x4001f8
 
 /*
@@ -1847,6 +1848,31 @@ static void sgi_hub_write_ioq(SGIHubState *s, hwaddr addr,
                   val, addr);
 }
 
+/*
+ * The link log accretes crosstalk LLP errors -- check-bit counts in bits
+ * 31:16, sequence-number counts in 15:0 -- and the emulated link commits
+ * none, so the counts hold their reset zero. The 6.5.30 kernel's periodic
+ * hub-statistics capture reads the log about once a second and feeds the
+ * counts to a rate evaluation, so the value is an input to a decision:
+ * never serve an error the link did not commit.
+ */
+static uint64_t sgi_hub_read_llp_log(SGIHubState *s, hwaddr addr,
+                                     unsigned arg)
+{
+    return 0;
+}
+
+static void sgi_hub_write_llp_log(SGIHubState *s, hwaddr addr,
+                                  unsigned arg, uint64_t val, unsigned size)
+{
+    /*
+     * The documented idiom is read-then-write-zero to close a sampling
+     * interval; clearing zero counts is complete at once. What a nonzero
+     * write does to the real counters is unverified, so it is discarded
+     * rather than invented.
+     */
+}
+
 static uint64_t sgi_hub_read_slot_id(SGIHubState *s, hwaddr addr,
                                      unsigned arg)
 {
@@ -2170,6 +2196,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_IO_SCRATCH_1, .arg = 1,
       .field = offsetof(SGIHubState, io_scratch[1]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
+    { .offset = HUB_IO_LLP_LOG,
+      .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
     { .offset = HUB_IO_ERROR_CLEAR, .write = sgi_hub_write_error_clear },
     { .offset = HUB_IO_PIO_DEALLOC,
       .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
