@@ -47,6 +47,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
+#include "net/checksum.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
@@ -251,6 +252,14 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 /* len_flags word at 0x08: length in the high 16 bits (0x0a), flags low (0x08). */
 #define BCM570X_TXBD_FLAGS          0x08
 #define BCM570X_TXBD_LEN            0x0a
+/*
+ * The offload the driver asks for in a transmit descriptor. It hands the frame
+ * over with the checksum fields still placeholders when it sets these, so a
+ * model that ignores them puts frames on the wire that every receiver discards
+ * without a word. ICMP and ARP hide it: the guest computes those itself.
+ */
+#define BCM570X_TXBDFLAG_TCP_UDP_CKSUM 0x0001
+#define BCM570X_TXBDFLAG_IP_CKSUM   0x0002
 #define BCM570X_TXBDFLAG_END        0x0004
 
 /*
@@ -784,6 +793,39 @@ static void bcm570x_rx_flush(void *opaque)
  * ring length regardless. A re-entrancy flag holds across the send so a peer
  * that calls synchronously back into the ring cannot corrupt its state.
  */
+/*
+ * Finish the checksums the driver left to the card. The lengths in the frame
+ * were composed by the guest, so an IPv4 header shorter than its own minimum,
+ * or lengths reaching past what arrived, would walk the helper off the end of
+ * the buffer: decline the offload rather than trust them.
+ */
+static void bcm570x_tx_offload_checksum(uint8_t *frame, unsigned int len,
+                                        uint16_t flags)
+{
+    unsigned int ihl, total;
+    int csum = 0;
+
+    if (len < 14 + 20 || lduw_be_p(frame + 12) != 0x0800) {
+        return;
+    }
+    if ((frame[14] >> 4) != 4) {
+        return;
+    }
+    ihl = (frame[14] & 0x0f) * 4;
+    total = lduw_be_p(frame + 16);
+    if (ihl < 20 || total < ihl || 14 + total > len) {
+        return;
+    }
+
+    if (flags & BCM570X_TXBDFLAG_IP_CKSUM) {
+        csum |= CSUM_IP;
+    }
+    if (flags & BCM570X_TXBDFLAG_TCP_UDP_CKSUM) {
+        csum |= CSUM_TCP | CSUM_UDP;
+    }
+    net_checksum_calculate(frame, len, csum);
+}
+
 static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -796,6 +838,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     uint8_t frame[BCM570X_MAX_FRAME];
     unsigned int frame_len = 0;
     unsigned int walked = 0;
+    uint16_t frame_flags = 0;
     bool frame_dropped = false;
 
     if (ring_len == 0 || prod >= ring_len) {
@@ -843,11 +886,17 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
             frame_dropped = true;
         }
 
+        frame_flags |= flags;
         if (flags & BCM570X_TXBDFLAG_END) {
             if (!frame_dropped && frame_len) {
+                if (frame_flags & (BCM570X_TXBDFLAG_IP_CKSUM |
+                                   BCM570X_TXBDFLAG_TCP_UDP_CKSUM)) {
+                    bcm570x_tx_offload_checksum(frame, frame_len, frame_flags);
+                }
                 qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
             }
             frame_len = 0;
+            frame_flags = 0;
             frame_dropped = false;
         }
 
