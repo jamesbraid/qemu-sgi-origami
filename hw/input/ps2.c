@@ -49,6 +49,11 @@
 #define KBD_CMD_RESET           0xFF    /* Reset */
 #define KBD_CMD_SET_MAKE_BREAK  0xFC    /* Set Make and Break mode */
 #define KBD_CMD_SET_TYPEMATIC   0xFA    /* Set Typematic Make and Break mode */
+#define KBD_CMD_ALL_TYPEMATIC   0xF7    /* Set all keys Typematic mode */
+#define KBD_CMD_ALL_MAKE_BREAK  0xF8    /* Set all keys Make and Break mode */
+#define KBD_CMD_ALL_MAKE        0xF9    /* Set all keys Make mode */
+#define KBD_CMD_KEY_TYPEMATIC   0xFB    /* Set one key to Typematic mode */
+#define KBD_CMD_KEY_MAKE        0xFD    /* Set one key to Make mode */
 
 /* Keyboard Replies */
 #define KBD_REPLY_POR       0xAA    /* Power on reset */
@@ -624,6 +629,8 @@ void ps2_write_keyboard(PS2KbdState *s, int val)
         case KBD_CMD_SET_LEDS:
         case KBD_CMD_SET_RATE:
         case KBD_CMD_SET_MAKE_BREAK:
+        case KBD_CMD_KEY_TYPEMATIC:
+        case KBD_CMD_KEY_MAKE:
             ps2->write_cmd = val;
             ps2_cqueue_1(ps2, KBD_REPLY_ACK);
             break;
@@ -644,6 +651,9 @@ void ps2_write_keyboard(PS2KbdState *s, int val)
                          KBD_REPLY_POR);
             break;
         case KBD_CMD_SET_TYPEMATIC:
+        case KBD_CMD_ALL_TYPEMATIC:
+        case KBD_CMD_ALL_MAKE_BREAK:
+        case KBD_CMD_ALL_MAKE:
             ps2_cqueue_1(ps2, KBD_REPLY_ACK);
             break;
         default:
@@ -656,6 +666,8 @@ void ps2_write_keyboard(PS2KbdState *s, int val)
         }
         break;
     case KBD_CMD_SET_MAKE_BREAK:
+    case KBD_CMD_KEY_TYPEMATIC:
+    case KBD_CMD_KEY_MAKE:
         ps2_cqueue_1(ps2, KBD_REPLY_ACK);
         ps2->write_cmd = -1;
         break;
