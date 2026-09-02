@@ -104,6 +104,15 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  * ASIC revision = chipid >> 12), so it must decode to the presented part. The
  * low 16 control bits are writable and behaviourless for now.
  */
+/*
+ * The low 256 bytes of BAR0 are the PCI configuration registers again: the part
+ * presents them in both spaces, and a driver reaches MISC_CTL and PCISTATE
+ * through whichever is convenient. Reaching them through the BAR has to land on
+ * the same state, or a driver that acknowledges its interrupt there is writing
+ * into a register file nothing reads.
+ */
+#define BCM570X_PCI_CFG_ALIAS       0x100
+
 #define BCM570X_PCI_MISC_CTL        0x68
 #define BCM570X_CHIPID_BCM5701      0x0105  /* B5 stepping; ASIC revision 0x0 */
 #define BCM570X_CHIPID_BCM5704      0x2003  /* A3 stepping; ASIC revision 0x2 */
@@ -142,6 +151,16 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MAC_ADDR_0_HIGH     0x0410
 #define BCM570X_MAC_ADDR_0_LOW      0x0414
 #define BCM570X_HCC_MODE            0x3c00
+/*
+ * How often the host-coalescing block DMAs the status block on its own, in
+ * microseconds. The part posts one whether or not traffic moved, and the IRIX
+ * driver leans on that: its watchdog tears the interface down and re-runs
+ * bring-up whenever a whole second passes with no interrupt, so a model that
+ * only posts on traffic is torn down once a second forever. Capped below the
+ * driver's one-second patience rather than trusted to the programmed value.
+ */
+#define BCM570X_HCC_STATS_TICKS     0x3c28
+#define BCM570X_STATUS_TICK_MAX_NS  (250 * SCALE_MS)
 #define BCM570X_BUFMGR_MODE         0x4400
 #define BCM570X_MISC_CFG            0x6804
 
@@ -342,6 +361,7 @@ struct Bcm570xState {
      * DMA, and the timer that flushes a partial group so the tail of a burst is
      * never stranded past the driver's programmed tick budget. */
     uint16_t rx_coal_pending;
+    QEMUTimer status_tick_timer;
     QEMUTimer coal_timer;
 
     /* The integrated copper PHY, reached through the MI registers. */
@@ -469,6 +489,7 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->irq_pending = false;
     s->status_kick_done = false;
     s->status_tag = 0;
+    timer_del(&s->status_tick_timer);
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_MAGIC);
     bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
@@ -614,14 +635,14 @@ static void bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
  * The model's DMA is byte-addressed, so each swap layer is modelled once and
  * never doubled.
  */
-static void bcm570x_dma_status_block(Bcm570xState *s)
+static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint8_t blk[BCM570X_STATUS_BLK_SIZE];
     uint64_t base;
 
     if (!(bcm570x_regfile_read(s, BCM570X_HCC_MODE) & BCM570X_HCC_MODE_ENABLE)) {
-        return;
+        return false;
     }
 
     base = bcm570x_compose_hostaddr(s,
@@ -642,10 +663,50 @@ static void bcm570x_dma_status_block(Bcm570xState *s)
      * the driver acknowledges by writing the interrupt mailbox. The monotonic tag
      * is delivered in the block for the driver's own use, not to gate the line.
      * Reached only past the enable gate above, so a disabled host-coalescing
-     * block raises no interrupt either.
+     * block raises no interrupt either. Returns whether the update reached the
+     * host, which the bring-up shot needs to know not to spend itself on a
+     * dropped update.
      */
-    s->irq_pending = true;
-    bcm570x_update_irq(s);
+    if (raise) {
+        s->irq_pending = true;
+        bcm570x_update_irq(s);
+    }
+    return true;
+}
+
+/* An update the driver is meant to be interrupted for. */
+static bool bcm570x_dma_status_block(Bcm570xState *s)
+{
+    return bcm570x_post_status_block(s, true);
+}
+
+
+static void bcm570x_arm_status_tick(Bcm570xState *s);
+
+/*
+ * The coalescing block's own periodic status update. It carries whatever the
+ * rings have and raises the line, which is what keeps the driver's watchdog
+ * satisfied between bursts of traffic.
+ */
+static void bcm570x_status_tick(void *opaque)
+{
+    Bcm570xState *s = opaque;
+
+    if (!(bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
+          BCM570X_HCC_MODE_ENABLE)) {
+        return;
+    }
+    bcm570x_dma_status_block(s);
+    bcm570x_arm_status_tick(s);
+}
+
+static void bcm570x_arm_status_tick(Bcm570xState *s)
+{
+    uint32_t us = bcm570x_regfile_read(s, BCM570X_HCC_STATS_TICKS);
+    uint64_t ns = us ? (uint64_t)us * 1000 : BCM570X_STATUS_TICK_MAX_NS;
+
+    timer_mod(&s->status_tick_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              MIN(ns, BCM570X_STATUS_TICK_MAX_NS));
 }
 
 /* The driver programs the receive coalescing tick budget in microseconds. */
@@ -707,6 +768,7 @@ static void bcm570x_rx_flush(void *opaque)
 
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
+
 
 /*
  * Ring the transmit doorbell: send every descriptor from the chip's consumer up
@@ -815,10 +877,18 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         }
         break;
     case BCM570X_MAC_MODE:
-    case BCM570X_HCC_MODE:
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
         break;
+    case BCM570X_HCC_MODE:
+        val &= ~BCM570X_MODE_RESET;
+        bcm570x_regfile_write(s, off, val);
+        if (val & BCM570X_HCC_MODE_ENABLE) {
+            bcm570x_arm_status_tick(s);
+        } else {
+            timer_del(&s->status_tick_timer);
+        }
+        return;
     case BCM570X_BUFMGR_MODE:
         /*
          * The reset bit self-clears like any *_MODE register, and so does the
@@ -871,14 +941,16 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
          * status paths (transmit doorbell, received frame) never fire, so post
          * one status update here, on the first standard-ring doorbell past the
          * enable. One shot suffices; the runtime paths carry it afterwards.
-         * (Gating this on the host-coalescing enable was tried and hung bring-up:
-         * the driver's enable and first doorbell do not straddle it the way that
-         * guard assumed.)
+         *
+         * The shot is spent only when the update actually reaches the host. The
+         * driver posts its first buffers before it enables the host-coalescing
+         * block, so an unconditional shot lands while that block is still off,
+         * is dropped, and leaves nothing to retry: the driver waits for an
+         * update that never comes and re-runs bring-up about once a second.
+         * Keeping the flag clear until a real update lands retries on the next
+         * doorbell, which is past the enable.
          */
-        if (!s->status_kick_done) {
-            bcm570x_dma_status_block(s);
-            s->status_kick_done = true;
-        }
+
         /*
          * A newly posted buffer may release a frame the peer had queued, but
          * deliver it from a bottom half rather than synchronously here. A
@@ -962,6 +1034,10 @@ static uint32_t bcm570x_reg_read(Bcm570xState *s, uint32_t off)
     return val;
 }
 
+static uint32_t bcm570x_config_read(PCIDevice *dev, uint32_t addr, int len);
+static void bcm570x_config_write(PCIDevice *dev, uint32_t addr, uint32_t val,
+                                 int len);
+
 /* SRAM offset the BAR0 window at 0x8000 exposes for a given BAR address. */
 static uint32_t bcm570x_window_sram_off(Bcm570xState *s, hwaddr addr)
 {
@@ -974,6 +1050,9 @@ static uint64_t bcm570x_bar0_read(void *opaque, hwaddr addr, unsigned size)
 {
     Bcm570xState *s = opaque;
 
+    if (addr < BCM570X_PCI_CFG_ALIAS) {
+        return bcm570x_config_read(PCI_DEVICE(s), addr, size);
+    }
     if (addr < BCM570X_REG_FILE_SIZE) {
         return bcm570x_reg_read(s, addr);
     }
@@ -985,6 +1064,10 @@ static void bcm570x_bar0_write(void *opaque, hwaddr addr, uint64_t val,
 {
     Bcm570xState *s = opaque;
 
+    if (addr < BCM570X_PCI_CFG_ALIAS) {
+        bcm570x_config_write(PCI_DEVICE(s), addr, val, size);
+        return;
+    }
     if (addr < BCM570X_REG_FILE_SIZE) {
         bcm570x_reg_write(s, addr, val);
         return;
@@ -1455,6 +1538,8 @@ static void bcm570x_init(Object *obj)
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
     timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_coal_timer, s);
+    timer_init_ns(&s->status_tick_timer, QEMU_CLOCK_VIRTUAL,
+                  bcm570x_status_tick, s);
 }
 
 static void bcm570x_class_init(ObjectClass *oc, const void *data)

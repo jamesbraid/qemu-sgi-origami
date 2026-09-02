@@ -94,12 +94,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_GTCR_RESET_VALUE BCM570X_PHY_GTCR_ADV_1000TFDX
 
 /*
- * How long autonegotiation takes to settle once the interface first reads
- * link status, for a driver that only polls. QEMU's e1000 and the in-tree
- * DP83840 model time it the same way; two seconds clears any polling driver's
- * timeout with room to spare.
+ * How long autonegotiation takes to settle once the interface first reads link
+ * status, for a driver that only polls. The settle has to finish inside the
+ * driver's own patience, not outside it: IRIX's tg gives up its link wait well
+ * before a second, so a two-second settle -- which the DP83840 model can afford
+ * because ef0's driver waits longer -- left this one polling a link that
+ * completed after it had stopped looking, and the interface never came up.
  */
-#define BCM570X_PHY_AUTONEG_SETTLE_NS (2 * NANOSECONDS_PER_SECOND)
+#define BCM570X_PHY_AUTONEG_SETTLE_NS (100 * SCALE_MS)
 
 struct Bcm570xPhyState {
     SysBusDevice parent_obj;

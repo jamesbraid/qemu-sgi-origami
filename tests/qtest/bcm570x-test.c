@@ -129,6 +129,12 @@
 /* Any PHY address answers: the integrated PHY is the only one on the bus. */
 #define BCM_PHY_ADDR            1u
 
+/*
+ * How long the modelled part negotiates for, from bcm570x_phy.h. A test that
+ * wants the settled link steps the clock past it.
+ */
+#define BCM_PHY_SETTLE_NS       (100 * 1000 * 1000)
+
 /* Transmit ring, status block, and DMA plumbing. */
 #define BCM_MBX_TX_PROD_LO      0x0304u
 #define BCM_HCC_STATUSBLK_HI    0x3c38u
@@ -817,8 +823,13 @@ static void test_mac_address_registers(const void *data)
 
 /*
  * The PHY answers through MI_COMM with the identity brgphy binds on, and its
- * link comes up when the guest configures the interface -- the load-bearing
+ * link comes up a settle after the part starts negotiating -- the load-bearing
  * link/autoneg result. MI_STS, the auto-poll link latch, follows the carrier.
+ *
+ * The settle is the contract, not a detail to assert away: a restart negotiates
+ * for a while and completes afterwards, so a driver watching for the completion
+ * it asked for sees the transition. Completing the moment the guest writes the
+ * control register hides that transition and hangs IRIX tg's bring-up.
  */
 static void test_phy_readback(const void *data)
 {
@@ -837,9 +848,15 @@ static void test_phy_readback(const void *data)
                     ==, 0);
     g_assert_cmphex(bar_readl(&b, BCM_MI_STS) & BCM_MISTS_LINK, ==, 0);
 
-    /* Configure the interface (restart autonegotiation): link comes up. */
+    /* Configure the interface (restart autonegotiation): still negotiating. */
     mii_write(&b, BCM_PHY_ADDR, MII_BMCR,
               MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
+
+    g_assert_cmphex(mii_read(&b, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
+                    ==, 0);
+
+    /* The settle elapses and the link comes up. */
+    qtest_clock_step(b.qts, BCM_PHY_SETTLE_NS + 1000);
 
     g_assert_cmphex(mii_read(&b, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
                     ==, MII_BMSR_LINK);
@@ -875,9 +892,10 @@ static void test_phy_aux_status_link_up(const void *data)
     g_assert_cmphex(aux & BRGPHY_AUXSTS_ACOMP, ==, 0);
     g_assert_cmphex(aux, !=, 0xffff);
 
-    /* Configure the interface (restart autonegotiation): link comes up. */
+    /* Configure the interface, then let the negotiation settle. */
     mii_write(&b, BCM_PHY_ADDR, MII_BMCR,
               MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
+    qtest_clock_step(b.qts, BCM_PHY_SETTLE_NS + 1000);
 
     /* The gate the up-path waits on: ACOMP set, a valid HCD, not all-ones. */
     aux = mii_read(&b, BCM_PHY_ADDR, BRGPHY_AUXSTS);

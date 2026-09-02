@@ -67,12 +67,16 @@ static void bcm570x_phy_settle_done(void *opaque)
 }
 
 /*
- * Arm the autonegotiation settle the first time the interface looks at link. A
- * real PHY negotiates on its own once autonegotiation is enabled, which it is
- * at reset; this models that as a delay started on the first link-status read,
- * so a driver that only polls gets its carrier without writing anything. Shared
- * by the basic status register and the auxiliary status summary, since a copper
- * link-up may poll either for completion.
+ * Start the autonegotiation settle. A real PHY negotiates on its own as soon as
+ * autonegotiation is enabled -- which it is out of reset -- so the settle runs
+ * from reset and from the control-register write that restarts it, not from the
+ * driver's first look at link.
+ *
+ * Waiting for that first look is what broke bring-up: the IRIX tg driver reads
+ * link status only a handful of times while configuring the interface and then
+ * stops for good, so arming on its first read guaranteed every one of those
+ * reads saw a link that had not begun negotiating, and the carrier arrived after
+ * the driver had given up watching for it.
  */
 static void bcm570x_phy_arm_settle(Bcm570xPhyState *s)
 {
@@ -177,23 +181,22 @@ void bcm570x_phy_write(Bcm570xPhyState *s, int reg, uint16_t val)
 
         /*
          * Any other write configures the interface to carry traffic --
-         * restarting autonegotiation, or forcing a speed and duplex. There is
-         * no cable to negotiate against, so we stand in as a cooperative far
-         * end and the negotiation succeeds at once. Isolating the part takes it
-         * off the link and leaves the settle free to re-arm on the next status
-         * read.
+         * restarting autonegotiation, or forcing a speed and duplex. Isolating
+         * the part takes it off the link; either way the settle is free to
+         * re-arm on the next status read.
+         *
+         * A restart negotiates, it does not arrive: the driver waits to observe
+         * the completion it asked for, so completing synchronously here leaves
+         * a driver that polls for the transition waiting on one that already
+         * happened, and bring-up hangs with the link never announced. Clearing
+         * completion and re-arming the settle gives it the transition to see.
          */
-        if (val & BCM570X_PHY_BMCR_ISOLATE) {
-            s->autoneg_done = false;
-            s->settle_armed = false;
-            timer_del(s->settle_timer);
-        } else {
-            s->autoneg_done = true;
-            s->settle_armed = true;
-            timer_del(s->settle_timer);
-        }
+        s->autoneg_done = false;
+        s->settle_armed = false;
+        timer_del(s->settle_timer);
 
         s->bmcr = val & ~(BCM570X_PHY_BMCR_RESET | BCM570X_PHY_BMCR_STARTNEG);
+        bcm570x_phy_arm_settle(s);
         return;
 
     case BCM570X_PHY_ANAR:
@@ -232,6 +235,8 @@ void bcm570x_phy_reset(Bcm570xPhyState *s)
     s->settle_armed = false;
     if (s->settle_timer) {
         timer_del(s->settle_timer);
+        /* Out of reset autonegotiation is enabled, so the part starts it. */
+        bcm570x_phy_arm_settle(s);
     }
     /*
      * link_down is the state of the far end, not a register, so a PHY reset
