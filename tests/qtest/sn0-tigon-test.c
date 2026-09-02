@@ -819,6 +819,50 @@ static void test_receive(const void *data)
 }
 
 /*
+ * A full-size frame, transmitted and compared byte for byte. The payload copy
+ * runs over 1500 bytes rather than the 60 the other transmit tests use, so a
+ * copy that is correct only for short frames, or only at the start of one,
+ * fails here.
+ */
+static void test_transmit_full_size_frame(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[1500];
+    uint8_t got[2048];
+    size_t len;
+    unsigned i;
+
+    /* dst/src/ethertype, then a pattern no repeating word can match. */
+    memcpy(frame, test_frame_direct, 14);
+    for (i = 14; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + (i >> 5));
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, frame, sizeof(frame));
+    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * A frame flagged for checksum offload need not be the IPv4 packet the flag
  * claims: the guest composes the bytes. A header length below the 20-byte
  * minimum underflows the checksum helper's remaining-length arithmetic and
@@ -1564,6 +1608,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/transmit-full-size-frame", NULL,
+                        test_transmit_full_size_frame);
     qtest_add_data_func("/sn0/tigon/transmit-checksum-offload", NULL,
                         test_transmit_checksum_offload);
     qtest_add_data_func("/sn0/tigon/transmit-checksum-rejects-malformed", NULL,

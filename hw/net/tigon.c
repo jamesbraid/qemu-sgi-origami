@@ -329,6 +329,17 @@ static void tigon_dma_st_addr(TigonState *s, uint64_t addr, uint64_t v)
 static void tigon_dma_read_frame(TigonState *s, uint64_t addr, uint8_t *dst,
                                  uint32_t len)
 {
+    /*
+     * Big-endian is the identity here: the word load assembles the bytes in
+     * memory order and the loop below writes them back out in that same
+     * order. Copy the payload in one transfer rather than one per word --
+     * a full-size frame costs 375 of them otherwise.
+     */
+    if (tigon_bd_bigendian(s)) {
+        pci_dma_read(PCI_DEVICE(s), addr, dst, len);
+        return;
+    }
+
     while (len) {
         uint64_t word_addr = addr & ~3ULL;
         uint32_t off = addr & 3;
@@ -345,10 +356,15 @@ static void tigon_dma_read_frame(TigonState *s, uint64_t addr, uint8_t *dst,
     }
 }
 
-/* Mirror of tigon_dma_read_frame() for the receive payload write. */
 static void tigon_dma_write_frame(TigonState *s, uint64_t addr,
                                   const uint8_t *src, uint32_t len)
 {
+    /* The same identity as the read side: one transfer, not one per word. */
+    if (tigon_bd_bigendian(s)) {
+        pci_dma_write(PCI_DEVICE(s), addr, src, len);
+        return;
+    }
+
     while (len) {
         uint64_t word_addr = addr & ~3ULL;
         uint32_t off = addr & 3;
