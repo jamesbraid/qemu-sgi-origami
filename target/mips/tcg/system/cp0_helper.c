@@ -223,23 +223,46 @@ static void sync_c0_entryhi(CPUMIPSState *cpu, int tc)
  * instruction graduates, wrapping from the Wired floor back to the upper
  * bound, and readable "to verify proper operation of the processor".
  *
- * The decrement basis is approximated: this model counts no graduation
- * cycles, so the register decrements once per consultation — a read or a
- * random TLB write — instead. The consulting instruction itself graduates,
- * so this is a lower bound on the hardware's decrement, and it keeps the
- * register deterministic for a diagnostic that reads it. Reset and the
- * Wired write helper reload the upper bound; the bounds themselves are the
- * manual's, and a TLB write random still lands within them.
+ * The decrement basis is approximated from the virtual clock: the manual
+ * decrements once per cycle in which an instruction graduates, and the
+ * model's clock advances with execution the way graduation cycles do, so
+ * each consultation — a read or a random TLB write — steps the register
+ * down by the nanoseconds elapsed since the previous consultation, at
+ * least one, wrapping at the Wired floor. The clock rather than the Count
+ * register, though Count is nearer the manual's units: Count is
+ * guest-writable, and a kernel that rewrites it (routine clock-code
+ * behaviour, observed live on this machine) would hand the decrement a
+ * backward basis. The earlier one-step-per-consultation approximation was strictly
+ * deterministic, and IRIX's periodic TLB maintenance sweep phase-locked
+ * with the resulting unit-decrement refill placement, eating a fixed page's
+ * refill several times in a row and killing init on a second-node processor
+ * about one boot in five — where real silicon's cycle-derived scatter makes
+ * the same coincidence vanishingly rare. Reset and the Wired write helper
+ * still reload the upper bound, the bounds themselves are the manual's, a
+ * consultation still returns the pre-step value (so the first read after a
+ * reload observes the bound), and a TLB write random still lands within the
+ * bounds.
  */
 uint32_t cpu_mips_get_random(CPUMIPSState *env)
 {
     uint32_t upper = env->tlb->nb_tlb - 1;
+    uint32_t range = upper - env->CP0_Wired + 1;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t elapsed = now - env->CP0_random_anchor;
     uint32_t val = env->CP0_Random;
+    uint32_t steps, pos;
 
+    env->CP0_random_anchor = now;
     if (val < env->CP0_Wired || val > upper) {
         val = upper;
     }
-    env->CP0_Random = (val == env->CP0_Wired) ? upper : val - 1;
+    steps = elapsed % range;
+    if (steps == 0) {
+        /* The consulting instruction itself graduates. */
+        steps = 1;
+    }
+    pos = ((uint32_t)(val - env->CP0_Wired) + range - steps) % range;
+    env->CP0_Random = env->CP0_Wired + pos;
     return val;
 }
 

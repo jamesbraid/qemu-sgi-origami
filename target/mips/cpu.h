@@ -740,6 +740,15 @@ typedef struct CPUArchState {
  * CP0 Register 1
  */
     int32_t CP0_Random;
+    /*
+     * The virtual-clock reading at the Random register's last consultation,
+     * anchoring the cycle-derived decrement. The clock, not Count: Count is
+     * guest-writable and a kernel that rewrites it hands the decrement a
+     * backward basis. Deliberately unmigrated: a stale anchor costs one
+     * arbitrarily-sized step of a register whose contract is to be
+     * unpredictable between consultations.
+     */
+    uint64_t CP0_random_anchor;
     int32_t CP0_VPEControl;
 #define CP0VPECo_YSI    21
 #define CP0VPECo_GSI    20
