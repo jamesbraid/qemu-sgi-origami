@@ -2670,6 +2670,44 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     qtest_quit(qts);
 }
 
+/* The board identity is supplied by the instance that fits the Bridge. */
+static void test_the_board_part_is_an_instance_property(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,io-bridge=on "
+        "-global sgi-bridge.board-part=123-4567-890");
+    uint8_t image[64];
+    char partnum[26];
+
+    nic_extended_page(qts, 0, &image[0]);
+    nic_extended_page(qts, 32, &image[32]);
+
+    g_assert_true(page_field(image, 30, "Part:", partnum));
+    g_assert_cmpstr(partnum, ==, "123-4567-890");
+    g_assert_cmpmem(&image[11], 12, "123-4567-890", 12);
+    g_assert_cmphex(nic_crc(0, &image[0], 32), ==, NIC_CRC_RESIDUE);
+    g_assert_cmphex(nic_crc(0, &image[32], 32), ==, NIC_CRC_RESIDUE);
+
+    qtest_quit(qts);
+}
+
+static void test_the_board_part_must_fit_the_wire_field(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-global", "sgi-bridge.board-part=123-4567-8900", "-kernel",
+        "/definitely/not/a/kernel", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output,
+                            "I/O bridge board part must be 12 characters"));
+}
+
 /*
  * Past the programmed pages the memory reads unprogrammed -- not wrapped,
  * which would hand a guest a spurious second part number.
@@ -3193,6 +3231,10 @@ int main(int argc, char **argv)
         test_status_past_the_programmed_regions);
     qtest_add_data_func("sn0/bridge/one-wire-unframed-matches-framed", NULL,
                         test_the_unframed_read_matches_the_framed_one);
+    qtest_add_data_func("sn0/bridge/one-wire-board-part-property", NULL,
+                        test_the_board_part_is_an_instance_property);
+    qtest_add_data_func("sn0/bridge/one-wire-board-part-must-fit", NULL,
+                        test_the_board_part_must_fit_the_wire_field);
     qtest_add_data_func("sn0/bridge/one-wire-unframed-read-ends-with-its-check",
                         NULL, test_the_unframed_read_ends_with_its_check);
     qtest_add_data_func("sn0/bridge/one-wire-data-past-the-image", NULL,

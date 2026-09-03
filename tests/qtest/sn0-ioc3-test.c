@@ -11,6 +11,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 
 /* Crosstalk space, and the chip's window inside the console widget. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -4358,6 +4359,17 @@ static void test_the_default_board_is_the_system_board(const void *data)
     qtest_quit(qts);
 }
 
+static void test_bare_device_keeps_system_board_default(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+                                 "-device sgi-ioc3,addr=3");
+
+    g_assert_cmphex(qtest_readl(qts, CFG0(3) + PCI_SUBSYSTEM), ==,
+                    SUBSYSTEM(0xc303));
+
+    qtest_quit(qts);
+}
+
 static void test_the_board_is_a_property(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,io-bridge=on "
@@ -4412,6 +4424,126 @@ static bool one_wire_part_is_fitted(QTestState *qts)
     qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
     qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     return (qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL) == 0;
+}
+
+static bool ioc3_has_child(QTestState *qts, const char *name)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     "/machine/node0/ioc3");
+    QList *children;
+    const QListEntry *entry;
+    bool found = false;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    children = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *type = qdict_get_try_str(child, "type");
+
+        if (type && g_str_has_prefix(type, "child<") &&
+            g_str_equal(qdict_get_str(child, "name"), name)) {
+            found = true;
+        }
+    }
+
+    qobject_unref(response);
+    return found;
+}
+
+static void assert_ioc3_population(QTestState *qts, bool eth, bool serial_a,
+                                   bool serial_b, bool kbc, bool parallel,
+                                   bool onewire, const char *timekeeper)
+{
+    g_assert_cmpint(ioc3_has_child(qts, "eth"), ==, eth);
+    g_assert_cmpint(ioc3_has_child(qts, "serial[0]"), ==, serial_a);
+    g_assert_cmpint(ioc3_has_child(qts, "serial[1]"), ==, serial_b);
+    g_assert_cmpint(ioc3_has_child(qts, "kbc"), ==, kbc);
+    g_assert_cmpint(ioc3_has_child(qts, "parallel"), ==, parallel);
+    g_assert_cmpint(ioc3_has_child(qts, "onewire-part"), ==, onewire);
+    g_assert_cmpint(ioc3_has_child(qts, "rtc"), ==,
+                    g_str_equal(timekeeper, "rtc"));
+    g_assert_cmpint(ioc3_has_child(qts, "ds1685"), ==,
+                    g_str_equal(timekeeper, "ds1685"));
+}
+
+/*
+ * The semantic population is instance data.  Keep the MENET4 identity while
+ * asking for a population that its subsystem lookup would never select.
+ */
+static void test_an_explicit_population_is_independent_of_identity(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,io-bridge=on "
+        "-global sgi-ioc3.subsystem-id=0xc306 "
+        "-global sgi-ioc3.population=0x23 "
+        "-global sgi-ioc3.timekeeper-kind=1");
+
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_SUBSYSTEM),
+                    ==, SUBSYSTEM(0xc306));
+    assert_ioc3_population(qts, true, true, false, false, false, true,
+                           "rtc");
+
+    qtest_quit(qts);
+}
+
+static void test_an_explicit_population_selects_the_other_children(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,io-bridge=on "
+        "-global sgi-ioc3.subsystem-id=0xc306 "
+        "-global sgi-ioc3.population=0x1c "
+        "-global sgi-ioc3.timekeeper-kind=2");
+
+    assert_ioc3_population(qts, false, false, true, true, true, false,
+                           "ds1685");
+    qtest_quit(qts);
+}
+
+static void assert_qemu_rejects(const char *const args[], const char *message)
+{
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+static void test_population_rejects_onewire_without_ethernet(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-global", "sgi-ioc3.population=0x20", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "IOC3 one-wire identity requires ethernet");
+}
+
+static void test_population_rejects_unknown_bits(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-global", "sgi-ioc3.population=0x40", NULL
+    };
+
+    assert_qemu_rejects(args, "IOC3 population has unknown bits 0x40");
+}
+
+static void test_population_rejects_an_unknown_timekeeper(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-global", "sgi-ioc3.population=0", "-global",
+        "sgi-ioc3.timekeeper-kind=3", NULL
+    };
+
+    assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
 }
 
 typedef struct BoardPopulation {
@@ -4491,8 +4623,21 @@ int main(int argc, char **argv)
                         test_pci_status_reset_value);
     qtest_add_data_func("sn0/ioc3/default-board-is-the-system-board", NULL,
                         test_the_default_board_is_the_system_board);
+    qtest_add_data_func("sn0/ioc3/bare-added-device-keeps-default", NULL,
+                        test_bare_device_keeps_system_board_default);
     qtest_add_data_func("sn0/ioc3/board-is-a-property", NULL,
                         test_the_board_is_a_property);
+    qtest_add_data_func("sn0/ioc3/population-is-instance-data", NULL,
+                        test_an_explicit_population_is_independent_of_identity);
+    qtest_add_data_func("sn0/ioc3/population-selects-other-children", NULL,
+                        test_an_explicit_population_selects_the_other_children);
+    qtest_add_data_func("sn0/ioc3/population-rejects-onewire-without-ethernet",
+                        NULL,
+                        test_population_rejects_onewire_without_ethernet);
+    qtest_add_data_func("sn0/ioc3/population-rejects-unknown-bits", NULL,
+                        test_population_rejects_unknown_bits);
+    qtest_add_data_func("sn0/ioc3/population-rejects-unknown-timekeeper", NULL,
+                        test_population_rejects_an_unknown_timekeeper);
     qtest_add_data_func("sn0/ioc3/phy-answers-at-one-address", NULL,
                         test_the_transceiver_answers_at_one_address);
     qtest_add_data_func("sn0/ioc3/phy-identity", NULL,

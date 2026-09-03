@@ -148,7 +148,8 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
                       SGI_IOC3_ONEWIRE_SAMPLE_MASK;
     bool level;
 
-    if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE) || !s->board->eth) {
+    if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE) ||
+        !s->board->onewire_identity) {
         /*
          * Two ways to an empty bus. Pin-control bit 21 routes the engine onto
          * its pin, and with the bit clear the bus is disconnected; and a
@@ -938,15 +939,18 @@ static const struct {
 } sgi_ioc3_boards[] = {
     { SGI_IOC3_SUBSYS_IP27_BASEIO6G,
       { .eth = true, .serial = { true, true }, .kbc = true,
-        .clock = SGI_IOC3_CLOCK_M48T35 } },
+        .onewire_identity = true,
+        .timekeeper = SGI_IOC3_TIMEKEEPER_M48T35 } },
     { SGI_IOC3_SUBSYS_IP27_MIO,
       { .serial = { true, true }, .kbc = true, .parallel = true } },
     { SGI_IOC3_SUBSYS_IP27_BASEIO,
       { .eth = true, .serial = { true, true },
-        .clock = SGI_IOC3_CLOCK_M48T35 } },
+        .onewire_identity = true,
+        .timekeeper = SGI_IOC3_TIMEKEEPER_M48T35 } },
     { SGI_IOC3_SUBSYS_IP29_SYSBOARD,
       { .eth = true, .serial = { true, true }, .kbc = true,
-        .clock = SGI_IOC3_CLOCK_M48T35, .parallel = true } },
+        .parallel = true, .onewire_identity = true,
+        .timekeeper = SGI_IOC3_TIMEKEEPER_M48T35 } },
     /*
      * The Octane's clock is a DS1685 at byte-bus devices 1 and 2, not the
      * M48T35 at device 0, and substituting the Timekeeper would hand a guest
@@ -959,11 +963,13 @@ static const struct {
      */
     { SGI_IOC3_SUBSYS_IP30_SYSBOARD,
       { .eth = true, .serial = { true, true }, .kbc = true,
-        .clock = SGI_IOC3_CLOCK_DS1685 } },
+        .onewire_identity = true,
+        .timekeeper = SGI_IOC3_TIMEKEEPER_DS1685 } },
     { SGI_IOC3_SUBSYS_MENET,
-      { .eth = true, .serial = { true, true } } },
+      { .eth = true, .serial = { true, true },
+        .onewire_identity = true } },
     { SGI_IOC3_SUBSYS_MENET4,
-      { .eth = true } },
+      { .eth = true, .onewire_identity = true } },
 };
 
 /*
@@ -972,7 +978,7 @@ static const struct {
  * boards it has no entry for included.
  */
 static const SGIIOC3Population sgi_ioc3_cad_duo = {
-    .eth = true, .kbc = true,
+    .eth = true, .kbc = true, .onewire_identity = true,
 };
 
 static const SGIIOC3Population *sgi_ioc3_board(uint16_t subsystem_id)
@@ -986,6 +992,49 @@ static const SGIIOC3Population *sgi_ioc3_board(uint16_t subsystem_id)
     }
 
     return &sgi_ioc3_cad_duo;
+}
+
+static bool sgi_ioc3_resolve_population(SGIIOC3State *s, Error **errp)
+{
+    SGIIOC3Population *population = &s->population;
+    uint32_t unknown;
+
+    if (s->population_mask == SGI_IOC3_POPULATION_AUTO) {
+        s->board = sgi_ioc3_board(s->subsystem_id);
+        return true;
+    }
+
+    memset(population, 0, sizeof(*population));
+    s->board = population;
+    unknown = s->population_mask & ~SGI_IOC3_POPULATION_ALL;
+    if (unknown) {
+        error_setg(errp, "IOC3 population has unknown bits 0x%x", unknown);
+        return false;
+    }
+    if (s->timekeeper_kind > SGI_IOC3_TIMEKEEPER_DS1685) {
+        error_setg(errp, "IOC3 timekeeper kind %u is unsupported",
+                   s->timekeeper_kind);
+        return false;
+    }
+    if ((s->population_mask & SGI_IOC3_POPULATION_ONEWIRE_IDENTITY) &&
+        !(s->population_mask & SGI_IOC3_POPULATION_ETHERNET)) {
+        error_setg(errp, "IOC3 one-wire identity requires ethernet");
+        return false;
+    }
+
+    population->eth = s->population_mask & SGI_IOC3_POPULATION_ETHERNET;
+    population->serial[0] =
+        s->population_mask & SGI_IOC3_POPULATION_SERIAL_A;
+    population->serial[1] =
+        s->population_mask & SGI_IOC3_POPULATION_SERIAL_B;
+    population->kbc =
+        s->population_mask & SGI_IOC3_POPULATION_KEYBOARD_MOUSE;
+    population->parallel =
+        s->population_mask & SGI_IOC3_POPULATION_PARALLEL;
+    population->onewire_identity =
+        s->population_mask & SGI_IOC3_POPULATION_ONEWIRE_IDENTITY;
+    population->timekeeper = s->timekeeper_kind;
+    return true;
 }
 
 static const hwaddr sgi_ioc3_serial_base[SGI_IOC3_SERIAL_PORTS] = {
@@ -1009,11 +1058,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
 
-    /*
-     * Before anything that can fail: the teardown path below reads it, and a
-     * board with no sub-devices at all is still a board.
-     */
-    s->board = sgi_ioc3_board(s->subsystem_id);
+    if (!sgi_ioc3_resolve_population(s, errp)) {
+        return;
+    }
 
     if (s->onewire_serial & ~SGI_IOC3_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "onewire-serial 0x%" PRIx64
@@ -1083,9 +1130,6 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     s->onewire_bus = onewire_create_bus(DEVICE(dev), "onewire");
 
     if (s->board->eth) {
-        uint8_t page[DS2502_PAGE_SIZE];
-        DeviceState *part;
-
         object_property_set_link(OBJECT(&s->eth), "dma-memory",
                                  OBJECT(&dev->bus_master_container_region),
                                  &error_abort);
@@ -1099,21 +1143,19 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
                            qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
 
+    } else {
+        object_unparent(OBJECT(&s->eth));
+    }
+
+    if (s->board->onewire_identity) {
+        uint8_t page[DS2502_PAGE_SIZE];
+        DeviceState *part;
+
         /*
          * The station-address part, a DS2501: the 512-bit sibling of the
          * DS2502, which is what the family byte 0x91 -- the custom bit over
-         * base type 0x11 -- identifies.
-         *
-         * The record is composed here and never again. It is fixed once the
-         * ethernet has realized and settled its address, and an EPROM keeps
-         * its contents across a reset -- that is what the technology is --
-         * so a chip that rebuilt the bytes on every reset would model
-         * something the hardware does not do. Those bytes are the part's own
-         * migrated state as well, and state with one owner wants one writer.
-         * Reaching into a child device's storage from a parent's reset is the
-         * wrong shape whichever order the phases run in, and they run in the
-         * safe one: hw/core/resettable.c holds children before the object
-         * itself, so the ordering was never the hazard.
+         * base type 0x11 -- identifies. Its bytes use the fitted ethernet
+         * address, so validation keeps that engine alongside the part.
          */
         sgi_ioc3_onewire_build_page(s, page);
         part = qdev_new(TYPE_ONEWIRE_DS2501);
@@ -1124,8 +1166,6 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
             return;
         }
-    } else {
-        object_unparent(OBJECT(&s->eth));
     }
 
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
@@ -1213,7 +1253,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * but unmapped, so it is absent from the object graph and from the
      * migration stream too.
      */
-    if (s->board->clock == SGI_IOC3_CLOCK_M48T35) {
+    if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_M48T35) {
         if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
             return;
         }
@@ -1224,7 +1264,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         object_unparent(OBJECT(&s->rtc));
     }
 
-    if (s->board->clock == SGI_IOC3_CLOCK_DS1685) {
+    if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1685) {
         if (!qdev_realize(DEVICE(&s->ds1685), BUS(&s->ioc3_bus), errp)) {
             return;
         }
@@ -1274,10 +1314,10 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     if (s->board->parallel) {
         qdev_unrealize(DEVICE(&s->parallel_dev));
     }
-    if (s->board->clock == SGI_IOC3_CLOCK_M48T35) {
+    if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_M48T35) {
         qdev_unrealize(DEVICE(&s->rtc));
     }
-    if (s->board->clock == SGI_IOC3_CLOCK_DS1685) {
+    if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1685) {
         qdev_unrealize(DEVICE(&s->ds1685));
     }
 }
@@ -1413,6 +1453,10 @@ static const Property sgi_ioc3_properties[] = {
                        SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_UINT16("subsystem-id", SGIIOC3State, subsystem_id,
                        SGI_IOC3_SUBSYSTEM_ID),
+    DEFINE_PROP_UINT32("population", SGIIOC3State, population_mask,
+                       SGI_IOC3_POPULATION_AUTO),
+    DEFINE_PROP_UINT8("timekeeper-kind", SGIIOC3State, timekeeper_kind,
+                      SGI_IOC3_TIMEKEEPER_NONE),
 };
 
 /*

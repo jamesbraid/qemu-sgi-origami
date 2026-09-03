@@ -831,7 +831,7 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
 static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
     [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
     [6]  = 'P', 'a', 'r', 't', ':',
-    [11] = '0', '3', '0', '-', '1', '2', '4', '4', '-', '0', '0', '1',
+    [11] = ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
     [23] = ';', ' ', ' ', ' ', ' ', ' ', ' ',
     [32] = ' ', ' ', ' ', ' ', ' ', ' ',
 };
@@ -844,11 +844,13 @@ static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
  * shifting a page and its check through the generator lands on the fixed
  * residue every one-wire CRC-16 stream ends on.
  */
-static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE])
+static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
+                                         const char *board_part)
 {
     unsigned int page;
 
     memcpy(rom, sgi_bridge_onewire_image, NIC_ROM_SIZE);
+    memcpy(&rom[11], board_part, 12);
 
     for (page = 0; page < NIC_PAGES; page++) {
         uint8_t *at = &rom[page * NIC_PAGE_SIZE];
@@ -1567,9 +1569,17 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     Object *obj = OBJECT(dev);
     uint8_t rom[NIC_ROM_SIZE];
     DeviceState *part;
+    const char *board_part;
     unsigned int slot;
 
     /* Refuse property errors before the first region exists. */
+    /* Compatibility until every machine supplies its installed identity. */
+    board_part = s->board_part ?: "030-1244-001";
+    if (strlen(board_part) != 12 || strchr(board_part, ';')) {
+        error_setg(errp, "the I/O bridge board part must be 12 characters "
+                   "without a semicolon");
+        return;
+    }
     if (s->onewire_serial & ~NIC_ROM_SERIAL_MASK) {
         error_setg(errp, "the I/O bridge one-wire serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
@@ -1596,7 +1606,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * itself, so the ordering was never the hazard.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
-    sgi_bridge_onewire_build_rom(rom);
+    sgi_bridge_onewire_build_rom(rom, board_part);
     part = qdev_new(TYPE_ONEWIRE_DS2505);
     object_property_add_child(obj, "onewire-part", OBJECT(part));
     qdev_prop_set_uint8(part, "family", NIC_ROM_FAMILY);
@@ -1777,6 +1787,7 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
+    DEFINE_PROP_STRING("board-part", SGIBridgeState, board_part),
     DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
     /*
      * Forces slots exempt whatever their cards say, for a test or a debug

@@ -189,6 +189,9 @@ struct SGIBridgeState {
      */
     uint64_t onewire_serial;
 
+    /* A property: the board part stored in the one-wire identity page. */
+    char *board_part;
+
     /*
      * The MicroLAN bus, carrying the one board identity part. Every
      * Bridge has both; the part is soldered to the board the chip is on.

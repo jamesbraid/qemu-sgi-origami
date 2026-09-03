@@ -2729,6 +2729,7 @@ static void sgi_hub_reset_exit(Object *obj, ResetType type)
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
 {
     SGIHubState *s = SGI_HUB(dev);
+    uint32_t unknown_population;
     unsigned int n;
 
     if (!s->xtalk) {
@@ -2739,6 +2740,32 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     if (s->onewire_serial & ~MD_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "the Hub one-wire serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
+        return;
+    }
+    unknown_population = s->population & ~SGI_HUB_POPULATION_ALL;
+    if (unknown_population) {
+        error_setg(errp, "Hub population has unknown bits 0x%x",
+                   unknown_population);
+        return;
+    }
+    if (s->onewire_kind > SGI_HUB_ONEWIRE_BLANK_DS2505) {
+        error_setg(errp, "Hub one-wire kind %u is unsupported",
+                   s->onewire_kind);
+        return;
+    }
+    if ((s->population & SGI_HUB_POPULATION_ELSC) &&
+        !(s->population & SGI_HUB_POPULATION_I2C_CONTROLLER)) {
+        error_setg(errp, "Hub ELSC requires I2C");
+        return;
+    }
+    if (s->i2c_nvram_pages &&
+        !(s->population & SGI_HUB_POPULATION_I2C_CONTROLLER)) {
+        error_setg(errp, "Hub I2C NVRAM requires I2C");
+        return;
+    }
+    if (s->i2c_nvram_pages > ELSC_NVRAM_PAGE_COUNT) {
+        error_setg(errp, "Hub I2C NVRAM has at most %u pages",
+                   ELSC_NVRAM_PAGE_COUNT);
         return;
     }
     if (s->ni_revision > NI_STATUS_REVISION_MAX) {
@@ -2795,14 +2822,18 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->junk_uart), 0));
     }
 
-    s->i2c.diagnostic = s->diagnostic;
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c), errp)) {
-        return;
+    if (s->population & SGI_HUB_POPULATION_I2C_CONTROLLER) {
+        s->i2c.diagnostic = s->diagnostic;
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c), errp)) {
+            return;
+        }
+        /* Above the Hub registers, so these bytes reach the controller. */
+        memory_region_add_subregion_overlap(
+            &s->regs, HUB_MD_I2C_BASE,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->i2c), 0), 1);
+    } else {
+        object_unparent(OBJECT(&s->i2c));
     }
-    /* Above sgi_hub_ops, so the chip's sixteen bytes reach the controller. */
-    memory_region_add_subregion_overlap(
-        &s->regs, HUB_MD_I2C_BASE,
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->i2c), 0), 1);
 
     /*
      * The module system controller (MSC): a real board on the same I2C bus,
@@ -2820,7 +2851,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * failed power-on diagnostic; the IRIX console (console=d) is IOC3
      * serial A, not this one.
      */
-    {
+    if (s->population & SGI_HUB_POPULATION_ELSC) {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
 
         object_property_add_child(OBJECT(s), "elsc", OBJECT(elsc));
@@ -2842,10 +2873,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * each. Page 7 is the reserved page the PROM reads before probing a
      * console; only its validity marker has a required value.
      */
-    {
+    if (s->i2c_nvram_pages) {
         static const uint8_t reserved_page_defaults[16] = { 0x37 };
 
-        for (n = 0; n < ELSC_NVRAM_PAGE_COUNT; n++) {
+        for (n = 0; n < s->i2c_nvram_pages; n++) {
             uint8_t address = ELSC_NVRAM_FIRST_ADDR + n;
 
             if (n == ELSC_NVRAM_RESERVED_PAGE) {
@@ -2888,7 +2919,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * firmware would parse into this machine's own.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
-    {
+    if (s->onewire_kind == SGI_HUB_ONEWIRE_BLANK_DS2505) {
         DeviceState *part = qdev_new(TYPE_ONEWIRE_DS2505);
 
         object_property_add_child(OBJECT(dev), "onewire-part", OBJECT(part));
@@ -3106,6 +3137,12 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIHubState, onewire_serial,
                        0x0c0b0a090807ULL),
+    DEFINE_PROP_UINT32("population", SGIHubState, population,
+                       SGI_HUB_POPULATION_ALL),
+    DEFINE_PROP_UINT32("i2c-nvram-pages", SGIHubState, i2c_nvram_pages,
+                       ELSC_NVRAM_PAGE_COUNT),
+    DEFINE_PROP_UINT8("onewire-kind", SGIHubState, onewire_kind,
+                      SGI_HUB_ONEWIRE_BLANK_DS2505),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),

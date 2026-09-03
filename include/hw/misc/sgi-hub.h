@@ -75,6 +75,15 @@ typedef struct SGIHubCounterLine {
 #define SGI_HUB_BWIN_SIZE    (512 * MiB)
 #define SGI_HUB_BWIN_TOTAL   (SGI_HUB_BWIN_ENTRIES * SGI_HUB_BWIN_SIZE)
 
+#define SGI_HUB_POPULATION_I2C_CONTROLLER   (1U << 0)
+#define SGI_HUB_POPULATION_ELSC               (1U << 1)
+#define SGI_HUB_POPULATION_ALL               ((1U << 2) - 1)
+
+typedef enum SGIHubOneWireKind {
+    SGI_HUB_ONEWIRE_NONE = 0,
+    SGI_HUB_ONEWIRE_BLANK_DS2505,
+} SGIHubOneWireKind;
+
 /* The four uncached spaces a node-qualified physical address selects. */
 #define SGI_HUB_CLAIM_SPACES  4
 
@@ -106,6 +115,11 @@ struct SGIHubState {
      * masters belongs to this node.
      */
     PCF8584State i2c;
+
+    /* Properties selecting the board population around the Hub. */
+    uint32_t population;
+    uint32_t i2c_nvram_pages;
+    uint8_t onewire_kind;
 
     /* Diagnostic reference; the I2C bus retains object ownership. */
     SGIElscState *elsc;
