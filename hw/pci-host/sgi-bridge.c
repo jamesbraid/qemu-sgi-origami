@@ -1308,10 +1308,11 @@ static MemTxResult sgi_bridge_lane_swap_read(void *opaque, hwaddr addr,
                                              uint64_t *val, unsigned size,
                                              MemTxAttrs attrs)
 {
+    SGIBridgeState *s = opaque;
     uint8_t bytes[8];
     MemTxResult res;
 
-    res = address_space_read(&address_space_memory,
+    res = address_space_read(&s->fabric_as,
                              sgi_bridge_window_correct(addr, size),
                              attrs, bytes, size);
     *val = ldn_be_p(bytes, size);
@@ -1322,10 +1323,11 @@ static MemTxResult sgi_bridge_lane_swap_write(void *opaque, hwaddr addr,
                                               uint64_t val, unsigned size,
                                               MemTxAttrs attrs)
 {
+    SGIBridgeState *s = opaque;
     uint8_t bytes[8];
 
     stn_be_p(bytes, size, val);
-    return address_space_write(&address_space_memory,
+    return address_space_write(&s->fabric_as,
                                sgi_bridge_window_correct(addr, size),
                                attrs, bytes, size);
 }
@@ -1352,10 +1354,16 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         /*
          * The swap decision is taken on the raw PCI address, ahead of the
          * 64-bit decode below: rewritten first, a wide access is measured
-         * against the wrong window.
+         * against the wrong window. Both arms land in the requesting node's
+         * fabric view -- the claim view the machine roots at fabric_as, and
+         * the swapping arm reaches it through the lane_swap ops -- so a
+         * transfer resolves to the node it names by programmed number, the
+         * same route the interrupt path takes. The global map would collapse
+         * a second node's DMA into node zero's memory while the nodes still
+         * read the same nasid during renumbering.
          */
         .target_as = sgi_bridge_dma_needs_correction(s, dma->slot, addr) ?
-                     &s->lane_swap_as : &address_space_memory,
+                     &s->lane_swap_as : &s->fabric_as,
         .iova = addr & ~page_mask,
         .translated_addr = 0,
         .addr_mask = page_mask,
@@ -1396,6 +1404,8 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     }
 
     if (addr >= BRIDGE_PCI_DIRECT) {
+        unsigned int widget;
+
         direct = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DIRECT_MAP)];
         offset = (hwaddr)(direct & DIRECT_OFFSET) << BRIDGE_DIRECT_SHIFT;
         offset |= addr & BRIDGE_DIRECT_PASS;
@@ -1405,10 +1415,11 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
             offset += BRIDGE_DIRECT_512MB;
         }
 
+        widget = (direct & DIRECT_WIDGET) >> DIRECT_WIDGET_SHIFT;
         entry.translated_addr =
-            sgi_bridge_compose_xtalk(s, (direct & DIRECT_WIDGET) >>
-                                     DIRECT_WIDGET_SHIFT, offset) & ~page_mask;
+            sgi_bridge_compose_xtalk(s, widget, offset) & ~page_mask;
         entry.perm = IOMMU_RW;
+        trace_sgi_bridge_dma_xlate_direct(addr, entry.translated_addr, widget);
         return entry;
     }
 
