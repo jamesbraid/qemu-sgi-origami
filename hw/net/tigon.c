@@ -973,6 +973,7 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                           "range\n", (uint32_t)val);
         }
         s->std_rx_prodidx = val % TI_STD_RX_RING_CNT;
+        trace_tigon_rx_doorbell("standard", (uint32_t)val);
         /* A frame refused before a buffer existed can now be delivered. */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
@@ -986,6 +987,7 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                           (uint32_t)val);
         }
         s->jumbo_rx_prodidx = val % TI_JUMBO_RX_RING_CNT;
+        trace_tigon_rx_doorbell("jumbo", (uint32_t)val);
         /* A frame too big for the standard ring can now be delivered. */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
