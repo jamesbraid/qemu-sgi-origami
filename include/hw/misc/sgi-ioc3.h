@@ -308,18 +308,28 @@ struct SGIIOC3BusState {
  * and a data port, so a board that names the wrong one hands its guest a
  * different register layout at the address it looked for.
  */
-typedef enum SGIIOC3ClockKind {
-    SGI_IOC3_CLOCK_NONE = 0,
-    SGI_IOC3_CLOCK_M48T35,      /* byte-bus device 0, directly addressed */
-    SGI_IOC3_CLOCK_DS1685,      /* byte-bus devices 1 and 2, indirect */
-} SGIIOC3ClockKind;
+typedef enum SGIIOC3TimekeeperKind {
+    SGI_IOC3_TIMEKEEPER_NONE = 0,
+    SGI_IOC3_TIMEKEEPER_M48T35,  /* byte-bus device 0, directly addressed */
+    SGI_IOC3_TIMEKEEPER_DS1685,  /* byte-bus devices 1 and 2, indirect */
+} SGIIOC3TimekeeperKind;
+
+#define SGI_IOC3_POPULATION_ETHERNET       (1U << 0)
+#define SGI_IOC3_POPULATION_SERIAL_A       (1U << 1)
+#define SGI_IOC3_POPULATION_SERIAL_B       (1U << 2)
+#define SGI_IOC3_POPULATION_KEYBOARD_MOUSE (1U << 3)
+#define SGI_IOC3_POPULATION_PARALLEL       (1U << 4)
+#define SGI_IOC3_POPULATION_ONEWIRE_IDENTITY (1U << 5)
+#define SGI_IOC3_POPULATION_ALL            ((1U << 6) - 1)
+#define SGI_IOC3_POPULATION_AUTO           UINT32_MAX
 
 typedef struct SGIIOC3Population {
     bool eth;
     bool serial[SGI_IOC3_SERIAL_PORTS];
     bool kbc;
     bool parallel;
-    SGIIOC3ClockKind clock;
+    bool onewire_identity;
+    SGIIOC3TimekeeperKind timekeeper;
 } SGIIOC3Population;
 
 /* Handlers learn their port only from this opaque. */
@@ -337,7 +347,10 @@ struct SGIIOC3State {
     /* A property: which board this chip is on, presented in config space. */
     uint16_t subsystem_id;
 
-    /* What that board fits, resolved once in realize. */
+    /* Optional semantic override, or the compatible subsystem lookup. */
+    uint32_t population_mask;
+    uint8_t timekeeper_kind;
+    SGIIOC3Population population;
     const SGIIOC3Population *board;
 
     MemoryRegion bar;
@@ -359,8 +372,7 @@ struct SGIIOC3State {
 
     /*
      * The MicroLAN bus. It carries the station-address part on a board
-     * that fits ethernet and nothing at all on one that does not, since
-     * the part is wired up with the ethernet rather than on its own.
+     * that fits an identity part and nothing at all on one that does not.
      */
     OneWireBus *onewire_bus;
 
