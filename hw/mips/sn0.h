@@ -23,6 +23,16 @@
 #define SN0_MAX_MEMORY_BANKS 8
 #define SN0_MAX_MEMORY_SLOTS 4
 
+typedef struct SN0FlashImplementation {
+    uint32_t sector_size;
+    uint8_t width;
+    uint8_t mappings;
+    bool big_endian;
+    uint16_t manufacturer_id;
+    uint16_t device_id;
+    uint16_t unlock_address[2];
+} SN0FlashImplementation;
+
 /*
  * Crosstalk space: a widget number and an offset -- one container
  * indexed by widget, so a small window and a big window are two views
@@ -357,6 +367,10 @@ struct SN0MachineClass {
 };
 
 void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
+const SN0FlashImplementation *sn0_model_flash_implementation(
+    SN0ModelFlashKind kind);
+void sn0_model_configure_diagnostic(SN0MachineState *s,
+                                    unsigned int node_index);
 
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
 void sn0_diagnostic_machine_reset(SN0MachineState *s);

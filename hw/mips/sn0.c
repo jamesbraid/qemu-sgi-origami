@@ -989,6 +989,8 @@ static void sn0_node_map_memory(SN0NodeState *node)
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     const SN0ModelFlash *flash = &node->topology->flash;
+    const SN0FlashImplementation *implementation =
+        sn0_model_flash_implementation(flash->kind);
     MemoryRegion *system = get_system_memory();
     const SN0ModelRegion *flash_hub =
         sn0_region(node->model, SN0_MODEL_REGION_PFLASH_LBOOT);
@@ -1026,12 +1028,13 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     g_autofree char *dir_name =
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
+    g_assert(implementation);
     g_assert(flash_reset &&
              flash_reset->space == SN0_MODEL_SPACE_MEMORY);
     g_assert(rboot_storage == flash_reset);
     g_assert(flash_reset->size > 0 &&
-             flash_reset->size % flash->sector_size == 0);
-    g_assert(flash_reset->size / flash->sector_size <= UINT32_MAX);
+             flash_reset->size % implementation->sector_size == 0);
+    g_assert(flash_reset->size / implementation->sector_size <= UINT32_MAX);
     g_assert(node->model->memory.architectural_banks > 0);
     g_assert(ecc->size % node->model->memory.architectural_banks == 0);
     g_assert(directory->size % node->model->memory.architectural_banks == 0);
@@ -1043,18 +1046,19 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
      */
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
     qdev_prop_set_uint32(flash_dev, "num-blocks",
-                         flash_reset->size / flash->sector_size);
-    qdev_prop_set_uint32(flash_dev, "sector-length", flash->sector_size);
-    qdev_prop_set_uint8(flash_dev, "width", flash->width);
-    qdev_prop_set_uint8(flash_dev, "mappings", flash->mappings);
+                         flash_reset->size / implementation->sector_size);
+    qdev_prop_set_uint32(flash_dev, "sector-length",
+                         implementation->sector_size);
+    qdev_prop_set_uint8(flash_dev, "width", implementation->width);
+    qdev_prop_set_uint8(flash_dev, "mappings", implementation->mappings);
     qdev_prop_set_uint8(flash_dev, "big-endian",
-                        flash->endianness == SN0_MODEL_ENDIAN_BIG);
-    qdev_prop_set_uint16(flash_dev, "id0", flash->manufacturer_id);
-    qdev_prop_set_uint16(flash_dev, "id1", flash->device_id);
+                        implementation->big_endian);
+    qdev_prop_set_uint16(flash_dev, "id0", implementation->manufacturer_id);
+    qdev_prop_set_uint16(flash_dev, "id1", implementation->device_id);
     qdev_prop_set_uint16(flash_dev, "unlock-addr0",
-                         flash->unlock_address[0]);
+                         implementation->unlock_address[0]);
     qdev_prop_set_uint16(flash_dev, "unlock-addr1",
-                         flash->unlock_address[1]);
+                         implementation->unlock_address[1]);
     qdev_prop_set_string(flash_dev, "name", flash_name);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(flash_dev), &error_fatal);
     node->flash = PFLASH_CFI02(flash_dev);
@@ -1414,7 +1418,7 @@ static void sn0_init(MachineState *machine)
                      "described by the machine model", mc->name);
         exit(EXIT_FAILURE);
     }
-    g_assert(model->junk_uart_node < profile->node_count);
+    g_assert(model->junk_uart.node < profile->node_count);
 
     /* Whole mebibytes per chassis: the bank fit is counted in them. */
     if (node_count > 1 && !numa_nodes &&
@@ -1535,6 +1539,8 @@ static void sn0_init(MachineState *machine)
             object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                      OBJECT(aux_chr), &error_fatal);
         }
+        qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up",
+                          node_model->peer_index >= 0);
         if (node_model->peer_index >= 0) {
             int peer_index = node_model->peer_index;
             const SN0ModelNodeInstance *peer;
@@ -1542,25 +1548,13 @@ static void sn0_init(MachineState *machine)
             g_assert((size_t)peer_index < profile->node_count);
             g_assert((unsigned int)peer_index != node_index);
             peer = sn0_model_profile_node(profile, peer_index);
-            qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up", true);
             object_property_set_link(OBJECT(&node->hub), "network-peer",
                                      OBJECT(&s->nodes[peer_index]->hub),
                                      &error_fatal);
             qdev_prop_set_uint32(DEVICE(&node->hub), "claim-peer-node",
                                  peer->nasid);
         }
-        qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
-                          node_index == model->junk_uart_node &&
-                          s->junk_uart_present);
-        if (node_index == model->junk_uart_node && s->junk_uart_present &&
-            serial_hd(SN0_NODE_SERIAL(model->junk_uart_node,
-                                      SN0_JUNK_UART_CHARDEV))) {
-            object_property_set_link(
-                OBJECT(&node->hub), "junk-uart-chardev",
-                OBJECT(serial_hd(SN0_NODE_SERIAL(model->junk_uart_node,
-                                                 SN0_JUNK_UART_CHARDEV))),
-                &error_fatal);
-        }
+        sn0_model_configure_diagnostic(s, node_index);
         sn0_diagnostic_attach(s, node_index);
 
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
@@ -1658,19 +1652,9 @@ static bool sn0_node_validate_topology(SN0NodeState *node, Error **errp)
     flash = &node->topology->flash;
     irq = &node->topology->hub.cpu_irq_lines;
 
-    if (flash->kind != SN0_MODEL_FLASH_AM29F080) {
+    if (!sn0_model_flash_implementation(flash->kind)) {
         error_setg(errp, "unsupported flash kind %u",
                    (unsigned int)flash->kind);
-        return false;
-    }
-    if (!flash->sector_size || !flash->width || !flash->mappings) {
-        error_setg(errp, "the flash geometry must be non-zero");
-        return false;
-    }
-    if (flash->endianness != SN0_MODEL_ENDIAN_BIG &&
-        flash->endianness != SN0_MODEL_ENDIAN_LITTLE) {
-        error_setg(errp, "unsupported flash endianness %u",
-                   (unsigned int)flash->endianness);
         return false;
     }
     if (irq->bank0 > 5 || irq->bank1 > 5 || irq->rt > 5) {
@@ -1775,6 +1759,8 @@ static void sn0_instance_init(Object *obj)
     g_assert(SN0_MACHINE_GET_CLASS(obj)->model);
     s->synthesized_firmware = true;
     s->debug_leds = true;
+    s->junk_uart_present =
+        SN0_MACHINE_GET_CLASS(obj)->model->junk_uart.default_enabled;
 }
 
 static void sn0_instance_finalize(Object *obj)

@@ -13,6 +13,14 @@
 #define GRAPH_COMP_STRIDE   0x80
 #define NODE_STRIDE         0x100000000ULL
 
+#define DUAL_NODE_ARGS \
+    "-M origin200 -m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
+
 #define COMP_MEMORY         3
 #define COMP_MEMORY_INDEX   2
 
@@ -248,13 +256,7 @@ static void test_memory_layout_matches_addressing_mode(const void *data)
 
 static void test_dual_node_gda(const void *data)
 {
-    QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
-        "-smp 4,sockets=2,cores=2,threads=1");
+    QTestState *qts = qtest_init(DUAL_NODE_ARGS);
     unsigned int i;
 
     for (i = 0; i < 2; i++) {
@@ -268,6 +270,39 @@ static void test_dual_node_gda(const void *data)
     }
 
     qtest_quit(qts);
+}
+
+static unsigned int count_trace_records(const char *trace, const char *record)
+{
+    unsigned int count = 0;
+
+    while ((trace = strstr(trace, record))) {
+        count++;
+        trace += strlen(record);
+    }
+    return count;
+}
+
+static void test_reset_programs_each_node_discovery_widget(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-firmware-trace-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf(DUAL_NODE_ARGS
+                      " -trace sn0_firmware_widget,file=%s", path);
+    qtest_system_reset(qts);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_cmpuint(count_trace_records(trace, "node 0 widget 0"), ==, 2);
+    g_assert_cmpuint(count_trace_records(trace, "node 1 widget 0"), ==, 2);
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 int main(int argc, char **argv)
@@ -284,6 +319,8 @@ int main(int argc, char **argv)
                         NULL, test_memory_layout_matches_addressing_mode);
     qtest_add_data_func("sn0/firmware/dual-node-gda", NULL,
                         test_dual_node_gda);
+    qtest_add_data_func("sn0/firmware/reset-programs-each-discovery-widget",
+                        NULL, test_reset_programs_each_node_discovery_widget);
 
     return g_test_run();
 }

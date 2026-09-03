@@ -69,6 +69,54 @@ static const char *sn0_model_pci_qom_type(SN0ModelPciKind kind)
     }
 }
 
+const SN0FlashImplementation *sn0_model_flash_implementation(
+    SN0ModelFlashKind kind)
+{
+    static const SN0FlashImplementation am29f080 = {
+        .sector_size = 0x10000,
+        .width = 1,
+        .mappings = 1,
+        .big_endian = true,
+        .manufacturer_id = 0x01,
+        .device_id = 0xd5,
+        .unlock_address = { 0x5555, 0x2aaa },
+    };
+
+    switch (kind) {
+    case SN0_MODEL_FLASH_AM29F080:
+        return &am29f080;
+    default:
+        return NULL;
+    }
+}
+
+void sn0_model_configure_diagnostic(SN0MachineState *s,
+                                    unsigned int node_index)
+{
+    const SN0ModelDiagnostic *diagnostic =
+        &SN0_MACHINE_GET_CLASS(s)->model->junk_uart;
+    SN0NodeState *node = s->nodes[node_index];
+
+    switch (diagnostic->kind) {
+    case SN0_MODEL_DIAGNOSTIC_HUB_UART:
+        qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
+                          node_index == diagnostic->node &&
+                          s->junk_uart_present);
+        if (node_index == diagnostic->node && s->junk_uart_present &&
+            serial_hd(SN0_NODE_SERIAL(diagnostic->node,
+                                      SN0_JUNK_UART_CHARDEV))) {
+            object_property_set_link(
+                OBJECT(&node->hub), "junk-uart-chardev",
+                OBJECT(serial_hd(SN0_NODE_SERIAL(diagnostic->node,
+                                                 SN0_JUNK_UART_CHARDEV))),
+                &error_fatal);
+        }
+        return;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static uint32_t sn0_model_ioc3_population(
     const SN0ModelIoc3Population *population)
 {
@@ -197,6 +245,8 @@ static void sn0_model_create_bridge(SN0MachineState *s,
     SGIBridgeState *bridge;
     g_autofree char *bridge_name = node_index == 0 ?
         g_strdup("bridge") : g_strdup_printf("bridge%u", node_index);
+    g_autofree char *bus_name = node_index == 0 ?
+        g_strdup("pci") : g_strdup_printf("pci.%u", node_index);
     g_autofree char *widget0_name = node_index == 0 ?
         g_strdup("sn0.xtalk.widget0") :
         g_strdup_printf("sn0.node%u.xtalk.widget0", node_index);
@@ -214,11 +264,7 @@ static void sn0_model_create_bridge(SN0MachineState *s,
                          base_io->serial_stride * node_index);
     qdev_prop_set_string(DEVICE(bridge), "board-part",
                          node->topology->bridge_part);
-    if (node_index != 0) {
-        g_autofree char *bus_name = g_strdup_printf("pci.%u", node_index);
-
-        qdev_prop_set_string(DEVICE(bridge), "pci-bus-name", bus_name);
-    }
+    qdev_prop_set_string(DEVICE(bridge), "pci-bus-name", bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(system),
                              &error_fatal);
     qdev_prop_set_uint64(DEVICE(bridge), "fabric-base", xtalk->carrier_base);

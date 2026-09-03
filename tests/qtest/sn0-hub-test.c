@@ -581,19 +581,41 @@ static void test_addressing_mode(const void *data)
 static void test_network_link_presence(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -global sgi-hub.network-link-up=on");
-    uint64_t status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    unsigned int node;
 
-    g_assert_cmphex(status & NI_LINK_UP, ==, NI_LINK_UP);
+    for (node = 0; node < 2; node++) {
+        uint64_t hub = NODE_STRIDE * node + HUB_LOCAL;
 
-    /* Link state is hardware status, not part of the writable fields. */
-    qtest_writeq(qts, HUB_LOCAL + NI_STATUS, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
-                    ==, NI_LINK_UP);
+        g_assert_cmphex(qtest_readq(qts, hub + NI_STATUS) & NI_LINK_UP,
+                        ==, NI_LINK_UP);
+    }
 
     qtest_system_reset(qts);
+    for (node = 0; node < 2; node++) {
+        uint64_t hub = NODE_STRIDE * node + HUB_LOCAL;
+
+        g_assert_cmphex(qtest_readq(qts, hub + NI_STATUS) & NI_LINK_UP,
+                        ==, NI_LINK_UP);
+    }
+    qtest_quit(qts);
+}
+
+static void test_one_node_link_state_overrides_class_global(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -global sgi-hub.network-link-up=on");
+
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
-                    ==, NI_LINK_UP);
+                    ==, 0);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
+                    ==, 0);
 
     qtest_quit(qts);
 }
@@ -3536,6 +3558,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/addressing-mode", NULL, test_addressing_mode);
     qtest_add_data_func("sn0/hub/network-link-presence", NULL,
                         test_network_link_presence);
+    qtest_add_data_func("sn0/hub/one-node-link-overrides-class-global", NULL,
+                        test_one_node_link_state_overrides_class_global);
     qtest_add_data_func("sn0/hub/processor-number", NULL,
                         test_processor_number);
     qtest_add_data_func("sn0/hub/reset-values", NULL, test_reset_values);
