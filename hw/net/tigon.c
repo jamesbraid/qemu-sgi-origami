@@ -1193,10 +1193,16 @@ static bool tigon_can_receive(NetClientState *nc)
 }
 
 /*
- * Accept a frame for our unicast address or broadcast, or anything in
- * promiscuous mode. Multicast hash filtering is not modelled yet; the return
- * value says whether to keep the frame and sets the cast flag for its return
- * descriptor.
+ * Accept a frame for our unicast address, broadcast, or any multicast group,
+ * or anything at all in promiscuous mode. The return value says whether to
+ * keep the frame and sets the cast flag for its return descriptor.
+ *
+ * The exact group filter is not modelled, so every multicast frame is kept and
+ * the stack sorts them out. That is the safe direction to be wrong in: keeping
+ * a frame the driver did not ask for costs it one discard, while dropping one
+ * it did ask for breaks the protocol carried on it and says nothing anywhere.
+ * IPv6 neighbour discovery rides entirely on solicited-node multicast, so
+ * dropping unsubscribed groups fails it silently.
  */
 static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, size_t size,
                             uint16_t *flags)
@@ -1214,8 +1220,12 @@ static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, size_t size,
         *flags = TI_BDFLAG_UCAST_PKT;
         return true;
     }
+    if (dest[0] & 1) {
+        *flags = TI_BDFLAG_MCAST_PKT;   /* group bit: any multicast */
+        return true;
+    }
     if (s->promisc) {
-        *flags = (dest[0] & 1) ? TI_BDFLAG_MCAST_PKT : TI_BDFLAG_UCAST_PKT;
+        *flags = TI_BDFLAG_UCAST_PKT;
         return true;
     }
     return false;

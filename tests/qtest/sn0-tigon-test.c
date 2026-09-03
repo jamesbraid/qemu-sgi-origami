@@ -1463,6 +1463,17 @@ static void test_receive_clamps_to_buffer(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A multicast frame: an IPv6 neighbour-discovery solicited-node address, which
+ * is the case that matters. Group bit set in the first octet.
+ */
+static const uint8_t rx_frame_mcast[64] = {
+    0x33, 0x33, 0xff, 0x12, 0x34, 0x56,      /* dest = IPv6 solicited-node */
+    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    0x86, 0xdd,                              /* ethertype IPv6 */
+    0x60, 0x00, 0x00, 0x00,
+};
+
 static void test_receive_filters_other(const void *data)
 {
     int sv[2];
@@ -1583,6 +1594,43 @@ static void receive_direct_map_check(bool bridge_transparent, uint32_t opmode)
         g_assert_cmphex(w8 & 0xffff, ==, sizeof(rx_frame_direct));
         g_assert_cmphex(w12 & TI_BDFLAG_END, ==, TI_BDFLAG_END);
     }
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A multicast frame is delivered, not dropped. The exact group filter is not
+ * modelled, so the card keeps every multicast frame and lets the stack sort
+ * them out -- which is the safe direction to be wrong in. Dropping them all
+ * unless the interface is promiscuous is not: a driver that has joined a group
+ * gets nothing and nothing anywhere says why. IPv6 neighbour discovery is
+ * carried entirely on solicited-node multicast, so it fails silently.
+ */
+static void test_receive_accepts_multicast(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[sizeof(rx_frame_mcast)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    /* Not promiscuous: go_operational leaves the filter in its normal state. */
+    net_send_frame(sv[0], rx_frame_mcast, sizeof(rx_frame_mcast));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed),
+                    rx_frame_mcast, sizeof(rx_frame_mcast));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -1993,6 +2041,8 @@ int main(int argc, char **argv)
                         test_receive_jumbo_frame);
     qtest_add_data_func("/sn0/tigon/firmware-up-releases-a-held-frame", NULL,
                         test_firmware_up_releases_a_held_frame);
+    qtest_add_data_func("/sn0/tigon/receive-accepts-multicast", NULL,
+                        test_receive_accepts_multicast);
     qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
                         test_receive_filters_other);
     qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
