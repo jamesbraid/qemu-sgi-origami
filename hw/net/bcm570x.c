@@ -49,6 +49,7 @@
 #include "qemu/timer.h"
 #include "net/checksum.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/bcm570x_phy.h"
@@ -359,7 +360,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RXBD_ADDR_LO        0x04
 /*
  * A completed descriptor packs the ring index and length into one word and the
- * type and flags into the next, little-endian to match the transmit ring. The
+ * type and flags into the next, using the transmit ring's scalar layout. The
  * length includes the four-byte FCS the driver strips; the END flag marks the
  * last descriptor of a frame. The opaque word is copied back from the posted
  * buffer so the driver maps the frame to the buffer it supplied.
@@ -377,6 +378,18 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 struct Bcm570xState {
     PCIDevice parent_obj;
+
+    /*
+     * The plain DMA route offered by an SGI Bridge, or NULL elsewhere.
+     * Big-endian scalar accessors on this route preserve the descriptor and
+     * status layout of little-endian accessors through the Bridge swap route.
+     * Frame payload is copied verbatim as a bounded model behavior for the
+     * measured BCM5701 configuration. That payload choice does not establish
+     * the card's hardware transformation with its DMA-swap controls clear.
+     * Off-Bridge devices retain the existing little-endian scalar view and
+     * payload handling.
+     */
+    AddressSpace *plain_dma;
 
     MemoryRegion bar0;
 
@@ -575,14 +588,9 @@ static uint64_t bcm570x_compose_hostaddr(Bcm570xState *s, uint32_t hi,
 }
 
 /*
- * Frame payloads cross the DMA the same way descriptors do: the big-endian
- * driver turns on the chip's MISC_CTL byte and word endian swap so it can lay
- * integers down little-endian, and a payload written that way is byte-reversed
- * per 32-bit word on the wire unless the chip swaps it back. Descriptors read
- * back correct because they go through ldl_le_p; a payload is a byte stream, so
- * the swap must be applied here. The swap reverses whole 32-bit words at their
- * physical alignment, not the frame's, so a buffer at the driver's two-byte
- * IP-alignment offset reverses across the same word boundaries the chip uses.
+ * The existing off-Bridge payload path applies swaps to whole 32-bit words
+ * at their physical alignment. This describes the current model, not an
+ * established hardware transformation for the MODE_CTL DMA-swap controls.
  */
 static void bcm570x_swap_span(uint8_t *p, unsigned int span,
                               bool bswap, bool wswap)
@@ -604,16 +612,87 @@ static void bcm570x_swap_span(uint8_t *p, unsigned int span,
     }
 }
 
+/*
+ * One bulk DMA transfer, on whichever route the machine gives us: the
+ * Bridge's plain space when there is one, the slot's own (swap-corrected)
+ * space otherwise. See plain_dma for the scalar and payload distinction.
+ */
+static void bcm570x_dma_read_buf(Bcm570xState *s, uint64_t addr,
+                                 void *buf, unsigned int len)
+{
+    if (s->plain_dma) {
+        dma_memory_read(s->plain_dma, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
+    } else {
+        pci_dma_read(PCI_DEVICE(s), addr, buf, len);
+    }
+}
+
+static void bcm570x_dma_write_buf(Bcm570xState *s, uint64_t addr,
+                                  const void *buf, unsigned int len)
+{
+    if (s->plain_dma) {
+        dma_memory_write(s->plain_dma, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
+    } else {
+        pci_dma_write(PCI_DEVICE(s), addr, buf, len);
+    }
+}
+
+/*
+ * DMA'd values. On the plain route memory holds the driver's own big-endian
+ * layout, whose 16-bit fields sit in the other half of each 32-bit word from
+ * where the swap-corrected view puts them -- the byte-lane halfword
+ * correction, offset xor 2. On the slot route the swap has already turned
+ * the layout little-endian at the model's own offsets.
+ */
+static uint32_t bcm570x_dma_ld32(Bcm570xState *s, const uint8_t *p)
+{
+    return s->plain_dma ? ldl_be_p(p) : ldl_le_p(p);
+}
+
+static uint16_t bcm570x_dma_ld16(Bcm570xState *s, const uint8_t *p)
+{
+    if (s->plain_dma) {
+        return lduw_be_p((const uint8_t *)((uintptr_t)p ^ 2));
+    }
+    return lduw_le_p(p);
+}
+
+static void bcm570x_dma_st32(Bcm570xState *s, uint8_t *p, uint32_t v)
+{
+    if (s->plain_dma) {
+        stl_be_p(p, v);
+    } else {
+        stl_le_p(p, v);
+    }
+}
+
+static void bcm570x_dma_st16(Bcm570xState *s, uint8_t *p, uint16_t v)
+{
+    if (s->plain_dma) {
+        stw_be_p((uint8_t *)((uintptr_t)p ^ 2), v);
+    } else {
+        stw_le_p(p, v);
+    }
+}
+
 static bool bcm570x_frame_swap(Bcm570xState *s, bool *bswap, bool *wswap)
 {
     uint32_t misc = pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL);
 
+    if (s->plain_dma) {
+        /*
+         * Verbatim payload is the bounded Bridge-machine model behavior.
+         * The card's clear-data hardware transformation remains unknown.
+         */
+        *bswap = false;
+        *wswap = false;
+        return false;
+    }
+
     /*
-     * The driver's big-endian setup reverses whole 32-bit DMA words: descriptors
-     * come back right because ldl_le_p reverses them, and a payload byte stream
-     * needs the same full reversal here. The word-swap enable is the driver's
-     * signal that the swap is on; when it is, reverse each word (byte and word
-     * swap together).
+     * Preserve the existing off-Bridge interpretation of MISC_CTL: the
+     * word-swap bit requests both byte and word swaps. The reviewed MODE_CTL
+     * fallback is a separate model change.
      */
     *bswap = (misc & BCM570X_MISCCTL_ENDIAN_WORDSWAP) != 0;
     *wswap = *bswap;
@@ -621,8 +700,8 @@ static bool bcm570x_frame_swap(Bcm570xState *s, bool *bswap, bool *wswap)
 }
 
 /*
- * Read a frame fragment from host memory, undoing the chip's data swap. The
- * swap reverses whole 32-bit words at their physical alignment, so read the
+ * Read a frame fragment from host memory, applying the model's payload swap.
+ * It reverses whole 32-bit words at their physical alignment, so read the
  * word-aligned span the fragment falls in, swap it, and take the fragment out.
  */
 static void bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
@@ -634,7 +713,7 @@ static void bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
     uint8_t tmp[BCM570X_MAX_FRAME + 8];
 
     if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        pci_dma_read(pci, phys, dst, len);
+        bcm570x_dma_read_buf(s, phys, dst, len);
         return;
     }
     astart = phys & ~(uint64_t)3;
@@ -665,7 +744,7 @@ static void bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
     uint8_t tmp[BCM570X_MAX_FRAME + 8];
 
     if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        pci_dma_write(pci, phys, src, len);
+        bcm570x_dma_write_buf(s, phys, src, len);
         return;
     }
     astart = phys & ~(uint64_t)3;
@@ -687,20 +766,12 @@ static void bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
  * gates it and reads the transmit/receive progress from there rather than a
  * register. The chip owns the block, so the model builds it whole each time.
  *
- * Byte order: this is a little-endian PCI part, so it delivers its DMA integers
- * in native little-endian (stl_le_p / stw_le_p), consistent with its
- * DEVICE_LITTLE_ENDIAN register file. The device makes no assumption about the
- * host bridge: a little-endian host reads the block back directly, while on a
- * big-endian host any byte-swap correction is the host bridge's concern, not
- * this device's. The MODE_CTL DMA-swap control is accepted and stored for
- * read-back; the MISC_CTL word-swap the driver sets is honoured where it
- * matters -- composing the 64-bit host addresses (bcm570x_compose_hostaddr).
- * The model's DMA is byte-addressed, so each swap layer is modelled once and
- * never doubled.
+ * Scalar fields use big-endian accessors on the Bridge's plain DMA route and
+ * little-endian accessors elsewhere. The MODE_CTL DMA-swap control is stored
+ * for readback. Host address composition retains its MISC_CTL handling.
  */
 static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 {
-    PCIDevice *pci = PCI_DEVICE(s);
     uint8_t blk[BCM570X_STATUS_BLK_SIZE];
     uint64_t base;
 
@@ -714,11 +785,11 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 
     memset(blk, 0, sizeof(blk));
     s->status_tag++;
-    stl_le_p(blk, BCM570X_STATFLAG_UPDATED);
-    stl_le_p(blk + BCM570X_STATUS_TAG_OFF, s->status_tag);
-    stw_le_p(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
-    stw_le_p(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
-    pci_dma_write(pci, base, blk, sizeof(blk));
+    bcm570x_dma_st32(s, blk, BCM570X_STATFLAG_UPDATED);
+    bcm570x_dma_st32(s, blk + BCM570X_STATUS_TAG_OFF, s->status_tag);
+    bcm570x_dma_st16(s, blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
+    bcm570x_dma_st16(s, blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
+    bcm570x_dma_write_buf(s, base, blk, sizeof(blk));
 
     /*
      * The block now carries an update the driver has not taken. The line asserts
@@ -1042,12 +1113,14 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         uint64_t buf_addr;
         uint16_t len, flags;
 
-        pci_dma_read(pci, ring_base + (uint64_t)s->tx_cons * BCM570X_TXBD_SIZE,
-                     bd, sizeof(bd));
-        buf_addr = ((uint64_t)ldl_le_p(bd + BCM570X_TXBD_ADDR_HI) << 32) |
-                   ldl_le_p(bd + BCM570X_TXBD_ADDR_LO);
-        len = lduw_le_p(bd + BCM570X_TXBD_LEN);
-        flags = lduw_le_p(bd + BCM570X_TXBD_FLAGS);
+        bcm570x_dma_read_buf(s,
+                             ring_base + (uint64_t)s->tx_cons *
+                             BCM570X_TXBD_SIZE, bd, sizeof(bd));
+        buf_addr = ((uint64_t)bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_HI)
+                    << 32) |
+                   bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_LO);
+        len = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_LEN);
+        flags = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_FLAGS);
 
         if (!frame_dropped && frame_len + len <= sizeof(frame)) {
             bcm570x_frame_dma_read(pci, s, buf_addr, frame + frame_len, len);
@@ -1067,7 +1140,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 
         frame_flags |= flags;
         if (frame_mss == 0) {
-            frame_mss = lduw_le_p(bd + BCM570X_TXBD_MSS);
+            frame_mss = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_MSS);
         }
         if (flags & BCM570X_TXBDFLAG_END) {
             if (!frame_dropped && frame_len) {
@@ -1601,9 +1674,8 @@ static uint32_t bcm570x_rx_offload_checksum(const uint8_t *frame,
  * not wedged waiting on a frame that will never be taken. Otherwise the frame is
  * DMA'd into the next posted standard-ring buffer, a completed descriptor is
  * written into the return ring, the receive producer advances, and the status
- * block reports it. The byte order reuses the transmit path's exactly:
- * descriptors native little-endian, the payload a raw byte stream copied
- * verbatim.
+ * block reports it. Descriptor byte order and payload handling use the same
+ * DMA helpers as the transmit path.
  */
 static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                size_t size)
@@ -1697,27 +1769,28 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                      BCM570X_RCB_HOSTADDR_LO));
 
     /* The posted buffer's host address, from the chosen ring's descriptor. */
-    pci_dma_read(pci, std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
-                 std_bd, sizeof(std_bd));
-    buf_addr = ((uint64_t)ldl_le_p(std_bd + BCM570X_RXBD_ADDR_HI) << 32) |
-               ldl_le_p(std_bd + BCM570X_RXBD_ADDR_LO);
+    bcm570x_dma_read_buf(s, std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
+                         std_bd, sizeof(std_bd));
+    buf_addr = ((uint64_t)bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_HI)
+                << 32) |
+               bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_LO);
 
     bcm570x_frame_dma_write(pci, s, buf_addr, buf, framelen);
     csum = bcm570x_rx_offload_checksum(buf, framelen, &rx_flags);
 
-    /* The completed descriptor into the return ring, little-endian. */
+    /* The completed descriptor uses the selected DMA route's scalar layout. */
     memset(ret_bd, 0, sizeof(ret_bd));
-    stl_le_p(ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
-    stl_le_p(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
-    stl_le_p(ret_bd + BCM570X_RXBD_IDX_LEN,
+    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
+    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
+    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_IDX_LEN,
              ((uint32_t)idx << 16) | ((framelen + BCM570X_ETH_FCS_LEN) & 0xffff));
-    stl_le_p(ret_bd + BCM570X_RXBD_TYPE_FLAGS, rx_flags);
-    stl_le_p(ret_bd + BCM570X_RXBD_CSUM, csum);
-    stl_le_p(ret_bd + BCM570X_RXBD_OPAQUE,
-             ldl_le_p(std_bd + BCM570X_RXBD_OPAQUE));
+    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_TYPE_FLAGS, rx_flags);
+    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_CSUM, csum);
+    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_OPAQUE,
+                     bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_OPAQUE));
 
-    pci_dma_write(pci, ret_base + (uint64_t)s->status_rx_prod *
-                  BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
+    bcm570x_dma_write_buf(s, ret_base + (uint64_t)s->status_rx_prod *
+                          BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
 
     if (on_jumbo) {
         s->rx_jumbo_cons =
@@ -1866,6 +1939,13 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
             return;
         }
     }
+
+    /*
+     * The DMA route decides the model's regime; see plain_dma. Resolved once
+     * here -- the device cannot move buses after realize.
+     */
+    s->plain_dma = sgi_bridge_plain_dma_as(dev);
+
 }
 
 static void bcm570x_reset_hold(Object *obj, ResetType type)
