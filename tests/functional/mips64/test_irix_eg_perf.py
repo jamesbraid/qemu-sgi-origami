@@ -90,6 +90,12 @@ SOCKBUF_ARG = (' -b ' + SOCKBUF) if SOCKBUF else ''
 # Trace events to enable, e.g. tigon_rx_ring, written beside the console log.
 TRACE = os.environ.get('EG_PERF_TRACE', '')
 
+# Parallel receive streams. Tests whether aggregate throughput scales across
+# processors or plateaus -- the plateau being the device holding the BQL across
+# the long per-word DMA, which serialises the streams that were meant to scale.
+# Off by default; set with EG_PERF_SMP>1 and EG_PERF_ACCEL=tcg,thread=multi.
+PARALLEL = int(os.environ.get('EG_PERF_PARALLEL', '0'))
+
 # Replace the network back end. The default user-mode stack runs TCP/IP in the
 # emulator's main loop and never puts a frame larger than the standard size on
 # the wire in either direction, so it cannot show what a larger frame is worth.
@@ -212,6 +218,46 @@ def _forget_console_history(con):
     del con.buf[:]
 
 
+def _parallel_send(host_ports, per_stream_bytes):
+    """Drive N concurrent TCP senders, one per host port, and return the
+    aggregate Mbit/s over the wall-clock of the whole batch. Near one stream's
+    rate means the streams serialised; near N times means they scaled."""
+    import threading
+
+    payload = os.urandom(per_stream_bytes)
+    start = threading.Barrier(len(host_ports) + 1)
+    done = [0] * len(host_ports)
+
+    def one(i, port):
+        s = socket.create_connection(("127.0.0.1", port), timeout=30)
+        s.settimeout(SEND_TIMEOUT_SECONDS)
+        start.wait()
+        try:
+            s.sendall(payload)
+        finally:
+            s.shutdown(socket.SHUT_WR)
+            s.settimeout(30)
+            try:
+                while s.recv(65536):
+                    pass
+            except OSError:
+                pass
+            s.close()
+        done[i] = len(payload)
+
+    threads = [threading.Thread(target=one, args=(i, p))
+               for i, p in enumerate(host_ports)]
+    for t in threads:
+        t.start()
+    start.wait()
+    t0 = time.monotonic()
+    for t in threads:
+        t.join()
+    elapsed = time.monotonic() - t0
+    total = sum(done)
+    return (total * 8 / elapsed / 1e6) if elapsed > 0 else 0.0
+
+
 def _parse_ttcp_rate(text):
     """Pull (megabits_per_sec, bytes, seconds) out of ttcp's report, which
     prints e.g. 'ttcp-r: 16777216 bytes in 3.21 real seconds = ... KB/sec'.
@@ -280,6 +326,9 @@ if base.QemuSystemTest is not None:
                           ',hostfwd=udp:127.0.0.1:0-%s:%d'
                           % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
                              base.GUEST_ADDR, UDP_GUEST_PORT))
+                for _pi in range(PARALLEL):
+                    netdev += (',hostfwd=tcp:127.0.0.1:0-%s:%d'
+                               % (base.GUEST_ADDR, TCP_GUEST_PORT + 1 + _pi))
             vm.add_args(
                 '-accel', ACCEL,
                 '-cpu', 'R10000', '-smp', SMP, '-m', str(base.MEMORY_MIB),
@@ -401,6 +450,45 @@ if base.QemuSystemTest is not None:
                     eg_up = True
                 except base._Harness:
                     pass
+
+                if PARALLEL:
+                    # One stream first for the per-stream baseline, then N
+                    # concurrent. If the aggregate is near the single, the
+                    # streams serialised (the BQL-held-per-word-DMA plateau);
+                    # near N times, they scaled.
+                    ports = [_usernet_hostport(vm, 'tcp', TCP_GUEST_PORT + 1 + i)
+                             for i in range(PARALLEL)]
+                    self.assertNotIn(None, ports, "missing parallel hostfwd")
+                    for i in range(PARALLEL):
+                        con.send("ttcp -r -s -p %d -l 65536 >/dev/null 2>&1 &"
+                                 % (TCP_GUEST_PORT + 1 + i))
+                    con.run("echo READY""PAR", "parready", timeout=60)
+                    time.sleep(3)
+                    single = _parallel_send(ports[:1], TCP_THROUGHPUT_BYTES)
+                    # relaunch the receivers the single run consumed
+                    for i in range(PARALLEL):
+                        con.send("ttcp -r -s -p %d -l 65536 >/dev/null 2>&1 &"
+                                 % (TCP_GUEST_PORT + 1 + i))
+                    con.run("echo READY""PAR2", "parready2", timeout=60)
+                    time.sleep(3)
+                    aggregate = _parallel_send(ports, TCP_THROUGHPUT_BYTES)
+                    results["parallel"] = {
+                        "streams": PARALLEL,
+                        "single_mbps": round(single, 1),
+                        "aggregate_mbps": round(aggregate, 1),
+                        "scaling": round(aggregate / single, 2) if single else 0,
+                        "load": [round(os.getloadavg()[0], 1)],
+                    }
+                    # Persist the parallel result here: this leg returns early,
+                    # before the normal summary write, so write it ourselves.
+                    import json as _json
+                    _sum = self.log_file('irix-eg-perf-summary.json')
+                    with open(_sum, 'w') as _f:
+                        _json.dump({"login": login, "eg_up": eg_up,
+                                    "results": results}, _f, indent=2,
+                                   default=str)
+                        _f.write("\n")
+                    return
 
                 seg_before = self._netstat_counter(
                     con, "tcp", "packets received", "segb")
