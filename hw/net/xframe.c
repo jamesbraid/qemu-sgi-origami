@@ -999,7 +999,20 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         /* Write-locked: takes only with the config key freshly written. */
         if (s->rmac_cfg_unlocked) {
             s->mac_cfg = full;
-            s->rmac_cfg_unlocked = false;
+            /*
+             * Release the unlock on the access covering the HIGH half -- the
+             * same half the key itself arrives through -- not on whichever
+             * access happens to come first. A driver reaching this 64-bit
+             * register through 32-bit cycles writes it as two halves (Linux
+             * s2io does on the Xena part, and the Origin 200 Bridge splits
+             * every 64-bit access that way for a slot with DEV_64BIT_DEVICE
+             * clear), so releasing it on the first half refuses the second and
+             * leaves the register holding half of what the guest wrote. One key
+             * unlocks one register write, however many bus cycles it takes.
+             */
+            if (commit_high) {
+                s->rmac_cfg_unlocked = false;
+            }
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "xframe: MAC_CFG write without RMAC_CFG_KEY, "
