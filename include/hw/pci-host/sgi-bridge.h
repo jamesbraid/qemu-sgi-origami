@@ -43,6 +43,21 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
                               hwaddr pci_base, bool memory_space);
 
 /*
+ * The bridge's plain DMA route for a device on its bus, or NULL when the
+ * device is not behind an SGI Bridge. Transfers move through this with
+ * dma_memory_read/write: the same address decode and node-qualified fabric
+ * routing as the slot's own space, with the byte-lane swap alone left out.
+ * Which transfers belong here is the device model's call, made from what
+ * its card is programmed to do: a leg whose two swaps compose to the
+ * identity (a frame payload everywhere; every leg on a card that swaps
+ * descriptors too) moves here rather than paying a per-word dispatch to
+ * produce bytes a plain copy gives for free, while a leg whose single swap
+ * is observable stays on pci_dma_*, which honours the slot's programmed
+ * correction.
+ */
+AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
+
+/*
  * What a device plugged into this bridge says about itself: "my transfers
  * already carry the guest's byte order, so hand me bytes uncorrected". A
  * device that models its own big-endian view of guest memory -- SGI's own
@@ -165,6 +180,13 @@ struct SGIBridgeState {
         SGIBridgeState *s;
         unsigned int slot;
     } dma[SGI_BRIDGE_DEVICES];
+
+    /*
+     * The plain route: the same decode, never the byte-lane swap. One for
+     * the whole bridge -- the swap decision was the only per-slot part.
+     */
+    IOMMUMemoryRegion plain_iommu;
+    AddressSpace plain_dma_as;
 
     /*
      * Where a lane-permuted transfer is sent: a translation entry can only

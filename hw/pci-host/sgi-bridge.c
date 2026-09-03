@@ -1312,6 +1312,7 @@ static MemTxResult sgi_bridge_lane_swap_read(void *opaque, hwaddr addr,
     uint8_t bytes[8];
     MemTxResult res;
 
+    trace_sgi_bridge_lane_swap_read(addr, size);
     res = address_space_read(&s->fabric_as,
                              sgi_bridge_window_correct(addr, size),
                              attrs, bytes, size);
@@ -1326,6 +1327,7 @@ static MemTxResult sgi_bridge_lane_swap_write(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
     uint8_t bytes[8];
 
+    trace_sgi_bridge_lane_swap_write(addr, size);
     stn_be_p(bytes, size, val);
     return address_space_write(&s->fabric_as,
                                sgi_bridge_window_correct(addr, size),
@@ -1342,12 +1344,16 @@ static const MemoryRegionOps sgi_bridge_lane_swap_ops = {
     .impl.max_access_size = 4,
 };
 
-static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
-                                          IOMMUAccessFlags flag, int iommu_idx)
+/*
+ * The decode shared by every DMA route. A slot's own route (slot >= 0) may
+ * send the access through the byte-lane swap; the plain route (slot < 0)
+ * never does -- it exists for byte-stream transfers whose swap nothing
+ * observes, so paying a per-word dispatch for it buys nothing.
+ */
+static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
+                                                 hwaddr addr,
+                                                 IOMMUAccessFlags flag)
 {
-    struct SGIBridgeDeviceDMA *dma =
-        container_of(iommu, struct SGIBridgeDeviceDMA, iommu);
-    SGIBridgeState *s = dma->s;
     unsigned int shift = sgi_bridge_page_shift(s);
     hwaddr page_mask = MAKE_64BIT_MASK(0, shift);
     IOMMUTLBEntry entry = {
@@ -1360,9 +1366,11 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
          * transfer resolves to the node it names by programmed number, the
          * same route the interrupt path takes. The global map would collapse
          * a second node's DMA into node zero's memory while the nodes still
-         * read the same nasid during renumbering.
+         * read the same nasid during renumbering. The plain route rides the
+         * unswapped arm: it skips the byte lanes alone, never the routing.
          */
-        .target_as = sgi_bridge_dma_needs_correction(s, dma->slot, addr) ?
+        .target_as = slot >= 0 &&
+                     sgi_bridge_dma_needs_correction(s, slot, addr) ?
                      &s->lane_swap_as : &s->fabric_as,
         .iova = addr & ~page_mask,
         .translated_addr = 0,
@@ -1374,7 +1382,11 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     unsigned int index;
     hwaddr offset;
 
-    trace_sgi_bridge_dma_xlate(addr, dma->slot, flag);
+    if (slot >= 0) {
+        trace_sgi_bridge_dma_xlate(addr, slot, flag);
+    } else {
+        trace_sgi_bridge_dma_xlate_plain(addr, flag);
+    }
 
     if (addr < BRIDGE_PCI_TRANSLATED) {
         /* Local: not carried to crosstalk at all. */
@@ -1451,6 +1463,25 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     return entry;
 }
 
+static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
+                                          IOMMUAccessFlags flag, int iommu_idx)
+{
+    struct SGIBridgeDeviceDMA *dma =
+        container_of(iommu, struct SGIBridgeDeviceDMA, iommu);
+
+    return sgi_bridge_translate_common(dma->s, dma->slot, addr, flag);
+}
+
+static IOMMUTLBEntry sgi_bridge_plain_translate(IOMMUMemoryRegion *iommu,
+                                                hwaddr addr,
+                                                IOMMUAccessFlags flag,
+                                                int iommu_idx)
+{
+    SGIBridgeState *s = container_of(iommu, SGIBridgeState, plain_iommu);
+
+    return sgi_bridge_translate_common(s, -1, addr, flag);
+}
+
 /* One table for the bus; the swap attribute is the requesting slot's. */
 static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
                                                      int devfn)
@@ -1472,6 +1503,24 @@ static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
 static const PCIIOMMUOps sgi_bridge_iommu_ops = {
     .get_address_space = sgi_bridge_device_address_space,
 };
+
+/*
+ * The plain route, for the transfers whose swaps compose to the identity.
+ * The slot's own space applies the byte-lane swap its Device(x) register
+ * asks for; where the card's own programming swaps the same data back, the
+ * pair is unobservable and the per-word window only costs. The device
+ * model moves those legs here -- which legs they are is its call, made
+ * from the card's programmed pairing. Same decode, same node-qualified
+ * fabric routing: only the swap differs.
+ */
+AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev)
+{
+    SGIBridgeState *s = (SGIBridgeState *)
+        object_dynamic_cast(OBJECT(BUS(pci_get_bus(dev))->parent),
+                            TYPE_SGI_BRIDGE);
+
+    return s ? &s->plain_dma_as : NULL;
+}
 
 #define TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION "sgi-bridge-iommu-memory-region"
 
@@ -1497,6 +1546,18 @@ static void sgi_bridge_iommu_class_init(ObjectClass *oc, const void *data)
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(oc);
 
     imrc->translate = sgi_bridge_translate;
+    imrc->notify_flag_changed = sgi_bridge_iommu_notify_flag_changed;
+}
+
+#define TYPE_SGI_BRIDGE_PLAIN_IOMMU_MEMORY_REGION \
+    "sgi-bridge-plain-iommu-memory-region"
+
+static void sgi_bridge_plain_iommu_class_init(ObjectClass *oc,
+                                              const void *data)
+{
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(oc);
+
+    imrc->translate = sgi_bridge_plain_translate;
     imrc->notify_flag_changed = sgi_bridge_iommu_notify_flag_changed;
 }
 
@@ -1733,6 +1794,12 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
         address_space_init(&s->dma[slot].as,
                            MEMORY_REGION(&s->dma[slot].iommu), as_name);
     }
+    /* The plain route: one per bridge, the swap was the per-slot part. */
+    memory_region_init_iommu(&s->plain_iommu, sizeof(s->plain_iommu),
+                             TYPE_SGI_BRIDGE_PLAIN_IOMMU_MEMORY_REGION, obj,
+                             "sgi-bridge.iommu.plain", UINT64_MAX);
+    address_space_init(&s->plain_dma_as, MEMORY_REGION(&s->plain_iommu),
+                       "sgi-bridge.dma.plain");
     pci_setup_iommu(phb->bus, &sgi_bridge_iommu_ops, s);
 
     /* The translation table, and the read-only view of its lower halves. */
@@ -1742,6 +1809,21 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->ate_low, obj, &sgi_bridge_ate_low_ops, s,
                           "sgi-bridge.ate-low", BRIDGE_ATE_LOW_SIZE);
     memory_region_add_subregion(&s->widget, BRIDGE_ATE_LOW_BASE, &s->ate_low);
+}
+
+static void sgi_bridge_unrealize(DeviceState *dev)
+{
+    SGIBridgeState *s = SGI_BRIDGE(dev);
+    int slot;
+
+    address_space_destroy(&s->plain_dma_as);
+    for (slot = SGI_BRIDGE_DEVICES - 1; slot >= 0; slot--) {
+        address_space_destroy(&s->dma[slot].as);
+    }
+    address_space_destroy(&s->lane_swap_as);
+    address_space_destroy(&s->pci_io_as);
+    address_space_destroy(&s->pci_mmio_as);
+    address_space_destroy(&s->fabric_as);
 }
 
 /* post_load re-aims the windows from the restored registers. */
@@ -1817,6 +1899,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     dc->desc = "SGI Bridge crosstalk-to-PCI host bridge";
     dc->fw_name = "pci";
     dc->realize = sgi_bridge_realize;
+    dc->unrealize = sgi_bridge_unrealize;
     dc->vmsd = &vmstate_sgi_bridge;
     dc->user_creatable = false;
     hc->plug = sgi_bridge_plug;
@@ -1840,6 +1923,11 @@ static const TypeInfo sgi_bridge_types[] = {
         .name = TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION,
         .parent = TYPE_IOMMU_MEMORY_REGION,
         .class_init = sgi_bridge_iommu_class_init,
+    },
+    {
+        .name = TYPE_SGI_BRIDGE_PLAIN_IOMMU_MEMORY_REGION,
+        .parent = TYPE_IOMMU_MEMORY_REGION,
+        .class_init = sgi_bridge_plain_iommu_class_init,
     },
 };
 
