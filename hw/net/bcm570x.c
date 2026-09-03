@@ -340,6 +340,19 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  * on into slots the driver has not filled and reads whatever they held.
  */
 #define BCM570X_RX_STD_RING_LEN     512u
+/*
+ * The jumbo receive ring. A frame too big for the standard ring's buffers rides
+ * a ring of its own, whose buffers the driver sizes for the larger MTU, and the
+ * completion is marked so the driver recycles from the ring the buffer came
+ * from. Without it a jumbo frame has nowhere big enough to go, and writing one
+ * into a standard-ring buffer runs off the end of what the driver set aside --
+ * which corrupts whatever the guest had after it.
+ */
+#define BCM570X_MBX_RX_JUMBO_PROD_LO 0x0274
+#define BCM570X_RX_JUMBO_RCB_HADDR_HI 0x2440
+#define BCM570X_RX_JUMBO_RCB_HADDR_LO 0x2444
+#define BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS 0x2448
+#define BCM570X_RX_JUMBO_RING_LEN   256u
 #define BCM570X_SRAM_RX_RETURN_RCB  0x0200
 #define BCM570X_RXBD_SIZE           32
 #define BCM570X_RXBD_ADDR_HI        0x00    /* offsets within an rx descriptor */
@@ -356,6 +369,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RXBD_CSUM           0x10 /* ip sum (31:16), tcp/udp sum (15:0) */
 #define BCM570X_RXBD_OPAQUE         0x1c
 #define BCM570X_RXBDFLAG_TCP_UDP_CKSUM 0x0001
+#define BCM570X_RXBDFLAG_JUMBO_RING 0x0020
 #define BCM570X_RXBDFLAG_IP_CKSUM   0x0002
 #define BCM570X_RXBDFLAG_END        0x0004
 #define BCM570X_ETH_FCS_LEN         4
@@ -389,6 +403,7 @@ struct Bcm570xState {
     uint16_t status_tx_cons;    /* what the status block reports (TX) */
     uint16_t status_rx_prod;    /* the return-ring producer the status reports */
     uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
+    uint16_t rx_jumbo_cons;     /* the chip's jumbo-ring consumer */
     bool tx_busy;               /* guards the send against netdev re-entrancy */
 
     /* Interrupt state: a mask set through the 0x0204 mailbox and a pending
@@ -530,6 +545,7 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
     s->rx_std_cons = 0;
+    s->rx_jumbo_cons = 0;
     s->irq_masked = true;
     s->irq_pending = false;
     s->status_kick_done = false;
@@ -1147,6 +1163,23 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         bcm570x_regfile_write(s, off, val);
         bcm570x_tx_kick(s, val);
         return;
+    case BCM570X_MBX_RX_JUMBO_PROD_LO: {
+        /* Posting jumbo-ring buffers; guard the index like the standard one. */
+        uint16_t jumbo_len =
+            bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
+
+        if (jumbo_len == 0 || (val & 0xffff) >= BCM570X_RX_JUMBO_RING_LEN) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: receive jumbo producer %u out of range "
+                          "(ring length %u)\n", val & 0xffff,
+                          BCM570X_RX_JUMBO_RING_LEN);
+            return;
+        }
+        bcm570x_regfile_write(s, off, val);
+        /* Room where there was none: take anything the peer had waiting. */
+        aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
+        return;
+    }
     case BCM570X_MBX_RX_STD_PROD_LO: {
         /* Posting standard-ring buffers; guard the index like the TX one. */
         uint16_t std_len =
@@ -1434,10 +1467,21 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
     uint16_t ret_cons =
         bcm570x_regfile_read(s, BCM570X_MBX_RX_CONS0_LO) & 0xffff;
 
-    return std_len != 0 && ret_len != 0 &&
+    /*
+     * Either ring having a buffer posted is enough to take a frame; which one
+     * it goes to depends on how big it turns out to be, which is not known
+     * until it arrives.
+     */
+    uint16_t jumbo_prod =
+        bcm570x_regfile_read(s, BCM570X_MBX_RX_JUMBO_PROD_LO) & 0xffff;
+    uint16_t jumbo_len =
+        bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
+    bool posted = (std_len != 0 && std_prod != s->rx_std_cons) ||
+                  (jumbo_len != 0 && jumbo_prod != s->rx_jumbo_cons);
+
+    return ret_len != 0 && posted &&
            (bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
             BCM570X_HCC_MODE_ENABLE) &&
-           std_prod != s->rx_std_cons &&
            (uint16_t)((s->status_rx_prod + 1) % ret_len) != ret_cons;
 }
 
@@ -1577,6 +1621,9 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint32_t framelen;
     uint16_t rx_flags = BCM570X_RXBDFLAG_END;
     uint32_t csum;
+    uint16_t std_size, jumbo_size;
+    uint64_t jumbo_base;
+    bool on_jumbo = false;
 
     if (!bcm570x_rx_ready(s)) {
         return 0;
@@ -1611,17 +1658,45 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         framelen = BCM570X_ETH_MIN_FRAME;
     }
 
-    std_base = bcm570x_compose_hostaddr(s,
-                   bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
-                   bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO));
+    /*
+     * Pick the ring by what the frame will fit in. The control block's length
+     * field is the size of the buffer behind each descriptor, so it is the
+     * driver's statement of how much room it set aside; a frame larger than
+     * that belongs on the jumbo ring, and one too big for either is dropped
+     * rather than written past the end of somebody's buffer.
+     */
+    std_size = bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
+    jumbo_size =
+        bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
+    jumbo_base = bcm570x_compose_hostaddr(s,
+                     bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_HI),
+                     bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_LO));
+
+    if (framelen <= std_size) {
+        std_base = bcm570x_compose_hostaddr(s,
+                       bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
+                       bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO));
+        idx = s->rx_std_cons;
+    } else if (jumbo_size != 0 && jumbo_base != 0 && framelen <= jumbo_size) {
+        std_base = jumbo_base;
+        idx = s->rx_jumbo_cons;
+        rx_flags |= BCM570X_RXBDFLAG_JUMBO_RING;
+        on_jumbo = true;
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: received frame of %u bytes fits neither the "
+                      "%u-byte standard buffer nor the %u-byte jumbo buffer, "
+                      "dropped\n", framelen, std_size, jumbo_size);
+        return size;
+    }
+
     ret_base = bcm570x_compose_hostaddr(s,
                    bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
                                      BCM570X_RCB_HOSTADDR_HI),
                    bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
                                      BCM570X_RCB_HOSTADDR_LO));
-    idx = s->rx_std_cons;
 
-    /* The posted buffer's host address, from the standard-ring descriptor. */
+    /* The posted buffer's host address, from the chosen ring's descriptor. */
     pci_dma_read(pci, std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
                  std_bd, sizeof(std_bd));
     buf_addr = ((uint64_t)ldl_le_p(std_bd + BCM570X_RXBD_ADDR_HI) << 32) |
@@ -1644,7 +1719,12 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     pci_dma_write(pci, ret_base + (uint64_t)s->status_rx_prod *
                   BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
 
-    s->rx_std_cons = (s->rx_std_cons + 1) % BCM570X_RX_STD_RING_LEN;
+    if (on_jumbo) {
+        s->rx_jumbo_cons =
+            (s->rx_jumbo_cons + 1) % BCM570X_RX_JUMBO_RING_LEN;
+    } else {
+        s->rx_std_cons = (s->rx_std_cons + 1) % BCM570X_RX_STD_RING_LEN;
+    }
     s->status_rx_prod = (s->status_rx_prod + 1) % ret_len;
 
     bcm570x_rx_coalesce(s);
@@ -1807,6 +1887,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
     s->rx_std_cons = 0;
+    s->rx_jumbo_cons = 0;
     s->tx_busy = false;
     s->irq_masked = true;
     s->irq_pending = false;
@@ -1856,6 +1937,7 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16(status_tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_rx_prod, Bcm570xState),
         VMSTATE_UINT16(rx_std_cons, Bcm570xState),
+        VMSTATE_UINT16(rx_jumbo_cons, Bcm570xState),
         VMSTATE_BOOL_V(irq_masked, Bcm570xState, 2),
         VMSTATE_BOOL_V(irq_pending, Bcm570xState, 2),
         VMSTATE_BOOL_V(status_kick_done, Bcm570xState, 3),

@@ -167,6 +167,11 @@
 #define BCM_RXBD_LEN            0x08   /* idx_len word: length in the low half */
 #define BCM_RXBD_IDX            0x0a   /* idx_len word: ring index in the high half */
 #define BCM_RXBD_FLAGS          0x0c   /* type_flags word: flags in the low half */
+#define BCM_RX_JUMBO_RCB_HI     0x2440u
+#define BCM_RX_JUMBO_RCB_LO     0x2444u
+#define BCM_RX_JUMBO_RCB_MAXLEN 0x2448u
+#define BCM_MBX_RX_JUMBO_PROD_LO 0x0274u
+#define BCM_RXBDFLAG_JUMBO_RING 0x0020u
 #define BCM_RXBD_TCP_CSUM       0x10   /* csum word: TCP/UDP result in the low half */
 #define BCM_RXBD_IP_CSUM        0x12   /* csum word: IP result in the high half */
 #define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
@@ -201,6 +206,15 @@
 #define STATUS2_PHYS            0x00260000ULL
 #define TX_RING_LEN            4u             /* descriptors in the test ring */
 #define RX_RING_LEN           4u
+/*
+ * The standard ring's control block carries the size of the buffer behind each
+ * descriptor, not a count of descriptors. A driver at the standard MTU posts
+ * something like this; a frame that does not fit belongs on the jumbo ring.
+ */
+#define STD_BUF_SIZE          1536u
+#define JUMBO_RING_PHYS       0x00260000ULL
+#define JUMBO_BUF_PHYS        0x00270000ULL
+#define JUMBO_BUF_SIZE        9216u
 #define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
 /* A ring and buffer area big enough to time a burst rather than a packet. */
@@ -1682,7 +1696,7 @@ static void receive_burst_cost(unsigned int coal, unsigned int frames,
 
     bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, COAL_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
@@ -1865,7 +1879,7 @@ static void rx_open_one(Bcm *b, int fd)
 
     bar_writel(b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(b, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    bar_writel(b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
     ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
@@ -1883,10 +1897,78 @@ static void rx_open_one(Bcm *b, int fd)
     (void)fd;
 }
 
+/* Post one jumbo-ring buffer alongside the standard ring rx_open_one set up. */
+static void rx_open_jumbo(Bcm *b)
+{
+    uint8_t bd[BCM_RXBD_SIZE];
+
+    bar_writel(b, BCM_RX_JUMBO_RCB_HI, JUMBO_RING_PHYS >> 32);
+    bar_writel(b, BCM_RX_JUMBO_RCB_LO, JUMBO_RING_PHYS & 0xffffffff);
+    bar_writel(b, BCM_RX_JUMBO_RCB_MAXLEN, JUMBO_BUF_SIZE << 16);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, JUMBO_BUF_PHYS >> 32);
+    put32le(bd + 4, JUMBO_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b->qts, JUMBO_RING_PHYS, bd, sizeof(bd));
+    bar_writel(b, BCM_MBX_RX_JUMBO_PROD_LO, 1);
+}
+
 /*
- * A jumbo frame arrives whole. SGI's board guide gives this adapter two MTUs,
- * 1500 and 9000, and the 9000 one is the reason the model has to carry more
- * than an ordinary frame.
+ * A frame too big for the buffer behind a standard-ring descriptor must not be
+ * written into it. The buffer size is the driver's statement of what it set
+ * aside; writing past it corrupts whatever the guest put next in memory, and
+ * the damage surfaces as a fault somewhere with no connection to this device.
+ * Observed for real: at MTU 9000 with no jumbo ring posted, the guest kernel
+ * panicked.
+ */
+static void test_receive_overruns_nothing(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    const unsigned int len = 4096;      /* larger than STD_BUF_SIZE */
+    uint8_t *frame = g_malloc(len);
+    uint8_t *guard = g_malloc(len);
+    unsigned int i;
+
+    for (i = 0; i < len; i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+    memset(frame, 0xff, 6);             /* broadcast destination */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);             /* standard ring only, no jumbo ring */
+
+    /* Lay a pattern over the buffer and well past its end. */
+    memset(guard, 0xa5, len);
+    qtest_memwrite(b.qts, RX_BUF_PHYS, guard, len);
+
+    net_socket_send_frame(sv[0], frame, len);
+
+    /*
+     * Nothing beyond the posted buffer may have moved. Whether the frame is
+     * refused outright or cut to fit is the model's business; overwriting the
+     * guest's memory past the buffer is not.
+     */
+    qtest_memread(b.qts, RX_BUF_PHYS + STD_BUF_SIZE, guard, len - STD_BUF_SIZE);
+    for (i = 0; i < len - STD_BUF_SIZE; i++) {
+        g_assert_cmphex(guard[i], ==, 0xa5);
+    }
+
+    bcm_close(&b);
+    close(sv[0]);
+    g_free(frame);
+    g_free(guard);
+}
+
+/*
+ * A jumbo frame arrives whole, on the ring that exists for it. SGI's board
+ * guide gives this adapter two MTUs, 1500 and 9000; the part carries the larger
+ * one on a separate receive ring whose buffers are sized for it, and marks the
+ * completion so the driver recycles from the right ring.
  */
 static void test_receive_jumbo_frame(const void *data)
 {
@@ -1908,16 +1990,19 @@ static void test_receive_jumbo_frame(const void *data)
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
     rx_open_one(&b, sv[0]);
-    qtest_memset(b.qts, RX_BUF_PHYS, 0, BCM_JUMBO_FRAME_LEN);
+    rx_open_jumbo(&b);
+    qtest_memset(b.qts, JUMBO_BUF_PHYS, 0, BCM_JUMBO_FRAME_LEN);
 
     net_socket_send_frame(sv[0], frame, BCM_JUMBO_FRAME_LEN);
     wait_for_rx_prod(&b, 1);
 
-    /* Reported whole, and the payload landed byte for byte. */
+    /* Reported whole, marked as the jumbo ring's, and landed byte for byte. */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
                     BCM_JUMBO_FRAME_LEN + BCM_ETH_FCS_LEN);
-    qtest_memread(b.qts, RX_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_JUMBO_RING,
+                    ==, BCM_RXBDFLAG_JUMBO_RING);
+    qtest_memread(b.qts, JUMBO_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN, frame, BCM_JUMBO_FRAME_LEN);
 
     bcm_close(&b);
@@ -2371,7 +2456,7 @@ static void test_receive_round_trip(const void *data)
     /* Standard-ring RCB in CSRs, return-ring RCB in SRAM, status block on. */
     bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
@@ -2462,7 +2547,7 @@ static void test_receive_interrupt_coalescing(const void *data)
      * the whole burst, and the status block's host address. */
     bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, COAL_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
@@ -2543,7 +2628,7 @@ static void test_receive_coalescing_timer(const void *data)
 
     bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, COAL_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
@@ -2630,7 +2715,7 @@ static void test_receive_frame_wordswap(const void *data)
 
     bar_writel(&b, BCM_RX_STD_RCB_HI, (uint32_t)STD_RING_PHYS);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS >> 32);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, (uint32_t)RET_RING_PHYS);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
@@ -2668,7 +2753,7 @@ static void test_rx_producer_out_of_range(const void *data)
     Bcm b;
 
     bcm_open(&b, bcm_init());
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
 
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, RX_RING_LEN);
@@ -3084,6 +3169,8 @@ int main(int argc, char **argv)
                         test_receive_checksum_offload);
     qtest_add_data_func("/bcm570x/receive-checksum-not-ip", NULL,
                         test_receive_checksum_not_ip);
+    qtest_add_data_func("/bcm570x/receive-overruns-nothing", NULL,
+                        test_receive_overruns_nothing);
     qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
     qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
