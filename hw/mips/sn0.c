@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 200/2000 ("SN0", IP27) family machines: the abstract machine
- * and the node device. Products parameterize them through SN0MachineClass
- * (sn0-origin200.c); firmware in sn0-firmware.c, diagnostics in sn0-diag.c.
+ * SGI Origin 200/2000 ("SN0", IP27) family mechanics and node device.
+ * Products supply a compiled topology to the generic model consumer.
+ * Firmware lives in sn0-firmware.c and diagnostics in sn0-diag.c.
  */
 
 #include "qemu/osdep.h"
