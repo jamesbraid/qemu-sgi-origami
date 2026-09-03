@@ -309,6 +309,21 @@
 #define PRC_RXD0_0               0x1930   /* receive ring base register */
 #define PRC_CTRL_0               0x1970   /* receive ring controller */
 #define RC_IN_SVC                (1ULL << 56)
+
+/*
+ * Receive ring mode, PRC_CTRL_0 bits 49:48. IRIX arms mode 2 -- the public
+ * s2io header's five-buffer header-split layout, 64-byte descriptors (three
+ * control words plus five pointers) -- as soon as the MTU is raised to a jumbo
+ * value.
+ */
+#define RC_RING_MODE_5BUF        (2ULL << 48)
+#define RXD5_SIZE                64
+#define RXD5_SET_SIZES(b0, b1, b2)                                          \
+    ((((uint64_t)(b0) & 0xff) << 48) | (((uint64_t)(b1) & 0xffff) << 32) |  \
+     (((uint64_t)(b2) & 0xffff) << 16))
+#define RXD5_GET_B0(c2)          (((c2) >> 48) & 0xff)
+#define RXD5_GET_B1(c2)          (((c2) >> 32) & 0xffff)
+#define RXD5_GET_B2(c2)          (((c2) >> 16) & 0xffff)
 #define RX_TRAFFIC_INT           0x08f0
 
 /*
@@ -3723,6 +3738,219 @@ static void test_receive_reports_checksum_results(void)
 }
 
 /*
+ * Jumbo receive. IRIX raises the MTU and immediately re-arms the receive ring
+ * in mode 2: three buffers per descriptor, header split across them, and
+ * descriptors 64 bytes rather than 32. A model that knows only one-buffer mode
+ * keeps walking at the 32-byte stride, reads the wrong words, never finds an
+ * owned descriptor again, and receive stops for good -- an interface that still
+ * reads UP and RUNNING while silently receiving nothing, which is exactly what
+ * this adapter did at MTU 9000 before the mode was implemented.
+ *
+ * Post one three-buffer descriptor with the sizes the guest really uses
+ * (14 for the Ethernet header, 128 for the upper headers, the rest for
+ * payload), deliver a frame bigger than the first two buffers put together, and
+ * require it split across all three in order with each buffer's own count
+ * reported back.
+ */
+static void test_receive_five_buffer_unclassified_frame(void)
+{
+    XframeTx t;
+    uint8_t frame[600];
+    uint8_t landed[600];
+    const uint64_t b0 = RX_BUF0;
+    const uint64_t b1 = RX_BUF0 + 0x1000;
+    const uint64_t b2 = RX_BUF0 + 0x2000;
+    const size_t c0 = 14, c1 = 128, c2 = 4096;  /* as IRIX posts them */
+    uint64_t ctrl2;
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 3);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+
+    /* A five-buffer descriptor armed the minimal way: three sizes, three
+     * pointers, overflow buffers unposted (zero). */
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 0, 0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 8, RXD_OWN);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 16, RXD5_SET_SIZES(c0, c1, c2));
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 24, b0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 32, b1);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 40, b2);
+
+    sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
+    sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    /* The card handed the descriptor back. */
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+
+    /*
+     * This frame is NOT IPv4/TCP -- it has no transport headers to split -- so
+     * the card puts the Ethernet header in buffer 0 and the whole remainder in
+     * buffer 2, leaving buffer 1 empty. A classified frame is split differently;
+     * that is the next test.
+     */
+    ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
+    g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, c0);
+    g_assert_cmpuint(RXD5_GET_B1(ctrl2), ==, 0);
+    g_assert_cmpuint(RXD5_GET_B2(ctrl2), ==, sizeof(frame) - c0);
+
+    qtest_memread(t.qs->qts, b0, landed, c0);
+    g_assert_cmpmem(landed, c0, frame, c0);
+    qtest_memread(t.qs->qts, b2, landed, sizeof(frame) - c0);
+    g_assert_cmpmem(landed, sizeof(frame) - c0, frame + c0, sizeof(frame) - c0);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The header split proper: a classified IPv4/TCP frame. The card puts the
+ * Ethernet header in buffer 0, the IP and transport headers in buffer 1, and
+ * the payload in buffer 2 -- the layout IRIX's checksum-offload path depends on,
+ * reading the transport headers from buffer 1. An earlier version of this model
+ * left buffer 1 empty (the Linux two-buffer dummy) and put the whole remainder
+ * in buffer 2, which reassembled fine but made the offload path find no headers
+ * in buffer 1 and drop every segment. So this asserts the headers ARE in
+ * buffer 1, the payload IS in buffer 2, and the offload status is reported.
+ */
+static void test_receive_five_buffer_splits_classified_headers(void)
+{
+    XframeTx t;
+    uint8_t frame[512];
+    uint8_t landed[512];
+    const uint64_t b0 = RX_BUF0;
+    const uint64_t b1 = RX_BUF0 + 0x1000;
+    const uint64_t b2 = RX_BUF0 + 0x2000;
+    const size_t c0 = 14, c1 = 128, c2 = 4096;   /* as IRIX posts them */
+    const size_t l34 = IPV4_HDR_LEN + TCP_HDR_LEN;   /* what belongs in buffer 1 */
+    const size_t payload = 200;
+    uint64_t ctrl1, ctrl2;
+    size_t len;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_TCP, payload,
+                           sizeof(frame));
+
+    xframe_tx_start(&t);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 0, 0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 8, RXD_OWN);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 16, RXD5_SET_SIZES(c0, c1, c2));
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 24, b0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 32, b1);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 40, b2);
+    sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
+    sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
+
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+
+    /* L2 -> buffer 0, L3+L4 -> buffer 1, payload -> buffer 2. */
+    ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
+    g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, c0);
+    g_assert_cmpuint(RXD5_GET_B1(ctrl2), ==, l34);
+    g_assert_cmpuint(RXD5_GET_B2(ctrl2), ==, len - c0 - l34);
+
+    qtest_memread(t.qs->qts, b0, landed, c0);
+    g_assert_cmpmem(landed, c0, frame, c0);
+    qtest_memread(t.qs->qts, b1, landed, l34);
+    g_assert_cmpmem(landed, l34, frame + c0, l34);
+    qtest_memread(t.qs->qts, b2, landed, len - c0 - l34);
+    g_assert_cmpmem(landed, len - c0 - l34, frame + c0 + l34, len - c0 - l34);
+
+    /* The classification and checksum results are reported (offload is on in
+     * this mode, unlike the interim gate that disabled it). */
+    ctrl1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
+    g_assert_cmphex(ctrl1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
+    g_assert_cmphex((ctrl1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);   /* IP header */
+    g_assert_cmphex(ctrl1 & 0xffff, ==, RXD_CKSUM_OK);           /* TCP */
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The same split at jumbo size: a 9014-byte TCP frame, the exact shape the peer
+ * sends during a bulk transfer at MTU 9000 and the first frame size that
+ * genuinely needs buffer 2's room (the handshake fits buffers 0 and 1). This is
+ * the case the guest failed on live -- data frames retransmitted forever, never
+ * acknowledged -- while the 274-byte classified test above passed, so the small
+ * test alone is not sufficient coverage.
+ */
+static void test_receive_five_buffer_splits_a_jumbo_frame(void)
+{
+    XframeTx t;
+    g_autofree uint8_t *frame = g_malloc0(9014);
+    g_autofree uint8_t *landed = g_malloc0(9014);
+    const uint64_t b0 = RX_BUF0;
+    const uint64_t b1 = RX_BUF0 + 0x1000;
+    const uint64_t b2 = RX_BUF0 + 0x2000;
+    const size_t c0 = 14, c1 = 128, c2 = 9738;   /* as IRIX posts them */
+    const size_t l34 = IPV4_HDR_LEN + TCP_HDR_LEN;
+    const size_t payload = 9014 - ETH_HDR_LEN - IPV4_HDR_LEN - TCP_HDR_LEN;
+    uint64_t ctrl1, ctrl2;
+    size_t len;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_TCP, payload,
+                           9014);
+    g_assert_cmpuint(len, ==, 9014);
+
+    xframe_tx_start(&t);
+    /*
+     * Post the descriptor the way IRIX actually does: five buffers, with the
+     * two 4-byte overflow buffers' sizes in the low halves of the first word
+     * under the driver's own bookkeeping value in the upper half.
+     */
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 0,
+               (0x1234ULL << 32) | (4 << 16) | 4);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 8, RXD_OWN);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 16, RXD5_SET_SIZES(c0, c1, c2));
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 24, b0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 32, b1);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 40, b2);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 48, b2 + 0x4000);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 56, b2 + 0x4008);
+    sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
+    sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
+
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+
+    ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
+    g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, c0);
+    g_assert_cmpuint(RXD5_GET_B1(ctrl2), ==, l34);
+    g_assert_cmpuint(RXD5_GET_B2(ctrl2), ==, len - c0 - l34);
+
+    /*
+     * The completion reports buffers 3 and 4 as EMPTY -- their count fields in
+     * the first word zeroed, the driver's bookkeeping above them preserved. A
+     * model that leaves the posted sizes in place hands the driver a frame sum
+     * 8 bytes long, and IRIX rejects every such frame as an input error:
+     * receive dead at jumbo MTU with each byte of the frame itself delivered
+     * perfectly, which is exactly how this shipped broken once already.
+     */
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 0), ==,
+                    0x1234ULL << 32);
+
+    qtest_memread(t.qs->qts, b0, landed, c0);
+    g_assert_cmpmem(landed, c0, frame, c0);
+    qtest_memread(t.qs->qts, b1, landed, l34);
+    g_assert_cmpmem(landed, l34, frame + c0, l34);
+    qtest_memread(t.qs->qts, b2, landed, len - c0 - l34);
+    g_assert_cmpmem(landed, len - c0 - l34, frame + c0 + l34, len - c0 - l34);
+
+    ctrl1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
+    g_assert_cmphex(ctrl1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
+    g_assert_cmphex(ctrl1 & 0xffff, ==, RXD_CKSUM_OK);
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * A descriptor can ask for insertion on a frame that is not IPv4 at all. The
  * lengths a checksum walk would follow are the guest's own bytes, so the
  * request has to be declined and the frame sent as it stands.
@@ -4031,6 +4259,12 @@ int main(int argc, char **argv)
                    test_transmit_segments_a_send_larger_than_a_frame);
     qtest_add_func("xframe/receive-reports-checksum-results",
                    test_receive_reports_checksum_results);
+    qtest_add_func("xframe/receive-five-buffer-unclassified-frame",
+                   test_receive_five_buffer_unclassified_frame);
+    qtest_add_func("xframe/receive-five-buffer-splits-classified-headers",
+                   test_receive_five_buffer_splits_classified_headers);
+    qtest_add_func("xframe/receive-five-buffer-splits-a-jumbo-frame",
+                   test_receive_five_buffer_splits_a_jumbo_frame);
     qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
                    test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
