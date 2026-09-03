@@ -27,6 +27,14 @@ const SN0ModelPciFunction *sn0_model_find_pci_function(
     return NULL;
 }
 
+const SN0ModelNodeTopology *sn0_model_node_topology(
+    const SN0MachineModel *model, const SN0ModelNodeInstance *node)
+{
+    g_assert(model->node_topologies);
+    g_assert(node->topology_index < model->node_topology_count);
+    return &model->node_topologies[node->topology_index];
+}
+
 const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
                                               unsigned int nodes,
                                               const unsigned int *cpus)

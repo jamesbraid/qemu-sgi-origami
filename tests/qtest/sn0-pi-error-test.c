@@ -269,7 +269,7 @@ static void test_prom_probe_latches_the_issuing_slice(const void *data)
         return;
     }
 
-    qts = qtest_initf("-M origin200,io-bridge=on -m 64M -smp 2 "
+    qts = qtest_initf("-M origin200 -m 64M -smp 2 "
                       "-kernel %s -accel tcg,thread=multi "
                       "-no-reboot -no-shutdown -S", kernel);
     g_unlink(kernel);
@@ -346,7 +346,7 @@ static void test_prom_probe_latches_the_issuing_slice(const void *data)
 
 static void test_narrow_probe_access_matches_bridge_alias(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+    QTestState *qts = qtest_init("-M origin200 "
                                  "-device pci-testdev,addr=3,membar=1M,"
                                  "membar-backed=on");
 
@@ -386,7 +386,7 @@ static void test_pi_status_survives_migration(const void *data)
     g_assert_nonnull(tmpdir);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
 
-    from = qtest_initf("-M origin200,io-bridge=on -m 64M -smp 2 "
+    from = qtest_initf("-M origin200 -m 64M -smp 2 "
                        "-kernel %s -accel tcg,thread=multi "
                        "-no-reboot -no-shutdown -S", kernel);
     qtest_writeq(from, START_A, 0);
@@ -405,7 +405,7 @@ static void test_pi_status_survives_migration(const void *data)
                     PI_STATUS_EXPECTED);
 
     dest_args = g_strdup_printf(
-        "-M origin200,io-bridge=on -m 64M -smp 2 -kernel %s "
+        "-M origin200 -m 64M -smp 2 -kernel %s "
         "-accel tcg,thread=multi -no-reboot -no-shutdown -incoming %s",
         kernel, uri);
     to = qtest_init(dest_args);
@@ -431,7 +431,7 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
         return;
     }
 
-    qts = qtest_initf("-M origin200,io-bridge=on -m 64M -smp 2 "
+    qts = qtest_initf("-M origin200 -m 64M -smp 2 "
                       "-kernel %s -accel tcg,thread=multi "
                       "-S", kernel);
     qtest_writeq(qts, START_A, 0);

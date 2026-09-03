@@ -32,7 +32,7 @@
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
 #define DEV_MEMORY_SPACE        (1u << 12)
 
-#define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
+#define MACHINE_WITH_BRIDGE     "-M origin200"
 #define MACHINE                 "-M origin200"
 #define MACHINE_RECORDING       "-M origin200,diagnostic-recording=on"
 

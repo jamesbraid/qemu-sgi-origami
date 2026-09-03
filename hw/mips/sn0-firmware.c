@@ -168,7 +168,7 @@ static void sn0_build_sash_handoff(uint8_t *flash, uint8_t *fw,
 }
 
 static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash,
-                            uint64_t flash_size)
+                            uint64_t flash_size, uint32_t sector_size)
 {
     const SN0MachineModel *model = smc->model;
     static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
@@ -177,7 +177,7 @@ static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash,
     int i;
 
     g_assert(flash_size >=
-             (SN0_PROMLOG_SECTOR + 1) * SN0_FLASH_SECTOR_SIZE);
+             (SN0_PROMLOG_SECTOR + 1) * sector_size);
     memset(flash, 0xff, flash_size);
 
     for (i = 0; i < SN0_FLASH_ENTRIES; i++) {
@@ -205,7 +205,7 @@ static void sn0_build_flash(SN0MachineClass *smc, uint8_t *flash,
     stl_be_p(config + 0x48, 0);                    /* configuration flags */
 
     /* The factory-fresh environment log; an erased first entry ends it. */
-    config = flash + SN0_PROMLOG_SECTOR * SN0_FLASH_SECTOR_SIZE;
+    config = flash + SN0_PROMLOG_SECTOR * sector_size;
     stl_be_p(config + 0x10, SN0_PROMLOG_MAGIC);
     stl_be_p(config + 0x14, SN0_PROMLOG_VERSION);
     stl_be_p(config + 0x18, 1);                    /* initial sequence */
@@ -626,14 +626,14 @@ static unsigned int sn0_kl_board_component_count(
     const SN0KlBoardModel *board, const SN0NodeState *node)
 {
     unsigned int count = 0;
+    unsigned int processor_templates = 0;
     size_t component_index;
 
     for (component_index = 0; component_index < board->component_count;
          component_index++) {
         switch (board->components[component_index].record_kind) {
         case SN0_KL_RECORD_PROCESSOR:
-            g_assert(count <= UINT_MAX - node->nr_cpus);
-            count += node->nr_cpus;
+            processor_templates++;
             break;
         case SN0_KL_RECORD_COMPONENT:
         case SN0_KL_RECORD_HUB:
@@ -644,6 +644,12 @@ static unsigned int sn0_kl_board_component_count(
         default:
             g_assert_not_reached();
         }
+    }
+    if (processor_templates) {
+        g_assert(processor_templates == 1 ||
+                 processor_templates == node->nr_cpus);
+        g_assert(count <= UINT_MAX - node->nr_cpus);
+        count += node->nr_cpus;
     }
     return count;
 }
@@ -821,9 +827,8 @@ static SN0KlComponentModel sn0_kl_resolve_component(
     const SN0MachineState *s, unsigned int node_index,
     const SN0KlComponentModel *template)
 {
-    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
-    const SN0ModelBaseIO *base_io = &model->base_io;
     const SN0NodeState *node = s->nodes[node_index];
+    const SN0ModelBaseIO *base_io = &node->topology->base_io;
     SN0KlComponentModel component = *template;
 
     switch (template->source) {
@@ -831,13 +836,13 @@ static SN0KlComponentModel sn0_kl_resolve_component(
         break;
     case SN0_KL_COMPONENT_SOURCE_HUB:
         g_assert(template->source_ordinal == 0);
-        component.type = model->hub.kl_type;
+        component.type = node->topology->hub.kl_type;
         component.revision = node->hub.ni_revision;
         break;
     case SN0_KL_COMPONENT_SOURCE_BASE_IO:
         g_assert(template->source_ordinal == 0);
         component.type = base_io->kl_type;
-        component.revision = s->widget0_revision;
+        component.revision = base_io->default_revision;
         component.physical_id = base_io->widget;
         component.widget = base_io->widget;
         break;
@@ -859,21 +864,9 @@ static SN0KlComponentModel sn0_kl_resolve_component(
         default:
             g_assert_not_reached();
         }
+        g_assert(device);
         component.type = function->kl_type;
-        if (device) {
-            component.revision =
-                pci_get_byte(device->config + PCI_REVISION_ID);
-        } else {
-            /*
-             * The bring-up-only no-Bridge topology deliberately omits both
-             * ISPs but has always retained their synthesized graph records.
-             * Keep that compatibility case separate from installed devices,
-             * whose revision comes from live PCI configuration above.
-             */
-            g_assert(!s->io_bridge_present);
-            g_assert(template->pci_kind == SN0_MODEL_PCI_ISP1040);
-            component.revision = function->pci_revision;
-        }
+        component.revision = pci_get_byte(device->config + PCI_REVISION_ID);
         component.physical_id = function->device;
         component.widget = base_io->widget;
         break;
@@ -889,8 +882,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
-    const SN0KlConfigModel *klconfig = &model->klconfig;
-    const SN0ModelBaseIO *base_io = &model->base_io;
+    SN0NodeState *node = s->nodes[node_index];
+    const SN0KlConfigModel *klconfig = &node->topology->klconfig;
+    const SN0ModelBaseIO *base_io = &node->topology->base_io;
     const SN0ModelPciFunction *ioc3 = sn0_model_find_pci_function(
         base_io, SN0_MODEL_PCI_IOC3, 0);
     const SN0ModelAddressSpace *memory = sn0_model_find_space(
@@ -899,7 +893,6 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
         model, SN0_MODEL_SPACE_XTALK);
     const SN0ModelRegion *bridge = sn0_model_find_region(
         model, SN0_MODEL_REGION_BRIDGE_REGISTERS);
-    SN0NodeState *node = s->nodes[node_index];
     hwaddr node_base;
     uint8_t *graph;
     uint8_t *console;
@@ -950,8 +943,16 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
         const SN0KlBoardModel *board = &klconfig->boards[board_index];
         unsigned int board_components =
             sn0_kl_board_component_count(board, node);
+        unsigned int processor_templates = 0;
         size_t template_index;
 
+        for (template_index = 0; template_index < board->component_count;
+             template_index++) {
+            if (board->components[template_index].record_kind ==
+                SN0_KL_RECORD_PROCESSOR) {
+                processor_templates++;
+            }
+        }
         sn0_kl_board(graph, klconfig, board, node, board_index,
                      component_index, board_components);
         for (template_index = 0; template_index < board->component_count;
@@ -960,7 +961,8 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                 s, node_index, &board->components[template_index]);
             const SN0KlComponentModel *component = &live_component;
             unsigned int instances = component->record_kind ==
-                SN0_KL_RECORD_PROCESSOR ? node->nr_cpus : 1;
+                SN0_KL_RECORD_PROCESSOR && processor_templates == 1 ?
+                node->nr_cpus : 1;
             unsigned int instance;
 
             for (instance = 0; instance < instances; instance++) {
@@ -972,8 +974,10 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                 case SN0_KL_RECORD_MEMORY_BANK:
                     break;
                 case SN0_KL_RECORD_PROCESSOR:
-                    virtual_id = node->cpu_base + instance;
-                    physical_id = instance;
+                    g_assert(component->physical_id <= UINT_MAX - instance);
+                    physical_id = component->physical_id + instance;
+                    g_assert(physical_id < node->nr_cpus);
+                    virtual_id = node->cpu_base + physical_id;
                     break;
                 case SN0_KL_RECORD_HUB:
                     physical_id = node->nasid;
@@ -1005,6 +1009,7 @@ static void sn0_build_structures(MachineState *machine,
     SN0MachineState *s = SN0_MACHINE(machine);
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
     SN0NodeState *node_state = s->nodes[node_index];
+    const SN0KlConfigModel *klconfig = &node_state->topology->klconfig;
     hwaddr node = sn0_firmware_node_base(model, node_state->nasid);
     struct sn0_mem_descriptor mem[6];
     uint8_t param[0x60] = { };
@@ -1043,8 +1048,8 @@ static void sn0_build_structures(MachineState *machine,
             break;
         case SN0_HW_DIR_CONFIG_GRAPH:
             stq_be_p(e + 0x00, SN0_HW_DIR_SIGNATURE);
-            stq_be_p(e + 0x08, model->klconfig.base);
-            stq_be_p(e + 0x18, model->klconfig.size);
+            stq_be_p(e + 0x08, klconfig->base);
+            stq_be_p(e + 0x18, klconfig->size);
             stq_be_p(e + 0x20, 1);
             break;
         case SN0_HW_DIR_GDA:
@@ -1169,6 +1174,7 @@ void sn0_firmware_reset(void *opaque)
 {
     SN0MachineState *s = opaque;
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
+    const SN0ModelBaseIO *base_io = &s->nodes[0]->topology->base_io;
     const SN0ModelAddressSpace *xtalk = sn0_model_find_space(
         model, SN0_MODEL_SPACE_XTALK);
     const SN0ModelRegion *hub = sn0_model_find_region(
@@ -1180,7 +1186,7 @@ void sn0_firmware_reset(void *opaque)
                       SN0_HUB_IO_BWIN_ENTRY(
                           SN0_FIRMWARE_WIDGET0_WINDOW),
                       SN0_HUB_IO_BWIN_WIDGET(
-                          model->base_io.discovery_widget) |
+                          base_io->discovery_widget) |
                       SN0_HUB_IO_BWIN_SLICE(
                           SN0_FIRMWARE_WIDGET0_SLICE),
                       MEMTXATTRS_UNSPECIFIED, NULL);
@@ -1194,8 +1200,8 @@ void sn0_firmware_reset(void *opaque)
 static void sn0_assign_node_pci_resources(SN0MachineState *s,
                                           unsigned int node_index)
 {
-    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
-    const SN0ModelBaseIO *base_io = &model->base_io;
+    const SN0ModelBaseIO *base_io =
+        &s->nodes[node_index]->topology->base_io;
     unsigned int scsi_index = 0;
     size_t function_index;
 
@@ -1237,10 +1243,6 @@ void sn0_assign_pci_resources(void *opaque)
 {
     SN0MachineState *s = opaque;
     unsigned int node_index;
-
-    if (!s->io_bridge_present) {
-        return;
-    }
 
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
         sn0_assign_node_pci_resources(s, node_index);
@@ -1294,6 +1296,20 @@ static void sn0_hand_off_elf_kernel(MachineState *machine, uint8_t *flash,
                              SN0_COMPAT_CACHED + SN0_ARGV_ADDR);
 }
 
+static bool sn0_flash_geometry_compatible(const SN0ModelFlash *left,
+                                          const SN0ModelFlash *right)
+{
+    return left->kind == right->kind &&
+           left->sector_size == right->sector_size &&
+           left->width == right->width &&
+           left->mappings == right->mappings &&
+           left->endianness == right->endianness &&
+           left->manufacturer_id == right->manufacturer_id &&
+           left->device_id == right->device_id &&
+           left->unlock_address[0] == right->unlock_address[0] &&
+           left->unlock_address[1] == right->unlock_address[1];
+}
+
 void sn0_firmware_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -1301,6 +1317,7 @@ void sn0_firmware_init(MachineState *machine)
     const SN0MachineModel *model = smc->model;
     const SN0ModelRegion *flash_region = sn0_model_find_region(
         model, SN0_MODEL_REGION_PFLASH_RESET);
+    const SN0ModelFlash *flash_model = &s->nodes[0]->topology->flash;
     MemoryRegion *system = get_system_memory();
     unsigned int node_count = s->num_nodes;
     hwaddr node = sn0_firmware_node_base(model, 0);
@@ -1311,9 +1328,19 @@ void sn0_firmware_init(MachineState *machine)
     unsigned int node_index;
 
     g_assert(flash_region && flash_region->size <= SIZE_MAX);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        if (s->nodes[node_index]->flash_size != flash_region->size ||
+            !sn0_flash_geometry_compatible(
+                flash_model, &s->nodes[node_index]->topology->flash)) {
+            error_report("%s: node %u has incompatible flash geometry",
+                         MACHINE_GET_CLASS(machine)->name, node_index);
+            exit(EXIT_FAILURE);
+        }
+    }
     /* A -bios image replaces this buffer; a short one leaves bytes behind. */
     flash = g_malloc0(flash_region->size);
-    sn0_build_flash(smc, flash, flash_region->size);
+    sn0_build_flash(smc, flash, flash_region->size,
+                    flash_model->sector_size);
 
     if (machine->firmware) {
         char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);

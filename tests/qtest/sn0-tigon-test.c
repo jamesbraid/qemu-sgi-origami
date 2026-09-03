@@ -28,7 +28,7 @@
 static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 #define MACHINE_WITH_BRIDGE  \
-    "-M origin200,io-bridge=on -device tigon,addr=3,mac=" TIGON_MAC
+    "-M origin200 -device tigon,addr=3,mac=" TIGON_MAC
 
 /*
  * The card's slot. Devices 0 and 1 are the base I/O board's SCSI adapters and
@@ -498,7 +498,7 @@ static uint32_t wait_return_prod(QTestState *qts)
 
 static QTestState *tigon_init_netdev(int guest_fd)
 {
-    return qtest_initf("-M origin200,io-bridge=on "
+    return qtest_initf("-M origin200 "
                        "-netdev socket,fd=%d,id=n0 "
                        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0",
                        guest_fd);

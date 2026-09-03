@@ -107,22 +107,6 @@ static void test_upper_half_is_not_the_register(const void *data)
     qtest_quit(qts);
 }
 
-static void test_the_revision_is_settable(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200,widget0-revision=3");
-
-    /* Turning the knob must reach the register a guest reads. */
-    uint32_t id = qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA);
-
-    g_assert_cmpuint(ID_REVISION(id), ==, 3);
-
-    /* And the rest of the identity is unmoved: one value changed, not two. */
-    g_assert_cmphex(ID_PART(id), ==, BRIDGE_PART);
-    g_assert_cmphex(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
-
-    qtest_quit(qts);
-}
-
 static void test_both_windows_reach_one_device(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -183,20 +167,6 @@ static void test_widget_0_is_the_bridge_itself(const void *data)
     qtest_quit(qts);
 }
 
-static void test_widget_0_answers_without_the_bridge_option(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200,io-bridge=off");
-
-    /* io-bridge=off must not silence widget 0: OpenBSD panics without it. */
-    uint32_t id = qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
-                              REG_DATA);
-
-    g_assert_cmphex(ID_PART(id), ==, BRIDGE_PART);
-    g_assert_cmphex(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
-
-    qtest_quit(qts);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -205,16 +175,11 @@ int main(int argc, char **argv)
                         test_identity_is_the_bridges);
     qtest_add_data_func("sn0/widget0/is-the-bridge-itself", NULL,
                         test_widget_0_is_the_bridge_itself);
-    qtest_add_data_func("sn0/widget0/answers-without-the-bridge-option", NULL,
-                        test_widget_0_answers_without_the_bridge_option);
     qtest_add_data_func("sn0/widget0/reached-through-the-last-big-window", NULL,
                         test_it_is_where_the_firmware_put_it);
     qtest_add_data_func("sn0/widget0/both-windows-reach-one-device", NULL,
                         test_both_windows_reach_one_device);
     qtest_add_data_func("sn0/widget0/upper-half-of-the-slot", NULL,
                         test_upper_half_is_not_the_register);
-    qtest_add_data_func("sn0/widget0/revision-is-settable", NULL,
-                        test_the_revision_is_settable);
-
     return g_test_run();
 }

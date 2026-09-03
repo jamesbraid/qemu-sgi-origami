@@ -23,11 +23,6 @@
 #define SN0_MAX_MEMORY_BANKS 8
 #define SN0_MAX_MEMORY_SLOTS 4
 
-/* The Hub's processor lines, named by the Cause bit each one raises. */
-#define SN0_HUB_BANK0_CAUSE_BIT 10
-#define SN0_HUB_BANK1_CAUSE_BIT 11
-#define SN0_HUB_RT_CAUSE_BIT    12
-
 /*
  * Crosstalk space: a widget number and an offset -- one container
  * indexed by widget, so a small window and a big window are two views
@@ -55,8 +50,6 @@
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
 /* The identification field is four bits wide. */
-#define SN0_WIDGET0_REVISION_MAX 0xf
-
 /*
  * The firmware's widget-0 redirection: the last big window aimed at
  * widget 0, which both guests expect done. OpenBSD's allocator would
@@ -191,9 +184,6 @@
  */
 #define SN0_PROCESSOR_MODE_MASK 0x01ffffff  /* bits 24:0, latched at reset */
 
-/* The Am29F080's erase sector, shared by chip model and image builder. */
-#define SN0_FLASH_SECTOR_SIZE (64 * KiB)
-
 /* Fixed state capacities; the product model supplies the active counts. */
 #define SN0_MAX_CPUS_PER_NODE 2
 #define SN0_MAX_ADDRESS_SPACES 4
@@ -222,6 +212,7 @@ typedef struct SN0NodeState {
 
     /* Static product description supplied by the owning machine. */
     const SN0MachineModel *model;
+    const SN0ModelNodeTopology *topology;
 
     /*
      * Properties. local-memory-base is where a NASID-less memory-space
@@ -329,13 +320,6 @@ struct SN0MachineState {
     /* The bridge at every other non-zero widget: net-new 2-7 and 9-15. */
     MemoryRegion (*widget_alias)[SN0_XTALK_WIDGETS];
 
-    /*
-     * On by default: a real Origin 200 always has one and every device
-     * hangs off it, so off is a bring-up aid. It does not gate widget 0,
-     * which must keep answering or OpenBSD panics.
-     */
-    bool io_bridge_present;
-
     /* Off by default: not a shipped part, and firmware would prefer it. */
     bool junk_uart_present;
 
@@ -355,13 +339,6 @@ struct SN0MachineState {
     PCIDevice **pci_ioc3;
     PCIDevice *(*pci_scsi)[SN0_MAX_SCSI_ADAPTERS];
 
-    /*
-     * Candidate values: derived facts, settable so two runs can differ
-     * in one value and nothing else; moving one out to a constant is how
-     * an observation settles it.
-     */
-    uint32_t widget0_revision;
-
 };
 
 typedef struct SN0MachineState SN0MachineState;
@@ -377,10 +354,9 @@ struct SN0MachineClass {
     /*< public >*/
     /* Static product facts compiled from the canonical machine model. */
     const SN0MachineModel *model;
-
-    /* Apply the product-specific QOM adapters to the generated topology. */
-    void (*populate_io)(SN0MachineState *s, unsigned int node_index);
 };
+
+void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
 
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
 void sn0_diagnostic_machine_reset(SN0MachineState *s);

@@ -23,8 +23,11 @@
 #define SPACE_XTALK     0x20000000000ULL
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
+#define BRIDGE_DEVICE3  0x700000
 #define IOC3_BASE       (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE2)
+#define TEST_IOC3_BASE  (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
+                         BRIDGE_DEVICE3)
 
 /*
  * A guest's bus scan: assign the controller a PCI address, let it master
@@ -41,11 +44,13 @@
 #define DEV_MEMORY_SPACE (1u << 12)
 
 #define PCI_IOC3_DEVICE  2
+#define TEST_IOC3_DEVICE 3
 #define PCI_COMMAND      0x04
 #define PCI_COMMAND_MEMORY 0x0002
 #define PCI_COMMAND_MASTER 0x0004
 #define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
+#define TEST_IOC3_PCI_MMIO 0x18000000u
 
 #define PCI_SUBSYSTEM    0x2c
 #define SUBSYSTEM_SGI    0x10a9u  /* the vendor half, the same on every board */
@@ -58,6 +63,16 @@ static void sn0_ioc3_attach(QTestState *qts)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+static void test_ioc3_attach(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(TEST_IOC3_DEVICE) + PCI_BAR0,
+                 TEST_IOC3_PCI_MMIO);
+    qtest_writel(qts, CFG0(TEST_IOC3_DEVICE) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DEVICE(TEST_IOC3_DEVICE),
+                 DEV_MEMORY_SPACE | (TEST_IOC3_PCI_MMIO >> 20));
 }
 
 /*
@@ -140,7 +155,7 @@ static void sn0_ioc3_attach(QTestState *qts)
  */
 static void test_the_presence_check_reads_out_of_reset(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -157,7 +172,7 @@ static void test_the_presence_check_reads_out_of_reset(const void *data)
  */
 static void test_the_fifo_flags_are_not_writable(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -181,7 +196,7 @@ static void test_the_fifo_flags_are_not_writable(const void *data)
  */
 static void test_the_extended_control_holds_its_control_bits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -213,7 +228,7 @@ static void test_the_mode_field_holds_each_encoding(const void *data)
     static const uint8_t modes[] = {
         MODE_COMPAT, MODE_BYTE, MODE_COMPAT_FIFO, MODE_ECP, MODE_CONFIG,
     };
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
 
     sn0_ioc3_attach(qts);
@@ -236,7 +251,7 @@ static void test_the_mode_field_holds_each_encoding(const void *data)
  */
 static void test_the_transmit_fifo_never_fills(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
 
     sn0_ioc3_attach(qts);
@@ -256,7 +271,7 @@ static void test_the_transmit_fifo_never_fills(const void *data)
 /* The eight data lines, which software also drives during negotiation. */
 static void test_the_data_register_holds_a_byte(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -278,7 +293,7 @@ static void test_the_data_register_holds_a_byte(const void *data)
  */
 static void test_the_status_register_reports_an_empty_cable(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -299,7 +314,7 @@ static void test_the_status_register_reports_an_empty_cable(const void *data)
  */
 static void test_the_control_register_holds_its_lines(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -317,7 +332,7 @@ static void test_the_control_register_holds_its_lines(const void *data)
 /* The configuration-B register, which the datasheet gives no mode. */
 static void test_the_configuration_b_register_holds_a_byte(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -335,7 +350,7 @@ static void test_the_configuration_b_register_holds_a_byte(const void *data)
  */
 static void test_configuration_a_needs_its_own_mode(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -361,7 +376,7 @@ static void test_configuration_a_needs_its_own_mode(const void *data)
  */
 static void test_the_ecp_registers_are_a_byte_apart(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -387,7 +402,7 @@ static void test_the_ecp_registers_are_a_byte_apart(const void *data)
  */
 static void test_the_ecp_file_answers_a_byte_at_a_time(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t lane[4];
     uint32_t wide;
     unsigned int i;
@@ -421,7 +436,7 @@ static void test_the_ecp_file_answers_a_byte_at_a_time(const void *data)
  */
 static void test_the_two_dma_contexts_are_distinct(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -446,7 +461,7 @@ static void test_the_two_dma_contexts_are_distinct(const void *data)
  */
 static void test_a_context_holds_its_count_arm_and_last(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -470,7 +485,7 @@ static void test_a_context_holds_its_count_arm_and_last(const void *data)
  */
 static void test_the_shared_control_reports_the_context_flags(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -504,7 +519,7 @@ static void test_the_shared_control_reports_the_context_flags(const void *data)
  */
 static void test_the_shared_control_holds_its_own_bits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -537,7 +552,7 @@ static void test_the_shared_control_holds_its_own_bits(const void *data)
  */
 static void test_the_engine_never_reports_a_busy_context(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -577,7 +592,7 @@ static QTestState *plp_start_with_a_file(char **path)
     g_assert_cmpint(fd, >=, 0);
     close(fd);
 
-    args = g_strdup_printf("-M origin200,io-bridge=on "
+    args = g_strdup_printf("-M origin200 "
                            "-chardev file,id=plp0,path=%s "
                            "-parallel chardev:plp0", *path);
     return qtest_init(args);
@@ -802,7 +817,7 @@ static void test_an_unreadable_buffer_faults_and_keeps_its_count(
  */
 static void test_the_dma_registers_are_four_bytes_apart(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -860,23 +875,24 @@ static void test_a_board_fits_the_port_or_does_not(const void *data)
 {
     const BoardParallel *board = data;
     g_autofree char *args =
-        g_strdup_printf("-M origin200,io-bridge=on "
-                        "-global sgi-ioc3.subsystem-id=0x%04x",
+        g_strdup_printf("-M origin200 "
+                        "-device sgi-ioc3,addr=3,subsystem-id=0x%04x",
                         board->subsystem_id);
     QTestState *qts = qtest_init(args);
 
-    sn0_ioc3_attach(qts);
+    test_ioc3_attach(qts);
 
     /* The identifier a guest dispatches on, before what it selects. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_SUBSYSTEM),
+    g_assert_cmphex(qtest_readl(qts, CFG0(TEST_IOC3_DEVICE) + PCI_SUBSYSTEM),
                     ==, SUBSYSTEM(board->subsystem_id));
 
-    qtest_writeb(qts, ECP_DATA, 0x5a);
-    g_assert_cmpint(qtest_readb(qts, ECP_DATA) == 0x5a, ==, board->parallel);
+    qtest_writeb(qts, TEST_IOC3_BASE + 0x20150, 0x5a);
+    g_assert_cmpint(qtest_readb(qts, TEST_IOC3_BASE + 0x20150) == 0x5a,
+                    ==, board->parallel);
 
-    qtest_writel(qts, DMA_A_ADDR_LO, 0x11112000);
-    g_assert_cmpint(qtest_readl(qts, DMA_A_ADDR_LO) == 0x11112000, ==,
-                    board->parallel);
+    qtest_writel(qts, TEST_IOC3_BASE + 0x084, 0x11112000);
+    g_assert_cmpint(qtest_readl(qts, TEST_IOC3_BASE + 0x084) == 0x11112000,
+                    ==, board->parallel);
 
     qtest_quit(qts);
 }

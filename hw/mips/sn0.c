@@ -74,10 +74,6 @@ static const SN0ModelRegion *sn0_region(const SN0MachineModel *model,
     return region;
 }
 
-/* The AMD 29F080's two unlock-cycle command addresses. */
-#define SN0_FLASH_CMD_ADDR1   0x5555
-#define SN0_FLASH_CMD_ADDR2   0x2aaa
-
 /*
  * The phase's two execution homes, from the full 64-bit PC. The PC is
  * translated through the MMU rather than pattern-matched, because the
@@ -992,6 +988,7 @@ static void sn0_node_map_memory(SN0NodeState *node)
 
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
+    const SN0ModelFlash *flash = &node->topology->flash;
     MemoryRegion *system = get_system_memory();
     const SN0ModelRegion *flash_hub =
         sn0_region(node->model, SN0_MODEL_REGION_PFLASH_LBOOT);
@@ -1033,8 +1030,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
              flash_reset->space == SN0_MODEL_SPACE_MEMORY);
     g_assert(rboot_storage == flash_reset);
     g_assert(flash_reset->size > 0 &&
-             flash_reset->size % SN0_FLASH_SECTOR_SIZE == 0);
-    g_assert(flash_reset->size / SN0_FLASH_SECTOR_SIZE <= UINT32_MAX);
+             flash_reset->size % flash->sector_size == 0);
+    g_assert(flash_reset->size / flash->sector_size <= UINT32_MAX);
     g_assert(node->model->memory.architectural_banks > 0);
     g_assert(ecc->size % node->model->memory.architectural_banks == 0);
     g_assert(directory->size % node->model->memory.architectural_banks == 0);
@@ -1046,15 +1043,18 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
      */
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
     qdev_prop_set_uint32(flash_dev, "num-blocks",
-                         flash_reset->size / SN0_FLASH_SECTOR_SIZE);
-    qdev_prop_set_uint32(flash_dev, "sector-length", SN0_FLASH_SECTOR_SIZE);
-    qdev_prop_set_uint8(flash_dev, "width", 1);
-    qdev_prop_set_uint8(flash_dev, "mappings", 1);
-    qdev_prop_set_uint8(flash_dev, "big-endian", 1);
-    qdev_prop_set_uint16(flash_dev, "id0", 0x01);       /* AMD */
-    qdev_prop_set_uint16(flash_dev, "id1", 0xd5);       /* Am29F080 */
-    qdev_prop_set_uint16(flash_dev, "unlock-addr0", SN0_FLASH_CMD_ADDR1);
-    qdev_prop_set_uint16(flash_dev, "unlock-addr1", SN0_FLASH_CMD_ADDR2);
+                         flash_reset->size / flash->sector_size);
+    qdev_prop_set_uint32(flash_dev, "sector-length", flash->sector_size);
+    qdev_prop_set_uint8(flash_dev, "width", flash->width);
+    qdev_prop_set_uint8(flash_dev, "mappings", flash->mappings);
+    qdev_prop_set_uint8(flash_dev, "big-endian",
+                        flash->endianness == SN0_MODEL_ENDIAN_BIG);
+    qdev_prop_set_uint16(flash_dev, "id0", flash->manufacturer_id);
+    qdev_prop_set_uint16(flash_dev, "id1", flash->device_id);
+    qdev_prop_set_uint16(flash_dev, "unlock-addr0",
+                         flash->unlock_address[0]);
+    qdev_prop_set_uint16(flash_dev, "unlock-addr1",
+                         flash->unlock_address[1]);
     qdev_prop_set_string(flash_dev, "name", flash_name);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(flash_dev), &error_fatal);
     node->flash = PFLASH_CFI02(flash_dev);
@@ -1146,6 +1146,9 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
+    const SN0ModelHub *hub = &node->topology->hub;
+    const SN0ModelHubPopulation *population =
+        &node->topology->hub_population;
     const SN0ModelRegion *memory_region =
         sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
     unsigned int node_index = node->nasid;
@@ -1189,15 +1192,43 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
+    switch (node->topology->module_role) {
+    case SN0_MODEL_MODULE_MASTER:
+        qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", false);
+        break;
+    case SN0_MODEL_MODULE_SLAVE:
+        qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", true);
+        break;
+    default:
+        g_assert_not_reached();
+    }
     qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
-                        node->model->hub.ni_revision);
+                        hub->ni_revision);
     /*
      * Each PIMM record part gets its own synthetic serial: per-unit as the
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         node->model->hub.serial_base +
-                         node->model->hub.serial_stride * node->nasid);
+                         hub->serial_base + hub->serial_stride * node->nasid);
+    qdev_prop_set_uint32(
+        DEVICE(&node->hub), "population",
+        (population->i2c_controller ?
+         SGI_HUB_POPULATION_I2C_CONTROLLER : 0) |
+        (population->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
+    qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
+                         population->i2c_nvram_pages);
+    switch (population->onewire_identity) {
+    case SN0_MODEL_ONEWIRE_NONE:
+        qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
+                            SGI_HUB_ONEWIRE_NONE);
+        break;
+    case SN0_MODEL_ONEWIRE_BLANK_DS2505:
+        qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
+                            SGI_HUB_ONEWIRE_BLANK_DS2505);
+        break;
+    default:
+        g_assert_not_reached();
+    }
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",
@@ -1249,13 +1280,13 @@ static void sn0_node_create_hub(SN0NodeState *node)
         cpu = node->cpu[slice];
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank0", slice,
-            cpu->env.irq[SN0_HUB_BANK0_CAUSE_BIT - CP0Ca_IP]);
+            cpu->env.irq[hub->cpu_irq_lines.bank0 + 2]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank1", slice,
-            cpu->env.irq[SN0_HUB_BANK1_CAUSE_BIT - CP0Ca_IP]);
+            cpu->env.irq[hub->cpu_irq_lines.bank1 + 2]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "rt", slice,
-            cpu->env.irq[SN0_HUB_RT_CAUSE_BIT - CP0Ca_IP]);
+            cpu->env.irq[hub->cpu_irq_lines.rt + 2]);
     }
 }
 
@@ -1327,8 +1358,8 @@ static void sn0_init(MachineState *machine)
     unsigned int max_nodes = sn0_model_max_nodes(model);
     unsigned int node_count, node_index, cpu_index = 0;
 
-    /* A product class must supply its static description and QOM adapters. */
-    g_assert(model && smc->populate_io);
+    /* A product class must supply its static description. */
+    g_assert(model);
     g_assert(max_nodes > 0);
     g_assert(model->cpu_slots_per_node <= SN0_MAX_CPUS_PER_NODE);
     g_assert(model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
@@ -1383,6 +1414,7 @@ static void sn0_init(MachineState *machine)
                      "described by the machine model", mc->name);
         exit(EXIT_FAILURE);
     }
+    g_assert(model->junk_uart_node < profile->node_count);
 
     /* Whole mebibytes per chassis: the bank fit is counted in them. */
     if (node_count > 1 && !numa_nodes &&
@@ -1465,6 +1497,7 @@ static void sn0_init(MachineState *machine)
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_model->nasid);
         node->model = model;
+        node->topology = sn0_model_node_topology(model, node_model);
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
         qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
@@ -1481,22 +1514,20 @@ static void sn0_init(MachineState *machine)
         qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
 
         /*
-         * The Hub facts the machine rather than the node owns: its
-         * programmed node number (real firmware programs it later, so a
-         * real-PROM boot starts at zero), which chassis is the slave, the
-         * chassis DIP switches, the CrayLink peer, the system controller's
-         * AUX backend, and the bring-up UART. Every module has its own
-         * physical AUX connector, so each node's controller gets its own
-         * -serial index, node-major with a fixed stride: node 0's AUX at 2,
-         * node 1's at 6. Resolved here because assigning one character
-         * backend to two frontends aborts the machine. The bring-up UART is
-         * a node-0 diagnostic device, not part of any shipped chassis;
-         * keeping it on the console node avoids the same collision.
+         * The runtime Hub state the machine owns: its programmed node number
+         * (real firmware programs it later, so a real-PROM boot starts at
+         * zero), the chassis DIP switches, the CrayLink peer, the system
+         * controller's AUX backend, and the bring-up UART. Every module has
+         * its own physical AUX connector, so each node's controller gets a
+         * separate -serial index, node-major with a fixed stride: node 0's
+         * AUX at 2, node 1's at 6. Resolved here because assigning one
+         * character backend to two frontends aborts the machine. The
+         * bring-up UART is
+         * a diagnostic device, not part of any shipped chassis; keeping it
+         * on the model's console node avoids the same collision.
          */
         qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
                              s->synthesized_firmware ? node_model->nasid : 0);
-        qdev_prop_set_bit(DEVICE(&node->hub), "slave-module",
-                          node_index != 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
         aux_chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_ELSC_CHARDEV));
@@ -1519,12 +1550,15 @@ static void sn0_init(MachineState *machine)
                                  peer->nasid);
         }
         qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
-                          node_index == 0 && s->junk_uart_present);
-        if (node_index == 0 && s->junk_uart_present &&
-            serial_hd(SN0_NODE_SERIAL(0, SN0_JUNK_UART_CHARDEV))) {
+                          node_index == model->junk_uart_node &&
+                          s->junk_uart_present);
+        if (node_index == model->junk_uart_node && s->junk_uart_present &&
+            serial_hd(SN0_NODE_SERIAL(model->junk_uart_node,
+                                      SN0_JUNK_UART_CHARDEV))) {
             object_property_set_link(
                 OBJECT(&node->hub), "junk-uart-chardev",
-                OBJECT(serial_hd(SN0_NODE_SERIAL(0, SN0_JUNK_UART_CHARDEV))),
+                OBJECT(serial_hd(SN0_NODE_SERIAL(model->junk_uart_node,
+                                                 SN0_JUNK_UART_CHARDEV))),
                 &error_fatal);
         }
         sn0_diagnostic_attach(s, node_index);
@@ -1541,7 +1575,7 @@ static void sn0_init(MachineState *machine)
     g_assert(ram_offset == machine->ram_size);
 
     for (node_index = 0; node_index < node_count; node_index++) {
-        smc->populate_io(s, node_index);
+        sn0_model_populate_node(s, node_index);
     }
 
     sn0_firmware_init(machine);
@@ -1555,16 +1589,6 @@ static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
 static void sn0_set_synthesized_firmware(Object *obj, bool value, Error **errp)
 {
     SN0_MACHINE(obj)->synthesized_firmware = value;
-}
-
-static bool sn0_get_io_bridge(Object *obj, Error **errp)
-{
-    return SN0_MACHINE(obj)->io_bridge_present;
-}
-
-static void sn0_set_io_bridge(Object *obj, bool value, Error **errp)
-{
-    SN0_MACHINE(obj)->io_bridge_present = value;
 }
 
 static bool sn0_get_junk_uart(Object *obj, Error **errp)
@@ -1622,28 +1646,48 @@ static void sn0_set_elsc_dip_switches(Object *obj, Visitor *v,
     }
 }
 
-static void sn0_get_widget0_revision(Object *obj, Visitor *v, const char *name,
-                                     void *opaque, Error **errp)
+static bool sn0_node_validate_topology(SN0NodeState *node, Error **errp)
 {
-    uint32_t value = SN0_MACHINE(obj)->widget0_revision;
+    const SN0ModelFlash *flash;
+    const SN0ModelCpuIrqLines *irq;
 
-    visit_type_uint32(v, name, &value, errp);
-}
-
-static void sn0_set_widget0_revision(Object *obj, Visitor *v, const char *name,
-                                     void *opaque, Error **errp)
-{
-    uint32_t value;
-
-    if (!visit_type_uint32(v, name, &value, errp)) {
-        return;
+    if (!node->topology) {
+        error_setg(errp, "the machine must bind the node's topology");
+        return false;
     }
-    if (value > SN0_WIDGET0_REVISION_MAX) {
-        error_setg(errp, "the widget 0 revision is a four-bit field, so at "
-                         "most %u", SN0_WIDGET0_REVISION_MAX);
-        return;
+    flash = &node->topology->flash;
+    irq = &node->topology->hub.cpu_irq_lines;
+
+    if (flash->kind != SN0_MODEL_FLASH_AM29F080) {
+        error_setg(errp, "unsupported flash kind %u",
+                   (unsigned int)flash->kind);
+        return false;
     }
-    SN0_MACHINE(obj)->widget0_revision = value;
+    if (!flash->sector_size || !flash->width || !flash->mappings) {
+        error_setg(errp, "the flash geometry must be non-zero");
+        return false;
+    }
+    if (flash->endianness != SN0_MODEL_ENDIAN_BIG &&
+        flash->endianness != SN0_MODEL_ENDIAN_LITTLE) {
+        error_setg(errp, "unsupported flash endianness %u",
+                   (unsigned int)flash->endianness);
+        return false;
+    }
+    if (irq->bank0 > 5 || irq->bank1 > 5 || irq->rt > 5) {
+        error_setg(errp, "Hub hardware IRQ lines must be in the range 0-5");
+        return false;
+    }
+    switch (node->topology->module_role) {
+    case SN0_MODEL_MODULE_MASTER:
+    case SN0_MODEL_MODULE_SLAVE:
+        break;
+    default:
+        error_setg(errp, "unsupported module role %u",
+                   (unsigned int)node->topology->module_role);
+        return false;
+    }
+
+    return true;
 }
 
 static void sn0_node_realize(DeviceState *dev, Error **errp)
@@ -1652,6 +1696,9 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
     unsigned int bank;
 
     g_assert(node->model);
+    if (!sn0_node_validate_topology(node, errp)) {
+        return;
+    }
     if (node->nr_cpus < 1 ||
         node->nr_cpus > node->model->cpu_slots_per_node) {
         error_setg(errp, "a node carries one to %u processors, not %u",
@@ -1724,13 +1771,10 @@ static void sn0_node_class_init(ObjectClass *oc, const void *data)
 static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
-    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(obj)->model;
 
-    g_assert(model);
+    g_assert(SN0_MACHINE_GET_CLASS(obj)->model);
     s->synthesized_firmware = true;
-    s->io_bridge_present = true;
     s->debug_leds = true;
-    s->widget0_revision = model->base_io.default_revision;
 }
 
 static void sn0_instance_finalize(Object *obj)
@@ -1767,16 +1811,6 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
         "Present firmware of the machine's own: the structures in low memory, "
         "the call vector and the routines behind it. Turn it off to run a real "
         "firmware image with nothing of ours in its way.");
-
-    object_class_property_add_bool(oc, "io-bridge",
-                                   sn0_get_io_bridge, sn0_set_io_bridge);
-    object_class_property_set_description(oc, "io-bridge",
-        "Fit the I/O bridge, the chip between the crossbar and the PCI bus. "
-        "On by default, because a real Origin 200 always has one and every "
-        "device on this machine hangs off it: turning it off leaves a board "
-        "with no PCI bus, which is a bring-up aid rather than a machine that "
-        "ever existed. Kept as an option because that aid is still useful "
-        "for isolating a fault to the fabric or to what sits behind it.");
 
     object_class_property_add_bool(oc, "junk-uart",
                                    sn0_get_junk_uart, sn0_set_junk_uart);
@@ -1818,16 +1852,6 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
 
-    /* Settable so another captured configuration can be measured. */
-    object_class_property_add(oc, "widget0-revision", "uint32",
-                              sn0_get_widget0_revision,
-                              sn0_set_widget0_revision, NULL, NULL);
-    object_class_property_set_description(oc, "widget0-revision",
-        "The silicon revision of the I/O bridge, which is what crosstalk "
-        "widget 0 and widget 8 both report because they are one chip. Both "
-        "guests treat a revision below four as having a byte-swapping defect "
-        "and avoid that widget's PCI I/O space, so this changes behaviour and "
-        "not only a printed line.");
 }
 
 static const TypeInfo sn0_machine_types[] = {

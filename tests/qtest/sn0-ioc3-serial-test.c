@@ -340,7 +340,7 @@ static void wait_for_source(QTestState *qts, uint32_t bit)
 /* No guest reads these fields back: asserted here or not at all. */
 static void test_the_control_register_round_trips(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -358,7 +358,7 @@ static void test_the_control_register_round_trips(const void *data)
  */
 static void test_an_index_keeps_only_its_pointer_field(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -386,7 +386,7 @@ static void test_an_index_keeps_only_its_pointer_field(const void *data)
  */
 static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
@@ -404,7 +404,7 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
  */
 static void test_the_receive_timer_keeps_twelve_bits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint32_t val;
 
     sn0_ioc3_attach(qts);
@@ -423,7 +423,7 @@ static void test_the_receive_timer_keeps_twelve_bits(const void *data)
  */
 static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     unsigned int port;
 
     sn0_ioc3_attach(qts);
@@ -459,7 +459,7 @@ static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
 
 static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     unsigned int port;
 
     sn0_ioc3_attach(qts);
@@ -488,7 +488,7 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
  */
 static void test_the_shadow_mirrors_the_port(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint32_t shadow;
     unsigned int port;
 
@@ -526,7 +526,7 @@ static void test_a_transmit_entry_sends_its_four_characters(const void *data)
     };
     char got[4];
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -561,7 +561,7 @@ static void test_a_completed_transmit_raises_both_its_sources(const void *data)
     };
     uint32_t status;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -598,7 +598,7 @@ static void test_an_entry_that_asked_for_nothing_gets_nothing(const void *data)
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
     };
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -621,7 +621,7 @@ static void test_an_entry_that_asked_for_nothing_gets_nothing(const void *data)
  */
 static void test_a_disabled_engine_walks_nothing(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     const uint8_t out[4] = { 'n', 'o', 'p', 'e' };
     const uint8_t control[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
@@ -649,7 +649,7 @@ static void test_a_disabled_engine_walks_nothing(const void *data)
  */
 static void ring_block_one_port(unsigned int port)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     const uint8_t out[4] = { 'r', 'i', 'n', 'g' };
     const uint8_t control[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
@@ -697,7 +697,7 @@ static void test_port_b_transmits_through_serial_hd_1(const void *data)
     uint16_t port;
     int lfd = portb_listen(&port);
     g_autofree char *args = g_strdup_printf(
-        "-M origin200,io-bridge=on -serial none "
+        "-M origin200 -serial none "
         "-chardev socket,id=portb,host=127.0.0.1,port=%u,reconnect-ms=10000 "
         "-serial chardev:portb", port);
     QTestState *qts = qtest_init(args);
@@ -729,7 +729,7 @@ static void test_port_b_transmits_through_serial_hd_1(const void *data)
  */
 static void test_the_size_bit_is_not_part_of_the_address(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     const uint8_t out[4] = { 'b', 'a', 's', 'e' };
     const uint8_t control[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
@@ -766,7 +766,7 @@ static void test_a_pause_is_acknowledged_and_stops_the_walk(const void *data)
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
     };
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -804,7 +804,7 @@ static void test_a_reset_returns_the_channels_to_the_start(const void *data)
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
     };
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -839,7 +839,7 @@ static void test_a_modem_entry_reaches_the_modem_register(const void *data)
     };
     uint8_t landed[8];
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -877,7 +877,7 @@ static void test_an_empty_slot_ends_the_entry(const void *data)
     char got[3];
     ssize_t n;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -913,7 +913,7 @@ static void test_the_walk_wraps_at_the_end_of_the_ring(const void *data)
     };
     char got[4];
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -951,7 +951,7 @@ static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
         TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY,
     };
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -989,7 +989,7 @@ static void test_a_ring_only_guest_receives_arriving_characters(
     uint8_t got[4], status[4];
     unsigned int i;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1035,7 +1035,7 @@ static void test_the_receive_timer_raises_on_expiry(
     uint8_t got, status;
     uint32_t val;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1089,7 +1089,7 @@ static void test_crossing_the_high_water_mark_raises_its_source(
     const uint8_t rest[4] = { 'b', 'c', 'd', 'e' };
     uint8_t got[5], status[5];
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1134,7 +1134,7 @@ static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
     uint8_t got[8], status[8];
     uint32_t produce;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1179,7 +1179,7 @@ static void test_a_full_ring_holds_characters(
     uint8_t got[12], status[12];
     unsigned int i;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1224,7 +1224,7 @@ static void test_pass_through_receives_while_the_rings_stay_off(
     int sock;
     const uint8_t sent = 'p';
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1266,7 +1266,7 @@ static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
     uint8_t got, status;
     uint32_t control;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1310,7 +1310,7 @@ static void test_a_channel_reset_stops_the_receive_timer(const void *data)
     const uint8_t sent = 'z';
     uint8_t got, status;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1348,7 +1348,7 @@ static void test_a_channel_reset_stops_the_receive_timer(const void *data)
  */
 static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     const uint8_t full[4] = { 'f', 'u', 'l', 'l' };
     const uint8_t full_ctrl[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
@@ -1420,7 +1420,7 @@ static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
  */
 static void test_a_channel_reset_clears_the_held_packer(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     hold_two_in_the_packer(qts, 16);
 
@@ -1437,7 +1437,7 @@ static void test_a_channel_reset_clears_the_held_packer(const void *data)
 static void test_a_system_reset_clears_the_held_packer_and_the_timer(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     hold_two_in_the_packer(qts, 16 | CONSUME_ARM_TIMER);
 
@@ -1469,7 +1469,7 @@ static void test_an_unbacked_transmit_ring_raises_the_pci_error(
     QTestState *qts;
     int sock;
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1504,7 +1504,7 @@ static void test_an_unbacked_receive_ring_raises_the_pci_error(
     int sock;
     const uint8_t sent[4] = { 'x', 'x', 'x', 'x' };
 
-    qts = qtest_init_with_serial("-M origin200,io-bridge=on", &sock);
+    qts = qtest_init_with_serial("-M origin200", &sock);
     serial_socket_deadline(sock);
 
     sn0_ioc3_attach(qts);
@@ -1533,7 +1533,7 @@ static void test_an_unbacked_receive_ring_raises_the_pci_error(
  * as the dual-node model test.
  */
 #define DUAL_IO_ARGS \
-    "-M origin200,io-bridge=on " \
+    "-M origin200 " \
     "-m 128M " \
     "-object memory-backend-ram,id=ram0,size=64M " \
     "-object memory-backend-ram,id=ram1,size=64M " \

@@ -210,7 +210,7 @@ static void test_other_widget_doubleword_load_completes(const void *data)
      * watched go red by reverting each fix alone.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
-    qts = qtest_initf("-M origin200,io-bridge=on -smp 1 -kernel %s", kernel);
+    qts = qtest_initf("-M origin200 -smp 1 -kernel %s", kernel);
     g_unsetenv("QTEST_QEMU_ARGS");
 
     g_test_timer_start();
@@ -226,7 +226,7 @@ static void test_other_widget_doubleword_load_completes(const void *data)
 
 static void test_doubleword_split_order(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on "
+    QTestState *qts = qtest_init("-M origin200 "
                                  "-device lsi53c895a,addr=4");
     uint64_t at2 = SMALL_WINDOW(2) + ORDER_WINDOW + LSI_SCRATCHB;
 
@@ -257,26 +257,6 @@ static void test_widget_1_stays_the_hub(const void *data)
     qtest_quit(qts);
 }
 
-static void test_widgets_gated_with_the_bridge(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200,io-bridge=off");
-
-    /*
-     * With the bridge option off the net-new widgets go quiet, matching the
-     * bridge's own widget 8, which also stops answering. Only widget 0 keeps
-     * the bridge's identity, because OpenBSD panics without it — the same
-     * unconditional alias the widget-0 test pins. This locks the choice that
-     * the option means "bridge maximally absent", not present at a scatter of
-     * widgets while its own is gone.
-     */
-    uint32_t at0 = widget_identity(qts, 0);
-    g_assert_cmphex(ID_PART(at0), ==, BRIDGE_PART);
-
-    g_assert_cmphex(ID_PART(widget_identity(qts, 2)), !=, BRIDGE_PART);
-
-    qtest_quit(qts);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -291,8 +271,5 @@ int main(int argc, char **argv)
                         NULL, test_doubleword_split_order);
     qtest_add_data_func("sn0/widget-decode/widget-1-stays-the-hub",
                         NULL, test_widget_1_stays_the_hub);
-    qtest_add_data_func("sn0/widget-decode/gated-with-the-bridge",
-                        NULL, test_widgets_gated_with_the_bridge);
-
     return g_test_run();
 }

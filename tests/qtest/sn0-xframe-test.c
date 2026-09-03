@@ -37,7 +37,7 @@
 #define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 #define REG_DATA                4
 
-#define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
+#define MACHINE_WITH_BRIDGE     "-M origin200"
 
 /*
  * The base I/O board fills PCI devices 0 and 1 (the SCSI adapters) and 2 (the

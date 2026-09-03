@@ -136,7 +136,7 @@ static const uint32_t device_reset[8] = {
  */
 #define BRIDGE_REVISION         4
 
-#define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
+#define MACHINE_WITH_BRIDGE     "-M origin200"
 
 /* Physical RAM location for the guest fragment's completion word. */
 #define GUEST_MARKER_ADDR       0x30000
@@ -317,21 +317,6 @@ static void test_identity(const void *data)
      */
     g_assert_false(ID_PART_OF(id) == XBOW_PART &&
                    ID_MANUFACTURER_OF(id) == XBOW_MANUFACTURER);
-
-    qtest_quit(qts);
-}
-
-static void test_identity_follows_the_machines_revision(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on,"
-                                 "widget0-revision=3");
-
-    /*
-     * Both places the machine reports the revision derive from one setting,
-     * so turning it must reach both.
-     */
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
-                    bridge_identity(3));
 
     qtest_quit(qts);
 }
@@ -898,7 +883,7 @@ static void test_translation_entries_reset_clear(const void *data)
  * collapsing node 1 into node 0's RAM.
  */
 #define MACHINE_TWO_NODE \
-    "-M origin200,io-bridge=on -m 128M " \
+    "-M origin200 -m 128M " \
     "-object memory-backend-ram,id=ram0,size=64M " \
     "-object memory-backend-ram,id=ram1,size=64M " \
     "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
@@ -1963,7 +1948,7 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
  */
 static void test_a_write_runs_a_bit_slot(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint32_t nic;
 
     /* The widths mainline uses to reset the bus. */
@@ -2005,7 +1990,7 @@ static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
  */
 static void test_a_search_returns_the_identity(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint64_t rom = 0;
     unsigned int i;
 
@@ -2113,7 +2098,7 @@ static void partnum_from_page(const uint8_t *page, char *out)
 
 static void test_a_page_reads_back_with_its_checks(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t exchange[6];
     uint8_t page[34];
     unsigned int i;
@@ -2274,7 +2259,7 @@ static void assign_node1_number(QTestState *qts)
 static void test_each_node_has_its_own_board_identity(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,io-bridge=on,synthesized-firmware=off -m 128M "
+        "-M origin200,synthesized-firmware=off -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -2349,7 +2334,7 @@ static void nic_read_first_page(QTestState *qts)
  */
 static void test_a_named_part_reads_back_its_page(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint64_t rom;
 
     g_assert_false(NIC_RESET(qts));
@@ -2372,7 +2357,7 @@ static void test_a_named_part_reads_back_its_page(const void *data)
  */
 static void test_naming_another_part_deselects_this_one(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
 
     g_assert_false(NIC_RESET(qts));
@@ -2403,7 +2388,7 @@ static void test_naming_another_part_deselects_this_one(const void *data)
  */
 static void test_the_status_memory_reads_back_by_the_page(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t first[9];
     uint8_t next[10];
     unsigned int i;
@@ -2517,7 +2502,7 @@ static void nic_status_final_page(QTestState *qts, uint16_t addr,
  */
 static void test_status_past_the_programmed_regions(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t first[13];
     uint8_t next[10];
     unsigned int i;
@@ -2611,7 +2596,7 @@ static bool page_field(const uint8_t *page, unsigned int len,
 
 static void test_the_unframed_read_matches_the_framed_one(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t framed[64];
     uint8_t plain[64];
     char partnum[26];
@@ -2670,11 +2655,10 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     qtest_quit(qts);
 }
 
-/* The board identity is supplied by the instance that fits the Bridge. */
-static void test_the_board_part_is_an_instance_property(const void *data)
+static void test_the_model_board_part_overrides_class_global(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,io-bridge=on "
+        "-M origin200 "
         "-global sgi-bridge.board-part=123-4567-890");
     uint8_t image[64];
     char partnum[26];
@@ -2683,29 +2667,12 @@ static void test_the_board_part_is_an_instance_property(const void *data)
     nic_extended_page(qts, 32, &image[32]);
 
     g_assert_true(page_field(image, 30, "Part:", partnum));
-    g_assert_cmpstr(partnum, ==, "123-4567-890");
-    g_assert_cmpmem(&image[11], 12, "123-4567-890", 12);
+    g_assert_cmpstr(partnum, ==, "030-1244-001");
+    g_assert_cmpmem(&image[11], 12, "030-1244-001", 12);
     g_assert_cmphex(nic_crc(0, &image[0], 32), ==, NIC_CRC_RESIDUE);
     g_assert_cmphex(nic_crc(0, &image[32], 32), ==, NIC_CRC_RESIDUE);
 
     qtest_quit(qts);
-}
-
-static void test_the_board_part_must_fit_the_wire_field(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-global", "sgi-bridge.board-part=123-4567-8900", "-kernel",
-        "/definitely/not/a/kernel", NULL
-    };
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
-    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output,
-                            "I/O bridge board part must be 12 characters"));
 }
 
 /*
@@ -2714,7 +2681,7 @@ static void test_the_board_part_must_fit_the_wire_field(const void *data)
  */
 static void test_the_data_past_the_image_is_unprogrammed(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
 
     g_assert_false(NIC_RESET(qts));
@@ -2740,7 +2707,7 @@ static void test_the_data_past_the_image_is_unprogrammed(const void *data)
 static void test_the_framed_read_past_the_image_is_unprogrammed(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t exchange[6];
     uint8_t page[34];
     unsigned int i;
@@ -2780,7 +2747,7 @@ static void test_the_framed_read_past_the_image_is_unprogrammed(
  */
 static void test_the_unframed_read_ends_with_its_check(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t exchange[13];
     unsigned int i;
 
@@ -2808,7 +2775,7 @@ static void test_the_unframed_read_ends_with_its_check(const void *data)
 
 static void test_a_reset_finds_the_part(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     /* The width mainline holds the wire down for to reset it. */
     qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(520) | NIC_SAMPLE(65));
@@ -3145,8 +3112,6 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/bridge/identity", NULL, test_identity);
-    qtest_add_data_func("sn0/bridge/identity-follows-the-machine", NULL,
-                        test_identity_follows_the_machines_revision);
     qtest_add_data_func("sn0/bridge/upper-half-of-the-slot", NULL,
                         test_upper_half_of_the_slot);
     qtest_add_data_func("sn0/bridge/reserved-data-half-store", NULL,
@@ -3231,10 +3196,9 @@ int main(int argc, char **argv)
         test_status_past_the_programmed_regions);
     qtest_add_data_func("sn0/bridge/one-wire-unframed-matches-framed", NULL,
                         test_the_unframed_read_matches_the_framed_one);
-    qtest_add_data_func("sn0/bridge/one-wire-board-part-property", NULL,
-                        test_the_board_part_is_an_instance_property);
-    qtest_add_data_func("sn0/bridge/one-wire-board-part-must-fit", NULL,
-                        test_the_board_part_must_fit_the_wire_field);
+    qtest_add_data_func("sn0/bridge/model-board-part-overrides-class-global",
+                        NULL,
+                        test_the_model_board_part_overrides_class_global);
     qtest_add_data_func("sn0/bridge/one-wire-unframed-read-ends-with-its-check",
                         NULL, test_the_unframed_read_ends_with_its_check);
     qtest_add_data_func("sn0/bridge/one-wire-data-past-the-image", NULL,
