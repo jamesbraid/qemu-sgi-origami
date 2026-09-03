@@ -88,6 +88,9 @@
 #define SN0_BRIDGE_REG_DATA     4
 #define SN0_BRIDGE_DEVICE_REG(node, device) \
     (SN0_BRIDGE_BASE(node) + 0x200 + 8 * (device) + SN0_BRIDGE_REG_DATA)
+#define SN0_PROM_PI_PROBE       (SN0_SPACE_XTALK + (UINT64_C(2) << 24) + \
+                                 UINT64_C(0x400208))
+#define SN0_BRIDGE_DEVICE1      0x400000
 #define SN0_BRIDGE_DEVICE2      0x600000
 #define SN0_IOC3_SERIAL_A       0x020178
 #define SN0_IOC3_SCRATCH        7
@@ -112,6 +115,9 @@
 #define SN0_PCI_IOC3_MEM        0x08600000U
 #define SN0_IOC3_SUBSYSTEM      0xc30310a9U
 #define SN0_TEST_IOC3_MEM       0x10000000U
+#define SN0_TEST_PROBE_CARD     3
+#define SN0_TEST_PROBE_BASE     0x10000000U
+#define SN0_TEST_PROBE_CARD_MEM (SN0_TEST_PROBE_BASE + 0x200)
 #define SN0_CPU_ID_ADDR         0x00030000U
 #define SN0_FPU_ID_ADDR         0x00030004U
 
@@ -564,6 +570,38 @@ static uint64_t ioc3_scratch(unsigned int node)
 {
     return SN0_BRIDGE_BASE(node) + SN0_BRIDGE_DEVICE2 +
            SN0_IOC3_SERIAL_A + SN0_IOC3_SCRATCH;
+}
+
+/*
+ * The PROM PI probe overlays a model-owned attachment and forwards accesses
+ * through the Bridge device window derived from that attachment. Aim the
+ * selected window at a test card, then compare the overlay with the ordinary
+ * Bridge route to the same card register.
+ */
+static void test_prom_pi_probe_uses_model_device_window(const void *data)
+{
+    QTestState *qts;
+    uint32_t value = 0x5a17c0de;
+
+    if (!qtest_has_device("sgi-bridge-dma-test")) {
+        g_test_skip("sgi-bridge-dma-test is not in this build");
+        return;
+    }
+    qts = qtest_init("-M origin200 "
+                     "-device sgi-bridge-dma-test,bus=pci,addr="
+                     stringify(SN0_TEST_PROBE_CARD));
+    qtest_writel(qts, SN0_CFG0(0, SN0_TEST_PROBE_CARD) + SN0_PCI_BAR0,
+                 SN0_TEST_PROBE_CARD_MEM);
+    qtest_writel(qts, SN0_CFG0(0, SN0_TEST_PROBE_CARD) + SN0_PCI_COMMAND,
+                 SN0_PCI_COMMAND_MEMORY);
+    qtest_writel(qts, SN0_BRIDGE_DEVICE_REG(0, 1),
+                 SN0_DEV_MEMORY_SPACE | (SN0_TEST_PROBE_BASE >> 20));
+
+    qtest_writel(qts, SN0_PROM_PI_PROBE, value);
+    g_assert_cmphex(qtest_readl(qts, SN0_BRIDGE_BASE(0) +
+                                     SN0_BRIDGE_DEVICE1 + 0x208), ==,
+                    value);
+    qtest_quit(qts);
 }
 
 /* The Hub's network interface, as far as renumbering a stock machine needs. */
@@ -1923,6 +1961,8 @@ int main(int argc, char **argv)
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
                         test_bridge_root_bus_names);
+    qtest_add_data_func("sn0/model/prom-pi-probe-device-window", NULL,
+                        test_prom_pi_probe_uses_model_device_window);
     qtest_add_data_func("sn0/model/user-device/base-pci-bus", NULL,
                         test_user_device_expands_the_base_pci_bus);
     qtest_add_data_func("sn0/model/user-device/second-pci-bus", NULL,
