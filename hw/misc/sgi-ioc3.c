@@ -999,7 +999,18 @@ static bool sgi_ioc3_resolve_population(SGIIOC3State *s, Error **errp)
     SGIIOC3Population *population = &s->population;
     uint32_t unknown;
 
+    if (s->timekeeper_kind > SGI_IOC3_TIMEKEEPER_DS1685) {
+        error_setg(errp, "IOC3 timekeeper kind %u is unsupported",
+                   s->timekeeper_kind);
+        return false;
+    }
     if (s->population_mask == SGI_IOC3_POPULATION_AUTO) {
+        if (s->timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE) {
+            error_setg(errp,
+                       "IOC3 timekeeper kind %u requires an explicit population",
+                       s->timekeeper_kind);
+            return false;
+        }
         s->board = sgi_ioc3_board(s->subsystem_id);
         return true;
     }
@@ -1009,11 +1020,6 @@ static bool sgi_ioc3_resolve_population(SGIIOC3State *s, Error **errp)
     unknown = s->population_mask & ~SGI_IOC3_POPULATION_ALL;
     if (unknown) {
         error_setg(errp, "IOC3 population has unknown bits 0x%x", unknown);
-        return false;
-    }
-    if (s->timekeeper_kind > SGI_IOC3_TIMEKEEPER_DS1685) {
-        error_setg(errp, "IOC3 timekeeper kind %u is unsupported",
-                   s->timekeeper_kind);
         return false;
     }
     if ((s->population_mask & SGI_IOC3_POPULATION_ONEWIRE_IDENTITY) &&

@@ -4413,11 +4413,10 @@ static bool ethernet_is_fitted(QTestState *qts)
 }
 
 /*
- * The station-address part on the one-wire bus, which travels with the
- * ethernet rather than on its own: the driver registers the MicroLAN master
- * inside its ethernet setup, so a board with no ethernet has no part either.
- * A fitted part answers a reset slot by pulling the wire low; an empty bus
- * reads high.
+ * The station-address part on the one-wire bus. Its presence can be selected
+ * independently, but it takes its station address from the embedded ethernet
+ * device, so a valid population always fits ethernet with it. A fitted part
+ * answers a reset slot by pulling the wire low; an empty bus reads high.
  */
 static bool one_wire_part_is_fitted(QTestState *qts)
 {
@@ -4546,6 +4545,31 @@ static void test_population_rejects_an_unknown_timekeeper(const void *data)
     assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
 }
 
+static void test_auto_population_rejects_a_timekeeper_override(
+    const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-global", "sgi-ioc3.timekeeper-kind=1", "-kernel",
+        "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(
+        args, "IOC3 timekeeper kind 1 requires an explicit population");
+}
+
+static void test_auto_population_validates_the_timekeeper_kind(
+    const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-global", "sgi-ioc3.timekeeper-kind=3", "-kernel",
+        "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
+}
+
 typedef struct BoardPopulation {
     const char *name;
     uint16_t subsystem_id;
@@ -4638,6 +4662,12 @@ int main(int argc, char **argv)
                         test_population_rejects_unknown_bits);
     qtest_add_data_func("sn0/ioc3/population-rejects-unknown-timekeeper", NULL,
                         test_population_rejects_an_unknown_timekeeper);
+    qtest_add_data_func("sn0/ioc3/auto-population-rejects-timekeeper-override",
+                        NULL,
+                        test_auto_population_rejects_a_timekeeper_override);
+    qtest_add_data_func("sn0/ioc3/auto-population-validates-timekeeper-kind",
+                        NULL,
+                        test_auto_population_validates_the_timekeeper_kind);
     qtest_add_data_func("sn0/ioc3/phy-answers-at-one-address", NULL,
                         test_the_transceiver_answers_at_one_address);
     qtest_add_data_func("sn0/ioc3/phy-identity", NULL,

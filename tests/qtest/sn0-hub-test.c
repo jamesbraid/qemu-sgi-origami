@@ -1412,17 +1412,55 @@ static bool hub_has_child(QTestState *qts, const char *name)
     return qom_child_count(qts, "/machine/node0/hub", name, NULL) == 1;
 }
 
-static unsigned int hub_nvram_page_count(QTestState *qts)
+static void assert_hub_nvram_pages(QTestState *qts,
+                                   unsigned int expected_pages)
 {
-    g_autofree char *qtree = qtest_hmp(qts, "info qtree");
-    const char *at = qtree;
+    const char *bus_path = "/machine/node0/hub/i2c/i2c";
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     bus_path);
+    QList *children;
+    const QListEntry *entry;
+    uint32_t addresses = 0;
     unsigned int count = 0;
 
-    while ((at = strstr(at, "dev: at24c-eeprom"))) {
+    g_assert_true(qdict_haskey(response, "return"));
+    children = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *type = qdict_get_try_str(child, "type");
+        QDict *target;
+        QDict *address_response;
+        uint64_t address;
+
+        if (!type || !g_str_equal(type, "link<at24c-eeprom>")) {
+            continue;
+        }
+
+        target = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                                " 'arguments': { 'path': %s,"
+                                " 'property': %s } }",
+                                bus_path, qdict_get_str(child, "name"));
+        g_assert_true(qdict_haskey(target, "return"));
+        address_response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                                          " 'arguments': { 'path': %s,"
+                                          " 'property': 'address' } }",
+                                          qdict_get_str(target, "return"));
+        g_assert_true(qdict_haskey(address_response, "return"));
+        address = qdict_get_int(address_response, "return");
+        g_assert_cmpuint(address, >=, 0x50);
+        g_assert_cmpuint(address, <, 0x50 + expected_pages);
+        g_assert_false(addresses & (1U << (address - 0x50)));
+        addresses |= 1U << (address - 0x50);
         count++;
-        at++;
+
+        qobject_unref(address_response);
+        qobject_unref(target);
     }
-    return count;
+
+    g_assert_cmpuint(count, ==, expected_pages);
+    g_assert_cmphex(addresses, ==, (1U << expected_pages) - 1);
+    qobject_unref(response);
 }
 
 static void test_the_default_population_remains_fitted(const void *data)
@@ -1432,7 +1470,7 @@ static void test_the_default_population_remains_fitted(const void *data)
     g_assert_true(hub_has_child(qts, "i2c"));
     g_assert_true(hub_has_child(qts, "elsc"));
     g_assert_true(hub_has_child(qts, "onewire-part"));
-    g_assert_cmpuint(hub_nvram_page_count(qts), ==, 8);
+    assert_hub_nvram_pages(qts, 8);
 
     qtest_quit(qts);
 }
@@ -1448,7 +1486,7 @@ static void test_population_selects_i2c_children(const void *data)
     g_assert_true(hub_has_child(qts, "i2c"));
     g_assert_false(hub_has_child(qts, "elsc"));
     g_assert_false(hub_has_child(qts, "onewire-part"));
-    g_assert_cmpuint(hub_nvram_page_count(qts), ==, 2);
+    assert_hub_nvram_pages(qts, 2);
 
     qtest_quit(qts);
 }
