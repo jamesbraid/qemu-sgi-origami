@@ -3,15 +3,17 @@ SGI Origin 200 machine and firmware model
 =========================================
 
 The Origin 200 is the one- or two-chassis member of SGI's SN0
-family, built on the IP29 node board. The committed
-``hw/mips/sn0-origin200-model.c`` descriptor is the sole authority for
-the machine's canonical static topology: profiles, components,
-ownership, buses, addresses, aliases, interrupts, identities, and the
-firmware graph. The generic SN0 model consumer constructs its selected
-profile, and semantic adapters map the descriptor's component kinds to
-QOM implementations. QEMU owns construction mechanics, device
-behavior, register and DMA handling, reset, migration, and object
-lifetime. The canonical topology has one
+family, built on the IP29 node board. The resolved Origami model is
+the sole authority for the machine's canonical static topology:
+profiles, components, ownership, buses, addresses, aliases,
+interrupts, identities, and the firmware graph. Its compiler emits
+``hw/mips/sn0-origin200-model.c`` as an ordinary committed QEMU build
+input, so building QEMU needs neither Origami nor Python. The generic
+SN0 model consumer constructs its selected profile from that
+descriptor, and semantic adapters map the descriptor's component
+kinds to QOM implementations. QEMU owns construction mechanics,
+device behavior, register and DMA handling, reset, migration, and
+object lifetime. The canonical topology has one
 directly connected Bridge per chassis with two SCSI adapters and the
 IOC3 base I/O controller on its PCI bus, four IP29 memory banks, and
 no crossbar. The synthesized firmware
