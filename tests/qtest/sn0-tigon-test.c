@@ -1124,10 +1124,15 @@ static void test_receive_jumbo_posted_by_command(const void *data)
     post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
 
-    /* One jumbo buffer, pushed by the firmware command, never the mailbox. */
+    /*
+     * One jumbo buffer, pushed by the firmware command, never the mailbox.
+     * The capacity is the one the IRIX driver actually posts -- a 16 KB
+     * allocation, far larger than any frame the card assembles. A buffer
+     * with room to spare is a normal posting, not a corrupt descriptor.
+     */
     qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
     write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
-    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (5u << 16) | 9018);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (5u << 16) | 16222);
     qtest_writel(qts, JUMBO_RX_RING_PHYS + 12,
                  (uint32_t)TI_BDTYPE_RECV_JUMBO_BD << 16);
 
