@@ -1418,6 +1418,39 @@ static void test_mac_config_write_lock(void)
 }
 
 /*
+ * One key unlocks one MAC_CFG write, however many bus cycles the guest spends
+ * on it. Drivers reach this 64-bit register through 32-bit cycles -- Linux
+ * s2io writes it as two halves on the Xena part, and the Origin 200 Bridge
+ * splits every 64-bit access that way for a slot with DEV_64BIT_DEVICE clear,
+ * which is the state the live IRIX boot leaves -- so a model that releases the
+ * lock on the FIRST access refuses the second and keeps half of what the guest
+ * wrote.
+ *
+ * That is not a cosmetic loss. MAC_CFG carries the receive enables, so on the
+ * real guest it left the register reading zero after a re-bring-up, with
+ * broadcast reception disabled: every ARP dropped, nothing resolved, and the
+ * only sign of it a single log line saying one MAC_CFG write had been ignored.
+ *
+ * The payload here deliberately has bits in BOTH halves; the whole-register
+ * lock test above cannot catch this because its value lives entirely in one.
+ */
+static void test_mac_config_write_lock_spans_both_halves(void)
+{
+    XframeTest t;
+    const uint64_t payload = MAC_CFG_PAYLOAD | 0x00000000000000c0ULL;
+
+    xframe_start(&t);
+
+    pif_writeq(&t, RMAC_CFG_KEY, RMAC_CFG_KEY_VALUE);
+    pif_writel(&t, MAC_CFG + 0, (uint32_t)payload);
+    pif_writel(&t, MAC_CFG + 4, (uint32_t)(payload >> 32));
+
+    g_assert_cmphex(pif_readq(&t, MAC_CFG), ==, payload);
+
+    xframe_stop(&t);
+}
+
+/*
  * The factory MAC read-back: the indirect read of MAC-address-table entry 0
  * (strobe, no write-enable) returns the configured netdev MAC in
  * RMAC_ADDR_DATA0_MEM bits 63:16, and the command strobe self-clears.
@@ -3969,6 +4002,8 @@ int main(int argc, char **argv)
     qtest_add_func("xframe/sw-reset-key-clears-state",
                    test_sw_reset_key_clears_state);
     qtest_add_func("xframe/mac-config-write-lock", test_mac_config_write_lock);
+    qtest_add_func("xframe/mac-config-write-lock-spans-both-halves",
+                   test_mac_config_write_lock_spans_both_halves);
     qtest_add_func("xframe/factory-mac-readback", test_factory_mac_readback);
     qtest_add_func("xframe/swapper-diagnostic-32bit-halves",
                    test_swapper_diagnostic_32bit_halves);
