@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "libqtest.h"
 
 #include <elf.h>
@@ -2675,6 +2676,34 @@ static void test_the_model_board_part_overrides_class_global(const void *data)
     qtest_quit(qts);
 }
 
+typedef struct BridgeBoardPartCase {
+    const char *part;
+    const char *message;
+} BridgeBoardPartCase;
+
+static const BridgeBoardPartCase invalid_board_parts[] = {
+    {
+        NULL,
+        "the I/O bridge board-part property is required",
+    },
+    {
+        "123-4567-8900",
+        "the I/O bridge board part must be 12 characters without a semicolon",
+    },
+    {
+        "123;4567-890",
+        "the I/O bridge board part must be 12 characters without a semicolon",
+    },
+};
+
+static void test_invalid_board_part_is_rejected(const void *data)
+{
+    const BridgeBoardPartCase *test = data;
+
+    g_assert_cmpstr(sgi_bridge_board_part_error(test->part), ==,
+                    test->message);
+}
+
 /*
  * Past the programmed pages the memory reads unprogrammed -- not wrapped,
  * which would hand a guest a spurious second part number.
@@ -3199,6 +3228,15 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/model-board-part-overrides-class-global",
                         NULL,
                         test_the_model_board_part_overrides_class_global);
+    qtest_add_data_func("sn0/bridge/reject-missing-board-part",
+                        &invalid_board_parts[0],
+                        test_invalid_board_part_is_rejected);
+    qtest_add_data_func("sn0/bridge/reject-overlong-board-part",
+                        &invalid_board_parts[1],
+                        test_invalid_board_part_is_rejected);
+    qtest_add_data_func("sn0/bridge/reject-semicolon-in-board-part",
+                        &invalid_board_parts[2],
+                        test_invalid_board_part_is_rejected);
     qtest_add_data_func("sn0/bridge/one-wire-unframed-read-ends-with-its-check",
                         NULL, test_the_unframed_read_ends_with_its_check);
     qtest_add_data_func("sn0/bridge/one-wire-data-past-the-image", NULL,

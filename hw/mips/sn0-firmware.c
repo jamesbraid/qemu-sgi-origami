@@ -24,6 +24,7 @@
 #include "cpu.h"
 #include "sn0.h"
 #include "sn0-klconfig-layout.h"
+#include "trace.h"
 
 static hwaddr sn0_firmware_node_base(const SN0MachineModel *model,
                                      unsigned int nasid)
@@ -1174,22 +1175,29 @@ void sn0_firmware_reset(void *opaque)
 {
     SN0MachineState *s = opaque;
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
-    const SN0ModelBaseIO *base_io = &s->nodes[0]->topology->base_io;
     const SN0ModelAddressSpace *xtalk = sn0_model_find_space(
         model, SN0_MODEL_SPACE_XTALK);
     const SN0ModelRegion *hub = sn0_model_find_region(
         model, SN0_MODEL_REGION_HUB_REGISTERS_LOCAL);
+    unsigned int node_index;
 
     g_assert(xtalk && hub);
-    address_space_stq(&address_space_memory,
-                      xtalk->carrier_base + hub->offset +
-                      SN0_HUB_IO_BWIN_ENTRY(
-                          SN0_FIRMWARE_WIDGET0_WINDOW),
-                      SN0_HUB_IO_BWIN_WIDGET(
-                          base_io->discovery_widget) |
-                      SN0_HUB_IO_BWIN_SLICE(
-                          SN0_FIRMWARE_WIDGET0_SLICE),
-                      MEMTXATTRS_UNSPECIFIED, NULL);
+    for (node_index = 0; node_index < s->num_nodes; node_index++) {
+        SN0NodeState *node = s->nodes[node_index];
+        const SN0ModelBaseIO *base_io = &node->topology->base_io;
+        uint64_t entry = SN0_HUB_IO_BWIN_WIDGET(
+                             base_io->discovery_widget) |
+                         SN0_HUB_IO_BWIN_SLICE(
+                             SN0_FIRMWARE_WIDGET0_SLICE);
+
+        trace_sn0_firmware_widget(node->nasid, base_io->discovery_widget);
+        address_space_stq(
+            &address_space_memory,
+            sn0_model_region_address(
+                model, xtalk, node->nasid, hub,
+                SN0_HUB_IO_BWIN_ENTRY(SN0_FIRMWARE_WIDGET0_WINDOW)),
+            entry, MEMTXATTRS_UNSPECIFIED, NULL);
+    }
 }
 
 /*
@@ -1299,15 +1307,7 @@ static void sn0_hand_off_elf_kernel(MachineState *machine, uint8_t *flash,
 static bool sn0_flash_geometry_compatible(const SN0ModelFlash *left,
                                           const SN0ModelFlash *right)
 {
-    return left->kind == right->kind &&
-           left->sector_size == right->sector_size &&
-           left->width == right->width &&
-           left->mappings == right->mappings &&
-           left->endianness == right->endianness &&
-           left->manufacturer_id == right->manufacturer_id &&
-           left->device_id == right->device_id &&
-           left->unlock_address[0] == right->unlock_address[0] &&
-           left->unlock_address[1] == right->unlock_address[1];
+    return left->kind == right->kind;
 }
 
 void sn0_firmware_init(MachineState *machine)
@@ -1318,6 +1318,8 @@ void sn0_firmware_init(MachineState *machine)
     const SN0ModelRegion *flash_region = sn0_model_find_region(
         model, SN0_MODEL_REGION_PFLASH_RESET);
     const SN0ModelFlash *flash_model = &s->nodes[0]->topology->flash;
+    const SN0FlashImplementation *flash_implementation =
+        sn0_model_flash_implementation(flash_model->kind);
     MemoryRegion *system = get_system_memory();
     unsigned int node_count = s->num_nodes;
     hwaddr node = sn0_firmware_node_base(model, 0);
@@ -1328,6 +1330,7 @@ void sn0_firmware_init(MachineState *machine)
     unsigned int node_index;
 
     g_assert(flash_region && flash_region->size <= SIZE_MAX);
+    g_assert(flash_implementation);
     for (node_index = 0; node_index < node_count; node_index++) {
         if (s->nodes[node_index]->flash_size != flash_region->size ||
             !sn0_flash_geometry_compatible(
@@ -1340,7 +1343,7 @@ void sn0_firmware_init(MachineState *machine)
     /* A -bios image replaces this buffer; a short one leaves bytes behind. */
     flash = g_malloc0(flash_region->size);
     sn0_build_flash(smc, flash, flash_region->size,
-                    flash_model->sector_size);
+                    flash_implementation->sector_size);
 
     if (machine->firmware) {
         char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);

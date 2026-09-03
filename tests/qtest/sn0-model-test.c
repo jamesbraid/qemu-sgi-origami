@@ -146,6 +146,28 @@ static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
     qobject_unref(response);
 }
 
+static void assert_named_pci_function(QTestState *qts, unsigned int node,
+                                      const char *name, unsigned int device,
+                                      unsigned int function)
+{
+    g_autofree char *path = g_strdup_printf("/machine/node%u/%s", node, name);
+    QDict *response = qtest_qmp(
+        qts, "{ 'execute': 'qom-get',"
+             " 'arguments': { 'path': %s, 'property': 'addr' } }", path);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpuint(qdict_get_uint(response, "return"), ==,
+                     (device << 3) | function);
+    qobject_unref(response);
+}
+
+static void assert_named_pci_functions(QTestState *qts, unsigned int node)
+{
+    assert_named_pci_function(qts, node, "isp0", SN0_SCSI_DEVICE0, 0);
+    assert_named_pci_function(qts, node, "isp1", SN0_SCSI_DEVICE1, 0);
+    assert_named_pci_function(qts, node, "ioc3", SN0_IOC3_DEVICE, 0);
+}
+
 static char *write_prid_guest(void)
 {
     static const uint32_t code[] = {
@@ -518,7 +540,9 @@ static void test_baseline_device_identity(const void *data)
  */
 static void test_bridge_root_bus_names(const void *data)
 {
-    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
+    QTestState *qts = qtest_init(
+        SN0_DUAL_CHASSIS_ARGS
+        " -global sgi-bridge.pci-bus-name=hostile");
 
     assert_pci_root_bus_name(qts, "/machine/bridge", "pci");
     assert_pci_root_bus_name(qts, "/machine/bridge1", "pci.1");
@@ -791,6 +815,7 @@ static void test_base_profile_topology(const void *data)
     assert_qom_child_set(qts, "/machine/node0", node_children,
                          node_child_count);
     assert_composite_population(qts, 0);
+    assert_named_pci_functions(qts, 0);
 
     qtest_quit(qts);
 }
@@ -839,6 +864,7 @@ static void test_dual_profile_topology(const void *data)
         assert_qom_child_set(qts, node_path, node_children,
                              ARRAY_SIZE(node_children));
         assert_composite_population(qts, node);
+        assert_named_pci_functions(qts, node);
     }
     qtest_quit(qts);
 }

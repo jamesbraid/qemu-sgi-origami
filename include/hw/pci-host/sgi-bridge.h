@@ -22,6 +22,18 @@
 #define TYPE_SGI_BRIDGE "sgi-bridge"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
 
+static inline const char *sgi_bridge_board_part_error(const char *board_part)
+{
+    if (!board_part) {
+        return "the I/O bridge board-part property is required";
+    }
+    if (strlen(board_part) != 12 || strchr(board_part, ';')) {
+        return "the I/O bridge board part must be 12 characters without a "
+               "semicolon";
+    }
+    return NULL;
+}
+
 /*
  * Aim a slot's window the way a guest write to BRIDGE_DEVICE(n) would --
  * for the machine's firmware emulation to arm the console slot before any

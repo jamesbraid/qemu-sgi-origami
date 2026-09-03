@@ -53,10 +53,9 @@ typedef enum SN0ModelFlashKind {
     SN0_MODEL_FLASH_AM29F080,
 } SN0ModelFlashKind;
 
-typedef enum SN0ModelEndianness {
-    SN0_MODEL_ENDIAN_BIG,
-    SN0_MODEL_ENDIAN_LITTLE,
-} SN0ModelEndianness;
+typedef enum SN0ModelDiagnosticKind {
+    SN0_MODEL_DIAGNOSTIC_HUB_UART,
+} SN0ModelDiagnosticKind;
 
 typedef enum SN0KlRecordKind {
     SN0_KL_RECORD_COMPONENT,
@@ -177,14 +176,13 @@ typedef struct SN0ModelHubPopulation {
 
 typedef struct SN0ModelFlash {
     SN0ModelFlashKind kind;
-    uint32_t sector_size;
-    uint8_t width;
-    uint8_t mappings;
-    SN0ModelEndianness endianness;
-    uint16_t manufacturer_id;
-    uint16_t device_id;
-    uint16_t unlock_address[2];
 } SN0ModelFlash;
+
+typedef struct SN0ModelDiagnostic {
+    SN0ModelDiagnosticKind kind;
+    unsigned int node;
+    bool default_enabled;
+} SN0ModelDiagnostic;
 
 typedef struct SN0KlComponentModel {
     SN0KlRecordKind record_kind;
@@ -260,7 +258,7 @@ typedef struct SN0MachineModel {
     SN0ModelMemory memory;
     const SN0ModelNodeTopology *node_topologies;
     size_t node_topology_count;
-    unsigned int junk_uart_node;
+    SN0ModelDiagnostic junk_uart;
     const SN0ModelProfile *profiles;
     size_t profile_count;
     const SN0ModelAddressSpace *address_spaces;

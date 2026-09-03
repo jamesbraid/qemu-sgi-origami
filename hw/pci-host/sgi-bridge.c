@@ -1570,17 +1570,14 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     uint8_t rom[NIC_ROM_SIZE];
     DeviceState *part;
     const char *board_part;
+    const char *board_part_error;
     unsigned int slot;
 
     /* Refuse property errors before the first region exists. */
     board_part = s->board_part;
-    if (!board_part) {
-        error_setg(errp, "the I/O bridge board-part property is required");
-        return;
-    }
-    if (strlen(board_part) != 12 || strchr(board_part, ';')) {
-        error_setg(errp, "the I/O bridge board part must be 12 characters "
-                   "without a semicolon");
+    board_part_error = sgi_bridge_board_part_error(board_part);
+    if (board_part_error) {
+        error_setg(errp, "%s", board_part_error);
         return;
     }
     if (s->onewire_serial & ~NIC_ROM_SERIAL_MASK) {
