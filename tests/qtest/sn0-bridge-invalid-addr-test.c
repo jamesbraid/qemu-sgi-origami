@@ -41,6 +41,40 @@
 #define PI_INT_PEND0        0x98
 #define ERR_HOST_BIT        5u
 
+/*
+ * The two-chassis machine. Real firmware is what hands out node numbers, so
+ * the synthesized one is off here: both Hubs start on the reset number.
+ */
+#define MACHINE_TWO_NODE \
+    "-M origin200,synthesized-firmware=off -m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
+
+/*
+ * Two ways to name a Hub, and the pair is what makes the routing visible.
+ * The first is the alias every processor decodes for the Hub beside it,
+ * fixed to the board position; it always names the first chassis here,
+ * because qtest drives the first processor's view. The second is a
+ * node-qualified address, which the Hubs route by the numbers firmware
+ * programmed. Give the chassis numbers that disagree with their positions
+ * and the two handles name different boards.
+ */
+#define HUB_BY_POSITION     HUB_LOCAL
+#define NODE_STRIDE         (1ULL << 32)
+#define HUB_BY_NUMBER(n)    (SPACE_XTALK + 0x01800000 + (n) * NODE_STRIDE)
+#define BRIDGE_BY_NUMBER(n) (BRIDGE_BASE + (n) * NODE_STRIDE)
+#define REG_BY_NUMBER(n, offset) \
+    (BRIDGE_BY_NUMBER(n) + (offset) + REG_DATA)
+
+/* The network interface's status register carries the programmed number. */
+#define HUB_NI_STATUS       0x600000
+#define HUB_NI_REGION_SIZE  (1ULL << 17)
+#define HUB_NI_NODE_MASK    (0x1ffULL << 8)
+#define HUB_NI_NODE_SHIFT   8
+
 /* An undefined slot inside the register window: the diagnostic's provoke. */
 #define UNDEFINED_REG       0x7c
 /* Somewhere inside the external-SSRAM window (0x08_0000, 512 KB). */
@@ -225,6 +259,102 @@ static void test_invalid_address_raises_host_interrupt(const void *data)
     qtest_quit(qts);
 }
 
+static uint32_t number_at(QTestState *qts, uint64_t hub)
+{
+    uint64_t status = qtest_readq(qts, hub + HUB_NI_STATUS);
+
+    return (status & HUB_NI_NODE_MASK) >> HUB_NI_NODE_SHIFT;
+}
+
+/*
+ * Number the chassis against their positions: the first is given one, the
+ * second keeps the reset number zero. This is the state the whole routing
+ * question lives in -- while the numbers agree with the positions nothing
+ * can tell a Hub picked by number from a Hub picked by position, and the
+ * machine boots through a stretch where they disagree.
+ *
+ * Setting the first chassis's own number rather than the second's is what
+ * makes the second addressable at all: qtest drives the first processor's
+ * view, whose node-qualified accesses go through the claim layer, and the
+ * unnumbered second chassis has no number to name it by.
+ */
+static void number_the_first_chassis_one(QTestState *qts)
+{
+    qtest_writeq(qts, HUB_BY_POSITION + HUB_NI_STATUS,
+                 HUB_NI_REGION_SIZE | (1ULL << HUB_NI_NODE_SHIFT));
+
+    /*
+     * Now the handles part company, which is what the rest of the test
+     * rests on: by position the first chassis, by number zero the second.
+     */
+    g_assert_cmpuint(number_at(qts, HUB_BY_POSITION), ==, 1);
+    g_assert_cmpuint(number_at(qts, HUB_BY_NUMBER(0)), ==, 0);
+    g_assert_cmpuint(number_at(qts, HUB_BY_NUMBER(1)), ==, 1);
+}
+
+/*
+ * Aim the second chassis's Bridge host-error interrupt at the Hub of one
+ * node number, and arm it. Nothing here says which board that is: the
+ * Bridge has a number, and finding the Hub is the fabric's job.
+ */
+static void route_second_chassis_host_error(QTestState *qts,
+                                            unsigned int number)
+{
+    qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_DEST_LO),
+                 (uint32_t)(HUB_LOCAL - SPACE_XTALK) + PI_INT_MODIFY);
+    qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_DEST_UP),
+                 number << (38 - 32));
+    qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_HOST_ERR), ERR_HOST_BIT);
+    qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_ENABLE), INT_INVALID_ADDR);
+}
+
+/*
+ * A Bridge addressing its own chassis's number must reach the Hub beside
+ * it, not the Hub that happens to sit where that number points. The
+ * PROM's Bridge sanity check provokes this very error and then polls its
+ * own pending register for the arrival, so a packet that lands on the
+ * other chassis is a diagnostic that fails with nothing to show for it.
+ */
+static void test_host_error_reaches_its_own_number(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_TWO_NODE);
+
+    number_the_first_chassis_one(qts);
+
+    route_second_chassis_host_error(qts, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NUMBER(0) + PI_INT_PEND0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_POSITION + PI_INT_PEND0), ==, 0);
+
+    qtest_writel(qts, BRIDGE_BY_NUMBER(0) + UNDEFINED_REG, 0xdeadbeefu);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NUMBER(0) + PI_INT_PEND0), ==,
+                    1ULL << ERR_HOST_BIT);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_POSITION + PI_INT_PEND0), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The other direction, so that arriving on the near Hub cannot be mistaken
+ * for a packet that never crosses: the same Bridge addressing the other
+ * chassis's number has to reach the far Hub.
+ */
+static void test_host_error_crosses_to_another_number(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_TWO_NODE);
+
+    number_the_first_chassis_one(qts);
+
+    route_second_chassis_host_error(qts, 1);
+    qtest_writel(qts, BRIDGE_BY_NUMBER(0) + UNDEFINED_REG, 0xdeadbeefu);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_POSITION + PI_INT_PEND0), ==,
+                    1ULL << ERR_HOST_BIT);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NUMBER(0) + PI_INT_PEND0), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -237,6 +367,10 @@ int main(int argc, char **argv)
                         NULL, test_reset_strobe_clears_only_its_own_group);
     qtest_add_data_func("sn0/bridge/invalid-address-raises-host-interrupt",
                         NULL, test_invalid_address_raises_host_interrupt);
+    qtest_add_data_func("sn0/bridge/host-error-reaches-hub-of-its-own-number",
+                        NULL, test_host_error_reaches_its_own_number);
+    qtest_add_data_func("sn0/bridge/host-error-crosses-to-another-number",
+                        NULL, test_host_error_crosses_to_another_number);
 
     return g_test_run();
 }
