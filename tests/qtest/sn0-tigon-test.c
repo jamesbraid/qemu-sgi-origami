@@ -104,6 +104,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_CMDRING      0x700
 #define TI_CMD_SET_PROMISC_MODE 0x0a
 #define TI_CMD_CODE_PROMISC_ENB 0x01
+#define TI_CMD_SET_RX_JUMBO_PROD_IDX 0x10
 #define TI_MHC_CLEARINT     0x00000002
 #define TI_MHC_MASK_INTS    0x00000040
 #define TI_BDFLAG_TCP_UDP_CKSUM 0x0001
@@ -1080,6 +1081,80 @@ static void test_receive_jumbo_frame(const void *data)
     g_assert_cmphex(word2 & 0xffff, ==, JUMBO_LEN);
     word3 = qtest_readl(qts, RETURN_RING_PHYS + 12);
     g_assert_cmphex(word3 >> 16, ==, TI_BDTYPE_RECV_JUMBO_BD);
+    g_assert_cmphex(word3 & TI_BDFLAG_JUMBO_RING, ==, TI_BDFLAG_JUMBO_RING);
+
+    qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(frame));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    /* The standard buffer was left untouched. */
+    g_assert_cmphex(qtest_readl(qts, RX_BUF_PHYS), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A jumbo frame waits while its ring has no posted buffers. Posting through
+ * the firmware command must release that frame with its payload intact and
+ * report the jumbo buffer's host address, ring index and full frame length.
+ */
+static void test_receive_jumbo_posted_by_command(const void *data)
+{
+    enum { JUMBO_LEN = 4000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[JUMBO_LEN], landed[JUMBO_LEN];
+    unsigned n;
+    uint32_t word2, word3;
+
+    memcpy(frame, rx_frame_ours, 14);
+    for (n = 14; n < JUMBO_LEN; n++) {
+        frame[n] = (uint8_t)(n * 3 + (n >> 5));
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* A standard buffer too, so the choice is size, not availability. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    /* One jumbo buffer, pushed by the firmware command, never the mailbox. */
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
+    write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (5u << 16) | 9018);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 12,
+                 (uint32_t)TI_BDTYPE_RECV_JUMBO_BD << 16);
+
+    /* The empty jumbo ring must hold the frame despite the standard buffer. */
+    net_send_frame(sv[0], frame, sizeof(frame));
+    g_assert_cmphex(wait_return_prod(qts), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RX_BUF_PHYS), ==, 0);
+
+    /* Only the command posts the buffer and releases the queued frame. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_CMDRING,
+                 ((uint32_t)TI_CMD_SET_RX_JUMBO_PROD_IDX << 24) | 1);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_CMDPROD_IDX, 1);
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    /*
+     * The completion names the jumbo buffer by its own host address -- the
+     * driver's only way to tell the rings apart -- with the posted index and
+     * the whole frame's length.
+     */
+    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 4), ==,
+                    JUMBO_BUF_PHYS);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 5);
+    g_assert_cmphex(word2 & 0xffff, ==, JUMBO_LEN);
+    word3 = qtest_readl(qts, RETURN_RING_PHYS + 12);
     g_assert_cmphex(word3 & TI_BDFLAG_JUMBO_RING, ==, TI_BDFLAG_JUMBO_RING);
 
     qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(frame));
@@ -2239,6 +2314,8 @@ int main(int argc, char **argv)
                         test_receive_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
+    qtest_add_data_func("/sn0/tigon/receive-jumbo-posted-by-command", NULL,
+                        test_receive_jumbo_posted_by_command);
     qtest_add_data_func("/sn0/tigon/firmware-up-releases-a-held-frame", NULL,
                         test_firmware_up_releases_a_held_frame);
     qtest_add_data_func("/sn0/tigon/receive-accepts-multicast", NULL,

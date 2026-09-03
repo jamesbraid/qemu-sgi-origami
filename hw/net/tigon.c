@@ -110,6 +110,12 @@
 #define TI_CMD_SET_PROMISC_MODE 0x0a
 #define TI_CMD_CODE_PROMISC_ENB 0x01
 #define TI_CMD_CODE_PROMISC_DIS 0x02
+/*
+ * The command-path jumbo producer push. The public header marks it obsolete
+ * in favour of the mailbox doorbell, but the IRIX eg driver drives its jumbo
+ * ring through the command, so a card serving that guest must honour both.
+ */
+#define TI_CMD_SET_RX_JUMBO_PROD_IDX 0x10
 
 /*
  * Link status reported up as a modelled fact: gigabit, full duplex. The chip's
@@ -549,6 +555,23 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
                       TIGON_LINK_DELAY_NS);
         } else if ((cmd >> 24) == TI_CMD_SET_PROMISC_MODE) {
             s->promisc = ((cmd >> 16) & 0xff) == TI_CMD_CODE_PROMISC_ENB;
+        } else if ((cmd >> 24) == TI_CMD_SET_RX_JUMBO_PROD_IDX) {
+            /* The index rides in the command word's low 12 bits. */
+            uint32_t idx = cmd & 0xfff;
+
+            if (idx >= TI_JUMBO_RX_RING_CNT) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "tigon: jumbo-rx producer index %u out of "
+                              "range in command\n", idx);
+            }
+            s->jumbo_rx_prodidx = idx % TI_JUMBO_RX_RING_CNT;
+            trace_tigon_rx_doorbell("jumbo-command", idx);
+            /* A frame too big for the standard ring can now be delivered. */
+            qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        } else if (cmd != 0) {
+            qemu_log_mask(LOG_UNIMP,
+                          "tigon: unhandled firmware command 0x%02x "
+                          "(word 0x%08x)\n", cmd >> 24, cmd);
         }
         s->cmd_considx = (s->cmd_considx + 1) % TIGON_CMD_RING_CNT;
     }
@@ -1169,10 +1192,15 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
      * ring, which the driver posts separately and only once it has been told
      * a larger frame size. Choosing by size is what lets a guest raise its
      * frame size at all: served only from the standard ring, the card can
-     * never carry one.
+     * never carry one. Once the jumbo ring is configured, an oversize frame
+     * waits for a jumbo buffer rather than being mangled into a standard one:
+     * a truncated frame fails the guest's checksums and is silently lost,
+     * where a held frame is retried.
      */
-    jumbo = size > TIGON_STD_FRAME_SIZE && s->jumbo_rx_ring_base != 0 &&
-            s->jumbo_rx_considx != s->jumbo_rx_prodidx;
+    jumbo = size > TIGON_STD_FRAME_SIZE && s->jumbo_rx_ring_base != 0;
+    if (jumbo && s->jumbo_rx_considx == s->jumbo_rx_prodidx) {
+        return 0;      /* jumbo-configured but unprovisioned: flow control */
+    }
     if (!jumbo && s->std_rx_considx == s->std_rx_prodidx) {
         return 0;      /* genuine no-buffer flow control */
     }
