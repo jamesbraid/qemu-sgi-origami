@@ -319,6 +319,8 @@
  */
 #define XFRAME_RC_IN_SVC                 (1ULL << 56)
 #define XFRAME_PRC_CTRL_RING_MODE_MASK   (3ULL << 48)
+#define XFRAME_RXD_MODE_1BUF             0
+#define XFRAME_RXD_MODE_5BUF            2
 
 /*
  * Pack the netdev's configured MAC into MAC-table entry 0 the way the factory
@@ -1133,10 +1135,14 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
             s->rx_page_addr = s->prc_rxd0_0;
             s->rx_desc_idx = 0;
         }
-        if (full & XFRAME_PRC_CTRL_RING_MODE_MASK) {
+        switch ((unsigned)((full >> 48) & 3)) {
+        case XFRAME_RXD_MODE_1BUF:
+        case XFRAME_RXD_MODE_5BUF:
+            break;      /* both implemented */
+        default:
             qemu_log_mask(LOG_UNIMP,
-                          "xframe: only 1-buffer receive mode is modelled; "
-                          "ring mode %u ignored\n",
+                          "xframe: receive ring mode %u is not implemented "
+                          "(only one-buffer mode 0 and five-buffer mode 2)\n",
                           (unsigned)((full >> 48) & 3));
         }
         s->prc_ctrl_0 = full;
@@ -1787,6 +1793,7 @@ static const MemoryRegionOps xframe_txp_ops = {
  * software, which is the point: on this machine the guest CPU is emulated and
  * the check here is not, so every byte checked here is a byte the guest does
  * not have to walk.
+
  *
  * Report a checksum verified ONLY when it actually verified against the bytes
  * that arrived. Anything this cannot vouch for -- a frame that is not IPv4, a
@@ -1795,14 +1802,19 @@ static const MemoryRegionOps xframe_txp_ops = {
  * and therefore means "not computed" -- leaves the corresponding half zero, and
  * a driver reading zero verifies for itself.
  */
-static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len)
+static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
+                                         size_t *l34_len)
 {
     const uint8_t *ip, *l4;
-    size_t ihl, ip_total, l4_len;
+    size_t ihl, ip_total, l4_len, thl;
     uint64_t status = 0;
     uint8_t pseudo[12];
     uint32_t sum;
     uint8_t proto;
+
+    if (l34_len) {
+        *l34_len = 0;
+    }
 
     if (len < XFRAME_ETH_HDR_LEN + XFRAME_IPV4_MIN_HDR_LEN ||
         lduw_be_p(frame + 12) != XFRAME_ETHERTYPE_IPV4 ||
@@ -1828,19 +1840,37 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len)
     }
 
     proto = ip[9];
+    l4 = ip + ihl;
+    l4_len = ip_total - ihl;
     if (proto == XFRAME_IPPROTO_TCP) {
+        if (l4_len < XFRAME_TCP_MIN_HDR_LEN) {
+            return status;
+        }
+        thl = ((l4[12] >> 4) & 0x0f) * 4;
+        if (thl < XFRAME_TCP_MIN_HDR_LEN || thl > l4_len) {
+            return status;
+        }
         status |= XFRAME_RXD_PROTO_TCP;
     } else if (proto == XFRAME_IPPROTO_UDP) {
+        if (l4_len < 8) {
+            return status;
+        }
+        thl = 8;
         status |= XFRAME_RXD_PROTO_UDP;
     } else {
         return status;
     }
 
-    l4 = ip + ihl;
-    l4_len = ip_total - ihl;
-    if (l4_len < 8) {
-        return status;
+    /*
+     * The header-split length: the IP header plus the transport header, which
+     * five-buffer mode delivers into buffer 1. Reported for exactly the frames
+     * that carry the TCP/UDP classification bit, so the descriptor's bits and
+     * its buffer layout agree -- a reader can infer one from the other.
+     */
+    if (l34_len) {
+        *l34_len = ihl + thl;
     }
+
     /* A zero UDP checksum means "none sent", not "verified". */
     if (proto == XFRAME_IPPROTO_UDP && lduw_be_p(l4 + 6) == 0) {
         return status;
@@ -1867,6 +1897,62 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len)
  * ring.
  */
 #define XFRAME_RXD1_PER_PAGE         127
+
+/*
+ * Receive ring modes, PRC_CTRL_0 bits 49:48. IRIX arms mode 0 at a standard MTU
+ * and mode 2 -- which the public s2io header (RING_MODE_5, vBIT(2,14,2)) names
+ * the FIVE-buffer header-split layout -- the moment the MTU is raised to a jumbo
+ * value, and stays in it. Its descriptor is 64 bytes: three control words and
+ * five buffer pointers, where one-buffer mode's is 32 bytes with one pointer. A
+ * model walking the ring at the one-buffer stride reads the wrong words, never
+ * finds an owned descriptor again, and receive stops for good -- an interface
+ * still reading UP while silently receiving nothing, not recovering when the
+ * MTU is put back.
+ *
+ * The card splits a received frame across the buffers by protocol layer: the
+ * Ethernet header into buffer 0, the IP and transport headers into buffer 1, and
+ * the payload from buffer 2 on. Observed on IRIX 6.5.30, the descriptors the
+ * driver posts carry buffer sizes 14, 128 and 9738 -- exactly an Ethernet
+ * header, room for the upper headers, and a jumbo payload -- in the field
+ * positions the public RxD three-buffer size macros give (vBIT(val,8,8),
+ * vBIT(val,16,16), vBIT(val,32,16)). A frame that fits buffer 2 never needs
+ * buffers 3 and 4, so those pointers are read but not filled here.
+ *
+ * NOT the same as Linux's RXD_MODE_3B ("two buffer mode", ring-mode value 1),
+ * which posts a one-byte dummy for its middle buffer and never reads it -- an
+ * earlier version of this code took that dummy for the rule and left buffer 1
+ * empty, which corrupted every classified frame because the driver's checksum-
+ * offload path reads the transport headers from buffer 1 where the card puts
+ * them. Only modes 0 and 2 are implemented; 1 and 3 keep the LOG_UNIMP below.
+ */
+#define XFRAME_RXD_MODE(ctrl0)       (((ctrl0) >> 48) & 3)
+
+#define XFRAME_RXD5_SIZE             64
+#define XFRAME_RXD5_PER_PAGE         63
+
+#define XFRAME_RXD5_BUF0_SIZE(c2)    (((c2) >> 48) & 0xff)
+#define XFRAME_RXD5_BUF1_SIZE(c2)    (((c2) >> 32) & 0xffff)
+#define XFRAME_RXD5_BUF2_SIZE(c2)    (((c2) >> 16) & 0xffff)
+#define XFRAME_RXD5_SET_SIZES(b0, b1, b2)                                   \
+    ((((uint64_t)(b0) & 0xff) << 48) | (((uint64_t)(b1) & 0xffff) << 32) |  \
+     (((uint64_t)(b2) & 0xffff) << 16))
+
+/* Geometry of the ring the guest has actually armed. */
+static bool xframe_rx_header_split(XframeState *s)
+{
+    return XFRAME_RXD_MODE(s->prc_ctrl_0) == XFRAME_RXD_MODE_5BUF;
+}
+
+static unsigned xframe_rxd_size(XframeState *s)
+{
+    return xframe_rx_header_split(s) ? XFRAME_RXD5_SIZE : XFRAME_RXD_SIZE;
+}
+
+static unsigned xframe_rxd_per_page(XframeState *s)
+{
+    return xframe_rx_header_split(s) ? XFRAME_RXD5_PER_PAGE
+                                     : XFRAME_RXD1_PER_PAGE;
+}
 #define XFRAME_RXD1_PAGE_SIZE        4096
 #define XFRAME_RXD1_PAGE_NEXT_OFF    (XFRAME_RXD1_PAGE_SIZE - 8)
 
@@ -1922,7 +2008,7 @@ static void xframe_rx_advance_page(XframeState *s)
  * so a stuck or corrupted position can never read past the page.
  */
 static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
-                           uint8_t raw[XFRAME_RXD_SIZE])
+                           uint8_t raw[XFRAME_RXD5_SIZE])
 {
     PCIDevice *pdev = PCI_DEVICE(s);
 
@@ -1930,10 +2016,11 @@ static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
         return false;
     }
 
-    s->rx_desc_idx %= XFRAME_RXD1_PER_PAGE;
-    *desc_addr = s->rx_page_addr + (uint64_t)s->rx_desc_idx * XFRAME_RXD_SIZE;
+    s->rx_desc_idx %= xframe_rxd_per_page(s);
+    *desc_addr = s->rx_page_addr +
+                 (uint64_t)s->rx_desc_idx * xframe_rxd_size(s);
 
-    if (pci_dma_read(pdev, *desc_addr, raw, XFRAME_RXD_SIZE) != MEMTX_OK) {
+    if (pci_dma_read(pdev, *desc_addr, raw, xframe_rxd_size(s)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "xframe: receive descriptor read at 0x%" PRIx64
                       " failed\n", *desc_addr);
@@ -2053,7 +2140,7 @@ static bool xframe_can_receive(NetClientState *nc)
 {
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     uint64_t desc_addr;
-    uint8_t raw[XFRAME_RXD_SIZE];
+    uint8_t raw[XFRAME_RXD5_SIZE];
     bool owned = xframe_rx_head(s, &desc_addr, raw);
 
     if (!owned) {
@@ -2083,8 +2170,18 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 {
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     PCIDevice *pdev = PCI_DEVICE(s);
-    uint64_t desc_addr, control2, bufaddr;
-    uint8_t raw[XFRAME_RXD_SIZE];
+    uint64_t desc_addr, control2;
+    uint64_t bufaddr3[3] = { 0, 0, 0 };
+    size_t bufcap[3] = { 0, 0, 0 };
+    size_t bufgot[3] = { 0, 0, 0 };
+    size_t seg[3] = { 0, 0, 0 };
+    uint64_t offload = 0;
+    size_t l34 = 0;
+    bool classified;
+    size_t eth;
+    unsigned nbuf, i;
+    size_t placed;
+    uint8_t raw[XFRAME_RXD5_SIZE];
     size_t capacity, copy_len;
     unsigned xcode;
     uint8_t word[8];
@@ -2105,8 +2202,6 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     }
 
     control2 = xframe_desc_ldq(s, raw + 16, true);
-    bufaddr = xframe_desc_ldq(s, raw + 24, true);
-    capacity = (control2 >> XFRAME_RXD_BUFSIZ_SHIFT) & 0xffff;
 
     copy_len = size;
     if (copy_len > XFRAME_MAX_FRAME) {
@@ -2120,38 +2215,173 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
                       "maximum; truncated\n", size, XFRAME_MAX_FRAME);
         copy_len = XFRAME_MAX_FRAME;
     }
-    xcode = XFRAME_RXD_XCODE_OK;
-    if (copy_len > capacity) {
-        xcode = XFRAME_RXD_XCODE_BSZ;
-        copy_len = capacity;
-    }
 
-    if (copy_len > 0 &&
-        pci_dma_write(pdev, bufaddr, buf, copy_len) != MEMTX_OK) {
+    /*
+     * Classify the frame once. The same parse drives both the buffer split and
+     * the reported offload status, so a descriptor's layout and its bits cannot
+     * disagree: the frame is split into buffer 1 exactly when the descriptor
+     * reports TCP or UDP.
+     */
+    offload = xframe_rx_offload_status(buf, copy_len, &l34);
+    classified = (offload & (XFRAME_RXD_PROTO_TCP | XFRAME_RXD_PROTO_UDP)) != 0;
+
+    if (xframe_rx_header_split(s)) {
         /*
-         * The descriptor itself was fine; the buffer pointer it named was
-         * not. Release the descriptor and advance past it below rather than
-         * leaving it parked here -- the same bad pointer would fail
-         * identically on every future frame, permanently stalling the ring
-         * behind one bad buffer.
+         * Five-buffer header-split mode. The card splits a frame by protocol
+         * layer: the Ethernet header into buffer 0, the IP and transport headers
+         * into buffer 1, the payload from buffer 2 on. Buffers 3 and 4 exist
+         * (five pointers) but a frame that fits buffer 2 never needs them, so
+         * they are read for stride but not filled.
          */
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "xframe: receive buffer write at 0x%" PRIx64
-                      " failed; frame dropped\n", bufaddr);
-        copy_len = 0;
-        xcode = XFRAME_RXD_XCODE_ABORT;
+        nbuf = 3;
+        bufcap[0] = XFRAME_RXD5_BUF0_SIZE(control2);
+        bufcap[1] = XFRAME_RXD5_BUF1_SIZE(control2);
+        bufcap[2] = XFRAME_RXD5_BUF2_SIZE(control2);
+        bufaddr3[0] = xframe_desc_ldq(s, raw + 24, true);
+        bufaddr3[1] = xframe_desc_ldq(s, raw + 32, true);
+        bufaddr3[2] = xframe_desc_ldq(s, raw + 40, true);
+
+        eth = MIN((size_t)XFRAME_ETH_HDR_LEN, copy_len);
+        if (classified && eth == XFRAME_ETH_HDR_LEN && l34 > 0 &&
+            eth <= bufcap[0] && l34 <= bufcap[1] && eth + l34 <= copy_len) {
+            /*
+             * Header split: L2 -> buf0, L3+L4 -> buf1, payload -> buf2. The
+             * room this layout really offers is what its own three legs hold,
+             * not the sum of the posted sizes -- the unclassified layout below
+             * uses none of buffer 1, and this one uses exactly l34 of it.
+             */
+            capacity = eth + l34 + bufcap[2];
+            xcode = XFRAME_RXD_XCODE_OK;
+            if (copy_len > capacity) {
+                /*
+                 * A frame past buffer 2's room would continue into buffers 3
+                 * and 4 on the real card. IRIX posts a buffer 2 larger than
+                 * any frame its own MTU allows, so nothing reaches this; say
+                 * so rather than silently truncating if something ever does.
+                 */
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "xframe: %zu-byte receive frame needs the "
+                              "overflow buffers (room %zu); truncated\n",
+                              copy_len, capacity);
+                xcode = XFRAME_RXD_XCODE_BSZ;
+                copy_len = capacity;
+            }
+            seg[0] = eth;
+            seg[1] = l34;
+            seg[2] = copy_len - eth - l34;
+        } else {
+            /*
+             * Unclassified (no transport headers to split -- ARP), or a
+             * classified frame whose headers do not fit buffer 1. Deliver it
+             * unsplit -- L2 header to buffer 0, the remainder to buffer 2 -- and
+             * do NOT report offload, since reporting it would claim a placement
+             * (transport headers in buffer 1) the card did not make. IRIX never
+             * posts a buffer 1 too small for a real header, so the second case
+             * is a guest-error, not a normal path.
+             */
+            if (classified) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "xframe: header-split receive: %zu-byte headers do "
+                              "not fit buffer 1 (%zu); delivered unsplit\n",
+                              l34, bufcap[1]);
+                offload = 0;
+            }
+            seg[0] = MIN(eth, bufcap[0]);
+            seg[1] = 0;
+            capacity = seg[0] + bufcap[2];
+            xcode = XFRAME_RXD_XCODE_OK;
+            if (copy_len > capacity) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "xframe: %zu-byte receive frame needs the "
+                              "overflow buffers (room %zu); truncated\n",
+                              copy_len, capacity);
+                xcode = XFRAME_RXD_XCODE_BSZ;
+                copy_len = capacity;
+            }
+            seg[2] = copy_len - seg[0];
+        }
+    } else {
+        nbuf = 1;
+        bufcap[0] = (control2 >> XFRAME_RXD_BUFSIZ_SHIFT) & 0xffff;
+        bufaddr3[0] = xframe_desc_ldq(s, raw + 24, true);
+        capacity = bufcap[0];
+
+        xcode = XFRAME_RXD_XCODE_OK;
+        if (copy_len > capacity) {
+            xcode = XFRAME_RXD_XCODE_BSZ;
+            copy_len = capacity;
+        }
+        seg[0] = copy_len;
     }
 
-    xframe_desc_stq(s, word, (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT, true);
+    for (i = 0, placed = 0; i < nbuf; i++) {
+        if (seg[i] == 0) {
+            bufgot[i] = 0;
+            continue;
+        }
+        if (pci_dma_write(pdev, bufaddr3[i], buf + placed, seg[i]) != MEMTX_OK) {
+            /*
+             * The descriptor itself was fine; a buffer pointer it named was
+             * not. Release the descriptor and advance past it below rather
+             * than leaving it parked here -- the same bad pointer would fail
+             * identically on every future frame, permanently stalling the ring
+             * behind one bad buffer.
+             */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: receive buffer write at 0x%" PRIx64
+                          " failed; frame dropped\n", bufaddr3[i]);
+            placed = 0;
+            xcode = XFRAME_RXD_XCODE_ABORT;
+            offload = 0;
+            break;
+        }
+        bufgot[i] = seg[i];
+        placed += seg[i];
+    }
+    copy_len = placed;
+
+    if (xframe_rx_header_split(s)) {
+        /*
+         * Five-buffer completion also reports the byte counts of buffers 3 and
+         * 4, in the low two 16-bit fields of the first descriptor word -- the
+         * same fields the guest posts their sizes in (observed: IRIX posts two
+         * real 4-byte buffers there, sizes 0x0004/0x0004, below an incrementing
+         * index in the upper half). A frame that fits buffer 2 puts nothing in
+         * them, and the count must SAY so: left unwritten, the driver reads the
+         * posted sizes back as counts, sums a frame 8 bytes longer than the
+         * wire's, and rejects every frame as an input error -- receive dead at
+         * jumbo MTU with the bytes themselves delivered perfectly.
+         * The upper half is the guest's own bookkeeping and is preserved.
+         *
+         * RULE, not an optimisation: this word is written ONLY in five-buffer
+         * mode. In the other ring modes it is host-private -- the public Linux
+         * driver keeps its skb pointer there and the card never touches it --
+         * so generalising this writeback to another mode would corrupt a
+         * driver pointer. (Control_2's own low 16 bits are posted as zero by
+         * IRIX in this mode -- observed 0x000e008026120000 -- so the size
+         * writeback below zeroing them rewrites the posted value unchanged.)
+         */
+        uint64_t hc = xframe_desc_ldq(s, raw, true);
+
+        hc &= ~0xffffffffULL;   /* buffers 3 and 4 received nothing */
+        xframe_desc_stq(s, word, hc, true);
+        pci_dma_write(pdev, desc_addr + 0, word, sizeof(word));
+
+        xframe_desc_stq(s, word,
+                        XFRAME_RXD5_SET_SIZES(bufgot[0], bufgot[1], bufgot[2]),
+                        true);
+    } else {
+        xframe_desc_stq(s, word,
+                        (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT, true);
+    }
     pci_dma_write(pdev, desc_addr + 16, word, sizeof(word));
 
     xframe_desc_stq(s, word,
-                    ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) |
-                    xframe_rx_offload_status(buf, copy_len), true);
+                    ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) | offload, true);
     pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
 
     s->rx_desc_idx++;
-    if (s->rx_desc_idx >= XFRAME_RXD1_PER_PAGE) {
+    if (s->rx_desc_idx >= xframe_rxd_per_page(s)) {
         xframe_rx_advance_page(s);
     }
 
