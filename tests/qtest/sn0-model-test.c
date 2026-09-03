@@ -573,12 +573,12 @@ static uint64_t ioc3_scratch(unsigned int node)
 }
 
 /*
- * The PROM PI probe overlays a model-owned attachment and forwards accesses
- * through the Bridge device window derived from that attachment. Aim the
- * selected window at a test card, then compare the overlay with the ordinary
- * Bridge route to the same card register.
+ * The canonical PROM PI probe overlay reaches the same card register as the
+ * ordinary Bridge window-1 route. Aim that window at a test card, write through
+ * the overlay, then read through the ordinary route.
  */
-static void test_prom_pi_probe_uses_model_device_window(const void *data)
+static void
+test_prom_pi_probe_reaches_expected_bridge_register(const void *data)
 {
     QTestState *qts;
     uint32_t value = 0x5a17c0de;
@@ -1961,8 +1961,8 @@ int main(int argc, char **argv)
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
                         test_bridge_root_bus_names);
-    qtest_add_data_func("sn0/model/prom-pi-probe-device-window", NULL,
-                        test_prom_pi_probe_uses_model_device_window);
+    qtest_add_data_func("sn0/model/prom-pi-probe-canonical-route", NULL,
+                        test_prom_pi_probe_reaches_expected_bridge_register);
     qtest_add_data_func("sn0/model/user-device/base-pci-bus", NULL,
                         test_user_device_expands_the_base_pci_bus);
     qtest_add_data_func("sn0/model/user-device/second-pci-bus", NULL,
