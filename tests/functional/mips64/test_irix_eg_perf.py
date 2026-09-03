@@ -90,6 +90,20 @@ SOCKBUF_ARG = (' -b ' + SOCKBUF) if SOCKBUF else ''
 # Trace events to enable, e.g. tigon_rx_ring, written beside the console log.
 TRACE = os.environ.get('EG_PERF_TRACE', '')
 
+# Replace the network back end. The default user-mode stack runs TCP/IP in the
+# emulator's main loop and never puts a frame larger than the standard size on
+# the wire in either direction, so it cannot show what a larger frame is worth.
+# A raw peer on the socket back end carries whatever the guest emits.
+NETDEV = os.environ.get('EG_PERF_NETDEV', '')
+# Address of that peer, and the guest address to match, when it is in use.
+RAW_PEER_IP = '10.0.3.2'
+RAW_GUEST_IP = '10.0.3.15'
+# Datagram size and count for the blast. The size is set from the
+# interface's frame size so one datagram is one frame: the whole
+# question is what a frame costs, so fragmenting would hide it.
+RAW_BLAST_LEN = int(os.environ.get('EG_PERF_RAW_LEN', '1472'))
+RAW_BLAST_BUFS = int(os.environ.get('EG_PERF_RAW_BUFS', '20000'))
+
 # Emulator log classes. 'unimp' is off by default because it is noisy, but it
 # is the only way to see which registers the driver touches that this model
 # does not implement -- a gate the guest programs and the model never reads
@@ -258,11 +272,14 @@ if base.QemuSystemTest is not None:
             vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
             vm.set_console()
             elsc = self.log_file('elsc-aux.log')
-            netdev = ('user,id=egnet,tftp=%s'
-                      ',hostfwd=tcp:127.0.0.1:0-%s:%d'
-                      ',hostfwd=udp:127.0.0.1:0-%s:%d'
-                      % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
-                         base.GUEST_ADDR, UDP_GUEST_PORT))
+            if NETDEV:
+                netdev = NETDEV
+            else:
+                netdev = ('user,id=egnet,tftp=%s'
+                          ',hostfwd=tcp:127.0.0.1:0-%s:%d'
+                          ',hostfwd=udp:127.0.0.1:0-%s:%d'
+                          % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
+                             base.GUEST_ADDR, UDP_GUEST_PORT))
             vm.add_args(
                 '-accel', ACCEL,
                 '-cpu', 'R10000', '-smp', SMP, '-m', str(base.MEMORY_MIB),
@@ -357,6 +374,25 @@ if base.QemuSystemTest is not None:
                             timeout=120)
 
                 con.run("egconfig -f 1 " + base.IFACE, "egc", timeout=180)
+                if NETDEV:
+                    # A raw peer answers ARP and counts what arrives; it speaks
+                    # no TCP, so this measures one thing only -- how fast the
+                    # guest can put frames on the wire, at whatever size it is
+                    # configured for. That is the quantity the per-packet cost
+                    # bounds, measured without the user-mode stack in the way.
+                    con.run("ifconfig %s inet %s netmask 0xffffff00 up"
+                            % (base.IFACE, RAW_GUEST_IP), "rawup", timeout=60)
+                    results["raw_ping"] = con.capture_value(
+                        "ping -c 3 %s | awk '/packets received/ "
+                        "{print \"RX=\" $4}'" % RAW_PEER_IP,
+                        "rawping", rb"RX=(\d+)", timeout=120)
+                    # -s makes ttcp generate its own data; without it the
+                    # transmit side reads standard input and simply waits.
+                    con.run("ttcp -u -t -s -l %d -n %d %s > /dev/null 2>&1"
+                            % (RAW_BLAST_LEN, RAW_BLAST_BUFS, RAW_PEER_IP),
+                            "rawblast", timeout=900)
+                    results["raw_done"] = True
+                    return
                 con.run(f"ifconfig {base.IFACE} inet {base.GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
                 try:
@@ -418,6 +454,19 @@ if base.QemuSystemTest is not None:
                 # believed. Sampled either side: the leg itself moves it.
                 results["tcp_load"] = [round(_load_tcp, 1),
                                        round(os.getloadavg()[0], 1)]
+                # The GUEST's own load, which the host profile cannot show: an
+                # emulated processor with nothing to do still burns a full host
+                # thread in its idle loop, so host-side samples say nothing
+                # about whether the guest was actually saturated. If this comes
+                # back near zero while a transfer is running, the guest is
+                # waiting, not working, and the limit is not its processor.
+                try:
+                    results["guest_load"] = con.capture_value(
+                        "uptime | sed 's/.*average.//' | "
+                        "awk -F, '{print \"GL=\" $1}'",
+                        "gload", rb"GL=\s*([0-9.]+)", timeout=60)
+                except base._Harness:
+                    results["guest_load"] = None
                 results["tcp_write_size"] = 65536
                 results["mtu"] = JUMBO_MTU if JUMBO else 1500
                 results["build"] = os.environ.get("QEMU_TEST_QEMU_BINARY", "")
@@ -499,6 +548,18 @@ if base.QemuSystemTest is not None:
                                        "host_bytes": s_bytes,
                                        "guest_bytes": gb2,
                                        "ok": (gc2 == s_crc and gb2 == s_bytes)})
+                    # A one-minute average means something here: the rounds
+                    # above ran back to back for a minute or more. The same
+                    # reading after a single sub-second leg is mostly the quiet
+                    # minute that preceded it, which is why the earlier sample
+                    # cannot settle whether the guest is saturated.
+                    try:
+                        results["guest_load_after_soak"] = con.capture_value(
+                            "uptime | sed 's/.*average.//' | "
+                            "awk -F, '{print \"GL=\" $1}'",
+                            "gload2", rb"GL=\s*([0-9.]+)", timeout=60)
+                    except base._Harness:
+                        results["guest_load_after_soak"] = None
                     results["soak"] = {
                         "rounds": rounds,
                         "bytes_total": SOAK_ROUNDS * SOAK_BYTES,
