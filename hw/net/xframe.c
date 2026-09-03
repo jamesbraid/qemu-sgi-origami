@@ -66,6 +66,48 @@
 #define XFRAME_PIF_RD_SWAPPER_FB    0x0910
 #define XFRAME_SCHED_INT_CTRL       0x0918
 #define XFRAME_XMSI_ADDRESS         0x0960
+/*
+ * The statistics block (public s2io: stat_cfg / stat_addr in the DCSR bank).
+ * STAT_CFG's enable and one-shot sit in the top bits (s2BIT(0)/s2BIT(1), i.e.
+ * bits 63 and 62); the update period occupies the low 32 bits in bus clicks,
+ * PER_SEC = 0x208d5 clicks to the second.
+ */
+#define XFRAME_STAT_CFG             0x09d0
+#define XFRAME_STAT_ADDR            0x09d8
+#define XFRAME_STAT_CFG_EN          (1ULL << 63)
+#define XFRAME_STAT_CFG_ONE_SHOT    (1ULL << 62)
+#define XFRAME_STAT_PER_SEC         0x208d5ULL
+
+/*
+ * The statistics block has its own byte-swap enables, SWAPPER_CTRL_STATS_FE
+ * and _SE (public s2io s2BIT(48)/s2BIT(49); s2BIT(n) is 1<<(63-n), so bits 15
+ * and 14 of the low word). The two combinations that occur on real drivers are
+ * modelled, and only those. Linux sets FE and SE together on both host
+ * endiannesses and declares every field __le in place: FE+SE means each field
+ * little-endian at its own offset. IRIX leaves both clear, and the block was
+ * measured big-endian in place (a little-endian write is read back
+ * byte-reversed here, a count of 50 arriving as 0x32000000). FE alone or SE
+ * alone -- which nobody sets -- would transpose the halves of each field on the
+ * hardware; that is not modelled, and the STAT_CFG enable path logs it. A
+ * 64-bit field,
+ * were one ever filled, follows the same selector in place (whole-64-bit
+ * little- or big-endian), not a half-swap.
+ */
+#define XFRAME_SWAPPER_CTRL_STATS_FE  (1ULL << 15)
+#define XFRAME_SWAPPER_CTRL_STATS_SE  (1ULL << 14)
+
+static void xframe_stat_dma(XframeState *s);
+static int64_t xframe_stat_period_ms(XframeState *s);
+
+static void xframe_stat_stl(XframeState *s, uint8_t *p, uint32_t val)
+{
+    if (s->swapper_ctrl & XFRAME_SWAPPER_CTRL_STATS_SE) {
+        stl_le_p(p, val);
+    } else {
+        stl_be_p(p, val);
+    }
+}
+
 #define XFRAME_PRC_RXD0_0           0x1930
 #define XFRAME_PRC_CTRL_0           0x1970
 #define XFRAME_MAC_INT_MASK         0x2008
@@ -597,6 +639,13 @@ static void xframe_soft_reset(XframeState *s)
      * against a ring that no longer exists in any guest-meaningful sense.
      */
     timer_del(s->rx_recovery_timer);
+    timer_del(s->stat_timer);
+    s->stat_cfg = 0;
+    s->stat_addr = 0;
+    s->stat_tx_frms = 0;
+    s->stat_tx_octets = 0;
+    s->stat_rx_frms = 0;
+    s->stat_rx_octets = 0;
     /*
      * A reset drops the adapter (ADAPTER_EN cleared above), so any pending
      * link event is void -- the driver re-enables and the link comes up
@@ -692,6 +741,10 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
         return s->rx_traffic_int;
     case XFRAME_MAC_RMAC_ERR_REG:
         return s->mac_rmac_err;
+    case XFRAME_STAT_CFG:
+        return s->stat_cfg;
+    case XFRAME_STAT_ADDR:
+        return s->stat_addr;
     case XFRAME_PRC_RXD0_0:
         return s->prc_rxd0_0;
     case XFRAME_PRC_CTRL_0:
@@ -1114,6 +1167,68 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
             xframe_update_irq(s);
         }
         return;
+    case XFRAME_STAT_ADDR:
+        s->stat_addr = full;
+        return;
+    case XFRAME_STAT_CFG:
+        /*
+         * Enable and one-shot are in the high half; act once the write covers
+         * it. Enabling DMAs a first snapshot immediately -- the driver's
+         * initial read must not see stale guest memory -- and arms the
+         * periodic refresh unless one-shot asked for exactly one.
+         */
+        s->stat_cfg = full;
+        if (commit_high) {
+            if (full & XFRAME_STAT_CFG_EN) {
+                /*
+                 * Only FE==SE is modelled (both set -> little-endian in place,
+                 * both clear -> big-endian). A guest that sets exactly one asks
+                 * for a half-transpose this model does not do; warn once here at
+                 * enable rather than on every periodic DMA.
+                 */
+                if (!(s->swapper_ctrl & XFRAME_SWAPPER_CTRL_STATS_FE) !=
+                    !(s->swapper_ctrl & XFRAME_SWAPPER_CTRL_STATS_SE)) {
+                    qemu_log_mask(LOG_UNIMP,
+                                  "xframe: statistics swapper FE != SE (0x%"
+                                  PRIx64 ") not modelled; writing in place\n",
+                                  s->swapper_ctrl);
+                }
+                xframe_stat_dma(s);
+                if (full & XFRAME_STAT_CFG_ONE_SHOT) {
+                    /*
+                     * The hardware clears enable when the single transfer
+                     * completes; the driver's one-shot path (s2io_updt_stats)
+                     * polls STAT_CFG's enable bit for exactly that and gives up
+                     * as "Updt failed" if it never clears. The DMA above is
+                     * synchronous, so clear it now, and cancel any periodic
+                     * timer a prior enable armed so one-shot means exactly one.
+                     */
+                    timer_del(s->stat_timer);
+                    s->stat_cfg &= ~XFRAME_STAT_CFG_EN;
+                } else {
+                    /*
+                     * The interval is taken from the period present now, at the
+                     * enable (high-half) write; a guest that rewrites the period
+                     * low half afterwards gets one stale interval before the
+                     * next re-arm picks the new value up. Log a clamped period
+                     * once here rather than on every timer fire.
+                     */
+                    int64_t raw = (int64_t)((full & 0xffffffffULL) * 1000 /
+                                            XFRAME_STAT_PER_SEC);
+                    if (raw < 100 || raw > 10000) {
+                        qemu_log_mask(LOG_UNIMP,
+                                      "xframe: statistics period %" PRId64
+                                      " ms clamped to [100, 10000]\n", raw);
+                    }
+                    timer_mod(s->stat_timer,
+                              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                              xframe_stat_period_ms(s));
+                }
+            } else {
+                timer_del(s->stat_timer);
+            }
+        }
+        return;
     case XFRAME_PRC_RXD0_0:
         s->prc_rxd0_0 = full;
         s->rx_page_addr = full;
@@ -1312,6 +1427,101 @@ static const MemoryRegionOps xframe_pif_ops = {
 #define XFRAME_TXD_OWN              (1ULL << 56)
 #define XFRAME_TXD_GCL              (1ULL << 40)
 #define XFRAME_TXD_BUF_LEN_MASK     0xffffULL
+
+/*
+ * The statistics block. The card DMAs a structure of hardware counters to the
+ * guest address in STAT_ADDR, periodically while STAT_CFG's enable is set, and
+ * the driver maintains its interface counters as DELTAS against successive
+ * snapshots of that memory. So the block must exist and must advance: left
+ * un-DMA'd, the driver differences against a block that never moves and its
+ * transmit packet count runs backwards (observed as netstat -in reporting
+ * Opkts of 4294967284 and falling, about one step per transmit handed over).
+ *
+ * Offsets and the hardware span come from compiling the public s2io stat_block
+ * (offsetof, both the mainline and history copies of the struct agree). The
+ * card writes the hardware section, [0, 0x320); at 0x320 the driver's own
+ * software tail (u8 buffer[20], then swStat) begins and the card never touches
+ * it. The block is a VALUE structure -- counts, not a byte stream -- so its
+ * byte order follows the guest's own SWAPPER_CTRL_STATS_SE setting, the way
+ * descriptors follow their swap-enables (see xframe_stat_stl); a plain
+ * little-endian write is read back byte-reversed on this big-endian guest, a
+ * count of 50 arriving as 0x32000000. Each 64-bit count is split as a low
+ * 32-bit field near the top of the block and a high 32-bit overflow field in
+ * a later section -- the two overflow fields sit past the eight __le16
+ * rmac_full_q0..q7 counters, which is why each overflow offset is 16 bytes
+ * above its Tx/Rx neighbour. Only the transmit and receive frame and byte
+ * counters are filled -- the rest of the block reads zero, which for counters
+ * of events this model never generates (errors, pauses, discards) is also the
+ * truth.
+ */
+#define XFRAME_STAT_BLOCK_SIZE          0x320
+#define XFRAME_STAT_TMAC_DATA_OCTETS    0x000
+#define XFRAME_STAT_TMAC_FRMS           0x004
+#define XFRAME_STAT_RMAC_DATA_OCTETS    0x060
+#define XFRAME_STAT_RMAC_VLD_FRMS       0x064
+#define XFRAME_STAT_TMAC_OCTETS_OFLOW   0x218
+#define XFRAME_STAT_TMAC_FRMS_OFLOW     0x21c
+#define XFRAME_STAT_RMAC_OCTETS_OFLOW   0x260
+#define XFRAME_STAT_RMAC_FRMS_OFLOW     0x264
+
+static void xframe_stat_dma(XframeState *s)
+{
+    uint8_t block[XFRAME_STAT_BLOCK_SIZE] = { 0 };
+
+    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_DATA_OCTETS,
+                    (uint32_t)s->stat_tx_octets);
+    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_OCTETS_OFLOW,
+                    (uint32_t)(s->stat_tx_octets >> 32));
+    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_FRMS, (uint32_t)s->stat_tx_frms);
+    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_FRMS_OFLOW,
+                    (uint32_t)(s->stat_tx_frms >> 32));
+    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_DATA_OCTETS,
+                    (uint32_t)s->stat_rx_octets);
+    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_OCTETS_OFLOW,
+                    (uint32_t)(s->stat_rx_octets >> 32));
+    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_VLD_FRMS,
+                    (uint32_t)s->stat_rx_frms);
+    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_FRMS_OFLOW,
+                    (uint32_t)(s->stat_rx_frms >> 32));
+
+    if (pci_dma_write(PCI_DEVICE(s), s->stat_addr, block,
+                      sizeof(block)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xframe: statistics block write at 0x%" PRIx64
+                      " failed\n", s->stat_addr);
+    }
+}
+
+/*
+ * STAT_CFG's low 32 bits are the period in bus clicks (public s2io
+ * SET_UPDT_PERIOD / SET_UPDT_CLICKS, s2io-regs.h:264-266); PER_SEC clicks make
+ * a second. Clamp to a host floor and ceiling so a pathological guest value
+ * cannot spin or freeze the periodic DMA. The floor only ever bites periodic
+ * mode -- the driver's one-shot uses 10 clicks and never reaches the timer --
+ * and the enable path logs when it engages, so the silent change of a
+ * guest-visible period is visible once.
+ */
+static int64_t xframe_stat_period_ms(XframeState *s)
+{
+    uint64_t clicks = s->stat_cfg & 0xffffffffULL;
+    int64_t ms = clicks * 1000 / XFRAME_STAT_PER_SEC;
+
+    return MIN(MAX(ms, 100), 10000);
+}
+
+static void xframe_stat_timer_cb(void *opaque)
+{
+    XframeState *s = opaque;
+
+    /* Only periodic mode arms this timer; a one-shot cleared enable already. */
+    if (!(s->stat_cfg & XFRAME_STAT_CFG_EN)) {
+        return;
+    }
+    xframe_stat_dma(s);
+    timer_mod(s->stat_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              xframe_stat_period_ms(s));
+}
 
 /*
  * Transmit checksum offload, in the second control word. The driver hands the
@@ -1513,6 +1723,8 @@ static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
          */
         net_checksum_calculate(seg, hdr_len + chunk, CSUM_IP | CSUM_TCP);
         qemu_send_packet(qemu_get_queue(s->nic), seg, hdr_len + chunk);
+        s->stat_tx_frms++;
+        s->stat_tx_octets += hdr_len + chunk;
     }
 
     return true;
@@ -1638,6 +1850,8 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
                 net_checksum_calculate(s->tx_frame, frame_len, csum);
             }
             qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
+            s->stat_tx_frms++;
+            s->stat_tx_octets += frame_len;
         }
     }
 
@@ -2380,6 +2594,17 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
                     ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) | offload, true);
     pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
 
+    /*
+     * Count only delivered frames. A frame the receive path drops earlier for
+     * a bad buffer pointer is not counted here; on the hardware it would land
+     * in a discard counter this model leaves zero, so netstat's received total
+     * omits it rather than miscounting it.
+     */
+    if (copy_len > 0) {
+        s->stat_rx_frms++;
+        s->stat_rx_octets += copy_len;
+    }
+
     s->rx_desc_idx++;
     if (s->rx_desc_idx >= xframe_rxd_per_page(s)) {
         xframe_rx_advance_page(s);
@@ -2494,6 +2719,7 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
 
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         xframe_rx_recovery_timer_cb, s);
+    s->stat_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, xframe_stat_timer_cb, s);
     s->link_down_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                       xframe_link_down_timer_cb, s);
     s->link_up_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
@@ -2548,6 +2774,7 @@ static void xframe_exit(PCIDevice *dev)
     XframeState *s = XFRAME(dev);
 
     timer_free(s->rx_recovery_timer);
+    timer_free(s->stat_timer);
     timer_free(s->link_down_timer);
     timer_free(s->link_up_timer);
     timer_free(s->sched_int_timer);
@@ -2629,6 +2856,18 @@ static int xframe_post_load(void *opaque, int version_id)
     if (s->sched_int_armed && !timer_pending(s->sched_int_timer)) {
         xframe_sched_int_arm(s);
     }
+    /*
+     * Periodic statistics DMA resumes on the target if the source had it
+     * enabled. Only periodic mode leaves enable set to migrate -- a one-shot
+     * clears it when its single transfer completes -- so the enable bit alone
+     * is the condition. A v3 or older source never programmed it, and the
+     * zero-value fields load as disabled, so this arms nothing there.
+     */
+    if ((s->stat_cfg & XFRAME_STAT_CFG_EN) && !timer_pending(s->stat_timer)) {
+        timer_mod(s->stat_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  xframe_stat_period_ms(s));
+    }
     return 0;
 }
 
@@ -2682,7 +2921,7 @@ static int xframe_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -2693,6 +2932,12 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(adapter_control, XframeState),
         VMSTATE_UINT64(general_int_mask, XframeState),
         VMSTATE_UINT64_V(rmac_max_pyld_len, XframeState, 3),
+        VMSTATE_UINT64_V(stat_cfg, XframeState, 4),
+        VMSTATE_UINT64_V(stat_addr, XframeState, 4),
+        VMSTATE_UINT64_V(stat_tx_frms, XframeState, 4),
+        VMSTATE_UINT64_V(stat_tx_octets, XframeState, 4),
+        VMSTATE_UINT64_V(stat_rx_frms, XframeState, 4),
+        VMSTATE_UINT64_V(stat_rx_octets, XframeState, 4),
         VMSTATE_UINT64_V(pic_int_mask, XframeState, 2),
         VMSTATE_UINT64_V(txpic_int_mask, XframeState, 2),
         VMSTATE_UINT64_V(rxpic_int_mask, XframeState, 2),
