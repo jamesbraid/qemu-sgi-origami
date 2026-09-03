@@ -296,11 +296,11 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_INT_KEYBOARD       (1u << 22)
 
 /*
- * Which sub-devices a board fits. One-wire is not a member here: the
- * station-address part sits behind the MicroLAN engine and is registered as
- * part of ethernet setup, so a board with no ethernet has no part on the bus
- * either. The buffer RAM, the serial DMA registers and the main register
- * block belong to the chip rather than to a board, and every board has them.
+ * Which sub-devices a board fits. The station-address part has its own
+ * presence bit, but takes its address from the embedded ethernet device, so
+ * realization rejects a one-wire identity without ethernet. The buffer RAM,
+ * the serial DMA registers and the main register block belong to the chip
+ * rather than to a board, and every board has them.
  */
 /*
  * Which clock, rather than whether one: the two parts are not alternatives
