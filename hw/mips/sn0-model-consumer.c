@@ -9,7 +9,6 @@
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/scsi/qlogic-isp.h"
 #include "net/net.h"
-#include "system/address-spaces.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "system/system.h"
@@ -244,7 +243,6 @@ static void sn0_model_create_bridge(SN0MachineState *s,
         model, SN0_MODEL_SPACE_XTALK);
     const SN0ModelRegion *bridge_region = sn0_model_find_region(
         model, SN0_MODEL_REGION_BRIDGE_REGISTERS);
-    MemoryRegion *system = get_system_memory();
     MemoryRegion *bridge_face;
     SGIBridgeState *bridge;
     g_autofree char *bridge_name = node_index == 0 ?
@@ -269,8 +267,22 @@ static void sn0_model_create_bridge(SN0MachineState *s,
     qdev_prop_set_string(DEVICE(bridge), "board-part",
                          node->topology->bridge_part);
     qdev_prop_set_string(DEVICE(bridge), "pci-bus-name", bus_name);
-    object_property_set_link(OBJECT(bridge), "fabric", OBJECT(system),
-                             &error_fatal);
+    /*
+     * Interrupt packets are real transfers, not calls into the Hub, so they
+     * travel the route a processor of this node travels: its claim view,
+     * where a node-qualified address resolves by programmed number. The
+     * canonical map resolves the same address by the board's position
+     * instead, which agrees only while every board's programmed number
+     * happens to equal its position. Node zero satisfies that by accident
+     * and node one does not, so before firmware hands out numbers -- both
+     * Hubs still reading zero -- node one's packet for "node zero" landed
+     * on node zero's Hub instead of staying home.
+     *
+     * Every processor's view of a node claims the same strides, so view
+     * zero speaks for the node; a node always has a processor.
+     */
+    object_property_set_link(OBJECT(bridge), "fabric",
+                             OBJECT(&node->claim_view[0]), &error_fatal);
     qdev_prop_set_uint64(DEVICE(bridge), "fabric-base", xtalk->carrier_base);
     qdev_prop_set_uint32(DEVICE(bridge), "fabric-node-shift",
                          ctz64(model->node_stride));
