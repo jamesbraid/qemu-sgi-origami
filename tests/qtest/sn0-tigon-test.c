@@ -154,6 +154,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 /* Misaligned on purpose -- forces the payload copy's buf & 3 != 0 path. */
 #define TX_BUF_DIRECT_PHYS  (TX_BUF_PHYS + 2)
 #define RX_BUF_DIRECT_PHYS  (RX_BUF_PHYS + 2)
+/* Deliberately outside the 128 MiB machine used by the DMA-error tests. */
+#define UNMAPPED_PAYLOAD_PHYS 0x7ff00000u
 
 #define JUMBO_RX_RING_PHYS  0x002a0000u
 #define JUMBO_BUF_PHYS      0x002c0000u
@@ -504,6 +506,26 @@ static QTestState *tigon_init_netdev(int guest_fd)
                        guest_fd);
 }
 
+static QTestState *tigon_init_netdev_128m(int guest_fd)
+{
+    return qtest_initf("-M origin200 -m 128M "
+                       "-netdev socket,fd=%d,id=n0 "
+                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0",
+                       guest_fd);
+}
+
+/* The same machine, with the Bridge's DMA-route trace points logged. */
+static QTestState *tigon_init_netdev_traced(int guest_fd, const char *logfile)
+{
+    return qtest_initf("-M origin200 "
+                       "-netdev socket,fd=%d,id=n0 "
+                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
+                       "-d trace:sgi_bridge_lane_swap_read,"
+                       "trace:sgi_bridge_lane_swap_write,"
+                       "trace:sgi_bridge_dma_xlate_plain -D %s",
+                       guest_fd, logfile);
+}
+
 static bool irq_asserted(QTestState *qts)
 {
     return (qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
@@ -629,6 +651,80 @@ static void test_transmit(const void *data)
     close(sv[0]);
 }
 
+/* A refused payload fetch must not send or consume its descriptor. */
+static void test_transmit_payload_dma_error(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t byte;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_128m(sv[1]);
+    close(sv[1]);
+
+    go_operational(qts);
+
+    write_rcb_addr(qts, TX_RING_PHYS + 0, UNMAPPED_PAYLOAD_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 0);
+    g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* A later fragment fault must leave the whole frame ready to retry. */
+static void test_transmit_fragment_dma_error_retry(const void *data)
+{
+    enum { FIRST_LEN = 24 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+    uint8_t byte;
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_128m(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8, (uint32_t)FIRST_LEN << 16);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    write_rcb_addr(qts, TX_RING_PHYS + 16, UNMAPPED_PAYLOAD_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 24,
+                 ((uint32_t)(sizeof(test_frame) - FIRST_LEN) << 16) |
+                 TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 28, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 0);
+    g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+
+    /* Repair only the failed fragment and retry the same producer. */
+    write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS + FIRST_LEN);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(test_frame));
+    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 2);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 /*
  * A 60-byte IPv4 TCP SYN with its TCP checksum field left zero, the way IRIX's
  * eg hands a checksum-offloaded segment to the card. Offsets: ethernet 0..13,
@@ -738,14 +834,15 @@ static const uint8_t test_frame_direct[61] = {
 /*
  * The transmit payload on the real (non-bypassed) direct-map DMA path -- a
  * driver's actual DMA-mapped sk_buff, unlike TX_BUF_PHYS above which sits
- * below the Bridge's translated window and so never exercises the swap at
- * all. Same two pairings as byte_order_check(), because the payload is
- * composed out of the identical tigon_dma_ld32() calls the descriptors use.
+ * below the Bridge's translated window and so never crosses the Bridge's
+ * DMA machinery at all. Same two pairings as byte_order_check(): the
+ * descriptors are read as word values on the pairing the guest programs,
+ * while the payload must arrive byte-exact whichever pairing is in force.
  * The frame is posted from a misaligned start (buf & 3 == 2) on top of a
- * length that is not a multiple of 4, forcing the leading- and
- * trailing-partial-word paths along with the plain aligned-word path.
+ * length that is not a multiple of 4, so partial-word edges are covered too.
  */
-static void transmit_direct_map_check(bool bridge_transparent)
+static void transmit_direct_map_check(bool bridge_transparent,
+                                      const char *tracefile)
 {
     int sv[2];
     QTestState *qts;
@@ -753,7 +850,8 @@ static void transmit_direct_map_check(bool bridge_transparent)
     size_t len;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
+    qts = tracefile ? tigon_init_netdev_traced(sv[1], tracefile)
+                    : tigon_init_netdev(sv[1]);
     close(sv[1]);
     net_recv_timeout(sv[0], 5);
 
@@ -802,12 +900,72 @@ static void transmit_direct_map_check(bool bridge_transparent)
 
 static void test_transmit_direct_map_transparent(const void *data)
 {
-    transmit_direct_map_check(true);
+    transmit_direct_map_check(true, NULL);
 }
 
 static void test_transmit_direct_map_corrects(const void *data)
 {
-    transmit_direct_map_check(false);
+    transmit_direct_map_check(false, NULL);
+}
+
+static unsigned count_lines_with(const char *text, const char *needle)
+{
+    unsigned n = 0;
+    const char *p = text;
+
+    while ((p = strstr(p, needle)) != NULL) {
+        n++;
+        p += strlen(needle);
+    }
+    return n;
+}
+
+/*
+ * The frame payload must not ride the byte-lane swap window. Both routes
+ * deliver identical wire bytes -- the window's per-word reversal cancels
+ * against the card's word-value consumption of the payload -- so no
+ * byte-exact check can see the difference; it shows up only as cost, one
+ * dispatch per payload word, measured as this device's dominant throughput
+ * ceiling. The trace log tells the routes apart where the wire cannot.
+ *
+ * A negative over a log needs two controls or it can pass vacuously.
+ * Descriptors still traverse the window on this pairing (they read as word
+ * values, so their swap is load-bearing): their nonzero count proves the
+ * instrument was live. The payload's presence on the plain route proves the
+ * needles still name what the test lays out: both needles derive from the
+ * buffer constant, so a moved buffer moves them too, and a changed trace
+ * format fails the positive before the negative can go quiet. The two
+ * needles differ by address domain -- the swap window logs its window
+ * offset, the plain route logs the raw PCI address the device issued.
+ */
+static void test_payload_skips_lane_swap(const void *data)
+{
+    g_autofree char *swap_needle =
+        g_strdup_printf("addr 0x%x", TX_BUF_PHYS >> 16);
+    g_autofree char *plain_needle =
+        g_strdup_printf("plain addr 0x%" PRIx64,
+                        (uint64_t)(IOVA(TX_BUF_PHYS) >> 8));
+    char *logfile = NULL;
+    char *log = NULL;
+    int fd;
+
+    fd = g_file_open_tmp("tigon-lane-swap-XXXXXX", &logfile, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    transmit_direct_map_check(false, logfile);
+
+    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
+    /* Control: the swap window saw the descriptor and ring traffic. */
+    g_assert_cmpuint(count_lines_with(log, "lane swap "), >, 0);
+    /* Control: the payload buffer's address showed up on the plain route. */
+    g_assert_cmpuint(count_lines_with(log, plain_needle), >, 0);
+    /* The payload buffer never crossed the swap window. */
+    g_assert_cmpuint(count_lines_with(log, swap_needle), ==, 0);
+
+    g_free(log);
+    unlink(logfile);
+    g_free(logfile);
 }
 
 /* A standard receive-buffer descriptor: address, index and length. */
@@ -834,6 +992,40 @@ static const uint8_t rx_frame_other[64] = {
     0x08, 0x00,
     0x99, 0x98, 0x97, 0x96,
 };
+
+/* A refused payload write must leave the posted buffer ready to retry. */
+static void test_receive_payload_dma_error(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[sizeof(rx_frame_ours)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_128m(sv[1]);
+    close(sv[1]);
+
+    go_operational(qts);
+
+    post_std_rx_buffer(qts, 0, UNMAPPED_PAYLOAD_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 0);
+
+    /* Repair slot 0 in place without posting another descriptor. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, sizeof(landed));
+    write_rcb_addr(qts, STD_RX_RING_PHYS, RX_BUF_PHYS);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
 
 /*
  * A frame larger than the standard ring's buffers has to come back through
@@ -2014,6 +2206,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/transmit-payload-dma-error", NULL,
+                        test_transmit_payload_dma_error);
+    qtest_add_data_func("/sn0/tigon/transmit-fragment-dma-error-retry", NULL,
+                        test_transmit_fragment_dma_error_retry);
     qtest_add_data_func("/sn0/tigon/ip-carriage-both-directions", NULL,
                         test_ip_carriage_both_directions);
     qtest_add_data_func("/sn0/tigon/transmit-full-size-frame", NULL,
@@ -2036,7 +2232,11 @@ int main(int argc, char **argv)
                         test_misc_conf_reads_back);
     qtest_add_data_func("/sn0/tigon/receive-reports-checksums", NULL,
                         test_receive_reports_checksums);
+    qtest_add_data_func("/sn0/tigon/payload-skips-lane-swap", NULL,
+                        test_payload_skips_lane_swap);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
+    qtest_add_data_func("/sn0/tigon/receive-payload-dma-error", NULL,
+                        test_receive_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
     qtest_add_data_func("/sn0/tigon/firmware-up-releases-a-held-frame", NULL,
