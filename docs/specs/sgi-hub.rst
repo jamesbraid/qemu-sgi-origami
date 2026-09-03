@@ -100,19 +100,21 @@ interrupt off. The counter's clock-control register resets with bit
 read-only and read zero on a machine with nothing driving a
 network-wide clock.
 
-Whether a comparator the counter has already passed fires at once or
-after a full wrap is unobserved and the public sources cut both
-ways; the model matches at once, chosen on failure mode: a strand
-would be silent for a 114-year revolution, while an immediate match
-costs a guarded writer one early tick and shows a livelock loudly.
-Only a guest-programmed deadline counts as passed -- moving the
-counter under a reset-zero comparator is a change of origin, not two
-unrequested interrupts. The modular space is split at half a
-revolution, which puts every deadline a guest programs (milliseconds)
-on the future side and accepts that an arm asking for the longest
-possible interval matches at once. A matched comparator is not
-re-armed, and its timer is deleted so the wrap deadline cannot pend
-a second time; guests rewrite it from every handler. An unpopulated
+A comparator the counter has already passed does not fire at once:
+the model arms it for the full forward distance, so a comparator
+written behind the count matches only when the counter genuinely
+reaches it, up to a near-full revolution later -- 114 years at
+1.25 MHz. This was an open failure-mode choice until the two-node
+IRIX miniroot settled it: a secondary processor parks its tick by
+writing zero to its comparator with the counter high and no
+read-back guard, and depends on silence -- a model that matched a
+behind comparator at once turned that write into a permanent
+interrupt storm, and real Origin 200s boot IRIX, so the silicon
+wraps. Moving the counter under a reset-zero comparator remains a
+change of origin, not two unrequested interrupts. A matched
+comparator is not re-armed: the arm that reaches its deadline fires
+once, its timer is deleted so the deadline cannot pend a second
+time, and guests rewrite it from every handler. An unpopulated
 slice never arms a timer. Of the clock-control register, bits 7:1
 (maximum count) and bit 0 (network-clock enable) are writable; bit
 15 and bits 14:8 observe the network-wide clock and read zero.
