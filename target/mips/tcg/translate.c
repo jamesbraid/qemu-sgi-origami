@@ -5210,6 +5210,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG01__RANDOM:
             CP0_CHECK(!(ctx->insn_flags & ISA_MIPS_R6));
+            /* Mark as an IO operation because we read the time.  */
+            translator_io_start(&ctx->base);
             gen_helper_mfc0_random(arg, tcg_env);
             register_name = "Random";
             break;
@@ -6796,6 +6798,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG01__RANDOM:
             CP0_CHECK(!(ctx->insn_flags & ISA_MIPS_R6));
+            /* Mark as an IO operation because we read the time.  */
+            translator_io_start(&ctx->base);
             gen_helper_mfc0_random(arg, tcg_env);
             register_name = "Random";
             break;
@@ -8836,6 +8840,8 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
         if (!env->tlb->helper_tlbwr) {
             goto die;
         }
+        /* Mark as an IO operation: the random victim reads the time.  */
+        translator_io_start(&ctx->base);
         gen_helper_tlbwr(tcg_env);
         break;
     case OPC_TLBP:
