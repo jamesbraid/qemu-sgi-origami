@@ -61,10 +61,14 @@ The MIPS Magnum R4000 emulation supports:
 
 -  G364 framebuffer
 
-The SGI Origin 200 emulation models one or two nodes of the product:
-one or two R10000 processors per node, each node's Hub ASIC (the
-per-node interrupt controller, real-time counter and block transfer
-engines), and the base I/O board behind the Hub's crosstalk port:
+The committed Origin 200 descriptor supplies the canonical fixed
+inventory and wiring. The generic SN0 model consumer instantiates the
+selected one- or two-node profile, while semantic adapters map model
+kinds to QOM implementations. QEMU retains device behavior and object
+lifecycle. The descriptor selects one or two R10000 processors per
+node, each node's Hub ASIC (the per-node interrupt controller,
+real-time counter and block transfer engines), and the base I/O board
+behind the Hub's crosstalk port:
 
 -  SGI Bridge crosstalk-to-PCI host bridge, with its address
    translation table modelled as an IOMMU
@@ -86,8 +90,10 @@ system controller's diagnostic port, 3 to the debug UART enabled by the
 ``junk-uart`` machine option. By default the machine synthesizes the
 firmware structures a kernel loaded with ``-kernel`` expects; booting
 SGI's own PROM image instead is done with ``-bios`` and
-``synthesized-firmware=off``. See the ``origin200`` machine's property
-descriptions for the remaining options.
+``synthesized-firmware=off``. The remaining machine-specific runtime
+properties are ``junk-uart``, ``debug-leds``, ``diagnostic-recording``,
+and ``elsc-dip-switches``. Explicit ``-device`` arguments can add
+hardware after QEMU constructs the canonical machine.
 
 The Fuloong 2E emulation supports:
 

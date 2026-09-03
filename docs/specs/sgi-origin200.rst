@@ -3,11 +3,18 @@ SGI Origin 200 machine and firmware model
 =========================================
 
 The Origin 200 is the one- or two-chassis member of SGI's SN0
-family, built on the IP29 node board. QEMU's ``origin200`` machine
-(``hw/mips/sn0-origin200.c`` on the family machinery in
-``hw/mips/sn0.c``) is one directly connected Bridge per chassis with
-two SCSI adapters and the IOC3 base I/O controller on its PCI bus,
-four IP29 memory banks, and no crossbar. The synthesized firmware
+family, built on the IP29 node board. The committed
+``hw/mips/sn0-origin200-model.c`` descriptor is the sole authority for
+the machine's canonical static topology: profiles, components,
+ownership, buses, addresses, aliases, interrupts, identities, and the
+firmware graph. The generic SN0 model consumer constructs its selected
+profile, and semantic adapters map the descriptor's component kinds to
+QOM implementations. QEMU owns construction mechanics, device
+behavior, register and DMA handling, reset, migration, and object
+lifetime. The canonical topology has one
+directly connected Bridge per chassis with two SCSI adapters and the
+IOC3 base I/O controller on its PCI bus, four IP29 memory banks, and
+no crossbar. The synthesized firmware
 (``hw/mips/sn0-firmware.c``) builds what a real IP27 PROM leaves
 behind for a guest -- the programmed boot flash and its configuration
 block, the ARCS call vectors and the routines behind them, and the
@@ -25,14 +32,13 @@ emits reaches the same chip. SGI's own firmware exploits this: a
 directly connected Bridge may be given whichever widget number the
 firmware chooses, and it chooses 8, avoiding 0 because SGI's own
 firmware cites an error-handling problem at widget 0 -- an account
-never shown to be the same defect as any this tree has found. The machine therefore
-maps the Bridge's whole widget face at widget 8, aliases it onto
-widgets 2-7 and 9-15 (the IRIX miniroot stamps a device pointer with
-widget 2), and aliases it at widget 0 unconditionally -- OpenBSD
-panics if widget 0's identification register does not read, so the
-``io-bridge`` machine option gates only the Bridge's own widget, never
-widget 0. Widget 1 is the Hub. One vocabulary trap spans the
-sources: the Hub translation entry's bit 12 selects what Linux and
+never shown to be the same defect as any this tree has found. The
+model declares the Bridge's whole widget face at widget 8 and aliases
+at widgets 0, 2-7, and 9-15 (the IRIX miniroot stamps a device pointer
+with widget 2). The generic consumer installs those mappings. OpenBSD
+panics if widget 0's identification register does not read. Widget 1
+is the Hub. One vocabulary trap spans the sources: the Hub translation
+entry's bit 12 selects what Linux and
 IRIX call "I/O space" and OpenBSD calls "device space", while the
 Bridge's own "device space" is a third, unrelated usage.
 
@@ -72,26 +78,21 @@ Base I/O
 The IOC3 is a child of the node that carries it, not of the machine,
 with its ethernet, transceiver and timekeeper children under it. Its
 second interrupt is not a PCI interrupt: the Bridge's INTx fold would
-land it on the ethernet's pin, so the board wires it directly to the
-Bridge input the real board uses, whether or not the Bridge's own
-window is mapped. Each node's base I/O board carries its own
-laser-programmed one-wire serial, distinct per node so that firmware
-and a guest's one-wire bus never merge two physical nodes that fall
-back to their base I/O identities. The timekeeper's battery is a
-per-node ``mtd`` drive.
+land it on the ethernet's pin, so the model declares a direct
+connection to the Bridge input the real board uses. Each node's base
+I/O board carries its own laser-programmed one-wire serial, distinct
+per node so that firmware and a guest's one-wire bus never merge two
+physical nodes that fall back to their base I/O identities. The
+timekeeper's battery is a per-node ``mtd`` drive.
 
-The two SCSI adapters occupy the first two PCI devices and exist only
-with the Bridge, since a guest reaches them only through its
-per-device decode. They are created with no drive: a disk arrives on
-the command line, and the command line's disks are offered to every
+The model declares the Bridge, both SCSI adapters, and IOC3 as
+unconditional topology. The adapters occupy PCI devices 0 and 1, and
+IOC3 occupies device 2. They are created with no drive: a disk arrives
+on the command line, and the command line's disks are offered to every
 adapter by bus number (node 0's first adapter is bus 0 and takes
-``-hda``).
-
-The Bridge chip is always built -- the IOC3 is a PCI device and needs
-a bus to realize onto -- and the ``io-bridge`` option decides only
-whether its register window is mapped. A snapshot from before the
-Bridge and IOC3 were always-present QOM devices cannot be loaded
-either way; their state was absent from it.
+``-hda``). The model also declares the Bridge register face and its
+aliases. The removed ``io-bridge`` property cannot select a bridgeless
+machine.
 
 Boot flash
 ==========
