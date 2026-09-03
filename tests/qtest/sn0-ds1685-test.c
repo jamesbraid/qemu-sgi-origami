@@ -55,7 +55,7 @@
 #define SUBSYS_IP30     "0xc304"   /* the Octane's, the one with this clock */
 
 #define OCTANE_IOC3(subsys) \
-    "-M origin200,io-bridge=on -device sgi-ioc3,id=octane,addr=" \
+    "-M origin200 -device sgi-ioc3,id=octane,addr=" \
     G_STRINGIFY(OCTANE_PCI_DEVICE) ",subsystem-id=" subsys
 
 /* Register numbers, written to the address port rather than to an address. */
@@ -797,7 +797,7 @@ static void migrate_one_board(const char *subsys, bool has_clock)
 
     args = g_strdup_printf("%s -device sgi-ioc3,id=octane,addr=%d,"
                            "subsystem-id=%s",
-                           "-M origin200,io-bridge=on",
+                           "-M origin200",
                            OCTANE_PCI_DEVICE, subsys);
 
     from = qtest_init(args);

@@ -17,7 +17,7 @@
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
 #define DEV_MEMORY_SPACE        (1u << 12)
 
-#define MACHINE_WITH_BRIDGE     "-M origin200,io-bridge=on"
+#define MACHINE_WITH_BRIDGE     "-M origin200"
 
 /* PCI type 0 configuration space, and the window each device sits behind. */
 #define BRIDGE_CFG0             0x020000

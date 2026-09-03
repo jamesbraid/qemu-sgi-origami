@@ -1475,23 +1475,7 @@ static void test_the_default_population_remains_fitted(const void *data)
     qtest_quit(qts);
 }
 
-static void test_population_selects_i2c_children(const void *data)
-{
-    QTestState *qts = qtest_init(
-        "-M origin200 "
-        "-global sgi-hub.population=1 "
-        "-global sgi-hub.i2c-nvram-pages=2 "
-        "-global sgi-hub.onewire-kind=0");
-
-    g_assert_true(hub_has_child(qts, "i2c"));
-    g_assert_false(hub_has_child(qts, "elsc"));
-    g_assert_false(hub_has_child(qts, "onewire-part"));
-    assert_hub_nvram_pages(qts, 2);
-
-    qtest_quit(qts);
-}
-
-static void test_population_can_be_empty(const void *data)
+static void test_model_population_overrides_class_globals(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200 "
@@ -1499,78 +1483,12 @@ static void test_population_can_be_empty(const void *data)
         "-global sgi-hub.i2c-nvram-pages=0 "
         "-global sgi-hub.onewire-kind=0");
 
-    g_assert_false(hub_has_child(qts, "i2c"));
-    g_assert_false(hub_has_child(qts, "elsc"));
-    g_assert_false(hub_has_child(qts, "onewire-part"));
+    g_assert_true(hub_has_child(qts, "i2c"));
+    g_assert_true(hub_has_child(qts, "elsc"));
+    g_assert_true(hub_has_child(qts, "onewire-part"));
+    assert_hub_nvram_pages(qts, 8);
 
     qtest_quit(qts);
-}
-
-static void assert_qemu_rejects(const char *const args[], const char *message)
-{
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
-    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output, message));
-}
-
-static void test_elsc_requires_i2c(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-global", "sgi-hub.population=2", "-global",
-        "sgi-hub.i2c-nvram-pages=0", "-global",
-        "sgi-hub.onewire-kind=0", NULL
-    };
-
-    assert_qemu_rejects(args, "Hub ELSC requires I2C");
-}
-
-static void test_nvram_requires_i2c(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-global", "sgi-hub.population=0", "-global",
-        "sgi-hub.i2c-nvram-pages=1", "-global",
-        "sgi-hub.onewire-kind=0", NULL
-    };
-
-    assert_qemu_rejects(args, "Hub I2C NVRAM requires I2C");
-}
-
-static void test_nvram_page_count_is_bounded(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-global", "sgi-hub.population=1", "-global",
-        "sgi-hub.i2c-nvram-pages=9", "-global",
-        "sgi-hub.onewire-kind=0", NULL
-    };
-
-    assert_qemu_rejects(args, "Hub I2C NVRAM has at most 8 pages");
-}
-
-static void test_population_rejects_unknown_bits(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-global", "sgi-hub.population=4", NULL
-    };
-
-    assert_qemu_rejects(args, "Hub population has unknown bits 0x4");
-}
-
-static void test_population_rejects_unknown_onewire_kind(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-global", "sgi-hub.onewire-kind=2", NULL
-    };
-
-    assert_qemu_rejects(args, "Hub one-wire kind 2 is unsupported");
 }
 
 /* One stride either side of the block belongs to the unimplemented default. */
@@ -1756,7 +1674,7 @@ static void test_translation_entry_width(const void *data)
 
 static void test_big_window_follows_its_entry(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_hub_attach_ioc3(qts);
 
@@ -1778,7 +1696,7 @@ static void test_big_window_follows_its_entry(const void *data)
 
 static void test_big_window_follows_the_slice_too(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_hub_attach_ioc3(qts);
 
@@ -1825,7 +1743,7 @@ static void test_a_big_window_may_name_widget_zero(const void *data)
 
 static void test_big_window_naming_an_absent_widget(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     sn0_hub_attach_ioc3(qts);
 
@@ -1867,9 +1785,9 @@ static void test_big_window_empty_access_is_not_chunked(const void *data)
     g_assert_cmpint(fd, >=, 0);
     close(fd);
 
-    qts = qtest_initf("-M origin200,io-bridge=on -d unimp -D %s", log);
+    qts = qtest_initf("-M origin200 -d unimp -D %s", log);
 
-    /* The unmodelled space; io-bridge=on leaves no gap for an absent widget. */
+    /* The unmodelled space; the installed bridge leaves no absent widget. */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(5),
                  IO_BWIN_WIDGET(CONSOLE_WIDGET) | IO_BWIN_OTHER_SPACE);
     qtest_readq(qts, BIG_WINDOW(5));
@@ -3645,20 +3563,9 @@ int main(int argc, char **argv)
                         test_junk_uart_is_a_child_of_the_hub);
     qtest_add_data_func("sn0/hub/population-default-remains-fitted", NULL,
                         test_the_default_population_remains_fitted);
-    qtest_add_data_func("sn0/hub/population-selects-i2c-children", NULL,
-                        test_population_selects_i2c_children);
-    qtest_add_data_func("sn0/hub/population-can-be-empty", NULL,
-                        test_population_can_be_empty);
-    qtest_add_data_func("sn0/hub/population-elsc-requires-i2c", NULL,
-                        test_elsc_requires_i2c);
-    qtest_add_data_func("sn0/hub/population-nvram-requires-i2c", NULL,
-                        test_nvram_requires_i2c);
-    qtest_add_data_func("sn0/hub/population-nvram-pages-bounded", NULL,
-                        test_nvram_page_count_is_bounded);
-    qtest_add_data_func("sn0/hub/population-rejects-unknown-bits", NULL,
-                        test_population_rejects_unknown_bits);
-    qtest_add_data_func("sn0/hub/population-rejects-unknown-onewire-kind", NULL,
-                        test_population_rejects_unknown_onewire_kind);
+    qtest_add_data_func("sn0/hub/model-population-overrides-class-globals",
+                        NULL,
+                        test_model_population_overrides_class_globals);
     qtest_add_data_func("sn0/hub/chardev-claims-are-distinct", NULL,
                         test_every_chardev_claim_is_distinct);
     qtest_add_data_func("sn0/hub/status-field-access", NULL,

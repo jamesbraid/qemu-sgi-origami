@@ -1573,8 +1573,11 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     unsigned int slot;
 
     /* Refuse property errors before the first region exists. */
-    /* Compatibility until every machine supplies its installed identity. */
-    board_part = s->board_part ?: "030-1244-001";
+    board_part = s->board_part;
+    if (!board_part) {
+        error_setg(errp, "the I/O bridge board-part property is required");
+        return;
+    }
     if (strlen(board_part) != 12 || strchr(board_part, ';')) {
         error_setg(errp, "the I/O bridge board part must be 12 characters "
                    "without a semicolon");

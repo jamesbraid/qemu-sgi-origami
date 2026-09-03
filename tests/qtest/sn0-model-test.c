@@ -97,6 +97,7 @@
 #define SN0_IOC3_DEVICE         2
 #define SN0_QLOGIC_ID           0x10201077
 #define SN0_IOC3_ID             0x000310a9
+#define SN0_TIGON_ID            0x000910a9
 
 #define SN0_PCI_COMMAND         0x04
 #define SN0_PCI_REVISION_ID     0x08
@@ -625,6 +626,7 @@ static bool is_qom_infrastructure_child(const char *type)
            g_str_equal(type, "child<clock>") ||
            g_str_equal(type, "child<irq>") ||
            g_str_equal(type, "child<sgi-ioc3-bus>") ||
+           g_str_equal(type, "child<onewire-bus>") ||
            g_str_equal(type, "child<qtest>") ||
            g_str_equal(type, "child<monitor-qmp>");
 }
@@ -676,7 +678,7 @@ static void assert_qom_child_set(QTestState *qts, const char *path,
     qobject_unref(response);
 }
 
-static void test_origin200_owns_the_ioc3_board_default(const void *data)
+static void test_origin200_has_no_ioc3_compat_global(const void *data)
 {
     QTestState *qts = qtest_init("-machine none");
     QDict *response = qtest_qmp(
@@ -716,9 +718,33 @@ static void test_origin200_owns_the_ioc3_board_default(const void *data)
         }
     }
     g_assert_true(found_machine);
-    g_assert_true(found_property);
+    g_assert_false(found_property);
     qobject_unref(response);
     qtest_quit(qts);
+}
+
+static void assert_composite_population(QTestState *qts, unsigned int node)
+{
+    static const QOMChildExpectation hub_children[] = {
+        { "i2c", "child<pcf8584>" },
+        { "elsc", "child<sgi-elsc>" },
+        { "onewire-part", "child<ds2505>" },
+    };
+    static const QOMChildExpectation ioc3_children[] = {
+        { "serial[0]", "child<serial>" },
+        { "serial[1]", "child<serial>" },
+        { "eth", "child<sgi-ioc3-eth>" },
+        { "kbc", "child<sgi-ioc3-kbc>" },
+        { "parallel", "child<sgi-ioc3-parallel>" },
+        { "onewire-part", "child<ds2501>" },
+        { "rtc", "child<m48t35>" },
+    };
+    g_autofree char *hub = g_strdup_printf("/machine/node%u/hub", node);
+    g_autofree char *ioc3 = g_strdup_printf("/machine/node%u/ioc3", node);
+
+    assert_qom_child_set(qts, hub, hub_children, ARRAY_SIZE(hub_children));
+    assert_qom_child_set(qts, ioc3, ioc3_children,
+                         ARRAY_SIZE(ioc3_children));
 }
 
 typedef struct BaseProfileTopologyCase {
@@ -764,6 +790,7 @@ static void test_base_profile_topology(const void *data)
                          ARRAY_SIZE(machine_children));
     assert_qom_child_set(qts, "/machine/node0", node_children,
                          node_child_count);
+    assert_composite_population(qts, 0);
 
     qtest_quit(qts);
 }
@@ -811,6 +838,7 @@ static void test_dual_profile_topology(const void *data)
 
         assert_qom_child_set(qts, node_path, node_children,
                              ARRAY_SIZE(node_children));
+        assert_composite_population(qts, node);
     }
     qtest_quit(qts);
 }
@@ -1094,11 +1122,11 @@ static void assert_base_io_records(QTestState *qts, uint64_t base,
 
 static void test_bridge_revision_matches_config_graph(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,widget0-revision=3 -m 64M");
+    QTestState *qts = qtest_init("-M origin200 -m 64M");
     uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(0) + 4);
 
-    g_assert_cmpuint(bridge >> 28, ==, 3);
-    assert_component(qts, 0, 0x4600, SN0_COMP_BRIDGE, 3, 8, 0, 8, 0);
+    g_assert_cmpuint(bridge >> 28, ==, 4);
+    assert_component(qts, 0, 0x4600, SN0_COMP_BRIDGE, 4, 8, 0, 8, 0);
     qtest_quit(qts);
 }
 
@@ -1439,6 +1467,71 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_nonnull(strstr(error_output, message));
 }
 
+static void assert_machine_property_rejected(const char *value,
+                                             const char *property)
+{
+    g_autofree char *machine = g_strdup_printf("origin200,%s", value);
+    g_autofree char *message = g_strdup_printf(
+        "Property 'origin200-machine.%s' not found", property);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", machine, "-display", "none",
+        "-kernel", "/definitely/not/a/kernel", NULL
+    };
+
+    assert_qemu_rejects(args, message);
+}
+
+static void test_reject_removed_topology_properties(const void *data)
+{
+    assert_machine_property_rejected("io-bridge=off", "io-bridge");
+    assert_machine_property_rejected("widget0-revision=3",
+                                     "widget0-revision");
+}
+
+static void test_user_device_expands_the_base_pci_bus(const void *data)
+{
+    QTestState *qts;
+
+    if (!qtest_has_device("tigon")) {
+        g_test_skip("tigon is not in this build");
+        return;
+    }
+
+    qts = qtest_init("-M origin200,synthesized-firmware=off "
+                     "-device tigon,addr=3");
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(0, SN0_SCSI_DEVICE0)), ==,
+                    SN0_QLOGIC_ID);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(0, SN0_SCSI_DEVICE1)), ==,
+                    SN0_QLOGIC_ID);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(0, SN0_IOC3_DEVICE)), ==,
+                    SN0_IOC3_ID);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(0, 3)), ==, SN0_TIGON_ID);
+    qtest_quit(qts);
+}
+
+static void test_user_device_expands_the_second_pci_bus(const void *data)
+{
+    QTestState *qts;
+
+    if (!qtest_has_device("tigon")) {
+        g_test_skip("tigon is not in this build");
+        return;
+    }
+
+    qts = qtest_init(SN0_DUAL_CHASSIS_ARGS
+                     " -device tigon,bus=pci.1,addr=3");
+    assign_node1_number(qts);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(0, 3)), ==, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(1, SN0_SCSI_DEVICE0)), ==,
+                    SN0_QLOGIC_ID);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(1, SN0_SCSI_DEVICE1)), ==,
+                    SN0_QLOGIC_ID);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(1, SN0_IOC3_DEVICE)), ==,
+                    SN0_IOC3_ID);
+    g_assert_cmphex(qtest_readl(qts, SN0_CFG0(1, 3)), ==, SN0_TIGON_ID);
+    qtest_quit(qts);
+}
+
 static void test_reject_non_r10000_cpu(const void *data)
 {
     const char *args[] = {
@@ -1604,7 +1697,7 @@ static void test_default_drive_reaches_the_first_scsi_adapter(const void *data)
     g_assert_cmpint(ftruncate(fd, 1 * 1024 * 1024), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
 
-    qts = qtest_initf("-M origin200,io-bridge=on "
+    qts = qtest_initf("-M origin200 "
                       "-drive file=%s,format=raw,index=0", img);
 
     response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
@@ -1628,7 +1721,7 @@ static void test_default_drive_reaches_the_first_scsi_adapter(const void *data)
 static void test_reject_a_device_beyond_the_bridge_slots(const void *data)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200,io-bridge=on",
+        qtest_qemu_binary(NULL), "-M", "origin200",
         "-device", "sgi-bridge-dma-test,addr=8",
         "-display", "none", NULL
     };
@@ -1786,8 +1879,8 @@ int main(int argc, char **argv)
                         test_dual_config_graphs);
     qtest_add_data_func("sn0/model/dual-device-identity", NULL,
                         test_dual_device_identity);
-    qtest_add_data_func("sn0/model/origin200-ioc3-board-default", NULL,
-                        test_origin200_owns_the_ioc3_board_default);
+    qtest_add_data_func("sn0/model/no-origin200-ioc3-compat-global", NULL,
+                        test_origin200_has_no_ioc3_compat_global);
     qtest_add_data_func("sn0/model/bridge-revision-matches-config-graph", NULL,
                         test_bridge_revision_matches_config_graph);
     qtest_add_data_func("sn0/model/base-profile-topology/one-cpu",
@@ -1804,6 +1897,10 @@ int main(int argc, char **argv)
                         test_architecture_boundaries);
     qtest_add_data_func("sn0/model/bridge-root-bus-names", NULL,
                         test_bridge_root_bus_names);
+    qtest_add_data_func("sn0/model/user-device/base-pci-bus", NULL,
+                        test_user_device_expands_the_base_pci_bus);
+    qtest_add_data_func("sn0/model/user-device/second-pci-bus", NULL,
+                        test_user_device_expands_the_second_pci_bus);
     qtest_add_data_func("sn0/model/dual-chassis-base-io", NULL,
                         test_dual_chassis_base_io);
     qtest_add_data_func("sn0/model/dual-chassis-ioc3-network-identity", NULL,
@@ -1824,6 +1921,8 @@ int main(int argc, char **argv)
                         test_dual_chassis_numa);
     qtest_add_data_func("sn0/model/reject-non-r10000-cpu", NULL,
                         test_reject_non_r10000_cpu);
+    qtest_add_data_func("sn0/model/reject-removed-topology-properties", NULL,
+                        test_reject_removed_topology_properties);
     qtest_add_data_func("sn0/model/reject-three-cores-one-chassis", NULL,
                         test_reject_three_cores_one_chassis);
     qtest_add_data_func("sn0/model/reject-three-sockets", NULL,

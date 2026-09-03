@@ -136,7 +136,7 @@ static void test_ssram_and_undefined_slot_post(const void *data)
      * Reverting either fix makes this time out.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
-    qts = qtest_initf("-M origin200,io-bridge=on -smp 1 -kernel %s", kernel);
+    qts = qtest_initf("-M origin200 -smp 1 -kernel %s", kernel);
     g_unsetenv("QTEST_QEMU_ARGS");
 
     g_test_timer_start();
@@ -152,7 +152,7 @@ static void test_ssram_and_undefined_slot_post(const void *data)
 
 static void test_invalid_address_latches_status(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     /*
      * Plain register state: the store latches the bit, the group strobe
@@ -174,7 +174,7 @@ static void test_invalid_address_latches_status(const void *data)
 
 static void test_reset_strobe_clears_only_its_own_group(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     /*
      * Guests write all seven groups at once, so a strobe clearing more
@@ -199,7 +199,7 @@ static void test_reset_strobe_clears_only_its_own_group(const void *data)
 
 static void test_invalid_address_raises_host_interrupt(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200,io-bridge=on");
+    QTestState *qts = qtest_init("-M origin200");
 
     /*
      * Point the widget interrupt-destination pair at the local Hub's

@@ -67,7 +67,7 @@
 /* The adapter's BAR target; the window base field needs 20-bit alignment. */
 #define ADAPTER_MMIO             0x10000000u
 
-#define MACHINE_WITH_BRIDGE      "-M origin200,io-bridge=on"
+#define MACHINE_WITH_BRIDGE      "-M origin200"
 
 /*
  * Offsets within the adapter's own window: PCI space, not the bridge's

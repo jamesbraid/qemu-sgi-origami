@@ -34,6 +34,30 @@ typedef enum SN0ModelPciKind {
     SN0_MODEL_PCI_ISP1040,
 } SN0ModelPciKind;
 
+typedef enum SN0ModelModuleRole {
+    SN0_MODEL_MODULE_MASTER,
+    SN0_MODEL_MODULE_SLAVE,
+} SN0ModelModuleRole;
+
+typedef enum SN0ModelTimekeeperKind {
+    SN0_MODEL_TIMEKEEPER_NONE,
+    SN0_MODEL_TIMEKEEPER_M48T35,
+} SN0ModelTimekeeperKind;
+
+typedef enum SN0ModelOnewireKind {
+    SN0_MODEL_ONEWIRE_NONE,
+    SN0_MODEL_ONEWIRE_BLANK_DS2505,
+} SN0ModelOnewireKind;
+
+typedef enum SN0ModelFlashKind {
+    SN0_MODEL_FLASH_AM29F080,
+} SN0ModelFlashKind;
+
+typedef enum SN0ModelEndianness {
+    SN0_MODEL_ENDIAN_BIG,
+    SN0_MODEL_ENDIAN_LITTLE,
+} SN0ModelEndianness;
+
 typedef enum SN0KlRecordKind {
     SN0_KL_RECORD_COMPONENT,
     SN0_KL_RECORD_PROCESSOR,
@@ -53,6 +77,7 @@ typedef struct SN0ModelNodeInstance {
     uint8_t cpu_first_id;
     uint8_t cpu_count;
     int peer_index;
+    size_t topology_index;
 } SN0ModelNodeInstance;
 
 typedef struct SN0ModelProfile {
@@ -86,12 +111,25 @@ typedef struct SN0ModelRegion {
     int alias_of;
 } SN0ModelRegion;
 
+typedef struct SN0ModelCpuIrqLines {
+    uint8_t bank0;
+    uint8_t bank1;
+    uint8_t rt;
+} SN0ModelCpuIrqLines;
+
 typedef struct SN0ModelHub {
     uint8_t kl_type;
     uint8_t ni_revision;
     uint64_t serial_base;
     uint8_t serial_stride;
+    SN0ModelCpuIrqLines cpu_irq_lines;
 } SN0ModelHub;
+
+typedef struct SN0ModelPromPiProbe {
+    uint8_t widget;
+    uint64_t offset;
+    uint64_t window_offset;
+} SN0ModelPromPiProbe;
 
 typedef struct SN0ModelPciFunction {
     SN0ModelPciKind kind;
@@ -117,7 +155,36 @@ typedef struct SN0ModelBaseIO {
     uint8_t serial_stride;
     const SN0ModelPciFunction *functions;
     size_t function_count;
+    SN0ModelPromPiProbe prom_pi_probe;
 } SN0ModelBaseIO;
+
+typedef struct SN0ModelIoc3Population {
+    bool ethernet;
+    bool serial_a;
+    bool serial_b;
+    bool keyboard_mouse;
+    bool parallel;
+    bool onewire_identity;
+    SN0ModelTimekeeperKind timekeeper;
+} SN0ModelIoc3Population;
+
+typedef struct SN0ModelHubPopulation {
+    bool i2c_controller;
+    bool system_controller;
+    uint8_t i2c_nvram_pages;
+    SN0ModelOnewireKind onewire_identity;
+} SN0ModelHubPopulation;
+
+typedef struct SN0ModelFlash {
+    SN0ModelFlashKind kind;
+    uint32_t sector_size;
+    uint8_t width;
+    uint8_t mappings;
+    SN0ModelEndianness endianness;
+    uint16_t manufacturer_id;
+    uint16_t device_id;
+    uint16_t unlock_address[2];
+} SN0ModelFlash;
 
 typedef struct SN0KlComponentModel {
     SN0KlRecordKind record_kind;
@@ -166,6 +233,17 @@ typedef struct SN0KlConfigModel {
     size_t board_count;
 } SN0KlConfigModel;
 
+typedef struct SN0ModelNodeTopology {
+    SN0ModelModuleRole module_role;
+    SN0ModelHub hub;
+    SN0ModelBaseIO base_io;
+    SN0ModelIoc3Population ioc3_population;
+    SN0ModelHubPopulation hub_population;
+    const char *bridge_part;
+    SN0ModelFlash flash;
+    SN0KlConfigModel klconfig;
+} SN0ModelNodeTopology;
+
 typedef struct SN0MachineModel {
     const char *description;
     SN0ModelCpuKind cpu_kind;
@@ -180,9 +258,9 @@ typedef struct SN0MachineModel {
     uint32_t flash_write_cycles;
     uint64_t node_stride;
     SN0ModelMemory memory;
-    SN0ModelHub hub;
-    SN0ModelBaseIO base_io;
-    SN0KlConfigModel klconfig;
+    const SN0ModelNodeTopology *node_topologies;
+    size_t node_topology_count;
+    unsigned int junk_uart_node;
     const SN0ModelProfile *profiles;
     size_t profile_count;
     const SN0ModelAddressSpace *address_spaces;
@@ -199,6 +277,8 @@ const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
 const SN0ModelPciFunction *sn0_model_find_pci_function(
     const SN0ModelBaseIO *base_io, SN0ModelPciKind kind,
     unsigned int instance);
+const SN0ModelNodeTopology *sn0_model_node_topology(
+    const SN0MachineModel *model, const SN0ModelNodeInstance *node);
 unsigned int sn0_model_max_nodes(const SN0MachineModel *model);
 unsigned int sn0_model_max_cpus(const SN0MachineModel *model);
 uint64_t sn0_model_node_address(const SN0MachineModel *model,
