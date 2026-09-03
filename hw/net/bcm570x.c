@@ -353,7 +353,10 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  */
 #define BCM570X_RXBD_IDX_LEN        0x08    /* ring index (31:16), length (15:0) */
 #define BCM570X_RXBD_TYPE_FLAGS     0x0c    /* type (31:16), flags (15:0) */
+#define BCM570X_RXBD_CSUM           0x10 /* ip sum (31:16), tcp/udp sum (15:0) */
 #define BCM570X_RXBD_OPAQUE         0x1c
+#define BCM570X_RXBDFLAG_TCP_UDP_CKSUM 0x0001
+#define BCM570X_RXBDFLAG_IP_CKSUM   0x0002
 #define BCM570X_RXBDFLAG_END        0x0004
 #define BCM570X_ETH_FCS_LEN         4
 #define BCM570X_ETH_MIN_FRAME       60
@@ -1484,6 +1487,69 @@ static bool bcm570x_frame_accepted(Bcm570xState *s, const uint8_t *buf,
     return memcmp(buf, addr, sizeof(addr)) == 0;
 }
 
+/* The one's-complement sum of a span, folded. A field that checks out sums
+ * with its own checksum to 0xffff, which is the value the part reports. */
+static uint16_t bcm570x_ones_sum(const uint8_t *buf, unsigned int len,
+                                 uint32_t seed)
+{
+    uint32_t sum = net_checksum_add_cont(len, (uint8_t *)buf, 0) + seed;
+
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)sum;
+}
+
+/*
+ * Check an arriving frame's checksums and report what they came to, so the
+ * driver can pass the frame up without reading the payload a second time. The
+ * part reports the sums it computed rather than a verdict; a field that checks
+ * out sums to 0xffff. Anything not plainly IPv4 TCP or UDP is left unclaimed --
+ * reporting a sum for something never summed would have the stack skip its own
+ * pass on the strength of it.
+ */
+static uint32_t bcm570x_rx_offload_checksum(const uint8_t *frame,
+                                            unsigned int len,
+                                            uint16_t *flags)
+{
+    unsigned int ihl, total, l4len;
+    uint16_t ip_sum, l4_sum;
+    uint32_t pseudo;
+    uint8_t proto;
+
+    if (len < 34 || lduw_be_p(frame + 12) != 0x0800 ||
+        (frame[14] >> 4) != 4) {
+        return 0;
+    }
+    ihl = (frame[14] & 0x0f) * 4;
+    total = lduw_be_p(frame + 16);
+    if (ihl < 20 || total < ihl || 14 + total > len) {
+        return 0;
+    }
+
+    ip_sum = bcm570x_ones_sum(frame + 14, ihl, 0);
+    *flags |= BCM570X_RXBDFLAG_IP_CKSUM;
+
+    proto = frame[23];
+    if (proto != 6 && proto != 17) {
+        return (uint32_t)ip_sum << 16;
+    }
+
+    /* The pseudo-header the transport sum is taken over, then the segment. */
+    l4len = total - ihl;
+    pseudo = 0;
+    pseudo += lduw_be_p(frame + 26);
+    pseudo += lduw_be_p(frame + 28);
+    pseudo += lduw_be_p(frame + 30);
+    pseudo += lduw_be_p(frame + 32);
+    pseudo += proto;
+    pseudo += l4len;
+    l4_sum = bcm570x_ones_sum(frame + 14 + ihl, l4len, pseudo);
+    *flags |= BCM570X_RXBDFLAG_TCP_UDP_CKSUM;
+
+    return ((uint32_t)ip_sum << 16) | l4_sum;
+}
+
 /*
  * A frame from the backend. Not ready, or no buffer posted, returns 0 -- the
  * only answer that leaves the frame at the peer's queue head for later. A frame
@@ -1509,6 +1575,8 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint8_t padded[BCM570X_ETH_MIN_FRAME];
     unsigned int idx;
     uint32_t framelen;
+    uint16_t rx_flags = BCM570X_RXBDFLAG_END;
+    uint32_t csum;
 
     if (!bcm570x_rx_ready(s)) {
         return 0;
@@ -1560,6 +1628,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                ldl_le_p(std_bd + BCM570X_RXBD_ADDR_LO);
 
     bcm570x_frame_dma_write(pci, s, buf_addr, buf, framelen);
+    csum = bcm570x_rx_offload_checksum(buf, framelen, &rx_flags);
 
     /* The completed descriptor into the return ring, little-endian. */
     memset(ret_bd, 0, sizeof(ret_bd));
@@ -1567,7 +1636,8 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     stl_le_p(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
     stl_le_p(ret_bd + BCM570X_RXBD_IDX_LEN,
              ((uint32_t)idx << 16) | ((framelen + BCM570X_ETH_FCS_LEN) & 0xffff));
-    stl_le_p(ret_bd + BCM570X_RXBD_TYPE_FLAGS, BCM570X_RXBDFLAG_END);
+    stl_le_p(ret_bd + BCM570X_RXBD_TYPE_FLAGS, rx_flags);
+    stl_le_p(ret_bd + BCM570X_RXBD_CSUM, csum);
     stl_le_p(ret_bd + BCM570X_RXBD_OPAQUE,
              ldl_le_p(std_bd + BCM570X_RXBD_OPAQUE));
 

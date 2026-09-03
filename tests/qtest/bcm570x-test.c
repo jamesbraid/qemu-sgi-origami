@@ -167,7 +167,12 @@
 #define BCM_RXBD_LEN            0x08   /* idx_len word: length in the low half */
 #define BCM_RXBD_IDX            0x0a   /* idx_len word: ring index in the high half */
 #define BCM_RXBD_FLAGS          0x0c   /* type_flags word: flags in the low half */
+#define BCM_RXBD_TCP_CSUM       0x10   /* csum word: TCP/UDP result in the low half */
+#define BCM_RXBD_IP_CSUM        0x12   /* csum word: IP result in the high half */
+#define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
+#define BCM_RXBDFLAG_IP_CKSUM   0x0002u
 #define BCM_RXBDFLAG_END        0x0004u
+#define BCM_CSUM_GOOD           0xffffu /* a one's-complement sum that checks out */
 #define BCM_ETH_FCS_LEN         4      /* length field carries the FCS the driver strips */
 
 /* Interrupts. */
@@ -1922,6 +1927,117 @@ static void test_receive_jumbo_frame(const void *data)
 }
 
 /*
+ * Fill in a frame's real IP and TCP checksums, so the card is asked to verify
+ * rather than to compute.
+ */
+static void seal_cksum_frame(uint8_t *f)
+{
+    uint16_t sum;
+    uint32_t pseudo;
+
+    f[24] = f[25] = 0;
+    sum = inet_csum(f + 14, 20, 0);
+    f[24] = sum >> 8;
+    f[25] = sum & 0xff;
+
+    f[50] = f[51] = 0;
+    pseudo = 0;
+    pseudo += ((uint32_t)f[26] << 8) | f[27];
+    pseudo += ((uint32_t)f[28] << 8) | f[29];
+    pseudo += ((uint32_t)f[30] << 8) | f[31];
+    pseudo += ((uint32_t)f[32] << 8) | f[33];
+    pseudo += 6;        /* protocol */
+    pseudo += 28;       /* TCP header and payload */
+    sum = inet_csum(f + 34, 28, pseudo);
+    f[50] = sum >> 8;
+    f[51] = sum & 0xff;
+}
+
+/*
+ * A received IPv4/TCP frame carries its checksum results in the completed
+ * descriptor. The part verifies both on the way in and reports the sums, which
+ * is what lets a driver hand the frame up without reading the payload again;
+ * with nothing reported the stack has to make its own pass over every byte.
+ */
+static void test_receive_checksum_offload(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[CKSUM_FRAME_LEN];
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint16_t flags;
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);         /* broadcast destination */
+    seal_cksum_frame(frame);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 1);
+
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    flags = get16le(ret + BCM_RXBD_FLAGS);
+
+    /* Both results are reported... */
+    g_assert_cmphex(flags & BCM_RXBDFLAG_IP_CKSUM, ==, BCM_RXBDFLAG_IP_CKSUM);
+    g_assert_cmphex(flags & BCM_RXBDFLAG_TCP_UDP_CKSUM, ==,
+                    BCM_RXBDFLAG_TCP_UDP_CKSUM);
+    /* ...and both check out, which is what the sums come to when they do. */
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IP_CSUM), ==, BCM_CSUM_GOOD);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_TCP_CSUM), ==, BCM_CSUM_GOOD);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * A frame the card cannot check is reported as unchecked rather than as good.
+ * Claiming a sum for something never summed would have the stack skip its own
+ * pass on the strength of it.
+ */
+static void test_receive_checksum_not_ip(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[CKSUM_FRAME_LEN];
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint16_t flags;
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);         /* broadcast destination */
+    seal_cksum_frame(frame);
+    frame[12] = 0x08;               /* ARP, not IPv4 */
+    frame[13] = 0x06;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 1);
+
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    flags = get16le(ret + BCM_RXBD_FLAGS);
+
+    g_assert_cmphex(flags & BCM_RXBDFLAG_IP_CKSUM, ==, 0);
+    g_assert_cmphex(flags & BCM_RXBDFLAG_TCP_UDP_CKSUM, ==, 0);
+    /* The frame still arrives; only the checksum claim is withheld. */
+    g_assert_cmphex(flags & BCM_RXBDFLAG_END, ==, BCM_RXBDFLAG_END);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
  * A frame larger than the model carries is refused, not cut down. Delivering
  * part of it would hand the guest something that looks whole and is not, and
  * the damage would surface wherever the payload is finally read rather than
@@ -2964,6 +3080,10 @@ int main(int argc, char **argv)
                         test_receive_ring_full_recovers);
     qtest_add_data_func("/bcm570x/receive-flush-on-enable", NULL,
                         test_receive_flush_on_enable);
+    qtest_add_data_func("/bcm570x/receive-checksum-offload", NULL,
+                        test_receive_checksum_offload);
+    qtest_add_data_func("/bcm570x/receive-checksum-not-ip", NULL,
+                        test_receive_checksum_not_ip);
     qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
     qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
