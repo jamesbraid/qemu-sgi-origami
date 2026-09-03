@@ -144,6 +144,23 @@ struct XframeState {
     uint64_t gpio_int_reg;      /* GPIO_INT_REG: PIC/GPIO-block link-state */
     uint64_t mac_cfg;           /* TMAC/RMAC config, key-locked */
     bool rmac_cfg_unlocked;     /* RMAC_CFG_KEY unlocks a MAC_CFG write */
+    /*
+     * The statistics block: the card DMAs a structure of hardware counters to
+     * the physical address in STAT_ADDR while STAT_CFG enables it, and the
+     * driver reads its interface counters out of that memory as deltas.
+     * Unmodelled, the driver differences against a block that never advances
+     * and its transmit packet count runs BACKWARDS (netstat -in showing Opkts
+     * of 4294967284 and falling). The four counters below are what the block
+     * is filled from; they only ever increase.
+     */
+    uint64_t stat_cfg;          /* STAT_CFG: enable, one-shot, update period */
+    uint64_t stat_addr;         /* STAT_ADDR: where the block is DMA'd */
+    uint64_t stat_tx_frms;      /* frames put on the wire */
+    uint64_t stat_tx_octets;    /* their bytes */
+    uint64_t stat_rx_frms;      /* frames delivered to the guest */
+    uint64_t stat_rx_octets;    /* their bytes */
+    QEMUTimer *stat_timer;      /* periodic DMA while enabled */
+
     uint64_t rmac_addr_cmd;     /* MAC-table command/strobe/offset */
     uint64_t rmac_addr_data0;   /* MAC-table data word 0 (the address) */
     uint64_t rmac_addr_data1;   /* MAC-table data word 1 (write-only mask) */

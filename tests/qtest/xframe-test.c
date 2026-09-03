@@ -327,6 +327,25 @@
 #define RX_TRAFFIC_INT           0x08f0
 
 /*
+ * The statistics block: STAT_ADDR takes the guest address, STAT_CFG's top bit
+ * enables the periodic DMA (public s2io stat_cfg / stat_addr; field offsets
+ * from its stat_block struct). The block's byte order follows the guest's
+ * SWAPPER_CTRL_STATS_SE bit -- big-endian at reset, as these tests read it
+ * with dma_ldl_be below.
+ */
+#define STAT_CFG                 0x09d0
+#define STAT_ADDR                0x09d8
+#define STAT_CFG_EN              (1ULL << 63)
+#define STAT_CFG_ONE_SHOT        (1ULL << 62)
+#define STAT_TMAC_DATA_OCTETS    0x000
+#define STAT_TMAC_FRMS           0x004
+#define STAT_RMAC_DATA_OCTETS    0x060
+#define STAT_RMAC_VLD_FRMS       0x064
+/* The card writes the hardware section [0, 0x320); the driver's tail follows. */
+#define STAT_BLOCK_SIZE          0x320
+#define STAT_BLOCK_ADDR          (TX_RAM_SCRATCH + 0x30000)
+
+/*
  * RX_TRAFFIC_INT's ring-0 completion bit (Linux s2io-regs.h
  * RX_TRAFFIC_INT_n(0), the driver's own MSB-first bit numbering: bit 63).
  * Only ring 0 is modelled.
@@ -521,6 +540,27 @@ static uint64_t dma_ldq_be(QTestState *qts, uint64_t addr)
 
     qtest_memread(qts, addr, b, sizeof(b));
     for (i = 0; i < 8; i++) {
+        val = (val << 8) | b[i];
+    }
+    return val;
+}
+
+/*
+ * A 32-bit big-endian read for the statistics block, whose fields the card
+ * lays out in the order the guest's SWAPPER_CTRL_STATS_SE bit selects. With
+ * that bit clear -- the reset state these tests run in, matching IRIX -- the
+ * block is big-endian, exactly as descriptors are. Do not use qtest_readl: it
+ * applies the x86_64 test target's little-endian correction and would read the
+ * block byte-reversed.
+ */
+static uint32_t dma_ldl_be(QTestState *qts, uint64_t addr)
+{
+    uint8_t b[4];
+    uint32_t val = 0;
+    int i;
+
+    qtest_memread(qts, addr, b, sizeof(b));
+    for (i = 0; i < 4; i++) {
         val = (val << 8) | b[i];
     }
     return val;
@@ -3951,6 +3991,136 @@ static void test_receive_five_buffer_splits_a_jumbo_frame(void)
 }
 
 /*
+ * The statistics block. The driver keeps its interface counters as deltas
+ * against successive DMA'd snapshots of this block, so the block must exist,
+ * must advance with traffic, and must never go backwards: unmodelled, the
+ * guest's transmit packet count ran BACKWARDS (netstat -in showing Opkts of
+ * 4294967284 and falling), because the driver differenced against memory that
+ * never moved.
+ */
+static void test_statistics_block_counts_traffic(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[256];
+    size_t len;
+    uint32_t frms0, frms, octets;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 64, 106);
+
+    xframe_tx_start(&t);
+
+    /* Enable: the first snapshot lands immediately. */
+    sock_pif_writeq(&t, STAT_ADDR, STAT_BLOCK_ADDR);
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | 0x208d5);
+    frms0 = dma_ldl_be(t.qs->qts, STAT_BLOCK_ADDR + STAT_TMAC_FRMS);
+    g_assert_cmpuint(frms0, ==, 0);
+
+    /* Transmit three frames and let the periodic refresh publish them. */
+    for (i = 0; i < 3; i++) {
+        xframe_program_txd(&t, TX_RAM_SCRATCH, TX_RAM_SCRATCH + 0x1000,
+                           frame, len);
+        xframe_ring_doorbell(&t, TX_RAM_SCRATCH);
+        (void)traffic_recv_frame(t.host_fd, got, sizeof(got));
+    }
+    qtest_clock_step(t.qs->qts, 2LL * 1000 * 1000 * 1000);
+
+    frms = dma_ldl_be(t.qs->qts, STAT_BLOCK_ADDR + STAT_TMAC_FRMS);
+    octets = dma_ldl_be(t.qs->qts, STAT_BLOCK_ADDR + STAT_TMAC_DATA_OCTETS);
+    g_assert_cmpuint(frms, ==, 3);
+    g_assert_cmpuint(octets, ==, 3 * len);
+
+    /* More traffic only moves it forward. */
+    xframe_program_txd(&t, TX_RAM_SCRATCH, TX_RAM_SCRATCH + 0x1000, frame, len);
+    xframe_ring_doorbell(&t, TX_RAM_SCRATCH);
+    (void)traffic_recv_frame(t.host_fd, got, sizeof(got));
+    qtest_clock_step(t.qs->qts, 2LL * 1000 * 1000 * 1000);
+    g_assert_cmpuint(dma_ldl_be(t.qs->qts,
+                                STAT_BLOCK_ADDR + STAT_TMAC_FRMS), ==, 4);
+
+    /*
+     * The block's byte order follows the swapper, big-endian at reset: a
+     * whole-32-bit read decodes to the true count, and a small value keeps its
+     * three high-order bytes zero. Reading it any other way byte-reverses it.
+     */
+    g_assert_cmpuint(dma_ldl_be(t.qs->qts,
+                                STAT_BLOCK_ADDR + STAT_TMAC_FRMS) >> 8, ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The DMA covers exactly the hardware span [0, 0x320) and nothing past it. Fill
+ * the block area and one guard byte with 0xff, drive traffic so the four
+ * counters are non-zero, and require the whole span to come back zero apart
+ * from those four words while the byte at 0x320 stays 0xff. This fails red if
+ * the write is ever shortened again (the overflow offsets and size were once 16
+ * bytes early, leaving the block's tail unwritten) or if it runs long.
+ */
+static void test_statistics_block_write_span(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[256];
+    uint8_t block[STAT_BLOCK_SIZE + 1];
+    size_t len, i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 64, 106);
+
+    xframe_tx_start(&t);
+
+    qtest_memset(t.qs->qts, STAT_BLOCK_ADDR, 0xff, sizeof(block));
+
+    sock_pif_writeq(&t, STAT_ADDR, STAT_BLOCK_ADDR);
+    for (i = 0; i < 3; i++) {
+        xframe_program_txd(&t, TX_RAM_SCRATCH, TX_RAM_SCRATCH + 0x1000,
+                           frame, len);
+        xframe_ring_doorbell(&t, TX_RAM_SCRATCH);
+        (void)traffic_recv_frame(t.host_fd, got, sizeof(got));
+    }
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | 0x208d5);
+    qtest_clock_step(t.qs->qts, 2LL * 1000 * 1000 * 1000);
+
+    qtest_memread(t.qs->qts, STAT_BLOCK_ADDR, block, sizeof(block));
+
+    /* The guard byte at 0x320 is untouched. */
+    g_assert_cmphex(block[STAT_BLOCK_SIZE], ==, 0xff);
+
+    /* Everything in the span is zero except the four counter words. */
+    for (i = 0; i < STAT_BLOCK_SIZE; i++) {
+        bool counter = (i < STAT_TMAC_FRMS + 4) ||
+                       (i >= STAT_RMAC_DATA_OCTETS && i < STAT_RMAC_VLD_FRMS + 4);
+        if (!counter) {
+            g_assert_cmphex(block[i], ==, 0);
+        }
+    }
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A one-shot transfer clears the enable bit when its single DMA completes --
+ * the driver's one-shot path polls exactly that and gives up as "Updt failed"
+ * if enable stays set. A periodic enable leaves the bit set.
+ */
+static void test_statistics_one_shot_clears_enable(void)
+{
+    XframeTx t;
+
+    xframe_tx_start(&t);
+    sock_pif_writeq(&t, STAT_ADDR, STAT_BLOCK_ADDR);
+
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_ONE_SHOT | STAT_CFG_EN | 0xa);
+    g_assert_cmphex(sock_pif_readq(&t, STAT_CFG) & STAT_CFG_EN, ==, 0);
+
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | 0x208d5);
+    g_assert_cmphex(sock_pif_readq(&t, STAT_CFG) & STAT_CFG_EN, ==, STAT_CFG_EN);
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * A descriptor can ask for insertion on a frame that is not IPv4 at all. The
  * lengths a checksum walk would follow are the guest's own bytes, so the
  * request has to be declined and the frame sent as it stands.
@@ -4265,6 +4435,12 @@ int main(int argc, char **argv)
                    test_receive_five_buffer_splits_classified_headers);
     qtest_add_func("xframe/receive-five-buffer-splits-a-jumbo-frame",
                    test_receive_five_buffer_splits_a_jumbo_frame);
+    qtest_add_func("xframe/statistics-block-counts-traffic",
+                   test_statistics_block_counts_traffic);
+    qtest_add_func("xframe/statistics-block-write-span",
+                   test_statistics_block_write_span);
+    qtest_add_func("xframe/statistics-one-shot-clears-enable",
+                   test_statistics_one_shot_clears_enable);
     qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
                    test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
