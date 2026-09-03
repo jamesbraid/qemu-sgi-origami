@@ -37,6 +37,10 @@
 #define SN0_PROMDATA_PADDR  0x100000
 #define SN0_PROMDATA_SIZE   (32 * KiB)
 #define SN0_PROM_COPY_PADDR 0x01a00000
+
+/* MIPS CPU input 0 is IP0. Hardware interrupt inputs begin at IP2. */
+#define SN0_MIPS_HARDWARE_IRQ_OFFSET 2
+
 /*
  * Not a hardware register: the IP27 PROM's own software convention of
  * boot-status flags in FPR 0. Bit 1 marks the cache-as-RAM phase.
@@ -1284,13 +1288,16 @@ static void sn0_node_create_hub(SN0NodeState *node)
         cpu = node->cpu[slice];
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank0", slice,
-            cpu->env.irq[hub->cpu_irq_lines.bank0 + 2]);
+            cpu->env.irq[hub->cpu_irq_lines.bank0 +
+                         SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank1", slice,
-            cpu->env.irq[hub->cpu_irq_lines.bank1 + 2]);
+            cpu->env.irq[hub->cpu_irq_lines.bank1 +
+                         SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "rt", slice,
-            cpu->env.irq[hub->cpu_irq_lines.rt + 2]);
+            cpu->env.irq[hub->cpu_irq_lines.rt +
+                         SN0_MIPS_HARDWARE_IRQ_OFFSET]);
     }
 }
 
@@ -1655,6 +1662,12 @@ static bool sn0_node_validate_topology(SN0NodeState *node, Error **errp)
     if (!sn0_model_flash_implementation(flash->kind)) {
         error_setg(errp, "unsupported flash kind %u",
                    (unsigned int)flash->kind);
+        return false;
+    }
+    if (node->topology->base_io.prom_pi_probe.device_window >=
+        SGI_BRIDGE_DEVICES) {
+        error_setg(errp, "PROM PI probe Bridge device window is outside 0-%u",
+                   SGI_BRIDGE_DEVICES - 1);
         return false;
     }
     if (irq->bank0 > 5 || irq->bank1 > 5 || irq->rt > 5) {

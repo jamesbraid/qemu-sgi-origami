@@ -127,6 +127,7 @@ typedef struct SN0ModelHub {
 typedef struct SN0ModelPromPiProbe {
     uint8_t widget;
     uint64_t offset;
+    uint8_t device_window;
     uint64_t window_offset;
 } SN0ModelPromPiProbe;
 

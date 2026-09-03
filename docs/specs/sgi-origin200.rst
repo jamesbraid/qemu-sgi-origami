@@ -279,10 +279,11 @@ Configuration block
 
 SGI ships a generic release image with Origin 2000 defaults; its
 flasher copies the running node's configuration into the new image
-and adjusts one byte so the block's byte sum is preserved. The
-machine class supplies the same three values -- the machine-type word
-and the two flash timings -- into a synthesized image that carries
-this product's values directly, preserving every other field and the
-old block sum. The factory-fresh environment log is retained state
+and adjusts one byte so the block's byte sum is preserved. The compiled
+machine descriptor supplies the same three values -- the
+machine-type word and the two flash timings -- into a synthesized image
+that carries this product's values directly, preserving every other
+field and the old block sum. The factory-fresh environment log is retained
+state
 outside the firmware payload, its erased first entry the log's end
 marker.

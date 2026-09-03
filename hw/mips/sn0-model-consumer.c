@@ -23,6 +23,8 @@ static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
                                           MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
+    const SN0ModelPromPiProbe *probe =
+        &node->topology->base_io.prom_pi_probe;
 
     if (addr == 0 && size == 8) {
         *data = 0;
@@ -30,8 +32,8 @@ static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
         return MEMTX_ERROR;
     }
     return memory_region_dispatch_read(
-        &node->prom_pi_probe_bridge->device_window_mem[1],
-        node->topology->base_io.prom_pi_probe.window_offset + addr, data,
+        &node->prom_pi_probe_bridge->device_window_mem[probe->device_window],
+        probe->window_offset + addr, data,
         SN0_PROM_PI_PROBE_MEMOP(size), attrs);
 }
 
@@ -40,10 +42,12 @@ static MemTxResult sn0_prom_pi_probe_write(void *opaque, hwaddr addr,
                                            MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
+    const SN0ModelPromPiProbe *probe =
+        &node->topology->base_io.prom_pi_probe;
 
     return memory_region_dispatch_write(
-        &node->prom_pi_probe_bridge->device_window_mem[1],
-        node->topology->base_io.prom_pi_probe.window_offset + addr, data,
+        &node->prom_pi_probe_bridge->device_window_mem[probe->device_window],
+        probe->window_offset + addr, data,
         SN0_PROM_PI_PROBE_MEMOP(size), attrs);
 }
 
