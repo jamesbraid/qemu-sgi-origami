@@ -61,14 +61,18 @@ The MIPS Magnum R4000 emulation supports:
 
 -  G364 framebuffer
 
-The committed Origin 200 descriptor supplies the canonical fixed
-inventory and wiring. The generic SN0 model consumer instantiates the
-selected one- or two-node profile, while semantic adapters map model
-kinds to QOM implementations. QEMU retains device behavior and object
-lifecycle. The descriptor selects one or two R10000 processors per
-node, each node's Hub ASIC (the per-node interrupt controller,
-real-time counter and block transfer engines), and the base I/O board
-behind the Hub's crosstalk port:
+Origami supplies the Origin 200's canonical fixed inventory and wiring.
+Its supported ``tools/build-env/qemu-build`` command generates the
+untracked ``hw/mips/sn0-origin200-model.c`` and
+``hw/mips/sn0-klconfig-layout.h`` inputs before building QEMU. Raw Meson
+builds require those files to exist and are not a supported way to build
+this machine. The generic SN0 consumer instantiates the selected one- or
+two-node profile, while a small semantic adapter maps model kinds to QOM
+implementations. QEMU retains hardware behavior and object lifecycle.
+The generated descriptor selects one or two R10000 processors per node,
+each node's Hub ASIC (the per-node interrupt controller, real-time
+counter and block transfer engines), and the base I/O board behind the
+Hub's crosstalk port:
 
 -  SGI Bridge crosstalk-to-PCI host bridge, with its address
    translation table modelled as an IOMMU
@@ -87,7 +91,9 @@ behind the Hub's crosstalk port:
 
 Serial backends map as: 0 and 1 to the IOC3's two rear ports, 2 to the
 system controller's diagnostic port, 3 to the debug UART enabled by the
-``junk-uart`` machine option. By default the machine synthesizes the
+``junk-uart`` machine option. That optional bring-up component is disabled
+by default because its production population is uncertain. By default the
+machine synthesizes the
 firmware structures a kernel loaded with ``-kernel`` expects; booting
 SGI's own PROM image instead is done with ``-bios`` and
 ``synthesized-firmware=off``. The remaining machine-specific runtime

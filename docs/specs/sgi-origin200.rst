@@ -6,14 +6,22 @@ The Origin 200 is the one- or two-chassis member of SGI's SN0
 family, built on the IP29 node board. The resolved Origami model is
 the sole authority for the machine's canonical static topology:
 profiles, components, ownership, buses, addresses, aliases,
-interrupts, identities, and the firmware graph. Its compiler emits
-``hw/mips/sn0-origin200-model.c`` as an ordinary committed QEMU build
-input, so building QEMU needs neither Origami nor Python. The generic
-SN0 model consumer constructs its selected profile from that
-descriptor, and semantic adapters map the descriptor's component
-kinds to QOM implementations. QEMU owns construction mechanics,
-device behavior, register and DMA handling, reset, migration, and
-object lifetime. The canonical topology has one
+interrupts, identities, and the firmware graph. Origami owns those
+static facts and their compiler. The supported
+``tools/build-env/qemu-build`` command resolves the invoking Origami
+checkout, mounts it read-only when run on a workstation, and generates
+the base and dual profiles before configure and Ninja. QEMU CI selects
+its paired Origami checkout under ``.origami-tools`` and runs the same
+command. Generation writes the untracked build inputs
+``hw/mips/sn0-origin200-model.c`` and
+``hw/mips/sn0-klconfig-layout.h``; unchanged output keeps its timestamp.
+A raw Meson build without those generated files is unsupported.
+
+The generic SN0 model consumer constructs its selected profile from
+the generated descriptor, and its small semantic adapter maps component
+kinds to QOM implementations. QEMU owns hardware behavior, construction
+mechanics, register and DMA handling, reset, migration, and object
+lifetime. The canonical topology has one
 directly connected Bridge per chassis with two SCSI adapters and the
 IOC3 base I/O controller on its PCI bus, four IP29 memory banks, and
 no crossbar. The synthesized firmware
@@ -116,19 +124,19 @@ port on 64-bit cycles only, low byte used, chip byte *N* at bus
 offset 8\ *N*, the mapping the vendor flash programmer states
 directly.
 
-Where code executes -- each node's own LBOOT window -- a direct romd
-alias of the chip overlays the decode, because the PROM fetches its
-relocated code there and an I/O region cannot back translated code.
-The remote node's RBOOT window is only ever a maintenance read and
-write path, never a fetch path, so it carries no overlay. The reset
-vector view is an alias of the megabyte of Hub space at the flash
+Where code executes -- the first ordinal node's LBOOT window -- a direct
+romd alias of the chip overlays the decode, because the PROM fetches its
+relocated code there and an I/O region cannot back translated code. A
+second node has no LBOOT mapping. Every node retains its node-qualified
+RBOOT maintenance path, which is never a fetch path and carries no
+overlay. The reset vector is a direct alias of the chip at the flash
 base, reached through the compatibility space; it overlaps RAM and
 wins. Writes through it land on the chip's own byte-addressed decode
-rather than the controller's strided command port -- an alias cannot
-route reads and writes differently, and this divergence is deliberate
-and confined: every observed command sequence, and the vendor flash
-programmer the datasheet cites, drives commands through the Hub
-window, and no source establishes the reset view's own write decode.
+rather than the controller's strided command port. This divergence is
+deliberate and confined: every observed command sequence, and the
+vendor flash programmer the datasheet cites, drives commands through
+the Hub window, and no source establishes the reset view's own write
+decode.
 
 The chip migrates its own state through the qdev tree. The machine's
 own flash descriptor keeps its wire name and a placeholder for the
@@ -155,6 +163,9 @@ bytes back.
 
 Configuration graph (KLCONFIG)
 ==============================
+
+The compiler's direct component relationships replace QEMU's former
+lookup tables without changing any KLCONFIG record bytes.
 
 The graph is a header carrying the console descriptor inline, then
 the board records a single-node Origin 200 emits, in the order and

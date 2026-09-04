@@ -20,3 +20,5 @@ GTAGS
 *.swp
 *.patch
 *.gcov
+/hw/mips/sn0-origin200-model.c
+/hw/mips/sn0-klconfig-layout.h
