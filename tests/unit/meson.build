@@ -45,6 +45,11 @@ tests = {
   'check-qom-proplist': [qom],
   'test-qemu-opts': [],
   'test-keyval': [testqapi],
+  # Fork unit tests spell their sources ../../hw/, and the SPELLING is what
+  # the pipeline discovers by (tools/run-fork-unit-tests in the project
+  # repository): one written as meson.project_source_root() / 'hw/...' --
+  # upstream's own idiom two entries down -- is valid meson that runs in NO
+  # required check. Keep the relative spelling.
   'test-onewire': ['../../hw/1wire/crc.c', '../../hw/1wire/core.c',
                    '../../hw/1wire/ds2502.c', '../../hw/1wire/ds2505.c',
                    qom, hwcore, migration],
