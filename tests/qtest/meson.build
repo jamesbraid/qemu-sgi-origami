@@ -20,15 +20,17 @@ slow_qtests = {
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
   # headroom and they time out under CI load. Give them the 120s slow budget.
   'sn0-pi-error-test': 120,
-  'sn0-bridge-test': 120,
   # The hub and IOC3 suites have grown past that budget: 115-119s (hub) and
   # ~106s (IOC3) measured under host load, so the 120s ceiling kills them
   # with zero failing subtests. Give both twice the measured wall time.
   'sn0-ioc3-test': 240,
   'sn0-hub-test': 240,
-  # The typed profile and KLCONFIG cases take more than 60s in the debug
-  # build. The default timeout kills the suite after valid subtests pass.
-  'sn0-model-test': 120,
+  # Model and bridge have grown the same way: 57s and 62s measured solo on a
+  # loaded workstation, and in CI they were the second and fourth most killed
+  # tests over Aug 30 - Sep 3 (105 and 20 timeout kills at the 120s ceiling,
+  # zero failing subtests). Same treatment: twice the measured wall time.
+  'sn0-bridge-test': 240,
+  'sn0-model-test': 240,
   # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
   # deadline was separately widened to 120s to tolerate CI scheduling delay (see
   # tests/qtest/sn0-ioc3-serial-test.c). Match this whole-test budget to that
