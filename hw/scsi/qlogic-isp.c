@@ -862,6 +862,7 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     int sense_len;
     uint16_t scsi_status = sreq->status;
     uint16_t completion;
+    uint16_t state_flags;
 
     sense_len = scsi_req_get_sense(sreq, sense, sizeof(sense));
     if (sense_len > 0) {
@@ -870,9 +871,19 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
 
     completion = resid ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
 
+    /*
+     * Auto-sense runs only after a CHECK CONDITION, so GOT_SENSE reports the
+     * sense phase alone; setting it on a clean command makes a driver that
+     * checks the phase mask retry without bound.
+     */
+    state_flags = ISP_STATE_FLAGS_ALL_PHASES & ~ISP_STATE_FLAG_GOT_SENSE;
+    if (sense_len > 0) {
+        state_flags |= ISP_STATE_FLAG_GOT_SENSE;
+    }
+
     /* The timeout bit belongs to the missing-target answer alone. */
     qlogic_isp_post_status(s, req->handle, scsi_status, completion,
-                           ISP_STATE_FLAGS_ALL_PHASES, 0, resid, sense,
+                           state_flags, 0, resid, sense,
                            sense_len);
 
     qlogic_isp_free_request(req);
