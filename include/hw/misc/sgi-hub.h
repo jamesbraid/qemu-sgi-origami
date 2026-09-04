@@ -16,6 +16,7 @@
 #include "hw/char/serial-mm.h"
 #include "hw/i2c/pcf8584.h"
 #include "hw/misc/sgi-elsc.h"
+#include "hw/mips/sn0-fabric.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
@@ -88,11 +89,12 @@ typedef enum SGIHubOneWireKind {
 #define SGI_HUB_CLAIM_SPACES  4
 
 /*
- * The node-number strides a Hub can route: its own board's and one
- * directly wired peer's -- the two-node reduction of the routing-table
- * rule that the address-map datasheet permits for this machine.
+ * The views the Hub's claim aliases fill: one per attached processor, and
+ * one for the Hub's own engines, which address memory as a processor does
+ * minus the per-processor pieces.
  */
-#define SGI_HUB_CLAIM_STRIDES 2
+#define SGI_HUB_CLAIM_VIEWS   (SGI_HUB_PROCESSORS + 1)
+#define SGI_HUB_DEVICE_VIEW   SGI_HUB_PROCESSORS
 
 /*
  * The nameless low window the cached-alias size bounds: the memory
@@ -133,28 +135,34 @@ struct SGIHubState {
     MemoryRegion *xtalk;
     uint32_t xtalk_widget_shift;
 
-    /* The BTEs' node-local memory view; only the machine can supply it. */
-    MemoryRegion *memory;
+    /* The engines' view of the fabric: the device claim view, as a space. */
     AddressSpace bte_as;
 
     /*
-     * The claim overlays: per attached processor view, one alias per
-     * uncached space per claimable node-number stride, aimed by the
-     * programmed node numbers over an error floor for a stride neither
-     * Hub claims. The machine wires the per-view containers, the
-     * canonical map the aliases resolve into, and the geometry; the Hub
-     * owns the regions and switches them from its own status store.
+     * The fabric this Hub's network interface is an endpoint on, and which
+     * endpoint. The fabric hands the Hub a reachability map -- per node
+     * number, the endpoint programmed with it that the fabric connects --
+     * and the Hub aims its aliases by that map and by nothing else.
      */
-    MemoryRegion *claim_view[SGI_HUB_PROCESSORS];
+    SN0FabricState *fabric;
+    uint32_t fabric_endpoint;
+
+    /*
+     * The claim overlays: per view, one alias per uncached space per
+     * fabric endpoint, placed at the node-number stride that endpoint
+     * currently holds and aimed at the endpoint's own stride in the
+     * canonical map, over an error floor across every stride. The machine
+     * wires the per-view containers, the canonical map the aliases resolve
+     * into, and the geometry; the Hub owns the regions and moves them
+     * whenever the fabric's map changes.
+     */
+    MemoryRegion *claim_view[SGI_HUB_CLAIM_VIEWS];
     MemoryRegion *claim_target;
     uint32_t claim_node_shift;
     uint32_t claim_space_shift;
-    uint32_t claim_own_node;
-    uint32_t claim_peer_node;
-    MemoryRegion claim_alias[SGI_HUB_PROCESSORS][SGI_HUB_CLAIM_SPACES]
-                            [SGI_HUB_CLAIM_STRIDES];
-    MemoryRegion claim_error[SGI_HUB_PROCESSORS][SGI_HUB_CLAIM_SPACES]
-                            [SGI_HUB_CLAIM_STRIDES];
+    MemoryRegion *claim_alias[SGI_HUB_CLAIM_VIEWS][SGI_HUB_CLAIM_SPACES];
+    MemoryRegion claim_error[SGI_HUB_CLAIM_VIEWS][SGI_HUB_CLAIM_SPACES];
+    bool claim_ready;
 
     /*
      * The nameless low memory window this Hub's cached-alias size
@@ -180,12 +188,6 @@ struct SGIHubState {
 
     /* Whether this processor module is the Origin 200 slave chassis. */
     bool slave_module;
-
-    /* Whether the direct inter-node CrayLink has a peer at the far end. */
-    bool network_link_up;
-
-    /* The Hub directly connected to this network port, when one is fitted. */
-    SGIHubState *network_peer;
 
     /* How many processor sockets this node has populated. */
     uint32_t cpus;
@@ -324,5 +326,9 @@ struct SGIHubState {
 
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
+
+/* The fabric's side of the seam: this endpoint's map or link state moved. */
+void sgi_hub_fabric_changed(SGIHubState *s);
+bool sgi_hub_vector_access(SGIHubState *target, SN0FabricVectorAccess *access);
 
 #endif /* HW_MISC_SGI_HUB_H */

@@ -722,43 +722,76 @@ static const MemoryRegionOps sgi_hub_claim_error_ops = {
     .impl.unaligned = true,
 };
 
-/*
- * Aim this Hub's claim aliases by the programmed node numbers: a stride
- * equal to this Hub's number is local, one equal to the directly wired
- * peer's routes there, anything else drops to the error floor. Own
- * number first: while both Hubs still hold the reset value zero, every
- * node's node-field-zero access must stay on its own Hub.
- */
-static void sgi_hub_claim_update(SGIHubState *s)
+/* The claim views this Hub fills: each populated processor's and its own. */
+static bool sgi_hub_claim_view_present(const SGIHubState *s, unsigned int view)
 {
-    unsigned int view, space, n;
-    unsigned int strides = s->network_peer ? SGI_HUB_CLAIM_STRIDES : 1;
+    return view == SGI_HUB_DEVICE_VIEW || view < s->cpus;
+}
+
+/*
+ * Aim this Hub's claim aliases by the fabric's map: for every endpoint the
+ * map reaches, one alias per view and space sits at the stride of the node
+ * number that endpoint holds and resolves into the endpoint's own stride in
+ * the canonical map; every other alias is disabled, so its stride falls to
+ * the error floor. The fabric keeps own number first: while two Hubs both
+ * hold the reset value zero, each keeps zero for itself.
+ */
+static void sgi_hub_claim_apply(SGIHubState *s)
+{
+    unsigned int endpoints, view, space, i;
+    const int16_t *map;
+
+    if (!s->claim_ready) {
+        return;
+    }
+    map = sn0_fabric_map(s->fabric, s->fabric_endpoint);
+    endpoints = sn0_fabric_endpoint_count(s->fabric);
 
     memory_region_transaction_begin();
-    for (view = 0; view < s->cpus; view++) {
+    for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
+        if (!sgi_hub_claim_view_present(s, view)) {
+            continue;
+        }
         for (space = 0; space < SGI_HUB_CLAIM_SPACES; space++) {
-            for (n = 0; n < strides; n++) {
-                uint32_t stride = n ? s->claim_peer_node : s->claim_own_node;
-                MemoryRegion *alias = &s->claim_alias[view][space][n];
+            for (i = 0; i < endpoints; i++) {
+                MemoryRegion *alias = &s->claim_alias[view][space][i];
+                uint32_t number = sn0_fabric_endpoint_number(s->fabric, i);
+                bool reachable = number < SN0_FABRIC_NUMBERS &&
+                                 map[number] == (int16_t)i;
 
-                if (stride == sgi_hub_programmed_nasid(s)) {
+                if (reachable) {
+                    memory_region_set_address(alias,
+                        ((hwaddr)space << s->claim_space_shift) |
+                        ((hwaddr)number << s->claim_node_shift));
                     memory_region_set_alias_offset(alias,
                         ((hwaddr)space << s->claim_space_shift) |
-                        ((hwaddr)s->claim_own_node << s->claim_node_shift));
-                    memory_region_set_enabled(alias, true);
-                } else if (s->network_peer && stride ==
-                           sgi_hub_programmed_nasid(s->network_peer)) {
-                    memory_region_set_alias_offset(alias,
-                        ((hwaddr)space << s->claim_space_shift) |
-                        ((hwaddr)s->claim_peer_node << s->claim_node_shift));
-                    memory_region_set_enabled(alias, true);
-                } else {
-                    memory_region_set_enabled(alias, false);
+                        ((hwaddr)sn0_fabric_endpoint_stride(s->fabric, i)
+                         << s->claim_node_shift));
                 }
+                memory_region_set_enabled(alias, reachable);
             }
         }
     }
     memory_region_transaction_commit();
+}
+
+/*
+ * The status register's link-up bit follows the fabric, the one source of
+ * link state; it is read-only to the guest and set again at every reset.
+ */
+static void sgi_hub_link_refresh(SGIHubState *s)
+{
+    bool up = s->fabric && sn0_fabric_link_up(s->fabric, s->fabric_endpoint);
+
+    s->ni_status = (s->ni_status & ~NI_STATUS_LINK_UP) |
+                   (up ? NI_STATUS_LINK_UP : 0);
+}
+
+/* The fabric's map or link state for this endpoint moved: follow it. */
+void sgi_hub_fabric_changed(SGIHubState *s)
+{
+    sgi_hub_link_refresh(s);
+    sgi_hub_claim_apply(s);
 }
 
 /*
@@ -800,18 +833,16 @@ static void sgi_hub_calias_update(SGIHubState *s)
 }
 
 /*
- * One programmed number decides claims in both Hubs' views, so a store,
- * reset or load re-derives the pair; each call touches only the regions
- * that Hub owns, and the transaction makes the switch atomic.
+ * The programmed number moved, by a store, a reset or a load: tell the
+ * fabric, which recomputes every endpoint's map and calls back each Hub
+ * whose map changed, this one included.
  */
-static void sgi_hub_claim_update_pair(SGIHubState *s)
+static void sgi_hub_report_number(SGIHubState *s)
 {
-    memory_region_transaction_begin();
-    sgi_hub_claim_update(s);
-    if (s->network_peer) {
-        sgi_hub_claim_update(s->network_peer);
+    if (s->fabric) {
+        sn0_fabric_report_number(s->fabric, s->fabric_endpoint,
+                                 sgi_hub_programmed_nasid(s));
     }
-    memory_region_transaction_commit();
 }
 
 /* Level outputs, recomputed on every change: raise-on-set becomes a storm. */
@@ -851,17 +882,18 @@ static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
 }
 
 /*
- * Wake the peer and end this processor's slice; no successor is chosen.
- * Firmware polls a peer through Hub registers with an instruction-count
- * timeout one slice can exhaust before the peer runs. Changes no Hub state.
+ * Wake the other processor and end this one's slice; no successor is
+ * chosen. Firmware polls the other processor through Hub registers with an
+ * instruction-count timeout one slice can exhaust before it runs. Changes
+ * no Hub state.
  */
-static void sgi_hub_yield_to_peer(CPUState *peer)
+static void sgi_hub_yield_to_processor(CPUState *other)
 {
-    if (!peer || peer == current_cpu) {
+    if (!other || other == current_cpu) {
         return;
     }
 
-    qemu_cpu_kick(peer);
+    qemu_cpu_kick(other);
 
     if (current_cpu) {
         cpu_exit(current_cpu);
@@ -890,7 +922,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 
     /* The PROM uses pending bits as barrier mailboxes; release the pollers. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_yield_to_peer(qemu_get_cpu(s->cpu_base + i));
+        sgi_hub_yield_to_processor(qemu_get_cpu(s->cpu_base + i));
     }
 }
 
@@ -907,7 +939,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
         if (s->pi_int_pend1_primary_credit) {
             s->pi_int_pend1_primary_credit = false;
         } else {
-            sgi_hub_yield_to_peer(primary);
+            sgi_hub_yield_to_processor(primary);
         }
         return value;
     }
@@ -915,7 +947,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
     return sgi_hub_int_pending_read(s, 1);
 }
 
-static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
+static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
 {
     unsigned int i;
 
@@ -927,7 +959,7 @@ static void sgi_hub_kick_remote_scratch_peer(SGIHubState *s)
 
     /* A remote scratch write is a discovery phase change; release the node. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_yield_to_peer(qemu_get_cpu(s->cpu_base + i));
+        sgi_hub_yield_to_processor(qemu_get_cpu(s->cpu_base + i));
     }
 }
 
@@ -950,7 +982,7 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     if (s->pi_int_pend_seen_valid[i][bank] &&
         s->pi_int_pend_seen[i][bank] == value) {
         for (i = 0; i < s->cpus; i++) {
-            sgi_hub_yield_to_peer(qemu_get_cpu(s->cpu_base + i));
+            sgi_hub_yield_to_processor(qemu_get_cpu(s->cpu_base + i));
         }
         return value;
     }
@@ -1078,22 +1110,25 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
                           engine, s->bte_notify[engine]);
         }
     } else {
-        /* Completion arrives as a device interrupt, via interrupt modify. */
+        /*
+         * Completion arrives as a device interrupt, via interrupt modify,
+         * on the Hub the fabric's map holds for the destination number:
+         * this Hub itself when the number is its own. A direct call, not
+         * a store through the fabric view, so the launching store never
+         * re-enters this Hub's own register region.
+         */
         uint64_t level = (s->bte_interrupt[engine] & BTE_INT_LEVEL_MASK) >>
                          BTE_INT_LEVEL_SHIFT;
         uint64_t node = s->bte_interrupt[engine] & BTE_INT_NODE_MASK;
-        SGIHubState *target;
+        SGIHubState *target = s->fabric ?
+            sn0_fabric_hub_for_number(s->fabric, s->fabric_endpoint, node) :
+            NULL;
 
-        if (node == sgi_hub_programmed_nasid(s)) {
-            target = s;
-        } else if (s->network_peer &&
-                   node == sgi_hub_programmed_nasid(s->network_peer)) {
-            target = s->network_peer;
-        } else {
+        if (!target) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-hub: BTE%u completion interrupt aimed at "
-                          "node %" PRIu64 ", which this machine does not "
-                          "have\n", engine, node);
+                          "node %" PRIu64 ", which no reachable Hub is "
+                          "programmed with\n", engine, node);
             return;
         }
         sgi_hub_int_modify(target, PI_INT_MODIFY_SET | level);
@@ -1178,7 +1213,7 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
     CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
-    sgi_hub_yield_to_peer(owner);
+    sgi_hub_yield_to_processor(owner);
     return s->pi_rt_compare[arg];
 }
 
@@ -1297,71 +1332,89 @@ static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
 }
 
 /*
- * Vector PIO: a null route names the directly wired peer chassis; any other
- * route needs a router and fails with the address-error response.
+ * The target's half of a vector operation, which the fabric delivers to
+ * whichever Hub the route ends at. The request carries bits 19:3 of the
+ * register address; a Hub target supplies the NI base. An exchange reads,
+ * and writes only over a zero.
+ */
+bool sgi_hub_vector_access(SGIHubState *target, SN0FabricVectorAccess *access)
+{
+    hwaddr addr = HUB_NI_STATUS + access->addr;
+
+    switch (access->op) {
+    case SN0_FABRIC_VECTOR_READ:
+        return sgi_hub_vector_target_read(target, addr, &access->value);
+    case SN0_FABRIC_VECTOR_WRITE:
+        return sgi_hub_vector_target_write(target, addr, access->data);
+    case SN0_FABRIC_VECTOR_EXCHANGE:
+        if (!sgi_hub_vector_target_read(target, addr, &access->value)) {
+            return false;
+        }
+        if (access->value == 0) {
+            return sgi_hub_vector_target_write(target, addr, access->data);
+        }
+        return true;
+    default:
+        /* A type the protocol does not define: answered, and refused. */
+        return false;
+    }
+}
+
+/*
+ * Vector PIO: the fabric walks the route from this Hub's port and performs
+ * the access on whatever the route ends at. A route nothing answers latches
+ * nothing and lets the poll time out -- the datasheet's proposal for an
+ * unobserved case, not a silicon fact; a device that answers and refuses
+ * latches the address-error response.
  */
 static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
 {
-    /* The request carries bits 19:3; a Hub target supplies the NI base. */
     hwaddr addr = parms & NI_VECTOR_ADDRESS_MASK;
-    hwaddr target_addr = HUB_NI_STATUS + addr;
     uint64_t type = parms & NI_VECTOR_TYPE_MASK;
     uint64_t response_type = type;
-    uint64_t source;
-    uint64_t value = 0;
-    bool success = false;
+    SN0FabricVectorAccess access = {
+        .addr = addr,
+        .data = s->ni_vector_data,
+    };
+    SN0FabricVectorResult result = SN0_FABRIC_VECTOR_NONE;
 
-    /* network_peer is serialized by BQL MMIO dispatch alone. */
+    /* The fabric is serialized by BQL MMIO dispatch alone. */
     assert(bql_locked());
 
-    /*
-     * No peer: latch nothing and let the poll time out -- the datasheet's
-     * proposal for an unobserved case, not a silicon fact.
-     */
-    if (!s->network_peer) {
+    switch (type) {
+    case NI_VECTOR_READ:
+        access.op = SN0_FABRIC_VECTOR_READ;
+        break;
+    case NI_VECTOR_WRITE:
+        access.op = SN0_FABRIC_VECTOR_WRITE;
+        break;
+    case NI_VECTOR_EXCHANGE:
+        access.op = SN0_FABRIC_VECTOR_EXCHANGE;
+        break;
+    default:
+        access.op = SN0_FABRIC_VECTOR_INVALID;
+        break;
+    }
+    if (s->fabric) {
+        result = sn0_fabric_vector(s->fabric, s->fabric_endpoint, s->ni_vector,
+                                   &access);
+    }
+    if (result == SN0_FABRIC_VECTOR_NONE) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: vector launch (parms 0x%" PRIx64
                       ") with no fabric to answer\n", parms);
         return;
     }
 
-    if (s->ni_vector == 0) {
-        switch (type) {
-        case NI_VECTOR_READ:
-            success = sgi_hub_vector_target_read(s->network_peer, target_addr,
-                                                 &value);
-            if (success) {
-                s->ni_vector_read_data = value;
-            }
-            break;
-        case NI_VECTOR_WRITE:
-            success = sgi_hub_vector_target_write(s->network_peer, target_addr,
-                                                  s->ni_vector_data);
-            break;
-        case NI_VECTOR_EXCHANGE:
-            success = sgi_hub_vector_target_read(s->network_peer, target_addr,
-                                                 &value);
-            if (success) {
-                s->ni_vector_read_data = value;
-                if (value == 0) {
-                    success = sgi_hub_vector_target_write(
-                        s->network_peer, target_addr, s->ni_vector_data);
-                }
-            }
-            break;
-        default:
-            break;
+    if (result == SN0_FABRIC_VECTOR_OK) {
+        if (access.op != SN0_FABRIC_VECTOR_WRITE) {
+            s->ni_vector_read_data = access.value;
         }
-    }
-
-    source = (s->network_peer->ni_status & NI_STATUS_NODE_MASK) >>
-        NI_STATUS_NODE_SHIFT;
-
-    if (!success) {
+    } else {
         response_type = NI_VECTOR_ADDRESS_ERROR;
     }
     s->ni_vector_status = NI_VECTOR_VALID |
-        (source << NI_VECTOR_TARGET_SHIFT) |
+        ((uint64_t)access.source << NI_VECTOR_TARGET_SHIFT) |
         (parms & (NI_VECTOR_PIOID_MASK | NI_VECTOR_WRITEID_MASK)) |
         (addr & NI_VECTOR_STATUS_ADDR_MASK) | response_type;
     if (trace_event_get_state_backends(TRACE_SGI_HUB_VECTOR_COMPLETE)) {
@@ -1369,9 +1422,9 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
 
         trace_sgi_hub_vector_complete(
             cpu ? cpu->cpu_index : -1, sgi_hub_programmed_nasid(s),
-            (int)sgi_hub_programmed_nasid(s->network_peer),
-            cpu ? cpu->cc->get_pc(cpu) : 0, parms, s->ni_vector_data, value,
-            s->ni_vector_status, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            (int)access.source, cpu ? cpu->cc->get_pc(cpu) : 0, parms,
+            s->ni_vector_data, access.value, s->ni_vector_status,
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
 }
@@ -1665,7 +1718,7 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
-    CPUState *peer;
+    CPUState *other;
 
     s->pi_rt_compare[arg] = val & PI_RT_MASK;
     sgi_hub_rt_arm(s, arg);
@@ -1673,13 +1726,13 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
     /*
      * A progress mailbox only while the slice's interrupt is disabled: the
      * PROM arbitrates through it that way, and ending the writer's slice
-     * keeps the peer's instruction-count timeout from expiring unrun. A
-     * deadline writer has the interrupt enabled and must keep its slice,
-     * or its own read-back finds every deadline already passed.
+     * keeps the other processor's instruction-count timeout from expiring
+     * unrun. A deadline writer has the interrupt enabled and must keep its
+     * slice, or its own read-back finds every deadline already passed.
      */
-    peer = qemu_get_cpu(s->cpu_base + (arg ^ 1));
+    other = qemu_get_cpu(s->cpu_base + (arg ^ 1));
     if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
-        sgi_hub_yield_to_peer(peer);
+        sgi_hub_yield_to_processor(other);
     }
 }
 
@@ -1926,8 +1979,8 @@ static void sgi_hub_store_ni_status(SGIHubState *s, unsigned arg,
     /* Node and region size are firmware's; link state and identity are not. */
     s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
                    (val & NI_STATUS_WRITABLE);
-    /* The programmed number moved: the claim decode switches with it. */
-    sgi_hub_claim_update_pair(s);
+    /* The programmed number moved: the fabric re-derives every map. */
+    sgi_hub_report_number(s);
 }
 
 static void sgi_hub_store_pi_calias_size(SGIHubState *s, unsigned arg,
@@ -1990,7 +2043,7 @@ static void sgi_hub_write_ni_scratch(SGIHubState *s, hwaddr addr,
                                      unsigned size)
 {
     s->ni_scratch[arg] = val;
-    sgi_hub_kick_remote_scratch_peer(s);
+    sgi_hub_kick_remote_scratch_node(s);
 }
 
 static void sgi_hub_write_vector_parms(SGIHubState *s, hwaddr addr,
@@ -2270,7 +2323,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
      * firmware might not open produces a dead machine with no
      * diagnostic. Both rows answer the remote vector decode -- the
      * stock PROM's link diagnostic opens its cross-link access by
-     * vector-writing the peer's protection register before its link
+     * vector-writing the remote Hub's protection register before its link
      * reads, and an address-error completion there counts as a phantom
      * link error. The override is write-only, so its row carries only
      * a store and a read keeps the undecoded register's answer.
@@ -2285,7 +2338,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     /*
      * All three LLP port registers answer the remote vector decode as
      * well as plain PIO: the stock PROM's link diagnostic vector-reads
-     * the peer's error register, and an address-error completion there
+     * the remote Hub's error register, and an address-error completion there
      * counts as a phantom link error on every two-chassis boot. The
      * error alias carries no HUB_REG_READ_CLEARS: on an always-zero
      * register the clear is a no-op, so the read has no side effect to
@@ -2644,8 +2697,8 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     memset(s->pi_err_status0, 0, sizeof(s->pi_err_status0));
     s->ni_status = NI_STATUS_RESET |
                    ((uint64_t)s->ni_revision << NI_STATUS_REVISION_SHIFT) |
-                   (s->network_link_up ? NI_STATUS_LINK_UP : 0) |
                    ((uint64_t)s->nasid << NI_STATUS_NODE_SHIFT);
+    sgi_hub_link_refresh(s);
     s->ni_scratch[0] = 0;
     s->ni_scratch[1] = 0;
     s->ni_vector = 0;
@@ -2704,16 +2757,16 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
 }
 
 /*
- * The claim overlays re-derive once every Hub's programmed number is
- * back at its seeded value -- the exit phase, because a Hub's claims
- * depend on the peer's number too, and every enter phase has run by now.
- * The nameless low windows re-derive with them, back to the reset size.
+ * The fabric's maps re-derive once every Hub's programmed number is back
+ * at its seeded value -- the exit phase, because a map depends on every
+ * endpoint's number, and every enter phase has run by now. The nameless
+ * low windows re-derive with them, back to the reset size.
  */
 static void sgi_hub_reset_exit(Object *obj, ResetType type)
 {
     SGIHubState *s = SGI_HUB(obj);
 
-    sgi_hub_claim_update_pair(s);
+    sgi_hub_report_number(s);
     sgi_hub_calias_update(s);
 }
 
@@ -2769,9 +2822,14 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "space its big windows translate into");
         return;
     }
-    if (!s->memory) {
-        error_setg(errp, "the Hub needs the node-local memory view its "
-                         "block transfer engines copy through");
+    if (!s->fabric) {
+        error_setg(errp, "the Hub needs the fabric its network interface is "
+                         "an endpoint on");
+        return;
+    }
+    if (s->fabric_endpoint >= sn0_fabric_endpoint_count(s->fabric)) {
+        error_setg(errp, "the Hub's fabric endpoint %u does not exist",
+                   s->fabric_endpoint);
         return;
     }
     if (!s->claim_target || !s->claim_node_shift || !s->claim_space_shift) {
@@ -2779,10 +2837,11 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "space geometry to claim node-qualified strides");
         return;
     }
-    for (n = 0; n < s->cpus; n++) {
-        if (!s->claim_view[n]) {
+    for (n = 0; n < SGI_HUB_CLAIM_VIEWS; n++) {
+        if (sgi_hub_claim_view_present(s, n) && !s->claim_view[n]) {
             error_setg(errp, "the Hub needs a claim container for each of "
-                             "its %u processors' views", s->cpus);
+                             "its %u processors' views and for its own",
+                       s->cpus);
             return;
         }
     }
@@ -2790,7 +2849,13 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_hub_ops, s,
                           "sgi-hub.regs", SGI_HUB_WINDOW_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
-    address_space_init(&s->bte_as, s->memory, "sgi-hub.bte");
+    /*
+     * The engines address memory as a processor does, by programmed node
+     * number through the claim layer, minus the per-processor pieces:
+     * their space is the device view and nothing else.
+     */
+    address_space_init(&s->bte_as, s->claim_view[SGI_HUB_DEVICE_VIEW],
+                       "sgi-hub.bte");
 
     if (s->junk_uart_present) {
         DeviceState *uart;
@@ -2945,51 +3010,92 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bwin);
 
     /*
-     * The claim overlays, disabled until the first reset aims them (the
-     * PAM idiom: pre-created alternatives, switched, never recreated).
-     * The error floor persists beneath each alias so an unclaimed stride
-     * fails rather than falling through to the static placement.
+     * The claim overlays, disabled until the fabric's first map aims them
+     * (the PAM idiom: pre-created alternatives, switched, never
+     * recreated). One error floor per view and space covers every node
+     * number's stride, so an unclaimed stride fails rather than falling
+     * through to the static placement; one alias per fabric endpoint
+     * moves to wherever that endpoint's number is.
      */
     memory_region_transaction_begin();
-    for (n = 0; n < s->cpus; n++) {
-        unsigned int space, stride_index;
-        unsigned int strides = s->network_peer ? SGI_HUB_CLAIM_STRIDES : 1;
+    for (n = 0; n < SGI_HUB_CLAIM_VIEWS; n++) {
+        unsigned int endpoints = sn0_fabric_endpoint_count(s->fabric);
+        const char *view_name = n == SGI_HUB_DEVICE_VIEW ? "engines" : "cpu";
+        unsigned int space, i;
 
+        if (!sgi_hub_claim_view_present(s, n)) {
+            continue;
+        }
         for (space = 0; space < SGI_HUB_CLAIM_SPACES; space++) {
-            for (stride_index = 0; stride_index < strides; stride_index++) {
-                uint32_t stride = stride_index ? s->claim_peer_node
-                                               : s->claim_own_node;
-                hwaddr base = ((hwaddr)space << s->claim_space_shift) |
-                              ((hwaddr)stride << s->claim_node_shift);
-                uint64_t size = 1ULL << s->claim_node_shift;
-                char *name;
+            hwaddr space_base = (hwaddr)space << s->claim_space_shift;
+            uint64_t size = 1ULL << s->claim_node_shift;
+            char *name;
+
+            name = g_strdup_printf("sgi-hub.claim.%s%u.space%u.error",
+                                   view_name, n, space);
+            memory_region_init_io(&s->claim_error[n][space], OBJECT(dev),
+                                  &sgi_hub_claim_error_ops, s, name,
+                                  (uint64_t)SN0_FABRIC_NUMBERS <<
+                                  s->claim_node_shift);
+            /*
+             * An engine's transfer that lands on the floor re-enters this
+             * Hub from inside the register write that launched it. The
+             * floor holds no state the re-entrancy guard could protect, so
+             * the guard is lifted for it alone; the register region keeps it.
+             */
+            s->claim_error[n][space].disable_reentrancy_guard = true;
+            memory_region_add_subregion_overlap(s->claim_view[n], space_base,
+                                                &s->claim_error[n][space], 0);
+            g_free(name);
+
+            s->claim_alias[n][space] = g_new0(MemoryRegion, endpoints);
+            for (i = 0; i < endpoints; i++) {
+                MemoryRegion *alias = &s->claim_alias[n][space][i];
 
                 name = g_strdup_printf(
-                    "sgi-hub.claim.cpu%u.space%u.node%u.error",
-                    n, space, stride);
-                memory_region_init_io(
-                    &s->claim_error[n][space][stride_index], OBJECT(dev),
-                    &sgi_hub_claim_error_ops, s, name, size);
-                memory_region_add_subregion_overlap(
-                    s->claim_view[n], base,
-                    &s->claim_error[n][space][stride_index], 0);
-                g_free(name);
-
-                name = g_strdup_printf("sgi-hub.claim.cpu%u.space%u.node%u",
-                                       n, space, stride);
-                memory_region_init_alias(
-                    &s->claim_alias[n][space][stride_index], OBJECT(dev),
-                    name, s->claim_target, base, size);
-                memory_region_set_enabled(
-                    &s->claim_alias[n][space][stride_index], false);
-                memory_region_add_subregion_overlap(
-                    s->claim_view[n], base,
-                    &s->claim_alias[n][space][stride_index], 1);
+                    "sgi-hub.claim.%s%u.space%u.endpoint%u",
+                    view_name, n, space, i);
+                memory_region_init_alias(alias, OBJECT(dev), name,
+                                         s->claim_target, space_base, size);
+                memory_region_set_enabled(alias, false);
+                memory_region_add_subregion_overlap(s->claim_view[n],
+                                                    space_base, alias, 1);
                 g_free(name);
             }
         }
     }
     memory_region_transaction_commit();
+    s->claim_ready = true;
+    sgi_hub_fabric_changed(s);
+}
+
+/* The overlays and the engines' space go with the device. */
+static void sgi_hub_unrealize(DeviceState *dev)
+{
+    SGIHubState *s = SGI_HUB(dev);
+    unsigned int endpoints = sn0_fabric_endpoint_count(s->fabric);
+    unsigned int view, space, i;
+
+    s->claim_ready = false;
+    address_space_destroy(&s->bte_as);
+    for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
+        if (!sgi_hub_claim_view_present(s, view)) {
+            continue;
+        }
+        for (space = 0; space < SGI_HUB_CLAIM_SPACES; space++) {
+            for (i = 0; i < endpoints; i++) {
+                MemoryRegion *alias = &s->claim_alias[view][space][i];
+
+                memory_region_del_subregion(s->claim_view[view], alias);
+                object_unparent(OBJECT(alias));
+            }
+            g_free(s->claim_alias[view][space]);
+            s->claim_alias[view][space] = NULL;
+            memory_region_del_subregion(s->claim_view[view],
+                                        &s->claim_error[view][space]);
+            object_unparent(OBJECT(&s->claim_error[view][space]));
+        }
+    }
 }
 
 static int sgi_hub_post_load(void *opaque, int version_id);
@@ -3098,12 +3204,12 @@ static int sgi_hub_post_load(void *opaque, int version_id)
         sgi_hub_bwin_follow(s, n);
     }
     /*
-     * The claim overlays re-derive from the just-restored programmed
-     * number. A Hub's claims also depend on the peer's number, which may
-     * not have loaded yet -- the pair update in whichever Hub's section
-     * loads second leaves both aimed by restored state.
+     * The fabric's maps re-derive from the just-restored programmed
+     * number. A map also depends on every other endpoint's number, which
+     * may not have loaded yet -- the recompute in whichever Hub's section
+     * loads last leaves every map aimed by restored state.
      */
-    sgi_hub_claim_update_pair(s);
+    sgi_hub_report_number(s);
     /* The nameless low windows re-derive from the restored size code. */
     sgi_hub_calias_update(s);
     /*
@@ -3118,9 +3224,9 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
     DEFINE_PROP_BOOL("slave-module", SGIHubState, slave_module, false),
-    DEFINE_PROP_BOOL("network-link-up", SGIHubState, network_link_up, false),
-    DEFINE_PROP_LINK("network-peer", SGIHubState, network_peer, TYPE_SGI_HUB,
-                     SGIHubState *),
+    DEFINE_PROP_LINK("fabric", SGIHubState, fabric, TYPE_SN0_FABRIC,
+                     SN0FabricState *),
+    DEFINE_PROP_UINT32("fabric-endpoint", SGIHubState, fabric_endpoint, 0),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
     DEFINE_PROP_UINT8("ni-revision", SGIHubState, ni_revision, 3),
     DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
@@ -3139,12 +3245,13 @@ static const Property sgi_hub_properties[] = {
                        xtalk_widget_shift, 0),
     DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
                      MemoryRegion *),
-    DEFINE_PROP_LINK("memory", SGIHubState, memory, TYPE_MEMORY_REGION,
-                     MemoryRegion *),
     DEFINE_PROP_LINK("claim-view0", SGIHubState, claim_view[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("claim-view1", SGIHubState, claim_view[1],
                      TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("claim-device-view", SGIHubState,
+                     claim_view[SGI_HUB_DEVICE_VIEW], TYPE_MEMORY_REGION,
+                     MemoryRegion *),
     DEFINE_PROP_LINK("claim-target", SGIHubState, claim_target,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("calias-window0", SGIHubState, calias_window[0],
@@ -3153,8 +3260,6 @@ static const Property sgi_hub_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT32("claim-node-shift", SGIHubState, claim_node_shift, 0),
     DEFINE_PROP_UINT32("claim-space-shift", SGIHubState, claim_space_shift, 0),
-    DEFINE_PROP_UINT32("claim-own-node", SGIHubState, claim_own_node, 0),
-    DEFINE_PROP_UINT32("claim-peer-node", SGIHubState, claim_peer_node, 0),
     DEFINE_PROP_BOOL("junk-uart", SGIHubState, junk_uart_present, false),
     DEFINE_PROP_LINK("elsc-chardev", SGIHubState, elsc_chr,
                      TYPE_CHARDEV, Chardev *),
@@ -3176,7 +3281,8 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI SN0 Hub ASIC";
     dc->realize = sgi_hub_realize;
-    /* The machine supplies the memory, crosstalk and peer links. */
+    dc->unrealize = sgi_hub_unrealize;
+    /* The machine supplies the crosstalk space, the fabric and the views. */
     dc->user_creatable = false;
     dc->vmsd = &vmstate_sgi_hub;
     device_class_set_props(dc, sgi_hub_properties);

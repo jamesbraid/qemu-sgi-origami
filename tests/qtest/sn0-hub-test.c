@@ -672,10 +672,14 @@ static void test_network_link_presence(const void *data)
     qtest_quit(qts);
 }
 
-static void test_one_node_link_state_overrides_class_global(const void *data)
+static void test_a_node_with_no_link_reads_down(const void *data)
 {
-    QTestState *qts = qtest_init(
-        "-M origin200 -global sgi-hub.network-link-up=on");
+    /*
+     * A single-node machine's Hub is an endpoint on a fabric with no link,
+     * so its status register reads link-down, at boot and across a reset.
+     * Live link state is the fabric's; there is no property to force it.
+     */
+    QTestState *qts = qtest_init("-M origin200");
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
                     ==, 0);
@@ -3500,94 +3504,6 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
     qtest_quit(qts);
 }
 
-static void test_bte_engines_see_their_own_node(const void *data)
-{
-    QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
-        "-smp 4,sockets=2,cores=2,threads=1");
-    const uint64_t node1 = NODE_STRIDE;
-    const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
-    uint8_t got[BTE_LINE];
-    unsigned int i;
-
-    assign_node1_number(qts);
-
-    /*
-     * Node-less addresses name the launching engine's own node, as they do
-     * for its processors; distinct fills show which node moved.
-     */
-    qtest_memset(qts, 0x01500000, 0xaa, BTE_LINE);
-    qtest_memset(qts, node1 + 0x01500000, 0xbb, BTE_LINE);
-    qtest_memset(qts, 0x01600000, 0xcc, BTE_LINE);
-    qtest_memset(qts, node1 + 0x01600000, 0xcc, BTE_LINE);
-
-    qtest_writeq(qts, hub1 + BTE_LENGTH(0), BTE_BUSY | 1);
-    qtest_writeq(qts, hub1 + BTE_SOURCE(0), BTE_CACHED_UPPER | 0x01500000);
-    qtest_writeq(qts, hub1 + BTE_DEST(0), BTE_CACHED_UPPER | 0x01600000);
-    qtest_writeq(qts, hub1 + BTE_INTERRUPT(0), BTE_INT_LEVEL(20) | 1);
-    qtest_writeq(qts, hub1 + BTE_CONTROL(0), 0);
-
-    g_assert_cmphex(qtest_readq(qts, hub1 + BTE_LENGTH(0)), ==, 0);
-    qtest_bufread(qts, node1 + 0x01600000, got, sizeof(got));
-    for (i = 0; i < sizeof(got); i++) {
-        g_assert_cmphex(got[i], ==, 0xbb);
-    }
-    qtest_bufread(qts, 0x01600000, got, sizeof(got));
-    for (i = 0; i < sizeof(got); i++) {
-        g_assert_cmphex(got[i], ==, 0xcc);
-    }
-
-    /* An interrupt aimed at the engine's programmed number stays home. */
-    g_assert_cmphex(qtest_readq(qts, hub1 + PI_INT_PEND0), ==, 1ULL << 20);
-    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==, 0);
-
-    /* The notification address follows the same rule. */
-    qtest_memset(qts, 0x01700000, 0xff, 8);
-    qtest_memset(qts, node1 + 0x01700000, 0xff, 8);
-    qtest_writeq(qts, hub1 + BTE_LENGTH(1), BTE_BUSY | 1);
-    qtest_writeq(qts, hub1 + BTE_SOURCE(1), 0x01500000);
-    qtest_writeq(qts, hub1 + BTE_DEST(1), 0x01680000);
-    qtest_writeq(qts, hub1 + BTE_NOTIFY(1), 0x01700000);
-    qtest_writeq(qts, hub1 + BTE_CONTROL(1), BTE_CTL_NOTIFY);
-    g_assert_cmphex(qtest_readq(qts, node1 + 0x01700000), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, 0x01700000), ==, ~0ULL);
-
-    /* And the mirror: node 0's engines leave node 1's memory alone. */
-    qtest_memset(qts, node1 + 0x01600000, 0xcc, BTE_LINE);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(0), BTE_BUSY | 1);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(0), 0x01500000);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(0), 0x01600000);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_INTERRUPT(0), BTE_INT_LEVEL(21));
-    qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(0), 0);
-    qtest_bufread(qts, 0x01600000, got, sizeof(got));
-    for (i = 0; i < sizeof(got); i++) {
-        g_assert_cmphex(got[i], ==, 0xaa);
-    }
-    qtest_bufread(qts, node1 + 0x01600000, got, sizeof(got));
-    for (i = 0; i < sizeof(got); i++) {
-        g_assert_cmphex(got[i], ==, 0xcc);
-    }
-    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==,
-                    1ULL << 21);
-
-    /* An explicit node number still reaches the other node. */
-    qtest_memset(qts, 0x01600000, 0xcc, BTE_LINE);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(0), BTE_BUSY | 1);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(0), node1 + 0x01500000);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(0), 0x01600000);
-    qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(0), 0);
-    qtest_bufread(qts, 0x01600000, got, sizeof(got));
-    for (i = 0; i < sizeof(got); i++) {
-        g_assert_cmphex(got[i], ==, 0xbb);
-    }
-
-    qtest_quit(qts);
-}
-
 static void test_bte_zero_length_and_misalignment(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -3624,8 +3540,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/addressing-mode", NULL, test_addressing_mode);
     qtest_add_data_func("sn0/hub/network-link-presence", NULL,
                         test_network_link_presence);
-    qtest_add_data_func("sn0/hub/one-node-link-overrides-class-global", NULL,
-                        test_one_node_link_state_overrides_class_global);
+    qtest_add_data_func("sn0/hub/a-node-with-no-link-reads-down", NULL,
+                        test_a_node_with_no_link_reads_down);
     qtest_add_data_func("sn0/hub/processor-number", NULL,
                         test_processor_number);
     qtest_add_data_func("sn0/hub/reset-values", NULL, test_reset_values);
@@ -3844,8 +3760,6 @@ int main(int argc, char **argv)
                         test_bte_error_latches_and_no_store_clears_it);
     qtest_add_data_func("sn0/hub/bte-zero-length-and-misalignment", NULL,
                         test_bte_zero_length_and_misalignment);
-    qtest_add_data_func("sn0/hub/bte-engines-see-their-own-node", NULL,
-                        test_bte_engines_see_their_own_node);
 
     return g_test_run();
 }

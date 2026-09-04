@@ -1109,16 +1109,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
 {
     const SN0ModelComponent *hub = node->topology->hub;
     const SN0ModelAddressMap *map = &node->topology->map;
-    const SN0ModelRegion *memory_region = &map->node_memory;
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
-    g_autofree char *memory_name =
-        g_strdup_printf("sn0.node%u.hub.memory", node_index);
-    g_autofree char *memory_system_name =
-        g_strdup_printf("sn0.node%u.hub.memory.system", node_index);
-    g_autofree char *memory_local_name =
-        g_strdup_printf("sn0.node%u.hub.memory.local", node_index);
+    g_autofree char *device_view_name =
+        g_strdup_printf("sn0.node%u.hub.device-view", node_index);
     MemoryRegion *system = get_system_memory();
     MIPSCPU *cpu;
     unsigned int slice;
@@ -1128,26 +1123,15 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     /*
      * The Hub's engines address memory as this node's processors do,
-     * minus the per-processor pieces -- a device has no slice to flip.
-     * The Hub cannot build this itself: its programmed node number reads
-     * zero under real firmware.
+     * minus the per-processor pieces -- a device has no slice to flip and
+     * no nameless window. The container is the machine's; the Hub fills
+     * it with its claim layer, which routes every node-qualified address
+     * by programmed number, and an engine sees nothing else.
      */
-    memory_region_init(&node->hub_memory, OBJECT(node), memory_name,
+    memory_region_init(&node->device_view, OBJECT(node), device_view_name,
                        UINT64_MAX);
-    memory_region_init_alias(&node->hub_memory_system, OBJECT(node),
-                             memory_system_name, system, 0, UINT64_MAX);
-    memory_region_add_subregion_overlap(&node->hub_memory, 0,
-                                        &node->hub_memory_system, -1);
-    memory_region_init_alias(&node->hub_memory_local, OBJECT(node),
-                             memory_local_name, system,
-                             node->local_memory_base,
-                             memory_region->size);
-    memory_region_add_subregion_overlap(
-        &node->hub_memory,
-        map->memory.carrier_base,
-                                        &node->hub_memory_local, 0);
-    object_property_set_link(OBJECT(&node->hub), "memory",
-                             OBJECT(&node->hub_memory), &error_fatal);
+    object_property_set_link(OBJECT(&node->hub), "claim-device-view",
+                             OBJECT(&node->device_view), &error_fatal);
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
@@ -1212,7 +1196,6 @@ static void sn0_node_create_hub(SN0NodeState *node)
                          ctz64(map->node_stride));
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-space-shift",
                          MIPS_UNCACHED_WINDOW_SHIFT);
-    qdev_prop_set_uint32(DEVICE(&node->hub), "claim-own-node", node->nasid);
     sysbus_realize(SYS_BUS_DEVICE(&node->hub), &error_fatal);
 
     for (slice = 0; slice < node->nr_cpus; slice++) {
@@ -1400,6 +1383,43 @@ static void sn0_init(MachineState *machine)
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk, model->cpu_clock_hz);
 
+    /*
+     * The fabric that joins the Hubs, built from the profile before any
+     * Hub realizes: every node's Hub is an endpoint at its board stride,
+     * and the profile's peer link, the one cable a direct-wired pair has,
+     * is the direct adapter's single link. The Hubs learn nothing of it
+     * beyond their own endpoint.
+     */
+    s->fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_DIRECT));
+    object_property_add_child(OBJECT(machine), "fabric", OBJECT(s->fabric));
+    for (node_index = 0; node_index < node_count; node_index++) {
+        const SN0ModelNodeInstance *node_model =
+            sn0_model_profile_node(profile, node_index);
+        unsigned int endpoint;
+
+        endpoint = sn0_fabric_add_endpoint(s->fabric,
+                                           &s->nodes[node_index]->hub,
+                                           node_model->nasid);
+        g_assert(endpoint == node_index);
+    }
+    for (node_index = 0; node_index < node_count; node_index++) {
+        const SN0ModelNodeInstance *node_model =
+            sn0_model_profile_node(profile, node_index);
+        int peer_index = node_model->peer_index;
+
+        if (peer_index < 0 || (unsigned int)peer_index < node_index) {
+            continue;
+        }
+        g_assert((size_t)peer_index < profile->node_count);
+        g_assert((unsigned int)peer_index != node_index);
+        g_assert(sn0_model_profile_node(profile, peer_index)->peer_index ==
+                 (int)node_index);
+        /* The dual composition's one cable, by its bus identifier. */
+        sn0_fabric_add_link(s->fabric, "peer-craylink", node_index,
+                            peer_index);
+    }
+    qdev_realize_and_unref(DEVICE(s->fabric), NULL, &error_fatal);
+
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
         const SN0ModelNodeInstance *node_model =
@@ -1469,21 +1489,10 @@ static void sn0_init(MachineState *machine)
             object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                      OBJECT(aux_chr), &error_fatal);
         }
-        qdev_prop_set_bit(DEVICE(&node->hub), "network-link-up",
-                          node_model->peer_index >= 0);
-        if (node_model->peer_index >= 0) {
-            int peer_index = node_model->peer_index;
-            const SN0ModelNodeInstance *peer;
-
-            g_assert((size_t)peer_index < profile->node_count);
-            g_assert((unsigned int)peer_index != node_index);
-            peer = sn0_model_profile_node(profile, peer_index);
-            object_property_set_link(OBJECT(&node->hub), "network-peer",
-                                     OBJECT(&s->nodes[peer_index]->hub),
-                                     &error_fatal);
-            qdev_prop_set_uint32(DEVICE(&node->hub), "claim-peer-node",
-                                 peer->nasid);
-        }
+        object_property_set_link(OBJECT(&node->hub), "fabric",
+                                 OBJECT(s->fabric), &error_fatal);
+        qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint",
+                             node_index);
         sn0_model_configure_diagnostic(s, node_index);
         sn0_diagnostic_attach(s, node_index);
 
@@ -1497,6 +1506,9 @@ static void sn0_init(MachineState *machine)
     }
     g_assert(cpu_index == machine->smp.cpus);
     g_assert(ram_offset == machine->ram_size);
+
+    /* Every Hub has its endpoint and its aliases: the maps can be aimed. */
+    sn0_fabric_build(s->fabric);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         sn0_model_populate_node(s, node_index);

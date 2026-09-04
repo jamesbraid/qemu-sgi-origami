@@ -253,10 +253,11 @@ typedef struct SN0NodeState {
     SN0PromDataState promdata[SN0_MAX_CPUS_PER_NODE];
     SGIHubState hub;
 
-    /* The Hub's own view of memory, for its block transfer engines. */
-    MemoryRegion hub_memory;
-    MemoryRegion hub_memory_system;
-    MemoryRegion hub_memory_local;
+    /*
+     * The Hub's own engines' view: the claim layer alone, so an engine
+     * address resolves by programmed node number like a processor's.
+     */
+    MemoryRegion device_view;
 
     PFlashCFI02 *flash;
     uint64_t flash_size;
@@ -309,6 +310,9 @@ struct SN0MachineState {
     unsigned int num_nodes;
     SN0NodeState **nodes;
     SGIBridgeState **io_bridge;
+
+    /* What joins the nodes' Hubs; every Hub holds one endpoint on it. */
+    SN0FabricState *fabric;
 
     /* The product reference clock every node's processors derive from. */
     Clock *cpu_refclk;
