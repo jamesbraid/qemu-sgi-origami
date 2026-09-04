@@ -327,7 +327,7 @@ struct SGIHubState {
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
 
-/* The fabric's side of the seam: this endpoint's map or link state moved. */
+/* The fabric's side of the interface: this endpoint's map or link state moved. */
 void sgi_hub_fabric_changed(SGIHubState *s);
 bool sgi_hub_vector_access(SGIHubState *target, SN0FabricVectorAccess *access);
 
