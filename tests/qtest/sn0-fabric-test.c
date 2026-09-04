@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * The fabric seam on the dual-module Origin 200: every class of node-qualified
+ * The fabric interface on the dual-module Origin 200: every class of node-qualified
  * traffic resolves by the programmed node number of a reachable Hub, through
  * the machine-owned fabric, and nothing resolves by board position.
  *
@@ -9,8 +9,8 @@
  * fabric is the direct adapter: each Hub reaches itself by its own number and
  * the other Hub by that Hub's programmed number, and nothing else. The tests
  * renumber node 1 to a number that is no board position (7) to tell a map keyed
- * by programmed number from the board-keyed aliases the fork had before the
- * seam, which could reach a peer only at its board stride.
+ * by programmed number from the board-keyed aliases the fork had before this
+ * change, which could reach a peer only at its board stride.
  *
  * The qtest backdoor is processor 0's view of the machine, so it too reaches
  * a node by that node's programmed number: once node 1 is renumbered to 7,

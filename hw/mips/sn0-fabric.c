@@ -233,7 +233,7 @@ static void sn0_fabric_direct_recompute(SN0FabricState *f)
 /*
  * A vector of zero names the directly wired peer; any other route needs a
  * Router this fabric does not have and fails with the address-error
- * response, as the fork answered before the seam. With no link up nothing
+ * response, as the fork answered before this change. With no link up nothing
  * answers at all.
  */
 static SN0FabricVectorResult
