@@ -166,7 +166,11 @@
 #define ISP_IOCB_INCOMPLETE  0x0001
 
 #define ISP_STATE_FLAG_GOT_BUS            0x0100
+#define ISP_STATE_FLAG_GOT_SENSE          0x2000
 #define ISP_STATE_FLAGS_ALL_PHASES        0x7f00
+/* A GOOD command runs no auto-sense, so its phase mask omits the sense phase. */
+#define ISP_STATE_FLAGS_NO_SENSE \
+    (ISP_STATE_FLAGS_ALL_PHASES & ~ISP_STATE_FLAG_GOT_SENSE)
 
 #define ISP_SCSI_STATUS_SENSE_VALID 0x0200
 
@@ -1586,11 +1590,92 @@ static void test_status_entry_clears_stale_bytes(void *obj, void *data,
     g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x3);
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==,
-                    ISP_STATE_FLAGS_ALL_PHASES);
+                    ISP_STATE_FLAGS_NO_SENSE);
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SENSE_LEN), ==, 0);
     for (i = 0; i < 32; i++) {
         g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + i], ==, 0);
     }
+
+    qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * State flags name the SCSI phases a command traversed. Auto-sense runs only
+ * after a CHECK CONDITION, so a GOOD command must not raise the sense phase.
+ * Posting it on every completion made IRIX read a clean CD-ROM MODE SELECT as
+ * an unexpected sense phase and reissue it without bound, wedging the boot.
+ */
+static void test_state_flags_track_sense_phase(void *obj, void *data,
+                                               QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   2, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    /*
+     * Command 1: TEST UNIT READY on a freshly attached device answers the
+     * power-on unit attention -- a CHECK CONDITION whose auto-sense the
+     * adapter reports, so the sense phase belongs in the mask here.
+     */
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+    g_assert_cmpint(isp_get16(status, ISP_STATUS_OFF_SENSE_LEN), >, 0);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS) &
+                    ISP_STATE_FLAG_GOT_SENSE, ==, ISP_STATE_FLAG_GOT_SENSE);
+
+    qlogic_isp_ack(dev, io);
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE,
+                   qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE));
+
+    /*
+     * Command 2: the unit attention is cleared, so TEST UNIT READY now
+     * returns GOOD with no sense. The sense phase must be absent, and the
+     * whole mask equals the no-sense set.
+     */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SENSE_LEN), ==, 0);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS) &
+                    ISP_STATE_FLAG_GOT_SENSE, ==, 0);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAGS_NO_SENSE);
 
     qlogic_isp_ack(dev, io);
     qpci_iounmap(dev, io);
@@ -2809,6 +2894,8 @@ static void qlogic_isp_register_nodes(void)
                  test_command_round_trip, NULL);
     qos_add_test("status-entry-clears-stale-bytes", "qlogic-isp1040",
                  test_status_entry_clears_stale_bytes, NULL);
+    qos_add_test("state-flags-track-sense-phase", "qlogic-isp1040",
+                 test_state_flags_track_sense_phase, NULL);
     qos_add_test("no-device-incomplete-state-flags", "qlogic-isp1040",
                  test_no_device_incomplete_state_flags, NULL);
     qos_add_test("unrecognized-entry-type-incomplete", "qlogic-isp1040",
