@@ -16,7 +16,6 @@
 
 /* Preserve the CPU's byte order across the nested Bridge dispatch. */
 #define SN0_PROM_PI_PROBE_MEMOP(size) (size_memop(size) | MO_BE)
-#define SN0_PROM_PI_PROBE_DEVICE_WINDOW 1
 
 static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
                                           uint64_t *data, unsigned int size,
@@ -32,7 +31,7 @@ static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
     }
     return memory_region_dispatch_read(
         &node->prom_pi_probe_bridge->
-            device_window_mem[SN0_PROM_PI_PROBE_DEVICE_WINDOW],
+            device_window_mem[node->prom_pi_probe_device_window],
         base_io->prom_pi_probe_window_offset + addr, data,
         SN0_PROM_PI_PROBE_MEMOP(size), attrs);
 }
@@ -46,7 +45,7 @@ static MemTxResult sn0_prom_pi_probe_write(void *opaque, hwaddr addr,
 
     return memory_region_dispatch_write(
         &node->prom_pi_probe_bridge->
-            device_window_mem[SN0_PROM_PI_PROBE_DEVICE_WINDOW],
+            device_window_mem[node->prom_pi_probe_device_window],
         base_io->prom_pi_probe_window_offset + addr, data,
         SN0_PROM_PI_PROBE_MEMOP(size), attrs);
 }
@@ -282,6 +281,7 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
     const SN0ModelRegion *bridge = &node->topology->map.bridge_registers;
     MemoryRegion *bridge_face;
     unsigned int scsi_index = 0;
+    unsigned int device_window;
     unsigned int widget;
     size_t component_index;
 
@@ -335,6 +335,23 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
                           &sn0_prom_pi_probe_ops, node,
                           "sn0.prom-pi-probe", 8);
     node->prom_pi_probe_bridge = s->io_bridge[node_index];
+    for (device_window = 0; device_window < SGI_BRIDGE_DEVICES;
+         device_window++) {
+        MemoryRegion *window = &node->prom_pi_probe_bridge->
+                                   device_window_mem[device_window];
+
+        if (base_io->prom_pi_probe_offset >= window->addr &&
+            base_io->prom_pi_probe_offset - window->addr <
+                memory_region_size(window)) {
+            break;
+        }
+    }
+    g_assert(device_window < SGI_BRIDGE_DEVICES);
+    g_assert(base_io->prom_pi_probe_offset -
+             node->prom_pi_probe_bridge->
+                 device_window_mem[device_window].addr ==
+             base_io->prom_pi_probe_window_offset);
+    node->prom_pi_probe_device_window = device_window;
     memory_region_add_subregion_overlap(
         &node->xtalk,
         SN0_XTALK_BASE(base_io->prom_pi_probe_widget) +
