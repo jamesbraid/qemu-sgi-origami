@@ -239,7 +239,7 @@ static void test_dual_node_boot_windows(const void *data)
     g_assert_cmphex(qtest_readq(qts, NODE0_LBOOT + CONFIG_MAGIC_OFF),
                     ==, CONFIG_MAGIC);
     g_assert_cmphex(qtest_readq(qts, NODE1_LBOOT + CONFIG_MAGIC_OFF),
-                    !=, CONFIG_MAGIC);
+                    ==, CONFIG_MAGIC);
     g_assert_cmphex(qtest_readq(qts, NODE0_RBOOT + CONFIG_MAGIC_OFF),
                     ==, CONFIG_MAGIC);
     g_assert_cmphex(qtest_readq(qts, NODE1_RBOOT + CONFIG_MAGIC_OFF),
