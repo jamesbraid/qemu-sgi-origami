@@ -209,6 +209,7 @@ typedef struct SN0BackdoorState {
 
 typedef struct SN0PromDataState {
     MIPSCPU *cpu;
+    const SN0ModelAddressMap *map;
     hwaddr node_base;
     MemoryRegion data;
     MemoryRegion filter;
@@ -368,7 +369,7 @@ struct SN0MachineClass {
 
 void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
 const SN0FlashImplementation *sn0_model_flash_implementation(
-    SN0ModelFlashKind kind);
+    void);
 void sn0_model_configure_diagnostic(SN0MachineState *s,
                                     unsigned int node_index);
 
