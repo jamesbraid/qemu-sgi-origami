@@ -9,7 +9,7 @@ mips_ss.add(when: 'CONFIG_MIPS_CPS', if_true: files('cps.c'))
 if 'CONFIG_TCG' in config_all_accel
 mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sn0.c', 'sn0-diag.c', 'sn0-firmware.c',
+            if_true: files('sn0.c', 'sn0-diag.c', 'sn0-fabric.c', 'sn0-firmware.c',
                            'sn0-model.c', 'sn0-model-consumer.c',
                            'sn0-origin200.c',
                            'sn0-origin200-model.c'),

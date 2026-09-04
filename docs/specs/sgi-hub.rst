@@ -171,7 +171,7 @@ timeout it measures in its own retired instructions. Under TCG a
 poller can spend that whole budget inside one scheduled slice before
 the processor it waits for runs at all, and report a live peer dead.
 
-The model's assist has one minimal contract, ``sgi_hub_yield_to_peer``:
+The model's assist has one minimal contract, ``sgi_hub_yield_to_processor``:
 wake the named peer and end the current processor's slice. It selects
 no successor, and it changes no Hub or interrupt state; it only makes
 an already-atomic write visible on the scheduling boundary where real
@@ -327,10 +327,18 @@ control store with busy clear does nothing, the datasheet's own
 proposal; what a control/terminate load returns is unobserved and
 answered with the written bits; poison mode launches, but the
 directory state it would poison belongs to the unmodelled directory.
-The notification is exactly eight bytes in guest byte order --
-whether hardware writes more of the line is unobserved -- and in
-interrupt mode the node field names a processor interface on this
-Hub or its direct peer, the only two. On hardware a failed transfer
+An engine's source, destination and notification addresses resolve
+by programmed node number through the Hub's own engine view of the
+claim layer, exactly as a processor's addresses do, so a
+node-field-zero address names whichever Hub holds number zero and
+never the engine's own board by position. The notification is exactly
+eight bytes in guest byte order -- whether hardware writes more of
+the line is unobserved -- and in interrupt mode the node field names
+a processor interface on whichever Hub the fabric's map holds for
+that number, this Hub included; the completion is a direct call into
+that Hub, so the launching store never re-enters this Hub's own
+register region, and a number no reachable Hub holds is logged and
+dropped. On hardware a failed transfer
 surfaces through the Hub's error machinery, not a completion signal;
 a notification write on error is not established, so neither
 completion path runs, and the Hub error interrupt is not modelled.
@@ -370,28 +378,39 @@ The status register stays in M mode; the node field and region size
 are the writable fields, programmed by firmware (synthesized firmware
 may supply the node through the nasid property), while the link state
 and chip identity are read-only; the region-size bit resets set and
-link-up reports whether the product wires a peer. The
-vector PIO reaches only the directly connected peer chassis: a null
-route names that peer, and non-null routes fail with the hardware's
-address-error response, so the direct topology never pretends it can
-route an Origin 2000 network. With no peer fitted the model latches
-nothing and lets the requester's poll time out -- the datasheet's
-no-response proposal for its open no-peer question, not an observed
-silicon behavior. A remote vector write decodes through the peer
-Hub's pure store, never its write hook, so it has no local side
-effects; the peer pointer is serialised only by BQL MMIO dispatch,
-which the launch path asserts before the first dereference.
+link-up reports whether the product wires a link. Vector PIO goes
+through the machine's fabric, on which this Hub's network interface
+is one endpoint: the fabric walks the route from that endpoint's port
+and performs the access on whatever the route ends at. On the direct
+adapter, the fabric of two Hubs joined by one link, a null route
+names the other Hub and any other route, which would need a Router,
+fails with the hardware's address-error response, so the direct
+topology never pretends it can route an Origin 2000 network. A route
+nothing answers -- no link, or the link down -- latches nothing and
+lets the requester's poll time out, the datasheet's no-response
+proposal for its open no-peer question, not an observed silicon
+behavior. A remote vector access decodes through the target Hub's
+pure store or peek, never its write hook, so it has no local side
+effects; the fabric is serialised only by BQL MMIO dispatch, which
+the launch path asserts before it calls in.
 
 The node field is what the Hub decodes node-qualified addresses
-against, not the board position: in each attached processor's view
-the Hub claims the stride whose node number equals its own programmed
-field, routes the stride equal to the directly wired peer's field to
-the peer, and answers a stride neither Hub claims with a decode error
--- never by board position. The machine wires the per-view overlay
-containers, the canonical map and the address geometry at build time;
-the Hub owns the overlay aliases and re-aims them inside one memory
-transaction whenever the field is stored, at reset exit, and after a
-migration load. At reset every Hub answers node zero, so each node's
+against, not the board position. The fabric gives each Hub a
+reachability map -- for every node number, the endpoint programmed
+with that number that the fabric connects, the Hub itself first --
+and in each attached processor's view, and in its own engines' view,
+the Hub places one alias per reachable endpoint at that endpoint's
+number stride, aimed at the endpoint's board stride in the canonical
+map, over an error floor across every stride; a number no reachable
+Hub holds answers with a decode error, never by board position and
+never from a Hub the number does not name. The Hub knows no peer,
+Router, module or cable: it holds its endpoint and its map. The
+machine wires the per-view overlay containers, the canonical map, the
+address geometry and the endpoint at build time; the Hub owns the
+overlay aliases and re-aims them inside one memory transaction
+whenever its map changes, which the fabric recomputes when any Hub's
+field is stored, at reset exit, and after a migration load. At reset
+every Hub answers node zero, so each node's
 early self-addressed initialisation stays on its own Hub until the
 global master assigns real numbers. The contract is the "node number
 a Hub answers to is programmed, not fixed" section of
