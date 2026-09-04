@@ -17,6 +17,9 @@
 /* Node zero's window, and the space the Hub answers uncached references in. */
 #define NODE0           0x0000000000ULL
 #define SPACE_HUB       0x10000000000ULL
+#define NODE_STRIDE     0x100000000ULL
+#define LBOOT_OFFSET    0x10000000ULL
+#define RBOOT_OFFSET    0x30000000ULL
 
 /* The flash at reset, through local LBOOT, and through node-explicit RBOOT. */
 #define FLASH_RESET     (NODE0 + 0x1fc00000)
@@ -51,7 +54,21 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 
 /* The configuration block, at flash offset 0x60. */
 #define CONFIG_OFFSET   0x60
+#define CONFIG_MAGIC_OFF 0x68
 #define CONFIG_MAGIC    0x69703237636f6e66ULL    /* "ip27conf" */
+
+#define NODE0_LBOOT (SPACE_HUB + NODE0 + LBOOT_OFFSET)
+#define NODE1_LBOOT (SPACE_HUB + NODE_STRIDE + LBOOT_OFFSET)
+#define NODE0_RBOOT (SPACE_HUB + NODE0 + RBOOT_OFFSET)
+#define NODE1_RBOOT (SPACE_HUB + NODE_STRIDE + RBOOT_OFFSET)
+
+#define SN0_DUAL_CHASSIS_FIRMWARE_ARGS \
+    "-M origin200 -m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
 
 #define FIELD_MAGIC     0x08
 #define FIELD_CPU_FREQ  0x10
@@ -211,6 +228,22 @@ static void test_flash_three_views(const void *data)
                     ==, CONFIG_MAGIC);
     g_assert_cmphex(qtest_readq(qts, FLASH_REMOTE + CONFIG_OFFSET +
                                FIELD_MAGIC), ==, CONFIG_MAGIC);
+
+    qtest_quit(qts);
+}
+
+static void test_dual_node_boot_windows(const void *data)
+{
+    QTestState *qts = qtest_init(SN0_DUAL_CHASSIS_FIRMWARE_ARGS);
+
+    g_assert_cmphex(qtest_readq(qts, NODE0_LBOOT + CONFIG_MAGIC_OFF),
+                    ==, CONFIG_MAGIC);
+    g_assert_cmphex(qtest_readq(qts, NODE1_LBOOT + CONFIG_MAGIC_OFF),
+                    !=, CONFIG_MAGIC);
+    g_assert_cmphex(qtest_readq(qts, NODE0_RBOOT + CONFIG_MAGIC_OFF),
+                    ==, CONFIG_MAGIC);
+    g_assert_cmphex(qtest_readq(qts, NODE1_RBOOT + CONFIG_MAGIC_OFF),
+                    ==, CONFIG_MAGIC);
 
     qtest_quit(qts);
 }
@@ -908,6 +941,8 @@ int main(int argc, char **argv)
                         NULL, test_supplied_prom_gets_origin200_config);
     qtest_add_data_func("sn0/address-map/flash-three-views", NULL,
                         test_flash_three_views);
+    qtest_add_data_func("sn0/address-map/dual-node-boot-windows", NULL,
+                        test_dual_node_boot_windows);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,
                         test_boot_windows_mirror_the_flash);
     qtest_add_data_func("sn0/address-map/flash-hub-local-is-fast", NULL,

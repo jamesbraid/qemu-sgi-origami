@@ -51,33 +51,6 @@
 
 DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
 
-static const SN0ModelAddressSpace *sn0_space(const SN0MachineModel *model,
-                                             SN0ModelAddressSpaceKind kind)
-{
-    const SN0ModelAddressSpace *space = sn0_model_find_space(model, kind);
-
-    g_assert(space);
-    return space;
-}
-
-static hwaddr sn0_space_node_base(const SN0MachineModel *model,
-                                  SN0ModelAddressSpaceKind kind,
-                                  unsigned int nasid)
-{
-    const SN0ModelAddressSpace *space = sn0_space(model, kind);
-
-    return sn0_model_node_address(model, space, nasid, 0);
-}
-
-static const SN0ModelRegion *sn0_region(const SN0MachineModel *model,
-                                        SN0ModelRegionRole role)
-{
-    const SN0ModelRegion *region = sn0_model_find_region(model, role);
-
-    g_assert(region);
-    return region;
-}
-
 /*
  * The phase's two execution homes, from the full 64-bit PC. The PC is
  * translated through the MMU rather than pattern-matched, because the
@@ -92,12 +65,8 @@ static const SN0ModelRegion *sn0_region(const SN0MachineModel *model,
  */
 static bool sn0_promdata_pc_in_prom(SN0PromDataState *s)
 {
-    const SN0MachineModel *model =
-        SN0_MACHINE_GET_CLASS(qdev_get_machine())->model;
-    const SN0ModelRegion *memory_region =
-        sn0_region(model, SN0_MODEL_REGION_NODE_MEMORY);
-    const SN0ModelRegion *flash =
-        sn0_region(model, SN0_MODEL_REGION_PFLASH_RESET);
+    const SN0ModelRegion *memory_region = &s->map->node_memory;
+    const SN0ModelRegion *flash = &s->map->flash_reset;
     TranslateForDebugResult r;
     uint64_t phys;
 
@@ -724,31 +693,36 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
  * cached-alias window -- beyond the bound the claim layer routes by
  * programmed number; the Hub's engines use it for their whole low view.
  */
-static hwaddr sn0_node_local_memory_base(MachineState *machine,
-                                         unsigned int nasid)
+static hwaddr sn0_node_local_memory_base(
+    MachineState *machine, const SN0ModelNodeInstance *node)
 {
-    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
+    const SN0ModelAddressMap *map = &node->topology->map;
+    unsigned int nasid = node->nasid;
 
     if (nasid != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
         machine->kernel_filename) {
-        return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, 0);
+        nasid = 0;
     }
-    return sn0_space_node_base(model, SN0_MODEL_SPACE_MEMORY, nasid);
+    return sn0_model_node_address(map, &map->memory, nasid, 0);
 }
 
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelRegion *memory_region =
-        sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
-    const SN0ModelAddressSpace *hub_special =
-        sn0_space(node->model, SN0_MODEL_SPACE_HUB_SPECIAL);
-    hwaddr node_base = sn0_space_node_base(
-        node->model, SN0_MODEL_SPACE_MEMORY, node->nasid);
+    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelAddressSpace *spaces[SN0_MAX_ADDRESS_SPACES] = {
+        &map->memory,
+        &map->hub_special,
+        &map->xtalk,
+        &map->memory_special,
+    };
+    const SN0ModelRegion *memory_region = &map->node_memory;
+    const SN0ModelAddressSpace *hub_special = &map->hub_special;
+    hwaddr node_base = sn0_model_node_address(
+        map, &map->memory, node->nasid, 0);
     unsigned int node_index = node->nasid;
     unsigned int slice, half, space_index;
 
-    g_assert(node->model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *alias_name =
             g_strdup_printf("sn0.node%u.cpu%u.system", node_index, slice);
@@ -786,14 +760,13 @@ static void sn0_node_create_cpus(SN0NodeState *node)
          * claim layer underneath.
          */
         for (space_index = 0;
-             space_index < node->model->address_space_count; space_index++) {
-            const SN0ModelAddressSpace *space_model =
-                &node->model->address_spaces[space_index];
+             space_index < SN0_MAX_ADDRESS_SPACES; space_index++) {
+            const SN0ModelAddressSpace *space_model = spaces[space_index];
             g_autofree char *local_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.local-space%u", node_index, slice,
                 space_model->selector);
             hwaddr alias_node_base =
-                space_model->kind == SN0_MODEL_SPACE_MEMORY ?
+                space_model == &map->memory ?
                 node->local_memory_base : node_base;
             hwaddr local_offset = 0;
             hwaddr local_size = memory_region->size;
@@ -817,13 +790,13 @@ static void sn0_node_create_cpus(SN0NodeState *node)
              * space and the LBOOT path are likewise local. Those keep
              * the wide reader-local window.
              */
-            if (space_model->kind == SN0_MODEL_SPACE_XTALK) {
-                const SN0ModelRegion *hub_region = sn0_region(
-                    node->model, SN0_MODEL_REGION_HUB_REGISTERS_LOCAL);
+            if (space_model == &map->xtalk) {
+                const SN0ModelRegion *hub_region =
+                    &map->hub_registers_local;
 
                 local_offset = hub_region->offset;
                 local_size = hub_region->size;
-            } else if (space_model->kind == SN0_MODEL_SPACE_MEMORY) {
+            } else if (space_model == &map->memory) {
                 local_size = SGI_HUB_CALIAS_MAX_SIZE;
             }
 
@@ -864,6 +837,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
          */
         if (node->promdata_filter) {
             node->promdata[slice].cpu = node->cpu[slice];
+            node->promdata[slice].map = map;
             node->promdata[slice].node_base = node_base;
             node->promdata[slice].present = true;
             memory_region_init_ram(&node->promdata[slice].data, OBJECT(node),
@@ -882,7 +856,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             /* Intercept the PROM's cached carrier window before node RAM. */
             memory_region_add_subregion_overlap(
                 &node->cpu_sysmem[slice],
-                sn0_space(node->model, SN0_MODEL_SPACE_MEMORY)->carrier_base +
+                map->memory.carrier_base +
                 SN0_PROMDATA_PADDR,
                 &node->promdata[slice].filter, 2);
         }
@@ -904,15 +878,14 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
+    const SN0ModelAddressMap *map = &node->topology->map;
     const SN0ModelMemory *geometry = &node->model->memory;
-    const SN0ModelRegion *local_memory =
-        sn0_region(node->model, SN0_MODEL_REGION_HUB_LOCAL_MEMORY);
-    const SN0ModelRegion *remote_memory =
-        sn0_region(node->model, SN0_MODEL_REGION_HUB_REMOTE_MEMORY);
-    hwaddr node_base = sn0_space_node_base(
-        node->model, SN0_MODEL_SPACE_MEMORY, node->nasid);
-    hwaddr hub_base = sn0_space_node_base(
-        node->model, SN0_MODEL_SPACE_HUB_SPECIAL, node->nasid);
+    const SN0ModelRegion *local_memory = &map->hub_local_memory;
+    const SN0ModelRegion *remote_memory = &map->hub_remote_memory;
+    hwaddr node_base = sn0_model_node_address(
+        map, &map->memory, node->nasid, 0);
+    hwaddr hub_base = sn0_model_node_address(
+        map, &map->hub_special, node->nasid, 0);
     uint64_t ram_offset = node->ram_start;
     unsigned int node_index = node->nasid;
     unsigned int bank, segment;
@@ -992,26 +965,19 @@ static void sn0_node_map_memory(SN0NodeState *node)
 
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
-    const SN0ModelFlash *flash = &node->topology->flash;
+    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelRegion *lboot = map->lboot;
     const SN0FlashImplementation *implementation =
-        sn0_model_flash_implementation(flash->kind);
+        sn0_model_flash_implementation();
     MemoryRegion *system = get_system_memory();
-    const SN0ModelRegion *flash_hub =
-        sn0_region(node->model, SN0_MODEL_REGION_PFLASH_LBOOT);
-    const SN0ModelRegion *flash_reset =
-        sn0_model_region_alias(node->model, flash_hub);
-    const SN0ModelRegion *flash_rboot =
-        sn0_region(node->model, SN0_MODEL_REGION_PFLASH_RBOOT);
-    const SN0ModelRegion *rboot_storage =
-        sn0_model_region_alias(node->model, flash_rboot);
-    const SN0ModelRegion *ecc =
-        sn0_region(node->model, SN0_MODEL_REGION_BACKDOOR_ECC);
-    const SN0ModelRegion *directory =
-        sn0_region(node->model, SN0_MODEL_REGION_BACKDOOR_DIRECTORY);
-    hwaddr node_base = sn0_space_node_base(
-        node->model, SN0_MODEL_SPACE_MEMORY, node->nasid);
-    hwaddr hub_base = sn0_space_node_base(
-        node->model, SN0_MODEL_SPACE_HUB_SPECIAL, node->nasid);
+    const SN0ModelRegion *flash_reset = &map->flash_reset;
+    const SN0ModelRegion *flash_rboot = &map->rboot;
+    const SN0ModelRegion *ecc = &map->backdoor_ecc;
+    const SN0ModelRegion *directory = &map->backdoor_directory;
+    hwaddr node_base = sn0_model_node_address(
+        map, &map->memory, node->nasid, 0);
+    hwaddr hub_base = sn0_model_node_address(
+        map, &map->hub_special, node->nasid, 0);
     unsigned int node_index = node->nasid;
     g_autofree char *flash_name =
         g_strdup_printf("sn0.node%u.flash", node_index);
@@ -1031,17 +997,6 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.backdoor.dir.absent", node_index);
     g_autofree char *dir_name =
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
-
-    g_assert(implementation);
-    g_assert(flash_reset &&
-             flash_reset->space == SN0_MODEL_SPACE_MEMORY);
-    g_assert(rboot_storage == flash_reset);
-    g_assert(flash_reset->size > 0 &&
-             flash_reset->size % implementation->sector_size == 0);
-    g_assert(flash_reset->size / implementation->sector_size <= UINT32_MAX);
-    g_assert(node->model->memory.architectural_banks > 0);
-    g_assert(ecc->size % node->model->memory.architectural_banks == 0);
-    g_assert(directory->size % node->model->memory.architectural_banks == 0);
 
     /*
      * An Am29F080, byte-wide, with no backing drive -- the firmware builder
@@ -1071,32 +1026,30 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     MemoryRegion *chip =
         sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_dev), 0);
 
-    /*
-     * The LBOOT window: the controller decode, with a romd alias of the
-     * chip overlaid where the PROM fetches its relocated code.
-     */
-    memory_region_init_io(&node->flash_hub_view, OBJECT(node),
-                          &sn0_boot_mirror_ops, node, hub_name,
-                          flash_hub->size);
-    memory_region_add_subregion(system, hub_base + flash_hub->offset,
-                                &node->flash_hub_view);
-    memory_region_init_alias(&node->flash_hub_fast, OBJECT(node),
-                             hub_fast_name, chip, 0, flash_reset->size);
-    memory_region_add_subregion_overlap(
-        system, hub_base + flash_reset->offset,
-        &node->flash_hub_fast, 1);
+    if (lboot) {
+        /*
+         * The LBOOT window: the controller decode, with a romd alias of the
+         * chip overlaid where the PROM fetches its relocated code.
+         */
+        memory_region_init_io(&node->flash_hub_view, OBJECT(node),
+                              &sn0_boot_mirror_ops, node, hub_name,
+                              lboot->size);
+        memory_region_add_subregion(system, hub_base + lboot->offset,
+                                    &node->flash_hub_view);
+        memory_region_init_alias(&node->flash_hub_fast, OBJECT(node),
+                                 hub_fast_name, chip, 0, flash_reset->size);
+        memory_region_add_subregion_overlap(
+            system, hub_base + flash_reset->offset,
+            &node->flash_hub_fast, 1);
+    }
 
     /*
-     * The reset-vector view aliases the megabyte of Hub space at the
-     * flash base. Writes through it land on the chip's byte decode, not
-     * the controller's strided command port -- an alias cannot route the
-     * two differently, and no source establishes the reset view's write
-     * decode. It overlaps RAM and wins.
+     * The reset-vector view aliases the flash chip directly. Writes through
+     * it land on the chip's byte decode, not the controller's strided command
+     * port. It overlaps RAM and wins.
      */
     memory_region_init_alias(&node->flash_reset_view, OBJECT(node),
-                             reset_name, system,
-                             hub_base + flash_reset->offset,
-                             flash_reset->size);
+                             reset_name, chip, 0, flash_reset->size);
     memory_region_add_subregion_overlap(system,
                                         node_base + flash_reset->offset,
                                         &node->flash_reset_view, 1);
@@ -1154,11 +1107,9 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
-    const SN0ModelHub *hub = &node->topology->hub;
-    const SN0ModelHubPopulation *population =
-        &node->topology->hub_population;
-    const SN0ModelRegion *memory_region =
-        sn0_region(node->model, SN0_MODEL_REGION_NODE_MEMORY);
+    const SN0ModelComponent *hub = node->topology->hub;
+    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelRegion *memory_region = &map->node_memory;
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
@@ -1193,7 +1144,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
                              memory_region->size);
     memory_region_add_subregion_overlap(
         &node->hub_memory,
-        sn0_space(node->model, SN0_MODEL_SPACE_MEMORY)->carrier_base,
+        map->memory.carrier_base,
                                         &node->hub_memory_local, 0);
     object_property_set_link(OBJECT(&node->hub), "memory",
                              OBJECT(&node->hub_memory), &error_fatal);
@@ -1201,42 +1152,32 @@ static void sn0_node_create_hub(SN0NodeState *node)
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
     switch (node->topology->module_role) {
-    case SN0_MODEL_MODULE_MASTER:
+    case SN0_MODULE_MASTER:
         qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", false);
         break;
-    case SN0_MODEL_MODULE_SLAVE:
+    case SN0_MODULE_SLAVE:
         qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", true);
         break;
     default:
         g_assert_not_reached();
     }
     qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
-                        hub->ni_revision);
+                        hub->revision);
     /*
      * Each PIMM record part gets its own synthetic serial: per-unit as the
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         hub->serial_base + hub->serial_stride * node->nasid);
+                         hub->serial);
     qdev_prop_set_uint32(
         DEVICE(&node->hub), "population",
-        (population->i2c_controller ?
+        (hub->i2c_controller ?
          SGI_HUB_POPULATION_I2C_CONTROLLER : 0) |
-        (population->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
+        (hub->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
-                         population->i2c_nvram_pages);
-    switch (population->onewire_identity) {
-    case SN0_MODEL_ONEWIRE_NONE:
-        qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
-                            SGI_HUB_ONEWIRE_NONE);
-        break;
-    case SN0_MODEL_ONEWIRE_BLANK_DS2505:
-        qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
-                            SGI_HUB_ONEWIRE_BLANK_DS2505);
-        break;
-    default:
-        g_assert_not_reached();
-    }
+                         hub->i2c_nvram_pages);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
+                        SGI_HUB_ONEWIRE_BLANK_DS2505);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",
@@ -1249,8 +1190,6 @@ static void sn0_node_create_hub(SN0NodeState *node)
      */
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *view_prop = g_strdup_printf("claim-view%u", slice);
-        unsigned int space_index;
-
         object_property_set_link(OBJECT(&node->hub), view_prop,
                                  OBJECT(&node->claim_view[slice]),
                                  &error_fatal);
@@ -1260,25 +1199,17 @@ static void sn0_node_create_hub(SN0NodeState *node)
          * memory space's, per view. The other spaces' windows are
          * position-independent aliases the register never moves.
          */
-        for (space_index = 0;
-             space_index < node->model->address_space_count; space_index++) {
-            g_autofree char *window_prop = NULL;
+        g_autofree char *window_prop =
+            g_strdup_printf("calias-window%u", slice);
 
-            if (node->model->address_spaces[space_index].kind !=
-                SN0_MODEL_SPACE_MEMORY) {
-                continue;
-            }
-            window_prop = g_strdup_printf("calias-window%u", slice);
-            object_property_set_link(
-                OBJECT(&node->hub), window_prop,
-                OBJECT(&node->local_space[slice][space_index]),
-                &error_fatal);
-        }
+        object_property_set_link(
+            OBJECT(&node->hub), window_prop,
+            OBJECT(&node->local_space[slice][0]), &error_fatal);
     }
     object_property_set_link(OBJECT(&node->hub), "claim-target",
                              OBJECT(system), &error_fatal);
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-node-shift",
-                         ctz64(node->model->node_stride));
+                         ctz64(map->node_stride));
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-space-shift",
                          MIPS_UNCACHED_WINDOW_SHIFT);
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-own-node", node->nasid);
@@ -1288,15 +1219,15 @@ static void sn0_node_create_hub(SN0NodeState *node)
         cpu = node->cpu[slice];
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank0", slice,
-            cpu->env.irq[hub->cpu_irq_lines.bank0 +
+            cpu->env.irq[hub->cpu_irq_bank0 +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank1", slice,
-            cpu->env.irq[hub->cpu_irq_lines.bank1 +
+            cpu->env.irq[hub->cpu_irq_bank1 +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "rt", slice,
-            cpu->env.irq[hub->cpu_irq_lines.rt +
+            cpu->env.irq[hub->cpu_irq_rt +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
     }
 }
@@ -1304,17 +1235,13 @@ static void sn0_node_create_hub(SN0NodeState *node)
 static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressSpace *xtalk =
-        sn0_space(node->model, SN0_MODEL_SPACE_XTALK);
-    const SN0ModelRegion *hub_explicit =
-        sn0_region(node->model, SN0_MODEL_REGION_HUB_REGISTERS_NODE);
-    const SN0ModelRegion *hub_local =
-        sn0_model_region_alias(node->model, hub_explicit);
+    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelAddressSpace *xtalk = &map->xtalk;
+    const SN0ModelRegion *hub_explicit = &map->hub_registers_node;
+    const SN0ModelRegion *hub_local = &map->hub_registers_local;
     unsigned int node_index = node->nasid;
     unsigned int widget;
 
-    g_assert(hub_local && hub_local->space == SN0_MODEL_SPACE_XTALK);
-    g_assert(hub_local->size == hub_explicit->size);
     g_assert(memory_region_size(&node->hub.regs) == hub_local->size);
 
     for (widget = 0; widget <= SN0_XTALK_PORT_LAST; widget++) {
@@ -1327,17 +1254,17 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
                                  SN0_XTALK_BASE(widget),
                                  SN0_SMALL_WINDOW_SIZE);
         memory_region_add_subregion(
-            system, sn0_model_node_address(node->model, xtalk, node->nasid,
+            system, sn0_model_node_address(map, xtalk, node->nasid,
                                            SN0_SMALL_WINDOW(widget)),
             &node->small_window[widget]);
     }
 
     memory_region_add_subregion(
-        system, sn0_model_node_address(node->model, xtalk, node->nasid,
+        system, sn0_model_node_address(map, xtalk, node->nasid,
                                        SN0_BIG_WINDOW_BASE),
         &node->hub.bwin);
     memory_region_add_subregion(
-        system, sn0_model_region_address(node->model, xtalk, node->nasid,
+        system, sn0_model_region_address(map, xtalk, node->nasid,
                                          hub_local, 0),
         &node->hub.regs);
 
@@ -1350,7 +1277,7 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
                                  hub_explicit->size);
     }
     memory_region_add_subregion(
-        system, sn0_model_region_address(node->model, xtalk, node->nasid,
+        system, sn0_model_region_address(map, xtalk, node->nasid,
                                          hub_explicit, 0),
         &node->hub_regs_node_view);
 }
@@ -1373,7 +1300,6 @@ static void sn0_init(MachineState *machine)
     g_assert(model);
     g_assert(max_nodes > 0);
     g_assert(model->cpu_slots_per_node <= SN0_MAX_CPUS_PER_NODE);
-    g_assert(model->address_space_count <= SN0_MAX_ADDRESS_SPACES);
     g_assert(model->memory.architectural_banks <= SN0_MAX_MEMORY_BANKS);
     profile_cpus = g_new0(unsigned int, max_nodes);
 
@@ -1425,8 +1351,6 @@ static void sn0_init(MachineState *machine)
                      "described by the machine model", mc->name);
         exit(EXIT_FAILURE);
     }
-    g_assert(model->junk_uart.node < profile->node_count);
-
     /* Whole mebibytes per chassis: the bank fit is counted in them. */
     if (node_count > 1 && !numa_nodes &&
         machine->ram_size % ((uint64_t)node_count * MiB)) {
@@ -1508,7 +1432,7 @@ static void sn0_init(MachineState *machine)
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_model->nasid);
         node->model = model;
-        node->topology = sn0_model_node_topology(model, node_model);
+        node->topology = node_model->topology;
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
         qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
@@ -1516,8 +1440,7 @@ static void sn0_init(MachineState *machine)
                                  &error_abort);
         qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
         qdev_prop_set_uint64(DEVICE(node), "local-memory-base",
-                             sn0_node_local_memory_base(machine,
-                                                        node_model->nasid));
+                             sn0_node_local_memory_base(machine, node_model));
         qdev_prop_set_bit(DEVICE(node), "promdata-filter",
                           !(s->synthesized_firmware &&
                             machine->kernel_filename));
@@ -1647,55 +1570,12 @@ static void sn0_set_elsc_dip_switches(Object *obj, Visitor *v,
     }
 }
 
-static bool sn0_node_validate_topology(SN0NodeState *node, Error **errp)
-{
-    const SN0ModelFlash *flash;
-    const SN0ModelCpuIrqLines *irq;
-
-    if (!node->topology) {
-        error_setg(errp, "the machine must bind the node's topology");
-        return false;
-    }
-    flash = &node->topology->flash;
-    irq = &node->topology->hub.cpu_irq_lines;
-
-    if (!sn0_model_flash_implementation(flash->kind)) {
-        error_setg(errp, "unsupported flash kind %u",
-                   (unsigned int)flash->kind);
-        return false;
-    }
-    if (node->topology->base_io.prom_pi_probe.device_window >=
-        SGI_BRIDGE_DEVICES) {
-        error_setg(errp, "PROM PI probe Bridge device window is outside 0-%u",
-                   SGI_BRIDGE_DEVICES - 1);
-        return false;
-    }
-    if (irq->bank0 > 5 || irq->bank1 > 5 || irq->rt > 5) {
-        error_setg(errp, "Hub hardware IRQ lines must be in the range 0-5");
-        return false;
-    }
-    switch (node->topology->module_role) {
-    case SN0_MODEL_MODULE_MASTER:
-    case SN0_MODEL_MODULE_SLAVE:
-        break;
-    default:
-        error_setg(errp, "unsupported module role %u",
-                   (unsigned int)node->topology->module_role);
-        return false;
-    }
-
-    return true;
-}
-
 static void sn0_node_realize(DeviceState *dev, Error **errp)
 {
     SN0NodeState *node = SN0_NODE(dev);
     unsigned int bank;
 
     g_assert(node->model);
-    if (!sn0_node_validate_topology(node, errp)) {
-        return;
-    }
     if (node->nr_cpus < 1 ||
         node->nr_cpus > node->model->cpu_slots_per_node) {
         error_setg(errp, "a node carries one to %u processors, not %u",
@@ -1773,7 +1653,8 @@ static void sn0_instance_init(Object *obj)
     s->synthesized_firmware = true;
     s->debug_leds = true;
     s->junk_uart_present =
-        SN0_MACHINE_GET_CLASS(obj)->model->junk_uart.default_enabled;
+        SN0_MACHINE_GET_CLASS(obj)->model->
+            optional_components[0].default_enabled;
 }
 
 static void sn0_instance_finalize(Object *obj)

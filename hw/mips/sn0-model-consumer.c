@@ -16,14 +16,14 @@
 
 /* Preserve the CPU's byte order across the nested Bridge dispatch. */
 #define SN0_PROM_PI_PROBE_MEMOP(size) (size_memop(size) | MO_BE)
+#define SN0_PROM_PI_PROBE_DEVICE_WINDOW 1
 
 static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
                                           uint64_t *data, unsigned int size,
                                           MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
-    const SN0ModelPromPiProbe *probe =
-        &node->topology->base_io.prom_pi_probe;
+    const SN0ModelComponent *base_io = node->topology->base_io;
 
     if (addr == 0 && size == 8) {
         *data = 0;
@@ -31,8 +31,9 @@ static MemTxResult sn0_prom_pi_probe_read(void *opaque, hwaddr addr,
         return MEMTX_ERROR;
     }
     return memory_region_dispatch_read(
-        &node->prom_pi_probe_bridge->device_window_mem[probe->device_window],
-        probe->window_offset + addr, data,
+        &node->prom_pi_probe_bridge->
+            device_window_mem[SN0_PROM_PI_PROBE_DEVICE_WINDOW],
+        base_io->prom_pi_probe_window_offset + addr, data,
         SN0_PROM_PI_PROBE_MEMOP(size), attrs);
 }
 
@@ -41,12 +42,12 @@ static MemTxResult sn0_prom_pi_probe_write(void *opaque, hwaddr addr,
                                            MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
-    const SN0ModelPromPiProbe *probe =
-        &node->topology->base_io.prom_pi_probe;
+    const SN0ModelComponent *base_io = node->topology->base_io;
 
     return memory_region_dispatch_write(
-        &node->prom_pi_probe_bridge->device_window_mem[probe->device_window],
-        probe->window_offset + addr, data,
+        &node->prom_pi_probe_bridge->
+            device_window_mem[SN0_PROM_PI_PROBE_DEVICE_WINDOW],
+        base_io->prom_pi_probe_window_offset + addr, data,
         SN0_PROM_PI_PROBE_MEMOP(size), attrs);
 }
 
@@ -60,20 +61,19 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
     .impl.max_access_size = 8,
 };
 
-static const char *sn0_model_pci_qom_type(SN0ModelPciKind kind)
+static const char *sn0_model_pci_qom_type(SN0ModelComponentKind kind)
 {
     switch (kind) {
-    case SN0_MODEL_PCI_IOC3:
+    case SN0_COMPONENT_IOC3:
         return TYPE_SGI_IOC3;
-    case SN0_MODEL_PCI_ISP1040:
+    case SN0_COMPONENT_ISP1040:
         return "qlogic-isp1040";
     default:
         g_assert_not_reached();
     }
 }
 
-const SN0FlashImplementation *sn0_model_flash_implementation(
-    SN0ModelFlashKind kind)
+const SN0FlashImplementation *sn0_model_flash_implementation(void)
 {
     static const SN0FlashImplementation am29f080 = {
         .sector_size = 0x10000,
@@ -85,38 +85,27 @@ const SN0FlashImplementation *sn0_model_flash_implementation(
         .unlock_address = { 0x5555, 0x2aaa },
     };
 
-    switch (kind) {
-    case SN0_MODEL_FLASH_AM29F080:
-        return &am29f080;
-    default:
-        return NULL;
-    }
+    return &am29f080;
 }
 
 void sn0_model_configure_diagnostic(SN0MachineState *s,
                                     unsigned int node_index)
 {
-    const SN0ModelDiagnostic *diagnostic =
-        &SN0_MACHINE_GET_CLASS(s)->model->junk_uart;
+    const SN0ModelOptionalComponent *diagnostic =
+        &SN0_MACHINE_GET_CLASS(s)->model->optional_components[0];
     SN0NodeState *node = s->nodes[node_index];
 
-    switch (diagnostic->kind) {
-    case SN0_MODEL_DIAGNOSTIC_HUB_UART:
-        qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
-                          node_index == diagnostic->node &&
-                          s->junk_uart_present);
-        if (node_index == diagnostic->node && s->junk_uart_present &&
-            serial_hd(SN0_NODE_SERIAL(diagnostic->node,
-                                      SN0_JUNK_UART_CHARDEV))) {
-            object_property_set_link(
-                OBJECT(&node->hub), "junk-uart-chardev",
-                OBJECT(serial_hd(SN0_NODE_SERIAL(diagnostic->node,
-                                                 SN0_JUNK_UART_CHARDEV))),
-                &error_fatal);
-        }
-        return;
-    default:
-        g_assert_not_reached();
+    qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
+                      node_index == diagnostic->node &&
+                      s->junk_uart_present);
+    if (node_index == diagnostic->node && s->junk_uart_present &&
+        serial_hd(SN0_NODE_SERIAL(diagnostic->node,
+                                  SN0_JUNK_UART_CHARDEV))) {
+        object_property_set_link(
+            OBJECT(&node->hub), "junk-uart-chardev",
+            OBJECT(serial_hd(SN0_NODE_SERIAL(diagnostic->node,
+                                             SN0_JUNK_UART_CHARDEV))),
+            &error_fatal);
     }
 }
 
@@ -136,21 +125,15 @@ static uint32_t sn0_model_ioc3_population(
     return mask;
 }
 
-static uint8_t sn0_model_ioc3_timekeeper(SN0ModelTimekeeperKind kind)
+static uint8_t sn0_model_ioc3_timekeeper(bool present)
 {
-    switch (kind) {
-    case SN0_MODEL_TIMEKEEPER_NONE:
-        return SGI_IOC3_TIMEKEEPER_NONE;
-    case SN0_MODEL_TIMEKEEPER_M48T35:
-        return SGI_IOC3_TIMEKEEPER_M48T35;
-    default:
-        g_assert_not_reached();
-    }
+    return present ? SGI_IOC3_TIMEKEEPER_M48T35 :
+        SGI_IOC3_TIMEKEEPER_NONE;
 }
 
 static void sn0_model_create_ioc3(SN0MachineState *s,
                                   unsigned int node_index,
-                                  const SN0ModelPciFunction *function)
+                                  const SN0ModelComponent *function)
 {
     const SN0ModelIoc3Population *population =
         &s->nodes[node_index]->topology->ioc3_population;
@@ -186,8 +169,7 @@ static void sn0_model_create_ioc3(SN0MachineState *s,
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         sn0_model_ioc3_timekeeper(population->timekeeper));
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
-                         function->serial_base +
-                         function->serial_stride * node_index);
+                         function->serial);
 
     {
         g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", node_index);
@@ -203,7 +185,7 @@ static void sn0_model_create_ioc3(SN0MachineState *s,
     pci_realize_and_unref(ioc3,
                           PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
-    pci_set_byte(ioc3->config + PCI_REVISION_ID, function->pci_revision);
+    pci_set_byte(ioc3->config + PCI_REVISION_ID, function->revision);
     s->pci_ioc3[node_index] = ioc3;
 
     /* Board wiring, not PCI INTx. */
@@ -214,7 +196,7 @@ static void sn0_model_create_ioc3(SN0MachineState *s,
 
 static void sn0_model_create_isp(SN0MachineState *s,
                                  unsigned int node_index,
-                                 const SN0ModelPciFunction *function,
+                                 const SN0ModelComponent *function,
                                  unsigned int instance)
 {
     g_autofree char *name = g_strdup_printf("isp%u", instance);
@@ -228,7 +210,7 @@ static void sn0_model_create_isp(SN0MachineState *s,
     pci_realize_and_unref(isp,
                           PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
-    pci_set_byte(isp->config + PCI_REVISION_ID, function->pci_revision);
+    pci_set_byte(isp->config + PCI_REVISION_ID, function->revision);
     s->pci_scsi[node_index][instance] = isp;
     qlogic_isp_handle_legacy_cmdline(DEVICE(isp));
 }
@@ -237,12 +219,10 @@ static void sn0_model_create_bridge(SN0MachineState *s,
                                     unsigned int node_index)
 {
     SN0NodeState *node = s->nodes[node_index];
-    const SN0MachineModel *model = node->model;
-    const SN0ModelBaseIO *base_io = &node->topology->base_io;
-    const SN0ModelAddressSpace *xtalk = sn0_model_find_space(
-        model, SN0_MODEL_SPACE_XTALK);
-    const SN0ModelRegion *bridge_region = sn0_model_find_region(
-        model, SN0_MODEL_REGION_BRIDGE_REGISTERS);
+    const SN0ModelComponent *base_io = node->topology->base_io;
+    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelAddressSpace *xtalk = &map->xtalk;
+    const SN0ModelRegion *bridge_region = &map->bridge_registers;
     MemoryRegion *bridge_face;
     SGIBridgeState *bridge;
     g_autofree char *bridge_name = node_index == 0 ?
@@ -253,19 +233,16 @@ static void sn0_model_create_bridge(SN0MachineState *s,
         g_strdup("sn0.xtalk.widget0") :
         g_strdup_printf("sn0.node%u.xtalk.widget0", node_index);
 
-    g_assert(xtalk && bridge_region);
-    g_assert(is_power_of_2(model->node_stride));
     bridge = SGI_BRIDGE(object_new(TYPE_SGI_BRIDGE));
     object_property_add_child(OBJECT(s), bridge_name, OBJECT(bridge));
     object_unref(OBJECT(bridge));
     s->io_bridge[node_index] = bridge;
     qdev_prop_set_uint32(DEVICE(bridge), "revision",
-                         base_io->default_revision);
+                         base_io->revision);
     qdev_prop_set_uint64(DEVICE(bridge), "onewire-serial",
-                         base_io->serial_base +
-                         base_io->serial_stride * node_index);
+                         base_io->serial);
     qdev_prop_set_string(DEVICE(bridge), "board-part",
-                         node->topology->bridge_part);
+                         base_io->part);
     qdev_prop_set_string(DEVICE(bridge), "pci-bus-name", bus_name);
     /*
      * Interrupt packets are real transfers, not calls into the Hub, so they
@@ -285,7 +262,7 @@ static void sn0_model_create_bridge(SN0MachineState *s,
                              OBJECT(&node->claim_view[0]), &error_fatal);
     qdev_prop_set_uint64(DEVICE(bridge), "fabric-base", xtalk->carrier_base);
     qdev_prop_set_uint32(DEVICE(bridge), "fabric-node-shift",
-                         ctz64(model->node_stride));
+                         ctz64(map->node_stride));
 
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
     bridge_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
@@ -301,29 +278,27 @@ static void sn0_model_create_bridge(SN0MachineState *s,
 void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
 {
     SN0NodeState *node = s->nodes[node_index];
-    const SN0ModelBaseIO *base_io = &node->topology->base_io;
-    const SN0ModelRegion *bridge = sn0_model_find_region(
-        node->model, SN0_MODEL_REGION_BRIDGE_REGISTERS);
+    const SN0ModelComponent *base_io = node->topology->base_io;
+    const SN0ModelRegion *bridge = &node->topology->map.bridge_registers;
     MemoryRegion *bridge_face;
     unsigned int scsi_index = 0;
     unsigned int widget;
-    size_t function_index;
+    size_t component_index;
 
     sn0_model_create_bridge(s, node_index);
 
-    g_assert(base_io->functions || base_io->function_count == 0);
-    for (function_index = 0; function_index < base_io->function_count;
-         function_index++) {
-        const SN0ModelPciFunction *function =
-            &base_io->functions[function_index];
+    for (component_index = 0;
+         component_index < node->topology->pci_count; component_index++) {
+        const SN0ModelComponent *component =
+            &node->topology->pci[component_index];
 
-        switch (function->kind) {
-        case SN0_MODEL_PCI_ISP1040:
-            sn0_model_create_isp(s, node_index, function, scsi_index++);
+        switch (component->kind) {
+        case SN0_COMPONENT_ISP1040:
+            sn0_model_create_isp(s, node_index, component, scsi_index++);
             break;
-        case SN0_MODEL_PCI_IOC3:
+        case SN0_COMPONENT_IOC3:
             g_assert(!s->pci_ioc3[node_index]);
-            sn0_model_create_ioc3(s, node_index, function);
+            sn0_model_create_ioc3(s, node_index, component);
             break;
         default:
             g_assert_not_reached();
@@ -362,7 +337,7 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
     node->prom_pi_probe_bridge = s->io_bridge[node_index];
     memory_region_add_subregion_overlap(
         &node->xtalk,
-        SN0_XTALK_BASE(base_io->prom_pi_probe.widget) +
-        base_io->prom_pi_probe.offset,
+        SN0_XTALK_BASE(base_io->prom_pi_probe_widget) +
+        base_io->prom_pi_probe_offset,
         &node->prom_pi_probe, 1);
 }

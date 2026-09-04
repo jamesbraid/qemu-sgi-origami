@@ -16,7 +16,7 @@ static const char * const origin200_r10000_cpu_types[] = {
 static const char * const *origin200_valid_cpu_types(SN0ModelCpuKind kind)
 {
     switch (kind) {
-    case SN0_MODEL_CPU_R10000:
+    case SN0_CPU_R10000:
         return origin200_r10000_cpu_types;
     default:
         g_assert_not_reached();
@@ -32,19 +32,16 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     size_t node_index;
 
     smc->model = &sn0_origin200_model;
-    g_assert(smc->model->profile_count > 0);
-    default_profile = &smc->model->profiles[0];
+    default_profile = sn0_model_default_profile(smc->model);
     for (node_index = 0; node_index < default_profile->node_count;
          node_index++) {
         const SN0ModelNodeInstance *node =
             sn0_model_profile_node(default_profile, node_index);
 
-        g_assert(default_cpus <= UINT_MAX - node->cpu_count);
         default_cpus += node->cpu_count;
     }
     mc->desc = smc->model->description;
     mc->valid_cpu_types = origin200_valid_cpu_types(smc->model->cpu_kind);
-    g_assert(smc->model->default_ram_mib <= UINT64_MAX / MiB);
     mc->default_ram_size = smc->model->default_ram_mib * MiB;
     mc->default_cpus = default_cpus;
     mc->default_ram_id = "sn0.node0.ram";
