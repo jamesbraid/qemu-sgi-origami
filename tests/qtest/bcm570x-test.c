@@ -462,6 +462,24 @@ static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
     g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
 }
 
+static void wait_for_log_marker(QTestState *qts, const char *logfile,
+                                const char *marker)
+{
+    unsigned int i;
+
+    for (i = 0; i < 100; i++) {
+        g_autofree char *log = NULL;
+
+        qtest_clock_step(qts, 1000 * 1000);
+        g_usleep(2000);
+        if (g_file_get_contents(logfile, &log, NULL, NULL) &&
+            strstr(log, marker)) {
+            return;
+        }
+    }
+    g_error("timed out waiting for QEMU log marker: %s", marker);
+}
+
 /*
  * A socket backend delivers a received frame on a later pass of the main loop,
  * so the status block's receive producer is polled rather than read once.
@@ -1178,6 +1196,91 @@ static void test_transmit_descriptor_dma_error(const void *data)
 
     bcm_close(&b);
     close(sv[0]);
+}
+
+/* A later fragment's failed payload read rolls the whole frame back. */
+static void test_transmit_payload_dma_error(const void *data)
+{
+    g_autofree char *logfile = NULL;
+    uint8_t frame[60], got[sizeof(frame)];
+    uint8_t ring[2 * BCM_TXBD_SIZE] = { 0 };
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+    uint8_t byte;
+    Bcm b;
+    unsigned int i;
+    uint32_t tag;
+    size_t len;
+    int logfd;
+    int sv[2];
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    logfd = g_file_open_tmp("bcm570x-tx-payload-error-XXXXXX", &logfile,
+                            NULL);
+    g_assert_cmpint(logfd, >=, 0);
+    close(logfd);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0"
+                             " -d guest_errors -D %s",
+                             sv[1], BCM_SLOT, logfile));
+
+    put32le(ring, TX_BUF_PHYS >> 32);
+    put32le(ring + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(ring + 10, 28);
+    put32le(ring + BCM_TXBD_SIZE, UNMAPPED_PHYS >> 32);
+    put32le(ring + BCM_TXBD_SIZE + 4, UNMAPPED_PHYS & 0xffffffff);
+    put16le(ring + BCM_TXBD_SIZE + 8, BCM_TXBDFLAG_END);
+    put16le(ring + BCM_TXBD_SIZE + 10, 32);
+    qtest_memwrite(b.qts, TX_RING_PHYS, ring, sizeof(ring));
+    qtest_memwrite(b.qts, TX_BUF_PHYS, frame, 28);
+    qtest_memset(b.qts, STATUS_PHYS, 0, sizeof(status));
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    tag = read_status_tag(&b);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 2);
+    wait_for_log_marker(b.qts, logfile,
+                        "bcm570x: transmit payload read at 0x2000000 failed; "
+                        "frame left ready to retry");
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_cmphex(read_status_tag(&b), ==, tag);
+    g_assert_false(intr_line_up(b.dev));
+    g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+
+    /* Repair only fragment two; producer 2 must replay fragment one. */
+    put32le(ring + BCM_TXBD_SIZE, (TX_BUF_PHYS + 0x100) >> 32);
+    put32le(ring + BCM_TXBD_SIZE + 4,
+            (TX_BUF_PHYS + 0x100) & 0xffffffff);
+    qtest_memwrite(b.qts, TX_RING_PHYS + BCM_TXBD_SIZE,
+                   ring + BCM_TXBD_SIZE, BCM_TXBD_SIZE);
+    qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100, frame + 28, 32);
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 2);
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
+    unlink(logfile);
 }
 
 /*
@@ -3012,6 +3115,85 @@ static void test_receive_completion_dma_error(const void *data)
     close(sv[0]);
 }
 
+/* A refused payload write must not publish or consume the receive entry. */
+static void test_receive_payload_dma_error(const void *data)
+{
+    g_autofree char *logfile = NULL;
+    uint8_t frame[64], landed[sizeof(frame)];
+    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
+    uint8_t ret[BCM_RXBD_SIZE], zero[BCM_RXBD_SIZE] = { 0 };
+    Bcm b;
+    unsigned int i;
+    uint32_t tag;
+    int logfd;
+    int sv[2];
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    logfd = g_file_open_tmp("bcm570x-rx-payload-error-XXXXXX", &logfile,
+                            NULL);
+    g_assert_cmpint(logfd, >=, 0);
+    close(logfd);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0"
+                             " -d guest_errors -D %s",
+                             sv[1], BCM_SLOT, logfile));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    qtest_memset(b.qts, RET_RING_PHYS, 0, sizeof(ret));
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    put32le(bd, UNMAPPED_PHYS >> 32);
+    put32le(bd + 4, UNMAPPED_PHYS & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    tag = read_status_tag(&b);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_log_marker(b.qts, logfile,
+                        "bcm570x: receive payload write at 0x2000000 failed; "
+                        "frame dropped without consuming descriptor 0");
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmpmem(ret, sizeof(ret), zero, sizeof(zero));
+    g_assert_cmphex(read_status_tag(&b), ==, tag);
+    g_assert_false(intr_line_up(b.dev));
+
+    /* Repair only the buffer address; the same ring entry remains posted. */
+    put32le(bd, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(landed));
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 1);
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+    qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
+    unlink(logfile);
+}
+
 /*
  * Interrupt coalescing on receive. The host-coalescing block batches completed
  * receive descriptors into one status-block update and one interrupt instead of
@@ -4063,6 +4245,8 @@ int main(int argc, char **argv)
                         test_transmit_source_address);
     qtest_add_data_func("/bcm570x/transmit-descriptor-dma-error", NULL,
                         test_transmit_descriptor_dma_error);
+    qtest_add_data_func("/bcm570x/transmit-payload-dma-error", NULL,
+                        test_transmit_payload_dma_error);
     qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
                         test_transmit_throughput);
     qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
@@ -4089,6 +4273,8 @@ int main(int argc, char **argv)
                         test_receive_round_trip);
     qtest_add_data_func("/bcm570x/receive-completion-dma-error", NULL,
                         test_receive_completion_dma_error);
+    qtest_add_data_func("/bcm570x/receive-payload-dma-error", NULL,
+                        test_receive_payload_dma_error);
     qtest_add_data_func("/bcm570x/receive-ring-laps", NULL,
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,

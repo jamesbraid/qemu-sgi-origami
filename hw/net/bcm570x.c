@@ -623,7 +623,7 @@ static void bcm570x_swap_span(uint8_t *p, unsigned int span,
 }
 
 /*
- * One bulk DMA transfer, on whichever route the machine gives us: the
+ * One ordered nonframe DMA transfer, on whichever route the machine gives us:
  * Bridge's plain space when there is one, the slot's own (swap-corrected)
  * space otherwise. See plain_dma for the scalar and payload distinction.
  */
@@ -711,8 +711,9 @@ static bool bcm570x_frame_swap(Bcm570xState *s, bool *bswap, bool *wswap)
 
 /*
  * Read a frame fragment from host memory, applying the model's payload swap.
- * It reverses whole 32-bit words at their physical alignment, so read the
- * word-aligned span the fragment falls in, swap it, and take the fragment out.
+ * The ordered descriptor fetch immediately before this read establishes the
+ * guest's payload writes, so the packet copy itself needs no second barrier.
+ * Swapped payloads reverse whole 32-bit words at their physical alignment.
  */
 static MemTxResult bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
                                           uint64_t phys, uint8_t *dst,
@@ -725,15 +726,19 @@ static MemTxResult bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
     MemTxResult result;
 
     if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        return bcm570x_dma_read_buf(s, phys, dst, len);
+        return dma_memory_read_relaxed(s->plain_dma ? s->plain_dma :
+                                       pci_get_address_space(pci),
+                                       phys, dst, len);
     }
     astart = phys & ~(uint64_t)3;
     lead = (unsigned int)(phys - astart);
     span = (lead + len + 3) & ~3u;
     if (span > sizeof(tmp)) {
-        return pci_dma_read(pci, phys, dst, len);
+        return dma_memory_read_relaxed(pci_get_address_space(pci),
+                                       phys, dst, len);
     }
-    result = pci_dma_read(pci, astart, tmp, span);
+    result = dma_memory_read_relaxed(pci_get_address_space(pci),
+                                     astart, tmp, span);
     if (result != MEMTX_OK) {
         return result;
     }
@@ -743,10 +748,10 @@ static MemTxResult bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
 }
 
 /*
- * Write a frame to host memory in the swapped layout the driver expects, the
- * inverse of the read path. The word-aligned span is reversed whole, so the
- * padding around the fragment is written too; it lands outside the frame the
- * driver reads and is harmless.
+ * The ordered completed-descriptor write after this payload copy publishes it
+ * to the guest and supplies the required barrier on either DMA route. Swapped
+ * payloads reverse the word-aligned span whole, including harmless padding the
+ * driver does not read.
  */
 static MemTxResult bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
                                            uint64_t phys, const uint8_t *src,
@@ -758,18 +763,22 @@ static MemTxResult bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
     uint8_t tmp[BCM570X_MAX_FRAME + 8];
 
     if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        return bcm570x_dma_write_buf(s, phys, src, len);
+        return dma_memory_write_relaxed(s->plain_dma ? s->plain_dma :
+                                        pci_get_address_space(pci),
+                                        phys, src, len);
     }
     astart = phys & ~(uint64_t)3;
     lead = (unsigned int)(phys - astart);
     span = (lead + len + 3) & ~3u;
     if (span > sizeof(tmp)) {
-        return pci_dma_write(pci, phys, src, len);
+        return dma_memory_write_relaxed(pci_get_address_space(pci),
+                                        phys, src, len);
     }
     memset(tmp, 0, span);
     memcpy(tmp + lead, src, len);
     bcm570x_swap_span(tmp, span, bswap, wswap);
-    return pci_dma_write(pci, astart, tmp, span);
+    return dma_memory_write_relaxed(pci_get_address_space(pci),
+                                    astart, tmp, span);
 }
 
 /*
