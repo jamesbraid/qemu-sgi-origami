@@ -139,6 +139,7 @@
 #define BCM_MBX_TX_PROD_LO      0x0304u
 #define BCM_HCC_STATUSBLK_HI    0x3c38u
 #define BCM_HCC_STATUSBLK_LO    0x3c3cu
+#define BCM_HCC_STATS_TICKS     0x3c28u
 #define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* receive coalescing: microseconds */
 #define BCM_HCC_TX_COAL_TICKS   0x3c0cu
 #define BCM_HCC_TX_MAX_COAL_BDS 0x3c14u
@@ -1513,6 +1514,39 @@ static void test_transmit_coalescing_timer(const void *data)
 }
 
 /*
+ * A zero tick budget means no delay, so a short transmit group must be
+ * reported by the doorbell that completed it.
+ */
+static void test_transmit_coalescing_zero_ticks(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint32_t before;
+
+    memset(frame, 0x8d, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 8, 0);
+
+    before = read_status_tag(&b);
+    txc_post(&b, frame, sizeof(frame), 1);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+    g_assert_cmpuint(read_status_tag(&b) - before, ==, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
  * The MAC status word's change bits are latches, and the driver clears one by
  * writing it back. Storing what it wrote instead leaves every bit it tried to
  * clear reading as set, so the driver sees the condition it just acknowledged
@@ -2815,6 +2849,162 @@ static void test_receive_coalescing_timer(const void *data)
 }
 
 /*
+ * Receive and transmit use the same zero-tick contract: a partial group is
+ * posted immediately instead of waiting forever for a timer that was not
+ * armed.
+ */
+static void test_receive_coalescing_zero_ticks(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint32_t before;
+
+    memset(frame, 0x41, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 8);
+    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0);
+
+    before = read_status_tag(&b);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_ret_end(&b, 0);
+    g_assert_cmpuint(read_status_tag(&b) - before, ==, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * Rebuild only the status-DMA plumbing after a reset. The coalescing controls
+ * stay at their reset values, so any update before the default one-second
+ * periodic deadline came from work a reset failed to discard.
+ */
+static void bcm_rearm_status_after_reset(Bcm *b)
+{
+    qpci_device_enable(b->dev);
+    ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    ind_reg_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    ind_reg_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    ind_reg_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+}
+
+/*
+ * The guest-driven core reset must discard a partial receive group and its
+ * timer. Otherwise re-enabling HCC lets pre-reset work update the new status
+ * block after the old deadline.
+ */
+static void test_global_reset_cancels_receive_coalescing(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    const unsigned int ticks = 50;
+
+    memset(frame, 0x72, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 8);
+    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, ticks);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_ret_end(&b, 0);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    bcm_rearm_status_after_reset(&b);
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * A machine reset has the same boundary for transmit work. A pending
+ * completion from the old machine state must not be delivered after reset.
+ */
+static void test_system_reset_cancels_transmit_coalescing(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t got[128];
+    const unsigned int ticks = 50;
+
+    memset(frame, 0x93, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 8, ticks);
+    txc_post(&b, frame, sizeof(frame), 1);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
+    qtest_qmp_eventwait(b.qts, "RESET");
+    bcm_rearm_status_after_reset(&b);
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+static void periodic_status_reset(bool system_reset)
+{
+    Bcm b;
+    const unsigned int ticks = 50;
+
+    bcm_open(&b, bcm_init());
+    bcm_arm_status(&b);
+    bar_writel(&b, BCM_HCC_STATS_TICKS, ticks);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    if (system_reset) {
+        qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
+        qtest_qmp_eventwait(b.qts, "RESET");
+    } else {
+        bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    }
+    bcm_rearm_status_after_reset(&b);
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    bcm_close(&b);
+}
+
+static void test_global_reset_cancels_periodic_status(const void *data)
+{
+    periodic_status_reset(false);
+}
+
+static void test_system_reset_cancels_periodic_status(const void *data)
+{
+    periodic_status_reset(true);
+}
+
+/*
  * Frame payload byte order on receive, the inverse of the transmit swap. With
  * ENDIAN_WORDSWAP set the chip lays the received frame into the buffer reversed
  * per 32-bit word, the layout the big-endian driver reverses back when it reads
@@ -3014,6 +3204,152 @@ static void bcm570x_migrate(QTestState *from, const char *uri)
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
     }
+}
+
+/*
+ * A partial transmit group owns both a pending completion count and its
+ * deadline. Migration must carry both so the destination reports the tail at
+ * the same timer boundary instead of losing it.
+ */
+static void test_transmit_coalescing_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+    int sv[2];
+    uint8_t frame[64];
+    uint8_t got[128];
+    const unsigned int ticks = 50;
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    memset(frame, 0x56, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0",
+                           sv[1], BCM_SLOT);
+    bcm_open(&from, from_qts);
+    txc_setup(&from, 8, ticks);
+    txc_post(&from, frame, sizeof(frame), 1);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+    g_assert_cmpuint(read_status_tag(&from), ==, 0);
+
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0"
+                           " -incoming %s", BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from_qts, uri);
+
+    g_assert_cmpuint(read_status_tag(&to), ==, 0);
+    qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
+    g_assert_cmpuint(read_status_tag(&to), ==, 1);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    close(sv[0]);
+}
+
+/*
+ * The receive side uses the same migration contract. This pins the existing
+ * pending-count field to a real timer expiry on the destination.
+ */
+static void test_receive_coalescing_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+    int sv[2];
+    uint8_t frame[64];
+    const unsigned int ticks = 50;
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    memset(frame, 0x67, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0",
+                           sv[1], BCM_SLOT);
+    bcm_open(&from, from_qts);
+    rx_open_one(&from, sv[0]);
+    bar_writel(&from, BCM_HCC_RX_MAX_COAL_BDS, 8);
+    bar_writel(&from, BCM_HCC_RX_COAL_TICKS, ticks);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_ret_end(&from, 0);
+    g_assert_cmpuint(read_status_tag(&from), ==, 0);
+
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0"
+                           " -incoming %s", BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from_qts, uri);
+
+    qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
+    g_assert_cmpuint(read_status_tag(&to), ==, 1);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    close(sv[0]);
+}
+
+/*
+ * HCC periodic status is part of the live device state too. An idle guest must
+ * keep receiving watchdog updates after migration without rewriting HCC.
+ */
+static void test_periodic_status_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+    const unsigned int ticks = 50;
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from_qts = bcm_init();
+    bcm_open(&from, from_qts);
+    bcm_arm_status(&from);
+    bar_writel(&from, BCM_HCC_STATS_TICKS, ticks);
+    bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    qtest_memset(from.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0"
+                           " -incoming %s", BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from_qts, uri);
+
+    g_assert_cmpuint(read_status_tag(&to), ==, 0);
+    qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
+    g_assert_cmpuint(read_status_tag(&to), ==, 1);
+
+    bcm_close(&to);
+    bcm_close(&from);
 }
 
 /*
@@ -3288,6 +3624,8 @@ int main(int argc, char **argv)
                         test_transmit_coalescing);
     qtest_add_data_func("/bcm570x/transmit-coalescing-timer", NULL,
                         test_transmit_coalescing_timer);
+    qtest_add_data_func("/bcm570x/transmit-coalescing-zero-ticks", NULL,
+                        test_transmit_coalescing_zero_ticks);
     qtest_add_data_func("/bcm570x/receive-coalescing-cost", NULL,
                         test_receive_coalescing_cost);
     qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,
@@ -3326,6 +3664,16 @@ int main(int argc, char **argv)
                         test_receive_interrupt_coalescing);
     qtest_add_data_func("/bcm570x/receive-coalescing-timer", NULL,
                         test_receive_coalescing_timer);
+    qtest_add_data_func("/bcm570x/receive-coalescing-zero-ticks", NULL,
+                        test_receive_coalescing_zero_ticks);
+    qtest_add_data_func("/bcm570x/global-reset-cancels-rx-coalescing", NULL,
+                        test_global_reset_cancels_receive_coalescing);
+    qtest_add_data_func("/bcm570x/system-reset-cancels-tx-coalescing", NULL,
+                        test_system_reset_cancels_transmit_coalescing);
+    qtest_add_data_func("/bcm570x/global-reset-cancels-periodic-status", NULL,
+                        test_global_reset_cancels_periodic_status);
+    qtest_add_data_func("/bcm570x/system-reset-cancels-periodic-status", NULL,
+                        test_system_reset_cancels_periodic_status);
     qtest_add_data_func("/bcm570x/rx-producer-out-of-range", NULL,
                         test_rx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/interrupt-mailbox", NULL,
@@ -3334,6 +3682,12 @@ int main(int argc, char **argv)
                         test_status_block_gated_by_hcc);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
+    qtest_add_data_func("/bcm570x/transmit-coalescing-survives-migration", NULL,
+                        test_transmit_coalescing_survives_migration);
+    qtest_add_data_func("/bcm570x/receive-coalescing-survives-migration", NULL,
+                        test_receive_coalescing_survives_migration);
+    qtest_add_data_func("/bcm570x/periodic-status-survives-migration", NULL,
+                        test_periodic_status_survives_migration);
     qtest_add_data_func("/bcm570x/dual-port-present-and-independent", NULL,
                         test_dual_port_present_and_independent);
     qtest_add_data_func("/bcm570x/dual-port-survives-migration", NULL,
