@@ -27,6 +27,17 @@
 #define PI_MASK_0_B          0x0b8
 #define PI_MASK_1_B          0x0c0
 #define PI_REMAP             0x0f0
+#define PI_RT_COMPARE_A      0x108
+#define PI_RT_COMPARE_B      0x110
+#define PI_PROFILE_COMPARE   0x118
+#define PI_RT_PENDING_A      0x120
+#define PI_RT_PENDING_B      0x128
+#define PI_PROFILE_PENDING_A 0x130
+#define PI_PROFILE_PENDING_B 0x138
+#define PI_RT_ENABLE_A       0x140
+#define PI_RT_ENABLE_B       0x148
+#define PI_PROFILE_ENABLE_A  0x150
+#define PI_PROFILE_ENABLE_B  0x158
 #define PI_PENDING_ALIAS     0x180
 #define PI_ERROR_SET         0x3f8
 #define PI_ERROR_PENDING     0x400
@@ -35,12 +46,73 @@
 #define PI_ERROR_STACK_A     0x418
 #define PI_ERROR_STACK_B     0x420
 #define PI_ERROR_STACK_SIZE  0x428
+#define PI_RT_COUNTER        0x30100
 
 #define PI_PASSWORD 0x53474972756c6573ULL
 #define PI_ERROR_MASK ((1ULL << 35) - 1)
 #define PI_ERROR_MEMORY_UNCORRECTABLE (1ULL << 24)
 #define PI_REFLECT_MASK ((1ULL << 54) | (1ULL << 55) | \
                          (1ULL << 62) | (1ULL << 63))
+#define PI_RT_MASK ((1ULL << 55) - 1)
+#define PI_RT_HZ 1250000
+#define PI_RT_TICK_NS (NANOSECONDS_PER_SECOND / PI_RT_HZ)
+
+static uint64_t pi_rt_count(SGIBedrockPIState *s)
+{
+    int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->rt_base_ns;
+
+    if (delta < 0) {
+        return s->rt_base;
+    }
+    return (s->rt_base + delta / PI_RT_TICK_NS) & PI_RT_MASK;
+}
+
+static void pi_arm_rt(SGIBedrockPIState *s, unsigned cpu)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed = MAX(now - s->rt_base_ns, 0);
+    uint64_t phase = elapsed % PI_RT_TICK_NS;
+    uint64_t ticks = ((s->rt_compare[cpu] - pi_rt_count(s) - 1) &
+                      PI_RT_MASK) + 1;
+    uint64_t max_ticks = ((uint64_t)(INT64_MAX - now) + phase) /
+                         PI_RT_TICK_NS;
+    uint64_t chunk;
+
+    /*
+     * A full 55-bit revolution exceeds an int64 nanosecond deadline.
+     * Wake at the largest safe intermediate point and recompute.
+     */
+    if (max_ticks == 0) {
+        s->rt_timer_match[cpu] = false;
+        timer_del(s->rt_timer[cpu]);
+        return;
+    }
+    chunk = MIN(ticks, max_ticks);
+    s->rt_timer_match[cpu] = chunk == ticks;
+    timer_mod_ns(s->rt_timer[cpu],
+                 now - phase + chunk * PI_RT_TICK_NS);
+}
+
+static void pi_arm_profile(SGIBedrockPIState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed = MAX(now - s->rt_base_ns, 0);
+    uint64_t phase = elapsed % PI_RT_TICK_NS;
+    uint32_t count = pi_rt_count(s);
+    uint64_t ticks = (uint32_t)(s->profile_compare - count);
+    uint64_t max_ticks = ((uint64_t)(INT64_MAX - now) + phase) /
+                         PI_RT_TICK_NS;
+
+    if (ticks == 0) {
+        ticks = UINT64_C(1) << 32;
+    }
+    if (ticks > max_ticks) {
+        timer_del(s->profile_timer);
+        return;
+    }
+    timer_mod_ns(s->profile_timer,
+                 now - phase + ticks * PI_RT_TICK_NS);
+}
 
 static uint64_t pi_pending1(SGIBedrockPIState *s)
 {
@@ -61,9 +133,42 @@ void sgi_bedrock_pi_recompute(SGIBedrockPIState *s)
 
         qemu_set_irq(s->hardware_irq[base], !!bank0);
         qemu_set_irq(s->hardware_irq[base + 1], !!bank1);
+        qemu_set_irq(s->hardware_irq[base + 2],
+                     s->rt_pending[cpu] && s->rt_enable[cpu]);
+        qemu_set_irq(s->hardware_irq[base + 3],
+                     s->profile_pending[cpu] && s->profile_enable[cpu]);
         qemu_set_irq(s->hardware_irq[base + 4],
                      !!(s->error_pending & s->error_mask[cpu]));
     }
+}
+
+static void pi_rt_expire(void *opaque)
+{
+    SGIBedrockPITimerLine *line = opaque;
+    SGIBedrockPIState *s = line->pi;
+
+    if (s->rt_timer_match[line->cpu]) {
+        s->rt_pending[line->cpu] = 1;
+        sgi_bedrock_pi_recompute(s);
+    }
+    pi_arm_rt(s, line->cpu);
+}
+
+static void pi_profile_expire(void *opaque)
+{
+    SGIBedrockPIState *s = opaque;
+
+    s->profile_pending[0] = 1;
+    s->profile_pending[1] = 1;
+    sgi_bedrock_pi_recompute(s);
+    pi_arm_profile(s);
+}
+
+static void pi_rearm_timers(SGIBedrockPIState *s)
+{
+    pi_arm_rt(s, 0);
+    pi_arm_rt(s, 1);
+    pi_arm_profile(s);
 }
 
 void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level)
@@ -118,6 +223,17 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_MASK_0_B: return s->mask[1][0];
     case PI_MASK_1_B: return s->mask[1][1];
     case PI_REMAP: return s->remap;
+    case PI_RT_COMPARE_A: return s->rt_compare[0];
+    case PI_RT_COMPARE_B: return s->rt_compare[1];
+    case PI_PROFILE_COMPARE: return s->profile_compare;
+    case PI_RT_PENDING_A: return s->rt_pending[0];
+    case PI_RT_PENDING_B: return s->rt_pending[1];
+    case PI_PROFILE_PENDING_A: return s->profile_pending[0];
+    case PI_PROFILE_PENDING_B: return s->profile_pending[1];
+    case PI_RT_ENABLE_A: return s->rt_enable[0];
+    case PI_RT_ENABLE_B: return s->rt_enable[1];
+    case PI_PROFILE_ENABLE_A: return s->profile_enable[0];
+    case PI_PROFILE_ENABLE_B: return s->profile_enable[1];
     case PI_ERROR_SET:
     case PI_ERROR_PENDING: return s->error_pending;
     case PI_ERROR_MASK_A: return s->error_mask[0];
@@ -125,6 +241,7 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_ERROR_STACK_A: return s->error_stack[0];
     case PI_ERROR_STACK_B: return s->error_stack[1];
     case PI_ERROR_STACK_SIZE: return s->error_stack_size;
+    case PI_RT_COUNTER: return pi_rt_count(s);
     case PI_CPU_OVERRIDE:
     case PI_NMI_A:
     case PI_NMI_B:
@@ -213,6 +330,42 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
                           "remap and error forwarding are unresolved\n");
         }
         break;
+    case PI_RT_COMPARE_A:
+        s->rt_compare[0] = value & PI_RT_MASK;
+        pi_arm_rt(s, 0);
+        return;
+    case PI_RT_COMPARE_B:
+        s->rt_compare[1] = value & PI_RT_MASK;
+        pi_arm_rt(s, 1);
+        return;
+    case PI_PROFILE_COMPARE:
+        s->profile_compare = value;
+        pi_arm_profile(s);
+        return;
+    case PI_RT_PENDING_A:
+        s->rt_pending[0] = 0;
+        break;
+    case PI_RT_PENDING_B:
+        s->rt_pending[1] = 0;
+        break;
+    case PI_PROFILE_PENDING_A:
+        s->profile_pending[0] = 0;
+        break;
+    case PI_PROFILE_PENDING_B:
+        s->profile_pending[1] = 0;
+        break;
+    case PI_RT_ENABLE_A:
+        s->rt_enable[0] = value & 1;
+        break;
+    case PI_RT_ENABLE_B:
+        s->rt_enable[1] = value & 1;
+        break;
+    case PI_PROFILE_ENABLE_A:
+        s->profile_enable[0] = value & 1;
+        break;
+    case PI_PROFILE_ENABLE_B:
+        s->profile_enable[1] = value & 1;
+        break;
     case PI_ERROR_SET:
         s->error_pending =
             (s->error_pending & PI_ERROR_MEMORY_UNCORRECTABLE) |
@@ -235,6 +388,11 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case PI_ERROR_STACK_SIZE:
         s->error_stack_size = value & 0xf;
+        return;
+    case PI_RT_COUNTER:
+        s->rt_base = value & PI_RT_MASK;
+        s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        pi_rearm_timers(s);
         return;
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -262,16 +420,48 @@ static void pi_reset_enter(Object *obj, ResetType type)
     memset(s->mask, 0, sizeof(s->mask));
     s->remap = 0;
     memset(s->error_mask, 0, sizeof(s->error_mask));
+    s->rt_base = 0;
+    s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    memset(s->rt_compare, 0, sizeof(s->rt_compare));
+    s->profile_compare = 0;
+    memset(s->rt_pending, 0, sizeof(s->rt_pending));
+    memset(s->profile_pending, 0, sizeof(s->profile_pending));
+    memset(s->rt_enable, 0, sizeof(s->rt_enable));
+    memset(s->profile_enable, 0, sizeof(s->profile_enable));
+    timer_del(s->rt_timer[0]);
+    timer_del(s->rt_timer[1]);
+    timer_del(s->profile_timer);
+    memset(s->rt_timer_match, 0, sizeof(s->rt_timer_match));
 }
 
 static void pi_reset_hold(Object *obj, ResetType type)
 {
-    sgi_bedrock_pi_recompute(SGI_BEDROCK_PI(obj));
+    SGIBedrockPIState *s = SGI_BEDROCK_PI(obj);
+
+    sgi_bedrock_pi_recompute(s);
+    pi_rearm_timers(s);
 }
 
 static int pi_post_load(void *opaque, int version_id)
 {
-    sgi_bedrock_pi_recompute(opaque);
+    SGIBedrockPIState *s = opaque;
+
+    s->rt_base = s->rt_migrate_count;
+    s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                    s->rt_migrate_phase_ns;
+    pi_rearm_timers(s);
+    sgi_bedrock_pi_recompute(s);
+    return 0;
+}
+
+static int pi_pre_save(void *opaque)
+{
+    SGIBedrockPIState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed = MAX(now - s->rt_base_ns, 0);
+
+    s->rt_migrate_count = pi_rt_count(s);
+    s->rt_migrate_phase_ns = elapsed % PI_RT_TICK_NS;
     return 0;
 }
 
@@ -279,6 +469,7 @@ static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_save = pi_pre_save,
     .post_load = pi_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(cpu_protect, SGIBedrockPIState),
@@ -293,6 +484,19 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT64_ARRAY(error_mask, SGIBedrockPIState, 2),
         VMSTATE_UINT64_ARRAY(error_stack, SGIBedrockPIState, 2),
         VMSTATE_UINT8(error_stack_size, SGIBedrockPIState),
+        VMSTATE_UINT64(rt_base, SGIBedrockPIState),
+        VMSTATE_INT64(rt_base_ns, SGIBedrockPIState),
+        VMSTATE_UINT64(rt_migrate_count, SGIBedrockPIState),
+        VMSTATE_UINT16(rt_migrate_phase_ns, SGIBedrockPIState),
+        VMSTATE_UINT64_ARRAY(rt_compare, SGIBedrockPIState, 2),
+        VMSTATE_UINT32(profile_compare, SGIBedrockPIState),
+        VMSTATE_UINT8_ARRAY(rt_pending, SGIBedrockPIState, 2),
+        VMSTATE_UINT8_ARRAY(profile_pending, SGIBedrockPIState, 2),
+        VMSTATE_UINT8_ARRAY(rt_enable, SGIBedrockPIState, 2),
+        VMSTATE_UINT8_ARRAY(profile_enable, SGIBedrockPIState, 2),
+        VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIBedrockPIState, 2),
+        VMSTATE_TIMER_PTR(profile_timer, SGIBedrockPIState),
+        VMSTATE_BOOL_ARRAY(rt_timer_match, SGIBedrockPIState, 2),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -311,6 +515,13 @@ static void pi_init(Object *obj)
     s->cpu_protect = UINT64_MAX;
     s->io_protect = UINT64_MAX;
     s->region_present = UINT64_MAX;
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        s->rt_line[cpu].pi = s;
+        s->rt_line[cpu].cpu = cpu;
+        s->rt_timer[cpu] = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_rt_expire,
+                                        &s->rt_line[cpu]);
+    }
+    s->profile_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_profile_expire, s);
     memory_region_init_io(&s->mmio, obj, &pi_ops, s, TYPE_SGI_BEDROCK_PI,
                           SGI_BEDROCK_PI_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -318,6 +529,15 @@ static void pi_init(Object *obj)
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(DEVICE(obj), s->nmi, "nmi",
                              ARRAY_SIZE(s->nmi));
+}
+
+static void pi_finalize(Object *obj)
+{
+    SGIBedrockPIState *s = SGI_BEDROCK_PI(obj);
+
+    timer_free(s->rt_timer[0]);
+    timer_free(s->rt_timer[1]);
+    timer_free(s->profile_timer);
 }
 
 static void pi_class_init(ObjectClass *klass, const void *data)
@@ -338,6 +558,7 @@ static const TypeInfo pi_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIBedrockPIState),
     .instance_init = pi_init,
+    .instance_finalize = pi_finalize,
     .class_init = pi_class_init,
 };
 
