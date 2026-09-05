@@ -130,9 +130,6 @@ typedef struct SN0FlashImplementation {
 /* KLCONFIG component state, independent of product contents. */
 #define SN0_COMP_ENABLED        1
 
-/* Fixed state capacity; the product model supplies the installed rows. */
-#define SN0_MAX_SCSI_ADAPTERS   2
-
 /* The -serial line assignment lives in hw/misc/sgi-hub.h; both units see it. */
 #define SN0_GDA                 0x11000
 #define SN0_GDA_SIZE            0x400
@@ -223,6 +220,7 @@ typedef struct SN0NodeState {
 
     /* Static product description supplied by the owning machine. */
     const SN0MachineModel *model;
+    const SN0ModelNodeInstance *instance;
     const SN0ModelNodeTopology *topology;
 
     /*
@@ -351,9 +349,8 @@ struct SN0MachineState {
     /* Where the firmware's console output goes. */
     Chardev *console;
 
-    /* The devices whose resources firmware reassigns on every reset. */
-    PCIDevice **pci_ioc3;
-    PCIDevice *(*pci_scsi)[SN0_MAX_SCSI_ADAPTERS];
+    /* Realized devices follow the generated PCI descriptor order. */
+    PCIDevice ***pci_devices;
 
 };
 
@@ -373,10 +370,10 @@ struct SN0MachineClass {
 };
 
 void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
-const SN0FlashImplementation *sn0_model_flash_implementation(
-    void);
 void sn0_model_configure_diagnostic(SN0MachineState *s,
                                     unsigned int node_index);
+
+extern const SN0FlashImplementation sn0_flash;
 
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
 void sn0_diagnostic_machine_reset(SN0MachineState *s);

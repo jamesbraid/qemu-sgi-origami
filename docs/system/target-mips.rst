@@ -61,14 +61,17 @@ The MIPS Magnum R4000 emulation supports:
 
 -  G364 framebuffer
 
-Origami supplies the Origin 200's canonical fixed inventory and wiring.
-Its supported ``tools/build-env/qemu-build`` command generates the
-untracked ``hw/mips/sn0-origin200-model.c`` and
+The generated Origin 200 descriptor is QEMU's only production authority for
+static topology. Origami's supported ``tools/build-env/qemu-build`` command
+generates untracked ``hw/mips/sn0-origin200-model.c`` and
 ``hw/mips/sn0-klconfig-layout.h`` inputs before building QEMU. Raw Meson
 builds require those files to exist and are not a supported way to build
 this machine. The generic SN0 consumer instantiates the selected one- or
-two-node profile, while a small semantic adapter maps model kinds to QOM
-implementations. QEMU retains hardware behavior and object lifecycle.
+two-node profile and keeps no alternate topology table. QEMU maps only CPU
+and PCI component semantic kinds to QOM implementations. It retains hardware
+behavior and object lifecycle. ``tests/qtest/sn0-model-test.c`` uses
+handwritten topology and firmware expectations independent of the generated
+descriptor, so the test expectations are not generated.
 The generated descriptor selects one or two R10000 processors per node,
 each node's Hub ASIC (the per-node interrupt controller, real-time
 counter and block transfer engines), and the base I/O board behind the

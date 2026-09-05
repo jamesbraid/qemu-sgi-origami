@@ -118,8 +118,11 @@ struct SGIHubState {
      */
     PCF8584State i2c;
 
-    /* Properties selecting the board population around the Hub. */
+    /* Properties selecting the board population and I2C placement. */
     uint32_t population;
+    uint64_t i2c_controller_offset;
+    uint8_t i2c_elsc_addr;
+    uint8_t i2c_nvram_first_addr;
     uint32_t i2c_nvram_pages;
     uint8_t onewire_kind;
 

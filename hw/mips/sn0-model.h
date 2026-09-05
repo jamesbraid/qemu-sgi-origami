@@ -27,10 +27,6 @@ typedef enum SN0KlRecordKind {
     SN0_KL_RECORD_MEMORY_BANK,
 } SN0KlRecordKind;
 
-/* These generated tags carry no choice for the QEMU adapter to make. */
-#define SN0_FLASH_AM29F080          0
-#define SN0_OPTIONAL_HUB_JUNK_UART  0
-
 typedef struct SN0ModelAddressSpace {
     unsigned int selector;
     uint64_t carrier_base;
@@ -72,12 +68,14 @@ typedef struct SN0ModelComponent {
     int8_t irq_input;
     uint16_t subsystem_id;
     uint32_t bar[2];
-    uint64_t serial;
     uint8_t cpu_irq_bank0;
     uint8_t cpu_irq_bank1;
     uint8_t cpu_irq_rt;
     bool i2c_controller;
     bool system_controller;
+    uint64_t i2c_controller_offset;
+    uint8_t i2c_elsc_addr;
+    uint8_t i2c_nvram_first_addr;
     uint8_t i2c_nvram_pages;
     uint8_t discovery_widget;
     uint16_t decoded_widget_mask;
@@ -107,10 +105,6 @@ typedef struct SN0ModelIoc3Population {
     bool timekeeper;
     bool onewire_identity;
 } SN0ModelIoc3Population;
-
-typedef struct SN0ModelFlash {
-    unsigned int kind;
-} SN0ModelFlash;
 
 typedef struct SN0KlComponentModel {
     SN0KlRecordKind record_kind;
@@ -158,13 +152,11 @@ typedef struct SN0KlConfigModel {
 } SN0KlConfigModel;
 
 typedef struct SN0ModelNodeTopology {
-    SN0ModelModuleRole module_role;
     const SN0ModelComponent *hub;
     const SN0ModelComponent *base_io;
     const SN0ModelComponent *pci;
     size_t pci_count;
     SN0ModelAddressMap map;
-    SN0ModelFlash flash;
     SN0ModelIoc3Population ioc3_population;
     SN0KlConfigModel klconfig;
 } SN0ModelNodeTopology;
@@ -173,20 +165,24 @@ typedef struct SN0ModelNodeInstance {
     uint8_t nasid;
     uint8_t cpu_first_id;
     uint8_t cpu_count;
-    int peer_index;
+    SN0ModelModuleRole module_role;
+    uint64_t hub_serial;
+    uint64_t base_io_serial;
+    uint64_t ioc3_serial;
     const SN0ModelNodeTopology *topology;
 } SN0ModelNodeInstance;
+
+typedef struct SN0ModelFabricLink {
+    const char *name;
+    unsigned int endpoint[2];
+} SN0ModelFabricLink;
 
 typedef struct SN0ModelProfile {
     const SN0ModelNodeInstance *nodes;
     size_t node_count;
+    const SN0ModelFabricLink *links;
+    size_t link_count;
 } SN0ModelProfile;
-
-typedef struct SN0ModelOptionalComponent {
-    unsigned int kind;
-    unsigned int node;
-    bool default_enabled;
-} SN0ModelOptionalComponent;
 
 typedef struct SN0MachineModel {
     const char *description;
@@ -203,8 +199,8 @@ typedef struct SN0MachineModel {
     SN0ModelMemory memory;
     const SN0ModelProfile *profiles;
     size_t profile_count;
-    const SN0ModelOptionalComponent *optional_components;
-    size_t optional_component_count;
+    unsigned int junk_uart_node;
+    bool junk_uart_default_enabled;
 } SN0MachineModel;
 
 extern const SN0MachineModel sn0_origin200_model;
@@ -225,23 +221,5 @@ uint64_t sn0_model_region_address(const SN0ModelAddressMap *map,
 bool sn0_model_memory_layout(const SN0MachineModel *model, uint64_t ram_size,
                              uint16_t *bank_mb,
                              unsigned int *populated_banks);
-
-static inline const SN0ModelProfile *
-sn0_model_default_profile(const SN0MachineModel *model)
-{
-    return &model->profiles[0];
-}
-
-static inline const SN0ModelNodeInstance *
-sn0_model_profile_node(const SN0ModelProfile *profile, size_t node_index)
-{
-    return &profile->nodes[node_index];
-}
-
-static inline unsigned int
-sn0_model_node_cpu_id(const SN0ModelNodeInstance *node, unsigned int slice)
-{
-    return node->cpu_first_id + slice;
-}
 
 #endif /* HW_MIPS_SN0_MODEL_H */
