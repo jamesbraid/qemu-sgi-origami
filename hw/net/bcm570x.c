@@ -567,7 +567,9 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->irq_pending = false;
     s->status_kick_done = false;
     s->status_tag = 0;
+    s->rx_coal_pending = 0;
     s->tx_coal_pending = 0;
+    timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_MAGIC);
@@ -943,6 +945,8 @@ static void bcm570x_rx_coalesce(Bcm570xState *s)
     } else if (ticks != 0 && !timer_pending(&s->coal_timer)) {
         timer_mod(&s->coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   (int64_t)ticks * BCM570X_COAL_TICK_NS);
+    } else if (ticks == 0) {
+        bcm570x_rx_coal_flush(s);
     }
 }
 
@@ -2003,7 +2007,10 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->status_kick_done = false;
     s->status_tag = 0;
     s->rx_coal_pending = 0;
+    s->tx_coal_pending = 0;
     timer_del(&s->coal_timer);
+    timer_del(&s->tx_coal_timer);
+    timer_del(&s->status_tick_timer);
     bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
 }
@@ -2018,22 +2025,40 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
 static int bcm570x_post_load(void *opaque, int version_id)
 {
     Bcm570xState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
+    if (version_id < 6) {
+        s->tx_coal_pending = 0;
+    }
     bcm570x_update_irq(s);
     /*
-     * A partial coalescing group can cross a migration; flush it on the
-     * destination so its frames are not stranded waiting for a status update the
-     * source would have delivered from its now-gone tick timer.
+     * Version 6 carries the timers themselves. Older streams carried only the
+     * receive pending count, so report that count immediately. Rebuild any
+     * missing timer from the restored register state so a malformed or older
+     * stream cannot strand live work.
      */
-    if (s->rx_coal_pending != 0) {
-        timer_mod(&s->coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    if (s->rx_coal_pending != 0 && !timer_pending(&s->coal_timer)) {
+        uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
+
+        timer_mod(&s->coal_timer, version_id < 6 ? now :
+                  now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
+    }
+    if (s->tx_coal_pending != 0 && !timer_pending(&s->tx_coal_timer)) {
+        uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
+
+        timer_mod(&s->tx_coal_timer,
+                  now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
+    }
+    if ((bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
+         BCM570X_HCC_MODE_ENABLE) && !timer_pending(&s->status_tick_timer)) {
+        bcm570x_arm_status_tick(s);
     }
     return 0;
 }
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 4,
+    .version_id = 6,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -2052,6 +2077,12 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_BOOL_V(status_kick_done, Bcm570xState, 3),
         VMSTATE_UINT8_V(status_tag, Bcm570xState, 3),
         VMSTATE_UINT16_V(rx_coal_pending, Bcm570xState, 4),
+        /* Version 5 carried two superseded DMA-warning latches. */
+        VMSTATE_UNUSED_V(5, 2),
+        VMSTATE_UINT16_V(tx_coal_pending, Bcm570xState, 6),
+        VMSTATE_TIMER_V(coal_timer, Bcm570xState, 6),
+        VMSTATE_TIMER_V(tx_coal_timer, Bcm570xState, 6),
+        VMSTATE_TIMER_V(status_tick_timer, Bcm570xState, 6),
         VMSTATE_END_OF_LIST()
     }
 };
