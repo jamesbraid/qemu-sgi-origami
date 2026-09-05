@@ -1077,24 +1077,20 @@ static void sn0_assign_node_pci_resources(SN0MachineState *s,
 {
     const SN0ModelNodeTopology *topology =
         s->nodes[node_index]->topology;
-    unsigned int scsi_index = 0;
     size_t component_index;
 
     for (component_index = 0; component_index < topology->pci_count;
          component_index++) {
         const SN0ModelComponent *component =
             &topology->pci[component_index];
-        PCIDevice *pci;
+        PCIDevice *pci = s->pci_devices[node_index][component_index];
         uint16_t command;
 
         switch (component->kind) {
         case SN0_COMPONENT_IOC3:
-            pci = s->pci_ioc3[node_index];
             command = PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER;
             break;
         case SN0_COMPONENT_ISP1040:
-            g_assert(scsi_index < SN0_MAX_SCSI_ADAPTERS);
-            pci = s->pci_scsi[node_index][scsi_index++];
             command = PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
                       PCI_COMMAND_MASTER;
             break;
@@ -1177,8 +1173,7 @@ void sn0_firmware_init(MachineState *machine)
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
     const SN0ModelNodeTopology *boot_topology = s->nodes[0]->topology;
     const SN0ModelRegion *flash_region = &boot_topology->map.flash_reset;
-    const SN0FlashImplementation *flash_implementation =
-        sn0_model_flash_implementation();
+    const SN0FlashImplementation *flash_implementation = &sn0_flash;
     MemoryRegion *system = get_system_memory();
     unsigned int node_count = s->num_nodes;
     hwaddr node = sn0_firmware_node_base(boot_topology, 0);

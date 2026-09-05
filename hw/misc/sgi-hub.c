@@ -199,7 +199,6 @@
 /* The PCF8584 (hw/i2c/pcf8584.c) is mapped over this window in realize. */
 #define HUB_MD_I2C_BASE         0x220000  /* PCF8584, S0 then S1 eight on */
 
-#define ELSC_NVRAM_FIRST_ADDR   0x50
 #define ELSC_NVRAM_PAGE_COUNT   8
 #define ELSC_NVRAM_PAGE_SIZE    256
 #define ELSC_NVRAM_RESERVED_PAGE 7
@@ -2802,9 +2801,21 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "Hub ELSC requires I2C");
         return;
     }
+    if ((s->population & SGI_HUB_POPULATION_ELSC) &&
+        (!s->i2c_elsc_addr || s->i2c_elsc_addr > 0x7f)) {
+        error_setg(errp, "Hub ELSC needs a nonzero seven-bit I2C address");
+        return;
+    }
     if (s->i2c_nvram_pages &&
         !(s->population & SGI_HUB_POPULATION_I2C_CONTROLLER)) {
         error_setg(errp, "Hub I2C NVRAM requires I2C");
+        return;
+    }
+    if (s->i2c_nvram_pages &&
+        (!s->i2c_nvram_first_addr || s->i2c_nvram_first_addr > 0x7f ||
+         s->i2c_nvram_pages > 0x80 - s->i2c_nvram_first_addr)) {
+        error_setg(errp, "Hub I2C NVRAM needs consecutive seven-bit "
+                   "addresses");
         return;
     }
     if (s->i2c_nvram_pages > ELSC_NVRAM_PAGE_COUNT) {
@@ -2885,7 +2896,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         }
         /* Above the Hub registers, so these bytes reach the controller. */
         memory_region_add_subregion_overlap(
-            &s->regs, HUB_MD_I2C_BASE,
+            &s->regs, s->i2c_controller_offset,
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->i2c), 0), 1);
     } else {
         object_unparent(OBJECT(&s->i2c));
@@ -2908,7 +2919,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * serial A, not this one.
      */
     if (s->population & SGI_HUB_POPULATION_ELSC) {
-        I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, SGI_ELSC_ADDR);
+        I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, s->i2c_elsc_addr);
 
         object_property_add_child(OBJECT(s), "elsc", OBJECT(elsc));
         qdev_prop_set_uint32(DEVICE(elsc), "num-cpus", s->cpus);
@@ -2933,7 +2944,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         static const uint8_t reserved_page_defaults[16] = { 0x37 };
 
         for (n = 0; n < s->i2c_nvram_pages; n++) {
-            uint8_t address = ELSC_NVRAM_FIRST_ADDR + n;
+            uint8_t address = s->i2c_nvram_first_addr + n;
 
             if (n == ELSC_NVRAM_RESERVED_PAGE) {
                 at24c_eeprom_init_rom(s->i2c.bus, address,
@@ -3236,6 +3247,11 @@ static const Property sgi_hub_properties[] = {
                        0x0c0b0a090807ULL),
     DEFINE_PROP_UINT32("population", SGIHubState, population,
                        SGI_HUB_POPULATION_ALL),
+    DEFINE_PROP_UINT64("i2c-controller-offset", SGIHubState,
+                       i2c_controller_offset, HUB_MD_I2C_BASE),
+    DEFINE_PROP_UINT8("i2c-elsc-addr", SGIHubState, i2c_elsc_addr, 0),
+    DEFINE_PROP_UINT8("i2c-nvram-first-addr", SGIHubState,
+                      i2c_nvram_first_addr, 0),
     DEFINE_PROP_UINT32("i2c-nvram-pages", SGIHubState, i2c_nvram_pages,
                        ELSC_NVRAM_PAGE_COUNT),
     DEFINE_PROP_UINT8("onewire-kind", SGIHubState, onewire_kind,

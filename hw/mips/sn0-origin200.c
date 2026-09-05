@@ -32,11 +32,11 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     size_t node_index;
 
     smc->model = &sn0_origin200_model;
-    default_profile = sn0_model_default_profile(smc->model);
+    default_profile = &smc->model->profiles[0];
     for (node_index = 0; node_index < default_profile->node_count;
          node_index++) {
         const SN0ModelNodeInstance *node =
-            sn0_model_profile_node(default_profile, node_index);
+            &default_profile->nodes[node_index];
 
         default_cpus += node->cpu_count;
     }

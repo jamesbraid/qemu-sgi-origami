@@ -98,6 +98,10 @@
 #define SN0_SCSI_DEVICE0        0
 #define SN0_SCSI_DEVICE1        1
 #define SN0_IOC3_DEVICE         2
+#define SN0_HUB_REVISION        3
+#define SN0_BRIDGE_REVISION     4
+#define SN0_ISP1040_REVISION    5
+#define SN0_IOC3_REVISION       1
 #define SN0_QLOGIC_ID           0x10201077
 #define SN0_IOC3_ID             0x000310a9
 #define SN0_TIGON_ID            0x000910a9
@@ -120,6 +124,16 @@
 #define SN0_TEST_PROBE_CARD_MEM (SN0_TEST_PROBE_BASE + 0x200)
 #define SN0_CPU_ID_ADDR         0x00030000U
 #define SN0_FPU_ID_ADDR         0x00030004U
+#define SN0_HUB_I2C_DATA        0x00220000U
+#define SN0_HUB_I2C_CTRL        0x00220008U
+#define SN0_I2C_CTRL_PIN        0x80
+#define SN0_I2C_CTRL_ESO        0x40
+#define SN0_I2C_CTRL_STA        0x04
+#define SN0_I2C_CTRL_STO        0x02
+#define SN0_I2C_CTRL_ACK        0x01
+#define SN0_I2C_STATUS_LRB      0x08
+#define SN0_ELSC_I2C_ADDR       0x08
+#define SN0_NVRAM_I2C_ADDR      0x50
 
 #define SN0_DEV_ERROR_LOCK      (1u << 28)
 #define SN0_DEV_PAGE_CROSS      (1u << 27)
@@ -172,6 +186,21 @@ static void assert_named_pci_functions(QTestState *qts, unsigned int node)
     assert_named_pci_function(qts, node, "isp0", SN0_SCSI_DEVICE0, 0);
     assert_named_pci_function(qts, node, "isp1", SN0_SCSI_DEVICE1, 0);
     assert_named_pci_function(qts, node, "ioc3", SN0_IOC3_DEVICE, 0);
+}
+
+static void assert_i2c_address_ack(QTestState *qts, uint64_t hub,
+                                   unsigned int address)
+{
+    qtest_writeq(qts, hub + SN0_HUB_I2C_CTRL,
+                 SN0_I2C_CTRL_PIN | SN0_I2C_CTRL_ESO);
+    qtest_writeq(qts, hub + SN0_HUB_I2C_DATA, address << 1);
+    qtest_writeq(qts, hub + SN0_HUB_I2C_CTRL,
+                 SN0_I2C_CTRL_PIN | SN0_I2C_CTRL_ESO |
+                 SN0_I2C_CTRL_STA | SN0_I2C_CTRL_ACK);
+    g_assert_cmphex(qtest_readq(qts, hub + SN0_HUB_I2C_CTRL) &
+                    SN0_I2C_STATUS_LRB, ==, 0);
+    qtest_writeq(qts, hub + SN0_HUB_I2C_CTRL,
+                 SN0_I2C_CTRL_PIN | SN0_I2C_CTRL_ESO | SN0_I2C_CTRL_STO);
 }
 
 static char *write_prid_guest(void)
@@ -513,21 +542,21 @@ static void assert_device_identity(QTestState *qts, unsigned int node)
                                       hub + SN0_IO_WIDGET_ID);
     uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(node) + 4);
 
-    g_assert_cmpuint((ni >> 4) & 0xf, ==, 3);
+    g_assert_cmpuint((ni >> 4) & 0xf, ==, SN0_HUB_REVISION);
     g_assert_cmpuint((hub_widget >> 28) & 0xf, ==, 1);
-    g_assert_cmpuint(bridge >> 28, ==, 4);
+    g_assert_cmpuint(bridge >> 28, ==, SN0_BRIDGE_REVISION);
     g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) +
                                       SN0_PCI_REVISION_ID) & 0xff, ==,
-                     1);
+                     SN0_IOC3_REVISION);
     g_assert_cmphex(qtest_readl(qts, SN0_CFG0(node, SN0_IOC3_DEVICE) +
                                      SN0_PCI_SUBSYSTEM), ==,
                     SN0_IOC3_SUBSYSTEM);
     g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_SCSI_DEVICE0) +
                                       SN0_PCI_REVISION_ID) & 0xff, ==,
-                     5);
+                     SN0_ISP1040_REVISION);
     g_assert_cmpuint(qtest_readl(qts, SN0_CFG0(node, SN0_SCSI_DEVICE1) +
                                       SN0_PCI_REVISION_ID) & 0xff, ==,
-                     5);
+                     SN0_ISP1040_REVISION);
 }
 
 static void test_baseline_device_identity(const void *data)
@@ -859,6 +888,31 @@ static void test_base_profile_topology(const void *data)
     qtest_quit(qts);
 }
 
+static void assert_system_controller_i2c_addresses(QTestState *qts,
+                                                   unsigned int node)
+{
+    uint64_t hub = SN0_HUB_BY_NODE(node);
+
+    /* Independent literals: none of these values come from model output. */
+    assert_i2c_address_ack(qts, hub, SN0_ELSC_I2C_ADDR);
+    assert_i2c_address_ack(qts, hub, SN0_NVRAM_I2C_ADDR);
+}
+
+static void test_system_controller_i2c_addresses(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int node;
+
+    assert_system_controller_i2c_addresses(qts, 0);
+    qtest_quit(qts);
+
+    qts = qtest_init(SN0_DUAL_CHASSIS_ARGS);
+    for (node = 0; node < 2; node++) {
+        assert_system_controller_i2c_addresses(qts, node);
+    }
+    qtest_quit(qts);
+}
+
 static void test_one_active_cpu_with_two_possible_cpus(const void *data)
 {
     static const QOMChildExpectation node_children[] = {
@@ -1126,12 +1180,6 @@ static void assert_component(QTestState *qts, uint64_t base, uint64_t offset,
     g_assert_cmphex(read_field(qts, base + offset + 0x28, 8), ==, 0);
 }
 
-static uint8_t hub_ni_revision(QTestState *qts, unsigned int nasid)
-{
-    return (qtest_readq(qts, SN0_HUB_BY_NODE(nasid) + SN0_NI_STATUS) >> 4) &
-           0xf;
-}
-
 static void assert_cpu_record(QTestState *qts, uint64_t base, uint64_t offset,
                               unsigned int slice, unsigned int virtual_id,
                               unsigned int nasid)
@@ -1167,33 +1215,14 @@ static void assert_memory_record(QTestState *qts, uint64_t base,
 static void assert_base_io_records(QTestState *qts, uint64_t base,
                                    uint64_t first, unsigned int nasid)
 {
-    uint8_t scsi0_revision =
-        qtest_readl(qts, SN0_CFG0(nasid, SN0_SCSI_DEVICE0) +
-                         SN0_PCI_REVISION_ID) & 0xff;
-    uint8_t scsi1_revision =
-        qtest_readl(qts, SN0_CFG0(nasid, SN0_SCSI_DEVICE1) +
-                         SN0_PCI_REVISION_ID) & 0xff;
-    uint8_t ioc3_revision =
-        qtest_readl(qts, SN0_CFG0(nasid, SN0_IOC3_DEVICE) +
-                         SN0_PCI_REVISION_ID) & 0xff;
-
-    assert_component(qts, base, first, SN0_COMP_BRIDGE, 4, 8, 0, 8, nasid);
+    assert_component(qts, base, first, SN0_COMP_BRIDGE,
+                     SN0_BRIDGE_REVISION, 8, 0, 8, nasid);
     assert_component(qts, base, first + 0x80, SN0_COMP_SCSI,
-                     scsi0_revision, 0, 0, 8, nasid);
+                     SN0_ISP1040_REVISION, 0, 0, 8, nasid);
     assert_component(qts, base, first + 0x100, SN0_COMP_SCSI,
-                     scsi1_revision, 1, 1, 8, nasid);
+                     SN0_ISP1040_REVISION, 1, 1, 8, nasid);
     assert_component(qts, base, first + 0x180, SN0_COMP_IO_CONTROLLER,
-                     ioc3_revision, 2, 0, 8, nasid);
-}
-
-static void test_bridge_revision_matches_config_graph(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200 -m 64M");
-    uint32_t bridge = qtest_readl(qts, SN0_BRIDGE_BASE(0) + 4);
-
-    g_assert_cmpuint(bridge >> 28, ==, 4);
-    assert_component(qts, 0, 0x4600, SN0_COMP_BRIDGE, 4, 8, 0, 8, 0);
-    qtest_quit(qts);
+                     SN0_IOC3_REVISION, 2, 0, 8, nasid);
 }
 
 static void assert_one_cpu_graph(QTestState *qts, uint16_t total_mb,
@@ -1206,7 +1235,7 @@ static void assert_one_cpu_graph(QTestState *qts, uint16_t total_mb,
     g_assert_cmphex(read_field(qts, 0x412c, 4), ==, 0x4500);
     assert_cpu_record(qts, 0, 0x4400, 0, 0, 0);
     assert_component(qts, 0, 0x4480, SN0_COMP_HUB,
-                     hub_ni_revision(qts, 0), 0, 0, 0, 0);
+                     SN0_HUB_REVISION, 0, 0, 0, 0);
     g_assert_cmphex(read_field(qts, 0x44bc, 8), ==,
                     0xffff000000000000ULL);
     g_assert_cmpuint(read_field(qts, 0x44d8, 8), ==, 90000000);
@@ -1237,7 +1266,7 @@ static void assert_two_cpu_graph(QTestState *qts, unsigned int nasid,
     assert_cpu_record(qts, base, 0x4400, 0, first_virtual_id, nasid);
     assert_cpu_record(qts, base, 0x4480, 1, first_virtual_id + 1, nasid);
     assert_component(qts, base, 0x4500, SN0_COMP_HUB,
-                     hub_ni_revision(qts, nasid), nasid, 0, 0, nasid);
+                     SN0_HUB_REVISION, nasid, 0, 0, nasid);
     g_assert_cmphex(read_field(qts, base + 0x453c, 8), ==,
                     0xffff000000000000ULL);
     g_assert_cmpuint(read_field(qts, base + 0x4558, 8), ==, 90000000);
@@ -1947,14 +1976,14 @@ int main(int argc, char **argv)
                         test_dual_device_identity);
     qtest_add_data_func("sn0/model/no-origin200-ioc3-compat-global", NULL,
                         test_origin200_has_no_ioc3_compat_global);
-    qtest_add_data_func("sn0/model/bridge-revision-matches-config-graph", NULL,
-                        test_bridge_revision_matches_config_graph);
     qtest_add_data_func("sn0/model/base-profile-topology/one-cpu",
                         &base_profile_topologies[0],
                         test_base_profile_topology);
     qtest_add_data_func("sn0/model/base-profile-topology/two-cpus",
                         &base_profile_topologies[1],
                         test_base_profile_topology);
+    qtest_add_data_func("sn0/model/system-controller-i2c-addresses", NULL,
+                        test_system_controller_i2c_addresses);
     qtest_add_data_func("sn0/model/one-active-cpu-two-possible", NULL,
                         test_one_active_cpu_with_two_possible_cpus);
     qtest_add_data_func("sn0/model/dual-profile-topology", NULL,

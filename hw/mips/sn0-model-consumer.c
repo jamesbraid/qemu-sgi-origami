@@ -72,37 +72,21 @@ static const char *sn0_model_pci_qom_type(SN0ModelComponentKind kind)
     }
 }
 
-const SN0FlashImplementation *sn0_model_flash_implementation(void)
-{
-    static const SN0FlashImplementation am29f080 = {
-        .sector_size = 0x10000,
-        .width = 1,
-        .mappings = 1,
-        .big_endian = true,
-        .manufacturer_id = 0x01,
-        .device_id = 0xd5,
-        .unlock_address = { 0x5555, 0x2aaa },
-    };
-
-    return &am29f080;
-}
-
 void sn0_model_configure_diagnostic(SN0MachineState *s,
                                     unsigned int node_index)
 {
-    const SN0ModelOptionalComponent *diagnostic =
-        &SN0_MACHINE_GET_CLASS(s)->model->optional_components[0];
+    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
     SN0NodeState *node = s->nodes[node_index];
 
     qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart",
-                      node_index == diagnostic->node &&
+                      node_index == model->junk_uart_node &&
                       s->junk_uart_present);
-    if (node_index == diagnostic->node && s->junk_uart_present &&
-        serial_hd(SN0_NODE_SERIAL(diagnostic->node,
+    if (node_index == model->junk_uart_node && s->junk_uart_present &&
+        serial_hd(SN0_NODE_SERIAL(model->junk_uart_node,
                                   SN0_JUNK_UART_CHARDEV))) {
         object_property_set_link(
             OBJECT(&node->hub), "junk-uart-chardev",
-            OBJECT(serial_hd(SN0_NODE_SERIAL(diagnostic->node,
+            OBJECT(serial_hd(SN0_NODE_SERIAL(model->junk_uart_node,
                                              SN0_JUNK_UART_CHARDEV))),
             &error_fatal);
     }
@@ -130,9 +114,9 @@ static uint8_t sn0_model_ioc3_timekeeper(bool present)
         SGI_IOC3_TIMEKEEPER_NONE;
 }
 
-static void sn0_model_create_ioc3(SN0MachineState *s,
-                                  unsigned int node_index,
-                                  const SN0ModelComponent *function)
+static PCIDevice *sn0_model_create_ioc3(SN0MachineState *s,
+                                        unsigned int node_index,
+                                        const SN0ModelComponent *function)
 {
     const SN0ModelIoc3Population *population =
         &s->nodes[node_index]->topology->ioc3_population;
@@ -168,7 +152,7 @@ static void sn0_model_create_ioc3(SN0MachineState *s,
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         sn0_model_ioc3_timekeeper(population->timekeeper));
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
-                         function->serial);
+                         s->nodes[node_index]->instance->ioc3_serial);
 
     {
         g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", node_index);
@@ -185,23 +169,22 @@ static void sn0_model_create_ioc3(SN0MachineState *s,
                           PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, function->revision);
-    s->pci_ioc3[node_index] = ioc3;
 
     /* Board wiring, not PCI INTx. */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
                           qdev_get_gpio_in(DEVICE(s->io_bridge[node_index]),
                                            function->irq_input));
+    return ioc3;
 }
 
-static void sn0_model_create_isp(SN0MachineState *s,
-                                 unsigned int node_index,
-                                 const SN0ModelComponent *function,
-                                 unsigned int instance)
+static PCIDevice *sn0_model_create_isp(SN0MachineState *s,
+                                       unsigned int node_index,
+                                       const SN0ModelComponent *function,
+                                       unsigned int instance)
 {
     g_autofree char *name = g_strdup_printf("isp%u", instance);
     PCIDevice *isp;
 
-    g_assert(instance < SN0_MAX_SCSI_ADAPTERS);
     isp = pci_new(PCI_DEVFN(function->device, function->function),
                   sn0_model_pci_qom_type(function->kind));
     object_property_add_child(OBJECT(s->nodes[node_index]), name,
@@ -210,8 +193,8 @@ static void sn0_model_create_isp(SN0MachineState *s,
                           PCI_HOST_BRIDGE(s->io_bridge[node_index])->bus,
                           &error_fatal);
     pci_set_byte(isp->config + PCI_REVISION_ID, function->revision);
-    s->pci_scsi[node_index][instance] = isp;
     qlogic_isp_handle_legacy_cmdline(DEVICE(isp));
+    return isp;
 }
 
 static void sn0_model_create_bridge(SN0MachineState *s,
@@ -239,7 +222,7 @@ static void sn0_model_create_bridge(SN0MachineState *s,
     qdev_prop_set_uint32(DEVICE(bridge), "revision",
                          base_io->revision);
     qdev_prop_set_uint64(DEVICE(bridge), "onewire-serial",
-                         base_io->serial);
+                         node->instance->base_io_serial);
     qdev_prop_set_string(DEVICE(bridge), "board-part",
                          base_io->part);
     qdev_prop_set_string(DEVICE(bridge), "pci-bus-name", bus_name);
@@ -281,11 +264,14 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
     const SN0ModelRegion *bridge = &node->topology->map.bridge_registers;
     MemoryRegion *bridge_face;
     unsigned int scsi_index = 0;
+    unsigned int ioc3_count = 0;
     unsigned int device_window;
     unsigned int widget;
     size_t component_index;
 
     sn0_model_create_bridge(s, node_index);
+    s->pci_devices[node_index] =
+        g_new0(PCIDevice *, node->topology->pci_count);
 
     for (component_index = 0;
          component_index < node->topology->pci_count; component_index++) {
@@ -294,18 +280,19 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
 
         switch (component->kind) {
         case SN0_COMPONENT_ISP1040:
-            sn0_model_create_isp(s, node_index, component, scsi_index++);
+            s->pci_devices[node_index][component_index] =
+                sn0_model_create_isp(s, node_index, component, scsi_index++);
             break;
         case SN0_COMPONENT_IOC3:
-            g_assert(!s->pci_ioc3[node_index]);
-            sn0_model_create_ioc3(s, node_index, component);
+            ioc3_count++;
+            s->pci_devices[node_index][component_index] =
+                sn0_model_create_ioc3(s, node_index, component);
             break;
         default:
             g_assert_not_reached();
         }
     }
-    g_assert(s->pci_ioc3[node_index] && bridge);
-    g_assert(scsi_index <= SN0_MAX_SCSI_ADAPTERS);
+    g_assert(ioc3_count == 1);
 
     bridge_face = sysbus_mmio_get_region(
         SYS_BUS_DEVICE(s->io_bridge[node_index]), 0);

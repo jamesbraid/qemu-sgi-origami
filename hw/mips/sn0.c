@@ -41,6 +41,16 @@
 /* MIPS CPU input 0 is IP0. Hardware interrupt inputs begin at IP2. */
 #define SN0_MIPS_HARDWARE_IRQ_OFFSET 2
 
+const SN0FlashImplementation sn0_flash = {
+    .sector_size = 0x10000,
+    .width = 1,
+    .mappings = 1,
+    .big_endian = true,
+    .manufacturer_id = 0x01,
+    .device_id = 0xd5,
+    .unlock_address = { 0x5555, 0x2aaa },
+};
+
 /*
  * Not a hardware register: the IP27 PROM's own software convention of
  * boot-status flags in FPR 0. Bit 1 marks the cache-as-RAM phase.
@@ -622,7 +632,7 @@ static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
 
     for (node_index = 0; node_index < profile->node_count; node_index++) {
         const SN0ModelNodeInstance *node =
-            sn0_model_profile_node(profile, node_index);
+            &profile->nodes[node_index];
         unsigned int slice;
 
         for (slice = 0; slice < node->cpu_count; slice++, index++) {
@@ -631,7 +641,7 @@ static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
             g_assert(index < max_cpus);
             slot->type = machine->cpu_type;
             slot->vcpus_count = 1;
-            slot->arch_id = sn0_model_node_cpu_id(node, slice);
+            slot->arch_id = node->cpu_first_id + slice;
             slot->props.has_socket_id = true;
             slot->props.socket_id = node_index;
             slot->props.has_core_id = true;
@@ -675,7 +685,7 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
     }
     for (node_index = 0; node_index < profile->node_count; node_index++) {
         const SN0ModelNodeInstance *node =
-            sn0_model_profile_node(profile, node_index);
+            &profile->nodes[node_index];
 
         if (index < node->cpu_count) {
             return node_index;
@@ -967,8 +977,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     const SN0ModelAddressMap *map = &node->topology->map;
     const SN0ModelRegion *lboot = map->lboot;
-    const SN0FlashImplementation *implementation =
-        sn0_model_flash_implementation();
+    const SN0FlashImplementation *implementation = &sn0_flash;
     MemoryRegion *system = get_system_memory();
     const SN0ModelRegion *flash_reset = &map->flash_reset;
     const SN0ModelRegion *flash_rboot = &map->rboot;
@@ -1135,7 +1144,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
-    switch (node->topology->module_role) {
+    switch (node->instance->module_role) {
     case SN0_MODULE_MASTER:
         qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", false);
         break;
@@ -1152,7 +1161,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         hub->serial);
+                         node->instance->hub_serial);
     qdev_prop_set_uint32(
         DEVICE(&node->hub), "population",
         (hub->i2c_controller ?
@@ -1160,6 +1169,12 @@ static void sn0_node_create_hub(SN0NodeState *node)
         (hub->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
                          hub->i2c_nvram_pages);
+    qdev_prop_set_uint64(DEVICE(&node->hub), "i2c-controller-offset",
+                         hub->i2c_controller_offset);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-elsc-addr",
+                        hub->i2c_elsc_addr);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-first-addr",
+                        hub->i2c_nvram_first_addr);
     qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
                         SGI_HUB_ONEWIRE_BLANK_DS2505);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
@@ -1278,6 +1293,7 @@ static void sn0_init(MachineState *machine)
     g_autofree unsigned int *profile_cpus = NULL;
     unsigned int max_nodes = sn0_model_max_nodes(model);
     unsigned int node_count, node_index, cpu_index = 0;
+    size_t link_index;
 
     /* A product class must supply its static description. */
     g_assert(model);
@@ -1368,8 +1384,7 @@ static void sn0_init(MachineState *machine)
     s->io_bridge = g_new0(SGIBridgeState *, node_count);
     s->widget0 = g_new0(MemoryRegion, node_count);
     s->widget_alias = g_malloc0(sizeof(*s->widget_alias) * node_count);
-    s->pci_ioc3 = g_new0(PCIDevice *, node_count);
-    s->pci_scsi = g_malloc0(sizeof(*s->pci_scsi) * node_count);
+    s->pci_devices = g_new0(PCIDevice **, node_count);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         g_autofree char *name = g_strdup_printf("node%u", node_index);
@@ -1394,7 +1409,7 @@ static void sn0_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "fabric", OBJECT(s->fabric));
     for (node_index = 0; node_index < node_count; node_index++) {
         const SN0ModelNodeInstance *node_model =
-            sn0_model_profile_node(profile, node_index);
+            &profile->nodes[node_index];
         unsigned int endpoint;
 
         endpoint = sn0_fabric_add_endpoint(s->fabric,
@@ -1402,28 +1417,21 @@ static void sn0_init(MachineState *machine)
                                            node_model->nasid);
         g_assert(endpoint == node_index);
     }
-    for (node_index = 0; node_index < node_count; node_index++) {
-        const SN0ModelNodeInstance *node_model =
-            sn0_model_profile_node(profile, node_index);
-        int peer_index = node_model->peer_index;
+    for (link_index = 0; link_index < profile->link_count; link_index++) {
+        const SN0ModelFabricLink *link = &profile->links[link_index];
 
-        if (peer_index < 0 || (unsigned int)peer_index < node_index) {
-            continue;
-        }
-        g_assert((size_t)peer_index < profile->node_count);
-        g_assert((unsigned int)peer_index != node_index);
-        g_assert(sn0_model_profile_node(profile, peer_index)->peer_index ==
-                 (int)node_index);
-        /* The dual composition's one cable, by its bus identifier. */
-        sn0_fabric_add_link(s->fabric, "peer-craylink", node_index,
-                            peer_index);
+        g_assert(link->endpoint[0] < node_count);
+        g_assert(link->endpoint[1] < node_count);
+        g_assert(link->endpoint[0] != link->endpoint[1]);
+        sn0_fabric_add_link(s->fabric, link->name, link->endpoint[0],
+                            link->endpoint[1]);
     }
     qdev_realize_and_unref(DEVICE(s->fabric), NULL, &error_fatal);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
         const SN0ModelNodeInstance *node_model =
-            sn0_model_profile_node(profile, node_index);
+            &profile->nodes[node_index];
         uint64_t ram_size = numa_nodes ?
             machine->numa_state->nodes[node_index].node_mem :
             machine->ram_size / node_count;
@@ -1452,6 +1460,7 @@ static void sn0_init(MachineState *machine)
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_model->nasid);
         node->model = model;
+        node->instance = node_model;
         node->topology = node_model->topology;
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
@@ -1470,7 +1479,7 @@ static void sn0_init(MachineState *machine)
         /*
          * The runtime Hub state the machine owns: its programmed node number
          * (real firmware programs it later, so a real-PROM boot starts at
-         * zero), the chassis DIP switches, the CrayLink peer, the system
+         * zero), the chassis DIP switches, the fabric endpoint, the system
          * controller's AUX backend, and the bring-up UART. Every module has
          * its own physical AUX connector, so each node's controller gets a
          * separate -serial index, node-major with a fixed stride: node 0's
@@ -1665,19 +1674,21 @@ static void sn0_instance_init(Object *obj)
     s->synthesized_firmware = true;
     s->debug_leds = true;
     s->junk_uart_present =
-        SN0_MACHINE_GET_CLASS(obj)->model->
-            optional_components[0].default_enabled;
+        SN0_MACHINE_GET_CLASS(obj)->model->junk_uart_default_enabled;
 }
 
 static void sn0_instance_finalize(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
+    unsigned int node_index;
 
     sn0_diagnostic_finalize(s);
+    for (node_index = 0; node_index < s->num_nodes; node_index++) {
+        g_free(s->pci_devices[node_index]);
+    }
     g_free(s->nodes);
     g_free(s->io_bridge);
-    g_free(s->pci_ioc3);
-    g_free(s->pci_scsi);
+    g_free(s->pci_devices);
     /*
      * The widget arrays hold MemoryRegions owned as QOM children,
      * released after instance_finalize; freeing them here would leave

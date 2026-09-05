@@ -18,9 +18,6 @@
 #define TYPE_SGI_ELSC "sgi-elsc"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 
-/* The ELSC's own I2C slave address on the system-controller bus. */
-#define SGI_ELSC_ADDR 0x08
-
 /*
  * Length, text, checksum summing to zero mod 256. A length above 94
  * overruns the firmware's own 96-byte buffers; never emit one.

@@ -17,11 +17,12 @@ command. Generation writes the untracked build inputs
 ``hw/mips/sn0-klconfig-layout.h``; unchanged output keeps its timestamp.
 A raw Meson build without those generated files is unsupported.
 
-The generic SN0 model consumer constructs its selected profile from
-the generated descriptor, and its small semantic adapter maps component
-kinds to QOM implementations. QEMU owns hardware behavior, construction
-mechanics, register and DMA handling, reset, migration, and object
-lifetime. The canonical topology has one
+The generated descriptor is QEMU's only production authority for static
+topology. The generic SN0 model consumer constructs its selected profile
+from that descriptor. It keeps no alternate topology table. QEMU maps only
+the descriptor's CPU kind and PCI component kinds to QOM implementations.
+QEMU owns hardware behavior, construction mechanics, register and DMA
+handling, reset, migration, and object lifetime. The canonical topology has one
 directly connected Bridge per chassis with two SCSI adapters and the
 IOC3 base I/O controller on its PCI bus, four IP29 memory banks, and
 no crossbar. The synthesized firmware
@@ -32,6 +33,10 @@ KLCONFIG configuration graph -- and owns the direct ``-kernel`` and
 sashARCS loaders, because loading a guest and handing it control is
 the firmware's job. Device pages: :doc:`sgi-hub`, :doc:`sgi-bridge`,
 :doc:`sgi-ioc3`, :doc:`sgi-qlogic-isp`, :doc:`sgi-elsc`.
+
+``tests/qtest/sn0-model-test.c`` keeps its topology and firmware
+expectations as handwritten literals. Those expectations are deliberately
+independent of the generated descriptor and are not generated.
 
 No crossbar
 ===========
