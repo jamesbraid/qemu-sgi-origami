@@ -1871,6 +1871,18 @@ static NetClientInfo net_bcm570x_info = {
     .link_status_changed = bcm570x_set_link_status,
 };
 
+static void bcm570x_cleanup_net(Bcm570xState *s)
+{
+    if (s->rx_flush_bh) {
+        qemu_bh_delete(s->rx_flush_bh);
+        s->rx_flush_bh = NULL;
+    }
+    if (s->nic) {
+        qemu_del_nic(s->nic);
+        s->nic = NULL;
+    }
+}
+
 static void bcm570x_realize(PCIDevice *dev, Error **errp)
 {
     Bcm570xState *s = BCM570X(dev);
@@ -1989,6 +2001,7 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                              s->subsystem_vendor_id);
         qdev_prop_set_uint16(&f1->qdev, "subsystem-id", s->subsystem_id);
         if (!pci_realize_and_unref(f1, bus, errp)) {
+            bcm570x_cleanup_net(s);
             return;
         }
     }
@@ -1998,24 +2011,16 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
      * here -- the device cannot move buses after realize.
      */
     s->plain_dma = sgi_bridge_plain_dma_as(dev);
-
 }
 
 static void bcm570x_exit(PCIDevice *dev)
 {
     Bcm570xState *s = BCM570X(dev);
 
-    if (s->rx_flush_bh) {
-        qemu_bh_delete(s->rx_flush_bh);
-        s->rx_flush_bh = NULL;
-    }
+    bcm570x_cleanup_net(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
-    if (s->nic) {
-        qemu_del_nic(s->nic);
-        s->nic = NULL;
-    }
 }
 
 static void bcm570x_reset_hold(Object *obj, ResetType type)
