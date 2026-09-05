@@ -37,6 +37,12 @@ test_mips64_timeouts = {
   # and run SGI's oldisk online diagnostic to a RSLT PASS (about 60s more).
   # BOOT_TIMEOUT_SECONDS in test_irix_diag.py keeps a 60s margin under this.
   'irix_diag' : 1560,
+  # Boot the plain installed IRIX disk (same 265s to root login as
+  # irix_diag above -- root.qcow2 is the base root-diags.qcow2 is built
+  # from) and require who -r/uname -aR to show run level 2 under the
+  # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
+  # keeps a 60s margin under this.
+  'irix_installed_boot' : 960,
   # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
   # PROM, then the eg (Alteon Tigon) adapter brought up and a 128 KiB
   # payload pulled over it by TFTP and checked byte-for-byte. The boot is
@@ -159,6 +165,7 @@ tests_mips64_system_thorough = [
   'prom_mdk_router',
   'irix_miniroot',
   'irix_diag',
+  'irix_installed_boot',
   'irix_eg_net',
   'irix_eg_perf',
   'irix_tg',
