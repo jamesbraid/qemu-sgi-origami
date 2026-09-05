@@ -1726,7 +1726,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint32_t framelen;
     uint16_t rx_flags = BCM570X_RXBDFLAG_END;
     uint32_t csum;
-    uint16_t std_size, jumbo_size;
+    uint16_t std_size, std_prod, jumbo_size, jumbo_prod;
     uint64_t jumbo_base;
     bool on_jumbo = false;
 
@@ -1771,18 +1771,28 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
      * rather than written past the end of somebody's buffer.
      */
     std_size = bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
+    std_prod =
+        bcm570x_regfile_read(s, BCM570X_MBX_RX_STD_PROD_LO) & 0xffff;
     jumbo_size =
         bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
+    jumbo_prod =
+        bcm570x_regfile_read(s, BCM570X_MBX_RX_JUMBO_PROD_LO) & 0xffff;
     jumbo_base = bcm570x_compose_hostaddr(s,
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_HI),
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_LO));
 
     if (framelen <= std_size) {
+        if (std_prod == s->rx_std_cons) {
+            return 0;
+        }
         std_base = bcm570x_compose_hostaddr(s,
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO));
         idx = s->rx_std_cons;
     } else if (jumbo_size != 0 && jumbo_base != 0 && framelen <= jumbo_size) {
+        if (jumbo_prod == s->rx_jumbo_cons) {
+            return 0;
+        }
         std_base = jumbo_base;
         idx = s->rx_jumbo_cons;
         rx_flags |= BCM570X_RXBDFLAG_JUMBO_RING;

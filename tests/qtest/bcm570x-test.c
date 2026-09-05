@@ -223,6 +223,8 @@
 #define STD_BUF_SIZE          1536u
 #define JUMBO_RING_PHYS       0x00260000ULL
 #define JUMBO_BUF_PHYS        0x00270000ULL
+#define STD_STALE_BUF_PHYS    0x00280000ULL
+#define JUMBO_STALE_BUF_PHYS  0x00290000ULL
 #define JUMBO_BUF_SIZE        9216u
 #define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
@@ -2090,6 +2092,26 @@ static void rx_open_jumbo(Bcm *b)
     bar_writel(b, BCM_MBX_RX_JUMBO_PROD_LO, 1);
 }
 
+static void write_rx_bd(Bcm *b, uint64_t ring, unsigned int idx,
+                        uint64_t buffer)
+{
+    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
+
+    put32le(bd + 0, buffer >> 32);
+    put32le(bd + 4, buffer & 0xffffffff);
+    qtest_memwrite(b->qts, ring + (uint64_t)idx * BCM_RXBD_SIZE,
+                   bd, sizeof(bd));
+}
+
+static uint16_t read_rx_prod(Bcm *b)
+{
+    uint8_t idx[2];
+
+    qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF,
+                  idx, sizeof(idx));
+    return get16le(idx);
+}
+
 /*
  * A frame too big for the buffer behind a standard-ring descriptor must not be
  * written into it. The buffer size is the driver's statement of what it set
@@ -2186,6 +2208,121 @@ static void test_receive_jumbo_frame(const void *data)
     close(sv[0]);
     g_free(frame);
     g_free(got);
+}
+
+/*
+ * A small frame belongs to the standard ring even when a jumbo buffer is
+ * available. If that selected ring is empty, the frame must stay queued: an
+ * unposted descriptor is stale guest memory, not permission to DMA through it.
+ */
+static void test_receive_waits_for_standard_ring(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t first[64], second[64], got[64];
+    uint8_t ret[BCM_RXBD_SIZE];
+
+    memset(first, 0x31, sizeof(first));
+    memset(second, 0x42, sizeof(second));
+    memset(first, 0xff, 6);
+    memset(second, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    rx_open_jumbo(&b);
+    write_rx_bd(&b, STD_RING_PHYS, 1, STD_STALE_BUF_PHYS);
+
+    net_socket_send_frame(sv[0], first, sizeof(first));
+    wait_for_rx_prod(&b, 1);
+    bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
+
+    qtest_memset(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, 0, BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STD_STALE_BUF_PHYS, 0xa5, sizeof(second));
+    qtest_memset(b.qts, JUMBO_BUF_PHYS, 0x5a, sizeof(second));
+    net_socket_send_frame(sv[0], second, sizeof(second));
+    g_usleep(100000);
+
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
+    qtest_memread(b.qts, STD_STALE_BUF_PHYS, got, sizeof(got));
+    memset(first, 0xa5, sizeof(first));
+    g_assert_cmpmem(got, sizeof(got), first, sizeof(first));
+    qtest_memread(b.qts, JUMBO_BUF_PHYS, got, sizeof(got));
+    memset(first, 0x5a, sizeof(first));
+    g_assert_cmpmem(got, sizeof(got), first, sizeof(first));
+
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+    wait_for_rx_prod(&b, 2);
+    qtest_memread(b.qts, STD_STALE_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), second, sizeof(second));
+    qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 1);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) &
+                    BCM_RXBDFLAG_JUMBO_RING, ==, 0);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * The inverse case has the same contract. A jumbo frame cannot borrow a
+ * posted standard descriptor while its own selected ring is empty.
+ */
+static void test_receive_waits_for_jumbo_ring(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    g_autofree uint8_t *first = g_malloc(BCM_JUMBO_FRAME_LEN);
+    g_autofree uint8_t *second = g_malloc(BCM_JUMBO_FRAME_LEN);
+    g_autofree uint8_t *got = g_malloc(BCM_JUMBO_FRAME_LEN);
+    uint8_t ret[BCM_RXBD_SIZE];
+
+    memset(first, 0x53, BCM_JUMBO_FRAME_LEN);
+    memset(second, 0x64, BCM_JUMBO_FRAME_LEN);
+    memset(first, 0xff, 6);
+    memset(second, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    rx_open_jumbo(&b);
+    write_rx_bd(&b, JUMBO_RING_PHYS, 1, JUMBO_STALE_BUF_PHYS);
+
+    net_socket_send_frame(sv[0], first, BCM_JUMBO_FRAME_LEN);
+    wait_for_rx_prod(&b, 1);
+    bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
+
+    qtest_memset(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, 0, BCM_RXBD_SIZE);
+    qtest_memset(b.qts, JUMBO_STALE_BUF_PHYS, 0xa5,
+                 BCM_JUMBO_FRAME_LEN);
+    net_socket_send_frame(sv[0], second, BCM_JUMBO_FRAME_LEN);
+    g_usleep(100000);
+
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
+    qtest_memread(b.qts, JUMBO_STALE_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
+    memset(first, 0xa5, BCM_JUMBO_FRAME_LEN);
+    g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
+                    first, BCM_JUMBO_FRAME_LEN);
+
+    bar_writel(&b, BCM_MBX_RX_JUMBO_PROD_LO, 2);
+    wait_for_rx_prod(&b, 2);
+    qtest_memread(b.qts, JUMBO_STALE_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
+    g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
+                    second, BCM_JUMBO_FRAME_LEN);
+    qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 1);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) &
+                    BCM_RXBDFLAG_JUMBO_RING, ==,
+                    BCM_RXBDFLAG_JUMBO_RING);
+
+    bcm_close(&b);
+    close(sv[0]);
 }
 
 /*
@@ -3656,6 +3793,10 @@ int main(int argc, char **argv)
                         test_receive_overruns_nothing);
     qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
+    qtest_add_data_func("/bcm570x/receive-waits-for-standard-ring", NULL,
+                        test_receive_waits_for_standard_ring);
+    qtest_add_data_func("/bcm570x/receive-waits-for-jumbo-ring", NULL,
+                        test_receive_waits_for_jumbo_ring);
     qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
                         test_receive_oversize_dropped);
     qtest_add_data_func("/bcm570x/receive-frame-wordswap", NULL,
