@@ -301,10 +301,21 @@ if base.QemuSystemTest is not None:
 
         @base.skipBigDataTest()
         @base.skipSlowTest()
+        @base.skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_eg_perf(self):
             paths = self._asset_paths()
             if paths is None:
-                self.skipTest('ORIGAMI_ASSETS has no PROM/installed IRIX disk')
+                # base.skipIfMissingEnv above already skipped the case
+                # where ORIGAMI_ASSETS is unset entirely -- getting here
+                # means it IS set, so a missing PROM or disk is a
+                # provisioning failure, not an absent-assets developer
+                # run, and must fail loudly rather than skip quietly.
+                self.fail(
+                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
+                    f'at <ORIGAMI_ASSETS>/{base.FIRMWARE_REL} and '
+                    f'<ORIGAMI_ASSETS>/{base.DISK_REL} -- provision them '
+                    '(nightly assets) rather than silently skipping a '
+                    'claimed capability')
             prom, disk = paths
             if base._sha256_file(prom) != base.PROM_SHA256:
                 self.fail('6.5.30 PROM SHA-256 mismatch')
