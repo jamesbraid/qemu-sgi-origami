@@ -1129,6 +1129,18 @@ send_whole:
     qemu_send_packet(qemu_get_queue(s->nic), frame, len);
 }
 
+static void bcm570x_tx_stop_on_dma_error(Bcm570xState *s,
+                                          uint16_t frame_start,
+                                          unsigned int sent)
+{
+    s->tx_cons = frame_start;
+    s->tx_busy = false;
+    if (sent) {
+        s->status_tx_cons = frame_start;
+        bcm570x_tx_coalesce(s, sent);
+    }
+}
+
 static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -1176,8 +1188,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "bcm570x: transmit descriptor %u read failed; "
                           "ring walk stopped\n", s->tx_cons);
-            s->tx_cons = frame_start;
-            s->tx_busy = false;
+            bcm570x_tx_stop_on_dma_error(s, frame_start, sent);
             return;
         }
         buf_addr = ((uint64_t)bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_HI)
@@ -1192,8 +1203,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "bcm570x: transmit payload read at 0x%" PRIx64
                               " failed; frame left ready to retry\n", buf_addr);
-                s->tx_cons = frame_start;
-                s->tx_busy = false;
+                bcm570x_tx_stop_on_dma_error(s, frame_start, sent);
                 return;
             }
             frame_len += len;
