@@ -190,3 +190,5 @@ system_ss.add(when: 'CONFIG_SGI_BEDROCK_NI',
               if_true: files('sgi-bedrock-ni.c', 'sgi-bedrock-ni-regs.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_LB',
               if_true: files('sgi-bedrock-lb.c'))
+system_ss.add(when: 'CONFIG_SGI_BEDROCK',
+              if_true: files('sgi-bedrock.c', 'sgi-bedrock-pi.c'))
