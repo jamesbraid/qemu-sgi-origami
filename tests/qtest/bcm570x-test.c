@@ -2745,6 +2745,33 @@ static void test_receive_flush_on_enable(const void *data)
     close(sv[0]);
 }
 
+/*
+ * Ask for removal, schedule a deferred receive flush while the device still
+ * exists, then let reset finish the unplug. The backend must be releasable and
+ * the main loop must remain responsive after the device state has gone away.
+ */
+static void test_receive_flush_hot_unplug(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev user,id=n0"
+                             " -device bcm570x,id=tg0,addr=%02x.0,netdev=n0",
+                             BCM_SLOT));
+
+    qtest_qmp_device_del_send(b.qts, "tg0");
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    qtest_system_reset_nowait(b.qts);
+    qtest_qmp_eventwait(b.qts, "DEVICE_DELETED");
+    qtest_clock_step(b.qts, 1000);
+    qtest_qmp_assert_success(b.qts, "{ 'execute': 'query-status' }");
+    qtest_qmp_assert_success(b.qts,
+                             "{ 'execute': 'netdev_del',"
+                             "  'arguments': { 'id': 'n0' } }");
+
+    bcm_close(&b);
+}
+
 static void test_receive_round_trip(const void *data)
 {
     int sv[2];
@@ -3785,6 +3812,8 @@ int main(int argc, char **argv)
                         test_receive_ring_full_recovers);
     qtest_add_data_func("/bcm570x/receive-flush-on-enable", NULL,
                         test_receive_flush_on_enable);
+    qtest_add_data_func("/bcm570x/receive-flush-hot-unplug", NULL,
+                        test_receive_flush_hot_unplug);
     qtest_add_data_func("/bcm570x/receive-checksum-offload", NULL,
                         test_receive_checksum_offload);
     qtest_add_data_func("/bcm570x/receive-checksum-not-ip", NULL,
