@@ -337,13 +337,17 @@ class IrixMiniroot(QemuSystemTest):
     def test_irix_miniroot(self):
         paths = self._release_paths()
         if paths is None:
-            self.skipTest(
-                'no firmware/kernel '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{TFTP_REL}/{KERNEL_NAME} -- point it '
-                'at a checkout with the real PROM and release-matched '
-                'miniroot kernel extracted (tools/extract-irix) to run '
-                'this test')
+            # skipIfMissingEnv above already skipped the case where
+            # ORIGAMI_ASSETS is unset entirely -- getting here means it
+            # IS set, so a missing PROM or kernel is a provisioning
+            # failure, not an absent-assets developer run, and must fail
+            # loudly rather than skip quietly.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the firmware/kernel are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{TFTP_REL}/{KERNEL_NAME} -- provision '
+                'them (tools/extract-irix, nightly assets) rather than '
+                'silently skipping a claimed capability')
         prom, tftp = paths
         kernel = os.path.join(tftp, KERNEL_NAME)
 
