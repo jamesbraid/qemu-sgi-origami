@@ -398,6 +398,7 @@ qos_test_ss.add(
   'pcnet-test.c',
   'qlogic-isp-test.c',
   'rs5c372-test.c',
+  'scsi-tape-test.c',
   'sdhci-test.c',
   'spapr-phb-test.c',
   'tmp105-test.c',
