@@ -152,12 +152,18 @@ if QemuSystemTest is not None:
         def test_irix_diag(self):
             paths = self._asset_paths()
             if paths is None:
-                self.skipTest(
-                    'no PROM/disk at '
-                    f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a checkout '
-                    'with the 6.5.30 PROM and the golden-with-diagnostics '
-                    'IRIX disk provisioned (nightly assets) to run this test')
+                # skipIfMissingEnv above already skipped the case where
+                # ORIGAMI_ASSETS is unset entirely -- getting here means
+                # it IS set, so a missing PROM or disk is a provisioning
+                # failure, not an absent-assets developer run, and must
+                # fail loudly: a silent skip here would let a real
+                # oldisk regression pass CI unnoticed.
+                self.fail(
+                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
+                    f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
+                    '(nightly assets) rather than silently skipping a '
+                    'claimed capability')
             prom, disk = paths
 
             vm = self.get_vm(name='irix_diag')
