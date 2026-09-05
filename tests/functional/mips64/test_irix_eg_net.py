@@ -57,13 +57,13 @@ clause is scored the way it is.
 
 Guarded by @skipBigDataTest() (the disk is multi-gigabyte) and
 @skipSlowTest() (a real multiuser IRIX boot plus the transfer is minutes),
-on top of the usual ORIGAMI_ASSETS resolution + skipTest() at method entry
-if the PROM or installed disk is missing, matching the other asset-gated
-functional tests here. The installed IRIX disk is not committed (the fork
-ships no IRIX bits); a runner provisions it at
-<ORIGAMI_ASSETS>/assets/irix/6.5.30/root.qcow2 the same way the firmware
-and miniroot kernel are provisioned out of band, and the test skips until it
-is present.
+on top of @skipIfMissingEnv('ORIGAMI_ASSETS') (skips only when the env var
+itself is unset) and a self.fail() at method entry if it is set but the
+PROM or installed disk is missing -- a missing asset with the env var set
+means CI provisioning failed, not a reason to skip quietly. The installed
+IRIX disk is not committed (the fork ships no IRIX bits); a runner
+provisions it at <ORIGAMI_ASSETS>/assets/irix/6.5.30/root.qcow2 the same
+way the firmware and miniroot kernel are provisioned out of band.
 """
 
 import hashlib
@@ -83,7 +83,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_irix_eg_net_verdict import eg_net_verdict  # noqa: E402
 
 try:
-    from qemu_test import QemuSystemTest, skipBigDataTest, skipSlowTest
+    from qemu_test import QemuSystemTest
+    from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
@@ -364,15 +365,21 @@ if QemuSystemTest is not None:
 
         @skipBigDataTest()
         @skipSlowTest()
+        @skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_eg_net(self):
             paths = self._asset_paths()
             if paths is None:
-                self.skipTest(
-                    'ORIGAMI_ASSETS is not set, or has no PROM/disk at '
-                    f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a checkout '
-                    'with the real 6.5.30 PROM and an installed IRIX disk '
-                    'provisioned to run this test')
+                # skipIfMissingEnv above already skipped the case where
+                # ORIGAMI_ASSETS is unset entirely -- getting here means
+                # it IS set, so a missing PROM or disk is a provisioning
+                # failure, not an absent-assets developer run, and must
+                # fail loudly rather than skip quietly.
+                self.fail(
+                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
+                    f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
+                    '(nightly assets) rather than silently skipping a '
+                    'claimed capability')
             prom, disk = paths
 
             if _sha256_file(prom) != PROM_SHA256:
