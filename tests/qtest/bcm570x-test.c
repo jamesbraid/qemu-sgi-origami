@@ -2772,6 +2772,43 @@ static void test_receive_flush_hot_unplug(const void *data)
     bcm_close(&b);
 }
 
+/*
+ * Function 0 creates function 1 while it realizes. Occupy function 1 so that
+ * the final step fails after the parent has otherwise initialized, and repeat
+ * the failed hotplug. Neither attempt may retain the requested network backend.
+ */
+static void test_failed_realize_releases_backend(const void *data)
+{
+    QTestState *qts = qtest_initf(BCM_MACHINE
+                                  " -netdev user,id=n0"
+                                  " -device pci-testdev,addr=%02x.1",
+                                  BCM_SLOT);
+    g_autofree char *addr = g_strdup_printf("%02x.0", BCM_SLOT);
+    unsigned int i;
+
+    for (i = 0; i < 2; i++) {
+        g_autofree char *id = g_strdup_printf("tg%u", i);
+        QDict *response;
+
+        response = qtest_qmp_assert_failure_ref(
+            qts,
+            "{ 'execute': 'device_add', 'arguments': {"
+            "  'driver': 'bcm570x', 'id': %s, 'addr': %s,"
+            "  'model': 'bcm5704', 'multifunction': true,"
+            "  'netdev': 'n0' } }",
+            id, addr);
+        g_assert_nonnull(strstr(qdict_get_str(response, "desc"),
+                                "in use by pci-testdev"));
+        qobject_unref(response);
+    }
+
+    qtest_qmp_assert_success(qts,
+                             "{ 'execute': 'netdev_del',"
+                             "  'arguments': { 'id': 'n0' } }");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
+    qtest_quit(qts);
+}
+
 static void test_receive_round_trip(const void *data)
 {
     int sv[2];
@@ -3814,6 +3851,8 @@ int main(int argc, char **argv)
                         test_receive_flush_on_enable);
     qtest_add_data_func("/bcm570x/receive-flush-hot-unplug", NULL,
                         test_receive_flush_hot_unplug);
+    qtest_add_data_func("/bcm570x/failed-realize-releases-backend", NULL,
+                        test_failed_realize_releases_backend);
     qtest_add_data_func("/bcm570x/receive-checksum-offload", NULL,
                         test_receive_checksum_offload);
     qtest_add_data_func("/bcm570x/receive-checksum-not-ip", NULL,
