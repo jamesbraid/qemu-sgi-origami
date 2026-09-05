@@ -399,6 +399,7 @@ struct Bcm570xState {
 
     NICState *nic;
     NICConf conf;
+    QEMUBH *rx_flush_bh;
 
     /* PCI identity, defaulting to the SGI board; overridable per instance. */
     char *model;
@@ -569,6 +570,9 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->status_tag = 0;
     s->rx_coal_pending = 0;
     s->tx_coal_pending = 0;
+    if (s->rx_flush_bh) {
+        qemu_bh_cancel(s->rx_flush_bh);
+    }
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
@@ -964,6 +968,10 @@ static void bcm570x_rx_flush(void *opaque)
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
+static void bcm570x_schedule_rx_flush(Bcm570xState *s)
+{
+    qemu_bh_schedule(s->rx_flush_bh);
+}
 
 /*
  * Ring the transmit doorbell: send every descriptor from the chip's consumer up
@@ -1232,7 +1240,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
              * the block without going on to ring a doorbell nothing would offer
              * it again.
              */
-            aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
+            bcm570x_schedule_rx_flush(s);
         } else {
             timer_del(&s->status_tick_timer);
         }
@@ -1283,7 +1291,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         }
         bcm570x_regfile_write(s, off, val);
         /* Room where there was none: take anything the peer had waiting. */
-        aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
+        bcm570x_schedule_rx_flush(s);
         return;
     }
     case BCM570X_MBX_RX_STD_PROD_LO: {
@@ -1326,7 +1334,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
          * without bound and never returns (the observed bring-up hang). The BH
          * lets the handler finish and take the buffer on the next interrupt.
          */
-        aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
+        bcm570x_schedule_rx_flush(s);
         return;
     }
     case BCM570X_MBX_RX_CONS0_LO: {
@@ -1352,7 +1360,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
          * worth and then goes quiet for good, which looks like the link dying
          * partway through a transfer.
          */
-        aio_bh_schedule_oneshot(qemu_get_aio_context(), bcm570x_rx_flush, s);
+        bcm570x_schedule_rx_flush(s);
         return;
     }
     case BCM570X_MI_COMM: {
@@ -1942,6 +1950,8 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     s->nic = qemu_new_nic(&net_bcm570x_info, &s->conf,
                           object_get_typename(OBJECT(dev)), ds->id,
                           &ds->mem_reentrancy_guard, s);
+    s->rx_flush_bh = qemu_bh_new_guarded(bcm570x_rx_flush, s,
+                                          &ds->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
     bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
 
@@ -1991,6 +2001,23 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
 
 }
 
+static void bcm570x_exit(PCIDevice *dev)
+{
+    Bcm570xState *s = BCM570X(dev);
+
+    if (s->rx_flush_bh) {
+        qemu_bh_delete(s->rx_flush_bh);
+        s->rx_flush_bh = NULL;
+    }
+    timer_del(&s->coal_timer);
+    timer_del(&s->tx_coal_timer);
+    timer_del(&s->status_tick_timer);
+    if (s->nic) {
+        qemu_del_nic(s->nic);
+        s->nic = NULL;
+    }
+}
+
 static void bcm570x_reset_hold(Object *obj, ResetType type)
 {
     Bcm570xState *s = BCM570X(obj);
@@ -2018,6 +2045,9 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->status_tag = 0;
     s->rx_coal_pending = 0;
     s->tx_coal_pending = 0;
+    if (s->rx_flush_bh) {
+        qemu_bh_cancel(s->rx_flush_bh);
+    }
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
@@ -2129,6 +2159,7 @@ static void bcm570x_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     pc->realize = bcm570x_realize;
+    pc->exit = bcm570x_exit;
     pc->config_read = bcm570x_config_read;
     pc->config_write = bcm570x_config_write;
     pc->vendor_id = BCM570X_VENDOR_ID;
