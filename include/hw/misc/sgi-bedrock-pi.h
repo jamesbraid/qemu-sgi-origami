@@ -3,6 +3,7 @@
 #define HW_MISC_SGI_BEDROCK_PI_H
 
 #include "hw/core/sysbus.h"
+#include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_PI "sgi-bedrock-pi"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockPIState, SGI_BEDROCK_PI)
@@ -10,6 +11,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockPIState, SGI_BEDROCK_PI)
 #define SGI_BEDROCK_PI_SIZE 0x30108
 #define SGI_BEDROCK_PI_PROCESSORS 2
 #define SGI_BEDROCK_PI_HW_IRQS 5
+
+typedef struct SGIBedrockPITimerLine {
+    struct SGIBedrockPIState *pi;
+    uint8_t cpu;
+} SGIBedrockPITimerLine;
 
 struct SGIBedrockPIState {
     SysBusDevice parent_obj;
@@ -33,6 +39,20 @@ struct SGIBedrockPIState {
     uint64_t error_mask[2];
     uint64_t error_stack[2];
     uint8_t error_stack_size;
+    uint64_t rt_base;
+    int64_t rt_base_ns;
+    uint64_t rt_migrate_count;
+    uint16_t rt_migrate_phase_ns;
+    uint64_t rt_compare[2];
+    uint32_t profile_compare;
+    uint8_t rt_pending[2];
+    uint8_t profile_pending[2];
+    uint8_t rt_enable[2];
+    uint8_t profile_enable[2];
+    QEMUTimer *rt_timer[2];
+    QEMUTimer *profile_timer;
+    SGIBedrockPITimerLine rt_line[2];
+    bool rt_timer_match[2];
     bool lb_error;
     bool ni_error;
 };
