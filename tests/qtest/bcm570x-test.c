@@ -441,6 +441,17 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
     return len;
 }
 
+/* A sent frame is already buffered by now; the timeout bounds silence. */
+static void net_socket_expect_no_frame(int fd)
+{
+    uint32_t hdr;
+
+    net_socket_set_recv_timeout(fd, 1);
+    errno = 0;
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
 static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
 {
     uint32_t hdr = htonl((uint32_t)len);
@@ -1406,6 +1417,24 @@ static void txc_setup(Bcm *b, unsigned int coal, unsigned int ticks)
     qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 }
 
+static void txc_post_one_at(Bcm *b, const uint8_t *frame, unsigned int len,
+                            unsigned int slot)
+{
+    uint64_t buf = TX_BUF_PHYS + (uint64_t)slot * 2048;
+    uint8_t bd[16];
+
+    g_assert_cmpuint(slot, <, TXC_RING);
+    qtest_memwrite(b->qts, buf, frame, len);
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, buf >> 32);
+    put32le(bd + 4, buf & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_END);
+    put16le(bd + 10, (uint16_t)len);
+    qtest_memwrite(b->qts, TX_RING_PHYS + (uint64_t)slot * 16,
+                   bd, sizeof(bd));
+    bar_writel(b, BCM_MBX_TX_PROD_LO, slot + 1);
+}
+
 /*
  * Post frames the way a driver does: one descriptor, one doorbell, per frame.
  * That is what makes coalescing worth anything -- a driver that handed the card
@@ -1414,20 +1443,10 @@ static void txc_setup(Bcm *b, unsigned int coal, unsigned int ticks)
 static void txc_post(Bcm *b, const uint8_t *frame, unsigned int len,
                      unsigned int frames)
 {
-    uint8_t bd[16];
     unsigned int i;
 
     for (i = 0; i < frames; i++) {
-        uint64_t buf = TX_BUF_PHYS + (uint64_t)i * 2048;
-
-        qtest_memwrite(b->qts, buf, frame, len);
-        memset(bd, 0, sizeof(bd));
-        put32le(bd + 0, buf >> 32);
-        put32le(bd + 4, buf & 0xffffffff);
-        put16le(bd + 8, BCM_TXBDFLAG_END);
-        put16le(bd + 10, (uint16_t)len);
-        qtest_memwrite(b->qts, TX_RING_PHYS + (uint64_t)i * 16, bd, sizeof(bd));
-        bar_writel(b, BCM_MBX_TX_PROD_LO, i + 1);
+        txc_post_one_at(b, frame, len, i);
     }
 }
 
@@ -3408,6 +3427,93 @@ static void bcm570x_migrate(QTestState *from, const char *uri)
 }
 
 /*
+ * The PHY is a migrated child while the net frontend is host state. Both must
+ * still describe the same cable on the destination, including after a fresh
+ * set_link event changes that level.
+ */
+static void test_migrated_link_controls_egress(const void *data)
+{
+    bool migrate_up = GPOINTER_TO_INT(data);
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+    int source_sv[2], dest_sv[2];
+    uint8_t frame[60];
+    uint8_t got[sizeof(frame)];
+
+    memset(frame, 0x5a, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, source_sv), ==, 0);
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "mac=52:54:00:11:22:33",
+                           source_sv[1], BCM_SLOT);
+    bcm_open(&from, from_qts);
+    txc_setup(&from, 1, 0);
+
+    mii_write(&from, BCM_PHY_ADDR, MII_BMCR,
+              MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
+    qtest_clock_step(from.qts, BCM_PHY_SETTLE_NS + 1000);
+    g_assert_cmphex(mii_read(&from, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
+                    ==, MII_BMSR_LINK);
+    if (!migrate_up) {
+        qtest_qmp_assert_success(from.qts,
+            "{'execute': 'set_link', 'arguments': "
+            "{'name': 'n0', 'up': false}}");
+        g_assert_cmphex(mii_read(&from, BCM_PHY_ADDR, MII_BMSR) &
+                        MII_BMSR_LINK, ==, 0);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "mac=52:54:00:11:22:33 -incoming %s",
+                           dest_sv[1], BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from.qts, uri);
+
+    g_assert_cmphex(mii_read(&to, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
+                    ==, migrate_up ? MII_BMSR_LINK : 0);
+    txc_post_one_at(&to, frame, sizeof(frame), 0);
+    if (migrate_up) {
+        net_socket_set_recv_timeout(dest_sv[0], 10);
+        g_assert_cmpint(net_socket_recv_frame(dest_sv[0], got, sizeof(got)),
+                        ==, sizeof(frame));
+    } else {
+        net_socket_expect_no_frame(dest_sv[0]);
+
+        qtest_qmp_assert_success(to.qts,
+            "{'execute': 'set_link', 'arguments': "
+            "{'name': 'n0', 'up': true}}");
+        g_assert_cmphex(mii_read(&to, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
+                        ==, MII_BMSR_LINK);
+
+        net_socket_set_recv_timeout(dest_sv[0], 10);
+        txc_post_one_at(&to, frame, sizeof(frame), 1);
+        g_assert_cmpint(net_socket_recv_frame(dest_sv[0], got, sizeof(got)),
+                        ==, sizeof(frame));
+    }
+
+    bcm_close(&to);
+    bcm_close(&from);
+    close(source_sv[0]);
+    close(dest_sv[0]);
+    g_rmdir(tmpfs);
+}
+
+/*
  * A partial transmit group owns both a pending completion count and its
  * deadline. Migration must carry both so the destination reports the tail at
  * the same timer boundary instead of losing it.
@@ -3891,6 +3997,10 @@ int main(int argc, char **argv)
                         test_status_block_gated_by_hcc);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
+    qtest_add_data_func("/bcm570x/migration/link-down", GINT_TO_POINTER(0),
+                        test_migrated_link_controls_egress);
+    qtest_add_data_func("/bcm570x/migration/link-up", GINT_TO_POINTER(1),
+                        test_migrated_link_controls_egress);
     qtest_add_data_func("/bcm570x/transmit-coalescing-survives-migration", NULL,
                         test_transmit_coalescing_survives_migration);
     qtest_add_data_func("/bcm570x/receive-coalescing-survives-migration", NULL,

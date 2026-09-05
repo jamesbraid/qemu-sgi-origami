@@ -2072,6 +2072,8 @@ static int bcm570x_post_load(void *opaque, int version_id)
     Bcm570xState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
+    /* The child PHY migrates its cable state; NetClientState does not. */
+    qemu_get_queue(s->nic)->link_down = s->phy.link_down;
     if (version_id < 6) {
         s->tx_coal_pending = 0;
     }
