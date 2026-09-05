@@ -318,3 +318,7 @@ config SGI_IOMMU_NOTIFIER_TEST
 config SGI_BEDROCK_NI
     bool
     default y if TEST_DEVICES
+
+config SGI_BEDROCK_LB
+    bool
+    default y if TEST_DEVICES
