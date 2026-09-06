@@ -410,6 +410,8 @@ qlogic_isp_firmware_load(uint16_t base, uint16_t count, uint64_t host) "base 0x%
 qlogic_isp_firmware_dump(uint16_t base, uint16_t count, uint64_t host) "base 0x%04x words %u host 0x%" PRIx64
 qlogic_isp_bank_read(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" PRIx64 " -> 0x%04x"
 qlogic_isp_bank_write(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" PRIx64 " <- 0x%04x"
+qlogic_isp_reset_delay(unsigned int channel, uint16_t value) "channel %u delay %u"
+qlogic_isp_mbox_busy(uint16_t cmd) "cmd 0x%04x refused, result still held"
 
 # scsi-tape.c
 scsi_tape_command(uint8_t op, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) "cdb %02x %02x %02x %02x %02x %02x"
