@@ -10,8 +10,11 @@
 #include "hw/pci/pci_device.h"
 #include "qemu/bswap.h"
 #include "qapi/error.h"
+#include "hw/core/irq.h"
 
 #define TYPE_XBRIDGE_IOMMU "sgi-xbridge-iommu"
+
+#define RAW_PCI_IRQS 32
 
 #define REG_COUNT (0x300 / 8)
 #define ATE_COUNT 512
@@ -28,6 +31,8 @@ struct SGIXBridgeHeadState {
     uint64_t ate[ATE_COUNT];
     uint8_t speed;
     uint8_t pins;
+    qemu_irq pci_irq[RAW_PCI_IRQS];
+    uint32_t pci_levels;
     MemoryRegion *target[16];
     struct XBridgeTarget {
         AddressSpace as;
@@ -67,6 +72,34 @@ static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: interrupt destination refused write\n");
     }
+}
+
+static int xbridge_map_pci_irq(PCIDevice *dev, int pin)
+{
+    unsigned slot = PCI_SLOT(dev->devfn);
+
+    if (slot >= 8 || pin < 0 || pin >= PCI_NUM_PINS) {
+        /* Unreachable with the root slot mask; keep a safe accounting sink. */
+        return RAW_PCI_IRQS;
+    }
+    return slot * PCI_NUM_PINS + pin;
+}
+
+static void xbridge_pci_irq(void *opaque, int line, int level)
+{
+    SGIXBridgeHeadState *s = opaque;
+
+    if (line < 0 || line >= RAW_PCI_IRQS) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-xbridge: unsupported PCI interrupt source\n");
+        return;
+    }
+    s->pci_levels = (s->pci_levels & ~(1U << line)) | (level ? 1U << line : 0);
+    if (level && !qemu_irq_is_connected(s->pci_irq[line])) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-xbridge: PCI source %d has no board wiring\n", line);
+    }
+    qemu_set_irq(s->pci_irq[line], level);
 }
 
 static void xbridge_set_pin(void *opaque, int pin, int level)
@@ -468,6 +501,10 @@ static void xbridge_reset_hold(Object *obj, ResetType type)
     unsigned i;
 
     s->pins = 0;
+    s->pci_levels = 0;
+    for (i = 0; i < RAW_PCI_IRQS; i++) {
+        qemu_set_irq(s->pci_irq[i], 0);
+    }
     memset(s->reg, 0, sizeof(s->reg));
     memset(s->ate, 0, sizeof(s->ate));
     REG(s, 0) = 0x2d002049;
@@ -522,12 +559,14 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
                            name);
     }
     qdev_init_gpio_in(dev, xbridge_set_pin, 8);
+    qdev_init_gpio_out_named(dev, s->pci_irq, "pci-intx", RAW_PCI_IRQS);
     memory_region_init(&s->pci_mem, OBJECT(s), "xbridge.pci-mem", UINT64_MAX);
     memory_region_init(&s->pci_io, OBJECT(s), "xbridge.pci-io", UINT64_MAX);
     address_space_init(&s->pci_mem_as, &s->pci_mem, "xbridge.pci-mem");
     address_space_init(&s->pci_io_as, &s->pci_io, "xbridge.pci-io");
-    PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, "head.0", NULL, NULL,
-        s, &s->pci_mem, &s->pci_io, 0, 0, TYPE_PCI_BUS);
+    PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, "head.0",
+        xbridge_pci_irq, xbridge_map_pci_irq, s, &s->pci_mem, &s->pci_io,
+        0, RAW_PCI_IRQS + 1, TYPE_PCI_BUS);
     pci_setup_iommu(PCI_HOST_BRIDGE(s)->bus, &xbridge_iommu_ops, s);
     pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus, ~0xffU);
     memory_region_init_io(&s->widget, OBJECT(s), &xbridge_ops, s,
@@ -556,11 +595,24 @@ static void xbridge_unrealize(DeviceState *dev)
     address_space_destroy(&s->pci_io_as);
 }
 
+static int xbridge_post_load(void *opaque, int version_id)
+{
+    SGIXBridgeHeadState *s = opaque;
+    unsigned i;
+
+    for (i = 0; i < RAW_PCI_IRQS; i++) {
+        qemu_set_irq(s->pci_irq[i], (s->pci_levels >> i) & 1);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_xbridge = {
     .name = TYPE_SGI_XBRIDGE_HEAD,
     .version_id = 1,
+    .post_load = xbridge_post_load,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pci_levels, SGIXBridgeHeadState),
         VMSTATE_UINT8(pins, SGIXBridgeHeadState),
         VMSTATE_UINT32_ARRAY(reg, SGIXBridgeHeadState, REG_COUNT),
         VMSTATE_UINT64_ARRAY(ate, SGIXBridgeHeadState, ATE_COUNT),

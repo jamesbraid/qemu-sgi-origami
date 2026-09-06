@@ -323,6 +323,8 @@ static void test_migration_reset(void)
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
+    qtest_irq_intercept_out_named(to, HEAD, "pci-intx");
+    card_write(from, 0x10, 1);
     reg_write(from, 0x20, 0x0f00320e);
     reg_write(from, 0x80, 0xb00000);
     reg_write(from, 0x30, 0x000cabf4);
@@ -337,6 +339,9 @@ static void test_migration_reset(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     wait_migration(from);
+    g_assert_true(qtest_get_irq(to, 0));
+    card_write(to, 0x10, 0);
+    g_assert_false(qtest_get_irq(to, 0));
     g_assert_cmphex(reg_read(to, 0x20), ==, 0x0f00320e);
     g_assert_cmphex(reg_read(to, 0x100) & 8, ==, 8);
     g_assert_cmphex(qtest_readl(to, BASE + 0x10ffc), ==, 0x1234);
@@ -346,7 +351,9 @@ static void test_migration_reset(void)
     dma_fill(to, 0x80008000, 0x60);
     g_assert_cmphex(qtest_readq(to, TARGET_B + SCRATCH), ==,
                     0x6061626364656667ULL);
+    card_write(to, 0x10, 1);
     qtest_system_reset(to);
+    g_assert_false(qtest_get_irq(to, 0));
     g_assert_cmphex(reg_read(to, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(to, 0x80), ==, 0x20000);
     g_assert_cmphex(reg_read(to, 0x108), ==, 0);
@@ -388,6 +395,29 @@ static void test_requester_bounds(void)
     g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*slot 8 function 0 not available*reserved*");
+}
+
+static void test_raw_pci_interrupts(void)
+{
+    QTestState *qts = transport_start(
+        "-device sgi-bridge-dma-test,bus=head.0,addr=0.1");
+
+    qtest_writel(qts, BASE + 0x20110, 0x01200000);
+    qtest_writel(qts, BASE + 0x20104, 6);
+    qtest_irq_intercept_out_named(qts, HEAD, "pci-intx");
+    card_write(qts, 0x10, 1);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmphex(reg_read(qts, 0x100) & 0xff, ==, 0);
+    reg_write(qts, 0x200, 0x83012);
+    card_write(qts, 0x10, 1);
+    reg_write(qts, 0x200, 0x83010);
+    card_write(qts, 0x10, 0);
+    g_assert_true(qtest_get_irq(qts, 0));
+    reg_write(qts, 0x200, 0x83012);
+    card_write(qts, 0x10, 0);
+    g_assert_false(qtest_get_irq(qts, 0));
+    g_assert_cmphex(reg_read(qts, 0x100) & 0xff, ==, 0);
+    qtest_quit(qts);
 }
 
 static void test_notifier_rejection(void)
@@ -569,6 +599,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/migration-reset", test_migration_reset);
     qtest_add_func("/sn1/xbridge/access-errors", test_access_errors);
     qtest_add_func("/sn1/xbridge/requester-bounds", test_requester_bounds);
+    qtest_add_func("/sn1/xbridge/raw-pci-interrupts", test_raw_pci_interrupts);
     qtest_add_func("/sn1/xbridge/notifier-rejection", test_notifier_rejection);
     qtest_add_func("/sn1/xbridge/page-dma", test_page_dma);
     qtest_add_func("/sn1/xbridge/page-boundaries", test_page_boundaries);
