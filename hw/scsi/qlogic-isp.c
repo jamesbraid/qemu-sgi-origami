@@ -32,7 +32,7 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 
 #define ISP_REG_ID_LOW      0x00    /* RO: chip identity, low half. */
 #define ISP_REG_ID_HIGH     0x02    /* RO: chip identity, high half. */
-#define ISP_REG_BUS_CFG0    0x04    /* RO: low four bits are a revision. */
+#define ISP_REG_BUS_CFG0    0x04    /* RO: a revision, on parts with one. */
 #define ISP_REG_BUS_CFG1    0x06    /* RW: FIFO threshold and burst enable. */
 #define ISP_REG_BUS_CTRL    0x08    /* RW: soft reset and interrupt enables. */
 #define ISP_REG_BUS_STATUS  0x0a    /* RO: which interrupt is pending. */
@@ -50,6 +50,10 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 #define ISP_BUS_CFG1_WRITE_MASK     (ISP_BUS_CFG1_FIFO_MASK | \
                                      ISP_BUS_CFG1_BANK_SELECT | \
                                      ISP_BUS_CFG1_BURST_ENABLE)
+
+/* The 1080 family selects instead through a two-bit field at bits 9:8. */
+#define ISP_BUS_CFG1_BANK1080_MASK  0x0300
+#define ISP_BUS_CFG1_BANK1080_SHIFT 8
 
 /* Stored: the burst enable here is read-modify-written by drivers. */
 #define ISP_DMA_CFG_BURST_ENABLE    0x0002
@@ -168,13 +172,21 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 #define ISP_RISC_FLAG_EXTERNAL      0x0010
 
 /*
- * Bit 3 of bus configuration 1 -- not bit 0, a decoy constant in driver
- * headers -- selects which bank the window at 0x80 presents.
+ * The window at 0x80 presents one bank at a time. On the ISP1040 bit 3 of
+ * bus configuration 1 -- not bit 0, a decoy constant in driver headers --
+ * picks one of two; on the 1080 family bits 9:8 pick one of four.
  */
 #define ISP_REG_SXP_RISC_BASE   0x80
 #define ISP_REG_SXP_RISC_END    0xc0
 #define ISP_SXP_RISC_COUNT      \
     ((ISP_REG_SXP_RISC_END - ISP_REG_SXP_RISC_BASE) / 2)
+
+enum {
+    ISP_BANK_RISC,
+    ISP_BANK_SXP0,
+    ISP_BANK_SXP1,
+    ISP_BANK_DMA,
+};
 
 /* Queue base split across mailboxes 2, 3, 6, 7; mailbox 1 is the count. */
 #define ISP_MBOX_ADDR_LOW(mb)   ((uint64_t)(mb)[3])
@@ -289,6 +301,7 @@ typedef struct QLogicISPInfo {
     uint8_t revision;               /* PCI revision byte */
     uint8_t nchannels;              /* SCSI buses realised */
     bool cfg0_reports_revision;     /* bus configuration 0 = revision + 1 */
+    bool banked_dma;                /* 1080-family banks, no flat DMA */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -326,6 +339,8 @@ struct QLogicISPState {
     uint16_t mailbox[ISP_MAILBOX_COUNT];
     uint16_t risc_bank[ISP_SXP_RISC_COUNT];
     uint16_t sxp_bank[ISP_SXP_RISC_COUNT];
+    uint16_t sxp1_bank[ISP_SXP_RISC_COUNT];    /* 1080 family only. */
+    uint16_t dma_bank[ISP_SXP_RISC_COUNT];
     uint16_t risc_ram[ISP_RISC_RAM_WORDS];    /* Downloaded firmware. */
 
     QLogicISPChannel chan[QLOGIC_ISP_MAX_CHANNELS];
@@ -407,6 +422,8 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
 
     memset(s->risc_bank, 0, sizeof(s->risc_bank));
     memset(s->sxp_bank, 0, sizeof(s->sxp_bank));
+    memset(s->sxp1_bank, 0, sizeof(s->sxp1_bank));
+    memset(s->dma_bank, 0, sizeof(s->dma_bank));
 
     /* The guest re-downloads firmware after every reset. */
     memset(s->risc_ram, 0, sizeof(s->risc_ram));
@@ -695,10 +712,45 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
 }
 
 /* Read fresh so a bank-select write takes effect on the next access. */
+static unsigned qlogic_isp_bank_index(QLogicISPState *s)
+{
+    if (QLOGIC_ISP_GET_CLASS(s)->info->banked_dma) {
+        return (s->bus_cfg1 & ISP_BUS_CFG1_BANK1080_MASK) >>
+               ISP_BUS_CFG1_BANK1080_SHIFT;
+    }
+    return (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? ISP_BANK_SXP0
+                                                    : ISP_BANK_RISC;
+}
+
 static uint16_t *qlogic_isp_active_bank(QLogicISPState *s)
 {
-    return (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ?
-           s->sxp_bank : s->risc_bank;
+    switch (qlogic_isp_bank_index(s)) {
+    case ISP_BANK_SXP0:
+        return s->sxp_bank;
+    case ISP_BANK_SXP1:
+        return s->sxp1_bank;
+    case ISP_BANK_DMA:
+        return s->dma_bank;
+    default:
+        return s->risc_bank;
+    }
+}
+
+static const char *qlogic_isp_bank_name(QLogicISPState *s)
+{
+    static const char *const names[] = { "RISC", "SXP0", "SXP1", "DMA" };
+
+    return names[qlogic_isp_bank_index(s)];
+}
+
+/* The flat DMA blocks: decoded by the ISP1040, banked by the 1080 family. */
+static bool qlogic_isp_flat_dma_reg(QLogicISPState *s, hwaddr addr)
+{
+    if (!QLOGIC_ISP_GET_CLASS(s)->info->banked_dma) {
+        return false;
+    }
+    return addr == ISP_REG_DMA_CMD_CFG || addr == ISP_REG_DMA_CMD_CTRL ||
+           addr == ISP_REG_DMA_DATA_CFG || addr == ISP_REG_DMA_DATA_CTRL;
 }
 
 /*
@@ -1343,10 +1395,15 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         uint16_t val =
             qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2];
 
-        trace_qlogic_isp_bank_read(
-            (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
-            addr, val);
+        trace_qlogic_isp_bank_read(qlogic_isp_bank_name(s), addr, val);
         return val;
+    }
+
+    if (qlogic_isp_flat_dma_reg(s, addr)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp: read of unimplemented register "
+                      "0x%02" HWADDR_PRIx "\n", addr);
+        return 0;
     }
 
     switch (addr) {
@@ -1415,16 +1472,22 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     /* Traced, not LOG_UNIMP, for the reason the read side gives. */
     if (addr >= ISP_REG_SXP_RISC_BASE && addr < ISP_REG_SXP_RISC_END) {
-        trace_qlogic_isp_bank_write(
-            (s->bus_cfg1 & ISP_BUS_CFG1_BANK_SELECT) ? "SXP" : "RISC",
-            addr, val);
+        trace_qlogic_isp_bank_write(qlogic_isp_bank_name(s), addr, val);
         qlogic_isp_active_bank(s)[(addr - ISP_REG_SXP_RISC_BASE) / 2] = val;
+        return;
+    }
+
+    if (qlogic_isp_flat_dma_reg(s, addr)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp: write 0x%04x to unimplemented register "
+                      "0x%02" HWADDR_PRIx "\n", (unsigned)val, addr);
         return;
     }
 
     switch (addr) {
     case ISP_REG_BUS_CFG1:
-        s->bus_cfg1 = val & ISP_BUS_CFG1_WRITE_MASK;
+        s->bus_cfg1 = QLOGIC_ISP_GET_CLASS(s)->info->banked_dma ?
+                      val : (val & ISP_BUS_CFG1_WRITE_MASK);
         break;
 
     /* Applied after the enables are stored, so the reset wins. */
@@ -1628,7 +1691,8 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
       .device_id = 0x1216, .revision = 0x06, .nchannels = 2,
-      .cfg0_reports_revision = false, .fw_version = { 10, 4, 0 } },
+      .cfg0_reports_revision = false, .banked_dma = true,
+      .fw_version = { 10, 4, 0 } },
 };
 
 static const TypeInfo qlogic_isp_base_info = {
