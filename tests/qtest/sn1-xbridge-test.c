@@ -407,6 +407,154 @@ static void test_notifier_rejection(void)
     }
 }
 
+static void ate_write(QTestState *qts, unsigned index, uint64_t value)
+{
+    qtest_writeq(qts, BASE + 0x10000 + index * 8, value);
+}
+
+static void test_page_dma(void)
+{
+    QTestState *qts = transport_start("");
+    const unsigned indices[] = { 0, 127, 128, 511 };
+
+    for (unsigned shift = 12; shift <= 14; shift += 2) {
+        reg_write(qts, 0x20, 0x0f00320f | (shift == 14 ? 1U << 21 : 0));
+        for (unsigned i = 0; i < G_N_ELEMENTS(indices); i++) {
+            ate_write(qts, indices[i], 0x8a21);
+            qtest_writeq(qts, TARGET_A + 0x8238, 0);
+            dma_fill(qts, 0x40000238 + ((uint64_t)indices[i] << shift),
+                     0x20 + i);
+            g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8238), ==,
+                0x2021222324252627ULL + 0x0101010101010101ULL * i);
+        }
+        /* ATE target zero is valid; high address bits belong to the target. */
+        ate_write(qts, 0, 0x8021);
+        dma_fill(qts, 0x40000000, 0x30);
+        g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,
+                       0x3031323334353637ULL);
+        ate_write(qts, 0, 0xabcd123400008ce1ULL);
+        dma_fill(qts, 0x40000000, 0x40);
+        g_assert_cmphex(qtest_readq(qts, TARGET_C + 0x8000), ==,
+                       0x4041424344454647ULL);
+        /* In 16 KB mode descriptor bits 13:12 do not change the page. */
+        if (shift == 14) {
+            ate_write(qts, 0, 0xba21);
+            dma_fill(qts, 0x40001238, 0x50);
+            g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x9238), ==,
+                           0x5051525354555657ULL);
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_page_boundaries(void)
+{
+    QTestState *qts = transport_start("");
+
+    for (unsigned shift = 12; shift <= 14; shift += 2) {
+        uint32_t size = 1U << shift;
+
+        reg_write(qts, 0x20, 0x0f00320f | (shift == 14 ? 1U << 21 : 0));
+        ate_write(qts, 0, 0x8a21);
+        ate_write(qts, 1, 0x8b01);
+        dma_fill(qts, 0x40000000 + size - 4, 0x20);
+        g_assert_cmphex(qtest_readl(qts, TARGET_A + 0x8000 + size - 4), ==,
+                       0x20212223);
+        g_assert_cmphex(qtest_readl(qts, TARGET_B + 0x8000), ==, 0x27262524);
+        /* The next access must use the rewritten target, base and swap. */
+        ate_write(qts, 1, 0xca21);
+        dma_fill(qts, 0x40000000 + size, 0x30);
+        g_assert_cmphex(qtest_readq(qts, TARGET_A + 0xc000), ==,
+                       0x3031323334353637ULL);
+        card_write(qts, 0x14, 0x40000000 + size);
+        card_write(qts, 0x1c, 0);
+        card_write(qts, 0, 0x8000);
+        card_write(qts, 0x18, 0xb0800000);
+        card_write(qts, 0xc, 2);
+        g_assert_cmphex(qtest_readq(qts, TARGET_B + 0x8000), ==,
+                       0x3031323334353637ULL);
+    }
+    ate_write(qts, 1, 0x8a21);
+    ate_write(qts, 4, 0x8b21);
+    reg_write(qts, 0x20, 0x0f00320f);
+    dma_fill(qts, 0x40004000, 0x60);
+    reg_write(qts, 0x20, 0x0f20320f);
+    dma_fill(qts, 0x40004000, 0x70);
+    g_assert_cmphex(qtest_readq(qts, TARGET_B + 0x8000), ==,
+                   0x6061626364656667ULL);
+    g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,
+                   0x7071727374757677ULL);
+    qtest_quit(qts);
+}
+
+static void tx_write(QTestState *qts, unsigned reg, uint32_t value)
+{
+    uint8_t bytes[4] = { value, value >> 8, value >> 16, value >> 24 };
+
+    qtest_memwrite(qts, BASE + 0x400000 + reg, bytes, sizeof(bytes));
+}
+
+static uint32_t tx_read(QTestState *qts, unsigned reg)
+{
+    uint8_t bytes[4];
+
+    qtest_memread(qts, BASE + 0x400000 + reg, bytes, sizeof(bytes));
+    return bytes[0] | (uint32_t)bytes[1] << 8 |
+           (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
+}
+
+static uint32_t tx_run(QTestState *qts, uint32_t address)
+{
+    tx_write(qts, 4, address);
+    tx_write(qts, 0xc, 8);
+    tx_write(qts, 0x1c, TARGET_A + 0x8000);
+    tx_write(qts, 0x14, 1);
+    tx_read(qts, 0);
+    return tx_read(qts, 0x10);
+}
+
+static void test_page_faults(void)
+{
+    QTestState *qts = transport_start(
+        "-device iommu-testdev,bus=head.0,addr=1");
+    const uint32_t faults[] = { 0x40000000, 0x40200000, 0x407ffff8 };
+    const uint32_t unresolved[] = { 0x40800000, 0x60000000, 0x7ffffff8 };
+
+    qtest_writel(qts, BASE + 0x21010, 0x01200000);
+    qtest_writel(qts, BASE + 0x21004, 6);
+    reg_write(qts, 0x208, 0x83012);
+    reg_write(qts, 0x80, 0xa00000);
+    g_assert_cmphex(tx_run(qts, 0x80008000), ==, 0);
+    for (unsigned i = 0; i < G_N_ELEMENTS(faults); i++) {
+        qtest_writeq(qts, TARGET_A + 0x8000, 0x1122334455667788ULL);
+        g_assert_cmphex(tx_run(qts, faults[i]), ==, 0xdead0002);
+        g_assert_cmphex(reg_read(qts, 0x100) & (1U << 30), ==, 1U << 30);
+        g_assert_cmphex(reg_read(qts, 0x170) & (1U << 30), ==, 1U << 30);
+        reg_write(qts, 0x110, 2);
+        g_assert_cmphex(reg_read(qts, 0x100) & (1U << 30), ==, 0);
+        g_assert_cmphex(reg_read(qts, 0x170) & (1U << 30), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,
+                       0x1122334455667788ULL);
+    }
+    ate_write(qts, 0, 0x8a21);
+    g_assert_cmphex(tx_run(qts, 0x40000000), ==, 0);
+    ate_write(qts, 0, 0x8a20);
+    g_assert_cmphex(tx_run(qts, 0x40000000), ==, 0xdead0002);
+    reg_write(qts, 0x110, 2);
+    ate_write(qts, 0, 0x8a21);
+    qtest_writeq(qts, TARGET_A + 0x8000, 0x1122334455667788ULL);
+    for (unsigned i = 0; i < G_N_ELEMENTS(unresolved); i++) {
+        g_assert_cmphex(tx_run(qts, unresolved[i]), ==, 0xdead0002);
+        g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,
+                       0x1122334455667788ULL);
+    }
+    ate_write(qts, 0, 0x8d21);
+    g_assert_cmphex(tx_run(qts, 0x40000000), ==, 0xdead0002);
+    g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,
+                   0x1122334455667788ULL);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -422,5 +570,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/access-errors", test_access_errors);
     qtest_add_func("/sn1/xbridge/requester-bounds", test_requester_bounds);
     qtest_add_func("/sn1/xbridge/notifier-rejection", test_notifier_rejection);
+    qtest_add_func("/sn1/xbridge/page-dma", test_page_dma);
+    qtest_add_func("/sn1/xbridge/page-boundaries", test_page_boundaries);
+    qtest_add_func("/sn1/xbridge/page-faults", test_page_faults);
     return g_test_run();
 }

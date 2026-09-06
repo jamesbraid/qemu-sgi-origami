@@ -162,7 +162,26 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         entry.perm = IOMMU_RW;
         return entry;
     }
-    if (addr >= 0x1000000000000000ULL) {
+    if (addr >= 0x40000000 && addr <= 0x407fffff) {
+        unsigned shift = (REG(s, 0x20) & (1U << 21)) ? 14 : 12;
+        unsigned index = (addr & 0x3fffffff) >> shift;
+        uint64_t ate;
+
+        entry.addr_mask = (1ULL << shift) - 1;
+        entry.iova = addr & ~entry.addr_mask;
+        if (index >= G_N_ELEMENTS(s->ate) || !(s->ate[index] & 1)) {
+            REG(s, 0x100) |= 1U << 30;
+            REG(s, 0x170) |= 1U << 30;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-xbridge: invalid page DMA at 0x%"
+                          HWADDR_PRIx " (entry %u)\n", addr, index);
+            return entry;
+        }
+        ate = s->ate[index];
+        widget = (ate >> 8) & 15;
+        destination = ate & 0x0000fffffffff000ULL;
+        swap = ate & (1U << 5);
+    } else if (addr >= 0x1000000000000000ULL) {
         widget = addr >> 60;
         destination = addr & 0x0000ffffffffffffULL;
         swap = addr & (1ULL << 55);
@@ -190,7 +209,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     }
     entry.target_as = swap ? &s->endpoint[widget].as :
                              &s->endpoint[widget].swap_as;
-    entry.translated_addr = destination & ~0xfffULL;
+    entry.translated_addr = destination & ~entry.addr_mask;
     entry.perm = IOMMU_RW;
     return entry;
 }
@@ -369,6 +388,10 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
     if (size != 4 || (addr & 7) != 4 || addr >= 0x300) {
         xbridge_invalid(s, addr);
         return;
+    }
+    if (off == 0x110 && (value & (1U << 1))) {
+        REG(s, 0x100) &= ~(1U << 30);
+        REG(s, 0x170) &= ~(1U << 30);
     }
     if (off >= 0x180 && off <= 0x1f8) {
         unsigned pin = ((off - 0x180) / 8) & 7;
