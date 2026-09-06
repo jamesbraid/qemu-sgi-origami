@@ -192,13 +192,18 @@ class PromDiagnostics(QemuSystemTest):
     def test_prom_diagnostics(self):
         paths = self._release_paths()
         if paths is None:
-            self.skipTest(
-                'no firmware/sash64 '
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing PROM or sash64 is a provisioning
+            # failure, not an absent-assets developer run, and must
+            # fail loudly: a silent skip here would let a real
+            # diagnostics regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the PROM/sash64 are missing '
                 f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{TFTP_REL}/sash64 -- point it at a '
-                'checkout with the real PROM and release-matched '
-                'sash64 extracted (tools/extract-irix) to run this '
-                'test')
+                f'<ORIGAMI_ASSETS>/{TFTP_REL}/sash64 -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         prom, tftp = paths
 
         vm = self.get_vm(name='prom_diagnostics')
