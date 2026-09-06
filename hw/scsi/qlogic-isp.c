@@ -123,6 +123,9 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 #define ISP_MBOX_CMD_LOAD_RAM_A64       0x0009
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE     0x0010
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE     0x0011
+#define ISP_MBOX_CMD_ABORT_COMMAND      0x0015
+#define ISP_MBOX_CMD_ABORT_DEVICE       0x0016
+#define ISP_MBOX_CMD_ABORT_TARGET       0x0017
 #define ISP_MBOX_CMD_BUS_RESET          0x0018
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS 0x001f
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64  0x0052
@@ -263,6 +266,8 @@ enum {
 
 #define ISP_IOCB_COMPLETE            0x0000
 #define ISP_IOCB_INCOMPLETE          0x0001
+#define ISP_IOCB_RESET               0x0004
+#define ISP_IOCB_ABORTED             0x0005
 #define ISP_IOCB_DATA_UNDERRUN       0x0015
 
 #define ISP_STATE_FLAG_GOT_BUS            0x0100
@@ -377,6 +382,8 @@ struct QLogicISPRequest {
     QEMUSGList qsg;
     uint64_t described;         /* Buffer bytes the descriptors named. */
     uint32_t handle;
+    /* The completion a recovery command owes this handle; 0 if none does. */
+    uint16_t retire_completion;
     uint8_t channel;
     uint8_t target;
     uint8_t lun;
@@ -549,6 +556,67 @@ static void qlogic_isp_ram_dump(QLogicISPState *s)
     for (i = 0; i < count; i++) {
         stw_le_pci_dma(pci, host + i * 2, s->risc_ram[(uint16_t)(base + i)],
                        MEMTXATTRS_UNSPECIFIED);
+    }
+}
+
+/*
+ * Every outstanding request the selector names, retired with the given
+ * completion; -1 matches any target, LUN or handle. Cancelling one waits
+ * for its backend, which can finish and free other requests on the way,
+ * so the walk restarts after each cancellation rather than trusting a
+ * link it saved before.
+ */
+static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
+                                  int lun, int64_t handle, uint16_t completion)
+{
+    unsigned retired = 0;
+    bool again = true;
+
+    while (again) {
+        QLogicISPRequest *req;
+
+        again = false;
+        QTAILQ_FOREACH(req, &s->requests, next) {
+            if (req->retire_completion != 0 || req->channel != channel) {
+                continue;
+            }
+            if (target >= 0 && req->target != target) {
+                continue;
+            }
+            if (lun >= 0 && req->lun != lun) {
+                continue;
+            }
+            if (handle >= 0 && req->handle != (uint32_t)handle) {
+                continue;
+            }
+
+            /* Read back by the cancel callback, which posts the entry. */
+            req->retire_completion = completion;
+            scsi_req_cancel(req->sreq);
+            retired++;
+            again = true;
+            break;
+        }
+    }
+
+    return retired;
+}
+
+/*
+ * A target reset reaches every LUN behind the target number, so the bus's
+ * children are walked instead of one address being looked up.
+ */
+static void qlogic_isp_reset_target(QLogicISPState *s, int channel,
+                                    int target)
+{
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &s->chan[channel].bus.qbus.children, sibling) {
+        SCSIDevice *sdev = SCSI_DEVICE(kid->child);
+
+        if (sdev->id == target) {
+            device_cold_reset(DEVICE(sdev));
+        }
     }
 }
 
@@ -761,11 +829,86 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
     }
 
+    /*
+     * Recovery. The channel, target and LUN in mailbox 1 have the same
+     * shape as a request entry's device word, so a part with one bus
+     * refuses a channel it does not have exactly as a request would be.
+     * Acknowledging the mailbox and retiring the affected requests are
+     * separate events, and the host waits for both.
+     */
+    case ISP_MBOX_CMD_ABORT_COMMAND:
+    case ISP_MBOX_CMD_ABORT_DEVICE:
+    case ISP_MBOX_CMD_ABORT_TARGET: {
+        const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+        int channel = ISP_DEVICE_BUS(s->mailbox[1]);
+        int target = ISP_DEVICE_TARGET(s->mailbox[1]);
+        int lun = ISP_DEVICE_LUN(s->mailbox[1]);
+        uint16_t completion = ISP_IOCB_ABORTED;
+        int64_t handle = -1;
+        unsigned retired;
+
+        if (channel >= info->nchannels) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
+
+        /* One named command, its handle split across two mailboxes. */
+        if (cmd == ISP_MBOX_CMD_ABORT_COMMAND) {
+            handle = ((uint32_t)s->mailbox[2] << 16) | s->mailbox[3];
+        }
+
+        /* A target reset carries no LUN, and what it cancels is a reset. */
+        if (cmd == ISP_MBOX_CMD_ABORT_TARGET) {
+            lun = -1;
+            completion = ISP_IOCB_RESET;
+        }
+
+        retired = qlogic_isp_retire(s, channel, target, lun, handle,
+                                    completion);
+        trace_qlogic_isp_recovery(cmd, channel, target, lun,
+                                  handle < 0 ? 0 : (uint32_t)handle, retired);
+
+        if (cmd == ISP_MBOX_CMD_ABORT_TARGET) {
+            qlogic_isp_reset_target(s, channel, target);
+        }
+
+        /*
+         * Only the handle-carrying abort can miss. The host named one
+         * command, and reporting that abort complete when nothing at that
+         * address answers to the handle tells the host a command it is
+         * still waiting on has been retired.
+         */
+        s->mailbox[0] = (cmd == ISP_MBOX_CMD_ABORT_COMMAND && retired == 0)
+                        ? ISP_MBOX_CMD_ERROR : ISP_MBOX_COMPLETE;
+        break;
+    }
+
     /* Resets the bus, not the adapter: chip state survives. */
-    case ISP_MBOX_CMD_BUS_RESET:
-        bus_cold_reset(BUS(&s->chan[0].bus));
+    case ISP_MBOX_CMD_BUS_RESET: {
+        const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+        int channel = 0;
+        unsigned retired;
+
+        /*
+         * Mailbox 1 holds the configured reset delay here, not a
+         * selector, and mailbox 2 picks the bus. A single-channel part
+         * answered for its one bus long before a second bus existed, so
+         * it still reads neither.
+         */
+        if (info->nchannels > 1) {
+            if (s->mailbox[2] >= info->nchannels) {
+                s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+                break;
+            }
+            channel = s->mailbox[2];
+        }
+
+        retired = qlogic_isp_retire(s, channel, -1, -1, -1, ISP_IOCB_RESET);
+        trace_qlogic_isp_recovery(cmd, channel, -1, -1, 0, retired);
+        bus_cold_reset(BUS(&s->chan[channel].bus));
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
+    }
 
     default:
         qlogic_isp_mbox_not_modelled(s, cmd);
@@ -1128,11 +1271,21 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     qlogic_isp_free_request(req);
 }
 
+/*
+ * A recovery command owes the host one entry for every request it
+ * retired. A cancellation from anywhere else -- an unplug, the adapter's
+ * own reset of its buses -- is not a completion the host asked for, and
+ * posting one for it would retire a handle the host still holds.
+ */
 static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
     trace_qlogic_isp_request_cancelled(req->handle);
+    if (req->retire_completion != 0) {
+        qlogic_isp_post_status(req->dev, req->handle, 0,
+                               req->retire_completion, 0, 0, 0, NULL, 0);
+    }
     qlogic_isp_free_request(req);
 }
 
