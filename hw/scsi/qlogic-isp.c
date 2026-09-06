@@ -570,8 +570,13 @@ static uint16_t qlogic_isp_ram_load(QLogicISPState *s)
     return ISP_MBOX_COMPLETE;
 }
 
-/* The other direction, in the same cycles the load side runs. */
-static void qlogic_isp_ram_dump(QLogicISPState *s)
+/*
+ * The other direction, in the same cycles the load side runs. A refused
+ * store is reported rather than swallowed: told the dump completed, a
+ * guest reads back whatever the destination already held and takes it for
+ * the image it asked for.
+ */
+static uint16_t qlogic_isp_ram_dump(QLogicISPState *s)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t base = s->mailbox[1];
@@ -582,14 +587,16 @@ static void qlogic_isp_ram_dump(QLogicISPState *s)
     trace_qlogic_isp_firmware_dump(base, count, host);
 
     if (count == 0) {
-        return;
+        return ISP_MBOX_COMPLETE;
     }
 
     if (qlogic_isp_ram_dma_per_word(s)) {
         for (i = 0; i < count; i++) {
-            stw_le_pci_dma(pci, host + i * 2,
-                           s->risc_ram[(uint16_t)(base + i)],
-                           MEMTXATTRS_UNSPECIFIED);
+            if (stw_le_pci_dma(pci, host + i * 2,
+                               s->risc_ram[(uint16_t)(base + i)],
+                               MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                return ISP_MBOX_HOST_INTERFACE_ERROR;
+            }
         }
     } else {
         g_autofree uint8_t *bytes = g_malloc(count * 2u);
@@ -597,8 +604,12 @@ static void qlogic_isp_ram_dump(QLogicISPState *s)
         for (i = 0; i < count; i++) {
             stw_le_p(bytes + i * 2, s->risc_ram[(uint16_t)(base + i)]);
         }
-        pci_dma_write(pci, host, bytes, count * 2u);
+        if (pci_dma_write(pci, host, bytes, count * 2u) != MEMTX_OK) {
+            return ISP_MBOX_HOST_INTERFACE_ERROR;
+        }
     }
+
+    return ISP_MBOX_COMPLETE;
 }
 
 /*
@@ -712,8 +723,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
             break;
         }
-        qlogic_isp_ram_dump(s);
-        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        s->mailbox[0] = qlogic_isp_ram_dump(s);
         break;
 
     /* Mailboxes 1-7 are expected back unchanged; they already are. */
