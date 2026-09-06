@@ -163,12 +163,7 @@ static void xb_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     }
     if (xb_queue_at(offset, XB_QUEUE_CLEAR_BASE, &queue)) {
-        if (!xb_queue_mask[queue]) {
-            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-xb: unsupported clear of "
-                          "queue error register 0x%" HWADDR_PRIx "\n",
-                          offset);
-            return;
-        }
+        /* Consumers clear every queue at probe, unmodeled ones included. */
         s->queue_errors[queue] = 0;
         s->unserviced &= ~BIT(queue);
         return;
