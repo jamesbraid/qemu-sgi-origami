@@ -23,6 +23,7 @@ struct SGIBedrockPIState {
     qemu_irq hardware_irq[SGI_BEDROCK_PI_PROCESSORS *
                            SGI_BEDROCK_PI_HW_IRQS];
     qemu_irq nmi[SGI_BEDROCK_PI_PROCESSORS];
+    qemu_irq cpu_enable_out[SGI_BEDROCK_PI_PROCESSORS];
 
     uint32_t interface;
     uint32_t processor_count;

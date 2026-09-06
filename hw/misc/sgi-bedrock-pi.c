@@ -191,6 +191,13 @@ static void pi_rearm_timers(SGIBedrockPIState *s)
     pi_arm_profile(s);
 }
 
+static void pi_drive_cpu_enable(SGIBedrockPIState *s)
+{
+    for (unsigned cpu = 0; cpu < SGI_BEDROCK_PI_PROCESSORS; cpu++) {
+        qemu_set_irq(s->cpu_enable_out[cpu], s->cpu_enable[cpu]);
+    }
+}
+
 void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level)
 {
     s->lb_error = level;
@@ -344,9 +351,11 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case PI_CPU_ENABLE_A:
         s->cpu_enable[0] = value & 1;
+        qemu_set_irq(s->cpu_enable_out[0], s->cpu_enable[0]);
         return;
     case PI_CPU_ENABLE_B:
         s->cpu_enable[1] = value & 1;
+        qemu_set_irq(s->cpu_enable_out[1], s->cpu_enable[1]);
         return;
     case PI_NMI_A:
         qemu_irq_pulse(s->nmi[0]);
@@ -549,6 +558,7 @@ static void pi_reset_hold(Object *obj, ResetType type)
     SGIBedrockPIState *s = SGI_BEDROCK_PI(obj);
 
     sgi_bedrock_pi_recompute(s);
+    pi_drive_cpu_enable(s);
     pi_rearm_timers(s);
 }
 
@@ -561,6 +571,7 @@ static int pi_post_load(void *opaque, int version_id)
                     s->rt_migrate_phase_ns;
     pi_rearm_timers(s);
     sgi_bedrock_pi_recompute(s);
+    pi_drive_cpu_enable(s);
     return 0;
 }
 
@@ -644,6 +655,8 @@ static void pi_init(Object *obj)
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(DEVICE(obj), s->nmi, "nmi",
                              ARRAY_SIZE(s->nmi));
+    qdev_init_gpio_out_named(DEVICE(obj), s->cpu_enable_out, "cpu-enable",
+                             ARRAY_SIZE(s->cpu_enable_out));
 }
 
 static void pi_finalize(Object *obj)
