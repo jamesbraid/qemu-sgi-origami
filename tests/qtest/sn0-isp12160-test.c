@@ -11,6 +11,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -1174,19 +1175,24 @@ static void disks_remove(DiskPair *disks)
  * plugged. A wrong bus name is refused at start-up rather than silently
  * putting both disks on one channel.
  */
-static QTestState *isp12160_start_with_disks(DiskPair *disks)
+static char *isp12160_disk_args(const DiskPair *disks)
 {
-    QTestState *qts;
-    g_autofree char *args = NULL;
-
-    disks_create(disks);
-    args = g_strdup_printf(
+    return g_strdup_printf(
         MACHINE
         " -drive if=none,id=d0,format=raw,file=%s"
         " -device scsi-hd,bus=scsi.2,scsi-id=1,drive=d0"
         " -drive if=none,id=d1,format=raw,file=%s"
         " -device scsi-hd,bus=scsi.3,scsi-id=1,drive=d1",
         disks->path[0], disks->path[1]);
+}
+
+static QTestState *isp12160_start_with_disks(DiskPair *disks)
+{
+    QTestState *qts;
+    g_autofree char *args = NULL;
+
+    disks_create(disks);
+    args = isp12160_disk_args(disks);
 
     qts = qtest_init(args);
     aim_window_at_memory_bar(qts);
@@ -2464,6 +2470,179 @@ static void test_retired_handle_is_reusable(const void *data)
     disks_remove(&disks);
 }
 
+/*
+ * Migration. Everything the guest can still see after the stream is
+ * replayed has to come back, and the two banks and the per-channel reset
+ * delays this part adds are exactly the state an ISP1040 stream never
+ * carried. Both instances open the same raw files: the destination holds
+ * them inactive until the source hands over.
+ */
+
+/* The command the source runs, and the one the destination runs after it. */
+#define MIGRATE_UA_CHANNEL1     0x00000070
+#define MIGRATE_READ_CHANNEL1   0x00000071
+
+#define MIGRATE_RAM_LOW_ADDR    0x0100
+#define MIGRATE_RAM_LOW_WORD    0x1010
+#define MIGRATE_RAM_HIGH_ADDR   0x8100
+#define MIGRATE_RAM_HIGH_WORD   0x2020
+
+static void migrate_stopped_vm(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    while (true) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        const char *status = qdict_get_str(ret, "status");
+        bool done = g_str_equal(status, "completed");
+
+        g_assert(!g_str_equal(status, "failed"));
+        qobject_unref(ret);
+        if (done) {
+            return;
+        }
+        usleep(1000);
+    }
+}
+
+/*
+ * One value per bank, in the order the selection table lists them, so a
+ * stream that carries the RISC and SCSI processor 0 banks alone leaves
+ * two of these four reading zero on the far side.
+ */
+static const uint16_t migrate_bank_word[] = {
+    0x1919, 0x2a2a, 0x3b3b, 0x0808
+};
+
+/*
+ * The register test's patterns, and the mailboxes they go in. Mailboxes 4
+ * and 5 are left out: with the rings live those two addresses are the
+ * request producer and the response consumer, so writing a pattern there
+ * publishes ring work rather than parking a word. What they read back is
+ * checked as a cursor instead.
+ */
+static const uint8_t migrate_probe_mbox[] = { 1, 2, 3, 6, 7 };
+static const uint16_t migrate_probe_pattern[] = {
+    0x0a0a, 0x0b0b, 0x0c0c, 0x0f0f, 0x1a1a
+};
+
+/* Channel 0's delay and channel 1's, which no register hands back. */
+static const uint16_t migrate_reset_delay[] = { 7, 9 };
+
+static void test_migration_preserves_distinct_state(const void *data)
+{
+    DiskPair disks;
+    g_autofree char *args = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    uint16_t rqst_cursor, resp_cursor;
+    uint8_t payload[SECTOR_BYTES];
+    unsigned i;
+
+    disks_create(&disks);
+    args = isp12160_disk_args(&disks);
+    dir = g_dir_make_tmp("isp12160-migrate-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init(args);
+    aim_window_at_memory_bar(from);
+
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        isp_writew(from, ISP_REG_BUS_CFG1, bank_selections[i]);
+        isp_writew(from, ISP_REG_BANK_BASE, migrate_bank_word[i]);
+    }
+
+    /*
+     * The source arm, so a miss on the far side is the stream's fault and
+     * not a setup that never took.
+     */
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        isp_writew(from, ISP_REG_BUS_CFG1, bank_selections[i]);
+        g_assert_cmphex(isp_readw(from, ISP_REG_BANK_BASE), ==,
+                        migrate_bank_word[i]);
+    }
+
+    isp_write_ram_word(from, MIGRATE_RAM_LOW_ADDR, MIGRATE_RAM_LOW_WORD);
+    isp_write_ram_word(from, MIGRATE_RAM_HIGH_ADDR, MIGRATE_RAM_HIGH_WORD);
+
+    qtest_memset(from, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(from, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(from, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    /* Collected here so the read on the far side is not the first command. */
+    absorb_unit_attention(from, 1, DISK_TARGET, 0, MIGRATE_UA_CHANNEL1);
+
+    g_assert_cmphex(isp_mbox(from, ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS,
+                             migrate_reset_delay,
+                             ARRAY_SIZE(migrate_reset_delay)), ==,
+                    ISP_MBOX_COMPLETE);
+    isp_mbox_ack(from);
+
+    /* Unacknowledged on purpose: the result and its latches migrate too. */
+    for (i = 0; i < ARRAY_SIZE(migrate_probe_mbox); i++) {
+        isp_writew(from, ISP_MAILBOX(migrate_probe_mbox[i]),
+                   migrate_probe_pattern[i]);
+    }
+    isp_writew(from, ISP_MAILBOX(0), ISP_MBOX_CMD_MAILBOX_REG_TEST);
+    isp_writew(from, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(from, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+
+    rqst_cursor = isp_readw(from, ISP_REG_REQUEST_QUEUE);
+    resp_cursor = isp_readw(from, ISP_REG_RESPONSE_QUEUE);
+    g_assert_cmpuint(rqst_cursor, ==, ring.rqst_next);
+    g_assert_cmpuint(resp_cursor, ==, ring.resp_next);
+
+    to = qtest_initf("%s -incoming %s", args, uri);
+
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    migrate_stopped_vm(from, uri);
+    qtest_quit(from);
+
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+
+    for (i = 0; i < ARRAY_SIZE(migrate_probe_mbox); i++) {
+        g_assert_cmphex(isp_readw(to, ISP_MAILBOX(migrate_probe_mbox[i])),
+                        ==, migrate_probe_pattern[i]);
+    }
+    g_assert_cmphex(isp_readw(to, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+
+    g_assert_cmphex(isp_readw(to, ISP_REG_BUS_STATUS) &
+                    ISP_BUS_STATUS_INT_BITS, ==, ISP_BUS_STATUS_INT_BITS);
+    g_assert_cmphex(isp_readw(to, ISP_REG_SEMAPHORE) & ISP_SEMAPHORE_LOCK,
+                    ==, ISP_SEMAPHORE_LOCK);
+    isp_mbox_ack(to);
+
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        isp_writew(to, ISP_REG_BUS_CFG1, bank_selections[i]);
+        g_assert_cmphex(isp_readw(to, ISP_REG_BANK_BASE), ==,
+                        migrate_bank_word[i]);
+    }
+
+    g_assert_cmphex(isp_read_ram_word(to, MIGRATE_RAM_LOW_ADDR), ==,
+                    MIGRATE_RAM_LOW_WORD);
+    g_assert_cmphex(isp_read_ram_word(to, MIGRATE_RAM_HIGH_ADDR), ==,
+                    MIGRATE_RAM_HIGH_WORD);
+
+    g_assert_cmpuint(isp_readw(to, ISP_REG_REQUEST_QUEUE), ==, rqst_cursor);
+    g_assert_cmpuint(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, resp_cursor);
+
+    /* No queue initialisation here: the bases and lengths came over. */
+    read_sector(to, 1, DISK_TARGET, 0, MIGRATE_READ_CHANNEL1, 0, BUF_PHYS,
+                payload);
+    expect_sector(payload, DISK1_SECTOR0_FILL);
+
+    qtest_quit(to);
+    disks_remove(&disks);
+    /* The listening side unlinks its own socket, so the directory is empty. */
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2557,6 +2736,8 @@ int main(int argc, char **argv)
                         NULL, test_natural_completion_racing_an_abort);
     qtest_add_data_func("sn0/isp12160/retired-handle-is-reusable", NULL,
                         test_retired_handle_is_reusable);
+    qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
+                        NULL, test_migration_preserves_distinct_state);
 
     return g_test_run();
 }
