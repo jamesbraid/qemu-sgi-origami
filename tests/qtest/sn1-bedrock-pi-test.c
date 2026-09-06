@@ -414,7 +414,11 @@ static void test_power_on_values(void)
     qtest_quit(s);
 }
 
-/* Registers the datasheet says survive a soft reset, and ones that must not. */
+/*
+ * Registers the datasheet says survive a soft reset (the model equates that
+ * reset with the network interface's local reset), and registers whose
+ * reset value the datasheet leaves unknown, which the model clears.
+ */
 static void write_reset_probe(QTestState *s)
 {
     qtest_writeq(s, PI(0, CPU_PROTECT), 0x1234);
@@ -454,6 +458,12 @@ static void check_reset_probe(QTestState *s)
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_STACK_B)), ==,
                     0x123456780ULL);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_STACK_SIZE)), ==, 0xf);
+    /*
+     * Datasheet reset values: none of these are stated. Zero is the model's
+     * choice for every unknown reset value, and the timer zero is the
+     * datasheet's stated emulator reset. A reset that left any of them
+     * would not be a reset of this unit at all.
+     */
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, MASK_0_A)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 0);
@@ -477,6 +487,11 @@ static void test_local_reset(void)
     qtest_writeq(s, NI(0x38), 0xa55a);
     qtest_writeq(s, NI(0x08), 4);
     check_reset_probe(s);
+    /*
+     * Local-block scratch 0 resets to zero and scratch 1 is not reset: both
+     * are the header's words. The network interface's channel age has no
+     * stated reset value; zero is the model's choice.
+     */
     g_assert_cmphex(qtest_readq(s, LB(0x8000)), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB(0x8008)), ==, 0xfeed);
     g_assert_cmphex(qtest_readq(s, NI(0x38)), ==, 0);
