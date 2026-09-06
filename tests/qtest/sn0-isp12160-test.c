@@ -1048,6 +1048,7 @@ static void test_submission_while_locked_is_ignored(const void *data)
 #define ISP_STATUS_OFF_SCSI_STATUS  8
 #define ISP_STATUS_OFF_COMPLETION   10
 #define ISP_STATUS_OFF_STATE_FLAGS  12
+#define ISP_STATUS_OFF_STATUS_FLAGS 14
 #define ISP_STATUS_OFF_SENSE_LEN    18
 #define ISP_STATUS_OFF_RESID        20
 #define ISP_STATUS_OFF_SENSE_DATA   32
@@ -1938,6 +1939,7 @@ static void test_underrun_reports_residual_and_leaves_sentinels(
 #define SENSE_FIXED_BYTES           18
 #define SENSE_KEY_MASK              0x0f
 #define SENSE_KEY_ILLEGAL_REQUEST   0x05
+#define SENSE_KEY_UNIT_ATTENTION    0x06
 
 /* What the response ring holds before the adapter writes any of it. */
 #define RESP_SENTINEL               0xee
@@ -2204,13 +2206,52 @@ static void expect_no_further_status(QTestState *qts)
                     ring.resp_next);
 }
 
-/* The whole entry a retirement writes: a completion code and nothing else. */
+/*
+ * The whole entry a retirement writes: a completion code, and every other
+ * field left at zero. A retired command reached no phase, carries no
+ * target status, transferred nothing and has no sense to report, so a
+ * model filling any of those in would be describing work it did not do.
+ */
 static void expect_retired(const uint8_t *status, uint16_t completion)
 {
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
                     completion);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
+    g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==, 0);
+    g_assert_cmpuint(get16le(status + ISP_STATUS_OFF_SENSE_LEN), ==, 0);
+}
+
+/*
+ * A reset raises a unit attention on every device it reached, and the
+ * next command to that device collects it. Reading it back is the only
+ * thing that separates a model that reset the target from one that
+ * retired the target's requests and reset nothing, and the probe drains
+ * the attention so the commands after it see a settled device.
+ */
+static void expect_reset_reported(QTestState *qts, unsigned channel,
+                                  uint32_t handle)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    run_simple(qts, handle, channel, DISK_TARGET, 0, SCSI_TEST_UNIT_READY,
+               status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==,
+                    ISP_SCSI_STATUS_CHECK_CONDITION);
+    g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + 2] & SENSE_KEY_MASK,
+                    ==, SENSE_KEY_UNIT_ATTENTION);
+}
+
+/* The same probe on a device the reset had no business reaching. */
+static void expect_no_reset_reported(QTestState *qts, unsigned channel,
+                                     uint32_t handle)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    run_simple(qts, handle, channel, DISK_TARGET, 0, SCSI_TEST_UNIT_READY,
+               status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
 }
 
 /*
@@ -2319,6 +2360,65 @@ static void test_abort_command_by_handle(const void *data)
 }
 
 /*
+ * A handle the adapter really is holding, named with the wrong channel.
+ * The selector has to be matched whole: retiring on the handle alone
+ * would cancel a command on a bus the host did not name, and answering
+ * complete would tell it a command it is still waiting on is gone.
+ */
+static void test_abort_command_checks_the_whole_selector(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x71 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    /* The one outstanding command is this target and LUN on channel 0. */
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, SECTOR_BYTES);
+    place_read(qts, 0x71, 0, BUF_PHYS);
+    publish_requests(qts);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_CMD_ERROR);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(wait_next_status(qts, status), ==, 0x71);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    expect_survivor_payload(qts, BUF_PHYS, DISK0_SECTOR0_FILL);
+    expect_no_further_status(qts);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * Abort device with nothing outstanding at the address. The command
+ * names no handle, so there is nothing for it to miss and nothing to
+ * report a miss about: a driver clearing a device it has already drained
+ * would read a command error as a failure.
+ */
+static void test_abort_device_with_nothing_outstanding(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0 };
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_DEVICE, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    expect_no_further_status(qts);
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
  * A handle nothing is using. Reporting the abort complete would tell the
  * host that a command it is still waiting on has been retired, and
  * posting an entry for a handle the host never issued is worse.
@@ -2364,9 +2464,17 @@ static void test_target_reset_is_channel_scoped(const void *data)
     expect_one_retired_one_survivor(qts, 0x42, ISP_IOCB_RESET, 0x41);
     expect_survivor_payload(qts, BUF_PHYS, DISK0_SECTOR0_FILL);
 
-    /* The reset target reports the reset, then serves the next command. */
-    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x43);
-    read_sector(qts, 1, DISK_TARGET, 0, 0x44, 0, BUF_PHYS, payload);
+    /*
+     * The reset target reports the reset and the other channel's target
+     * does not, so the devices really were reset and only the named one
+     * was. Retiring the requests and resetting nothing would leave both
+     * quiet here.
+     */
+    expect_reset_reported(qts, 1, 0x43);
+    expect_no_reset_reported(qts, 0, 0x44);
+
+    /* The reset target serves the next command. */
+    read_sector(qts, 1, DISK_TARGET, 0, 0x45, 0, BUF_PHYS, payload);
     expect_sector(payload, DISK1_SECTOR0_FILL);
 
     qtest_quit(qts);
@@ -2394,11 +2502,17 @@ static void test_bus_reset_is_channel_scoped(const void *data)
 
     expect_one_retired_one_survivor(qts, 0x42, ISP_IOCB_RESET, 0x41);
 
+    /*
+     * The bus that was named reports the reset and the other one does
+     * not, so a bus really was reset and it was the right one.
+     */
+    expect_reset_reported(qts, 1, 0x43);
+    expect_no_reset_reported(qts, 0, 0x44);
+
     /* A reset bus, not a wiped one: both media are where they were. */
-    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x43);
-    read_sector(qts, 1, DISK_TARGET, 0, 0x44, 0, BUF_PHYS, payload);
+    read_sector(qts, 1, DISK_TARGET, 0, 0x45, 0, BUF_PHYS, payload);
     expect_sector(payload, DISK1_SECTOR0_FILL);
-    read_sector(qts, 0, DISK_TARGET, 0, 0x45, 0, BUF_PHYS, payload);
+    read_sector(qts, 0, DISK_TARGET, 0, 0x46, 0, BUF_PHYS, payload);
     expect_sector(payload, DISK0_SECTOR0_FILL);
 
     qtest_quit(qts);
@@ -2725,6 +2839,12 @@ int main(int argc, char **argv)
                         test_abort_device_is_channel_scoped);
     qtest_add_data_func("sn0/isp12160/abort-command-by-handle", NULL,
                         test_abort_command_by_handle);
+    qtest_add_data_func(
+        "sn0/isp12160/abort-command-checks-the-whole-selector", NULL,
+        test_abort_command_checks_the_whole_selector);
+    qtest_add_data_func(
+        "sn0/isp12160/abort-device-with-nothing-outstanding", NULL,
+        test_abort_device_with_nothing_outstanding);
     qtest_add_data_func(
         "sn0/isp12160/abort-unknown-handle-is-a-command-error", NULL,
         test_abort_unknown_handle_is_a_command_error);
