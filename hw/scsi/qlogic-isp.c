@@ -1417,7 +1417,13 @@ static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
 
         qemu_sglist_add(&req->qsg, base, len);
     }
-    /* The saved list is already capped, so it is all this request describes. */
+    /*
+     * described normally counts the whole named length, trimmed segment
+     * bytes included, and the stream carries only the trimmed list. Block
+     * I/O drains before a save, so no request arriving here still has a
+     * transfer left to measure a residual against and the list's own size
+     * is all the count has to be.
+     */
     req->described = req->qsg.size;
 
     return req;
@@ -1495,6 +1501,7 @@ static void qlogic_isp_add_segment(QEMUSGList *qsg, uint64_t *described,
     uint64_t placed = MIN(len, room);
 
     *described += len;
+    /* Nothing to move: a list entry here would be a slot holding no bytes. */
     if (placed > 0) {
         qemu_sglist_add(qsg, base, placed);
     }
@@ -1561,7 +1568,6 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     uint8_t cdb[ISP_REQ_CDB_LEN];
     SCSIDevice *sdev;
     QLogicISPRequest *req;
-
 
     handle = qlogic_isp_desc_ld32(pci, addr + ISP_REQ_OFF_HANDLE);
     device = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_DEVICE);
@@ -1687,7 +1693,6 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     SCSIDevice *sdev;
     QLogicISPRequest *req;
 
-
     handle = qlogic_isp_desc_ld32(pci, addr + ISP_REQ_OFF_HANDLE);
     device = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_DEVICE);
     cdb_len = qlogic_isp_desc_ld16(pci, addr + ISP_REQ_OFF_CDBLEN);
@@ -1769,7 +1774,6 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         hwaddr addr = qlogic_isp_rqst_entry_addr(s, s->rqst_cons);
         uint8_t entry_type;
         uint8_t entry_count;
-
 
         entry_type = qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_TYPE);
         entry_count = qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_COUNT);
