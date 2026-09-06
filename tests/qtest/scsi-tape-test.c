@@ -467,6 +467,50 @@ static void test_mode_sense(void *obj, void *data, QGuestAllocator *alloc)
     session_close(&s);
 }
 
+/*
+ * The medium partition page must exist for a single-partition medium: a
+ * DAT driver reads it at open and fails the open when it is refused.
+ */
+static void test_mode_sense_partition_page(void *obj, void *data,
+                                           QGuestAllocator *alloc)
+{
+    TapeSession s;
+    /*
+     * Allocation lengths match the answers exactly: a shorter answer is a
+     * data underrun at the adapter, which is its contract, not this one.
+     */
+    uint8_t cdb[6] = { MODE_SENSE, 0, 0x11, 0, 20, 0 };
+    uint8_t all[6] = { MODE_SENSE, 0, 0x3f, 0, 64, 0 };
+    uint64_t buf = guest_alloc(alloc, 96);
+    uint8_t out[96];
+    uint32_t off;
+    bool found = false;
+
+    session_open(&s, obj, alloc);
+    tape_clear_ua(&s);
+    tape_good(&s, cdb, 6, buf, 20);
+    qtest_memread(s.qts, buf, out, 20);
+    g_assert_cmphex(out[0], ==, 19);
+    g_assert_cmphex(out[3], ==, 8);
+    g_assert_cmphex(out[12], ==, 0x11);
+    g_assert_cmphex(out[13], ==, 0x06);
+    g_assert_cmphex(out[14], ==, 0);
+    g_assert_cmphex(out[15], ==, 0);
+
+    tape_good(&s, all, 6, buf, 64);
+    qtest_memread(s.qts, buf, out, 64);
+    for (off = 4 + out[3]; off + 2 <= (uint32_t)out[0] + 1;
+         off += 2 + out[off + 1]) {
+        if ((out[off] & 0x3f) == 0x11) {
+            found = true;
+        }
+    }
+    g_assert_true(found);
+
+    guest_free(alloc, buf);
+    session_close(&s);
+}
+
 static void test_mode_sense_write_protect(void *obj, void *data,
                                           QGuestAllocator *alloc)
 {
@@ -905,6 +949,8 @@ static void scsi_tape_register_tests(void)
                  &opts);
     qos_add_test("scsi-tape/mode-sense-write-protect", "qlogic-isp1040",
                  test_mode_sense_write_protect, &ro_opts);
+    qos_add_test("scsi-tape/mode-sense-partition-page", "qlogic-isp1040",
+                 test_mode_sense_partition_page, &opts);
     qos_add_test("scsi-tape/write-rewind-read", "qlogic-isp1040",
                  test_write_rewind_read, &opts);
     qos_add_test("scsi-tape/read-length-mismatch", "qlogic-isp1040",

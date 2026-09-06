@@ -27,6 +27,7 @@
 #include "system/block-backend.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
+#include "trace.h"
 
 #define MAX_SERIAL_LEN           36
 #define MAX_SERIAL_LEN_FOR_DEVID 20
@@ -55,7 +56,7 @@
 #define SENSE_FLAG_ILI       0x20
 
 #define TAPE_INQUIRY_LEN     36
-#define TAPE_MODE_MAX        64
+#define TAPE_MODE_MAX        96
 
 OBJECT_DECLARE_SIMPLE_TYPE(SCSITapeState, SCSI_TAPE)
 
@@ -469,6 +470,16 @@ static uint32_t tape_mode_page(uint8_t page, uint8_t *out)
         /* Early-warning and end-of-data are reported, not buffered away. */
         out[10] = 0x18;
         return 16;
+    case 0x11:
+        /*
+         * Medium partition page: one partition, not partitionable (maximum
+         * additional partitions and additional partitions defined both
+         * zero). A DAT driver reads it at open and fails the open if it is
+         * missing, so a single-partition medium must still answer it.
+         */
+        out[0] = 0x11;
+        out[1] = 0x06;
+        return 8;
     default:
         return 0;
     }
@@ -503,12 +514,14 @@ static uint32_t tape_mode_sense(SCSITapeState *s, SCSITapeReq *r,
     case 0x01:
     case 0x0f:
     case 0x10:
+    case 0x11:
         len += tape_mode_page(page, out + len);
         break;
     case 0x3f:
         len += tape_mode_page(0x01, out + len);
         len += tape_mode_page(0x0f, out + len);
         len += tape_mode_page(0x10, out + len);
+        len += tape_mode_page(0x11, out + len);
         break;
     default:
         tape_check_condition(r, SENSE_CODE(INVALID_FIELD));
@@ -533,6 +546,7 @@ static uint32_t tape_mode_sense(SCSITapeState *s, SCSITapeReq *r,
     }
     out[0] = len - 1;
     tape_copy_out(out, &len, cdb[4]);
+    trace_scsi_tape_mode_sense(pc, page, dbd, cdb[4], len);
     return len;
 }
 
@@ -567,6 +581,7 @@ static void tape_mode_select(SCSITapeState *s, SCSITapeReq *r,
         tape_check_condition(r, SENSE_CODE(INVALID_PARAM));
         return;
     }
+    trace_scsi_tape_mode_select(len, bd_len, s->block_size, s->density);
 
     /*
      * Pages are accepted whole. None is modelled beyond what MODE SENSE
@@ -576,7 +591,7 @@ static void tape_mode_select(SCSITapeState *s, SCSITapeReq *r,
     for (off = 4 + bd_len; off + 2 <= len; off += 2 + in[off + 1]) {
         uint8_t page = in[off] & 0x3f;
 
-        if (page != 0x01 && page != 0x0f && page != 0x10) {
+        if (page != 0x01 && page != 0x0f && page != 0x10 && page != 0x11) {
             qemu_log_mask(LOG_UNIMP, "scsi-tape: MODE SELECT page 0x%02x "
                           "accepted but not modelled\n", page);
         }
@@ -879,6 +894,8 @@ static int32_t scsi_tape_send_command(SCSIRequest *req, uint8_t *cdb)
     SCSITapeState *s = SCSI_TAPE(req->dev);
     uint8_t *out;
     uint32_t len;
+
+    trace_scsi_tape_command(cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5]);
 
     /* Commands that need no medium, or say so themselves. */
     switch (cdb[0]) {
