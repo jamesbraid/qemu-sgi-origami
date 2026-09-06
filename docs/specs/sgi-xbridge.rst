@@ -65,9 +65,11 @@ stored. The registers the datasheet carries over from the Bridge
 unchanged -- test pin control, arbitration, PCI timeout, interrupt
 device and the two read response buffer registers among them -- are
 stored with the Bridge's reset values and fields. The address-match
-buffers, performance counters, interrupt-acknowledge slot and the 4 MB
-section are defined but deferred: reads return zero, writes are
-dropped, both are logged, and none is an invalid-address error.
+buffers, performance counters, the eight-byte interrupt-acknowledge
+slot and the 4 MB section are defined but deferred: reads return
+zero, writes are dropped, both are logged, and none is an
+invalid-address error. The rest of the acknowledge slot's page is in
+no map entry and is one.
 
 Errors of the head's own
 ========================
