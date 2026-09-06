@@ -25,6 +25,7 @@
 #define XIO_NODE(n) ((uint64_t)(n) << 39)
 #define HUB_REMOTE UINT64_C(0x1800000)
 
+#define WIDGET_STATUS  0x8
 #define WIDGET_CONTROL 0x20
 #define LOCAL_PROTECT  0x100
 #define OUT_ACCESS     0x110
@@ -52,6 +53,56 @@ static QTestState *io_start_machine(const char *machine, const char *extra)
 static QTestState *io_start(const char *extra)
 {
     return io_start_machine(MACHINE, extra);
+}
+
+/*
+ * What the model refuses or leaves unimplemented is part of its contract,
+ * and the only trace of it is the log.  These run QEMU with -d unimp into
+ * a file and hand its contents back once the machine has exited.
+ */
+static char *log_file_new(void)
+{
+    GError *error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn1-io-log-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    close(fd);
+    return path;
+}
+
+static QTestState *io_start_logged(const char *log, const char *extra)
+{
+    g_autofree char *with_log = g_strdup_printf("-d unimp -D %s %s", log,
+                                                extra);
+
+    return io_start(with_log);
+}
+
+static char *log_file_take(const char *path)
+{
+    GError *error = NULL;
+    char *contents = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    unlink(path);
+    return contents;
+}
+
+static void test_widget_status(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    QTestState *s = io_start_logged(log, "");
+
+    g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_STATUS), ==, 0);
+    qtest_writeq(s, REG_BASE + WIDGET_STATUS, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_STATUS), ==, 0);
+    qtest_quit(s);
+    contents = log_file_take(log);
+    g_assert_null(strstr(contents, "unsupported read at 0x8\n"));
+    g_assert_nonnull(strstr(contents, "widget status"));
 }
 
 /*
@@ -643,6 +694,8 @@ int main(int argc, char **argv)
                    test_dma_link_required);
     qtest_add_func("/mips64/sn1/bedrock-io/identity-registers",
                    test_identity_and_registers);
+    qtest_add_func("/mips64/sn1/bedrock-io/widget-status",
+                   test_widget_status);
     qtest_add_func("/mips64/sn1/bedrock-io/probe-retained",
                    test_probe_and_retained_registers);
     qtest_add_func("/mips64/sn1/bedrock-io/pio-translation",
