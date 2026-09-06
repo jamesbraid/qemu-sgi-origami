@@ -247,6 +247,7 @@ qtests_mips64 = \
                                                    'sn0-ioc3-parallel-test',
                                                    'sn0-ioc3-serial-test',
                                                    'sn0-qlogic-isp-test',
+                                                   'sn0-isp12160-test',
                                                    'sn0-xframe-test',
                                                    'sn0-tigon-test',
                                                    'sn0-hub-test',
