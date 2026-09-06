@@ -789,7 +789,7 @@ const mips_def_t mips_defs[] =
             .performance_counter_pairs = 4,
             .performance_control_rw_bitmask =
                 CP0PC_IE | CP0PC_U | CP0PC_K | CP0PC_EXL,
-            /* Counter overflow and reset behavior remain unimplemented. */
+            /* Counter overflow interrupt behavior remains outside the model. */
             .performance_counter_interrupts = false,
             .diagnostic_rw_bitmask = CP0DI_WRITABLE | (1ULL << 26),
             .scache_size = R14K_SCACHE_SIZE,

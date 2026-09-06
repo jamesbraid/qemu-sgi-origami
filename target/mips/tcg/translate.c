@@ -5173,9 +5173,9 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
-     * processor's own instructions for reaching its two performance counters
-     * and their two control registers. Every other register keeps the rule that
-     * a nonzero selector needs MIPS32.
+     * processor's own instructions for reaching its model-selected performance
+     * counter pairs: two on R10000 and four on R14000. Every other register
+     * keeps the rule that a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
         !(reg == CP0_REGISTER_25 &&
@@ -5989,9 +5989,9 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
-     * processor's own instructions for reaching its two performance counters
-     * and their two control registers. Every other register keeps the rule that
-     * a nonzero selector needs MIPS32.
+     * processor's own instructions for reaching its model-selected performance
+     * counter pairs: two on R10000 and four on R14000. Every other register
+     * keeps the rule that a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
         !(reg == CP0_REGISTER_25 &&
@@ -6778,9 +6778,9 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
-     * processor's own instructions for reaching its two performance counters
-     * and their two control registers. Every other register keeps the rule that
-     * a nonzero selector needs MIPS32.
+     * processor's own instructions for reaching its model-selected performance
+     * counter pairs: two on R10000 and four on R14000. Every other register
+     * keeps the rule that a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
         !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
@@ -7538,9 +7538,9 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
-     * processor's own instructions for reaching its two performance counters
-     * and their two control registers. Every other register keeps the rule that
-     * a nonzero selector needs MIPS32.
+     * processor's own instructions for reaching its model-selected performance
+     * counter pairs: two on R10000 and four on R14000. Every other register
+     * keeps the rule that a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
         !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
