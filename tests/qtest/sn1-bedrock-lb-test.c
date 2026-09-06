@@ -98,6 +98,31 @@ static void test_default_identity(void)
     qtest_quit(s);
 }
 
+/* A write to the identity register is refused, and the refusal is logged. */
+static void test_identity_write_logged(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn1-lb-identity-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
+    const uint64_t identity = (0x36ULL << 1) | (0x3012ULL << 12) |
+                              (2ULL << 28) | (0x5aULL << 32);
+    QTestState *s;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d guest_errors -D %s", log);
+    s = lb_start(extra);
+    qtest_writeq(s, LB_BASE + REVISION, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==, identity);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "write to read-only register 0x0\n"));
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
 /*
  * The datasheet gives the permission registers no reset value and says only
  * that every consumer's first access assumes its region is allowed. Reading
@@ -381,6 +406,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-lb/identity-permissions",
                    test_identity_and_permissions);
     qtest_add_func("sn1/bedrock-lb/default-identity", test_default_identity);
+    qtest_add_func("sn1/bedrock-lb/identity-write-logged",
+                   test_identity_write_logged);
     qtest_add_func("sn1/bedrock-lb/permissive-reset", test_permissive_reset);
     qtest_add_func("sn1/bedrock-lb/storage-masks-error",
                    test_storage_masks_and_error);
