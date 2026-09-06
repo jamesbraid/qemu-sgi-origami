@@ -325,9 +325,13 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case PI_REMAP:
         s->remap = value & 0x1f;
-        if (s->remap) {
-            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: pending bank 1 "
-                          "remap and error forwarding are unresolved\n");
+        if (s->remap & 0xf) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: pending bank 1 remap "
+                          "0x%x is not routed\n", s->remap & 0xf);
+        }
+        if (s->remap & 0x10) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: error forwarding to "
+                          "the I/O interface is not implemented\n");
         }
         break;
     case PI_RT_COMPARE_A:
