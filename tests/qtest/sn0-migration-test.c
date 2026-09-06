@@ -693,6 +693,56 @@ static void test_bte_state_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+static void test_bte_physical_routing_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    const uint64_t hub = HUB_BY_NODE + NODE_STRIDE;
+    const uint64_t src = 0x00800000;
+    const uint64_t dst = 0x00900000;
+    const uint64_t notify = 0x00a00000;
+    unsigned int engine;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_DUAL);
+    assign_node1_number(from);
+    qtest_memset(from, src, 0xaa, BTE_LINE);
+    qtest_memset(from, NODE_STRIDE + src, 0xbb, BTE_LINE);
+    qtest_memset(from, dst, 0xcc, 2 * BTE_LINE);
+    qtest_memset(from, NODE_STRIDE + dst, 0xcc, 2 * BTE_LINE);
+    qtest_memset(from, notify, 0xff, 2 * BTE_LINE);
+    qtest_memset(from, NODE_STRIDE + notify, 0xff, 2 * BTE_LINE);
+    for (engine = 0; engine < 2; engine++) {
+        qtest_writeq(from, hub + BTE_SOURCE(engine), src);
+        qtest_writeq(from, hub + BTE_DEST(engine), dst + engine * BTE_LINE);
+        qtest_writeq(from, hub + BTE_NOTIFY(engine),
+                     notify + engine * BTE_LINE);
+        qtest_writeq(from, hub + BTE_LENGTH(engine), BTE_BUSY | 1);
+    }
+    dest_cmdline = g_strdup_printf(MACHINE_DUAL " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+    for (engine = 0; engine < 2; engine++) {
+        qtest_writeq(to, hub + BTE_CONTROL(engine), BTE_CTL_NOTIFY);
+        g_assert_cmphex(qtest_readq(to, hub + BTE_LENGTH(engine)), ==, 0);
+        g_assert_cmphex(qtest_readq(to, dst + engine * BTE_LINE),
+                        ==, 0xaaaaaaaaaaaaaaaaULL);
+        g_assert_cmphex(qtest_readq(to,
+                        NODE_STRIDE + dst + engine * BTE_LINE),
+                        ==, 0xccccccccccccccccULL);
+        g_assert_cmphex(qtest_readq(to, notify + engine * BTE_LINE), ==, 0);
+        g_assert_cmphex(qtest_readq(to,
+                        NODE_STRIDE + notify + engine * BTE_LINE), ==, ~0ULL);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 static void test_flash_autoselect_survives_migration(const void *data)
 {
     g_autofree gchar *tmpfs = NULL;
@@ -859,6 +909,8 @@ int main(int argc, char **argv)
                         NULL, test_a_conversation_survives_migration);
     qtest_add_data_func("sn0/migration/bte-state-survives-migration",
                         NULL, test_bte_state_survives_migration);
+    qtest_add_data_func("sn0/migration/bte-physical-routing-survives-migration",
+                        NULL, test_bte_physical_routing_survives_migration);
     qtest_add_data_func("sn0/migration/flash-autoselect-survives-migration",
                         NULL, test_flash_autoselect_survives_migration);
     qtest_add_data_func("sn0/migration/flash-program-command-"
