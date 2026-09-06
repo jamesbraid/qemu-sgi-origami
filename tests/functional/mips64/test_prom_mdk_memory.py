@@ -88,11 +88,18 @@ class PromMdkMemory(QemuSystemTest):
     def test_prom_mdk_memory(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'no firmware/'
-                f'memory.mdk at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{MDK_REL} -- tools/extract-irix mdk '
-                'in the project checkout lands the MDK packages')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing PROM or memory.mdk is a
+            # provisioning failure, not an absent-assets developer run,
+            # and must fail loudly: a silent skip here would let a real
+            # memory-test regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the firmware/memory.mdk are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{MDK_REL} -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         prom, mdk = paths
 
         identity_problems = payload_identity_problems(
