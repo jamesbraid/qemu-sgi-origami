@@ -216,6 +216,36 @@ static void test_service_order(void)
     qtest_quit(s);
 }
 
+static void test_premature_clear_retains_record(void)
+{
+    QTestState *s = xb_start("");
+
+    qtest_irq_intercept_out_named(s, XB_PATH, "error");
+    /*
+     * A record on a higher queue must survive a premature clear even when a
+     * lower queue is populated: the record is retained, not relatched from
+     * the lowest populated queue.
+     */
+    qtest_writeq(s, XB_BASE + QUEUE_ERROR(LB_INPUT), 1);
+    g_assert_cmphex(qtest_readq(s, XB_BASE + FIRST_ERROR), ==,
+                    FIRST_ERROR_LB_INPUT);
+    qtest_writeq(s, XB_BASE + QUEUE_ERROR(PI0_OUTPUT), 1);
+    qtest_writeq(s, XB_BASE + FIRST_ERROR_CLEAR, FIRST_ERROR_LB_INPUT);
+    g_assert_cmphex(qtest_readq(s, XB_BASE + FIRST_ERROR), ==,
+                    FIRST_ERROR_LB_INPUT);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, XB_BASE + QUEUE_CLEAR(LB_INPUT), 1);
+    qtest_writeq(s, XB_BASE + FIRST_ERROR_CLEAR, FIRST_ERROR_LB_INPUT);
+    g_assert_cmphex(qtest_readq(s, XB_BASE + FIRST_ERROR), ==,
+                    FIRST_ERROR_PI0_OUTPUT);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, XB_BASE + QUEUE_CLEAR(PI0_OUTPUT), 1);
+    qtest_writeq(s, XB_BASE + FIRST_ERROR_CLEAR, FIRST_ERROR_PI0_OUTPUT);
+    g_assert_cmphex(qtest_readq(s, XB_BASE + FIRST_ERROR), ==, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_quit(s);
+}
+
 static void test_relatch(void)
 {
     QTestState *s = xb_start("");
@@ -511,6 +541,8 @@ int main(int argc, char **argv)
                    test_pi0_output_injection);
     qtest_add_func("sn1/bedrock-xb/undocumented-bits", test_undocumented_bits);
     qtest_add_func("sn1/bedrock-xb/service-order", test_service_order);
+    qtest_add_func("sn1/bedrock-xb/premature-clear",
+                   test_premature_clear_retains_record);
     qtest_add_func("sn1/bedrock-xb/relatch", test_relatch);
     qtest_add_func("sn1/bedrock-xb/probe-replay", test_probe_replay);
     qtest_add_func("sn1/bedrock-xb/structureless-queues",
