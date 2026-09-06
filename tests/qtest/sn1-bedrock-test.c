@@ -411,6 +411,59 @@ static void test_parent_l1_missing_link(void)
     qtest_quit(s);
 }
 
+static void assert_log_contains(const char *path, const char *needle)
+{
+    GError *error = NULL;
+    g_autofree char *contents = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    if (!strstr(contents, needle)) {
+        g_test_message("log lacks \"%s\"; log follows: %s", needle, contents);
+        g_assert_not_reached();
+    }
+}
+
+/*
+ * A refused access to the remote register window must be visible: a
+ * permission denial as a guest error, an unlinked or undecoded target as
+ * unimplemented. The log file is read after the machine has exited.
+ */
+static void test_parent_remote_window_logs(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-bedrock-remote-log-XXXXXX", &error);
+    g_autofree char *log = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *s;
+
+    g_assert_no_error(error);
+    log = g_build_filename(directory, "qemu.log", NULL);
+    extra = g_strdup_printf("-d guest_errors,unimp -D %s", log);
+
+    s = bedrock_l1_start(extra);
+    qtest_writeq(s, MD_BASE, UINT64_MAX & ~(UINT64_C(1) << 5));
+    qtest_writeq(s, REMOTE_BASE + 0x80, 0x7e);
+    qtest_writeq(s, MD_BASE, UINT64_MAX);
+    (void)qtest_readq(s, REMOTE_BASE + 0x1000);
+    qtest_quit(s);
+    assert_log_contains(log, "sgi-bedrock: remote register window write "
+                        "at 0x80 denied for region 5");
+    assert_log_contains(log, "sgi-bedrock: remote register window read "
+                        "at 0x1000 is not decoded");
+    g_assert_cmpint(unlink(log), ==, 0);
+
+    s = bedrock_start(extra);
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 3, REMOTE_BASE);
+    qtest_writeq(s, REMOTE_BASE + 0x80, 0x7e);
+    qtest_quit(s);
+    assert_log_contains(log, "sgi-bedrock: remote register window write "
+                        "at 0x80 with no L1 controller linked");
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 /*
  * The remote form of the hub's own register window, as a widget's
  * interrupt write reaches it. Only the two interrupt-pending-modify
@@ -526,6 +579,8 @@ int main(int argc, char **argv)
                    test_parent_l1_missing_region);
     qtest_add_func("sn1/bedrock/composition/l1-missing-link",
                    test_parent_l1_missing_link);
+    qtest_add_func("sn1/bedrock/composition/remote-window-logs",
+                   test_parent_remote_window_logs);
     qtest_add_func("sn1/bedrock/composition/io-interrupt-write",
                    test_parent_io_interrupt_write);
     qtest_add_func("sn1/bedrock/composition/widget-interrupt-write",

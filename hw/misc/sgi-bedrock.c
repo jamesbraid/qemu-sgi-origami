@@ -20,6 +20,31 @@ static bool bedrock_remote_permitted(SGIBedrockState *s)
     return s->md.current_cell & (UINT64_C(1) << s->initiator_region);
 }
 
+/* True when the window refuses the access, with the reason logged. */
+static bool bedrock_remote_refused(SGIBedrockState *s, hwaddr addr,
+                                   unsigned size, const char *access)
+{
+    if (!s->l1_uart_as_initialized) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: remote register window %s "
+                      "at 0x%" HWADDR_PRIx " with no L1 controller linked\n",
+                      access, addr);
+        return true;
+    }
+    if (!bedrock_remote_permitted(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: remote register window "
+                      "%s at 0x%" HWADDR_PRIx " denied for region %u\n",
+                      access, addr, (unsigned)s->initiator_region);
+        return true;
+    }
+    if (addr < BEDROCK_L1_UART_OFFSET ||
+        addr + size > BEDROCK_L1_UART_OFFSET + SGI_L1_SIZE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: remote register window %s "
+                      "at 0x%" HWADDR_PRIx " is not decoded\n", access, addr);
+        return true;
+    }
+    return false;
+}
+
 static MemTxResult bedrock_remote_read(void *opaque, hwaddr addr,
                                        uint64_t *value, unsigned size,
                                        MemTxAttrs attrs)
@@ -28,9 +53,7 @@ static MemTxResult bedrock_remote_read(void *opaque, hwaddr addr,
     uint8_t buffer[8];
     MemTxResult result;
 
-    if (!s->l1_uart_as_initialized || !bedrock_remote_permitted(s) ||
-        addr < BEDROCK_L1_UART_OFFSET ||
-        addr + size > BEDROCK_L1_UART_OFFSET + SGI_L1_SIZE) {
+    if (bedrock_remote_refused(s, addr, size, "read")) {
         return MEMTX_DECODE_ERROR;
     }
     result = address_space_read(&s->l1_uart_as,
@@ -65,9 +88,7 @@ static MemTxResult bedrock_remote_write(void *opaque, hwaddr addr,
     SGIBedrockState *s = opaque;
     uint8_t buffer[8];
 
-    if (!s->l1_uart_as_initialized || !bedrock_remote_permitted(s) ||
-        addr < BEDROCK_L1_UART_OFFSET ||
-        addr + size > BEDROCK_L1_UART_OFFSET + SGI_L1_SIZE) {
+    if (bedrock_remote_refused(s, addr, size, "write")) {
         return MEMTX_DECODE_ERROR;
     }
     switch (size) {
