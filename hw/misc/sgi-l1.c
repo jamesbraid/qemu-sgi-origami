@@ -259,6 +259,52 @@ static void l1_console_event(void *opaque, QEMUChrEvent event)
     }
 }
 
+static bool l1_route(SGIL1State *s, uint32_t address)
+{
+    unsigned type = address >> 28;
+    unsigned rack = (address >> 18) & 0x3ff;
+    unsigned bay = (address >> 12) & 0x3f;
+    unsigned task = address & 0x1f;
+
+    if (address & 0xfe0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-l1: reserved destination bits set: 0x%08x\n",
+                      address);
+        return false;
+    }
+    rack = rack == 0x3ff ? s->rack : rack;
+    bay = bay == 0x3f ? s->bay : bay;
+    if ((type != 0 && type != 4) || rack != s->rack || bay != s->bay ||
+        (type == 0 && task != 3 && task != 6) ||
+        (type == 4 && task != 6)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: destination not modeled: 0x%08x\n", address);
+        return false;
+    }
+    return true;
+}
+
+static bool l1_task_command(uint32_t address, uint16_t command)
+{
+    if ((address & 0x1f) == 3) {
+        return command == 0;
+    }
+    if ((address >> 28) == 4) {
+        return command == 3;
+    }
+    switch (command) {
+    case 2:
+    case 3:
+    case 5:
+    case 6:
+    case 0x1004:
+    case 0x1005:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void l1_request(SGIL1State *s)
 {
     const uint8_t *p = s->frame;
@@ -288,15 +334,21 @@ static void l1_request(SGIL1State *s)
     }
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
+    if (!l1_route(s, address)) {
+        return;
+    }
+    if (!l1_task_command(address, command)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: request 0x%04x unavailable at 0x%08x\n",
+                      command, address);
+        l1_reply(s, channel, -101, 0, NULL, 0);
+        return;
+    }
     count = length == 7 ? 0 : p[7];
     args = p + MIN(length, 8);
     args_len = length > 8 ? length - 8 : 0;
     if (!l1_arguments(args, args_len, count)) {
         l1_reply(s, channel, -100, 0, NULL, 0);
-        return;
-    }
-    if ((address >> 28) != 0 && (address >> 28) != 4) {
-        l1_reply(s, channel, -104, 0, NULL, 0);
         return;
     }
     switch (command) {
