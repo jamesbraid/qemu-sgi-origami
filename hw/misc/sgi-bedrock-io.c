@@ -106,9 +106,13 @@ static void ii_bte_notify(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     uint64_t value = cpu_to_be64(bte->status);
 
-    if ((bte->control & (1 << 4)) &&
-        dma_memory_write(s->dma_as, bte->notification, &value,
-                         sizeof(value), MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+    if (!(bte->control & (1 << 4))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE interrupt-mode "
+                      "completion is unsupported\n");
+        return;
+    }
+    if (dma_memory_write(s->dma_as, bte->notification, &value, sizeof(value),
+                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-io: BTE notification write failed\n");
     }
