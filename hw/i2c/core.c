@@ -10,11 +10,101 @@
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "trace.h"
+
+typedef struct I2CWireMaster {
+    int64_t low_ns, high_ns;
+    int64_t deadline, staged_at;
+    bool configured, sda, clock, scl_low;
+    bool pending, staged_sda, staged_clock;
+    bool clock_after_loss;
+} I2CWireMaster;
+
+struct I2CWire {
+    I2CBus *bus;
+    QEMUTimer *timer;
+    I2CWireObserver observe;
+    void *opaque;
+    I2CWireMaster masters[I2C_WIRE_MAX_MASTERS];
+    uint64_t contenders;
+    bool scl, sda, occupied, start_hold;
+    bool address_byte, ack, read_valid, read_prepare_pending;
+    uint8_t bits, byte;
+    uint64_t phase, read_prepare_phase;
+    int32_t error;
+};
+
+static void i2c_wire_schedule(I2CWire *wire);
+static bool i2c_wire_slave_sda(const I2CWire *wire, bool scl);
+static int i2c_wire_finish_load(I2CBus *bus);
+static int i2c_wire_queue_service(I2CWire *wire, I2CSlave *slave,
+                                  enum i2c_wire_service service);
+static void i2c_clear_nodes(I2CNodeList *nodes);
+
+static void i2c_bus_reset_hold(Object *obj, ResetType type)
+{
+    I2CBus *bus = I2C_BUS(obj);
+    I2CWire *wire = bus->wire;
+    BusChild *kid;
+
+    if (!wire) {
+        return;
+    }
+    timer_del(wire->timer);
+    i2c_clear_nodes(&bus->current_devs);
+    bus->owner = UINT32_MAX;
+    bus->address_valid = false;
+    bus->requested_address = 0;
+    bus->master_recv = bus->broadcast = false;
+    wire->contenders = 0;
+    wire->bits = wire->byte = 0;
+    wire->phase = wire->read_prepare_phase = 0;
+    wire->address_byte = wire->ack = wire->read_valid = false;
+    wire->read_prepare_pending = false;
+    wire->error = 0;
+    wire->occupied = wire->start_hold = false;
+    wire->scl = wire->sda = true;
+    for (unsigned i = 0; i < bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+
+        m->sda = true;
+        m->clock = m->scl_low = m->pending = false;
+        m->deadline = -1;
+    }
+    QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        slave->wire_hold = slave->wire_hold_pending = false;
+        slave->wire_hold_value = false;
+        slave->wire_hold_at = 0;
+        slave->wire_hold_phase = slave->wire_service_phase = 0;
+        slave->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+        slave->wire_service_pending = false;
+    }
+    bus->wire_loading = false;
+    bus->wire_slaves_loaded = 0;
+}
+
+static void i2c_bus_class_init(ObjectClass *oc, const void *data)
+{
+    RESETTABLE_CLASS(oc)->phases.hold = i2c_bus_reset_hold;
+}
+
+static void i2c_bus_finalize(Object *obj)
+{
+    I2CBus *bus = I2C_BUS(obj);
+
+    if (bus->wire) {
+        timer_free(bus->wire->timer);
+        g_free(bus->wire);
+    }
+}
 
 static const Property i2c_props[] = {
     DEFINE_PROP_UINT8("address", struct I2CSlave, address, 0),
@@ -24,6 +114,208 @@ static const TypeInfo i2c_bus_info = {
     .name = TYPE_I2C_BUS,
     .parent = TYPE_BUS,
     .instance_size = sizeof(I2CBus),
+    .instance_finalize = i2c_bus_finalize,
+    .class_init = i2c_bus_class_init,
+};
+
+static const VMStateDescription vmstate_i2c_wire_master = {
+    .name = "i2c-wire-master",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT64(low_ns, I2CWireMaster),
+        VMSTATE_INT64(high_ns, I2CWireMaster),
+        VMSTATE_INT64(deadline, I2CWireMaster),
+        VMSTATE_INT64(staged_at, I2CWireMaster),
+        VMSTATE_BOOL(configured, I2CWireMaster),
+        VMSTATE_BOOL(sda, I2CWireMaster),
+        VMSTATE_BOOL(clock, I2CWireMaster),
+        VMSTATE_BOOL(scl_low, I2CWireMaster),
+        VMSTATE_BOOL(pending, I2CWireMaster),
+        VMSTATE_BOOL(staged_sda, I2CWireMaster),
+        VMSTATE_BOOL(staged_clock, I2CWireMaster),
+        VMSTATE_BOOL(clock_after_loss, I2CWireMaster),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static int i2c_wire_post_load(void *opaque, int version_id)
+{
+    I2CWire *wire = opaque;
+    uint64_t members = (1ULL << wire->bus->master_count) - 1;
+
+    if (wire->bits > 9 || wire->error > 0 ||
+        (wire->contenders & ~members) ||
+        (!wire->occupied && (wire->contenders || wire->bus->address_valid ||
+                             wire->bits || wire->byte)) ||
+        (wire->start_hold && (!wire->occupied || !wire->scl)) ||
+        (wire->ack && (!wire->occupied || wire->bits < 8)) ||
+        (wire->ack && wire->bus->master_recv && !wire->address_byte) ||
+        (wire->address_byte && !wire->occupied) ||
+        (wire->bits < 8 &&
+         (wire->address_byte ||
+          (wire->bus->address_valid && !wire->bus->master_recv)) &&
+         wire->byte >= (1U << wire->bits)) ||
+        (wire->read_valid &&
+         (!wire->occupied || !wire->bus->address_valid ||
+          !wire->bus->master_recv || wire->address_byte || wire->bits > 8)) ||
+        (wire->read_prepare_pending &&
+         (!wire->occupied || !wire->bus->address_valid ||
+          !wire->bus->master_recv || wire->address_byte || wire->read_valid ||
+          wire->bits || !wire->read_prepare_phase ||
+          wire->read_prepare_phase != wire->phase)) ||
+        (!wire->read_prepare_pending && wire->read_prepare_phase)) {
+        return -EINVAL;
+    }
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+
+        if ((m->configured && (m->low_ns <= 0 || m->high_ns <= 0)) ||
+            (!m->configured && (m->clock || m->pending)) ||
+            (!m->clock && m->scl_low) || m->deadline < -1) {
+            return -EINVAL;
+        }
+    }
+    wire->bus->wire_loaded = true;
+    return 0;
+}
+
+static uint32_t i2c_wire_slave_count(I2CBus *bus)
+{
+    BusChild *kid;
+    uint32_t count = 0;
+
+    QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+        count++;
+    }
+    return count;
+}
+
+static bool i2c_wire_service_state_valid(I2CWire *wire, I2CSlave *slave)
+{
+    enum i2c_wire_service service = slave->wire_service_kind;
+
+    if ((!slave->wire_hold && slave->wire_hold_phase) ||
+        (slave->wire_hold_phase && slave->wire_hold_phase != wire->phase) ||
+        (slave->wire_hold_phase &&
+         (!slave->saved_selected || wire->bits)) ||
+        (slave->wire_hold_pending &&
+         slave->wire_hold_at < qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL))) {
+        return false;
+    }
+    if (!slave->wire_service_pending) {
+        return !slave->wire_service_phase &&
+               service == I2C_WIRE_SERVICE_COUNT;
+    }
+    if (!slave->saved_selected || slave->wire_hold ||
+        !slave->wire_service_phase ||
+        slave->wire_service_phase != wire->phase ||
+        wire->bits < 8 || service >= I2C_WIRE_SERVICE_COUNT) {
+        return false;
+    }
+    switch (service) {
+    case I2C_WIRE_ADDRESS_SEND:
+        return wire->address_byte && wire->bus->address_valid &&
+               !wire->bus->master_recv;
+    case I2C_WIRE_ADDRESS_RECV:
+        return wire->address_byte && wire->bus->address_valid &&
+               wire->bus->master_recv;
+    case I2C_WIRE_WRITE:
+        return !wire->address_byte && wire->bus->address_valid &&
+               !wire->bus->master_recv;
+    case I2C_WIRE_READ_ACK:
+        return !wire->address_byte && wire->bus->address_valid &&
+               wire->bus->master_recv;
+    case I2C_WIRE_READ_NACK:
+    case I2C_WIRE_SERVICE_COUNT:
+        return false;
+    }
+    return false;
+}
+
+static int i2c_wire_finish_load(I2CBus *bus)
+{
+    I2CWire *wire = bus->wire;
+    BusChild *kid;
+    bool scl = true;
+    bool sda;
+    bool read_prepare_held = false;
+
+    if (!wire || !wire->bus->wire_loaded ||
+        bus->wire_slaves_loaded != i2c_wire_slave_count(bus)) {
+        return -EINVAL;
+    }
+    QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        if (!i2c_wire_service_state_valid(wire, slave)) {
+            return -EINVAL;
+        }
+        if (wire->read_prepare_pending && slave->saved_selected &&
+            slave->wire_hold &&
+            slave->wire_hold_phase == wire->read_prepare_phase) {
+            read_prepare_held = true;
+        }
+        scl &= !slave->wire_hold;
+    }
+    for (unsigned i = 0; i < bus->master_count; i++) {
+        scl &= !wire->masters[i].scl_low;
+    }
+    sda = i2c_wire_slave_sda(wire, wire->scl);
+    for (unsigned i = 0; i < bus->master_count; i++) {
+        if (wire->contenders & (1ULL << i)) {
+            sda &= wire->masters[i].sda;
+        }
+    }
+    if ((wire->read_prepare_pending && !read_prepare_held) ||
+        scl != wire->scl || sda != wire->sda) {
+        return -EINVAL;
+    }
+    bus->wire_loading = false;
+    i2c_wire_schedule(wire);
+    return 0;
+}
+
+static const VMStateDescription vmstate_i2c_wire_state = {
+    .name = "i2c-wire-state",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = i2c_wire_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(masters, I2CWire, I2C_WIRE_MAX_MASTERS, 1,
+                              vmstate_i2c_wire_master, I2CWireMaster),
+        VMSTATE_UINT64(contenders, I2CWire),
+        VMSTATE_BOOL(scl, I2CWire),
+        VMSTATE_BOOL(sda, I2CWire),
+        VMSTATE_BOOL(occupied, I2CWire),
+        VMSTATE_BOOL(start_hold, I2CWire),
+        VMSTATE_BOOL(address_byte, I2CWire),
+        VMSTATE_BOOL(ack, I2CWire),
+        VMSTATE_BOOL(read_valid, I2CWire),
+        VMSTATE_UINT8(bits, I2CWire),
+        VMSTATE_UINT8(byte, I2CWire),
+        VMSTATE_UINT64(phase, I2CWire),
+        VMSTATE_UINT64(read_prepare_phase, I2CWire),
+        VMSTATE_BOOL(read_prepare_pending, I2CWire),
+        VMSTATE_INT32(error, I2CWire),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool i2c_wire_needed(void *opaque)
+{
+    return ((I2CBus *)opaque)->wire != NULL;
+}
+
+static const VMStateDescription vmstate_i2c_wire = {
+    .name = "i2c_bus/wire",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = i2c_wire_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(wire, I2CBus, vmstate_i2c_wire_state, I2CWire),
+        VMSTATE_END_OF_LIST()
+    },
 };
 
 static int i2c_bus_pre_save(void *opaque)
@@ -65,7 +357,7 @@ static int i2c_masters_post_load(void *opaque, int version_id)
     bus->broadcast = bus->address_valid && !bus->master_recv &&
                      bus->requested_address == I2C_BROADCAST;
     if ((bus->owner != UINT32_MAX && bus->owner >= bus->master_count) ||
-        (bus->address_valid && bus->owner == UINT32_MAX) ||
+        (bus->address_valid && bus->owner == UINT32_MAX && !bus->wire) ||
         bus->requested_address > 0x7f) {
         return -EINVAL;
     }
@@ -93,6 +385,12 @@ static int i2c_bus_pre_load(void *opaque)
     I2CBus *bus = opaque;
 
     bus->masters_loaded = false;
+    bus->wire_loaded = false;
+    bus->wire_loading = bus->wire != NULL;
+    bus->wire_slaves_loaded = 0;
+    if (bus->wire) {
+        timer_del(bus->wire->timer);
+    }
     if (bus->master_count) {
         /* Loading a replacement state is not a physical STOP. */
         i2c_clear_nodes(&bus->current_devs);
@@ -105,7 +403,14 @@ static int i2c_bus_post_load(void *opaque, int version_id)
 {
     I2CBus *bus = opaque;
 
-    return bus->master_count && !bus->masters_loaded ? -EINVAL : 0;
+    if ((bus->master_count && !bus->masters_loaded) ||
+        (bus->wire && !bus->wire_loaded)) {
+        return -EINVAL;
+    }
+    if (bus->wire && !i2c_wire_slave_count(bus)) {
+        return i2c_wire_finish_load(bus);
+    }
+    return 0;
 }
 
 const VMStateDescription vmstate_i2c_bus = {
@@ -121,6 +426,7 @@ const VMStateDescription vmstate_i2c_bus = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_i2c_masters,
+        &vmstate_i2c_wire,
         NULL
     },
 };
@@ -145,6 +451,9 @@ void i2c_slave_set_address(I2CSlave *dev, uint8_t address)
 /* Return nonzero if bus is busy.  */
 int i2c_bus_busy(I2CBus *bus)
 {
+    if (bus->wire) {
+        return bus->wire->occupied;
+    }
     if (bus->master_count) {
         return bus->owner != UINT32_MAX;
     }
@@ -425,7 +734,7 @@ static int i2c_slave_post_load(void *opaque, int version_id)
 
     bus = I2C_BUS(qdev_get_parent_bus(DEVICE(dev)));
     if (bus->master_count && dev->saved_selected &&
-        (!bus->address_valid || bus->owner == UINT32_MAX ||
+        (!bus->address_valid || (bus->owner == UINT32_MAX && !bus->wire) ||
          !I2C_SLAVE_GET_CLASS(dev)->supports_master_ids)) {
         return -EINVAL;
     }
@@ -435,6 +744,19 @@ static int i2c_slave_post_load(void *opaque, int version_id)
         node = g_new(struct I2CNode, 1);
         node->elt = dev;
         QLIST_INSERT_HEAD(&bus->current_devs, node, next);
+    }
+    if (bus->wire) {
+        if (bus->wire_loading) {
+            bus->wire_slaves_loaded++;
+            if (bus->wire_slaves_loaded > i2c_wire_slave_count(bus)) {
+                return -EINVAL;
+            }
+            if (bus->wire_slaves_loaded == i2c_wire_slave_count(bus)) {
+                return i2c_wire_finish_load(bus);
+            }
+        } else {
+            i2c_wire_schedule(bus->wire);
+        }
     }
     return 0;
 }
@@ -479,6 +801,31 @@ static const VMStateDescription vmstate_i2c_slave_selected = {
     },
 };
 
+static bool i2c_slave_wire_needed(void *opaque)
+{
+    I2CSlave *slave = opaque;
+
+    return I2C_BUS(qdev_get_parent_bus(DEVICE(slave)))->wire != NULL;
+}
+
+static const VMStateDescription vmstate_i2c_slave_wire = {
+    .name = "I2CSlave/wire",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = i2c_slave_wire_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(wire_hold, I2CSlave),
+        VMSTATE_BOOL(wire_hold_pending, I2CSlave),
+        VMSTATE_BOOL(wire_hold_value, I2CSlave),
+        VMSTATE_INT64(wire_hold_at, I2CSlave),
+        VMSTATE_UINT64(wire_hold_phase, I2CSlave),
+        VMSTATE_UINT64(wire_service_phase, I2CSlave),
+        VMSTATE_UINT8(wire_service_kind, I2CSlave),
+        VMSTATE_BOOL(wire_service_pending, I2CSlave),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 const VMStateDescription vmstate_i2c_slave = {
     .name = "I2CSlave",
     .version_id = 1,
@@ -492,6 +839,7 @@ const VMStateDescription vmstate_i2c_slave = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_i2c_slave_selected,
+        &vmstate_i2c_slave_wire,
         NULL
     },
 };
@@ -601,6 +949,9 @@ int i2c_bus_enable_master_ids(I2CBus *bus, uint32_t count)
 
 int i2c_bus_start_resolved(I2CBus *bus, uint32_t master)
 {
+    if (bus->wire) {
+        return -ENOTSUP;
+    }
     if (!bus->master_count || master >= bus->master_count) {
         return -EINVAL;
     }
@@ -615,20 +966,17 @@ int i2c_bus_start_resolved(I2CBus *bus, uint32_t master)
 
 static bool i2c_master_owns(I2CBus *bus, uint32_t master)
 {
-    return bus->master_count && master < bus->master_count &&
+    return !bus->wire && bus->master_count && master < bus->master_count &&
            bus->owner == master;
 }
 
-int i2c_master_start_transfer(I2CBus *bus, uint32_t master,
-                              uint8_t address, bool recv)
+static int i2c_resolved_start_transfer(I2CBus *bus, uint8_t address,
+                                       bool recv)
 {
     I2CNodeList matches = QLIST_HEAD_INITIALIZER(matches);
     I2CNode *node, *next;
     bool broadcast = address == I2C_BROADCAST && !recv;
 
-    if (!i2c_master_owns(bus, master)) {
-        return -EPERM;
-    }
     if (address > 0x7f) {
         return -EINVAL;
     }
@@ -670,14 +1018,20 @@ int i2c_master_start_transfer(I2CBus *bus, uint32_t master,
     return QLIST_EMPTY(&bus->current_devs) ? 1 : 0;
 }
 
-int i2c_master_send(I2CBus *bus, uint32_t master, uint8_t data)
+int i2c_master_start_transfer(I2CBus *bus, uint32_t master,
+                              uint8_t address, bool recv)
+{
+    if (!i2c_master_owns(bus, master)) {
+        return -EPERM;
+    }
+    return i2c_resolved_start_transfer(bus, address, recv);
+}
+
+static int i2c_resolved_send(I2CBus *bus, uint8_t data, I2CWire *wire)
 {
     I2CNode *node;
     bool ack = false;
 
-    if (!i2c_master_owns(bus, master)) {
-        return -EPERM;
-    }
     if (!bus->address_valid || bus->master_recv) {
         return -EINVAL;
     }
@@ -688,12 +1042,29 @@ int i2c_master_send(I2CBus *bus, uint32_t master, uint8_t data)
         I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(node->elt);
 
         if (sc->send) {
+            int ret;
+
             trace_i2c_send(node->elt->address, data);
             /* Deliver once to every receiver; any ACK pulls the line low. */
-            ack |= sc->send(node->elt, data) == 0;
+            ret = sc->send(node->elt, data);
+            if (!ret) {
+                ack = true;
+                if (wire && i2c_wire_queue_service(
+                        wire, node->elt, I2C_WIRE_WRITE)) {
+                    return wire->error;
+                }
+            }
         }
     }
     return ack ? 0 : 1;
+}
+
+int i2c_master_send(I2CBus *bus, uint32_t master, uint8_t data)
+{
+    if (!i2c_master_owns(bus, master)) {
+        return -EPERM;
+    }
+    return i2c_resolved_send(bus, data, NULL);
 }
 
 int i2c_master_recv(I2CBus *bus, uint32_t master, uint8_t *data)
@@ -735,4 +1106,560 @@ int i2c_master_end_transfer(I2CBus *bus, uint32_t master)
     bus->owner = UINT32_MAX;
     bus->address_valid = false;
     return 0;
+}
+
+static int i2c_wire_queue_service(I2CWire *wire, I2CSlave *slave,
+                                  enum i2c_wire_service service)
+{
+    if (slave->wire_service_pending || service >= I2C_WIRE_SERVICE_COUNT) {
+        wire->error = -EINVAL;
+        return wire->error;
+    }
+    slave->wire_service_pending = true;
+    slave->wire_service_phase = wire->phase;
+    slave->wire_service_kind = service;
+    return 0;
+}
+
+static int i2c_wire_queue_selected(I2CWire *wire,
+                                   enum i2c_wire_service service,
+                                   bool first_only)
+{
+    I2CNode *node;
+
+    QLIST_FOREACH(node, &wire->bus->current_devs, next) {
+        int ret = i2c_wire_queue_service(wire, node->elt, service);
+
+        if (ret || first_only) {
+            return ret;
+        }
+    }
+    return 0;
+}
+
+static void i2c_wire_complete_services(I2CWire *wire, bool read_acked)
+{
+    I2CNode *node;
+
+    QLIST_FOREACH(node, &wire->bus->current_devs, next) {
+        I2CSlave *slave = node->elt;
+        I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(slave);
+        enum i2c_wire_service service = slave->wire_service_kind;
+        bool hold = false;
+
+        if (!slave->wire_service_pending ||
+            slave->wire_service_phase != wire->phase) {
+            continue;
+        }
+        if (service == I2C_WIRE_READ_ACK) {
+            service = read_acked ? I2C_WIRE_READ_ACK : I2C_WIRE_READ_NACK;
+        }
+        slave->wire_service_pending = false;
+        slave->wire_service_phase = 0;
+        slave->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+        if (sc->wire_service) {
+            hold = sc->wire_service(slave, service);
+        }
+        if (hold) {
+            if (slave->wire_hold || slave->wire_hold_pending) {
+                wire->error = -ENOTSUP;
+                continue;
+            }
+            slave->wire_hold = true;
+            slave->wire_hold_phase = wire->phase;
+        }
+    }
+}
+
+static bool i2c_wire_read_prepare_held(I2CWire *wire)
+{
+    I2CNode *node;
+
+    QLIST_FOREACH(node, &wire->bus->current_devs, next) {
+        I2CSlave *slave = node->elt;
+
+        if (slave->wire_hold &&
+            slave->wire_hold_phase == wire->read_prepare_phase) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void i2c_wire_prepare_read(I2CWire *wire)
+{
+    if (!wire->read_prepare_pending || i2c_wire_read_prepare_held(wire)) {
+        return;
+    }
+    wire->byte = i2c_do_recv(wire->bus);
+    wire->read_valid = true;
+    wire->read_prepare_pending = false;
+    wire->read_prepare_phase = 0;
+}
+
+static void i2c_wire_schedule(I2CWire *wire)
+{
+    int64_t next = 0;
+    bool found = false;
+    BusChild *kid;
+
+    if (wire->error || wire->bus->wire_loading) {
+        timer_del(wire->timer);
+        return;
+    }
+
+    QTAILQ_FOREACH(kid, &wire->bus->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        if (slave->wire_hold_pending) {
+            if (!found || slave->wire_hold_at < next) {
+                next = slave->wire_hold_at;
+                found = true;
+            }
+        }
+    }
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+
+        if (m->pending) {
+            if (!found || m->staged_at < next) {
+                next = m->staged_at;
+                found = true;
+            }
+        }
+        if (m->clock && m->deadline >= 0) {
+            if (!found || m->deadline < next) {
+                next = m->deadline;
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        timer_del(wire->timer);
+    } else {
+        timer_mod(wire->timer, next);
+    }
+}
+
+static bool i2c_wire_slave_sda(const I2CWire *wire, bool scl)
+{
+    unsigned int bit = wire->bits;
+
+    if (wire->ack) {
+        return false;
+    }
+    if (wire->occupied && wire->bus->address_valid &&
+        wire->bus->master_recv && !wire->address_byte && wire->read_valid) {
+        /* The sampled bit remains stable until SCL falls. */
+        if (scl && bit) {
+            bit--;
+        }
+        if (bit < 8) {
+            return (wire->byte >> (7 - bit)) & 1;
+        }
+    }
+    return true;
+}
+
+static bool i2c_wire_set_deadlines(I2CWire *wire, int64_t now, bool low)
+{
+    int64_t deadlines[I2C_WIRE_MAX_MASTERS];
+
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+        int64_t period = low ? m->low_ns : m->high_ns;
+
+        if (m->clock && sadd64_overflow(now, period, &deadlines[i])) {
+            for (unsigned j = 0; j < wire->bus->master_count; j++) {
+                if (wire->masters[j].clock) {
+                    wire->masters[j].deadline = -1;
+                }
+            }
+            wire->error = -ERANGE;
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+
+        if (m->clock) {
+            m->deadline = deadlines[i];
+        }
+    }
+    return true;
+}
+
+static void i2c_wire_tick(void *opaque)
+{
+    I2CWire *wire = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    bool old_scl = wire->scl, old_sda = wire->sda;
+    uint64_t old_contenders = wire->contenders;
+    bool scl = true, sda;
+    uint64_t lost = 0;
+    uint64_t restart_attempts = 0, stop_attempts = 0;
+    int old_error = wire->error;
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &wire->bus->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        if (slave->wire_hold_pending && slave->wire_hold_at <= now) {
+            slave->wire_hold_pending = false;
+            slave->wire_hold = slave->wire_hold_value;
+            if (!slave->wire_hold) {
+                slave->wire_hold_phase = 0;
+            }
+        }
+        scl &= !slave->wire_hold;
+    }
+    i2c_wire_prepare_read(wire);
+    sda = i2c_wire_slave_sda(wire, wire->scl);
+    /* Apply the complete deadline batch before resolving either line. */
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+
+        if (m->pending && m->staged_at <= now) {
+            m->pending = false;
+            if (!m->clock && m->staged_clock && !old_scl) {
+                /* Joining a clock mid-low has no common falling edge. */
+                wire->error = -ENOTSUP;
+                continue;
+            }
+            if ((old_contenders & (1ULL << i)) && wire->occupied &&
+                old_scl && !m->staged_clock) {
+                if (m->sda && !m->staged_sda) {
+                    restart_attempts |= 1ULL << i;
+                } else if (m->staged_sda) {
+                    stop_attempts |= 1ULL << i;
+                }
+            }
+            m->sda = m->staged_sda;
+            if ((!wire->occupied || wire->start_hold) && !m->sda) {
+                wire->contenders |= 1ULL << i;
+            }
+            if (m->clock != m->staged_clock) {
+                m->clock = m->staged_clock;
+                m->scl_low = m->clock;
+                m->deadline = -1;
+            }
+        }
+        if (m->clock && m->deadline >= 0 && m->deadline <= now) {
+            m->scl_low = wire->scl;
+            m->deadline = -1;
+        }
+        scl &= !m->scl_low;
+        if (wire->contenders & (1ULL << i)) {
+            sda &= m->sda;
+        }
+    }
+    if (wire->error) {
+        goto publish;
+    }
+    if ((restart_attempts && restart_attempts != old_contenders) ||
+        (stop_attempts && stop_attempts != old_contenders)) {
+        wire->error = -ENOTSUP;
+        goto publish;
+    }
+    if (old_scl && scl && old_sda && !sda) {
+        if (wire->occupied) {
+            I2CNode *node;
+
+            QLIST_FOREACH(node, &wire->bus->current_devs, next) {
+                I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(node->elt);
+
+                if (sc->event) {
+                    sc->event(node->elt, I2C_RESTART);
+                }
+            }
+            i2c_clear_nodes(&wire->bus->current_devs);
+            wire->bus->address_valid = false;
+        }
+        wire->occupied = true;
+        wire->start_hold = true;
+        wire->address_byte = true;
+        wire->bits = wire->byte = 0;
+        wire->ack = wire->read_valid = false;
+        wire->read_prepare_pending = false;
+        wire->read_prepare_phase = 0;
+    } else if (old_scl && scl && !old_sda && sda) {
+        wire->occupied = false;
+        wire->start_hold = false;
+        wire->contenders = 0;
+        wire->bits = wire->byte = 0;
+        wire->ack = wire->read_valid = false;
+        wire->read_prepare_pending = false;
+        wire->read_prepare_phase = 0;
+        i2c_do_end_transfer(wire->bus);
+        wire->bus->address_valid = false;
+    }
+    if (old_scl && !scl) {
+        wire->start_hold = false;
+        if (!i2c_wire_set_deadlines(wire, now, true)) {
+            goto publish;
+        }
+        for (unsigned i = 0; i < wire->bus->master_count; i++) {
+            if (wire->masters[i].clock) {
+                wire->masters[i].scl_low = true;
+            }
+        }
+    } else if (!old_scl && scl) {
+        if (!i2c_wire_set_deadlines(wire, now, false)) {
+            goto publish;
+        }
+        for (unsigned i = 0; i < wire->bus->master_count; i++) {
+            I2CWireMaster *m = &wire->masters[i];
+            uint64_t bit = 1ULL << i;
+
+            if (((wire->bits < 8 &&
+                  !(wire->bus->address_valid && wire->bus->master_recv &&
+                    !wire->address_byte)) ||
+                 (wire->bits == 8 && wire->bus->address_valid &&
+                  wire->bus->master_recv && !wire->address_byte)) &&
+                (wire->contenders & bit) &&
+                m->sda && !sda) {
+                lost |= bit;
+                wire->contenders &= ~bit;
+                if (!m->clock_after_loss) {
+                    m->clock = false;
+                }
+            }
+        }
+    }
+    if (!old_scl && scl && wire->occupied) {
+        if (wire->bits < 8 &&
+            (wire->address_byte || !wire->bus->master_recv)) {
+            wire->byte = (wire->byte << 1) | sda;
+        }
+        wire->bits++;
+    }
+    if (old_scl && !scl && wire->occupied) {
+        if (wire->bits == 8) {
+            int ret;
+
+            if (wire->phase == UINT64_MAX) {
+                wire->error = -ERANGE;
+                goto publish;
+            }
+            wire->phase++;
+            if (wire->address_byte) {
+                ret = i2c_resolved_start_transfer(wire->bus, wire->byte >> 1,
+                                                   wire->byte & 1);
+                if (!ret) {
+                    ret = i2c_wire_queue_selected(
+                        wire, wire->bus->master_recv ?
+                        I2C_WIRE_ADDRESS_RECV : I2C_WIRE_ADDRESS_SEND,
+                        false);
+                }
+            } else if (wire->bus->master_recv) {
+                ret = 1;
+                wire->read_valid = false;
+                if (!QLIST_EMPTY(&wire->bus->current_devs)) {
+                    ret = i2c_wire_queue_selected(
+                        wire, I2C_WIRE_READ_ACK, true);
+                }
+            } else if (QLIST_EMPTY(&wire->bus->current_devs)) {
+                ret = 1;
+            } else {
+                ret = i2c_resolved_send(wire->bus, wire->byte, wire);
+            }
+            wire->error = MIN(ret, 0);
+            wire->ack = !wire->bus->master_recv && ret == 0;
+            if (wire->address_byte) {
+                wire->ack = ret == 0;
+            }
+        } else if (wire->bits == 9) {
+            bool was_address = wire->address_byte;
+            bool target_acked = wire->ack;
+            bool master_acked = !old_sda;
+
+            wire->bits = wire->byte = 0;
+            wire->address_byte = wire->ack = false;
+            if (wire->bus->master_recv &&
+                !QLIST_EMPTY(&wire->bus->current_devs)) {
+                if (was_address && target_acked) {
+                    wire->read_prepare_pending = true;
+                    wire->read_prepare_phase = wire->phase;
+                } else if (!was_address && master_acked) {
+                    wire->read_prepare_pending = true;
+                    wire->read_prepare_phase = wire->phase;
+                } else if (!was_address) {
+                    i2c_do_nack(wire->bus);
+                }
+            }
+            i2c_wire_complete_services(wire, master_acked);
+            if (wire->error) {
+                goto publish;
+            }
+            i2c_wire_prepare_read(wire);
+            for (unsigned i = 0; i < wire->bus->master_count; i++) {
+                I2CWireMaster *m = &wire->masters[i];
+
+                if (!(wire->contenders & (1ULL << i))) {
+                    m->clock = m->scl_low = false;
+                    m->deadline = -1;
+                }
+            }
+        }
+    }
+publish:
+    /* Target ACK is a separate line drive, never a master arbitration bit. */
+    sda = i2c_wire_slave_sda(wire, scl);
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        if (wire->contenders & (1ULL << i)) {
+            sda &= wire->masters[i].sda;
+        }
+    }
+    wire->scl = scl;
+    wire->sda = sda;
+    if (wire->observe && (old_scl != scl || old_sda != sda ||
+                         old_contenders != wire->contenders ||
+                         old_error != wire->error)) {
+        I2CWireEvent event = {
+            .time = now, .contenders = wire->contenders, .lost = lost,
+            .scl = scl, .sda = sda, .error = wire->error,
+        };
+
+        wire->observe(wire->opaque, &event);
+    }
+    i2c_wire_schedule(wire);
+}
+
+int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
+                         I2CWireObserver observe, void *opaque)
+{
+    BusChild *kid;
+    int ret;
+
+    if (!count || count > I2C_WIRE_MAX_MASTERS) {
+        return -EINVAL;
+    }
+    if (bus->wire || i2c_bus_busy(bus)) {
+        return -EBUSY;
+    }
+    if (!bus->master_count) {
+        ret = i2c_bus_enable_master_ids(bus, count);
+        if (ret) {
+            return ret;
+        }
+    } else if (bus->master_count != count) {
+        return -EINVAL;
+    }
+    bus->wire = g_new0(I2CWire, 1);
+    bus->wire->bus = bus;
+    bus->wire->observe = observe;
+    bus->wire->opaque = opaque;
+    bus->wire->scl = bus->wire->sda = true;
+    for (unsigned i = 0; i < count; i++) {
+        bus->wire->masters[i].sda = true;
+        bus->wire->masters[i].deadline = -1;
+    }
+    QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+
+        slave->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+    }
+    bus->wire->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                      i2c_wire_tick, bus->wire);
+    return 0;
+}
+
+int i2c_wire_configure(I2CBus *bus, uint32_t master, int64_t low_ns,
+                       int64_t high_ns, bool clock_after_loss)
+{
+    I2CWireMaster *m;
+
+    if (!bus->wire || master >= bus->master_count || low_ns <= 0 ||
+        high_ns <= 0) {
+        return -EINVAL;
+    }
+    m = &bus->wire->masters[master];
+    if (m->clock || m->pending) {
+        return -EBUSY;
+    }
+    m->configured = true;
+    m->low_ns = low_ns;
+    m->high_ns = high_ns;
+    m->clock_after_loss = clock_after_loss;
+    return 0;
+}
+
+int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
+                   bool sda, bool clock)
+{
+    I2CWireMaster *m;
+
+    if (!bus->wire || master >= bus->master_count) {
+        return -EINVAL;
+    }
+    if (bus->wire->error) {
+        return bus->wire->error;
+    }
+    if (at <= qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
+        return -EINVAL;
+    }
+    m = &bus->wire->masters[master];
+    if (!m->configured || MAX(m->low_ns, m->high_ns) > INT64_MAX - at) {
+        return -EINVAL;
+    }
+    if (m->pending) {
+        return -EBUSY;
+    }
+    m->pending = true;
+    m->staged_at = at;
+    m->staged_sda = sda;
+    m->staged_clock = clock;
+    i2c_wire_schedule(bus->wire);
+    return 0;
+}
+
+int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
+{
+    I2CBus *bus = I2C_BUS(qdev_get_parent_bus(DEVICE(slave)));
+
+    if (!bus->wire || at <= qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
+        return -EINVAL;
+    }
+    if (slave->wire_hold_pending) {
+        return -EBUSY;
+    }
+    slave->wire_hold_pending = true;
+    slave->wire_hold_at = at;
+    slave->wire_hold_value = hold;
+    i2c_wire_schedule(bus->wire);
+    return 0;
+}
+
+int i2c_wire_reset_master(I2CBus *bus, uint32_t master)
+{
+    I2CWireMaster *m;
+
+    if (!bus->wire || master >= bus->master_count) {
+        return -EINVAL;
+    }
+    m = &bus->wire->masters[master];
+    if ((bus->wire->contenders & (1ULL << master)) || m->clock) {
+        return -ENOTSUP;
+    }
+    m->pending = false;
+    m->sda = true;
+    m->scl_low = false;
+    m->deadline = -1;
+    i2c_wire_schedule(bus->wire);
+    return 0;
+}
+
+bool i2c_wire_scl(I2CBus *bus)
+{
+    return bus->wire && bus->wire->scl;
+}
+
+bool i2c_wire_sda(I2CBus *bus)
+{
+    return bus->wire && bus->wire->sda;
+}
+
+uint64_t i2c_wire_contenders(I2CBus *bus)
+{
+    return bus->wire ? bus->wire->contenders : 0;
 }
