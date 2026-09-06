@@ -273,6 +273,14 @@ static void xbridge_error_packet(SGIXBridgeHeadState *s)
     }
 }
 
+/* Defined by the datasheet and deferred here: not an invalid address. */
+static bool xbridge_deferred(hwaddr addr)
+{
+    return (addr >= 0x300 && addr < 0x600) ||
+           (addr >= 0x30000 && addr < 0x31000) ||
+           addr >= 0xc00000;
+}
+
 static void xbridge_invalid(SGIXBridgeHeadState *s, hwaddr addr)
 {
     bool first = !(REG(s, 0x100) & (1U << 24));
@@ -388,6 +396,12 @@ static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
             return REG(s, addr);
         }
     }
+    if (xbridge_deferred(addr)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-xbridge: read of deferred register 0x%"
+                      HWADDR_PRIx "\n", addr);
+        return 0;
+    }
     xbridge_invalid(s, addr);
     return 0;
 }
@@ -416,6 +430,12 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
     if (size == 8 && !(addr & 7) &&
         addr >= 0x10000 && addr < 0x11000) {
         s->ate[(addr - 0x10000) / 8] = value & 0x0000ffffffffffffULL;
+        return;
+    }
+    if (xbridge_deferred(addr)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-xbridge: write to deferred register 0x%"
+                      HWADDR_PRIx "\n", addr);
         return;
     }
     if (size != 4 || (addr & 7) != 4 || addr >= 0x300) {

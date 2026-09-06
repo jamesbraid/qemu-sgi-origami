@@ -388,6 +388,14 @@ static void test_access_errors(void)
     reg_write(qts, 0x38, 0x8000);
     reg_write(qts, 0x128, 0x93);
     reg_write(qts, 0x108, 1U << 24);
+    /* Defined but deferred ranges are not invalid addresses. */
+    reg_read(qts, 0x300);
+    reg_read(qts, 0x400);
+    qtest_readl(qts, BASE + 0x30004);
+    qtest_readl(qts, BASE + 0xc00004);
+    reg_write(qts, 0x400, 0);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==, 0);
     qtest_writeq(qts, BASE + 0x20, 0xabcdef0123456789ULL);
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
