@@ -268,17 +268,18 @@ static void mips_r10k_perf_cb(void *opaque)
     mips_r10k_perf_update(env);
 }
 
-/*
- * After an incoming migration: the counters and the clock crossed intact,
- * but the deadline timer did not, so a counter that was counting toward an
- * IP[7] edge must be re-armed.
- */
 void cpu_mips_r10k_perf_post_load(CPUMIPSState *env)
 {
     if (!env->r10k_perf_timer) {
         return;
     }
-    mips_r10k_perf_update(env);
+    if (env->cfg.performance_counter_pairs == 4) {
+        /* Re-anchor migrated R14000 logical values to the destination clock. */
+        cpu_mips_r10k_perf_thaw(env);
+    } else {
+        /* The established R10000 stream stores its running clock biases. */
+        mips_r10k_perf_update(env);
+    }
 }
 
 void cpu_mips_r10k_perf_clock_init(MIPSCPU *cpu)
