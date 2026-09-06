@@ -925,18 +925,19 @@ static void bcm570x_tx_coal_timer(void *opaque)
 }
 
 /*
- * Count the frames this doorbell completed and report the group once it is as
- * large as the driver asked for. The tick timer is what stops the tail of a
- * burst waiting for a frame that never comes: a count on its own would hold
- * the last few completions back for an interrupt that never arrives, which is
- * a stall wearing a saving's clothes.
+ * Count the descriptors this doorbell completed and report the group once it
+ * is as large as the driver asked for. The tick timer is what stops the tail
+ * of a burst waiting for a descriptor that never comes: a count on its own
+ * would hold the last few completions back for an interrupt that never
+ * arrives, which is a stall wearing a saving's clothes.
  */
-static void bcm570x_tx_coalesce(Bcm570xState *s, unsigned int frames)
+static void bcm570x_tx_coalesce(Bcm570xState *s,
+                                unsigned int completed_descs)
 {
     uint32_t max_bds = bcm570x_regfile_read(s, BCM570X_HCC_TX_MAX_COAL_BDS);
     uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
 
-    if (frames == 0) {
+    if (completed_descs == 0) {
         /*
          * A doorbell that completed nothing still moves the consumer the driver
          * reads, and bring-up leans on the update arriving: report it rather
@@ -945,7 +946,7 @@ static void bcm570x_tx_coalesce(Bcm570xState *s, unsigned int frames)
         bcm570x_dma_status_block(s);
         return;
     }
-    s->tx_coal_pending += frames;
+    s->tx_coal_pending += completed_descs;
     if (max_bds <= 1 || s->tx_coal_pending >= max_bds) {
         bcm570x_tx_coal_flush(s);
     } else if (ticks != 0 && !timer_pending(&s->tx_coal_timer)) {
@@ -1153,7 +1154,6 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     uint8_t frame[BCM570X_MAX_FRAME];
     unsigned int frame_len = 0;
     unsigned int walked = 0;
-    unsigned int sent = 0;
     unsigned int completed_descs = 0;
     uint16_t frame_flags = 0;
     uint16_t frame_start;
@@ -1233,7 +1233,6 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                                               frame_flags);
                 }
                 bcm570x_tx_segment(s, frame, frame_len, frame_mss, frame_flags);
-                sent++;
             }
             frame_len = 0;
             frame_flags = 0;
@@ -1251,7 +1250,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     s->tx_busy = false;
 
     s->status_tx_cons = prod;
-    bcm570x_tx_coalesce(s, sent);
+    bcm570x_tx_coalesce(s, completed_descs);
 }
 
 /*

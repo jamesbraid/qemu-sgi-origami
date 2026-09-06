@@ -1873,21 +1873,28 @@ static void txc_setup(Bcm *b, unsigned int coal, unsigned int ticks)
     qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 }
 
+static void txc_write_bd_at(Bcm *b, unsigned int slot, uint64_t buf,
+                            unsigned int len, uint16_t flags)
+{
+    uint8_t bd[16] = { 0 };
+
+    g_assert_cmpuint(slot, <, TXC_RING);
+    g_assert_cmpuint(len, <=, UINT16_MAX);
+    put32le(bd + 0, buf >> 32);
+    put32le(bd + 4, buf & 0xffffffff);
+    put16le(bd + 8, flags);
+    put16le(bd + 10, len);
+    qtest_memwrite(b->qts, TX_RING_PHYS + (uint64_t)slot * 16,
+                   bd, sizeof(bd));
+}
+
 static void txc_post_one_at(Bcm *b, const uint8_t *frame, unsigned int len,
                             unsigned int slot)
 {
     uint64_t buf = TX_BUF_PHYS + (uint64_t)slot * 2048;
-    uint8_t bd[16];
 
-    g_assert_cmpuint(slot, <, TXC_RING);
     qtest_memwrite(b->qts, buf, frame, len);
-    memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, buf >> 32);
-    put32le(bd + 4, buf & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_END);
-    put16le(bd + 10, (uint16_t)len);
-    qtest_memwrite(b->qts, TX_RING_PHYS + (uint64_t)slot * 16,
-                   bd, sizeof(bd));
+    txc_write_bd_at(b, slot, buf, len, BCM_TXBDFLAG_END);
     bar_writel(b, BCM_MBX_TX_PROD_LO, slot + 1);
 }
 
@@ -1942,6 +1949,103 @@ static void test_transmit_coalescing(const void *data)
 
     bcm_close(&b);
     close(sv[0]);
+}
+
+/* Empty and dropped frames still complete every descriptor they consume. */
+static void test_transmit_coalescing_empty_and_dropped(const void *data)
+{
+    enum { OVERSIZE_FRAGMENT_LEN = 9600 };
+    uint8_t frame[64], got[sizeof(frame)];
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+    Bcm b;
+    uint32_t tag;
+    size_t len;
+    int sv[2];
+
+    memset(frame, 0x69, sizeof(frame));
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 4, 0x10000000);
+    qtest_memwrite(b.qts, TX_BUF_PHYS, frame, sizeof(frame));
+    qtest_memset(b.qts, TX_BUF_PHYS + 0x1000, 0xa5,
+                 OVERSIZE_FRAGMENT_LEN);
+    txc_write_bd_at(&b, 0, TX_BUF_PHYS, sizeof(frame), BCM_TXBDFLAG_END);
+    txc_write_bd_at(&b, 1, 0, 0, BCM_TXBDFLAG_END);
+    txc_write_bd_at(&b, 2, TX_BUF_PHYS + 0x1000,
+                    OVERSIZE_FRAGMENT_LEN, 0);
+    txc_write_bd_at(&b, 3, TX_BUF_PHYS + 0x4000, 1,
+                    BCM_TXBDFLAG_END);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    tag = read_status_tag(&b);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 4);
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    net_socket_expect_no_frame(sv[0]);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 4);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+/* One completed frame may consume enough descriptors to fill a group. */
+static void test_transmit_coalescing_multidescriptor(const void *data)
+{
+    enum { FIRST_FRAGMENT_LEN = 28 };
+    uint8_t frame[60], got[sizeof(frame)];
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+    Bcm b;
+    unsigned int i;
+    uint32_t tag;
+    size_t len;
+    int sv[2];
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 2, 0x10000000);
+    qtest_memwrite(b.qts, TX_BUF_PHYS, frame, FIRST_FRAGMENT_LEN);
+    qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100,
+                   frame + FIRST_FRAGMENT_LEN,
+                   sizeof(frame) - FIRST_FRAGMENT_LEN);
+    txc_write_bd_at(&b, 0, TX_BUF_PHYS, FIRST_FRAGMENT_LEN, 0);
+    txc_write_bd_at(&b, 1, TX_BUF_PHYS + 0x100,
+                    sizeof(frame) - FIRST_FRAGMENT_LEN,
+                    BCM_TXBDFLAG_END);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    tag = read_status_tag(&b);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 2);
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    net_socket_expect_no_frame(sv[0]);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
 }
 
 /*
@@ -4559,6 +4663,10 @@ int main(int argc, char **argv)
                         test_transmit_throughput);
     qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
                         test_transmit_coalescing);
+    qtest_add_data_func("/bcm570x/transmit-coalescing-empty-and-dropped", NULL,
+                        test_transmit_coalescing_empty_and_dropped);
+    qtest_add_data_func("/bcm570x/transmit-coalescing-multidescriptor", NULL,
+                        test_transmit_coalescing_multidescriptor);
     qtest_add_data_func("/bcm570x/transmit-coalescing-timer", NULL,
                         test_transmit_coalescing_timer);
     qtest_add_data_func("/bcm570x/transmit-coalescing-zero-ticks", NULL,
