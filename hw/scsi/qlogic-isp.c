@@ -315,6 +315,7 @@ typedef struct QLogicISPInfo {
     bool ram_wraps;                 /* RAM commands fold at the array end */
     bool reject_busy_mailbox;       /* a held result refuses a submission */
     bool a64_ram_load;              /* the 0x0009 RAM load is in the set */
+    bool recovery_mailboxes;        /* the 0x0015-0x0017 abort commands */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -831,10 +832,9 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
 
     /*
      * Recovery. The channel, target and LUN in mailbox 1 have the same
-     * shape as a request entry's device word, so a part with one bus
-     * refuses a channel it does not have exactly as a request would be.
-     * Acknowledging the mailbox and retiring the affected requests are
-     * separate events, and the host waits for both.
+     * shape as a request entry's device word. Acknowledging the mailbox
+     * and retiring the affected requests are separate events, and the
+     * host waits for both.
      */
     case ISP_MBOX_CMD_ABORT_COMMAND:
     case ISP_MBOX_CMD_ABORT_DEVICE:
@@ -847,6 +847,12 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         int64_t handle = -1;
         unsigned retired;
 
+        if (!info->recovery_mailboxes) {
+            qlogic_isp_mbox_not_modelled(s, cmd);
+            break;
+        }
+
+        /* Rejects nothing on a part whose one selector bit names a bus. */
         if (channel >= info->nchannels) {
             s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
             break;
@@ -2107,6 +2113,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .device_id = 0x1216, .revision = 0x06, .nchannels = 2,
       .cfg0_reports_revision = false, .banked_dma = true,
       .reject_busy_mailbox = true, .a64_ram_load = true,
+      .recovery_mailboxes = true,
       .fw_version = { 10, 4, 0 } },
 };
 

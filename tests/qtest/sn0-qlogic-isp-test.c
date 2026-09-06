@@ -110,6 +110,7 @@
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
 #define ISP_MBOX_CMD_LOAD_RAM_A64   0x0009
+#define ISP_MBOX_CMD_ABORT_COMMAND  0x0015
 #define ISP_MBOX_CMD_GET_TARGET_PARAMETERS  0x0028
 #define ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS 0x003a
 #define ISP_MBOX_COMPLETE           0x4000
@@ -979,6 +980,31 @@ static void test_mbox_a64_ram_load_is_not_this_part(const void *data)
 }
 
 /*
+ * Abort command is the dual-channel part's opcode. This part's contract
+ * lists no abort mailbox at all, so answering one would tell a guest that
+ * probes for it that this adapter can retire a command by handle, and the
+ * guest would then wait for a retirement that never arrives.
+ */
+static void test_mbox_abort_command_is_not_this_part(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_device0_window_at_its_bar(qts);
+
+    isp_writew(qts, ISP_MAILBOX(1), 1 << 8);    /* target 1, LUN 0 */
+    isp_writew(qts, ISP_MAILBOX(2), 0);
+    isp_writew(qts, ISP_MAILBOX(3), 0);
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_ABORT_COMMAND);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_INVALID);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
  * Two LUNs behind one target, an address this adapter has always taken.
  * The INQUIRY each one answers is what says the second disk is really
  * there: a LUN with nothing behind it is answered by the target itself,
@@ -1267,6 +1293,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/qlogic-isp/mbox-get-target-parameters-ignores-bit-15", NULL,
         test_mbox_get_target_parameters_ignores_bit_15);
+    qtest_add_data_func("sn0/qlogic-isp/mbox-abort-command-is-not-this-part",
+                        NULL, test_mbox_abort_command_is_not_this_part);
     qtest_add_data_func("sn0/qlogic-isp/mbox-a64-ram-load-is-not-this-part",
                         NULL, test_mbox_a64_ram_load_is_not_this_part);
     qtest_add_data_func("sn0/qlogic-isp/two-luns-behind-one-target", NULL,
