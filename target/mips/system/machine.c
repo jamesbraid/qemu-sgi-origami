@@ -351,6 +351,25 @@ static const VMStateDescription mips_vmstate_timer = {
     }
 };
 
+static bool mips_r14k_performance_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.cfg.performance_counter_pairs == 4;
+}
+
+static const VMStateDescription mips_vmstate_r14k_performance = {
+    .name = "cpu/r14k-performance",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r14k_performance_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SUB_ARRAY(env.CP0_Performance, MIPSCPU, 4, 4, 0,
+                          vmstate_info_int32, int32_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_r10k_scache_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -364,16 +383,51 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
     .minimum_version_id = 1,
     .needed = mips_r10k_scache_needed,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(env.r10k_scache_taglo, MIPSCPU,
-                             R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_ARRAY(env.r10k_scache_taghi, MIPSCPU,
-                            R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_ARRAY(env.r10k_scache_mru, MIPSCPU,
-                            R10K_SCACHE_SETS),
-        VMSTATE_UINT64_ARRAY_V(env.r10k_scache_data, MIPSCPU,
-                               R10K_SCACHE_DWORDS, 2),
-        VMSTATE_UINT16_ARRAY_V(env.r10k_scache_ecc, MIPSCPU,
-                               R10K_SCACHE_QUADWORDS, 2),
+        VMSTATE_UINT32_SUB_ARRAY(env.r10k_scache_taglo, MIPSCPU, 0,
+                                 R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_taghi, MIPSCPU, 0,
+                                R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_mru, MIPSCPU, 0,
+                                R10K_SCACHE_SETS),
+        VMSTATE_SUB_ARRAY(env.r10k_scache_data, MIPSCPU, 0,
+                          R10K_SCACHE_DWORDS, 2,
+                          vmstate_info_uint64, uint64_t),
+        VMSTATE_SUB_ARRAY(env.r10k_scache_ecc, MIPSCPU, 0,
+                          R10K_SCACHE_QUADWORDS, 2,
+                          vmstate_info_uint16, uint16_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r14k_scache_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.cfg.scache_size == R14K_SCACHE_SIZE;
+}
+
+static const VMStateDescription mips_vmstate_r14k_scache = {
+    .name = "cpu/r14k-scache",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r14k_scache_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_SUB_ARRAY(env.r10k_scache_taglo, MIPSCPU,
+                                 R10K_SCACHE_TAGS,
+                                 R14K_SCACHE_TAGS - R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_taghi, MIPSCPU,
+                                R10K_SCACHE_TAGS,
+                                R14K_SCACHE_TAGS - R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_mru, MIPSCPU,
+                                R10K_SCACHE_SETS,
+                                R14K_SCACHE_SETS - R10K_SCACHE_SETS),
+        VMSTATE_UINT64_SUB_ARRAY(env.r10k_scache_data, MIPSCPU,
+                                 R10K_SCACHE_DWORDS,
+                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS),
+        VMSTATE_UINT16_SUB_ARRAY(env.r10k_scache_ecc, MIPSCPU,
+                                 R10K_SCACHE_QUADWORDS,
+                                 R14K_SCACHE_QUADWORDS -
+                                 R10K_SCACHE_QUADWORDS),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -501,7 +555,7 @@ static bool mips_timer_ip7_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.cfg.has_performance_counters && cpu->env.cp0_timer_ip7;
+    return cpu->env.cfg.performance_counter_pairs && cpu->env.cp0_timer_ip7;
 }
 
 static const VMStateDescription mips_vmstate_timer_ip7 = {
@@ -669,7 +723,8 @@ const VMStateDescription vmstate_mips_cpu = {
         VMSTATE_UNUSED(sizeof(int32_t)),
         VMSTATE_INT32(env.CP0_Debug, MIPSCPU),
         VMSTATE_UINTTL(env.CP0_DEPC, MIPSCPU),
-        VMSTATE_INT32_ARRAY(env.CP0_Performance, MIPSCPU, 4),
+        VMSTATE_SUB_ARRAY(env.CP0_Performance, MIPSCPU, 0, 4, 0,
+                          vmstate_info_int32, int32_t),
         VMSTATE_INT32(env.CP0_ErrCtl, MIPSCPU),
         VMSTATE_UINT64(env.CP0_TagLo, MIPSCPU),
         VMSTATE_INT32(env.CP0_DataLo, MIPSCPU),
@@ -690,7 +745,9 @@ const VMStateDescription vmstate_mips_cpu = {
     .subsections = (const VMStateDescription * const []) {
         &mips_vmstate_timer,
         &mips_vmstate_timer_ip7,
+        &mips_vmstate_r14k_performance,
         &mips_vmstate_r10k_scache,
+        &mips_vmstate_r14k_scache,
         &mips_vmstate_r10k_pcache,
         &mips_vmstate_r10k_cacherr,
         &mips_vmstate_r10k_diagnostic,

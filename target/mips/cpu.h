@@ -71,10 +71,18 @@ typedef struct MIPSCPUConfig {
     /* The Diagnostic register reaches a branch prediction table. */
     bool has_branch_prediction_table;
     /*
-     * Coprocessor 0 register 25 holds two counters and two control registers
-     * reached by selector.
+     * The number of control/counter pairs reached through coprocessor 0
+     * register 25. Zero means the processor uses the generic register.
      */
-    bool has_performance_counters;
+    uint8_t performance_counter_pairs;
+    /* The control bits accepted by this processor's counter pairs. */
+    uint16_t performance_control_rw_bitmask;
+    /* Counter overflow contributes to the processor's IP[7] input. */
+    bool performance_counter_interrupts;
+    /* Writable bits in the R10000-family Diagnostic register. */
+    uint64_t diagnostic_rw_bitmask;
+    /* External secondary-cache capacity used by diagnostic operations. */
+    uint32_t scache_size;
     /*
      * Count and Compare are compared continuously, so a write leaving them
      * equal raises the interrupt at once.
@@ -504,8 +512,9 @@ typedef struct mips_def_t mips_def_t;
 /* CP0 Register 27 */
 #define CP0_REG27__CACHERR         0
 
-/* The external secondary cache described by the R10000 CPU definition. */
+/* External secondary-cache geometry used by R10000-family definitions. */
 #define R10K_SCACHE_SIZE       (1024 * 1024)
+#define R14K_SCACHE_SIZE       (2 * 1024 * 1024)
 #define R10K_SCACHE_LINE_SIZE  128
 #define R10K_SCACHE_WAYS       2
 #define R10K_SCACHE_SETS       (R10K_SCACHE_SIZE / R10K_SCACHE_LINE_SIZE / \
@@ -513,6 +522,11 @@ typedef struct mips_def_t mips_def_t;
 #define R10K_SCACHE_TAGS       (R10K_SCACHE_SETS * R10K_SCACHE_WAYS)
 #define R10K_SCACHE_QUADWORDS  (R10K_SCACHE_SIZE / 16)
 #define R10K_SCACHE_DWORDS     (R10K_SCACHE_SIZE / 8)
+#define R14K_SCACHE_SETS       (R14K_SCACHE_SIZE / R10K_SCACHE_LINE_SIZE / \
+                                R10K_SCACHE_WAYS)
+#define R14K_SCACHE_TAGS       (R14K_SCACHE_SETS * R10K_SCACHE_WAYS)
+#define R14K_SCACHE_QUADWORDS  (R14K_SCACHE_SIZE / 16)
+#define R14K_SCACHE_DWORDS     (R14K_SCACHE_SIZE / 8)
 #define R10K_SCACHE_TAGLO_MASK 0xffffcdff
 #define R10K_SCACHE_TAGHI_MASK 0x8000000f
 
@@ -1352,7 +1366,7 @@ typedef struct CPUArchState {
      * CP0_Count is kept, and the value is reassembled on read. Every other
      * slot holds its value directly.
      */
-    int32_t CP0_Performance[4];
+    int32_t CP0_Performance[8];
 /*
  * The R10000 family's performance control register layout: an event
  * number, an interrupt enable, and one count enable per processor mode.
@@ -1390,11 +1404,11 @@ typedef struct CPUArchState {
     int32_t CP0_DataHi;
 
     /* R10000 external secondary-cache diagnostic state. */
-    uint32_t r10k_scache_taglo[R10K_SCACHE_TAGS];
-    uint8_t r10k_scache_taghi[R10K_SCACHE_TAGS];
-    uint8_t r10k_scache_mru[R10K_SCACHE_SETS];
-    uint64_t r10k_scache_data[R10K_SCACHE_DWORDS];
-    uint16_t r10k_scache_ecc[R10K_SCACHE_QUADWORDS];
+    uint32_t r10k_scache_taglo[R14K_SCACHE_TAGS];
+    uint8_t r10k_scache_taghi[R14K_SCACHE_TAGS];
+    uint8_t r10k_scache_mru[R14K_SCACHE_SETS];
+    uint64_t r10k_scache_data[R14K_SCACHE_DWORDS];
+    uint16_t r10k_scache_ecc[R14K_SCACHE_QUADWORDS];
 
     /*
      * R10000 primary-cache diagnostic state. The tag arrays keep each tag's
