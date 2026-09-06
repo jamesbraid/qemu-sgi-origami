@@ -9,6 +9,7 @@
 #include "system/dma.h"
 
 #define II_WIDGET_ID       0x00000
+#define II_WIDGET_STATUS   0x00008
 #define II_WIDGET_CONTROL  0x00020
 #define II_LOCAL_PROTECT   0x00100
 #define II_OUT_ACCESS      0x00110
@@ -180,6 +181,9 @@ static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
     }
     switch (offset) {
     case II_WIDGET_ID: return II_WIDGET_ID_VALUE | (uint64_t)s->revision << 28;
+    case II_WIDGET_STATUS:
+        /* No request pending, no timeout, retry or error detected. */
+        return 0;
     case II_WIDGET_CONTROL: return s->widget_control;
     case II_LOCAL_PROTECT: return s->local_protect;
     case II_OUT_ACCESS: return s->outbound_access;
@@ -284,6 +288,10 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
     }
     switch (offset) {
     case II_WIDGET_ID:
+        return;
+    case II_WIDGET_STATUS:
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: widget status write "
+                      "ignored, no error state to clear\n");
         return;
     case II_WIDGET_CONTROL:
         s->widget_control = value & II_WIDGET_CONTROL_MASK;
