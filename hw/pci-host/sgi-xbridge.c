@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/misc/sgi-xbridge-xbow.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
@@ -14,42 +15,10 @@
 
 #define TYPE_XBRIDGE_IOMMU "sgi-xbridge-iommu"
 
-#define RAW_PCI_IRQS 32
-
-#define REG_COUNT (0x300 / 8)
-#define ATE_COUNT 512
+#define RAW_PCI_IRQS SGI_XBRIDGE_HEAD_RAW_PCI_IRQS
+#define REG_COUNT SGI_XBRIDGE_HEAD_REG_COUNT
+#define ATE_COUNT SGI_XBRIDGE_HEAD_ATE_COUNT
 #define REG(s, off) ((s)->reg[(off) / 8])
-
-struct SGIXBridgeHeadState {
-    PCIHostState parent_obj;
-    MemoryRegion widget;
-    MemoryRegion pci_mem;
-    MemoryRegion pci_io;
-    AddressSpace pci_mem_as;
-    AddressSpace pci_io_as;
-    uint32_t reg[REG_COUNT];
-    uint64_t ate[ATE_COUNT];
-    uint8_t speed;
-    uint8_t pins;
-    qemu_irq pci_irq[RAW_PCI_IRQS];
-    uint32_t pci_levels;
-    MemoryRegion *target[16];
-    struct XBridgeTarget {
-        AddressSpace as;
-        MemoryRegion swap;
-        AddressSpace swap_as;
-    } endpoint[16];
-    struct XBridgeDMA {
-        IOMMUMemoryRegion iommu;
-        AddressSpace as;
-        SGIXBridgeHeadState *head;
-        unsigned slot;
-    } dma[8];
-    MemoryRegion denied;
-    AddressSpace denied_as;
-    MemoryRegion flush;
-    AddressSpace flush_as;
-};
 
 static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
 {
@@ -557,7 +526,9 @@ static void xbridge_reset_hold(Object *obj, ResetType type)
 static void xbridge_realize(DeviceState *dev, Error **errp)
 {
     SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(dev);
-
+    /* Two heads in one chip cannot both be "head.0". */
+    g_autofree char *bus_name = g_strdup_printf("%s.0",
+        dev->id ? dev->id : object_get_canonical_path_component(OBJECT(s)));
     unsigned i;
 
     if (s->speed > 3) {
@@ -600,7 +571,7 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->pci_io, OBJECT(s), "xbridge.pci-io", UINT64_MAX);
     address_space_init(&s->pci_mem_as, &s->pci_mem, "xbridge.pci-mem");
     address_space_init(&s->pci_io_as, &s->pci_io, "xbridge.pci-io");
-    PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, "head.0",
+    PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, bus_name,
         xbridge_pci_irq, xbridge_map_pci_irq, s, &s->pci_mem, &s->pci_io,
         0, RAW_PCI_IRQS + 1, TYPE_PCI_BUS);
     pci_setup_iommu(PCI_HOST_BRIDGE(s)->bus, &xbridge_iommu_ops, s);
@@ -696,6 +667,169 @@ static const TypeInfo xbridge_type = {
     .instance_init = xbridge_init,
 };
 
+/*
+ * The chip: the crossbar half at widget 0, the two heads at widgets 0xe and
+ * 0xf, and the routing between them and the one host port. The machine
+ * instantiates this and gets the two PCI root buses; it never composes the
+ * halves itself.
+ */
+
+#define CHIP_WIDGET_SHIFT 44
+#define CHIP_WIDGET_SPACE (1ULL << CHIP_WIDGET_SHIFT)
+#define CHIP_FACE_SIZE 0x1000000
+#define CHIP_HEAD_E 0xe
+#define CHIP_HEAD_F 0xf
+#define CHIP_LINK_FIRST 8
+
+struct SGIXBridgeState {
+    SysBusDevice parent_obj;
+    SGIXBridgeXbowState xbow;
+    SGIXBridgeHeadState head[2];
+    MemoryRegion crosstalk;
+    MemoryRegion unmapped;
+    MemoryRegion *fabric;
+    uint8_t host_port;
+    uint8_t pci_speed[2];
+};
+
+/* Ports without a widget, and widget space beyond a child's 16 MB face. */
+static uint64_t chip_unmapped_read(void *opaque, hwaddr addr, unsigned size)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbridge: %u-byte read of widget %x offset 0x%"
+                  PRIx64 " reaches nothing\n",
+                  size, (unsigned)(addr >> CHIP_WIDGET_SHIFT),
+                  (uint64_t)(addr & (CHIP_WIDGET_SPACE - 1)));
+    return 0;
+}
+
+static void chip_unmapped_write(void *opaque, hwaddr addr, uint64_t value,
+                                unsigned size)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbridge: %u-byte write to widget %x offset 0x%"
+                  PRIx64 " reaches nothing\n",
+                  size, (unsigned)(addr >> CHIP_WIDGET_SHIFT),
+                  (uint64_t)(addr & (CHIP_WIDGET_SPACE - 1)));
+}
+
+static const MemoryRegionOps chip_unmapped_ops = {
+    .read = chip_unmapped_read,
+    .write = chip_unmapped_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+static void chip_link_host(Object *child, unsigned port, MemoryRegion *fabric,
+                           Error **errp)
+{
+    g_autofree char *name = g_strdup_printf("target-%x", port);
+
+    object_property_set_link(child, name, OBJECT(fabric), errp);
+}
+
+static void chip_realize(DeviceState *dev, Error **errp)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(dev);
+    unsigned i;
+
+    if (!s->fabric) {
+        error_setg(errp, "XBridge needs the fabric link to its host");
+        return;
+    }
+    if (s->host_port < CHIP_LINK_FIRST || s->host_port > 0xf ||
+        s->host_port == CHIP_HEAD_E || s->host_port == CHIP_HEAD_F) {
+        error_setg(errp, "XBridge host port must be 8 to 0xd");
+        return;
+    }
+    memory_region_init(&s->crosstalk, OBJECT(s), "sgi-xbridge.crosstalk",
+                       16 * CHIP_WIDGET_SPACE);
+    memory_region_init_io(&s->unmapped, OBJECT(s), &chip_unmapped_ops, s,
+                          "sgi-xbridge.unmapped", 16 * CHIP_WIDGET_SPACE);
+    memory_region_add_subregion_overlap(&s->crosstalk, 0, &s->unmapped, -1);
+
+    /* The host and the two heads are present; the other links are empty. */
+    qdev_prop_set_uint8(DEVICE(&s->xbow), "links-present",
+                        (1U << (s->host_port - CHIP_LINK_FIRST)) |
+                        (1U << (CHIP_HEAD_E - CHIP_LINK_FIRST)) |
+                        (1U << (CHIP_HEAD_F - CHIP_LINK_FIRST)));
+    chip_link_host(OBJECT(&s->xbow), s->host_port, s->fabric, errp);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
+        return;
+    }
+    memory_region_add_subregion(&s->crosstalk, 0,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
+                               s->host_port - CHIP_LINK_FIRST));
+
+    for (i = 0; i < 2; i++) {
+        unsigned widget = i ? CHIP_HEAD_F : CHIP_HEAD_E;
+
+        qdev_prop_set_uint8(DEVICE(&s->head[i]), "pci-speed", s->pci_speed[i]);
+        chip_link_host(OBJECT(&s->head[i]), s->host_port, s->fabric, errp);
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s->crosstalk,
+                                    (uint64_t)widget << CHIP_WIDGET_SHIFT,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(&s->head[i]), 0));
+    }
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->crosstalk);
+    qdev_pass_gpios(DEVICE(&s->xbow), dev, "warm-reset");
+    qdev_pass_gpios(DEVICE(&s->xbow), dev, "warm-reset-out");
+}
+
+/* Bus speeds as OpenBSD reads them on an IP45: 66 MHz at 0xe, 33 at 0xf. */
+static const Property chip_properties[] = {
+    DEFINE_PROP_UINT8("host-port", SGIXBridgeState, host_port, 0),
+    DEFINE_PROP_UINT8("pci-speed-e", SGIXBridgeState, pci_speed[0], 1),
+    DEFINE_PROP_UINT8("pci-speed-f", SGIXBridgeState, pci_speed[1], 0),
+};
+
+/* No state of its own; the children carry theirs. */
+static const VMStateDescription vmstate_chip = {
+    .name = TYPE_SGI_XBRIDGE,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void chip_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->desc = "SGI XBridge crosstalk-PCI bridge";
+    dc->user_creatable = true;
+    dc->realize = chip_realize;
+    dc->vmsd = &vmstate_chip;
+    device_class_set_props(dc, chip_properties);
+}
+
+static void chip_init(Object *obj)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(obj);
+
+    object_initialize_child(obj, "xbow", &s->xbow, TYPE_SGI_XBRIDGE_XBOW);
+    object_initialize_child(obj, "head-e", &s->head[0], TYPE_SGI_XBRIDGE_HEAD);
+    object_initialize_child(obj, "head-f", &s->head[1], TYPE_SGI_XBRIDGE_HEAD);
+    object_property_add_link(obj, "fabric", TYPE_MEMORY_REGION,
+                             (Object **)&s->fabric,
+                             qdev_prop_allow_set_link_before_realize, 0);
+}
+
+static const TypeInfo chip_type = {
+    .name = TYPE_SGI_XBRIDGE,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(SGIXBridgeState),
+    .class_init = chip_class_init,
+    .instance_init = chip_init,
+};
+
 static void xbridge_register_types(void)
 {
     static const TypeInfo iommu_type = {
@@ -706,6 +840,7 @@ static void xbridge_register_types(void)
 
     type_register_static(&iommu_type);
     type_register_static(&xbridge_type);
+    type_register_static(&chip_type);
 }
 
 type_init(xbridge_register_types)
