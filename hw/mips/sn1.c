@@ -4,7 +4,9 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/datadir.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -39,6 +41,34 @@
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
+static void sn1_cpu_b_enable(void *opaque, int n, int level)
+{
+    SN1MachineState *s = opaque;
+    CPUState *cs = s->cpu[1];
+
+    BQL_LOCK_GUARD();
+    if (level) {
+        s->cpu_b_enabled = true;
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
+        cs->halted = 0;
+        qemu_cpu_kick(cs);
+        if (current_cpu && current_cpu != cs) {
+            cpu_exit(current_cpu);
+        }
+    } else if (s->cpu_b_enabled) {
+        s->cpu_b_enabled = false;
+        cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+    }
+}
+
+static void sn1_machine_init(Object *obj)
+{
+    SN1MachineState *s = SN1_MACHINE(obj);
+
+    qemu_init_irq_child(obj, "cpu-b-enable", &s->cpu_b_enable,
+                        sn1_cpu_b_enable, s, 0);
+}
+
 static void sn1_cpu_reset(void *opaque)
 {
     cpu_reset(CPU(opaque));
@@ -48,11 +78,11 @@ static void sn1_machine_reset(MachineState *machine, ResetType type)
 {
     CPUState *cs;
 
-    qemu_devices_reset(type);
     /* Busless MIPS CPUs are outside the registered SysBus reset tree. */
     CPU_FOREACH(cs) {
         sn1_cpu_reset(cs);
     }
+    qemu_devices_reset(type);
 }
 
 static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
@@ -68,6 +98,8 @@ static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
                                  OBJECT(get_system_memory()), &error_abort);
         qdev_connect_clock_in(cpu_dev, "clk-in", s->cpu_refclk);
         object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
+                                 &error_abort);
+        object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", i != 0,
                                  &error_abort);
         qdev_realize(cpu_dev, NULL, &error_fatal);
         cpu_mips_irq_init_cpu(cpu);
@@ -161,6 +193,9 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     object_unref(OBJECT(s->bedrock));
     bedrock = SYS_BUS_DEVICE(s->bedrock);
 
+    qdev_connect_gpio_out_named(s->bedrock, "cpu-enable", 1,
+                                &s->cpu_b_enable);
+
     memory_region_add_subregion(system, SN1_SPACE_XTALK,
                                 sysbus_mmio_get_region(bedrock, 1));
     memory_region_add_subregion_overlap(system, SN1_BEDROCK_LOCAL,
@@ -229,12 +264,17 @@ static void origin300_init(MachineState *machine)
 
 static void origin300_class_init(ObjectClass *oc, const void *data)
 {
+    static const char * const valid_cpu_types[] = {
+        MIPS_CPU_TYPE_NAME("R14000"),
+        NULL,
+    };
     MachineClass *mc = MACHINE_CLASS(oc);
 
     mc->desc = "SGI Origin 300 (IP45)";
     mc->init = origin300_init;
     mc->reset = sn1_machine_reset;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R14000");
+    mc->valid_cpu_types = valid_cpu_types;
     mc->default_cpus = 2;
     mc->min_cpus = 2;
     mc->max_cpus = 2;
@@ -246,6 +286,7 @@ static const TypeInfo origin300_machine_type = {
     .name = TYPE_SN1_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(SN1MachineState),
+    .instance_init = sn1_machine_init,
     .class_init = origin300_class_init,
 };
 
