@@ -56,6 +56,20 @@
 #define ERROR_STACK_A 0x418
 #define ERROR_STACK_B 0x420
 #define ERROR_STACK_SIZE 0x428
+#define ERROR_STATUS_0_A 0x430
+#define ERROR_STATUS_0_A_CLEAR 0x438
+#define ERROR_STATUS_1_A 0x440
+#define ERROR_STATUS_1_A_CLEAR 0x448
+#define ERROR_STATUS_0_B 0x450
+#define ERROR_STATUS_0_B_CLEAR 0x458
+#define ERROR_STATUS_1_B 0x460
+#define ERROR_STATUS_1_B_CLEAR 0x468
+#define NACK_COUNT_A 0x4a8
+#define NACK_COUNT_B 0x4b0
+#define NACK_COMPARE 0x4b8
+#define SPOOL_MASK 0x4c0
+#define SPURIOUS_HEADER_0 0x4c8
+#define SPURIOUS_HEADER_1 0x4d0
 #define RT_COUNTER 0x30100
 #define RT_MASK ((1ULL << 55) - 1)
 #define RT_TICK_NS 800
@@ -388,6 +402,73 @@ static void test_local_reset(void)
     qtest_quit(s);
 }
 
+/*
+ * The model captures no error, counts no negative acknowledgement and
+ * spools nothing, so these registers can only be shown to read zero, to
+ * retain the fields the datasheet names, to accept the Itanium port's
+ * initialisation writes, and to keep or lose their values across a reset.
+ * None of that establishes what the hardware captures.
+ */
+static void test_error_capture_registers(void)
+{
+    static const unsigned status[] = {
+        ERROR_STATUS_0_A, ERROR_STATUS_0_A_CLEAR,
+        ERROR_STATUS_1_A, ERROR_STATUS_1_A_CLEAR,
+        ERROR_STATUS_0_B, ERROR_STATUS_0_B_CLEAR,
+        ERROR_STATUS_1_B, ERROR_STATUS_1_B_CLEAR,
+    };
+    QTestState *s = start("");
+
+    for (unsigned i = 0; i < ARRAY_SIZE(status); i++) {
+        g_assert_cmphex(qtest_readq(s, PI(0, status[i])), ==, 0);
+    }
+    /* Status registers are capture, not storage: a direct write is dropped. */
+    qtest_writeq(s, PI(0, ERROR_STATUS_0_A), UINT64_MAX);
+    qtest_writeq(s, PI(0, ERROR_STATUS_1_B), UINT64_MAX);
+    /* The Itanium port writes all ones to both clear aliases at init. */
+    qtest_writeq(s, PI(0, ERROR_STATUS_0_A_CLEAR), UINT64_MAX);
+    qtest_writeq(s, PI(0, ERROR_STATUS_1_A_CLEAR), UINT64_MAX);
+    qtest_writeq(s, PI(1, ERROR_STATUS_0_B_CLEAR), UINT64_MAX);
+    qtest_writeq(s, PI(1, ERROR_STATUS_1_B_CLEAR), UINT64_MAX);
+    for (unsigned i = 0; i < ARRAY_SIZE(status); i++) {
+        g_assert_cmphex(qtest_readq(s, PI(0, status[i])), ==, 0);
+        g_assert_cmphex(qtest_readq(s, PI(1, status[i])), ==, 0);
+    }
+
+    qtest_writeq(s, PI(0, NACK_COUNT_A), UINT64_MAX);
+    qtest_writeq(s, PI(0, NACK_COUNT_B), 0x12345);
+    qtest_writeq(s, PI(0, NACK_COMPARE), UINT64_MAX);
+    qtest_writeq(s, PI(0, SPOOL_MASK), UINT64_MAX);
+    qtest_writeq(s, PI(0, SPURIOUS_HEADER_0), 0x8123456789abcdefULL);
+    qtest_writeq(s, PI(0, SPURIOUS_HEADER_1), 0x0fedcba987654321ULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_A)), ==, 0x1fffff);
+    g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_B)), ==, 0x12345);
+    g_assert_cmphex(qtest_readq(s, PI(0, NACK_COMPARE)), ==, 0xfffff);
+    g_assert_cmphex(qtest_readq(s, PI(0, SPOOL_MASK)), ==, 0x3f);
+    g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_0)), ==,
+                    0x8123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_1)), ==,
+                    0x0fedcba987654321ULL);
+    g_assert_cmphex(qtest_readq(s, PI(1, NACK_COUNT_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, SPURIOUS_HEADER_0)), ==, 0);
+
+    /*
+     * The spurious headers are "not cleared at reset" in the header's
+     * words. The nack and spool-mask reset values are unknown; the model
+     * reads them as zero, its choice for every unknown reset value.
+     */
+    qtest_writeq(s, NI(0x08), 4);
+    g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_0)), ==,
+                    0x8123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_1)), ==,
+                    0x0fedcba987654321ULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_B)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, NACK_COMPARE)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, SPOOL_MASK)), ==, 0);
+    qtest_quit(s);
+}
+
 /* A write to NMI A or B pulses that processor's line; the data is ignored. */
 static void test_nmi(void)
 {
@@ -591,6 +672,7 @@ static void test_migration_recomputes_outputs(void)
     qtest_writeq(from, PI(0, RT_COUNTER), 100);
     qtest_writeq(from, PI(0, RT_COMPARE_B), 110);
     qtest_writeq(from, PI(0, RT_ENABLE_B), 1);
+    qtest_writeq(from, PI(1, SPURIOUS_HEADER_1), 0x8000000000000abcULL);
     qtest_clock_step(from, 4 * RT_TICK_NS);
     g_assert_true(qtest_get_irq(from, 0));
     g_assert_true(qtest_get_irq(from, 11));
@@ -605,6 +687,8 @@ static void test_migration_recomputes_outputs(void)
     g_assert_cmphex(qtest_readq(to, PI(0, PENDING_0)), ==, 1ULL << 7);
     g_assert_cmphex(qtest_readq(to, PI(1, PENDING_1)), ==,
                     (1ULL << 40) | (1ULL << 55));
+    g_assert_cmphex(qtest_readq(to, PI(1, SPURIOUS_HEADER_1)), ==,
+                    0x8000000000000abcULL);
     g_assert_true(qtest_get_irq(to, 0));
     g_assert_true(qtest_get_irq(to, 11));
     g_assert_true(qtest_get_irq(to, 16));
@@ -680,6 +764,8 @@ int main(int argc, char **argv)
                    test_masks_remap_and_isolation);
     qtest_add_func("sn1/bedrock-pi/power-on-values", test_power_on_values);
     qtest_add_func("sn1/bedrock-pi/local-reset", test_local_reset);
+    qtest_add_func("sn1/bedrock-pi/error-capture-registers",
+                   test_error_capture_registers);
     qtest_add_func("sn1/bedrock-pi/nmi", test_nmi);
     qtest_add_func("sn1/bedrock-pi/error-pending-survives-reset",
                    test_error_pending_survives_reset);
