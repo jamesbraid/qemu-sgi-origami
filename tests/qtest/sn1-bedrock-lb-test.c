@@ -42,6 +42,14 @@
 /* The one-bit type field is the model's reading of an open width. */
 #define VECTOR_PARAMS_MASK (1ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
                             (0x7ffULL << 40))
+#define RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
+                        (1ULL << 28) | (1ULL << 32))
+#define RTC_FILTER_MASK (0x1fULL | (0xfffULL << 8) | (1ULL << 20) | \
+                         (0x3ffULL << 24) | (0x3ffULL << 36) | \
+                         (0x3ffULL << 48))
+/* Command, supplemental, source, error type, overrun, valid. */
+#define HEADER_1_MASK (0x7fULL | (0x7ffULL << 8) | (0x7ffULL << 20) | \
+                       (0xfULL << 32) | (1ULL << 40) | (1ULL << 44))
 
 static QTestState *lb_start(const char *extra)
 {
@@ -113,16 +121,6 @@ static void test_permissive_reset(void)
 static void test_storage_masks_and_error(void)
 {
     QTestState *s = lb_start("");
-    const uint64_t rtc_local_mask = 1ULL | (0x3ffULL << 4) |
-                                    (0x3ffULL << 16) | (1ULL << 28) |
-                                    (1ULL << 32);
-    const uint64_t rtc_filter_mask = 0x1fULL | (0xfffULL << 8) |
-                                     (1ULL << 20) | (0x3ffULL << 24) |
-                                     (0x3ffULL << 36) | (0x3ffULL << 48);
-    /* Command, supplemental, source, error type, overrun, valid. */
-    const uint64_t header_1_mask = 0x7fULL | (0x7ffULL << 8) |
-                                   (0x7ffULL << 20) | (0xfULL << 32) |
-                                   (1ULL << 40) | (1ULL << 44);
 
     qtest_irq_intercept_out_named(s, LB_PATH, "error");
     qtest_writeq(s, LB_BASE + REGION_PRESENT, 0x8000000000000001ULL);
@@ -133,15 +131,15 @@ static void test_storage_masks_and_error(void)
                     0x8000000000000001ULL);
     g_assert_cmphex(qtest_readq(s, LB_BASE + NODES_ABSENT), ==,
                     0x80ff00238000807fULL);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, rtc_local_mask);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_FILTER), ==, rtc_filter_mask);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, RTC_LOCAL_MASK);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_FILTER), ==, RTC_FILTER_MASK);
 
     qtest_writeq(s, LB_BASE + ERROR_HEADER_1, 1ULL << 44);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_1), ==, 1ULL << 44);
     qtest_writeq(s, LB_BASE + ERROR_HEADER_1, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_1), ==,
-                    header_1_mask);
-    qtest_writeq(s, LB_BASE + ERROR_HEADER_1, ~header_1_mask);
+                    HEADER_1_MASK);
+    qtest_writeq(s, LB_BASE + ERROR_HEADER_1, ~HEADER_1_MASK);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_1), ==, 0);
     qtest_writeq(s, LB_BASE + ERROR_HEADER_2, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_2), ==,
@@ -321,39 +319,53 @@ static void test_migration(void)
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     QTestState *from, *to;
+    /* One entry per migrated field, each differing from its reset value. */
+    static const struct {
+        uint64_t offset;
+        uint64_t written;
+        uint64_t expected;
+    } fields[] = {
+        { CPU_PERMISSION, 0x123456789abcdef0ULL, 0x123456789abcdef0ULL },
+        { IO_PERMISSION, 0x0f1e2d3c4b5a6978ULL, 0x0f1e2d3c4b5a6978ULL },
+        { REGION_PRESENT, 0x55aa55aa55aa55aaULL, 0x55aa55aa55aa55aaULL },
+        { NODES_ABSENT, 0xffff01238000ff7fULL, 0x80ff00238000807fULL },
+        { ERROR_BITS, 1ULL << 9, 1ULL << 9 },
+        { ERROR_HEADER_1, UINT64_MAX, HEADER_1_MASK },
+        { ERROR_HEADER_2, 0x2bcdef0123ULL, 0x2bcdef0123ULL },
+        { ERROR_DATA, 0xfeedfacecafef00dULL, 0xfeedfacecafef00dULL },
+        { DEBUG_SELECT, 0x2a, 0x2a },
+        { RTC_LOCAL, UINT64_MAX, RTC_LOCAL_MASK },
+        { RTC_FILTER, UINT64_MAX, RTC_FILTER_MASK },
+        { SCRATCH(0), 0x52c5878c, 0x52c5878c },
+        { SCRATCH(1), 0x0000080690349000ULL, 0x0000080690349000ULL },
+        { SCRATCH(2), 0x0ead0040, 0x0ead0040 },
+        { SCRATCH(3), 1, 1 },
+        { SCRATCH(4), 1, 1 },
+        /* Bit 1 masked off is the model's one-bit type; the width is open. */
+        { VECTOR_PARAMS, 0x5a5a5a5a5a5a5a5aULL,
+          0x5a5a5a5a5a5a5a5aULL & VECTOR_PARAMS_MASK },
+        { VECTOR_ROUTE, 0x123456789abcdef0ULL, 0x123456789abcdef0ULL },
+        { VECTOR_DATA, 0xfedcba9876543210ULL, 0xfedcba9876543210ULL },
+    };
 
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     from = lb_start("");
     to = lb_start("-incoming defer");
-    qtest_writeq(from, LB_BASE + CPU_PERMISSION, 0x123456789abcdef0ULL);
-    qtest_writeq(from, LB_BASE + REGION_PRESENT, 0x55aa55aa55aa55aaULL);
-    qtest_writeq(from, LB_BASE + SCRATCH(2), 0x0ead0040);
-    qtest_writeq(from, LB_BASE + ERROR_BITS, 1ULL << 9);
-    qtest_writeq(from, LB_BASE + DEBUG_SELECT, 0x2a);
-    qtest_writeq(from, LB_BASE + VECTOR_ROUTE, 0x123456789abcdef0ULL);
-    qtest_writeq(from, LB_BASE + VECTOR_DATA, 0xfedcba9876543210ULL);
-    qtest_writeq(from, LB_BASE + VECTOR_PARAMS, 0x5a5a5a5a5a5a5a5aULL);
+    for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
+        qtest_writeq(from, LB_BASE + fields[i].offset, fields[i].written);
+    }
     qtest_irq_intercept_out_named(to, LB_PATH, "error");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + CPU_PERMISSION), ==,
-                    0x123456789abcdef0ULL);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + REGION_PRESENT), ==,
-                    0x55aa55aa55aa55aaULL);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + SCRATCH(2)), ==, 0x0ead0040);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + ERROR_BITS), ==, 1ULL << 9);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + DEBUG_SELECT), ==, 0x2a);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + VECTOR_ROUTE), ==,
-                    0x123456789abcdef0ULL);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + VECTOR_DATA), ==,
-                    0xfedcba9876543210ULL);
-    g_assert_cmphex(qtest_readq(to, LB_BASE + VECTOR_PARAMS), ==,
-                    0x5a5a5a5a5a5a5a5aULL & VECTOR_PARAMS_MASK);
+    for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
+        g_assert_cmphex(qtest_readq(to, LB_BASE + fields[i].offset), ==,
+                        fields[i].expected);
+    }
     g_assert_true(qtest_get_irq(to, 0));
     qtest_writeq(to, LB_BASE + ERROR_CLEAR, 1ULL << 9);
     g_assert_false(qtest_get_irq(to, 0));
