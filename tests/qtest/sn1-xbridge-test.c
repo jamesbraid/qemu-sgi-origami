@@ -423,6 +423,11 @@ static void test_access_errors(void)
     g_assert_cmphex(reg_read(qts, 0xb0) & 3, ==, 0);
     reg_write(qts, 0x178, UINT32_MAX);
     g_assert_cmphex(reg_read(qts, 0x178), ==, 0);
+    /* The acknowledge slot is eight bytes; the rest of its page is not. */
+    reg_write(qts, 0x110, 8);
+    qtest_readl(qts, BASE + 0x3000c);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0x3000c);
     qtest_quit(qts);
 }
 

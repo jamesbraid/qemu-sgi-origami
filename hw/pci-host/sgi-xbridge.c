@@ -280,7 +280,7 @@ static void xbridge_error_packet(SGIXBridgeHeadState *s)
 static bool xbridge_deferred(hwaddr addr)
 {
     return (addr >= 0x300 && addr < 0x600) ||
-           (addr >= 0x30000 && addr < 0x31000) ||
+           (addr >= 0x30000 && addr < 0x30008) ||
            addr >= 0xc00000;
 }
 
