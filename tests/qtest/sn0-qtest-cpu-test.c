@@ -111,6 +111,18 @@ static void user_li(UserCode *p, unsigned int rt, uint32_t value)
     user_i(p, 13, rt, rt, value);
 }
 
+static void user_li64(UserCode *p, unsigned int rt, uint64_t value)
+{
+    user_i(p, 13, 0, rt, value >> 48);
+    for (unsigned int shift = 32; ; shift -= 16) {
+        user_emit(p, (rt << 16) | (rt << 11) | (16 << 6) | 0x38);
+        user_i(p, 13, rt, rt, value >> shift);
+        if (shift == 0) {
+            break;
+        }
+    }
+}
+
 static void user_mtc0(UserCode *p, unsigned int rt, unsigned int rd)
 {
     user_emit(p, 0x40800000 | (rt << 16) | (rd << 11));
@@ -438,6 +450,234 @@ static void test_remote_user_code_first_call(void)
     run_user_code_first_call(true);
 }
 
+#define WORD_LOAD_DATA     (USER_PHYS + 0x100)
+#define WORD_LOAD_MAILBOX  (USER_PHYS + 0xc00)
+#define WORD_LOAD_DONE     0x1f0
+#define WORD_LOAD_RESULTS  22
+
+static const uint64_t word_load_expected[WORD_LOAD_RESULTS] = {
+    UINT64_C(0x0000000012345678), /* LWL clear, offset 0 */
+    UINT64_C(0x00000000345678d4), /* LWL clear, offset 1 */
+    UINT64_C(0x000000005678c3d4), /* LWL clear, offset 2 */
+    UINT64_C(0x0000000078b2c3d4), /* LWL clear, offset 3 */
+    UINT64_C(0xffffffff89abcdef), /* LWL set, offset 0 */
+    UINT64_C(0xffffffffabcdefd4), /* LWL set, offset 1 */
+    UINT64_C(0xffffffffcdefc3d4), /* LWL set, offset 2 */
+    UINT64_C(0xffffffffefb2c3d4), /* LWL set, offset 3 */
+    UINT64_C(0x0000000012345678), /* full LWR, bit 31 clear */
+    UINT64_C(0xffffffff89abcdef), /* full LWR, bit 31 set */
+    UINT64_C(0x1122334471b2c312), /* partial LWR 0, old bit 31 clear */
+    UINT64_C(0x1122334471b21234), /* partial LWR 1, old bit 31 clear */
+    UINT64_C(0x1122334471123456), /* partial LWR 2, old bit 31 clear */
+    UINT64_C(0x55667788a1b2c312), /* partial LWR 0, old bit 31 set */
+    UINT64_C(0x55667788a1b21234), /* partial LWR 1, old bit 31 set */
+    UINT64_C(0x55667788a1123456), /* partial LWR 2, old bit 31 set */
+    UINT64_C(0x0000000012345678), /* clear pair, LWL then LWR */
+    UINT64_C(0x0000000012345678), /* clear pair, LWR then LWL */
+    UINT64_C(0xffffffff89abcdef), /* set pair, LWL then LWR */
+    UINT64_C(0xffffffff89abcdef), /* set pair, LWR then LWL */
+    UINT64_C(0x0000000071b2c312), /* 32-bit mode, old bit 31 clear */
+    UINT64_C(0xffffffffa1b2c312), /* 32-bit mode, old bit 31 set */
+};
+
+static const uint64_t word_load_default_partial[6] = {
+    UINT64_C(0x0000000071b2c312),
+    UINT64_C(0x0000000071b21234),
+    UINT64_C(0x0000000071123456),
+    UINT64_C(0xffffffffa1b2c312),
+    UINT64_C(0xffffffffa1b21234),
+    UINT64_C(0xffffffffa1123456),
+};
+
+static const char *const word_load_names[WORD_LOAD_RESULTS] = {
+    "lwl-clear-0", "lwl-clear-1", "lwl-clear-2", "lwl-clear-3",
+    "lwl-set-0", "lwl-set-1", "lwl-set-2", "lwl-set-3",
+    "lwr-full-clear", "lwr-full-set",
+    "lwr-partial-0-old-clear", "lwr-partial-1-old-clear",
+    "lwr-partial-2-old-clear", "lwr-partial-0-old-set",
+    "lwr-partial-1-old-set", "lwr-partial-2-old-set",
+    "pair-clear-lwl-lwr", "pair-clear-lwr-lwl",
+    "pair-set-lwl-lwr", "pair-set-lwr-lwl",
+    "lwr-32bit-old-clear", "lwr-32bit-old-set",
+};
+
+static void word_load_result(UserCode *p, unsigned int *result,
+                             uint64_t initial, unsigned int op,
+                             unsigned int offset)
+{
+    user_li64(p, 8, initial);
+    user_i(p, op, 16, 8, offset);
+    user_i(p, 63, 17, 8, (*result)++ * 8);
+}
+
+static void build_word_load_test(UserCode *p)
+{
+    const uint64_t initial = UINT64_C(0x11223344a1b2c3d4);
+    unsigned int second, result = 0;
+
+    user_emit(p, 0x100001ff); /* reset -> offset 0x800 */
+    user_emit(p, 0);
+    p->pos = 0x380;
+    user_emit(p, 0x1000001f); /* general exception -> offset 0x400 */
+    user_emit(p, 0);
+
+    /* Save both 32-bit-register-mode results from the syscall handler. */
+    p->pos = 0x400;
+    second = user_branch(p, 5, 27, 0);
+    user_i(p, 63, 26, 8, 20 * 8);
+    user_i(p, 9, 0, 27, 1);
+    user_li64(p, 8, UINT64_C(0x55667788a1b2c3d4));
+    user_emit(p, 0x40000000 | (9u << 16) | (14u << 11)); /* EPC */
+    user_i(p, 9, 9, 9, 4);
+    user_mtc0(p, 9, 14);
+    user_emit(p, 0x42000018); /* eret */
+    user_emit(p, 0);
+    user_patch(p, second, p->pos);
+    user_i(p, 63, 26, 8, 21 * 8);
+    user_i(p, 9, 0, 9, 1);
+    user_i(p, 43, 26, 9, WORD_LOAD_DONE);
+    user_park(p);
+
+    p->pos = 0x800;
+    user_li(p, 8, 0x00400080); /* BEV, KX; no ERL */
+    user_mtc0(p, 8, 12);
+    user_li(p, 16, 0xa0000000 | WORD_LOAD_DATA);
+    user_li(p, 17, 0xa0000000 | WORD_LOAD_MAILBOX);
+
+    for (unsigned int offset = 0; offset < 4; offset++) {
+        word_load_result(p, &result, initial, 34, offset);
+    }
+    for (unsigned int offset = 0; offset < 4; offset++) {
+        word_load_result(p, &result, initial, 34, 8 + offset);
+    }
+    word_load_result(p, &result, initial, 38, 3);
+    word_load_result(p, &result, initial, 38, 11);
+    for (unsigned int offset = 0; offset < 3; offset++) {
+        word_load_result(p, &result, UINT64_C(0x1122334471b2c3d4),
+                         38, offset);
+    }
+    for (unsigned int offset = 0; offset < 3; offset++) {
+        word_load_result(p, &result, UINT64_C(0x55667788a1b2c3d4),
+                         38, offset);
+    }
+
+    user_li64(p, 8, initial);
+    user_i(p, 34, 16, 8, 17);
+    user_i(p, 38, 16, 8, 20);
+    user_i(p, 63, 17, 8, result++ * 8);
+    user_li64(p, 8, initial);
+    user_i(p, 38, 16, 8, 20);
+    user_i(p, 34, 16, 8, 17);
+    user_i(p, 63, 17, 8, result++ * 8);
+    user_li64(p, 8, initial);
+    user_i(p, 34, 16, 8, 33);
+    user_i(p, 38, 16, 8, 36);
+    user_i(p, 63, 17, 8, result++ * 8);
+    user_li64(p, 8, initial);
+    user_i(p, 38, 16, 8, 36);
+    user_i(p, 34, 16, 8, 33);
+    user_i(p, 63, 17, 8, result++ * 8);
+    g_assert_cmpuint(result, ==, 20);
+
+    /* Map one page, then repeat a partial LWR with 64-bit GPRs disabled. */
+    user_mtc0(p, 0, 0);           /* Index */
+    user_mtc0(p, 0, 5);           /* PageMask: 4 KiB */
+    user_li(p, 8, USER_TEXT);
+    user_mtc0(p, 8, 10);          /* EntryHi */
+    user_li(p, 8, (USER_PHYS >> 6) | 0x1f); /* C=3, D,V,G */
+    user_mtc0(p, 8, 2);
+    user_i(p, 9, 0, 8, 1);       /* unused odd half: G only */
+    user_mtc0(p, 8, 3);
+    user_emit(p, 0x42000002);     /* tlbwi */
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(p, 0);
+    }
+    user_li(p, 16, USER_TEXT + 0x100);
+    user_li(p, 26, 0xa0000000 | WORD_LOAD_MAILBOX);
+    user_i(p, 9, 0, 27, 0);
+    user_li64(p, 8, UINT64_C(0x1122334471b2c3d4));
+    user_li(p, 9, USER_TEXT + 0x800);
+    user_mtc0(p, 9, 14);
+    user_li(p, 9, 0x00400092);    /* BEV, KX, user KSU, EXL; no UX */
+    user_mtc0(p, 9, 12);
+    user_emit(p, 0x42000018);     /* eret */
+    user_emit(p, 0);
+    g_assert_cmpuint(p->pos, <=, 0x1000);
+}
+
+static void run_word_load_test(const char *machine, const char *cpu,
+                               bool preserves_upper)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t data[64] = {
+        0x12, 0x34, 0x56, 0x78,
+        [8] = 0x89, 0xab, 0xcd, 0xef,
+        [16] = 0xee, 0x12, 0x34, 0x56, 0x78,
+        [32] = 0xee, 0x89, 0xab, 0xcd, 0xef,
+    };
+    uint8_t mailbox[0x200] = { 0 };
+    uint8_t user_code[16] = { 0 };
+    QTestState *qts;
+    int64_t deadline;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    build_word_load_test(image);
+    stl_be_p(user_code, (38u << 26) | (16u << 21) | (8u << 16));
+    stl_be_p(user_code + 4, 0x0000000c); /* syscall */
+    stl_be_p(user_code + 8, (38u << 26) | (16u << 21) | (8u << 16));
+    stl_be_p(user_code + 12, 0x0000000c); /* syscall */
+    fd = g_file_open_tmp("sn0-word-loads-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("%s -cpu %s -bios %s -accel tcg,thread=multi -S",
+                      machine, cpu, path);
+    unlink(path);
+    qtest_memwrite(qts, WORD_LOAD_DATA, data, sizeof(data));
+    qtest_memwrite(qts, USER_PHYS + 0x800, user_code, sizeof(user_code));
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    do {
+        qtest_memread(qts, WORD_LOAD_MAILBOX, mailbox, sizeof(mailbox));
+        if (ldl_be_p(mailbox + WORD_LOAD_DONE)) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    qtest_quit(qts);
+    g_assert_cmphex(ldl_be_p(mailbox + WORD_LOAD_DONE), ==, 1);
+    for (unsigned int i = 0; i < WORD_LOAD_RESULTS; i++) {
+        uint64_t expected = word_load_expected[i];
+        uint64_t actual = ldq_be_p(mailbox + i * 8);
+
+        if (!preserves_upper && i >= 10 && i < 16) {
+            expected = word_load_default_partial[i - 10];
+        }
+        if (actual != expected) {
+            g_test_message("%s: expected 0x%016" PRIx64
+                           ", got 0x%016" PRIx64,
+                           word_load_names[i], expected, actual);
+            g_test_fail();
+        }
+    }
+}
+
+static void test_r10000_word_loads(void)
+{
+    run_word_load_test(MACHINE_DUAL, "R10000", true);
+}
+
+static void test_mips4_word_loads(void)
+{
+    run_word_load_test("-M malta -m 64M", "VR5432", false);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -446,5 +686,9 @@ int main(int argc, char **argv)
                    test_user_code_first_call);
     qtest_add_func("/sn0/qtest/remote-user-code-first-call",
                    test_remote_user_code_first_call);
+    qtest_add_func("/sn0/qtest/r10000-word-loads", test_r10000_word_loads);
+    if (qtest_has_machine("malta")) {
+        qtest_add_func("/sn0/qtest/mips4-word-loads", test_mips4_word_loads);
+    }
     return g_test_run();
 }

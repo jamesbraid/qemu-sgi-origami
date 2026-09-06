@@ -2191,7 +2191,20 @@ static void gen_ld(DisasContext *ctx, uint32_t opc,
         t1 = tcg_temp_new();
         gen_load_gpr(t1, rt);
         gen_lxr(ctx, t1, t0, mem_idx, mo_endian(ctx) | MO_UL);
-        tcg_gen_ext32s_tl(t1, t1);
+#if defined(TARGET_MIPS64)
+        if (opc == OPC_LWR && ctx->partial_lwr_preserves_upper &&
+            disas_is_bigendian(ctx) && decode_64bit_enabled(ctx)) {
+            TCGLabel *partial = gen_new_label();
+
+            tcg_gen_andi_tl(t0, t0, 3);
+            tcg_gen_brcondi_tl(TCG_COND_NE, t0, 3, partial);
+            tcg_gen_ext32s_tl(t1, t1);
+            gen_set_label(partial);
+        } else
+#endif
+        {
+            tcg_gen_ext32s_tl(t1, t1);
+        }
         gen_store_gpr(t1, rt);
         break;
     case OPC_LLE:
@@ -15444,6 +15457,8 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->mi = (env->CP0_Config5 >> CP0C5_MI) & 1;
     ctx->gi = (env->CP0_Config5 >> CP0C5_GI) & 3;
     ctx->crcp = (env->CP0_Config5 >> CP0C5_CRCP) & 1;
+    ctx->partial_lwr_preserves_upper =
+        env->cfg.partial_lwr_preserves_upper;
     restore_cpu_state(env, ctx);
 #ifdef CONFIG_USER_ONLY
         ctx->mem_idx = MIPS_HFLAG_UM;
