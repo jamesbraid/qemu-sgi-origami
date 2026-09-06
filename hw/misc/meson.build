@@ -192,5 +192,7 @@ system_ss.add(when: 'CONFIG_SGI_BEDROCK_MD', if_true: files('sgi-bedrock-md.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_IO', if_true: files('sgi-bedrock-io.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_LB',
               if_true: files('sgi-bedrock-lb.c'))
+system_ss.add(when: 'CONFIG_SGI_BEDROCK_XB',
+              if_true: files('sgi-bedrock-xb.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK',
               if_true: files('sgi-bedrock.c', 'sgi-bedrock-pi.c'))

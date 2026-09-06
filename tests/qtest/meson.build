@@ -233,6 +233,8 @@ qtests_mips64 = \
     ['sn1-bedrock-io-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_LB') ?
     ['sn1-bedrock-lb-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_BEDROCK_XB') ?
+    ['sn1-bedrock-xb-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK') ?
     ['sn1-bedrock-pi-test', 'sn1-bedrock-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test',
