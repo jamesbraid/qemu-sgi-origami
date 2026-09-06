@@ -11,12 +11,19 @@
 #define IMAGE_SIZE          0x1000
 #define CODE_START          0x400
 #define MAIN_LOOP           0x480
+#define RESET_CHECK         0x700
+#define RESET_LOOP          0x780
 
 #define STATE_PHYS          0x00100000
 #define STATE_KSEG1_HI      0xa010
 #define READY_OFF           0x00
 #define COUNT_OFF           0x08
+#define PHASE_OFF           0x20
+#define POWER_ON_OFF        0x40
+#define NONZERO_OFF         0x80
+#define RESET_OFF           0xc0
 #define READY_MAGIC         0x1400
+#define RESET_READY_MAGIC   0x1401
 #define INITIAL_COUNT       0x12340000u
 #define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
@@ -25,11 +32,13 @@
 
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
+#define OPC_BNE             (0x05u << 26)
 #define OPC_ADDIU           (0x09u << 26)
 #define OPC_ORI             (0x0du << 26)
 #define OPC_AND             (0x24u | OPC_SPECIAL)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_CP0             (0x10u << 26)
+#define OPC_LD              (0x37u << 26)
 #define OPC_SD              (0x3fu << 26)
 #define OPC_MFC0            (OPC_CP0 | (0x00u << 21))
 #define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
@@ -39,6 +48,7 @@
 #define R_T0                8
 #define R_T1                9
 #define R_T2                10
+#define R_T3                11
 
 #define CP0_STATUS          12
 #define CP0_PERFORMANCE     25
@@ -72,6 +82,13 @@ static void emit_branch(GuestImage *img, unsigned int target)
     int32_t off = ((int32_t)target - (int32_t)(img->pos + 4)) / 4;
 
     emit(img, OPC_BEQ | (off & 0xffff));
+}
+
+static void emit_bne(GuestImage *img, int rs, int rt, unsigned int target)
+{
+    int32_t off = ((int32_t)target - (int32_t)(img->pos + 4)) / 4;
+
+    emit(img, OPC_BNE | (rs << 21) | (rt << 16) | (off & 0xffff));
 }
 
 static void emit_mfc0(GuestImage *img, int rt, int rd, int sel)
@@ -116,6 +133,67 @@ static void write_guest_image(int fd, const TestConfig *config)
     emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | COUNT_OFF);
     emit(&img, OPC_SYNC);
     emit_branch(&img, MAIN_LOOP);
+    emit(&img, 0);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void write_reset_guest_image(int fd)
+{
+    static const uint16_t nonzero[8] = {
+        PERF_KERNEL, 0x101, PERF_KERNEL, 0x303,
+        PERF_KERNEL, 0x505, PERF_KERNEL, 0x707,
+    };
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+    unsigned int sel;
+
+    /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
+    emit_branch(&img, CODE_START);
+    emit(&img, 0);
+
+    img.pos = CODE_START;
+    emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
+    emit(&img, OPC_LD | (R_T2 << 21) | (R_T3 << 16) | PHASE_OFF);
+    emit_bne(&img, R_T3, R_ZERO, RESET_CHECK);
+    emit(&img, 0);
+
+    for (sel = 0; sel < 8; sel++) {
+        emit_mfc0(&img, R_T0, CP0_PERFORMANCE, sel);
+        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
+                   (POWER_ON_OFF + sel * 8));
+    }
+    for (sel = 0; sel < 8; sel++) {
+        emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) |
+                   nonzero[sel]);
+        emit_mtc0(&img, R_T0, CP0_PERFORMANCE, sel);
+        emit_mfc0(&img, R_T0, CP0_PERFORMANCE, sel);
+        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
+                   (NONZERO_OFF + sel * 8));
+    }
+    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) | 1);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | PHASE_OFF);
+    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) | READY_MAGIC);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | READY_OFF);
+    emit(&img, OPC_SYNC);
+    emit_branch(&img, RESET_LOOP);
+    emit(&img, 0);
+
+    img.pos = RESET_CHECK;
+    for (sel = 0; sel < 8; sel++) {
+        emit_mfc0(&img, R_T0, CP0_PERFORMANCE, sel);
+        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
+                   (RESET_OFF + sel * 8));
+    }
+    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) |
+               RESET_READY_MAGIC);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | READY_OFF);
+    emit(&img, OPC_SYNC);
+
+    img.pos = RESET_LOOP;
+    emit_branch(&img, RESET_LOOP);
     emit(&img, 0);
 
     written = write(fd, image, sizeof(image));
@@ -169,6 +247,19 @@ static void wait_for_ready(QTestState *qts)
         g_usleep(POLL_INTERVAL_US);
     }
     g_assert_not_reached();
+}
+
+static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
+{
+    unsigned int tries;
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, off) == expected) {
+            return;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(state_word(qts, off), ==, expected);
 }
 
 static void wait_for_migration(QTestState *from)
@@ -344,6 +435,45 @@ static void test_stream_representation(const void *opaque)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+static void test_r14000_reset_values(void)
+{
+    static const uint64_t nonzero[8] = {
+        PERF_KERNEL, 0x101, PERF_KERNEL, 0x303,
+        PERF_KERNEL, 0x505, PERF_KERNEL, 0x707,
+    };
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    unsigned int sel;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    fd = g_file_open_tmp("mips64-r14k-perf-reset-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_reset_guest_image(fd);
+    close(fd);
+    qts = qtest_initf("-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
+                      "-no-shutdown", image);
+    unlink(image);
+
+    wait_for_ready(qts);
+    for (sel = 0; sel < 8; sel++) {
+        g_assert_cmphex(state_word(qts, POWER_ON_OFF + sel * 8), ==, 0);
+        g_assert_cmphex(state_word(qts, NONZERO_OFF + sel * 8), ==,
+                        nonzero[sel]);
+    }
+    qtest_writeq(qts, STATE_PHYS + READY_OFF, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    wait_for_state(qts, READY_OFF, RESET_READY_MAGIC);
+    for (sel = 0; sel < 8; sel++) {
+        g_assert_cmphex(state_word(qts, RESET_OFF + sel * 8), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -355,5 +485,7 @@ int main(int argc, char **argv)
                         &configurations[0], test_stream_representation);
     qtest_add_data_func("mips64/r10k-perf-stream/r14000",
                         &configurations[1], test_stream_representation);
+    qtest_add_func("mips64/r14000-perf/reset-values",
+                   test_r14000_reset_values);
     return g_test_run();
 }
