@@ -10,20 +10,22 @@ disabled (Super Bridge mode). The Origin 300 runs XBridge mode: its
 Bedrock sits on port 0xa, the crossbar answers at widget 0, and the
 two PCI buses are widgets 0xe and 0xf.
 
-QEMU models the two halves separately, each testable on its own:
+QEMU models the two halves and the chip that joins them, each testable
+on its own:
 
 * ``sgi-xbridge-head`` (``hw/pci-host/sgi-xbridge.c``) is one Bridge
   section -- the PCI host bridge with its register block, device and
   configuration windows, DMA translation and interrupt path;
 * ``sgi-xbridge-xbow`` (``hw/misc/sgi-xbridge-xbow.c``) is the
   crossbar half as widget 0 presents it -- identity, crossbar-wide
-  status and control, fences, lock and one register set per link.
+  status and control, fences, lock and one register set per link;
+* ``sgi-xbridge`` (also in ``hw/pci-host/sgi-xbridge.c``) is the chip:
+  one crossbar and two heads at widgets 0xe and 0xf, and the routing
+  between them and one host port.
 
-Composing them into the chip, with packets routed by destination
-widget, is not yet modeled. Everything the Bridge page states carries
-over to the head unless this page says otherwise; the deltas come
-from the XBridge ASIC specification through the project's reviewed
-datasheet.
+Everything the Bridge page states carries over to the head unless this
+page says otherwise; the deltas come from the XBridge ASIC
+specification through the project's reviewed datasheet.
 
 The head's register block
 =========================
@@ -59,7 +61,13 @@ specification does not say which of the two happens.
 
 The bridge-half NIC register does not drive the one-wire pin in
 XBridge mode -- widget 0's does -- so its writes are logged and not
-stored.
+stored. The registers the datasheet carries over from the Bridge
+unchanged -- test pin control, arbitration, PCI timeout, interrupt
+device and the two read response buffer registers among them -- are
+stored with the Bridge's reset values and fields. The address-match
+buffers, performance counters, interrupt-acknowledge slot and the 4 MB
+section are defined but deferred: reads return zero, writes are
+dropped, both are logged, and none is an invalid-address error.
 
 Errors of the head's own
 ========================
@@ -75,8 +83,7 @@ record nor sends again until the request-dispatch group strobe
 The latched value is the offset inside the head's 16 MB window, not
 the 48-bit crosstalk request address a Bridge captures: the head
 does not know its own address in the crosstalk space. That is model
-behavior, kept until the crossbar composition can supply the full
-address.
+behavior; the chip composition does not yet supply the full address.
 
 Configuration and device windows
 ================================
@@ -191,7 +198,45 @@ Not modeled, and logged when touched: link training timing,
 software-disabled links, arbitration, performance counting, buffer
 flushing with traffic (an empty flush completes at once), injected
 link errors, the link-reset one-shot's effect on a link, and the
-one-wire pulse behind widget 0's NIC register.
+one-wire pulse behind widget 0's NIC register. A read of the
+write-only link-reset register returns zero; neither datasheet names
+such a read as an error.
+
+The chip
+========
+
+``sgi-xbridge`` owns a crossbar and two heads as children and is what
+a machine instantiates. Two properties are required and realization
+is refused without them: ``fabric``, a link to the memory region that
+receives everything the chip sends toward its host (interrupt and
+error packets, DMA), and ``host-port``, the crossbar port the host
+occupies, 8 to 0xd. The Origin 300's Bedrock sits on 0xa and the
+machine must say so. The crossbar's presence map is the host port and
+the two heads.
+
+The chip's MMIO region is the crosstalk space as the host sees it:
+sixteen slots of 16 TB, one per widget. Slot 0 is the crossbar's view
+for the host's port, so the status register reports the host's port
+number; slots 0xe and 0xf are the heads' 16 MB register faces. Every
+other slot, and the space beyond a face, reaches nothing: reads return
+zero, writes are dropped, both are logged. The datasheet does not
+establish how a Bedrock big-window request above a face maps into a
+head's general PCI memory space, so that decode is a later head
+increment rather than a guess here.
+
+Widgets 0xe and 0xf are fixed destinations. Rewriting a head's
+widget-ID field changes what it reads back, not where it answers; the
+source identity a real head puts in its packets is not observable in
+this model, whose packets are plain writes.
+
+A warm reset arriving on the host's port resets the crossbar core, as
+the widget-0 fence allows, and is forwarded to the ports whose fences
+admit the source. Inside the chip the forwards for 0xe and 0xf reset
+the heads; the external ports' forwards are outputs for the machine.
+Whether a warm reset the widget-0 fence rejects still forwards to the
+links is not settled by the datasheet, and the model forwards nothing
+in that case. The 1024-cycle window in which a port ignores further
+reset patterns is not modeled.
 
 Migration
 =========
@@ -204,8 +249,9 @@ status, so a pending assertion still clears on the far side.
 Not yet modeled
 ===============
 
-* the chip composition and destination routing
+* routing between the two heads
 * the 4 MB flash section behind port 0xf
 * the performance counters and address-match buffers
 * PCI memory space above the head's 16 MB register window
 * Super Bridge mode and the PIC
+* the 1024-cycle reset-ignore window
