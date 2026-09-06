@@ -14,6 +14,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/queue.h"
+#include "hw/core/hotplug.h"
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
 #include "hw/scsi/qlogic-isp.h"
@@ -323,6 +324,7 @@ struct QLogicISPClass {
  */
 typedef struct QLogicISPChannel {
     SCSIBus bus;
+    SCSIBusInfo info;   /* The family's record, carrying this bus's channel. */
     QLogicISPState *dev;
     uint8_t index;
     uint16_t reset_delay;   /* What this bus waits after a reset. */
@@ -1166,6 +1168,35 @@ static const struct SCSIBusInfo qlogic_isp_scsi_info = {
     .load_request = qlogic_isp_load_request,
 };
 
+/*
+ * A QEMU SCSI device carries the channel it sits on, and its migration
+ * path is that channel with the target and LUN. Both of this adapter's
+ * buses would otherwise say channel zero, so the same target number on
+ * each channel -- the thing a dual-channel adapter is for -- would be one
+ * address, and the save-state registry refuses the second device outright.
+ * A bus is a channel here, so it stamps its own number into what plugs in.
+ */
+static void qlogic_isp_channel_pre_plug(HotplugHandler *hotplug_dev,
+                                        DeviceState *dev, Error **errp)
+{
+    SCSIBus *bus = SCSI_BUS(qdev_get_parent_bus(dev));
+    QLogicISPChannel *chan = container_of(bus, QLogicISPChannel, bus);
+    SCSIDevice *sdev = SCSI_DEVICE(dev);
+
+    sdev->channel = chan->index;
+
+    /*
+     * The bus checked the address before the stamp moved it. An address
+     * left to the bus to pick is picked after this, against the stamped
+     * channel, so only a fully specified one needs looking at again.
+     */
+    if (sdev->id != -1 && sdev->lun != -1 &&
+        scsi_device_find(bus, sdev->channel, sdev->id, sdev->lun)) {
+        error_setg(errp, "target %d lun %d is already used on channel %u",
+                   sdev->id, sdev->lun, chan->index);
+    }
+}
+
 static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
                                      hwaddr rqst_addr, uint8_t entry_count,
                                      uint16_t seg_count)
@@ -1702,8 +1733,12 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     for (i = 0; i < info->nchannels; i++) {
         s->chan[i].dev = s;
         s->chan[i].index = i;
+        /* One channel per bus, so a bus accepts its own number and no other. */
+        s->chan[i].info = qlogic_isp_scsi_info;
+        s->chan[i].info.max_channel = i;
         scsi_bus_init(&s->chan[i].bus, sizeof(s->chan[i].bus), DEVICE(dev),
-                      &qlogic_isp_scsi_info);
+                      &s->chan[i].info);
+        qbus_set_hotplug_handler(BUS(&s->chan[i].bus), OBJECT(dev));
     }
 }
 
@@ -1764,12 +1799,16 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
 
     pc->realize = qlogic_isp_realize;
     pc->exit = qlogic_isp_exit;
     pc->vendor_id = QLOGIC_ISP_VENDOR_ID;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
     rc->phases.hold = qlogic_isp_reset_hold;
+    /* Taken from the SCSI bus, which supplies exactly this unplug. */
+    hc->pre_plug = qlogic_isp_channel_pre_plug;
+    hc->unplug = qdev_simple_device_unplug_cb;
     dc->vmsd = &vmstate_qlogic_isp;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
@@ -1808,6 +1847,7 @@ static const TypeInfo qlogic_isp_base_info = {
     .abstract = true,
     .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+        { TYPE_HOTPLUG_HANDLER },
         { },
     },
 };
