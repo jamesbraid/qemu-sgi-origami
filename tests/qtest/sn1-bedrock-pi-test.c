@@ -12,6 +12,7 @@
 #define PI(n, reg) (BASE + (n) * 0x200000ULL + (reg))
 #define LB(reg) (BASE + 0x600000ULL + (reg))
 #define NI(reg) (BASE + 0x680000ULL + (reg))
+#define XB(reg) (BASE + 0x700000ULL + (reg))
 #define MACHINE "-M none -cpu R10000 -m 256M " \
                 "-object memory-backend-ram,id=bedrock-dma,size=2M " \
                 "-device sgi-bedrock,id=bedrock,processor-count=%u," \
@@ -240,6 +241,32 @@ static void test_pending_modify_and_reflection(void)
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 0);
     g_assert_false(qtest_get_irq(s, 16));
+
+    /*
+     * Bit 54 reflects the crossbar's first-error valid bit in both
+     * interfaces. Inject through the PI0 output queue error register and
+     * service in the documented order: the queue's clear, then first error
+     * clear; the bit holds until the second.
+     */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x176);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
+    qtest_writeq(s, XB(0x20), 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 54);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 1ULL << 54);
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x076);
+    qtest_writeq(s, PI(1, PENDING_ALIAS), 0x076);
+    qtest_writeq(s, PI(1, PENDING_1), 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 54);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 1ULL << 54);
+    qtest_writeq(s, PI(1, MASK_1_A), 1ULL << 54);
+    g_assert_true(qtest_get_irq(s, 11));
+    qtest_writeq(s, XB(0x120), 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 54);
+    g_assert_true(qtest_get_irq(s, 11));
+    qtest_writeq(s, XB(0x190), 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 0);
+    g_assert_false(qtest_get_irq(s, 11));
     qtest_quit(s);
 }
 
@@ -303,6 +330,25 @@ static void test_masks_remap_and_isolation(void)
     qtest_writeq(s, PI(0, REMAP), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PI(0, REMAP)), ==, 0x1f);
     qtest_writeq(s, PI(0, REMAP), 0);
+
+    /* The crossbar error reaches every processor through its bank-1 mask. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x045);
+    qtest_writeq(s, PI(0, MASK_1_A), 0);
+    qtest_writeq(s, XB(0x20), 1);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned cpu = 0; cpu < 2; cpu++) {
+            unsigned line = pi * 10 + cpu * 5 + 1;
+            unsigned mask = cpu ? MASK_1_B : MASK_1_A;
+
+            g_assert_false(qtest_get_irq(s, line));
+            qtest_writeq(s, PI(pi, mask), 1ULL << 54);
+            g_assert_true(qtest_get_irq(s, line));
+            qtest_writeq(s, PI(pi, mask), 0);
+            g_assert_false(qtest_get_irq(s, line));
+        }
+    }
+    qtest_writeq(s, XB(0x120), 1);
+    qtest_writeq(s, XB(0x190), 1);
 
     qtest_writeq(s, PI(0, ERROR_SET), (1ULL << 3) | (1ULL << 26));
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==,
@@ -388,6 +434,9 @@ static void write_reset_probe(QTestState *s)
     qtest_writeq(s, PI(0, RT_COMPARE_A), 0x5678);
     qtest_writeq(s, PI(0, RT_ENABLE_A), 1);
     qtest_writeq(s, PI(0, ERROR_MASK_A), 1ULL << 3);
+    qtest_writeq(s, XB(0x20), 1);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==,
+                    (1ULL << 10) | (1ULL << 54));
     g_assert_true(qtest_get_irq(s, 0));
     g_assert_true(qtest_get_irq(s, 16));
 }
@@ -712,7 +761,8 @@ static void test_migration_recomputes_outputs(void)
     qtest_writeq(from, PI(1, PENDING_MODIFY), 0x168);
     qtest_writeq(from, PI(1, MASK_1_B), 1ULL << 40);
     qtest_writeq(from, LB(0x4040), 1ULL << 3);
-    qtest_writeq(from, PI(1, MASK_1_A), 1ULL << 55);
+    qtest_writeq(from, XB(0x20), 1);
+    qtest_writeq(from, PI(1, MASK_1_A), (1ULL << 54) | (1ULL << 55));
     qtest_writeq(from, PI(0, RT_COUNTER), 100);
     qtest_writeq(from, PI(0, RT_COMPARE_B), 110);
     qtest_writeq(from, PI(0, RT_ENABLE_B), 1);
@@ -730,7 +780,7 @@ static void test_migration_recomputes_outputs(void)
     ensure_clock_running(to);
     g_assert_cmphex(qtest_readq(to, PI(0, PENDING_0)), ==, 1ULL << 7);
     g_assert_cmphex(qtest_readq(to, PI(1, PENDING_1)), ==,
-                    (1ULL << 40) | (1ULL << 55));
+                    (1ULL << 40) | (1ULL << 54) | (1ULL << 55));
     g_assert_cmphex(qtest_readq(to, PI(1, SPURIOUS_HEADER_1)), ==,
                     0x8000000000000abcULL);
     g_assert_true(qtest_get_irq(to, 0));
@@ -749,8 +799,13 @@ static void test_migration_recomputes_outputs(void)
     qtest_writeq(to, PI(1, PENDING_MODIFY), 0x068);
     qtest_writeq(to, LB(0x4048), 1ULL << 3);
     g_assert_false(qtest_get_irq(to, 0));
-    g_assert_false(qtest_get_irq(to, 11));
+    g_assert_true(qtest_get_irq(to, 11));
     g_assert_false(qtest_get_irq(to, 16));
+    /* The crossbar's error level was re-driven on the destination. */
+    qtest_writeq(to, XB(0x120), 1);
+    qtest_writeq(to, XB(0x190), 1);
+    g_assert_cmphex(qtest_readq(to, PI(1, PENDING_1)), ==, 0);
+    g_assert_false(qtest_get_irq(to, 11));
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);

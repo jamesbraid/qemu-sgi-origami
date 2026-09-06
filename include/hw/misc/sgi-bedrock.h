@@ -8,6 +8,7 @@
 #include "hw/misc/sgi-bedrock-md.h"
 #include "hw/misc/sgi-bedrock-ni.h"
 #include "hw/misc/sgi-bedrock-pi.h"
+#include "hw/misc/sgi-bedrock-xb.h"
 
 #define TYPE_SGI_BEDROCK "sgi-bedrock"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
@@ -24,6 +25,7 @@ struct SGIBedrockState {
     SGIBedrockMDState md;
     SGIBedrockLBState lb;
     SGIBedrockNIState ni;
+    SGIBedrockXBState xb;
     qemu_irq hardware_irq[2 * SGI_BEDROCK_PI_PROCESSORS *
                            SGI_BEDROCK_PI_HW_IRQS];
     qemu_irq nmi[2 * SGI_BEDROCK_PI_PROCESSORS];
