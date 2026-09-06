@@ -60,10 +60,12 @@ struct SGIBedrockPIState {
     bool rt_timer_match[2];
     bool lb_error;
     bool ni_error;
+    bool xb_error;
 };
 
 void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_ni_error(SGIBedrockPIState *s, bool level);
+void sgi_bedrock_pi_set_xb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
 /*
  * An I/O-issued write to the interrupt-pending-modify register from a

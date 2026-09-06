@@ -135,7 +135,8 @@ static void pi_arm_profile(SGIBedrockPIState *s)
 
 static uint64_t pi_pending1(SGIBedrockPIState *s)
 {
-    uint64_t reflected = (s->lb_error ? 1ULL << 55 : 0) |
+    uint64_t reflected = (s->xb_error ? 1ULL << 54 : 0) |
+                         (s->lb_error ? 1ULL << 55 : 0) |
                          (s->ni_error ? 1ULL << 62 : 0);
 
     return (s->pending[1] & ~PI_REFLECT_MASK) | reflected;
@@ -199,6 +200,12 @@ void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level)
 void sgi_bedrock_pi_set_ni_error(SGIBedrockPIState *s, bool level)
 {
     s->ni_error = level;
+    sgi_bedrock_pi_recompute(s);
+}
+
+void sgi_bedrock_pi_set_xb_error(SGIBedrockPIState *s, bool level)
+{
+    s->xb_error = level;
     sgi_bedrock_pi_recompute(s);
 }
 

@@ -12,6 +12,7 @@
 #define L1_PATH "/machine/peripheral/l1"
 #define IO_BASE (BASE + UINT64_C(0x400000))
 #define LB_BASE (BASE + UINT64_C(0x600000))
+#define XB_BASE (BASE + UINT64_C(0x700000))
 #define MD_BASE (BASE + UINT64_C(0x780000))
 
 #define MACHINE_BASE \
@@ -207,6 +208,8 @@ static void test_parent_identity_and_pio(void)
     g_assert_cmphex(qtest_readq(s, IO_BASE), ==, UINT64_C(0x2c11006c));
     g_assert_cmphex(qtest_readq(s, LB_BASE) & UINT64_C(0xffffffff), ==,
                     UINT64_C(0x2301206c));
+    g_assert_cmphex(qtest_readq(s, XB_BASE), ==,
+                    UINT64_C(0x0008000080000021));
 
     qtest_writeq(s, IO_BASE + 0x160, UINT64_C(0x800));
     qtest_writel(s, PIO_BASE + 0x20000100, 0x12345678);
@@ -250,11 +253,21 @@ static void test_parent_md_decode_and_reset(void)
     g_assert_cmphex(qtest_readq(s, LB_BASE + 0x8008), ==,
                     UINT64_C(0x0123456789abcdef));
     program_md(s);
+    qtest_writeq(s, XB_BASE + 0x20, 1);
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 1ULL << 54);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 1ULL << 54);
     qtest_writeq(s, BASE + 0x680008, 4);
     check_md_soft_reset(s);
+    /* The local reset cold-resets the crossbar; its error drops. */
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 0);
     program_md(s);
+    qtest_writeq(s, XB_BASE + 0x20, 1);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 1ULL << 54);
     qtest_writeq(s, LB_BASE + 0x4018, 1);
     check_md_soft_reset(s);
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 0);
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readq(s, MD_BASE + 0x8), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD_BASE + 0x20000), ==, 0);
