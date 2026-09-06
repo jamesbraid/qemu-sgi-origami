@@ -6,9 +6,18 @@
 #define BEDROCK_PATH "/machine/peripheral/bedrock"
 #define BASE UINT64_C(0x10000000)
 #define PIO_BASE UINT64_C(0x100000000)
+/*
+ * The inbound aperture is 2^48 bytes from INBOUND_BASE, ending at
+ * 0x1020000000000; the other windows sit above that so nothing overlaps.
+ */
 #define INBOUND_BASE UINT64_C(0x20000000000)
-#define REMOTE_BASE UINT64_C(0x30000000000)
-#define IO_REGISTERS_BASE UINT64_C(0x40000000000)
+#define REMOTE_BASE UINT64_C(0x2000000000000)
+#define IO_REGISTERS_BASE UINT64_C(0x3000000000000)
+/* Crosstalk bit 47, small window 1 in its remote form, then the register. */
+#define HUB_REMOTE_WINDOW (UINT64_C(1) << 47 | UINT64_C(0x1800000))
+#define HUB_INTERRUPT_SEND(node, pi) \
+    (INBOUND_BASE + HUB_REMOTE_WINDOW + ((uint64_t)(node) << 39) + \
+     (pi) * UINT64_C(0x200000) + 0x90)
 #define L1_PATH "/machine/peripheral/l1"
 #define IO_BASE (BASE + UINT64_C(0x400000))
 #define LB_BASE (BASE + UINT64_C(0x600000))
@@ -450,6 +459,53 @@ static void test_parent_io_interrupt_write(void)
     qtest_quit(s);
 }
 
+/*
+ * A widget's interrupt write as the I/O interface receives it: crosstalk
+ * bit 47, the node at bit 39, small window 1 in its remote form, and the
+ * modify register of the chosen interface. The I/O interface forwards it
+ * to the parent's register window only after its inbound-access check and
+ * only for this node; the parent then applies the interface's I/O protect.
+ */
+static void test_parent_widget_interrupt_write(void)
+{
+    QTestState *s = bedrock_start("");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+    qtest_writeq(s, BASE + 0xa8, 1ULL << 7);
+    qtest_writeq(s, BASE + 0x2000b0, 1ULL << 10);
+
+    qtest_writeq(s, IO_BASE + 0x118, UINT64_MAX ^ (1ULL << 8));
+    qtest_writeq(s, HUB_INTERRUPT_SEND(0, 0), 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    qtest_writeq(s, IO_BASE + 0x118, UINT64_MAX);
+    qtest_writeq(s, HUB_INTERRUPT_SEND(0, 0), 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, HUB_INTERRUPT_SEND(0, 1), 0x14a);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 1ULL << 10);
+    g_assert_true(qtest_get_irq(s, 11));
+
+    /* A packet naming another node arrives nowhere. */
+    qtest_writeq(s, HUB_INTERRUPT_SEND(1, 0), 0x007);
+    qtest_writeq(s, HUB_INTERRUPT_SEND(1, 1), 0x04a);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 1ULL << 10);
+
+    /* I/O protect for the local region gates this path as well. */
+    qtest_writeq(s, BASE + 0x10, UINT64_MAX ^ 1);
+    qtest_writeq(s, HUB_INTERRUPT_SEND(0, 0), 0x007);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    qtest_writeq(s, BASE + 0x10, UINT64_MAX);
+    qtest_writeq(s, HUB_INTERRUPT_SEND(0, 0), 0x007);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+
+    /* Only the modify registers answer through the window. */
+    qtest_writeq(s, INBOUND_BASE + HUB_REMOTE_WINDOW + 0x600040, 1);
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 0);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -467,6 +523,8 @@ int main(int argc, char **argv)
                    test_parent_l1_missing_link);
     qtest_add_func("/sgi/bedrock/composition/io-interrupt-write",
                    test_parent_io_interrupt_write);
+    qtest_add_func("/sgi/bedrock/composition/widget-interrupt-write",
+                   test_parent_widget_interrupt_write);
     qtest_add_func("/sgi/bedrock/composition/l1-protection",
                    test_parent_l1_protection);
     qtest_add_func("/sgi/bedrock/composition/md-decode-reset",
