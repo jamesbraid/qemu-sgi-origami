@@ -290,13 +290,27 @@ static void test_relatch(void)
 
 static void test_probe_replay(void)
 {
-    QTestState *s = xb_start("");
+    g_autofree char *path = g_strdup_printf("%s/sn1-xb-probe-XXXXXX.log",
+                                            g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    char *found = NULL;
+    QTestState *s;
+    int fd = g_mkstemp(path);
 
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d unimp -D %s", path);
+    s = xb_start(extra);
     qtest_irq_intercept_out_named(s, XB_PATH, "error");
     for (unsigned n = 0; n < QUEUES; n++) {
         qtest_writeq(s, XB_BASE + QUEUE_CLEAR(n), 0);
     }
     qtest_writeq(s, XB_BASE + FIRST_ERROR_CLEAR, 0);
+    /* The replay is expected consumer traffic, not an unimplemented access. */
+    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+    g_assert_null(strstr(found, "sgi-bedrock-xb"));
+    g_free(found);
+
     for (unsigned n = 0; n < QUEUES; n++) {
         g_assert_cmphex(qtest_readq(s, XB_BASE + QUEUE_ERROR(n)), ==, 0);
     }
@@ -304,6 +318,10 @@ static void test_probe_replay(void)
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_cmphex(qtest_readq(s, XB_BASE + PARAMETERS), ==,
                     PARAMETERS_RESET);
+    /* Reads of the unmodeled queues stay logged, which proves the capture. */
+    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "sgi-bedrock-xb"));
+    g_free(found);
 
     /* Model policy: any value written to a clear register clears. */
     qtest_writeq(s, XB_BASE + QUEUE_ERROR(PI0_OUTPUT), 1);
@@ -314,6 +332,7 @@ static void test_probe_replay(void)
     g_assert_cmphex(qtest_readq(s, XB_BASE + FIRST_ERROR), ==, 0);
     g_assert_false(qtest_get_irq(s, 0));
     qtest_quit(s);
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 static void test_structureless_queues(void)
