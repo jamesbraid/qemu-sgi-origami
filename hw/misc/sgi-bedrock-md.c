@@ -15,6 +15,10 @@ enum {
 #define MD_REPLY_QUEUE UINT64_C(0x001818180c0c0c00)
 #define MD_REQUEST_QUEUE UINT64_C(0x0000000004040400)
 #define MD_COUNTER_MASK ((UINT64_C(1) << 41) - 1)
+/*
+ * Bits 58:56 are write-only in the public definition; reading them back
+ * and resetting them to zero is model policy.
+ */
 #define MD_MEMORY_CONFIG_MASK (UINT64_C(0xfbfbfbfb) | \
     (UINT64_C(3) << 32) | (UINT64_C(0xf) << 44) | \
     (UINT64_C(0x3f) << 48) | (UINT64_C(7) << 56) | \
@@ -175,6 +179,7 @@ static void md_write(void *opaque, hwaddr offset, uint64_t value,
                   HWADDR_PRIx " value 0x%" PRIx64 "\n", offset, value);
 }
 
+/* Every register is 64 bits; refusing narrower accesses is model policy. */
 static const MemoryRegionOps md_ops = {
     .read = md_read, .write = md_write, .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 8, .max_access_size = 8 },
