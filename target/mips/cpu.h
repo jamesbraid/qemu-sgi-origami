@@ -85,6 +85,8 @@ typedef struct MIPSCPUConfig {
      * bits.
      */
     bool mtc0_entrylo_moves_64_bits;
+    /* A partial LWR in 64-bit-register mode preserves GPR bits 63:32. */
+    bool partial_lwr_preserves_upper;
 } MIPSCPUConfig;
 
 /* MSA Context */

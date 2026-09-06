@@ -20,9 +20,9 @@ slow_qtests = {
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
   # headroom and they time out under CI load. Give them the 120s slow budget.
   'sn0-pi-error-test': 120,
-  # sn0-qtest-cpu-test runs two sequential TCG cases with 30s polling
-  # deadlines. Allow startup and teardown headroom beyond those 60s.
-  'sn0-qtest-cpu-test': 120,
+  # sn0-qtest-cpu-test runs four sequential TCG cases with 30s polling
+  # deadlines. Allow startup and teardown headroom beyond those 120s.
+  'sn0-qtest-cpu-test': 180,
   # The hub and IOC3 suites have grown past that budget: 115-119s (hub) and
   # ~106s (IOC3) measured under host load, so the 120s ceiling kills them
   # with zero failing subtests. Give both twice the measured wall time.

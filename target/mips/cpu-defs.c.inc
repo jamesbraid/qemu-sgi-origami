@@ -734,6 +734,7 @@ const mips_def_t mips_defs[] =
             .has_performance_counters = true,
             .compare_match_is_continuous = true,
             .mtc0_entrylo_moves_64_bits = true,
+            .partial_lwr_preserves_upper = true,
         },
         .mmu_type = MMU_TYPE_R10000,
     },
