@@ -218,13 +218,17 @@ widget-0 fence admits resets the core and goes out on every other
 port whose fence admits the source, judged by the fences as they
 stood before the reset returned them to all ones.
 
+A read of a write-only link-reset register is a register-access
+error like the others, condition and interrupt; what data the chip
+answers is not specified, and the model returns zero.
+
 Not modeled, and logged when touched: link training timing,
 software-disabled links, arbitration, performance counting, buffer
 flushing with traffic (an empty flush completes at once), injected
-link errors, the link-reset one-shot's effect on a link, and the
-one-wire pulse behind widget 0's NIC register. A read of the
-write-only link-reset register returns zero; neither datasheet names
-such a read as an error.
+link errors, the link-reset one-shot's effect on a link, the address
+and command word a condition would log in the error registers, which
+are storage here, and the one-wire pulse behind widget 0's NIC
+register.
 
 The chip
 ========

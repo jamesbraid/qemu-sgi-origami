@@ -157,6 +157,8 @@ static uint64_t xbow_read(void *opaque, hwaddr addr, unsigned size)
         case 0x28:
             return xbow_link_status(s, link);
         case 0x30:
+            /* Write-only; the data the chip answers is not specified. */
+            xbow_access_error(s, addr, size, false);
             return 0;
         case 0x38:
             return xbow_link_aux(s, link);
