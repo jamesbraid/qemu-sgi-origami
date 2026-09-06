@@ -7,19 +7,28 @@
 #define BASE UINT64_C(0x10000000)
 #define PIO_BASE UINT64_C(0x100000000)
 #define INBOUND_BASE UINT64_C(0x20000000000)
+#define REMOTE_BASE UINT64_C(0x30000000000)
+#define L1_PATH "/machine/peripheral/l1"
 #define IO_BASE (BASE + UINT64_C(0x400000))
 #define LB_BASE (BASE + UINT64_C(0x600000))
 #define MD_BASE (BASE + UINT64_C(0x780000))
 
-#define MACHINE \
+#define MACHINE_BASE \
     "-M none -cpu R10000 -m 256M " \
     "-object memory-backend-ram,id=dma,size=2M " \
     "-object memory-backend-ram,id=widget8,size=2M " \
-    "-object memory-backend-ram,id=widget9,size=2M " \
+    "-object memory-backend-ram,id=widget9,size=2M "
+#define BEDROCK_DEVICE \
     "-device sgi-bedrock,id=bedrock,revision=2," \
     "dma-memory=/objects/dma/dma[0]," \
     "widget-8=/objects/widget8/widget8[0]," \
-    "widget-9=/objects/widget9/widget9[0] -S"
+    "widget-9=/objects/widget9/widget9[0]"
+#define MACHINE MACHINE_BASE BEDROCK_DEVICE " -S"
+#define MACHINE_L1 \
+    MACHINE_BASE \
+    "-device sgi-l1,id=l1 " \
+    BEDROCK_DEVICE \
+    ",l1-uart=/machine/peripheral/l1/sgi-l1[0],initiator-region=5 -S"
 
 static QTestState *bedrock_start(const char *extra)
 {
@@ -29,6 +38,129 @@ static QTestState *bedrock_start(const char *extra)
     qtest_sysbus_mmio_map(s, BEDROCK_PATH, 1, PIO_BASE);
     qtest_sysbus_mmio_map(s, BEDROCK_PATH, 2, INBOUND_BASE);
     return s;
+}
+
+static uint16_t l1_fcs(uint16_t value, uint8_t byte)
+{
+    value ^= byte;
+    for (unsigned i = 0; i < 8; i++) {
+        value = (value >> 1) ^ ((value & 1) ? 0x8408 : 0);
+    }
+    return value;
+}
+
+static void l1_put(QTestState *s, uint64_t base, uint8_t byte)
+{
+    if (byte == 0x7e || byte == 0x7d) {
+        qtest_writeq(s, base, 0x7d);
+        byte ^= 0x20;
+    }
+    qtest_writeq(s, base, byte);
+}
+
+static void l1_send_frame(QTestState *s, uint64_t base,
+                          const uint8_t *payload, size_t length)
+{
+    uint16_t crc = 0xffff;
+
+    qtest_writeq(s, base, 0x7e);
+    for (size_t i = 0; i < length; i++) {
+        crc = l1_fcs(crc, payload[i]);
+        l1_put(s, base, payload[i]);
+    }
+    crc = ~crc;
+    l1_put(s, base, crc);
+    l1_put(s, base, crc >> 8);
+    qtest_writeq(s, base, 0x7e);
+}
+
+static QTestState *bedrock_l1_start(const char *extra)
+{
+    QTestState *s = qtest_initf(MACHINE_L1 " %s", extra);
+
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 0, BASE);
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 1, PIO_BASE);
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 2, INBOUND_BASE);
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 3, REMOTE_BASE);
+    return s;
+}
+
+static void test_parent_l1_protection(void)
+{
+    static const uint8_t display_a[] = {
+        0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1, 1, 'a', 0,
+    };
+    static const uint8_t display_b[] = {
+        0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1, 1, 'b', 0,
+    };
+    g_autoptr(QDict) result = NULL;
+    QTestState *s = bedrock_l1_start("");
+
+    l1_send_frame(s, REMOTE_BASE + 0x80, display_a, sizeof(display_a));
+    result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "a");
+    qobject_unref(result);
+    result = NULL;
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xa8), ==, 0x61);
+
+    qtest_writeq(s, MD_BASE, UINT64_MAX & ~(UINT64_C(1) << 5));
+    (void)qtest_readq(s, REMOTE_BASE + 0x80);
+    l1_send_frame(s, REMOTE_BASE + 0x80, display_b, sizeof(display_b));
+    result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "a");
+    qobject_unref(result);
+    result = NULL;
+
+    qtest_writeq(s, MD_BASE, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x80), ==, 0x7e);
+    l1_send_frame(s, REMOTE_BASE + 0x80, display_b, sizeof(display_b));
+    result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "b");
+    qobject_unref(result);
+    result = NULL;
+
+    qtest_writeq(s, REMOTE_BASE + 0x98, 3);
+    qtest_writeq(s, REMOTE_BASE + 0xb8, 0x5a);
+    qtest_writeq(s, REMOTE_BASE + 0x40, UINT64_MAX);
+    qtest_writeq(s, REMOTE_BASE + 0xc0, UINT64_MAX);
+    qtest_writeq(s, REMOTE_BASE + UINT64_C(0x8000000), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x98), ==, 3);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xb8), ==, 0x5a);
+
+    qtest_writeq(s, MD_BASE, 0);
+    qtest_writeq(s, BASE + 0x680008, 4);
+    g_assert_cmphex(qtest_readq(s, MD_BASE), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x98), ==, 3);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xb8), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xa8), ==, 0x61);
+    result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "b");
+    qobject_unref(result);
+    result = NULL;
+    qtest_writeq(s, MD_BASE, 0);
+    qtest_writeq(s, LB_BASE + 0x4018, 1);
+    g_assert_cmphex(qtest_readq(s, MD_BASE), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x98), ==, 3);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xb8), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xa8), ==, 0x61);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x80), ==, 0x30);
+    result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "b");
+    qobject_unref(result);
+    result = NULL;
+
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x98), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xb8), ==, 0);
+    result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "");
+    qtest_quit(s);
 }
 
 static void test_parent_dma_and_reset(void)
@@ -160,12 +292,20 @@ static void test_parent_migration(void)
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    from = bedrock_start("");
-    to = bedrock_start("-incoming defer");
+    from = bedrock_l1_start("");
+    to = bedrock_l1_start("-incoming defer");
     qtest_writeq(from, IO_BASE + 0x150, UINT64_C(0x13579bdf2468ace0));
     qtest_writeq(from, IO_BASE + 0x160, 0x800);
     qtest_writeq(from, MD_BASE + 0x8, UINT64_MAX);
     qtest_writeq(from, MD_BASE + 0x10010, UINT64_C(0x123456789ab));
+    {
+        static const uint8_t display[] = {
+            0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1, 1, 'm', 0,
+        };
+        l1_send_frame(from, REMOTE_BASE + 0x80, display, sizeof(display));
+    }
+    qtest_writeq(from, MD_BASE,
+                 UINT64_MAX & ~(UINT64_C(1) << 5));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -178,12 +318,69 @@ static void test_parent_migration(void)
                     UINT64_C(0x373ff003fbfbfbfb));
     g_assert_cmphex(qtest_readq(to, MD_BASE + 0x10010), ==,
                     UINT64_C(0x123456789ab));
+    g_assert_cmphex(qtest_readq(to, MD_BASE) & (UINT64_C(1) << 5), ==, 0);
+    (void)qtest_readq(to, REMOTE_BASE + 0x80);
+    qtest_writeq(to, MD_BASE, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(to, REMOTE_BASE + 0x80), ==, 0x7e);
+    {
+        g_autoptr(QDict) result =
+            qtest_qmp(to, "{'execute':'qom-get','arguments':"
+                          "{'path':%s,'property':'display-line-2'}}", L1_PATH);
+        g_assert_cmpstr(qdict_get_str(result, "return"), ==, "m");
+    }
     qtest_writel(to, PIO_BASE + 0x20000100, 0x55aa33cc);
     g_assert_cmphex(qtest_readl(to, PIO_BASE + 0x20000100), ==, 0x55aa33cc);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+static void test_parent_l1_invalid_region(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(
+            "*initiator-region must be set below 64 when l1-uart is linked*");
+        return;
+    }
+    s = qtest_init(MACHINE_BASE
+        "-device sgi-l1,id=l1 "
+        BEDROCK_DEVICE
+        ",l1-uart=/machine/peripheral/l1/sgi-l1[0],initiator-region=64 -S");
+    qtest_quit(s);
+}
+
+static void test_parent_l1_missing_region(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(
+            "*initiator-region must be set below 64 when l1-uart is linked*");
+        return;
+    }
+    s = qtest_init(MACHINE_BASE
+        "-device sgi-l1,id=l1 "
+        BEDROCK_DEVICE
+        ",l1-uart=/machine/peripheral/l1/sgi-l1[0] -S");
+    qtest_quit(s);
+}
+
+static void test_parent_l1_missing_link(void)
+{
+    QTestState *s = bedrock_start("");
+
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 3, REMOTE_BASE);
+    qtest_writeq(s, MD_BASE + 0x10010, 0x12345);
+    qtest_writeq(s, REMOTE_BASE + 0x80, 0x7e);
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x10010), ==, 0x12345);
+    qtest_quit(s);
 }
 
 int main(int argc, char **argv)
@@ -195,6 +392,14 @@ int main(int argc, char **argv)
                    test_parent_dma_and_reset);
     qtest_add_func("/sgi/bedrock/composition/migration",
                    test_parent_migration);
+    qtest_add_func("/sgi/bedrock/composition/l1-invalid-region",
+                   test_parent_l1_invalid_region);
+    qtest_add_func("/sgi/bedrock/composition/l1-missing-region",
+                   test_parent_l1_missing_region);
+    qtest_add_func("/sgi/bedrock/composition/l1-missing-link",
+                   test_parent_l1_missing_link);
+    qtest_add_func("/sgi/bedrock/composition/l1-protection",
+                   test_parent_l1_protection);
     qtest_add_func("/sgi/bedrock/composition/md-decode-reset",
                    test_parent_md_decode_and_reset);
     return g_test_run();

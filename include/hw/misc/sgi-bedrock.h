@@ -17,6 +17,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 struct SGIBedrockState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
+    MemoryRegion remote_registers;
     SGIBedrockPIState pi[2];
     SGIBedrockIOState io;
     SGIBedrockMDState md;
@@ -32,8 +33,12 @@ struct SGIBedrockState {
     uint8_t inbound_device;
     uint64_t device_mask_reset;
     MemoryRegion *dma_mr;
+    MemoryRegion *l1_uart_mr;
     AddressSpace dma_as;
     bool dma_as_initialized;
+    AddressSpace l1_uart_as;
+    bool l1_uart_as_initialized;
+    uint8_t initiator_region;
     MemoryRegion *widget_mr[16];
 };
 
