@@ -41,13 +41,23 @@
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
+static const VMStateDescription vmstate_sn1_machine = {
+    .name = "sn1-machine",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(cpu_b_enabled, SN1MachineState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void sn1_cpu_b_enable(void *opaque, int n, int level)
 {
     SN1MachineState *s = opaque;
     CPUState *cs = s->cpu[1];
 
     BQL_LOCK_GUARD();
-    if (level) {
+    if (level && !s->cpu_b_enabled) {
         s->cpu_b_enabled = true;
         cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
         cs->halted = 0;
@@ -55,7 +65,7 @@ static void sn1_cpu_b_enable(void *opaque, int n, int level)
         if (current_cpu && current_cpu != cs) {
             cpu_exit(current_cpu);
         }
-    } else if (s->cpu_b_enabled) {
+    } else if (!level && s->cpu_b_enabled) {
         s->cpu_b_enabled = false;
         cpu_interrupt(cs, CPU_INTERRUPT_HALT);
     }
@@ -67,6 +77,15 @@ static void sn1_machine_init(Object *obj)
 
     qemu_init_irq_child(obj, "cpu-b-enable", &s->cpu_b_enable,
                         sn1_cpu_b_enable, s, 0);
+    /* Restore the tracked level before Bedrock replays its output. */
+    vmstate_register(NULL, 0, &vmstate_sn1_machine, s);
+}
+
+static void sn1_machine_finalize(Object *obj)
+{
+    SN1MachineState *s = SN1_MACHINE(obj);
+
+    vmstate_unregister(NULL, &vmstate_sn1_machine, s);
 }
 
 static void sn1_cpu_reset(void *opaque)
@@ -76,12 +95,14 @@ static void sn1_cpu_reset(void *opaque)
 
 static void sn1_machine_reset(MachineState *machine, ResetType type)
 {
+    SN1MachineState *s = SN1_MACHINE(machine);
     CPUState *cs;
 
     /* Busless MIPS CPUs are outside the registered SysBus reset tree. */
     CPU_FOREACH(cs) {
         sn1_cpu_reset(cs);
     }
+    s->cpu_b_enabled = false;
     qemu_devices_reset(type);
 }
 
@@ -287,6 +308,7 @@ static const TypeInfo origin300_machine_type = {
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(SN1MachineState),
     .instance_init = sn1_machine_init,
+    .instance_finalize = sn1_machine_finalize,
     .class_init = origin300_class_init,
 };
 

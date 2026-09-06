@@ -14,6 +14,7 @@
 #include "qemu/units.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -109,6 +110,13 @@ static QTestState *machine_start_with(const char *path, const char *extra)
     return qtest_initf(MACHINE_ARGS " -bios %s %s", quoted, extra);
 }
 
+static QTestState *machine_start_bare(const char *extra)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+
+    return qtest_initf("-M origin300 -bios %s %s", quoted, extra);
+}
+
 static QTestState *machine_start(void)
 {
     return machine_start_with(prom_path, "");
@@ -140,6 +148,17 @@ static void run_vm_for_10ms(QTestState *qts)
     stop_vm(qts);
 }
 
+static void stop_vm_if_running(QTestState *qts)
+{
+    g_autoptr(QDict) response =
+        qtest_qmp(qts, "{'execute':'query-status'}");
+    QDict *status = qdict_get_qdict(response, "return");
+
+    if (qdict_get_bool(status, "running")) {
+        stop_vm(qts);
+    }
+}
+
 static void wait_for_migration(QTestState *from)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -159,12 +178,48 @@ static void wait_for_migration(QTestState *from)
     }
 }
 
-static void check_not_writable(QTestState *qts, uint64_t address)
+static void check_access_has_no_storage(QTestState *qts, uint64_t address)
 {
     uint64_t before = qtest_readq(qts, address);
 
     qtest_writeq(qts, address, ~before);
     g_assert_cmphex(qtest_readq(qts, address), ==, before);
+}
+
+static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
+{
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    const char *system_view = strstr(mtree, "Root memory region: system");
+    const char *system_view_end;
+    const char *line;
+
+    g_assert_nonnull(system_view);
+    system_view = strchr(system_view, '\n');
+    g_assert_nonnull(system_view);
+    system_view++;
+    system_view_end = strstr(system_view, "\nFlatView #");
+    if (!system_view_end) {
+        system_view_end = system_view + strlen(system_view);
+    }
+
+    for (line = system_view; line < system_view_end; ) {
+        const char *line_end = strchr(line, '\n');
+        uint64_t start;
+        uint64_t end;
+
+        if (!line_end || line_end > system_view_end) {
+            line_end = system_view_end;
+        }
+        if (sscanf(line, " %" SCNx64 "-%" SCNx64, &start, &end) == 2 &&
+            address >= start && address <= end) {
+            g_autofree char *mapping = g_strndup(line, line_end - line);
+
+            g_test_message("0x%" PRIx64 " is mapped by %s", address,
+                           mapping);
+            g_assert_not_reached();
+        }
+        line = line_end + (line_end < system_view_end);
+    }
 }
 
 static void test_ram_and_hub_alias(const void *data)
@@ -181,11 +236,11 @@ static void test_ram_and_hub_alias(const void *data)
                     UINT64_C(0xfedcba9876543210));
 
     /* The local uncached alias is exactly 256 MiB. */
-    check_not_writable(qts, SPACE_HUB + 256 * MiB);
+    assert_flat_view_unmapped(qts, SPACE_HUB + 256 * MiB);
     /* Node memory ends at the selected 512 MiB population. */
-    check_not_writable(qts, 512 * MiB);
-    /* Memory-special has no implemented operation in this skeleton. */
-    check_not_writable(qts, SPACE_MEMORY_SPECIAL + 0x1000);
+    assert_flat_view_unmapped(qts, 512 * MiB);
+    /* Memory-special has no mapping in this skeleton. */
+    assert_flat_view_unmapped(qts, SPACE_MEMORY_SPECIAL + 0x1000);
 
     qtest_quit(qts);
 }
@@ -208,8 +263,10 @@ static void test_bedrock_register_aliases(const void *data)
                     ==, 0);
 
     /* The 8 MiB architectural window does not turn its tail into storage. */
-    check_not_writable(qts, BEDROCK_LOCAL + BEDROCK_WINDOW_SIZE - 8);
-    check_not_writable(qts, BEDROCK_NODE0 + BEDROCK_WINDOW_SIZE - 8);
+    check_access_has_no_storage(qts,
+                                BEDROCK_LOCAL + BEDROCK_WINDOW_SIZE - 8);
+    check_access_has_no_storage(qts,
+                                BEDROCK_NODE0 + BEDROCK_WINDOW_SIZE - 8);
 
     qtest_quit(qts);
 }
@@ -232,8 +289,9 @@ static void test_crosstalk_big_window_routes(const void *data)
     g_assert_cmphex(qtest_readq(qts, BIG_WINDOW(0) + IO_WIDGET_ID), !=,
                     identity);
 
-    /* The gap between the small and big windows is not decoded. */
-    check_not_writable(qts, SPACE_XTALK + UINT64_C(0x10000000));
+    /* The unimplemented PIO catch-all does not retain writes. */
+    check_access_has_no_storage(qts,
+                                SPACE_XTALK + UINT64_C(0x10000000));
 
     qtest_quit(qts);
 }
@@ -250,7 +308,7 @@ static void test_hub_special_register_windows(const void *data)
     /* Public consumers establish the L1 decoder only in the remote form. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), !=, scratch);
-    check_not_writable(qts, HUB_REMOTE_REGISTERS + 0x1000);
+    check_access_has_no_storage(qts, HUB_REMOTE_REGISTERS + 0x1000);
 
     qtest_quit(qts);
 }
@@ -281,8 +339,8 @@ static void test_prom_three_read_only_views(const void *data)
     }
 
     /* Both boot aliases stop at the exact supplied length. */
-    check_not_writable(qts, HUB_LOCAL_BOOT + PROM_SIZE);
-    check_not_writable(qts, HUB_REMOTE_BOOT + PROM_SIZE);
+    assert_flat_view_unmapped(qts, HUB_LOCAL_BOOT + PROM_SIZE);
+    assert_flat_view_unmapped(qts, HUB_REMOTE_BOOT + PROM_SIZE);
 
     /* The reset view ends there too and reveals the RAM underneath. */
     qtest_writeq(qts, PROM_RESET + PROM_SIZE,
@@ -425,13 +483,57 @@ static void test_ram_size_is_exact(const void *data)
 
 static void test_cpu_type_is_r14000(const void *data)
 {
-    const char *args[] = {
+    const char *r4000_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R4000",
         "-smp", "2", "-bios", prom_path, "-display", "none",
         "-kernel", "/definitely/not/a/kernel", NULL,
     };
+    const char *r10000_args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R10000",
+        "-smp", "2", "-bios", prom_path, "-display", "none",
+        "-kernel", "/definitely/not/a/kernel", NULL,
+    };
 
-    assert_qemu_rejects(args, "Invalid CPU model: R4000");
+    assert_qemu_rejects(r4000_args, "Invalid CPU model: R4000");
+    assert_qemu_rejects(r10000_args, "Invalid CPU model: R10000");
+}
+
+static void test_machine_defaults(const void *data)
+{
+    static const char * const cpu_paths[] = {
+        "/machine/cpu0", "/machine/cpu1",
+    };
+    static const char * const clock_paths[] = {
+        "/machine/cpu0/clk-in", "/machine/cpu1/clk-in",
+        "/machine/cpu-refclk",
+    };
+    QTestState *qts = machine_start_bare("-S");
+    g_autoptr(QDict) response = NULL;
+    QList *cpus;
+
+    response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+    cpus = qdict_get_qlist(response, "return");
+    g_assert_cmpuint(qlist_size(cpus), ==, 2);
+
+    for (size_t i = 0; i < ARRAY_SIZE(cpu_paths); i++) {
+        qobject_unref(response);
+        response = qtest_qmp(qts,
+            "{'execute':'qom-get', 'arguments':{"
+            "'path':%s, 'property':'type'}}", cpu_paths[i]);
+        g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                        "R14000-mips64-cpu");
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(clock_paths); i++) {
+        qobject_unref(response);
+        response = qtest_qmp(qts,
+            "{'execute':'qom-get', 'arguments':{"
+            "'path':%s, 'property':'qtest-clock-period'}}", clock_paths[i]);
+        g_assert_cmpint(qdict_get_int(response, "return"), ==,
+                        UINT64_C(2) << 32);
+    }
+
+    qtest_quit(qts);
 }
 
 static void test_cpu_b_follows_enable(const void *data)
@@ -449,6 +551,8 @@ static void test_cpu_b_follows_enable(const void *data)
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
 
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
     run_vm_for_10ms(qts);
     g_assert_cmphex(cpu_gpr(qts, 0, "t0"), !=, 0);
     stopped = cpu_gpr(qts, 1, "t0");
@@ -459,6 +563,11 @@ static void test_cpu_b_follows_enable(const void *data)
     run_vm_for_10ms(qts);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, stopped);
 
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    run_vm_for_10ms(qts);
+    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, stopped);
+
+    stopped = cpu_gpr(qts, 1, "t0");
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
     run_vm_for_10ms(qts);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, stopped);
@@ -545,6 +654,62 @@ static void test_prom_migration(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+static void test_cpu_b_enabled_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
+    QTestState *from;
+    QTestState *to;
+    uint64_t stopped;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    directory = g_dir_make_tmp("sn1-cpu-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    path = create_cpu_control_prom();
+    from = machine_start_with(
+        path, "-accel tcg,thread=multi -no-shutdown -S");
+    to = machine_start_with(
+        path, "-accel tcg,thread=multi -no-shutdown -S -incoming defer");
+
+    qtest_writeq(from, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    run_vm_for_10ms(from);
+    g_assert_cmphex(cpu_gpr(from, 1, "t0"), !=, 0);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    wait_for_migration(to);
+    stop_vm_if_running(to);
+
+    stopped = cpu_gpr(to, 1, "t0");
+    g_assert_cmphex(stopped, !=, 0);
+    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
+    run_vm_for_10ms(to);
+    g_assert_cmphex(cpu_gpr(to, 1, "t0"), ==, stopped);
+
+    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    run_vm_for_10ms(to);
+    g_assert_cmphex(cpu_gpr(to, 1, "t0"), !=, stopped);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_system_reset_clears_bedrock_state(const void *data)
 {
     QTestState *qts = machine_start();
@@ -587,10 +752,14 @@ int main(int argc, char **argv)
                         test_ram_size_is_exact);
     qtest_add_data_func("sn1/address-map/cpu-type-is-r14000", NULL,
                         test_cpu_type_is_r14000);
+    qtest_add_data_func("sn1/address-map/machine-defaults", NULL,
+                        test_machine_defaults);
     qtest_add_data_func("sn1/address-map/cpu-b-follows-enable", NULL,
                         test_cpu_b_follows_enable);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
+    qtest_add_data_func("sn1/address-map/cpu-b-enabled-migration", NULL,
+                        test_cpu_b_enabled_migration);
     qtest_add_data_func("sn1/address-map/system-reset", NULL,
                         test_system_reset_clears_bedrock_state);
 
