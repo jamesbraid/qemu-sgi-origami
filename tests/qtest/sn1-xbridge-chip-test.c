@@ -6,6 +6,8 @@
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
 
 #define CHIP "/machine/peripheral/xbridge"
 #define HOST_PORT 0xb
@@ -15,12 +17,16 @@
 #define WIDGET(n) (BASE + ((uint64_t)(n) << 44))
 #define FACE 0x1000000ULL
 
+/* The chip's own views of widgets 0, 0xe and 0xf, mapped apart. */
+#define VIEW(i) (0x2000000000000ULL + ((uint64_t)(i) << 44))
+
 /* Where packets to the host land. */
 #define FABRIC 0x20000000ULL
 #define SCRATCH 0x8000
 
 #define XBOW_ID 0x2d000001
 #define HEAD_ID 0x2d002049
+#define CARD_ID 0x00051b36
 
 static QTestState *chip_start(const char *extra)
 {
@@ -161,6 +167,138 @@ static void test_warm_reset_reaches_the_heads(void)
     qtest_quit(qts);
 }
 
+static uint32_t config_read(QTestState *qts, uint64_t widget, unsigned slot)
+{
+    return qtest_readl(qts, widget + 0x20000 + slot * 0x1000);
+}
+
+static void test_widget_views(void)
+{
+    QTestState *qts = chip_start(
+        "-device sgi-bridge-dma-test,bus=head-e.0,addr=1 "
+        "-device sgi-bridge-dma-test,bus=head-f.0,addr=2");
+    unsigned i;
+
+    for (i = 0; i < 3; i++) {
+        qtest_sysbus_mmio_map(qts, CHIP, 1 + i, VIEW(i));
+    }
+    g_assert_cmphex(qtest_readl(qts, VIEW(0) + 4), ==, XBOW_ID);
+    g_assert_cmphex((qtest_readl(qts, VIEW(0) + 8 + 4) >> 6) & 0xf, ==,
+                    HOST_PORT);
+    g_assert_cmphex(qtest_readl(qts, VIEW(1) + 4), ==, HEAD_ID);
+    g_assert_cmphex(qtest_readl(qts, VIEW(2) + 4), ==, HEAD_ID);
+    /* A view is the widget's whole slot, so past the face reaches nothing. */
+    g_assert_cmphex(qtest_readl(qts, VIEW(1) + FACE + 4), ==, 0);
+    /* A view and the full space show the same widget. */
+    qtest_writel(qts, VIEW(2) + 0x28 + 4, 0x12345);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0x12345);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x28), ==, 0xfffff);
+    /* Each head's PCI bus is its own. */
+    g_assert_cmphex(config_read(qts, VIEW(1), 1), ==, CARD_ID);
+    g_assert_cmphex(config_read(qts, VIEW(1), 2), ==, 0xffffffff);
+    g_assert_cmphex(config_read(qts, VIEW(2), 1), ==, 0xffffffff);
+    g_assert_cmphex(config_read(qts, VIEW(2), 2), ==, CARD_ID);
+    qtest_quit(qts);
+}
+
+static void card_setup(QTestState *qts, unsigned widget)
+{
+    qtest_writel(qts, WIDGET(widget) + 0x20010, 0x01000000);
+    qtest_writel(qts, WIDGET(widget) + 0x20004, 6);
+    reg_write(qts, widget, 0x200, 0x83010);
+}
+
+static void test_head_raw_sources(void)
+{
+    static const struct {
+        const char *group;
+        unsigned widget;
+        unsigned line;
+    } head[2] = {
+        { "head-e-pci-intx", 0xe, 0 },
+        { "head-f-pci-intx", 0xf, 2 },
+    };
+    unsigned i;
+
+    /* A session intercepts one group, so one session per head. */
+    for (i = 0; i < 2; i++) {
+        QTestState *qts = chip_start(
+            "-device sgi-bridge-dma-test,bus=head-e.0,addr=0 "
+            "-device sgi-bridge-dma-test,bus=head-f.0,addr=0,interrupt-pin=3");
+        unsigned other = i ^ 1;
+
+        card_setup(qts, 0xe);
+        card_setup(qts, 0xf);
+        qtest_irq_intercept_out_named(qts, CHIP, head[i].group);
+        /* The other head's card is not in this group. */
+        card_write(qts, head[other].widget, 0x10, 1);
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, head[other].line), ==,
+                         0);
+        card_write(qts, head[i].widget, 0x10, 1);
+        g_assert_true(qtest_get_irq(qts, head[i].line));
+        card_write(qts, head[i].widget, 0x10, 0);
+        g_assert_false(qtest_get_irq(qts, head[i].line));
+        qtest_quit(qts);
+    }
+}
+
+static void test_head_pins(void)
+{
+    QTestState *qts = chip_start("");
+
+    /* A chip-level pin is that head's own: its status bit, nobody else's. */
+    qtest_set_irq_in(qts, CHIP, "head-e-pin", 3, 1);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x100) & 0xff, ==, 8);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x100) & 0xff, ==, 0);
+    qtest_set_irq_in(qts, CHIP, "head-e-pin", 3, 0);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x100) & 0xff, ==, 0);
+    /* And its rising edge sends that head's packet. */
+    reg_write(qts, 0xf, 0x30, HOST_PORT << 16);
+    reg_write(qts, 0xf, 0x38, SCRATCH);
+    reg_write(qts, 0xf, 0x148, 0x85);
+    reg_write(qts, 0xf, 0x108, 8);
+    qtest_set_irq_in(qts, CHIP, "head-f-pin", 3, 1);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x100) & 0xff, ==, 8);
+    g_assert_cmphex(qtest_readq(qts, FABRIC + SCRATCH), ==, 0x185);
+    qtest_quit(qts);
+}
+
+static bool chip_has_property(QTestState *qts, const char *name)
+{
+    QDict *resp = qtest_qmp(qts, "{'execute': 'qom-list', "
+                            "'arguments': {'path': %s}}", CHIP);
+    const QListEntry *e;
+    bool found = false;
+
+    for (e = qlist_first(qdict_get_qlist(resp, "return")); e;
+         e = qlist_next(e)) {
+        if (!strcmp(qdict_get_str(qobject_to(QDict, e->value), "name"),
+                    name)) {
+            found = true;
+        }
+    }
+    qobject_unref(resp);
+    return found;
+}
+
+static void test_warm_reset_external_ports(void)
+{
+    QTestState *qts = chip_start("");
+
+    /* Six lines each way: the heads' lines stay inside the chip. */
+    g_assert_true(chip_has_property(qts, "warm-reset[5]"));
+    g_assert_false(chip_has_property(qts, "warm-reset[6]"));
+    g_assert_true(chip_has_property(qts, "warm-reset-out[5]"));
+    g_assert_false(chip_has_property(qts, "warm-reset-out[6]"));
+    qtest_irq_intercept_out_named(qts, CHIP, "warm-reset-out");
+    qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 1);
+    qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 0);
+    /* Every other admitted external port goes out; the source does not. */
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 9 - 8), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, HOST_PORT - 8), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_realize_checks(void)
 {
     if (g_test_subprocess()) {
@@ -203,6 +341,12 @@ int main(int argc, char **argv)
                    test_head_dma_reaches_the_host);
     qtest_add_func("/sn1/xbridge-chip/warm-reset-reaches-the-heads",
                    test_warm_reset_reaches_the_heads);
+    qtest_add_func("/sn1/xbridge-chip/widget-views", test_widget_views);
+    qtest_add_func("/sn1/xbridge-chip/head-raw-sources",
+                   test_head_raw_sources);
+    qtest_add_func("/sn1/xbridge-chip/head-pins", test_head_pins);
+    qtest_add_func("/sn1/xbridge-chip/warm-reset-external-ports",
+                   test_warm_reset_external_ports);
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
     qtest_add_func("/sn1/xbridge-chip/realize-needs-fabric",
                    test_realize_needs_fabric);

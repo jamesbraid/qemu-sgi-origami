@@ -12,9 +12,33 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeHeadState, SGI_XBRIDGE_HEAD)
 #define TYPE_SGI_XBRIDGE "sgi-xbridge"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 
+#define SGI_XBRIDGE_HEAD_PINS 8
 #define SGI_XBRIDGE_HEAD_RAW_PCI_IRQS 32
 #define SGI_XBRIDGE_HEAD_REG_COUNT (0x300 / 8)
 #define SGI_XBRIDGE_HEAD_ATE_COUNT 512
+
+/* The crossbar ports a machine can attach to: 8 to 0xd, the heads excluded. */
+#define SGI_XBRIDGE_EXTERNAL_PORTS 6
+
+/*
+ * What a machine wires, keyed by crosstalk widget number: 0 is the
+ * crossbar as the host's port sees it, 0xe and 0xf are the heads.
+ *
+ * A widget view covers the widget's whole 16 TB slot, so an access past
+ * a head's 16 MB face reaches nothing there too. The views exist from
+ * instance init, so a host can link them before either side is realized,
+ * and are also SysBus MMIO regions 1 to 3 in that order; region 0 is the
+ * whole crosstalk space. A head's PCI bus exists once the chip is realized.
+ *
+ * GPIO groups, all on the chip:
+ *   "head-e-pci-intx", "head-f-pci-intx": 32 outputs each, slot * 4 + pin,
+ *       the head's raw INTx levels; slot-to-pin routing is board wiring
+ *   "head-e-pin", "head-f-pin": 8 inputs each, the head's interrupt pins
+ *   "warm-reset", "warm-reset-out": one line per external port, index
+ *       port - 8; the heads' lines are wired inside the chip
+ */
+MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget);
+PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget);
 
 struct SGIXBridgeHeadState {
     PCIHostState parent_obj;

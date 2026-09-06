@@ -606,7 +606,7 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         address_space_init(&s->dma[i].as, MEMORY_REGION(&s->dma[i].iommu),
                            name);
     }
-    qdev_init_gpio_in(dev, xbridge_set_pin, 8);
+    qdev_init_gpio_in(dev, xbridge_set_pin, SGI_XBRIDGE_HEAD_PINS);
     qdev_init_gpio_out_named(dev, s->pci_irq, "pci-intx", RAW_PCI_IRQS);
     memory_region_init(&s->pci_mem, OBJECT(s), "xbridge.pci-mem", UINT64_MAX);
     memory_region_init(&s->pci_io, OBJECT(s), "xbridge.pci-io", UINT64_MAX);
@@ -722,17 +722,44 @@ static const TypeInfo xbridge_type = {
 #define CHIP_HEAD_F 0xf
 #define CHIP_LINK_FIRST 8
 
+/* The widgets a machine gets a view of, in SysBus MMIO region order. */
+static const unsigned chip_view_widget[] = { 0, CHIP_HEAD_E, CHIP_HEAD_F };
+
 struct SGIXBridgeState {
     SysBusDevice parent_obj;
     SGIXBridgeXbowState xbow;
     SGIXBridgeHeadState head[2];
     MemoryRegion crosstalk;
     MemoryRegion unmapped;
+    MemoryRegion view[ARRAY_SIZE(chip_view_widget)];
     MemoryRegion *fabric;
     qemu_irq head_reset[2];
+    /* The chip's own lines, and the sinks that re-drive a child's onto them. */
+    qemu_irq head_intx[2][SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
+    qemu_irq head_intx_sink[2][SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
+    qemu_irq warm_reset_out[SGI_XBRIDGE_EXTERNAL_PORTS];
+    qemu_irq warm_reset_sink[SGI_XBRIDGE_EXTERNAL_PORTS];
     uint8_t host_port;
     uint8_t pci_speed[2];
 };
+
+MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget)
+{
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(chip_view_widget); i++) {
+        if (chip_view_widget[i] == widget) {
+            return &s->view[i];
+        }
+    }
+    g_assert_not_reached();
+}
+
+PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget)
+{
+    assert(widget == CHIP_HEAD_E || widget == CHIP_HEAD_F);
+    return PCI_HOST_BRIDGE(&s->head[widget - CHIP_HEAD_E])->bus;
+}
 
 /* Ports without a widget, and widget space beyond a child's 16 MB face. */
 static uint64_t chip_unmapped_read(void *opaque, hwaddr addr, unsigned size)
@@ -781,10 +808,29 @@ static void chip_head_reset(void *opaque, int line, int level)
     }
 }
 
+/* A child's line re-driven as the chip's, under the chip's group name. */
+static void chip_forward(void *opaque, int line, int level)
+{
+    qemu_irq *out = opaque;
+
+    qemu_set_irq(out[line], level);
+}
+
+static void chip_head_pin(void *opaque, int pin, int level)
+{
+    qemu_set_irq(qdev_get_gpio_in(DEVICE(opaque), pin), level);
+}
+
+static void chip_warm_reset(void *opaque, int port, int level)
+{
+    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(opaque), "warm-reset", port),
+                 level);
+}
+
 static void chip_realize(DeviceState *dev, Error **errp)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(dev);
-    unsigned i;
+    unsigned i, n;
 
     if (!s->fabric) {
         error_setg(errp, "XBridge needs the fabric link to its host");
@@ -795,11 +841,6 @@ static void chip_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "XBridge host port must be 8 to 0xd");
         return;
     }
-    memory_region_init(&s->crosstalk, OBJECT(s), "sgi-xbridge.crosstalk",
-                       16 * CHIP_WIDGET_SPACE);
-    memory_region_init_io(&s->unmapped, OBJECT(s), &chip_unmapped_ops, s,
-                          "sgi-xbridge.unmapped", 16 * CHIP_WIDGET_SPACE);
-    memory_region_add_subregion_overlap(&s->crosstalk, 0, &s->unmapped, -1);
 
     /* The host and the two heads are present; the other links are empty. */
     qdev_prop_set_uint8(DEVICE(&s->xbow), "links-present",
@@ -813,6 +854,13 @@ static void chip_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s->crosstalk, 0,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
                                s->host_port - CHIP_LINK_FIRST));
+    /* The external ports' forwards go out; the heads' are wired below. */
+    for (n = 0; n < SGI_XBRIDGE_EXTERNAL_PORTS; n++) {
+        s->warm_reset_sink[n] = qemu_allocate_irq(chip_forward,
+                                                  s->warm_reset_out, n);
+        qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out", n,
+                                    s->warm_reset_sink[n]);
+    }
 
     for (i = 0; i < 2; i++) {
         unsigned widget = i ? CHIP_HEAD_F : CHIP_HEAD_E;
@@ -827,23 +875,33 @@ static void chip_realize(DeviceState *dev, Error **errp)
         qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out",
                                     widget - CHIP_LINK_FIRST,
                                     s->head_reset[i]);
+        for (n = 0; n < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; n++) {
+            s->head_intx_sink[i][n] = qemu_allocate_irq(chip_forward,
+                                                        s->head_intx[i], n);
+            qdev_connect_gpio_out_named(DEVICE(&s->head[i]), "pci-intx", n,
+                                        s->head_intx_sink[i][n]);
+        }
         memory_region_add_subregion(&s->crosstalk,
                                     (uint64_t)widget << CHIP_WIDGET_SHIFT,
                                     sysbus_mmio_get_region(
                                         SYS_BUS_DEVICE(&s->head[i]), 0));
     }
-    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->crosstalk);
-    /* Outputs 0xe and 0xf are consumed above; the external ports pass out. */
-    qdev_pass_gpios(DEVICE(&s->xbow), dev, "warm-reset");
-    qdev_pass_gpios(DEVICE(&s->xbow), dev, "warm-reset-out");
 }
 
 static void chip_unrealize(DeviceState *dev)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(dev);
+    unsigned i, n;
 
-    qemu_free_irq(s->head_reset[0]);
-    qemu_free_irq(s->head_reset[1]);
+    for (n = 0; n < SGI_XBRIDGE_EXTERNAL_PORTS; n++) {
+        qemu_free_irq(s->warm_reset_sink[n]);
+    }
+    for (i = 0; i < 2; i++) {
+        for (n = 0; n < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; n++) {
+            qemu_free_irq(s->head_intx_sink[i][n]);
+        }
+        qemu_free_irq(s->head_reset[i]);
+    }
 }
 
 /* Bus speeds as OpenBSD reads them on an IP45: 66 MHz at 0xe, 33 at 0xf. */
@@ -878,6 +936,8 @@ static void chip_class_init(ObjectClass *oc, const void *data)
 static void chip_init(Object *obj)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(obj);
+    DeviceState *dev = DEVICE(obj);
+    unsigned i;
 
     object_initialize_child(obj, "xbow", &s->xbow, TYPE_SGI_XBRIDGE_XBOW);
     object_initialize_child(obj, "head-e", &s->head[0], TYPE_SGI_XBRIDGE_HEAD);
@@ -885,6 +945,40 @@ static void chip_init(Object *obj)
     object_property_add_link(obj, "fabric", TYPE_MEMORY_REGION,
                              (Object **)&s->fabric,
                              qdev_prop_allow_set_link_before_realize, 0);
+
+    /*
+     * The space and its views exist before realize: a host links the views
+     * while the chip links the host's region, so neither can go first.
+     */
+    memory_region_init(&s->crosstalk, obj, "sgi-xbridge.crosstalk",
+                       16 * CHIP_WIDGET_SPACE);
+    memory_region_init_io(&s->unmapped, obj, &chip_unmapped_ops, s,
+                          "sgi-xbridge.unmapped", 16 * CHIP_WIDGET_SPACE);
+    memory_region_add_subregion_overlap(&s->crosstalk, 0, &s->unmapped, -1);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->crosstalk);
+    for (i = 0; i < ARRAY_SIZE(chip_view_widget); i++) {
+        g_autofree char *name = g_strdup_printf("sgi-xbridge.widget-%x",
+                                                chip_view_widget[i]);
+
+        memory_region_init_alias(&s->view[i], obj, name, &s->crosstalk,
+                                 (uint64_t)chip_view_widget[i]
+                                 << CHIP_WIDGET_SHIFT, CHIP_WIDGET_SPACE);
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->view[i]);
+    }
+
+    qdev_init_gpio_in_named_with_opaque(dev, chip_head_pin, &s->head[0],
+                                        "head-e-pin", SGI_XBRIDGE_HEAD_PINS);
+    qdev_init_gpio_in_named_with_opaque(dev, chip_head_pin, &s->head[1],
+                                        "head-f-pin", SGI_XBRIDGE_HEAD_PINS);
+    qdev_init_gpio_out_named(dev, s->head_intx[0], "head-e-pci-intx",
+                             SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
+    qdev_init_gpio_out_named(dev, s->head_intx[1], "head-f-pci-intx",
+                             SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
+    qdev_init_gpio_in_named_with_opaque(dev, chip_warm_reset, &s->xbow,
+                                        "warm-reset",
+                                        SGI_XBRIDGE_EXTERNAL_PORTS);
+    qdev_init_gpio_out_named(dev, s->warm_reset_out, "warm-reset-out",
+                             SGI_XBRIDGE_EXTERNAL_PORTS);
 }
 
 static const TypeInfo chip_type = {

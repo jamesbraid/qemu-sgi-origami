@@ -214,15 +214,32 @@ occupies, 8 to 0xd. The Origin 300's Bedrock sits on 0xa and the
 machine must say so. The crossbar's presence map is the host port and
 the two heads.
 
-The chip's MMIO region is the crosstalk space as the host sees it:
-sixteen slots of 16 TB, one per widget. Slot 0 is the crossbar's view
-for the host's port, so the status register reports the host's port
-number; slots 0xe and 0xf are the heads' 16 MB register faces. Every
-other slot, and the space beyond a face, reaches nothing: reads return
-zero, writes are dropped, both are logged. The datasheet does not
-establish how a Bedrock big-window request above a face maps into a
-head's general PCI memory space, so that decode is a later head
+The chip's first MMIO region is the crosstalk space as the host sees
+it: sixteen slots of 16 TB, one per widget. Slot 0 is the crossbar's
+view for the host's port, so the status register reports the host's
+port number; slots 0xe and 0xf are the heads' 16 MB register faces.
+Every other slot, and the space beyond a face, reaches nothing: reads
+return zero, writes are dropped, both are logged. The datasheet does
+not establish how a Bedrock big-window request above a face maps into
+a head's general PCI memory space, so that decode is a later head
 increment rather than a guess here.
+
+A host that decodes the widget number itself, as the Bedrock does,
+links one region per widget instead. ``sgi_xbridge_widget_view``
+returns the chip's own view of widget 0, 0xe or 0xf: the widget's
+whole slot, with the same reach-nothing space past a face. The three
+views are also MMIO regions 1 to 3. They exist from instance init, so
+the host's link to a view and the chip's ``fabric`` link to the host
+can both be set before either device is realized.
+``sgi_xbridge_pci_bus`` returns a head's PCI root bus by widget once
+the chip is realized; the buses are also named ``head-e.0`` and
+``head-f.0`` after the children.
+
+Each head's interrupt pins and raw INTx sources are the chip's GPIO
+groups ``head-e-pin`` and ``head-e-pci-intx``, and their ``head-f``
+twins, carrying the head's lines unchanged. Which source drives which
+pin is board wiring: the machine connects the two groups to each
+other, and the chip assigns nothing.
 
 Widgets 0xe and 0xf are fixed destinations. Rewriting a head's
 widget-ID field changes what it reads back, not where it answers; the
@@ -232,11 +249,13 @@ this model, whose packets are plain writes.
 A warm reset arriving on the host's port resets the crossbar core, as
 the widget-0 fence allows, and is forwarded to the ports whose fences
 admit the source. Inside the chip the forwards for 0xe and 0xf reset
-the heads; the external ports' forwards are outputs for the machine.
-Whether a warm reset the widget-0 fence rejects still forwards to the
-links is not settled by the datasheet, and the model forwards nothing
-in that case. The 1024-cycle window in which a port ignores further
-reset patterns is not modeled.
+the heads. The chip's ``warm-reset`` inputs and ``warm-reset-out``
+outputs carry the six external ports only, 8 to 0xd at index port
+minus 8; the heads' lines stay inside the chip, so a machine has no
+alias to avoid. Whether a warm reset the widget-0 fence rejects still
+forwards to the links is not settled by the datasheet, and the model
+forwards nothing in that case. The 1024-cycle window in which a port
+ignores further reset patterns is not modeled.
 
 Migration
 =========
