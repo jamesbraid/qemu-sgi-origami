@@ -937,39 +937,39 @@ static void test_migration_inflight(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/mips64/sn1/bedrock-io/dma-link-required",
+    qtest_add_func("sn1/bedrock-io/dma-link-required",
                    test_dma_link_required);
-    qtest_add_func("/mips64/sn1/bedrock-io/identity-registers",
+    qtest_add_func("sn1/bedrock-io/identity-registers",
                    test_identity_and_registers);
-    qtest_add_func("/mips64/sn1/bedrock-io/widget-status",
+    qtest_add_func("sn1/bedrock-io/widget-status",
                    test_widget_status);
-    qtest_add_func("/mips64/sn1/bedrock-io/probe-retained",
+    qtest_add_func("sn1/bedrock-io/probe-retained",
                    test_probe_and_retained_registers);
-    qtest_add_func("/mips64/sn1/bedrock-io/pio-translation",
+    qtest_add_func("sn1/bedrock-io/pio-translation",
                    test_pio_translation_and_protection);
-    qtest_add_func("/mips64/sn1/bedrock-io/inbound-protection",
+    qtest_add_func("sn1/bedrock-io/inbound-protection",
                    test_inbound_protection);
-    qtest_add_func("/mips64/sn1/bedrock-io/inbound-register-access",
+    qtest_add_func("sn1/bedrock-io/inbound-register-access",
                    test_inbound_register_access);
-    qtest_add_func("/mips64/sn1/bedrock-io/bte", test_bte_copy_and_zero);
-    qtest_add_func("/mips64/sn1/bedrock-io/bte-error-termination",
+    qtest_add_func("sn1/bedrock-io/bte", test_bte_copy_and_zero);
+    qtest_add_func("sn1/bedrock-io/bte-error-termination",
                    test_bte_error_and_termination);
-    qtest_add_func("/mips64/sn1/bedrock-io/bte-programming-edges",
+    qtest_add_func("sn1/bedrock-io/bte-programming-edges",
                    test_bte_programming_edges);
-    qtest_add_func("/mips64/sn1/bedrock-io/itanium-probe",
+    qtest_add_func("sn1/bedrock-io/itanium-probe",
                    test_itanium_probe_sequence);
-    qtest_add_func("/mips64/sn1/bedrock-io/bte-termination-progress",
+    qtest_add_func("sn1/bedrock-io/bte-termination-progress",
                    test_bte_termination_with_progress);
-    qtest_add_func("/mips64/sn1/bedrock-io/bte-error-after-progress",
+    qtest_add_func("sn1/bedrock-io/bte-error-after-progress",
                    test_bte_error_after_progress);
-    qtest_add_func("/mips64/sn1/bedrock-io/reset-during-transfer",
+    qtest_add_func("sn1/bedrock-io/reset-during-transfer",
                    test_reset_during_transfer);
-    qtest_add_func("/mips64/sn1/bedrock-io/write-one-to-set",
+    qtest_add_func("sn1/bedrock-io/write-one-to-set",
                    test_write_one_to_set_masks);
-    qtest_add_func("/mips64/sn1/bedrock-io/pio-unlinked-widget",
+    qtest_add_func("sn1/bedrock-io/pio-unlinked-widget",
                    test_pio_unlinked_widget);
-    qtest_add_func("/mips64/sn1/bedrock-io/reset", test_reset);
-    qtest_add_func("/mips64/sn1/bedrock-io/migration-inflight",
+    qtest_add_func("sn1/bedrock-io/reset", test_reset);
+    qtest_add_func("sn1/bedrock-io/migration-inflight",
                    test_migration_inflight);
     return g_test_run();
 }
