@@ -12,8 +12,10 @@
 #define PI(n, reg) (BASE + (n) * 0x200000ULL + (reg))
 #define LB(reg) (BASE + 0x600000ULL + (reg))
 #define NI(reg) (BASE + 0x680000ULL + (reg))
-#define MACHINE "-M none -cpu R10000 -device sgi-bedrock,id=bedrock," \
-                "processor-count=1 -S"
+#define MACHINE "-M none -cpu R10000 -m 256M " \
+                "-object memory-backend-ram,id=bedrock-dma,size=2M " \
+                "-device sgi-bedrock,id=bedrock,processor-count=1," \
+                "dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
 
 #define CPU_PROTECT 0x00
 #define CPU_OVERRIDE 0x08

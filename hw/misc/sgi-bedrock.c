@@ -43,6 +43,7 @@ static void bedrock_local_reset(void *opaque, int n, int level)
     if (level) {
         device_cold_reset(DEVICE(&s->pi[0]));
         device_cold_reset(DEVICE(&s->pi[1]));
+        device_cold_reset(DEVICE(&s->io));
         device_cold_reset(DEVICE(&s->lb));
         device_cold_reset(DEVICE(&s->ni));
     }
@@ -55,6 +56,33 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     if (s->processor_count > 4) {
         error_setg(errp, "Bedrock processor count exceeds four slots");
         return;
+    }
+    if (!s->dma_mr) {
+        error_setg(errp, TYPE_SGI_BEDROCK " 'dma-memory' link not set");
+        return;
+    }
+    if (s->revision >= 16) {
+        error_setg(errp, "revision must fit four bits");
+        return;
+    }
+    address_space_init(&s->dma_as, s->dma_mr, "sgi-bedrock-dma");
+    s->dma_as_initialized = true;
+    qdev_prop_set_uint8(DEVICE(&s->io), "revision", s->revision);
+    qdev_prop_set_uint8(DEVICE(&s->io), "local-region", s->local_region);
+    qdev_prop_set_uint8(DEVICE(&s->io), "inbound-widget", s->inbound_widget);
+    qdev_prop_set_uint8(DEVICE(&s->io), "inbound-device", s->inbound_device);
+    qdev_prop_set_uint64(DEVICE(&s->io), "device-mask-reset",
+                         s->device_mask_reset);
+    sgi_bedrock_io_set_dma_as(&s->io, &s->dma_as);
+    for (unsigned i = 0; i < ARRAY_SIZE(s->widget_mr); i++) {
+        if (s->widget_mr[i]) {
+            g_autofree char *name = g_strdup_printf("widget-%u", i);
+
+            if (!object_property_set_link(OBJECT(&s->io), name,
+                                          OBJECT(s->widget_mr[i]), errp)) {
+                return;
+            }
+        }
     }
     for (unsigned i = 0; i < 2; i++) {
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "interface", i);
@@ -80,12 +108,18 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
                     i * SGI_BEDROCK_PI_PROCESSORS + cpu));
         }
     }
+    qdev_prop_set_uint32(DEVICE(&s->lb), "revision", s->revision);
+    if (!qdev_realize(DEVICE(&s->io), sysbus_get_default(), errp)) {
+        return;
+    }
     if (!qdev_realize(DEVICE(&s->lb), sysbus_get_default(), errp)) {
         return;
     }
     if (!qdev_realize(DEVICE(&s->ni), sysbus_get_default(), errp)) {
         return;
     }
+    memory_region_add_subregion(&s->mmio, 0x400000,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 0));
     memory_region_add_subregion(&s->mmio, 0x600000,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->lb), 0));
     memory_region_add_subregion(&s->mmio, 0x680000,
@@ -103,6 +137,26 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
 static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("processor-count", SGIBedrockState,
                        processor_count, 1),
+    DEFINE_PROP_UINT8("revision", SGIBedrockState, revision, 2),
+    DEFINE_PROP_UINT8("local-region", SGIBedrockState, local_region, 0),
+    DEFINE_PROP_UINT8("inbound-widget", SGIBedrockState, inbound_widget, 8),
+    DEFINE_PROP_UINT8("inbound-device", SGIBedrockState, inbound_device, 0),
+    DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockState,
+                       device_mask_reset, UINT64_MAX),
+    DEFINE_PROP_LINK("dma-memory", SGIBedrockState, dma_mr,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+#define BEDROCK_WIDGET_PROP(_n) \
+    DEFINE_PROP_LINK("widget-" #_n, SGIBedrockState, widget_mr[_n], \
+                     TYPE_MEMORY_REGION, MemoryRegion *)
+    BEDROCK_WIDGET_PROP(0), BEDROCK_WIDGET_PROP(1),
+    BEDROCK_WIDGET_PROP(2), BEDROCK_WIDGET_PROP(3),
+    BEDROCK_WIDGET_PROP(4), BEDROCK_WIDGET_PROP(5),
+    BEDROCK_WIDGET_PROP(6), BEDROCK_WIDGET_PROP(7),
+    BEDROCK_WIDGET_PROP(8), BEDROCK_WIDGET_PROP(9),
+    BEDROCK_WIDGET_PROP(10), BEDROCK_WIDGET_PROP(11),
+    BEDROCK_WIDGET_PROP(12), BEDROCK_WIDGET_PROP(13),
+    BEDROCK_WIDGET_PROP(14), BEDROCK_WIDGET_PROP(15),
+#undef BEDROCK_WIDGET_PROP
 };
 
 static void bedrock_init(Object *obj)
@@ -112,10 +166,15 @@ static void bedrock_init(Object *obj)
 
     object_initialize_child(obj, "pi0", &s->pi[0], TYPE_SGI_BEDROCK_PI);
     object_initialize_child(obj, "pi1", &s->pi[1], TYPE_SGI_BEDROCK_PI);
+    object_initialize_child(obj, "io", &s->io, TYPE_SGI_BEDROCK_IO);
     object_initialize_child(obj, "lb", &s->lb, TYPE_SGI_BEDROCK_LB);
     object_initialize_child(obj, "ni", &s->ni, TYPE_SGI_BEDROCK_NI);
     memory_region_init(&s->mmio, obj, TYPE_SGI_BEDROCK, SGI_BEDROCK_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj),
+                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 1));
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj),
+                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 2));
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
@@ -126,6 +185,15 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_lb_error, "lb-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_ni_error, "ni-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
+}
+
+static void bedrock_finalize(Object *obj)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+
+    if (s->dma_as_initialized) {
+        address_space_destroy(&s->dma_as);
+    }
 }
 
 static void bedrock_class_init(ObjectClass *klass, const void *data)
@@ -143,6 +211,7 @@ static const TypeInfo bedrock_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIBedrockState),
     .instance_init = bedrock_init,
+    .instance_finalize = bedrock_finalize,
     .class_init = bedrock_class_init,
 };
 
