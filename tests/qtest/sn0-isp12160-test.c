@@ -1353,35 +1353,43 @@ static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
     publish_requests(qts);
 }
 
-/*
- * The completion for one handle. Reading mailbox 5 answers the adapter's
- * response producer index, so the entry the test has not read yet is
- * ready once that index moves; writing mailbox 5 back releases the slot.
- */
-static void wait_status(QTestState *qts, uint32_t handle, uint8_t *status)
-{
-    unsigned spins;
+#define STATUS_STEP_NS      (1000 * 1000)
+#define STATUS_WAIT_US      (10 * 1000 * 1000)
 
-    for (spins = 0; spins < 1000; spins++) {
-        if (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != ring.resp_next) {
-            break;
-        }
-        qtest_clock_step(qts, 10000);
+/*
+ * The next completion in the ring, whichever handle it carries. Reading
+ * mailbox 5 answers the adapter's response producer index, so the entry
+ * the test has not read yet is ready once that index moves; writing
+ * mailbox 5 back releases the slot. The wait is bounded in wall time
+ * because a read held by a block filter is waiting on that filter's own
+ * timer rather than on anything the model or the guest clock does.
+ */
+static uint32_t wait_next_status(QTestState *qts, uint8_t *status)
+{
+    gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
+
+    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) == ring.resp_next) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        qtest_clock_step(qts, STATUS_STEP_NS);
     }
-    g_assert_cmpuint(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), !=,
-                     ring.resp_next);
 
     qtest_memread(qts, ring_phys(ring.resp_iova)
                        + ring.resp_next * ISP_QUEUE_ENTRY_SIZE,
                   status, ISP_QUEUE_ENTRY_SIZE);
     normalise_words(status, ISP_QUEUE_ENTRY_SIZE);
     g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
-    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
 
     ring.resp_next = (ring.resp_next + 1) % ring.resp_len;
     isp_writew(qts, ISP_REG_RESPONSE_QUEUE, ring.resp_next);
     isp_writew(qts, ISP_REG_HOST_CMD,
                ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    return get32le(status + ISP_STATUS_OFF_HANDLE);
+}
+
+/* The completion for one handle, which has to be the one that comes next. */
+static void wait_status(QTestState *qts, uint32_t handle, uint8_t *status)
+{
+    g_assert_cmphex(wait_next_status(qts, status), ==, handle);
 }
 
 /* A command with no data, run to completion; the caller reads the status. */
@@ -2084,6 +2092,378 @@ static void test_a_failure_on_one_channel_leaves_the_other_alone(
     disks_remove(&disks);
 }
 
+/*
+ * Recovery. A command has to still be outstanding when the abort or the
+ * reset arrives, so these tests put both disks behind one throttle
+ * filter. The group's bucket lets a first sector read through and holds
+ * the ones after it, and a held read cannot finish inside the write that
+ * published it. Cancelling such a read waits for it, which is why every
+ * wait below is bounded in wall time rather than in polls.
+ *
+ * The rate is what the held read then costs: the bucket drains in
+ * (bytes accounted - rate/10) / rate seconds of real time, and that same
+ * figure is the margin between filling the bucket and submitting the
+ * read under test. A kilobyte a second puts both at four tenths of a
+ * second -- long enough that the handful of commands in between cannot
+ * close it, short enough that seven tests fit in the suite's time.
+ */
+#define THROTTLE_BPS_READ   1024
+
+static QTestState *isp12160_start_with_throttled_disks(DiskPair *disks)
+{
+    QTestState *qts;
+    g_autofree char *args = NULL;
+
+    disks_create(disks);
+    args = g_strdup_printf(
+        MACHINE
+        " -object throttle-group,id=tg,x-bps-read=%u"
+        " -blockdev driver=file,node-name=f0,filename=%s"
+        " -blockdev driver=throttle,node-name=t0,throttle-group=tg,file=f0"
+        " -device scsi-hd,bus=scsi.2,scsi-id=1,drive=t0"
+        " -blockdev driver=file,node-name=f1,filename=%s"
+        " -blockdev driver=throttle,node-name=t1,throttle-group=tg,file=f1"
+        " -device scsi-hd,bus=scsi.3,scsi-id=1,drive=t1",
+        THROTTLE_BPS_READ, disks->path[0], disks->path[1]);
+
+    qts = qtest_init(args);
+    aim_window_at_memory_bar(qts);
+    return qts;
+}
+
+/* Handles for the work that clears the way, kept out of the tests' range. */
+#define RECOVERY_UA_CHANNEL0    0x000000a0
+#define RECOVERY_UA_CHANNEL1    0x000000a1
+#define RECOVERY_FILL_BUCKET    0x000000a2
+
+/* The recovery mailboxes, three of which the family did not answer. */
+#define ISP_MBOX_CMD_ABORT_COMMAND  0x0015
+#define ISP_MBOX_CMD_ABORT_DEVICE   0x0016
+#define ISP_MBOX_CMD_ABORT_TARGET   0x0017
+#define ISP_MBOX_CMD_BUS_RESET      0x0018
+
+#define ISP_MBOX_CMD_ERROR          0x4005
+
+/* What a retired request carries where a finished one carries its result. */
+#define ISP_IOCB_RESET              0x0004
+#define ISP_IOCB_ABORTED            0x0005
+
+/*
+ * Queues, disks, and the read that fills the throttle group's bucket.
+ * That read has to happen before the ones under test are submitted, or
+ * they finish inside the write that published them and there is nothing
+ * left to recover.
+ */
+static QTestState *recovery_start(DiskPair *disks)
+{
+    QTestState *qts = isp12160_start_with_throttled_disks(disks);
+    uint8_t got[SECTOR_BYTES];
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, RECOVERY_UA_CHANNEL0);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, RECOVERY_UA_CHANNEL1);
+
+    read_sector(qts, 0, DISK_TARGET, 0, RECOVERY_FILL_BUCKET, 0, BUF_PHYS,
+                got);
+    expect_sector(got, DISK0_SECTOR0_FILL);
+    return qts;
+}
+
+/* A one-sector read placed in the ring, left for the caller to publish. */
+static void place_read(QTestState *qts, uint32_t handle, unsigned channel,
+                       uint32_t buf_phys)
+{
+    uint8_t cdb[10] = { SCSI_READ_10 };
+    const RingSeg seg = { DIRECT64(buf_phys), SECTOR_BYTES };
+
+    put_lba10(cdb, 0, 1);
+    place_a64(qts, ring.rqst_next, handle, channel, DISK_TARGET, 0, cdb,
+              sizeof(cdb), ISP_REQ_CONTROL_DATA_IN, &seg, 1);
+}
+
+/* The ring stays put, checked after giving a late entry time to land. */
+#define QUIET_WAIT_US   (500 * 1000)
+
+static void expect_no_further_status(QTestState *qts)
+{
+    gint64 until = g_get_monotonic_time() + QUIET_WAIT_US;
+
+    while (g_get_monotonic_time() < until) {
+        qtest_clock_step(qts, STATUS_STEP_NS);
+    }
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==,
+                    ring.resp_next);
+}
+
+/* The whole entry a retirement writes: a completion code and nothing else. */
+static void expect_retired(const uint8_t *status, uint16_t completion)
+{
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    completion);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==, 0);
+}
+
+/*
+ * The two entries a scoped recovery command leaves behind: the retired
+ * one and the survivor, which finishes normally. They arrive in
+ * whichever order the backend releases them -- the cancellation waits
+ * for the read it is retiring, and the other channel's read can finish
+ * inside that wait -- and nothing in the contract orders them, so they
+ * are sorted by handle rather than by arrival.
+ */
+static void expect_one_retired_one_survivor(QTestState *qts,
+                                            uint32_t retired_handle,
+                                            uint16_t completion,
+                                            uint32_t survivor_handle)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    unsigned seen;
+
+    for (seen = 0; seen < 2; seen++) {
+        uint32_t handle = wait_next_status(qts, status);
+
+        if (handle == retired_handle) {
+            expect_retired(status, completion);
+        } else {
+            g_assert_cmphex(handle, ==, survivor_handle);
+            g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                            ISP_IOCB_COMPLETE);
+            g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==,
+                            0);
+        }
+    }
+}
+
+/* The survivor's payload arrived whole while its neighbour was retired. */
+static void expect_survivor_payload(QTestState *qts, uint32_t buf_phys,
+                                    uint8_t fill)
+{
+    uint8_t payload[SECTOR_BYTES];
+
+    qtest_memread(qts, buf_phys, payload, sizeof(payload));
+    normalise_words(payload, sizeof(payload));
+    expect_sector(payload, fill);
+}
+
+/* One read outstanding per channel, at the same target and LUN. */
+static void place_one_read_per_channel(QTestState *qts, uint32_t handle0,
+                                       uint32_t handle1)
+{
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, 2 * SECTOR_BYTES);
+    place_read(qts, handle0, 0, BUF_PHYS);
+    place_read(qts, handle1, 1, BUF_PHYS + SECTOR_BYTES);
+    publish_requests(qts);
+}
+
+/*
+ * Abort device names a channel, a target and a LUN and carries no
+ * handle. The same target and LUN number is busy on the other channel,
+ * so a model that drops the channel out of the selector retires both.
+ */
+static void test_abort_device_is_channel_scoped(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0 };
+
+    place_one_read_per_channel(qts, 0x41, 0x42);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_DEVICE, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    expect_one_retired_one_survivor(qts, 0x42, ISP_IOCB_ABORTED, 0x41);
+    expect_survivor_payload(qts, BUF_PHYS, DISK0_SECTOR0_FILL);
+    expect_no_further_status(qts);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * Abort command names one handle. Its neighbour is on the same channel,
+ * target and LUN, so only the handle tells them apart and a model
+ * decoding the selector alone retires both.
+ */
+static void test_abort_command_by_handle(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x52 };
+
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, 2 * SECTOR_BYTES);
+    place_read(qts, 0x51, 1, BUF_PHYS);
+    place_read(qts, 0x52, 1, BUF_PHYS + SECTOR_BYTES);
+    publish_requests(qts);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    expect_one_retired_one_survivor(qts, 0x52, ISP_IOCB_ABORTED, 0x51);
+    expect_survivor_payload(qts, BUF_PHYS, DISK1_SECTOR0_FILL);
+    expect_no_further_status(qts);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * A handle nothing is using. Reporting the abort complete would tell the
+ * host that a command it is still waiting on has been retired, and
+ * posting an entry for a handle the host never issued is worse.
+ */
+static void test_abort_unknown_handle_is_a_command_error(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x77 };
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_CMD_ERROR);
+    isp_mbox_ack(qts);
+
+    expect_no_further_status(qts);
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * Target reset reaches one target on one channel. The same target number
+ * is busy on the other channel and has to survive, and the reset target
+ * has to serve the next command rather than be left cancelled.
+ */
+static void test_target_reset_is_channel_scoped(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 1 };
+    uint8_t payload[SECTOR_BYTES];
+
+    place_one_read_per_channel(qts, 0x41, 0x42);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_TARGET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    expect_one_retired_one_survivor(qts, 0x42, ISP_IOCB_RESET, 0x41);
+    expect_survivor_payload(qts, BUF_PHYS, DISK0_SECTOR0_FILL);
+
+    /* The reset target reports the reset, then serves the next command. */
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x43);
+    read_sector(qts, 1, DISK_TARGET, 0, 0x44, 0, BUF_PHYS, payload);
+    expect_sector(payload, DISK1_SECTOR0_FILL);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * Bus reset takes its channel from mailbox 2. Mailbox 1 carries the
+ * configured reset delay instead, so a model reading the channel out of
+ * mailbox 1 resets a bus the host did not name: the delay here is three,
+ * which is not even a channel this adapter has.
+ */
+static void test_bus_reset_is_channel_scoped(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { 3, 1 };
+    uint8_t payload[SECTOR_BYTES];
+
+    place_one_read_per_channel(qts, 0x41, 0x42);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_BUS_RESET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    expect_one_retired_one_survivor(qts, 0x42, ISP_IOCB_RESET, 0x41);
+
+    /* A reset bus, not a wiped one: both media are where they were. */
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x43);
+    read_sector(qts, 1, DISK_TARGET, 0, 0x44, 0, BUF_PHYS, payload);
+    expect_sector(payload, DISK1_SECTOR0_FILL);
+    read_sector(qts, 0, DISK_TARGET, 0, 0x45, 0, BUF_PHYS, payload);
+    expect_sector(payload, DISK0_SECTOR0_FILL);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * The host cannot see a command finish before its abort reaches the
+ * adapter. The abort has to report that there was nothing to retire and
+ * leave the completion that already went out alone: a second entry for
+ * the same handle would retire a command the host has already accounted
+ * for.
+ */
+static void test_natural_completion_racing_an_abort(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x62 };
+    uint8_t payload[SECTOR_BYTES];
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, RECOVERY_UA_CHANNEL1);
+
+    /* Nothing throttles this disk, so the read is over before the abort. */
+    read_sector(qts, 1, DISK_TARGET, 0, 0x62, 0, BUF_PHYS, payload);
+    expect_sector(payload, DISK1_SECTOR0_FILL);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_CMD_ERROR);
+    isp_mbox_ack(qts);
+
+    expect_no_further_status(qts);
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * A handle belongs to the host, and retiring a command hands it back.
+ * The next command carrying it is a different command: the adapter must
+ * not match it against the retired one or answer it twice.
+ */
+static void test_retired_handle_is_reusable(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x61 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t payload[SECTOR_BYTES];
+
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, SECTOR_BYTES);
+    place_read(qts, 0x61, 1, BUF_PHYS);
+    publish_requests(qts);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(wait_next_status(qts, status), ==, 0x61);
+    expect_retired(status, ISP_IOCB_ABORTED);
+
+    read_sector(qts, 1, DISK_TARGET, 0, 0x61, 0, BUF_PHYS, payload);
+    expect_sector(payload, DISK1_SECTOR0_FILL);
+
+    expect_no_further_status(qts);
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2162,6 +2542,21 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/isp12160/a-failure-on-one-channel-leaves-the-other-alone", NULL,
         test_a_failure_on_one_channel_leaves_the_other_alone);
+    qtest_add_data_func("sn0/isp12160/abort-device-is-channel-scoped", NULL,
+                        test_abort_device_is_channel_scoped);
+    qtest_add_data_func("sn0/isp12160/abort-command-by-handle", NULL,
+                        test_abort_command_by_handle);
+    qtest_add_data_func(
+        "sn0/isp12160/abort-unknown-handle-is-a-command-error", NULL,
+        test_abort_unknown_handle_is_a_command_error);
+    qtest_add_data_func("sn0/isp12160/target-reset-is-channel-scoped", NULL,
+                        test_target_reset_is_channel_scoped);
+    qtest_add_data_func("sn0/isp12160/bus-reset-is-channel-scoped", NULL,
+                        test_bus_reset_is_channel_scoped);
+    qtest_add_data_func("sn0/isp12160/natural-completion-racing-an-abort",
+                        NULL, test_natural_completion_racing_an_abort);
+    qtest_add_data_func("sn0/isp12160/retired-handle-is-reusable", NULL,
+                        test_retired_handle_is_reusable);
 
     return g_test_run();
 }
