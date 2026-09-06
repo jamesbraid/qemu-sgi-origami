@@ -282,10 +282,41 @@ static void xbridge_iommu_class_init(ObjectClass *oc, const void *data)
     imrc->notify_flag_changed = xbridge_notify_flags;
 }
 
+static void xbridge_error_packet(SGIXBridgeHeadState *s)
+{
+    uint32_t upper = REG(s, 0x30);
+    unsigned target = (upper >> 16) & 15;
+    uint64_t addr = ((uint64_t)(upper & 0xffff) << 32) | REG(s, 0x38);
+    MemTxResult result;
+
+    if (!s->target[target]) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-xbridge: error interrupt target %x is absent\n",
+                      target);
+        return;
+    }
+    address_space_stq_be(&s->endpoint[target].as, addr,
+                         (REG(s, 0x128) & 0xff) | 0x100,
+                         MEMTXATTRS_UNSPECIFIED, &result);
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-xbridge: error destination refused write\n");
+    }
+}
+
 static void xbridge_invalid(SGIXBridgeHeadState *s, hwaddr addr)
 {
+    bool first = !(REG(s, 0x100) & (1U << 24));
+
     REG(s, 0x100) |= 1U << 24;
     REG(s, 0x170) |= 1U << 24;
+    if (first) {
+        REG(s, 0x10) = addr >> 32;
+        REG(s, 0x18) = addr;
+        if (REG(s, 0x108) & (1U << 24)) {
+            xbridge_error_packet(s);
+        }
+    }
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-xbridge: invalid access at 0x%" HWADDR_PRIx "\n", addr);
 }
@@ -449,6 +480,7 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case 0x100:
         return;
+    case 0x128:
     case 0x118:
         value &= 0xff;
         break;
@@ -462,6 +494,10 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         value &= 0x00fff800;
         break;
     case 0x110:
+        if (value & (1U << 3)) {
+            REG(s, 0x100) &= ~(1U << 24);
+            REG(s, 0x170) &= ~(1U << 24);
+        }
         if (value & (1U << 6)) {
             REG(s, 0x170) = 0;
         }

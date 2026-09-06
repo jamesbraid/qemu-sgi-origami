@@ -370,12 +370,16 @@ static void test_access_errors(void)
 
     reg_write(qts, 0x30, 0x000c1234);
     reg_write(qts, 0x38, 0x8000);
+    reg_write(qts, 0x128, 0x93);
     reg_write(qts, 0x108, 1U << 24);
     qtest_writeq(qts, BASE + 0x20, 0xabcdef0123456789ULL);
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==, 0x193);
     reg_write(qts, 0x110, 1);
     g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    reg_write(qts, 0x110, 8);
+    g_assert_cmphex(reg_read(qts, 0x100), ==, 0);
     reg_write(qts, 0xb0, UINT32_MAX);
     g_assert_cmphex(reg_read(qts, 0xb0) & 3, ==, 0);
     reg_write(qts, 0x178, UINT32_MAX);
