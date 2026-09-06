@@ -57,7 +57,8 @@ static void test_ate(void)
         uint64_t value = 0xabcd123456780021ULL + (i << 12);
 
         qtest_writeq(qts, BASE + 0x10000 + off, value);
-        g_assert_cmphex(qtest_readl(qts, BASE + 0x10004 + off), ==,
+        /* Bits 63:48 are unresolved and not asserted; 47:32 must hold. */
+        g_assert_cmphex(qtest_readl(qts, BASE + 0x10004 + off) & 0xffff, ==,
                         (value >> 32) & 0xffff);
         g_assert_cmphex(qtest_readl(qts, BASE + 0x11004 + off), ==,
                         (uint32_t)value);
