@@ -156,20 +156,27 @@ static void test_read_only_writes(void)
     g_assert_cmpint(unlink(log), ==, 0);
 }
 
-static void test_system_reset(void)
+/*
+ * The datasheet states no reset value for any register here and only that
+ * the sideband register is not cleared, a survival the register-core unit
+ * test carries with a seeded value that no MMIO path can produce. What this
+ * asserts is model policy, not hardware: unknown defaults are modelled as
+ * zero, so every guest-writable register reads 0 after a reset.
+ */
+static void test_reset_model_policy(void)
 {
     QTestState *s = ni_start("");
-    uint64_t sideband = qtest_readq(s, NI_BASE + 0x118);
-    uint64_t age = qtest_readq(s, NI_BASE + 0x38);
-    uint64_t route = qtest_readq(s, NI_BASE + 0x1000);
+    static const uint64_t offsets[] = {
+        0x10, 0x18, 0x20, 0x30, 0x38, 0x1000, 0x13f8, 0x2000,
+    };
 
-    qtest_writeq(s, NI_BASE + 0x38, age ^ 0xffff);
-    qtest_writeq(s, NI_BASE + 0x1000, route ^ 0x1f);
+    for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
+        qtest_writeq(s, NI_BASE + offsets[i], UINT64_MAX);
+    }
     qtest_system_reset(s);
-    /* Hardware defaults are unknown; compare with observed startup state. */
-    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x38), ==, age);
-    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x1000), ==, route);
-    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x118), ==, sideband);
+    for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
+        g_assert_cmphex(qtest_readq(s, NI_BASE + offsets[i]), ==, 0);
+    }
     qtest_quit(s);
 }
 
@@ -234,7 +241,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-ni/reset-requests", test_reset_requests);
     qtest_add_func("sn1/bedrock-ni/disconnected", test_disconnected);
     qtest_add_func("sn1/bedrock-ni/read-only-writes", test_read_only_writes);
-    qtest_add_func("sn1/bedrock-ni/system-reset", test_system_reset);
+    qtest_add_func("sn1/bedrock-ni/reset-model-policy",
+                   test_reset_model_policy);
     qtest_add_func("sn1/bedrock-ni/migration", test_migration);
     return g_test_run();
 }
