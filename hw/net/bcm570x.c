@@ -939,9 +939,9 @@ static void bcm570x_tx_coalesce(Bcm570xState *s,
 
     if (completed_descs == 0) {
         /*
-         * A doorbell that completed nothing still moves the consumer the driver
-         * reads, and bring-up leans on the update arriving: report it rather
-         * than folding it into a group that may never fill.
+         * A doorbell at the current consumer completes nothing. Bring-up still
+         * leans on the status update arriving, so report it rather than folding
+         * it into a group that may never fill.
          */
         bcm570x_dma_status_block(s);
         return;
@@ -1130,9 +1130,9 @@ send_whole:
     qemu_send_packet(qemu_get_queue(s->nic), frame, len);
 }
 
-static void bcm570x_tx_stop_on_dma_error(Bcm570xState *s,
-                                          uint16_t frame_start,
-                                          unsigned int completed_descs)
+static void bcm570x_tx_rollback_to_frame(Bcm570xState *s,
+                                         uint16_t frame_start,
+                                         unsigned int completed_descs)
 {
     s->tx_cons = frame_start;
     s->tx_busy = false;
@@ -1189,7 +1189,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "bcm570x: transmit descriptor %u read failed; "
                           "ring walk stopped\n", s->tx_cons);
-            bcm570x_tx_stop_on_dma_error(s, frame_start, completed_descs);
+            bcm570x_tx_rollback_to_frame(s, frame_start, completed_descs);
             return;
         }
         buf_addr = ((uint64_t)bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_HI)
@@ -1204,7 +1204,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "bcm570x: transmit payload read at 0x%" PRIx64
                               " failed; frame left ready to retry\n", buf_addr);
-                bcm570x_tx_stop_on_dma_error(s, frame_start,
+                bcm570x_tx_rollback_to_frame(s, frame_start,
                                              completed_descs);
                 return;
             }
@@ -1246,6 +1246,10 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
             frame_start = s->tx_cons;
             completed_descs = walked;
         }
+    }
+    if (s->tx_cons != frame_start) {
+        bcm570x_tx_rollback_to_frame(s, frame_start, completed_descs);
+        return;
     }
     s->tx_busy = false;
 
