@@ -422,10 +422,6 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         xbridge_invalid(s, addr);
         return;
     }
-    if (off == 0x110 && (value & (1U << 1))) {
-        REG(s, 0x100) &= ~(1U << 30);
-        REG(s, 0x170) &= ~(1U << 30);
-    }
     if (off >= 0x180 && off <= 0x1f8) {
         unsigned pin = ((off - 0x180) / 8) & 7;
 
@@ -449,6 +445,21 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case 0x100:
         return;
+    case 0x70:
+        value &= 0x00ffffff;
+        break;
+    case 0xa0:
+        value &= 0x3ff7f;
+        break;
+    case 0xc0:
+        value &= 0x1f03ff;
+        break;
+    case 0x120:
+        value &= 0xffffff;
+        break;
+    case 0x280:
+    case 0x288:
+        break;
     case 0x128:
     case 0x118:
         value &= 0xff;
@@ -463,6 +474,10 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         value &= 0x00fff800;
         break;
     case 0x110:
+        if (value & (1U << 1)) {
+            REG(s, 0x100) &= ~(1U << 30);
+            REG(s, 0x170) &= ~(1U << 30);
+        }
         if (value & (1U << 3)) {
             REG(s, 0x100) &= ~(1U << 24);
             REG(s, 0x170) &= ~(1U << 24);
@@ -518,6 +533,8 @@ static void xbridge_reset_hold(Object *obj, ResetType type)
     REG(s, 0x28) = 0xfffff;
     REG(s, 0x48) = 0x03ff1810;
     REG(s, 0x80) = 0x20000;
+    REG(s, 0xa0) = 0x20008;
+    REG(s, 0xc0) = 0x10000;
     for (i = 0; i < 8; i++) {
         REG(s, 0x200 + i * 8) = 0x18001000;
     }
