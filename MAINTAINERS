@@ -1492,6 +1492,7 @@ F: hw/misc/sgi-*.c
 F: hw/net/dp83840.c
 F: hw/net/sgi-ioc3-eth.c
 F: hw/pci-host/sgi-bridge.c
+F: hw/pci-host/sgi-xbridge.c
 F: hw/rtc/m48t35.c
 F: hw/scsi/qlogic-isp.c
 F: include/hw/1wire/
@@ -1501,6 +1502,7 @@ F: include/hw/misc/sgi-*.h
 F: include/hw/net/dp83840.h
 F: include/hw/net/sgi-ioc3-eth.h
 F: include/hw/pci-host/sgi-bridge.h
+F: include/hw/pci-host/sgi-xbridge.h
 F: include/hw/rtc/m48t35.h
 F: include/hw/scsi/qlogic-isp.h
 F: qapi/misc-mips.json
@@ -1510,6 +1512,7 @@ F: tests/qtest/qlogic-isp-test.c
 F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/sn0-*
 F: tests/qtest/sn1-l1-test.c
+F: tests/qtest/sn1-*
 
 Jazz
 M: Hervé Poussineau <hpoussin@reactos.org>
