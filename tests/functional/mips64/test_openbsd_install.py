@@ -88,10 +88,12 @@ own login boot is pinned to 128 MiB and not raised.
 Guarded by @skipBigDataTest() (the install media total several hundred
 MB) and @skipSlowTest() (a full install is 20-30 minutes) -- the
 framework's own env-var-gated decorators, matching test_openbsd_login.py
--- on top of @skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest() at
-method entry if any install input is missing. The install media are published to
-the forge asset store now (nightly provisioning for them is being added
-separately, out of this test's own scope).
+-- on top of @skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no
+assets at all. The install media are published to the forge asset store
+now (nightly provisioning for them is being added separately, out of
+this test's own scope), so ORIGAMI_ASSETS being set with an install
+input missing underneath it is a provisioning failure, not an
+absent-assets run, and fails the test loudly rather than skipping it.
 
 The pure verdict logic lives entirely in test_openbsd_install_verdict.py
 (imported below; it needs no qemu_test itself). What is left here is the
@@ -491,13 +493,19 @@ class OpenbsdInstall(QemuSystemTest):
     def test_openbsd_install(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'missing one of the '
-                f'install inputs under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing install input is a provisioning
+            # failure, not an absent-assets developer run, and must fail
+            # loudly: a silent skip here would let a real install
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but one of the install inputs is '
+                f'missing under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
                 f'({INSTALL_KERNEL_NAME}, ' +
                 ', '.join(SETS_FILE_NAMES) +
-                ') -- point it at a checkout with the OpenBSD 6.9 '
-                'install media provisioned to run this test')
+                ') -- provision them (nightly assets) rather than '
+                'silently skipping a claimed capability')
         kernel, sets_files = paths
 
         qemu_img = get_qemu_img(self)
