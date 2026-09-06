@@ -1355,10 +1355,11 @@ typedef struct CPUArchState {
  * CP0 Register 25
  */
     /*
-     * Register 25 holds two counters and their two control registers, chosen
-     * by the selector: even selectors are the control registers and odd ones
-     * the counters. The R10000 family reaches the same four through its own
-     * move instructions, whose low bits land in the same place.
+     * Register 25 holds a model-selected number of counters and control
+     * registers: R10000 has two pairs and R14000 has four. Even selectors are
+     * the control registers and odd ones the counters. The R10000 family
+     * reaches them through its own move instructions, whose low bits land in
+     * the same place.
      *
      * On the R10000 family a counter whose control register selects the
      * Cycles event and enables the current processor mode is live: its slot
