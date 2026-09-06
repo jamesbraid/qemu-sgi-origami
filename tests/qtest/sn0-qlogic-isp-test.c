@@ -109,9 +109,11 @@
 #define ISP_MBOX_CMD_READ_RAM_WORD  0x0005
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
+#define ISP_MBOX_CMD_LOAD_RAM_A64   0x0009
 #define ISP_MBOX_CMD_GET_TARGET_PARAMETERS  0x0028
 #define ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS 0x003a
 #define ISP_MBOX_COMPLETE           0x4000
+#define ISP_MBOX_INVALID            0x4001
 #define ISP_MBOX_TEST_FAILED        0x4003
 
 /* Ring entry layout, restated here the same way the mailbox offsets are. */
@@ -930,6 +932,136 @@ static void test_mbox_set_reset_delay_params(const void *data)
 }
 
 /*
+ * Bit 15 of the target-parameter selector picks a bus on the family's
+ * dual-channel part. This part has one bus and never read the bit, so a
+ * request carrying it gets the same answer as one without: turning it into
+ * a parameter error would be a new refusal of a request drivers have
+ * always been able to make.
+ */
+static void test_mbox_get_target_parameters_ignores_bit_15(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_device0_window_at_its_bar(qts);
+
+    isp_writew(qts, ISP_MAILBOX(1), 0x8100);    /* target 1, bit 15 set */
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_GET_TARGET_PARAMETERS);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(3)), ==, 0);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The A64 RAM load is the dual-channel part's opcode. Nothing in this
+ * part's contract carries it, so answering it would invent a command, and
+ * a guest that probed for it would conclude this adapter has one.
+ */
+static void test_mbox_a64_ram_load_is_not_this_part(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_device0_window_at_its_bar(qts);
+
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_LOAD_RAM_A64);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_INVALID);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Two LUNs behind one target, an address this adapter has always taken.
+ * The INQUIRY each one answers is what says the second disk is really
+ * there: a LUN with nothing behind it is answered by the target itself,
+ * with the peripheral qualifier that means no device.
+ */
+#define INQUIRY_BYTES               36
+#define INQUIRY_NO_DEVICE           0x7f
+#define LUN_BUF_PHYS                0x00120000u
+#define LUN_BUF_IOVA                (0xa500000000000000ULL | LUN_BUF_PHYS)
+
+static void build_a64_inquiry(uint8_t *entry, uint32_t handle,
+                              uint16_t device, uint64_t buf_iova)
+{
+    memset(entry, 0, ISP_QUEUE_ENTRY_SIZE);
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, device);
+    put16le(entry + ISP_REQ_OFF_CDBLEN, 6);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, 1);
+    entry[ISP_REQ_OFF_CDB + 0] = 0x12;
+    entry[ISP_REQ_OFF_CDB + 4] = INQUIRY_BYTES;
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 0, (uint32_t)buf_iova);
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 4, (uint32_t)(buf_iova >> 32));
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 8, INQUIRY_BYTES);
+    normalise_words(entry, ISP_QUEUE_ENTRY_SIZE);
+}
+
+static void test_two_luns_behind_one_target(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -drive id=d0,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=0,drive=d0"
+                                 " -drive id=d1,if=none,file=null-co://,"
+                                 "size=1048576,format=raw"
+                                 " -device scsi-hd,bus=scsi.0,scsi-id=1,"
+                                 "lun=1,drive=d1");
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t payload[INQUIRY_BYTES];
+    unsigned lun;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    for (lun = 0; lun < 2; lun++) {
+        uint32_t handle = 0x10a00000 + lun;
+
+        qtest_memset(qts, LUN_BUF_PHYS, 0xcc, INQUIRY_BYTES);
+        build_a64_inquiry(entry, handle, 0x0100 | lun, LUN_BUF_IOVA);
+        qtest_memwrite(qts, RING_PHYS + lun * ISP_QUEUE_ENTRY_SIZE, entry,
+                       sizeof(entry));
+        isp_writew(qts, ISP_REG_REQUEST_QUEUE, lun + 1);
+        g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, lun + 1);
+
+        qtest_memread(qts, RESP_PHYS + lun * ISP_QUEUE_ENTRY_SIZE, status,
+                      sizeof(status));
+        normalise_words(status, sizeof(status));
+        g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+
+        qtest_memread(qts, LUN_BUF_PHYS, payload, sizeof(payload));
+        normalise_words(payload, sizeof(payload));
+        g_assert_cmphex(payload[0], !=, INQUIRY_NO_DEVICE);
+        g_assert_cmpmem(payload + 8, 8, "QEMU    ", 8);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
  * The fabric-refused-transfer pair: with 64 MB of memory the first
  * unbacked address is right after it, and a transfer there is refused the
  * way one through an invalid translation entry would be.
@@ -1132,6 +1264,13 @@ int main(int argc, char **argv)
                         test_mbox_get_target_parameters);
     qtest_add_data_func("sn0/qlogic-isp/mbox-set-reset-delay-params", NULL,
                         test_mbox_set_reset_delay_params);
+    qtest_add_data_func(
+        "sn0/qlogic-isp/mbox-get-target-parameters-ignores-bit-15", NULL,
+        test_mbox_get_target_parameters_ignores_bit_15);
+    qtest_add_data_func("sn0/qlogic-isp/mbox-a64-ram-load-is-not-this-part",
+                        NULL, test_mbox_a64_ram_load_is_not_this_part);
+    qtest_add_data_func("sn0/qlogic-isp/two-luns-behind-one-target", NULL,
+                        test_two_luns_behind_one_target);
     qtest_add_data_func("sn0/qlogic-isp/refused-cdb-read-drops-the-request",
                         NULL, test_a_refused_cdb_read_drops_the_request);
     qtest_add_data_func("sn0/qlogic-isp/refused-status-write-no-interrupt",
