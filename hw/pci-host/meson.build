@@ -34,6 +34,7 @@ pci_ss.add(when: 'CONFIG_VERSATILE_PCI', if_true: files('versatile.c'))
 
 # MIPS devices
 pci_ss.add(when: 'CONFIG_SGI_BRIDGE', if_true: files('sgi-bridge.c'))
+pci_ss.add(when: 'CONFIG_SGI_XBRIDGE', if_true: files('sgi-xbridge.c'))
 
 # HPPA devices
 specific_ss.add(when: 'CONFIG_ASTRO', if_true: files('astro.c'))
