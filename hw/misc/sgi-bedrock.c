@@ -173,6 +173,13 @@ static void bedrock_forward_nmi(void *opaque, int n, int level)
     qemu_set_irq(s->nmi[n], level);
 }
 
+static void bedrock_forward_cpu_enable(void *opaque, int n, int level)
+{
+    SGIBedrockState *s = opaque;
+
+    qemu_set_irq(s->cpu_enable[n], level);
+}
+
 static void bedrock_lb_error(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
@@ -283,6 +290,9 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
             qdev_connect_gpio_out_named(DEVICE(&s->pi[i]), "nmi", cpu,
                 qdev_get_gpio_in_named(dev, "pi-nmi",
                     i * SGI_BEDROCK_PI_PROCESSORS + cpu));
+            qdev_connect_gpio_out_named(DEVICE(&s->pi[i]), "cpu-enable", cpu,
+                qdev_get_gpio_in_named(dev, "pi-cpu-enable",
+                    i * SGI_BEDROCK_PI_PROCESSORS + cpu));
         }
     }
     qdev_prop_set_uint32(DEVICE(&s->lb), "revision", s->revision);
@@ -381,10 +391,14 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
+    qdev_init_gpio_out_named(dev, s->cpu_enable, "cpu-enable",
+                             ARRAY_SIZE(s->cpu_enable));
     qdev_init_gpio_in_named(dev, bedrock_forward_irq, "pi-hardware-irq",
                             ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_in_named(dev, bedrock_forward_nmi, "pi-nmi",
                             ARRAY_SIZE(s->nmi));
+    qdev_init_gpio_in_named(dev, bedrock_forward_cpu_enable, "pi-cpu-enable",
+                            ARRAY_SIZE(s->cpu_enable));
     qdev_init_gpio_in_named(dev, bedrock_lb_error, "lb-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_ni_error, "ni-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_xb_error, "xb-error", 1);
