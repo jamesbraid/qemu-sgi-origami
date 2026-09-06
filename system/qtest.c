@@ -194,13 +194,17 @@ IrqInterceptState irq_intercept_state;
  *
  * .. code-block:: none
  *
- *  > read ADDR SIZE
+ *  > read ADDR SIZE [CPU_INDEX]
  *  < OK DATA
  *
  * .. code-block:: none
  *
- *  > write ADDR SIZE DATA
+ *  > write ADDR SIZE DATA [CPU_INDEX]
  *  < OK
+ *
+ * Raw read and write use the first CPU's physical address space unless an
+ * explicit CPU_INDEX is supplied. An invalid index or argument count returns
+ * FAIL without accessing memory. DATA retains the same raw byte order.
  *
  * .. code-block:: none
  *
@@ -365,6 +369,30 @@ static void qtest_init_irq_intercept(int num_irqs)
     g_free(irq_intercept_state.irq_levels);
     irq_intercept_state.irq_levels = g_new0(int, num_irqs);
     irq_intercept_state.num_irqs = num_irqs;
+}
+
+static CPUState *qtest_memory_cpu(CharFrontend *chr, gchar **words,
+                                  unsigned int required_words)
+{
+    unsigned int count = g_strv_length(words);
+    CPUState *cpu = first_cpu;
+    int index;
+
+    if (count != required_words && count != required_words + 1) {
+        qtest_send(chr, "FAIL invalid memory command arguments\n");
+        return NULL;
+    }
+    if (count == required_words + 1) {
+        if (qemu_strtoi(words[required_words], NULL, 0, &index) || index < 0) {
+            qtest_send(chr, "FAIL invalid CPU index\n");
+            return NULL;
+        }
+        cpu = qemu_get_cpu(index);
+    }
+    if (!cpu) {
+        qtest_send(chr, "FAIL CPU does not exist\n");
+    }
+    return cpu;
 }
 
 static void qtest_process_command(CharFrontend *chr, gchar **words)
@@ -594,6 +622,11 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         uint64_t addr, len;
         uint8_t *data;
         int ret;
+        CPUState *cpu = qtest_memory_cpu(chr, words, 3);
+
+        if (!cpu) {
+            return;
+        }
 
         g_assert(words[1] && words[2]);
         ret = qemu_strtou64(words[1], NULL, 0, &addr);
@@ -604,7 +637,7 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         g_assert(len);
 
         data = g_malloc(len);
-        address_space_read(first_cpu->as, addr, MEMTXATTRS_UNSPECIFIED, data,
+        address_space_read(cpu->as, addr, MEMTXATTRS_UNSPECIFIED, data,
                            len);
 
         enc = qemu_hexdump_line(NULL, data, len, 0, 0);
@@ -637,6 +670,11 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         uint8_t *data;
         size_t data_len;
         int ret;
+        CPUState *cpu = qtest_memory_cpu(chr, words, 4);
+
+        if (!cpu) {
+            return;
+        }
 
         g_assert(words[1] && words[2] && words[3]);
         ret = qemu_strtou64(words[1], NULL, 0, &addr);
@@ -659,7 +697,7 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
                 data[i] = 0;
             }
         }
-        address_space_write(first_cpu->as, addr, MEMTXATTRS_UNSPECIFIED, data,
+        address_space_write(cpu->as, addr, MEMTXATTRS_UNSPECIFIED, data,
                             len);
         g_free(data);
 

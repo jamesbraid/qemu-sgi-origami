@@ -752,7 +752,8 @@ static GString *qtest_client_socket_recv_line(QTestState *s)
     return line;
 }
 
-static gchar **qtest_rsp_args(QTestState *s, int expected_args)
+static gchar **qtest_rsp_args_full(QTestState *s, int expected_args,
+                                   bool allow_failure)
 {
     GString *line;
     gchar **words;
@@ -788,6 +789,10 @@ redo:
     }
 
     g_assert(words[0] != NULL);
+    if (allow_failure && !strcmp(words[0], "FAIL")) {
+        g_strfreev(words);
+        return NULL;
+    }
     g_assert_cmpstr(words[0], ==, "OK");
 
     for (i = 0; i < expected_args; i++) {
@@ -795,6 +800,11 @@ redo:
     }
 
     return words;
+}
+
+static gchar **qtest_rsp_args(QTestState *s, int expected_args)
+{
+    return qtest_rsp_args_full(s, expected_args, false);
 }
 
 static void qtest_rsp(QTestState *s)
@@ -1393,18 +1403,27 @@ static int hex2nib(char ch)
     }
 }
 
-void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size)
+static bool qtest_memread_full(QTestState *s, uint64_t addr, void *data,
+                                size_t size, int64_t cpu_index)
 {
     uint8_t *ptr = data;
     gchar **args;
     size_t i;
 
     if (!size) {
-        return;
+        return true;
     }
 
-    qtest_sendf(s, "read 0x%" PRIx64 " 0x%zx\n", addr, size);
-    args = qtest_rsp_args(s, 2);
+    if (cpu_index < 0) {
+        qtest_sendf(s, "read 0x%" PRIx64 " 0x%zx\n", addr, size);
+    } else {
+        qtest_sendf(s, "read 0x%" PRIx64 " 0x%zx %" PRIi64 "\n",
+                    addr, size, cpu_index);
+    }
+    args = qtest_rsp_args_full(s, 2, cpu_index >= 0);
+    if (!args) {
+        return false;
+    }
 
     for (i = 0; i < size; i++) {
         ptr[i] = hex2nib(args[1][2 + (i * 2)]) << 4;
@@ -1412,6 +1431,18 @@ void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size)
     }
 
     g_strfreev(args);
+    return true;
+}
+
+void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size)
+{
+    qtest_memread_full(s, addr, data, size, -1);
+}
+
+bool qtest_memread_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
+                       void *data, size_t size)
+{
+    return qtest_memread_full(s, addr, data, size, cpu_index);
 }
 
 uint64_t qtest_rtas_call(QTestState *s, const char *name,
@@ -1506,14 +1537,17 @@ void qtest_bufread(QTestState *s, uint64_t addr, void *data, size_t size)
     g_strfreev(args);
 }
 
-void qtest_memwrite(QTestState *s, uint64_t addr, const void *data, size_t size)
+static bool qtest_memwrite_full(QTestState *s, uint64_t addr, const void *data,
+                                 size_t size, int64_t cpu_index)
 {
     const uint8_t *ptr = data;
     size_t i;
     char *enc;
+    gchar **reply;
+    bool success;
 
     if (!size) {
-        return;
+        return true;
     }
 
     enc = g_malloc(2 * size + 1);
@@ -1522,9 +1556,28 @@ void qtest_memwrite(QTestState *s, uint64_t addr, const void *data, size_t size)
         sprintf(&enc[i * 2], "%02x", ptr[i]);
     }
 
-    qtest_sendf(s, "write 0x%" PRIx64 " 0x%zx 0x%s\n", addr, size, enc);
-    qtest_rsp(s);
+    if (cpu_index < 0) {
+        qtest_sendf(s, "write 0x%" PRIx64 " 0x%zx 0x%s\n", addr, size, enc);
+    } else {
+        qtest_sendf(s, "write 0x%" PRIx64 " 0x%zx 0x%s %" PRIi64 "\n",
+                    addr, size, enc, cpu_index);
+    }
+    reply = qtest_rsp_args_full(s, 0, cpu_index >= 0);
+    success = reply != NULL;
+    g_strfreev(reply);
     g_free(enc);
+    return success;
+}
+
+void qtest_memwrite(QTestState *s, uint64_t addr, const void *data, size_t size)
+{
+    qtest_memwrite_full(s, addr, data, size, -1);
+}
+
+bool qtest_memwrite_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
+                        const void *data, size_t size)
+{
+    return qtest_memwrite_full(s, addr, data, size, cpu_index);
 }
 
 void qtest_memset(QTestState *s, uint64_t addr, uint8_t pattern, size_t size)
