@@ -66,11 +66,17 @@ class PromBoot(QemuSystemTest):
         firmware = resolve_asset(os.environ['ORIGAMI_ASSETS'],
                                  FIRMWARE_REL)
         if firmware is None:
-            self.skipTest(
-                'no firmware at '
-                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} -- point it at a '
-                'checkout with the real PROM image extracted '
-                '(tools/extract-irix prom) to run this test')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing firmware image is a provisioning
+            # failure, not an absent-assets developer run, and must
+            # fail loudly: a silent skip here would let a real
+            # firmware-boot regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but no firmware is present '
+                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
 
         # A single CPU, single node -- the smallest cell that boots the
         # real firmware -- built via lib_matrix's own Cell/machine_props/
