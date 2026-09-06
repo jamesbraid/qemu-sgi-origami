@@ -32,6 +32,7 @@
 #define IN_ACCESS      0x118
 #define DEVICE_MASK    0x120
 #define LINK_STATUS    0x128
+#define ERROR_CLEAR    0x1f8
 #define LINK_LOG       0x130
 #define SCRATCH0       0x150
 #define MISC_ERROR_MASK 0x1e8
@@ -75,8 +76,8 @@ static char *log_file_new(void)
 
 static QTestState *io_start_logged(const char *log, const char *extra)
 {
-    g_autofree char *with_log = g_strdup_printf("-d unimp -D %s %s", log,
-                                                extra);
+    g_autofree char *with_log = g_strdup_printf("-d guest_errors,unimp -D %s "
+                                                "%s", log, extra);
 
     return io_start(with_log);
 }
@@ -105,6 +106,22 @@ static void test_widget_status(void)
     contents = log_file_take(log);
     g_assert_null(strstr(contents, "unsupported read at 0x8\n"));
     g_assert_nonnull(strstr(contents, "widget status"));
+}
+
+static void test_dropped_writes_logged(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    QTestState *s = io_start_logged(log, "");
+
+    qtest_writeq(s, REG_BASE, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE), ==, UINT64_C(0x1c11006c));
+    qtest_writeq(s, REG_BASE + ERROR_CLEAR, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + ERROR_CLEAR), ==, 0);
+    qtest_quit(s);
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents, "widget identification"));
+    g_assert_nonnull(strstr(contents, "error clear"));
 }
 
 /*
@@ -953,6 +970,8 @@ int main(int argc, char **argv)
                    test_identity_and_registers);
     qtest_add_func("sn1/bedrock-io/widget-status",
                    test_widget_status);
+    qtest_add_func("sn1/bedrock-io/dropped-writes",
+                   test_dropped_writes_logged);
     qtest_add_func("sn1/bedrock-io/probe-retained",
                    test_probe_and_retained_registers);
     qtest_add_func("sn1/bedrock-io/pio-translation",

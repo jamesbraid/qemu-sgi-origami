@@ -293,6 +293,8 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
     }
     switch (offset) {
     case II_WIDGET_ID:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: write to the "
+                      "read-only widget identification ignored\n");
         return;
     case II_WIDGET_STATUS:
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: widget status write "
@@ -348,6 +350,10 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         s->tail_timeout = value & UINT64_C(0x0fffffff03ffffff);
         return;
     case II_ERROR_CLEAR:
+        if (value) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: error clear 0x%" PRIx64
+                          " ignored, no error state to clear\n", value);
+        }
         return;
     case II_BTE_CONTROL:
         s->bte_control = value & 0x10f;
