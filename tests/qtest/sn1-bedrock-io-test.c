@@ -32,7 +32,9 @@
 #define IN_ACCESS      0x118
 #define DEVICE_MASK    0x120
 #define LINK_STATUS    0x128
+#define LINK_LOG       0x130
 #define SCRATCH0       0x150
+#define MISC_ERROR_MASK 0x1e8
 #define ITTE0          0x160
 #define BTE0           0x10000
 #define BTE1           0x20000
@@ -260,6 +262,7 @@ static void test_dma_link_required(void)
 static void test_identity_and_registers(void)
 {
     QTestState *s = io_start("");
+    uint64_t link;
 
     g_assert_cmphex(qtest_readq(s, REG_BASE), ==, UINT64_C(0x1c11006c));
     g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_CONTROL) & 0x2000f, ==,
@@ -280,6 +283,24 @@ static void test_identity_and_registers(void)
     qtest_writeq(s, REG_BASE + LOCAL_PROTECT, 0x55);
     qtest_writeq(s, REG_BASE + BTE0 + LOCAL_PROTECT, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, REG_BASE + LOCAL_PROTECT), ==, 0x55);
+
+    qtest_writeq(s, REG_BASE, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE), ==, UINT64_C(0x1c11006c));
+    qtest_writeq(s, REG_BASE + SCRATCH0 + 8, UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0 + 8), ==,
+                    UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==,
+                    UINT64_C(0x0123456789abcdef));
+    link = qtest_readq(s, REG_BASE + LINK_STATUS);
+    qtest_writeq(s, REG_BASE + LINK_STATUS, link & ~(UINT64_C(1) << 10));
+    g_assert_false(qtest_readq(s, REG_BASE + LINK_STATUS) & (1 << 10));
+    g_assert_true(qtest_readq(s, REG_BASE + LINK_STATUS) & (1 << 13));
+    qtest_writeq(s, REG_BASE + LINK_STATUS, link | (1 << 10));
+    g_assert_true(qtest_readq(s, REG_BASE + LINK_STATUS) & (1 << 10));
+    qtest_writeq(s, REG_BASE + LINK_LOG, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LINK_LOG), ==, 0);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x28, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x28), ==, 0x7f01ff);
     qtest_quit(s);
 }
 
@@ -312,6 +333,11 @@ static void test_probe_and_retained_registers(void)
         g_assert_cmphex(qtest_readq(s, REG_BASE + registers[i].offset), ==,
                         registers[i].expected);
     }
+    /*
+     * Model policy, not the datasheet: the readback mask is the union of
+     * the header's fields as the model stores them.  Only bits 13 and 10
+     * carry an established meaning, and identity-registers checks those.
+     */
     qtest_writeq(s, REG_BASE + LINK_STATUS, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, REG_BASE + LINK_STATUS), ==,
                     UINT64_C(0x3ff0fff7d3f));
@@ -550,8 +576,13 @@ static void test_bte_error_and_termination(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 8);
     qtest_clock_step(s, 2);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 20));
+    /*
+     * The control read on an engine that was armed but never started is
+     * only cleanup here.  What it does to that engine's busy bit is the
+     * model's extrapolation, not a datasheet statement, so it is not
+     * asserted.
+     */
     qtest_readq(s, REG_BASE + BTE0 + 0x18);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1);
     qtest_quit(s);
     contents = log_file_take(log);
     g_assert_nonnull(strstr(contents, "interrupt-mode completion"));
@@ -598,6 +629,206 @@ static void test_bte_programming_edges(void)
     qtest_quit(s);
 }
 
+static void test_itanium_probe_sequence(void)
+{
+    QTestState *s = io_start("");
+    uint64_t saved, value;
+
+    /* Per-hub pass, register by register, in the consumer's order. */
+    qtest_writeq(s, REG_BASE + 0x3a8, 0xf << 4);
+    qtest_writeq(s, REG_BASE + 0x200, 8);
+    qtest_writeq(s, REG_BASE + 0x3c0, 0x1000);
+    qtest_writeq(s, REG_BASE + 0x3b8, 0xff);
+    for (unsigned i = 0; i < 9; i++) {
+        uint64_t offset = i ? 0x1a0 + (i - 1) * 8 : 0x198;
+
+        value = qtest_readq(s, REG_BASE + offset);
+        value &= ~(UINT64_C(0x1f) << 43 | UINT64_C(1) << 42 |
+                   UINT64_C(0x3fff) << 24 | UINT64_C(0x3fff) << 8 | 0xff);
+        value |= UINT64_C(1) << 43 | 3;
+        qtest_writeq(s, REG_BASE + offset, value);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + offset), ==,
+                        (UINT64_C(1) << 43) | 3);
+    }
+    qtest_writeq(s, REG_BASE + 0x1f8, UINT64_MAX);
+    value = qtest_readq(s, REG_BASE + 0x138);
+    qtest_writeq(s, REG_BASE + 0x138, value & ~(UINT64_C(1) << 28));
+    qtest_writeq(s, REG_BASE + 0x138, (1 << 24) | 102);
+
+    /*
+     * Widget-probe pass.  The consumer's six disable writes name widget 3
+     * but all land on entry 0, the window number spilling into bit 12 and
+     * above.
+     */
+    for (unsigned window = 0; window < 6; window++) {
+        qtest_writeq(s, REG_BASE + ITTE0, ((uint64_t)window << 12) | 0x300);
+    }
+    saved = qtest_readq(s, REG_BASE + OUT_ACCESS);
+    qtest_writeq(s, REG_BASE + OUT_ACCESS, 0);
+    qtest_writeq(s, REG_BASE + 0x198,
+                 (qtest_readq(s, REG_BASE + 0x198) & ~UINT64_C(0xff)) | 1);
+    for (unsigned w = 8; w < 16; w++) {
+        uint64_t offset = 0x1a0 + (w - 8) * 8;
+
+        qtest_writeq(s, REG_BASE + offset,
+                     (qtest_readq(s, REG_BASE + offset) & ~UINT64_C(0xff)) | 3);
+    }
+    qtest_writeq(s, REG_BASE + OUT_ACCESS, saved);
+
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x3a8), ==, 0xf0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x200), ==, 8);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x3c0), ==, 0x1000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x3b8), ==, 0xff);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x1f8), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x138), ==, (1 << 24) | 102);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x198), ==,
+                    (UINT64_C(1) << 43) | 1);
+    for (unsigned w = 8; w < 16; w++) {
+        g_assert_cmphex(qtest_readq(s, REG_BASE + 0x1a0 + (w - 8) * 8), ==,
+                        (UINT64_C(1) << 43) | 3);
+    }
+    g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0), ==, 0x1300);
+    for (unsigned entry = 1; entry < 6; entry++) {
+        g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0 + entry * 8), ==, 0);
+    }
+    g_assert_cmphex(qtest_readq(s, REG_BASE + OUT_ACCESS), ==, UINT64_MAX);
+    qtest_quit(s);
+}
+
+static void test_bte_termination_with_progress(void)
+{
+    QTestState *s = io_start("");
+    uint8_t source[384], actual[384], unchanged[384];
+
+    fill_pattern(source, sizeof(source), 0x2b);
+    memset(unchanged, 0x4e, sizeof(unchanged));
+    dma_write(s, 0x100000, source, sizeof(source));
+    dma_write(s, 0x110000, unchanged, sizeof(unchanged));
+    dma_writeq(s, 0x120000, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x100000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x110000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x120000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 20));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x18), ==, 1 << 4);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
+    qtest_clock_step(s, 2);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
+    dma_read(s, 0x110000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, 128, source, 128);
+    g_assert_cmpmem(actual + 128, 256, unchanged + 128, 256);
+    g_assert_cmphex(dma_readq(s, 0x120000), ==, UINT64_MAX);
+
+    qtest_writeq(s, REG_BASE + BTE0, 1 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x100000 + 256);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x110000 + 256);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+    dma_read(s, 0x110000, actual, sizeof(actual));
+    g_assert_cmpmem(actual + 256, 128, source + 256, 128);
+    g_assert_cmphex(dma_readq(s, 0x120000), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_bte_error_after_progress(void)
+{
+    QTestState *s = io_start("");
+    uint8_t source[128], actual[256], unchanged[256];
+
+    /* Source line 1 is the DMA region's last line; line 2 lies beyond it. */
+    fill_pattern(source, sizeof(source), 0x71);
+    memset(unchanged, 0x19, sizeof(unchanged));
+    dma_write(s, 0x2000000 - 128, source, sizeof(source));
+    dma_write(s, 0x130000, unchanged, sizeof(unchanged));
+    dma_writeq(s, 0x140000, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x2000000 - 128);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x130000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x140000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 20));
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 16));
+    g_assert_cmphex(dma_readq(s, 0x140000), ==, 2 | (1 << 16));
+    dma_read(s, 0x130000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, 128, source, 128);
+    g_assert_cmpmem(actual + 128, 128, unchanged + 128, 128);
+    qtest_quit(s);
+}
+
+static void test_reset_during_transfer(void)
+{
+    QTestState *s = io_start("");
+    uint8_t source[384], actual[384], unchanged[384];
+
+    fill_pattern(source, sizeof(source), 0x66);
+    memset(unchanged, 0x25, sizeof(unchanged));
+    dma_write(s, 0x150000, source, sizeof(source));
+    dma_write(s, 0x160000, unchanged, sizeof(unchanged));
+    dma_writeq(s, 0x170000, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + BTE1, 3 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE1 + 8, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x160000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x170000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 2 | (1 << 20));
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1 + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1 + 0x10), ==, 0);
+    qtest_clock_step(s, 2);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 0);
+    dma_read(s, 0x160000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, 128, source, 128);
+    g_assert_cmpmem(actual + 128, 256, unchanged + 128, 256);
+    g_assert_cmphex(dma_readq(s, 0x170000), ==, UINT64_MAX);
+    qtest_quit(s);
+}
+
+static void test_write_one_to_set_masks(void)
+{
+    QTestState *s = io_start("-global sgi-bedrock-io.device-mask-reset=0");
+
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, 0x10);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + DEVICE_MASK), ==, 0x10);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, 0x100);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + DEVICE_MASK), ==, 0x110);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + DEVICE_MASK), ==, 0x110);
+    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0);
+    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0x10);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x10);
+    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0x100);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x110);
+    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x110);
+    qtest_quit(s);
+}
+
+static void test_pio_unlinked_widget(void)
+{
+    QTestState *s = io_start("");
+
+    qtest_writel(s, 0x100, 0x0badcafe);
+    dma_writeq(s, 0x100, UINT64_C(0xd00d5eedd00d5eed));
+    qtest_writeq(s, REG_BASE + ITTE0, 0xa00);
+    qtest_writel(s, PIO_BASE + 0x20000100, 0x12345678);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0);
+    qtest_writel(s, PIO_BASE + 0xa000100, 0x12345678);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0xa000100), ==, 0);
+    g_assert_cmphex(qtest_readl(s, 0x100), ==, 0x0badcafe);
+    g_assert_cmphex(dma_readq(s, 0x100), ==, UINT64_C(0xd00d5eedd00d5eed));
+    qtest_writeq(s, REG_BASE + ITTE0, 0x800);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x8000100), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_reset(void)
 {
     QTestState *s = io_start("");
@@ -606,6 +837,11 @@ static void test_reset(void)
     qtest_writeq(s, REG_BASE + ITTE0, 0x1802);
     qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
     qtest_system_reset(s);
+    /*
+     * Local access protection all ones is the datasheet's reset value.
+     * The zeros are the model's choices for registers whose hardware
+     * reset value is unknown.
+     */
     g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
@@ -720,6 +956,18 @@ int main(int argc, char **argv)
                    test_bte_error_and_termination);
     qtest_add_func("/mips64/sn1/bedrock-io/bte-programming-edges",
                    test_bte_programming_edges);
+    qtest_add_func("/mips64/sn1/bedrock-io/itanium-probe",
+                   test_itanium_probe_sequence);
+    qtest_add_func("/mips64/sn1/bedrock-io/bte-termination-progress",
+                   test_bte_termination_with_progress);
+    qtest_add_func("/mips64/sn1/bedrock-io/bte-error-after-progress",
+                   test_bte_error_after_progress);
+    qtest_add_func("/mips64/sn1/bedrock-io/reset-during-transfer",
+                   test_reset_during_transfer);
+    qtest_add_func("/mips64/sn1/bedrock-io/write-one-to-set",
+                   test_write_one_to_set_masks);
+    qtest_add_func("/mips64/sn1/bedrock-io/pio-unlinked-widget",
+                   test_pio_unlinked_widget);
     qtest_add_func("/mips64/sn1/bedrock-io/reset", test_reset);
     qtest_add_func("/mips64/sn1/bedrock-io/migration-inflight",
                    test_migration_inflight);
