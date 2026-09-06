@@ -29,7 +29,10 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "libqos/pci-pc.h"
+#include "qapi/error.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
+#include "qobject/qlist.h"
 #include "hw/pci/pci_regs.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -108,6 +111,7 @@
 #define MII_BMSR                0x01u
 #define MII_PHYIDR1             0x02u
 #define MII_PHYIDR2             0x03u
+#define MII_ANAR                0x04u
 #define MII_BMCR_AUTOEN         0x1000u
 #define MII_BMCR_STARTNEG       0x0200u
 #define MII_BMSR_ANEGDONE       0x0020u
@@ -3477,6 +3481,23 @@ static void test_receive_flush_hot_unplug(const void *data)
 }
 
 /*
+ * Removing the card must release every embedded helper with it. A child left
+ * attached to a global bus outlives the card's allocation and makes QEMU's
+ * final object-tree teardown access freed parent storage under ASan.
+ */
+static void test_hot_unplug_exits_cleanly(const void *data)
+{
+    QTestState *qts = qtest_initf(BCM_MACHINE
+                                  " -device bcm570x,id=tg0,addr=%02x.0",
+                                  BCM_SLOT);
+
+    qtest_qmp_device_del_send(qts, "tg0");
+    qtest_system_reset_nowait(qts);
+    qtest_qmp_eventwait(qts, "DEVICE_DELETED");
+    qtest_quit(qts);
+}
+
+/*
  * Function 0 creates function 1 while it realizes. Occupy function 1 so that
  * the final step fails after the parent has otherwise initialized, and repeat
  * the failed hotplug. Neither attempt may retain the requested network backend.
@@ -4269,6 +4290,113 @@ static void bcm570x_migrate(QTestState *from, const char *uri)
     }
 }
 
+static QDict *bcm570x_vmstate_field(QList *fields, const char *name)
+{
+    const QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(fields, entry) {
+        QDict *field = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(field, "field"), name)) {
+            return field;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Version 6 predates moving the PHY into the MAC's migration section. The
+ * nested state must therefore start at a new parent version: reusing version 6
+ * makes old and new binaries assign different layouts to the same stream.
+ */
+static void test_vmstate_versions_nested_phy(const void *data)
+{
+    g_autofree gchar *dump_path = NULL;
+    g_autofree gchar *dump = NULL;
+    g_autofree gchar *error_output = NULL;
+    QObject *root_obj;
+    QDict *root, *section, *description, *phy;
+    QList *fields;
+    GError *err = NULL;
+    int fd, wait_status;
+
+    fd = g_file_open_tmp("bcm570x-vmstate-XXXXXX", &dump_path, &err);
+    g_assert_no_error(err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-nodefaults", "-machine", "pc",
+            "-device", "bcm570x", "-dump-vmstate", dump_path, NULL
+        };
+
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                                   NULL, &error_output, &wait_status, &err));
+    }
+    g_assert_no_error(err);
+    g_assert_true(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_true(g_file_get_contents(dump_path, &dump, NULL, &err));
+    g_assert_no_error(err);
+
+    root_obj = qobject_from_json(dump, &error_abort);
+    root = qobject_to(QDict, root_obj);
+    g_assert_false(qdict_haskey(root, "bcm570x-phy"));
+    section = qdict_get_qdict(root, "bcm570x");
+    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 7);
+    description = qdict_get_qdict(section, "Description");
+    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 7);
+    fields = qdict_get_qlist(description, "Fields");
+    phy = bcm570x_vmstate_field(fields, "phy");
+    g_assert_nonnull(phy);
+    g_assert_cmpint(qdict_get_int(phy, "version_id"), ==, 7);
+
+    qobject_unref(root_obj);
+    unlink(dump_path);
+}
+
+/* A version-6 standalone PHY section must load into the nested PHY state. */
+static void test_v6_phy_state_migrates(const void *data)
+{
+    const uint16_t advertise = 0x5a5a;
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *source = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+
+    if (!g_getenv("QTEST_QEMU_BINARY_V6")) {
+        g_test_skip("QTEST_QEMU_BINARY_V6 is not set");
+        return;
+    }
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    source = g_strdup_printf(BCM_MACHINE
+                             " -device bcm570x,addr=%02x.0", BCM_SLOT);
+    from_qts = qtest_init_ext("QTEST_QEMU_BINARY_V6", source, NULL, true);
+    bcm_open(&from, from_qts);
+    mii_write(&from, BCM_PHY_ADDR, MII_ANAR, advertise);
+    g_assert_cmphex(mii_read(&from, BCM_PHY_ADDR, MII_ANAR), ==, advertise);
+
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -device bcm570x,addr=%02x.0 -incoming %s",
+                           BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from_qts, uri);
+    g_assert_cmphex(mii_read(&to, BCM_PHY_ADDR, MII_ANAR), ==, advertise);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    g_rmdir(tmpfs);
+}
+
 /*
  * The PHY is a migrated child while the net frontend is host state. Both must
  * still describe the same cable on the destination, including after a fresh
@@ -4830,6 +4958,8 @@ int main(int argc, char **argv)
                         test_receive_flush_on_enable);
     qtest_add_data_func("/bcm570x/receive-flush-hot-unplug", NULL,
                         test_receive_flush_hot_unplug);
+    qtest_add_data_func("/bcm570x/hot-unplug-exits-cleanly", NULL,
+                        test_hot_unplug_exits_cleanly);
     qtest_add_data_func("/bcm570x/failed-realize-releases-backend", NULL,
                         test_failed_realize_releases_backend);
     qtest_add_data_func("/bcm570x/receive-checksum-offload", NULL,
@@ -4870,6 +5000,10 @@ int main(int argc, char **argv)
                         test_status_block_gated_by_hcc);
     qtest_add_data_func("/bcm570x/status-dma-error", NULL,
                         test_status_dma_error);
+    qtest_add_data_func("/bcm570x/vmstate-versions-nested-phy", NULL,
+                        test_vmstate_versions_nested_phy);
+    qtest_add_data_func("/bcm570x/v6-phy-state-migrates", NULL,
+                        test_v6_phy_state_migrates);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
     qtest_add_data_func("/bcm570x/migration/link-down", GINT_TO_POINTER(0),
