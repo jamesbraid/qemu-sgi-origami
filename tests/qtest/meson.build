@@ -47,6 +47,12 @@ slow_qtests = {
   'sn0-elsc-test': 120,
 }
 
+qtest_priorities = {
+  # This four-vCPU MTTCG test needs a longer timeout, but promoting it with
+  # long SN0 device suites causes host contention and unrelated timeouts.
+  'sn0-qtest-cpu-test': 60,
+}
+
 qtests_generic = [
   'cdrom-test',
   'device-introspect-test',
@@ -590,7 +596,7 @@ foreach dir : target_dirs
          args: test_args,
          protocol: 'tap',
          timeout: slow_qtests.get(test, 60),
-         priority: slow_qtests.get(test, 60),
+         priority: qtest_priorities.get(test, slow_qtests.get(test, 60)),
          suite: ['qtest', 'qtest-' + target_base] +
                 (slow_qtests.has_key(test) ? ['slow'] : []))
   endforeach
