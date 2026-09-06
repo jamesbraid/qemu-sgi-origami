@@ -69,10 +69,38 @@ static void test_widgets(void)
 
         g_assert_cmpuint(!!(aux & (1U << 5)), ==, present);
     }
-    /* Empty ports and space beyond a face answer nothing. */
+    /* Empty ports answer nothing. */
     g_assert_cmphex(qtest_readl(qts, WIDGET(8) + 4), ==, 0);
     g_assert_cmphex(qtest_readl(qts, WIDGET(HOST_PORT) + 4), ==, 0);
+    /* Past its face a head answers itself: an undefined address, recorded. */
     g_assert_cmphex(qtest_readl(qts, WIDGET(0xe) + FACE + 4), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x18), ==, FACE + 4);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x100) & (1U << 24), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_space_above_face(void)
+{
+    QTestState *qts = chip_start(
+        "-device sgi-bridge-dma-test,bus=head-e.0,addr=0");
+
+    /* A card's register through head E's 32-bit alias, from the host. */
+    qtest_writel(qts, WIDGET(0xe) + 0x20010, 0x01000000);
+    qtest_writel(qts, WIDGET(0xe) + 0x20004, 6);
+    qtest_writel(qts, WIDGET(0xe) + 0x40000000 + 0x01000004, 0x10);
+    g_assert_cmphex(qtest_readl(qts, WIDGET(0xe) + 0x40000000 + 0x01000004),
+                    ==, 0x10);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x100) & (1U << 24), ==, 0);
+    /*
+     * The same address at head F is its own PCI memory, decoded but empty:
+     * no undefined-address error there, and E's register is not what it
+     * reaches. What an unclaimed PCI cycle returns is not asserted.
+     */
+    qtest_writel(qts, WIDGET(0xf) + 0x40000000 + 0x01000004, 0x20);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x100) & (1U << 24), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, WIDGET(0xe) + 0x40000000 + 0x01000004),
+                    ==, 0x10);
     qtest_quit(qts);
 }
 
@@ -187,8 +215,9 @@ static void test_widget_views(void)
                     HOST_PORT);
     g_assert_cmphex(qtest_readl(qts, VIEW(1) + 4), ==, HEAD_ID);
     g_assert_cmphex(qtest_readl(qts, VIEW(2) + 4), ==, HEAD_ID);
-    /* A view is the widget's whole slot, so past the face reaches nothing. */
+    /* A view is the widget's whole slot: past the face the head answers. */
     g_assert_cmphex(qtest_readl(qts, VIEW(1) + FACE + 4), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x100) & (1U << 24), ==, 1U << 24);
     /* A view and the full space show the same widget. */
     qtest_writel(qts, VIEW(2) + 0x28 + 4, 0x12345);
     g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0x12345);
@@ -333,6 +362,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sn1/xbridge-chip/widgets", test_widgets);
+    qtest_add_func("/sn1/xbridge-chip/space-above-face",
+                   test_space_above_face);
     qtest_add_func("/sn1/xbridge-chip/fixed-destinations",
                    test_fixed_destinations);
     qtest_add_func("/sn1/xbridge-chip/head-interrupts-reach-the-host",

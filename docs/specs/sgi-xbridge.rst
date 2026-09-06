@@ -80,10 +80,10 @@ number with bit 8 set. A later invalid access neither overwrites the
 record nor sends again until the request-dispatch group strobe
 (reset-interrupt-status bit 3) clears bit 24 and rearms it.
 
-The latched value is the offset inside the head's 16 MB window, not
-the 48-bit crosstalk request address a Bridge captures: the head
-does not know its own address in the crosstalk space. That is model
-behavior; the chip composition does not yet supply the full address.
+The latched value is the request's widget-relative address, bits
+47:32 in the upper register and 31:0 in the lower, without the
+widget number: inside the face it equals the face offset, above the
+face the full value. Through the chip it is at most 44 bits wide.
 
 Configuration and device windows
 ================================
@@ -93,6 +93,28 @@ follow the Bridge page. One thing differs: a configuration read of
 an empty device raises the master-timeout bit in the error-interrupt
 view, whether or not it appears in the status register, because the
 SN1 consumer probes with a guarded read and then reads the view.
+
+Space above the face
+====================
+
+A widget's space is 48 bits wide and the head decodes its lower
+8 GB. Above the 16 MB face, ``0x4000_0000`` to ``0x7fff_ffff`` is
+PCI memory ``0x0`` to ``0x3fff_ffff`` for a 32-bit target,
+``0x8000_0000`` to ``0xbfff_ffff`` the same gigabyte for a 64-bit
+target, and ``0x1_0000_0000`` to ``0x1_ffff_ffff`` the whole of PCI
+I/O space; the offset within a range is the PCI address. Byte
+placement follows control bit 22 for the memory ranges and bit 23
+for the I/O range: with the bit clear a narrow access lands mirrored
+within the target's width, as a device window places it without its
+swap bit; with the bit set it lands where addressed. That the alias,
+not a device register, selects the 64-bit mirror is the datasheet's
+inference, and the test asserts it as the model's reading.
+
+Everything else in the widget's space, the gaps between the ranges
+and all of it above 8 GB, is an undefined address: the
+invalid-address error of the head's own, with the address recorded.
+Through the chip a widget-relative address is at most 44 bits, so
+the datasheet's rule for bit 47 has no reachable case.
 
 DMA
 ===
@@ -217,18 +239,14 @@ the two heads.
 The chip's first MMIO region is the crosstalk space as the host sees
 it: sixteen slots of 16 TB, one per widget. Slot 0 is the crossbar's
 view for the host's port, so the status register reports the host's
-port number; slots 0xe and 0xf are the heads' 16 MB register faces.
-Every other slot, and the space beyond a face, reaches nothing: reads
-return zero, writes are dropped, both are logged. The datasheet does
-not establish how a Bedrock big-window request above a face maps into
-a head's general PCI memory space, so that decode is a later head
-increment rather than a guess here.
+port number; slots 0xe and 0xf are the heads' whole widget spaces,
+the 16 MB face and the PCI ranges above it. Every other slot reaches
+nothing: reads return zero, writes are dropped, both are logged.
 
 A host that decodes the widget number itself, as the Bedrock does,
 links one region per widget instead. ``sgi_xbridge_widget_view``
 returns the chip's own view of widget 0, 0xe or 0xf: the widget's
-whole slot, with the same reach-nothing space past a face. The three
-views are also MMIO regions 1 to 3. They exist from instance init, so
+whole slot. The three views are also MMIO regions 1 to 3. They exist from instance init, so
 the host's link to a view and the chip's ``fabric`` link to the host
 can both be set before either device is realized.
 ``sgi_xbridge_pci_bus`` returns a head's PCI root bus by widget once
@@ -271,6 +289,5 @@ Not yet modeled
 * routing between the two heads
 * the 4 MB flash section behind port 0xf
 * the performance counters and address-match buffers
-* PCI memory space above the head's 16 MB register window
 * Super Bridge mode and the PIC
 * the 1024-cycle reset-ignore window

@@ -40,9 +40,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget);
 PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget);
 
+/* The PCI ranges above the face: two memory aliases and I/O space. */
+#define SGI_XBRIDGE_HEAD_RANGES 3
+
 struct SGIXBridgeHeadState {
     PCIHostState parent_obj;
     MemoryRegion widget;
+    MemoryRegion face;
+    struct XBridgeRange {
+        SGIXBridgeHeadState *head;
+        AddressSpace *as;
+        MemoryRegion mr;
+        unsigned width;
+        uint32_t swap;
+    } range[SGI_XBRIDGE_HEAD_RANGES];
+    MemoryRegion undefined;
     MemoryRegion pci_mem;
     MemoryRegion pci_io;
     AddressSpace pci_mem_as;
