@@ -29,6 +29,9 @@ struct SGIBedrockIOState {
     MemoryRegion pio;
     MemoryRegion inbound;
     AddressSpace *dma_as;
+    MemoryRegion *dma_mr;
+    AddressSpace linked_dma_as;
+    bool linked_dma_as_initialized;
     MemoryRegion *widget_mr[16];
     AddressSpace widget_as[16];
     bool widget_as_initialized[16];

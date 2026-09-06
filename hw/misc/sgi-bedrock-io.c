@@ -557,8 +557,13 @@ static const MemoryRegionOps ii_inbound_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+/*
+ * A composing parent may hand over its own DMA address space instead of
+ * linking a region.  Only before realize: engines may be mid-transfer after.
+ */
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as)
 {
+    assert(!DEVICE(s)->realized);
     s->dma_as = as;
 }
 
@@ -645,7 +650,6 @@ static void ii_init(Object *obj)
 {
     SGIBedrockIOState *s = SGI_BEDROCK_IO(obj);
 
-    s->dma_as = &address_space_memory;
     memory_region_init_io(&s->regs, obj, &ii_ops, s, TYPE_SGI_BEDROCK_IO,
                           SGI_BEDROCK_IO_REG_SIZE);
     memory_region_init_io(&s->pio, obj, &ii_pio_ops, s,
@@ -668,6 +672,9 @@ static void ii_finalize(Object *obj)
 
     timer_free(s->bte[0].timer);
     timer_free(s->bte[1].timer);
+    if (s->linked_dma_as_initialized) {
+        address_space_destroy(&s->linked_dma_as);
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_as); i++) {
         if (s->widget_as_initialized[i]) {
             address_space_destroy(&s->widget_as[i]);
@@ -682,6 +689,8 @@ static const Property ii_properties[] = {
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockIOState, inbound_device, 0),
     DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockIOState,
                        device_mask_reset, UINT64_MAX),
+    DEFINE_PROP_LINK("dma-memory", SGIBedrockIOState, dma_mr,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("widget-0", SGIBedrockIOState, widget_mr[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("widget-1", SGIBedrockIOState, widget_mr[1],
@@ -734,6 +743,15 @@ static void ii_realize(DeviceState *dev, Error **errp)
     }
     if (s->inbound_device >= 8) {
         error_setg(errp, "inbound-device must be below 8");
+        return;
+    }
+    if (s->dma_mr) {
+        address_space_init(&s->linked_dma_as, s->dma_mr,
+                           "sgi-bedrock-io.dma");
+        s->linked_dma_as_initialized = true;
+        s->dma_as = &s->linked_dma_as;
+    } else if (!s->dma_as) {
+        error_setg(errp, TYPE_SGI_BEDROCK_IO " 'dma-memory' link not set");
         return;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_mr); i++) {
