@@ -2039,12 +2039,40 @@ static void qlogic_isp_exit(PCIDevice *dev)
 }
 
 /*
+ * State no ISP1040 has, so it travels in a subsection the single-channel
+ * part never emits and its stream never has to grow.
+ */
+static bool qlogic_isp_isp12160_state_needed(void *opaque)
+{
+    QLogicISPState *s = opaque;
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+
+    return info->banked_dma || info->nchannels > 1;
+}
+
+static const VMStateDescription vmstate_qlogic_isp_isp12160 = {
+    .name = "qlogic-isp/isp12160",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = qlogic_isp_isp12160_state_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16_ARRAY(sxp1_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
+        VMSTATE_UINT16_ARRAY(dma_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
+        VMSTATE_UINT16(chan[0].reset_delay, QLogicISPState),
+        VMSTATE_UINT16(chan[1].reset_delay, QLogicISPState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
  * Version 7 added resp_cons; an older stream loads with it at 0, which
- * is exactly what an unacknowledged guest means.
+ * is exactly what an unacknowledged guest means. Version 9 marks the
+ * subsection below, which an older stream simply omits, so the minimum
+ * stays where it was.
  */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
@@ -2068,6 +2096,10 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(resp_prod, QLogicISPState),
         VMSTATE_UINT16_V(resp_cons, QLogicISPState, 7),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_qlogic_isp_isp12160,
+        NULL
     }
 };
 
