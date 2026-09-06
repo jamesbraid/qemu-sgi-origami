@@ -44,6 +44,7 @@ static void bedrock_local_reset(void *opaque, int n, int level)
         device_cold_reset(DEVICE(&s->pi[0]));
         device_cold_reset(DEVICE(&s->pi[1]));
         device_cold_reset(DEVICE(&s->io));
+        sgi_bedrock_md_soft_reset(&s->md);
         device_cold_reset(DEVICE(&s->lb));
         device_cold_reset(DEVICE(&s->ni));
     }
@@ -118,12 +119,17 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     if (!qdev_realize(DEVICE(&s->ni), sysbus_get_default(), errp)) {
         return;
     }
+    if (!qdev_realize(DEVICE(&s->md), sysbus_get_default(), errp)) {
+        return;
+    }
     memory_region_add_subregion(&s->mmio, 0x400000,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 0));
     memory_region_add_subregion(&s->mmio, 0x600000,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->lb), 0));
     memory_region_add_subregion(&s->mmio, 0x680000,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->ni), 0));
+    memory_region_add_subregion(&s->mmio, 0x780000,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 0));
     qdev_connect_gpio_out_named(DEVICE(&s->lb), "error", 0,
         qdev_get_gpio_in_named(dev, "lb-error", 0));
     qdev_connect_gpio_out_named(DEVICE(&s->lb), "soft-reset", 0,
@@ -167,6 +173,7 @@ static void bedrock_init(Object *obj)
     object_initialize_child(obj, "pi0", &s->pi[0], TYPE_SGI_BEDROCK_PI);
     object_initialize_child(obj, "pi1", &s->pi[1], TYPE_SGI_BEDROCK_PI);
     object_initialize_child(obj, "io", &s->io, TYPE_SGI_BEDROCK_IO);
+    object_initialize_child(obj, "md", &s->md, TYPE_SGI_BEDROCK_MD);
     object_initialize_child(obj, "lb", &s->lb, TYPE_SGI_BEDROCK_LB);
     object_initialize_child(obj, "ni", &s->ni, TYPE_SGI_BEDROCK_NI);
     memory_region_init(&s->mmio, obj, TYPE_SGI_BEDROCK, SGI_BEDROCK_SIZE);
