@@ -1420,9 +1420,6 @@ static void sn0_init(MachineState *machine)
     for (link_index = 0; link_index < profile->link_count; link_index++) {
         const SN0ModelFabricLink *link = &profile->links[link_index];
 
-        g_assert(link->endpoint[0] < node_count);
-        g_assert(link->endpoint[1] < node_count);
-        g_assert(link->endpoint[0] != link->endpoint[1]);
         sn0_fabric_add_link(s->fabric, link->name, link->endpoint[0],
                             link->endpoint[1]);
     }
@@ -1443,8 +1440,6 @@ static void sn0_init(MachineState *machine)
         Chardev *aux_chr;
         unsigned int slice, bank;
 
-        g_assert(model->memory.architectural_banks <=
-                 SN0_MAX_MEMORY_BANKS);
         if (!sn0_model_memory_layout(model, ram_size, bank_mb,
                                      &populated_banks)) {
             error_report("%s: node %u's %" PRIu64 " MiB cannot be "

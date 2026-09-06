@@ -60,18 +60,6 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
     .impl.max_access_size = 8,
 };
 
-static const char *sn0_model_pci_qom_type(SN0ModelComponentKind kind)
-{
-    switch (kind) {
-    case SN0_COMPONENT_IOC3:
-        return TYPE_SGI_IOC3;
-    case SN0_COMPONENT_ISP1040:
-        return "qlogic-isp1040";
-    default:
-        g_assert_not_reached();
-    }
-}
-
 void sn0_model_configure_diagnostic(SN0MachineState *s,
                                     unsigned int node_index)
 {
@@ -122,7 +110,7 @@ static PCIDevice *sn0_model_create_ioc3(SN0MachineState *s,
         &s->nodes[node_index]->topology->ioc3_population;
     PCIDevice *ioc3 = pci_new(PCI_DEVFN(function->device,
                                         function->function),
-                              sn0_model_pci_qom_type(function->kind));
+                              TYPE_SGI_IOC3);
     Chardev *ioc3_a;
     Chardev *ioc3_b;
 
@@ -186,7 +174,7 @@ static PCIDevice *sn0_model_create_isp(SN0MachineState *s,
     PCIDevice *isp;
 
     isp = pci_new(PCI_DEVFN(function->device, function->function),
-                  sn0_model_pci_qom_type(function->kind));
+                  "qlogic-isp1040");
     object_property_add_child(OBJECT(s->nodes[node_index]), name,
                               OBJECT(isp));
     pci_realize_and_unref(isp,
@@ -264,7 +252,6 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
     const SN0ModelRegion *bridge = &node->topology->map.bridge_registers;
     MemoryRegion *bridge_face;
     unsigned int scsi_index = 0;
-    unsigned int ioc3_count = 0;
     unsigned int device_window;
     unsigned int widget;
     size_t component_index;
@@ -284,7 +271,6 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
                 sn0_model_create_isp(s, node_index, component, scsi_index++);
             break;
         case SN0_COMPONENT_IOC3:
-            ioc3_count++;
             s->pci_devices[node_index][component_index] =
                 sn0_model_create_ioc3(s, node_index, component);
             break;
@@ -292,7 +278,6 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index)
             g_assert_not_reached();
         }
     }
-    g_assert(ioc3_count == 1);
 
     bridge_face = sysbus_mmio_get_region(
         SYS_BUS_DEVICE(s->io_bridge[node_index]), 0);
