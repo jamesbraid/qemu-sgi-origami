@@ -192,7 +192,33 @@ static void test_pending_modify_and_reflection(void)
 
 static void test_masks_remap_and_isolation(void)
 {
+    static const struct {
+        unsigned reg;
+        uint64_t written;
+        uint64_t expected;
+    } masks[] = {
+        { MASK_0_A, 0x0123456789abcdefULL, 0x0123456789abcdefULL },
+        { MASK_1_A, 0xfedcba9876543210ULL, 0xfedcba9876543210ULL },
+        { MASK_0_B, 0xa5a5a5a5a5a5a5a5ULL, 0xa5a5a5a5a5a5a5a5ULL },
+        { MASK_1_B, 0x5a5a5a5a5a5a5a5aULL, 0x5a5a5a5a5a5a5a5aULL },
+        { ERROR_MASK_A, UINT64_MAX, (1ULL << 35) - 1 },
+        { ERROR_MASK_B, UINT64_MAX ^ 1, ((1ULL << 35) - 1) ^ 1 },
+    };
     QTestState *s = start("");
+
+    /* Each mask retains a write; the Itanium port spins on this readback. */
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+            qtest_writeq(s, PI(pi, masks[i].reg), masks[i].written ^ pi);
+        }
+    }
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+            g_assert_cmphex(qtest_readq(s, PI(pi, masks[i].reg)), ==,
+                            masks[i].expected ^ pi);
+            qtest_writeq(s, PI(pi, masks[i].reg), 0);
+        }
+    }
 
     qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
     qtest_writeq(s, PI(0, PENDING_MODIFY), 0x107);
