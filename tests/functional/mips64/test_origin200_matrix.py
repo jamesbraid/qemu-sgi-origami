@@ -54,14 +54,29 @@ def _boot_one_attempt(test, cell, attempt_index):
         # provisioned, rather than launching a machine with no
         # firmware at all. firmware=synth cells never take this branch:
         # no -bios, no trace, no skip.
-        firmware_path = resolve_asset(os.environ.get('ORIGAMI_ASSETS'),
-                                      FIRMWARE_REL)
-        if firmware_path is None:
+        assets_root = os.environ.get('ORIGAMI_ASSETS')
+        if not assets_root:
+            # No decorator covers this cell test -- it runs for both
+            # firmware=prom and firmware=synth rows, and only the prom
+            # rows ever touch ORIGAMI_ASSETS at all -- so the unset
+            # case is handled here rather than by @skipIfMissingEnv.
+            # A developer with no assets provisioned gets the usual
+            # skip.
             test.skipTest(
-                'ORIGAMI_ASSETS is not set, or has no firmware at '
-                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} -- point it at a '
-                'checkout with the real PROM image extracted '
-                '(tools/extract-irix prom) to run this test')
+                'ORIGAMI_ASSETS is not set -- point it at a checkout '
+                'with the real PROM image extracted (tools/extract-irix '
+                'prom) to run this test')
+        firmware_path = resolve_asset(assets_root, FIRMWARE_REL)
+        if firmware_path is None:
+            # ORIGAMI_ASSETS IS set, so a missing firmware image is a
+            # provisioning failure, not an absent-assets developer run,
+            # and must fail loudly: a silent skip here would let a
+            # real firmware-boot regression pass CI unnoticed.
+            test.fail(
+                'ORIGAMI_ASSETS is set but no firmware is present '
+                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         vm.add_args(*prom_args(firmware_path))
 
     try:
