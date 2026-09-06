@@ -13,6 +13,7 @@
 #define LB(reg) (BASE + 0x600000ULL + (reg))
 #define NI(reg) (BASE + 0x680000ULL + (reg))
 #define XB(reg) (BASE + 0x700000ULL + (reg))
+#define PI0_PATH BEDROCK_PATH "/pi0"
 #define MACHINE "-M none -cpu R10000 -m 256M " \
                 "-object memory-backend-ram,id=bedrock-dma,size=2M " \
                 "-device sgi-bedrock,id=bedrock,processor-count=%u," \
@@ -867,6 +868,79 @@ static void test_migration_preserves_counter_phase(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+/*
+ * The CPU-enable registers drive the interface's cpu-enable outputs, line
+ * 0 for processor A and 1 for B, at bit 0 of each write. The registers
+ * survive the local reset and the level is driven again after it; that
+ * half installs the intercept after the write, so only the re-drive can
+ * raise the line the test observes.
+ */
+static void test_cpu_enable_lines(void)
+{
+    QTestState *s = start("");
+
+    qtest_irq_intercept_out_named(s, PI0_PATH, "cpu-enable");
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_false(qtest_get_irq(s, 1));
+    qtest_writeq(s, PI(0, CPU_ENABLE_A), 1);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_false(qtest_get_irq(s, 1));
+    qtest_writeq(s, PI(0, CPU_ENABLE_B), UINT64_MAX);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_true(qtest_get_irq(s, 1));
+    qtest_writeq(s, PI(0, CPU_ENABLE_A), 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_true(qtest_get_irq(s, 1));
+    qtest_writeq(s, PI(0, CPU_ENABLE_B), 2);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_false(qtest_get_irq(s, 1));
+    qtest_quit(s);
+
+    s = start("");
+    qtest_writeq(s, PI(0, CPU_ENABLE_A), 1);
+    qtest_irq_intercept_out_named(s, PI0_PATH, "cpu-enable");
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, NI(0x08), 4);
+    g_assert_cmphex(qtest_readq(s, PI(0, CPU_ENABLE_A)), ==, 1);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_false(qtest_get_irq(s, 1));
+    qtest_quit(s);
+}
+
+/* A migration destination drives the migrated CPU-enable bits after load. */
+static void test_cpu_enable_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-bedrock-pi-cpu-enable-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start("");
+    to = start("-incoming defer");
+    ensure_clock_running(from);
+    qtest_writeq(from, PI(0, CPU_ENABLE_A), 1);
+    qtest_writeq(from, PI(0, CPU_ENABLE_B), 0);
+    qtest_irq_intercept_out_named(to, PI0_PATH, "cpu-enable");
+    g_assert_false(qtest_get_irq(to, 0));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    g_assert_cmphex(qtest_readq(to, PI(0, CPU_ENABLE_A)), ==, 1);
+    g_assert_true(qtest_get_irq(to, 0));
+    g_assert_false(qtest_get_irq(to, 1));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -895,5 +969,8 @@ int main(int argc, char **argv)
                    test_migration_recomputes_outputs);
     qtest_add_func("sn1/bedrock-pi/migration-counter-phase",
                    test_migration_preserves_counter_phase);
+    qtest_add_func("sn1/bedrock-pi/cpu-enable-lines", test_cpu_enable_lines);
+    qtest_add_func("sn1/bedrock-pi/cpu-enable-migration",
+                   test_cpu_enable_migration);
     return g_test_run();
 }
