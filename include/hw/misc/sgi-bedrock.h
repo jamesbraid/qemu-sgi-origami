@@ -18,6 +18,7 @@ struct SGIBedrockState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     MemoryRegion remote_registers;
+    MemoryRegion io_registers;
     SGIBedrockPIState pi[2];
     SGIBedrockIOState io;
     SGIBedrockMDState md;
