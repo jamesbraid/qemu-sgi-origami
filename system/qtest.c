@@ -20,6 +20,7 @@
 #include "system/memory.h"
 #include "exec/tswap.h"
 #include "hw/core/qdev.h"
+#include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/core/cpu.h"
 #include "qemu/accel.h"
@@ -225,6 +226,19 @@ static void *qtest_server_send_opaque;
  * B64_DATA is an arbitrarily long base64 encoded string.
  * If the sizes do not match, the data will be truncated.
  *
+ * SysBus MMIO mapping:
+ * """""""""""""""""""
+ *
+ * .. code-block:: none
+ *
+ *  > sysbus_mmio_map QOM-PATH INDEX ADDR
+ *  < OK
+ *
+ * Map a realized SysBus device's MMIO region into system memory for an
+ * isolated device test. Requires the qtest accelerator. INDEX selects the
+ * device's region; ADDR is the test address, not a machine address contract.
+ * Invalid paths, indices and addresses return FAIL without changing mappings.
+ *
  * IRQ management:
  * """""""""""""""
  *
@@ -404,7 +418,44 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         return;
     }
 
-    if (strcmp(words[0], "irq_intercept_out") == 0
+    if (qtest_enabled() && strcmp(words[0], "sysbus_mmio_map") == 0) {
+        Object *obj;
+        SysBusDevice *dev;
+        uint64_t addr, size;
+        int index;
+
+        if (!words[1] || !words[2] || !words[3] || words[4]) {
+            qtest_send(chr, "FAIL Expected path, index and address\n");
+            return;
+        }
+        obj = object_resolve_path(words[1], NULL);
+        if (!obj) {
+            qtest_send(chr, "FAIL Unknown device\n");
+            return;
+        }
+        if (!object_dynamic_cast(obj, TYPE_SYS_BUS_DEVICE)) {
+            qtest_send(chr, "FAIL Not a SysBus device\n");
+            return;
+        }
+        dev = SYS_BUS_DEVICE(obj);
+        if (!DEVICE(dev)->realized) {
+            qtest_send(chr, "FAIL Device is not realized\n");
+            return;
+        }
+        if (qemu_strtoi(words[2], NULL, 0, &index) ||
+            index < 0 || index >= dev->num_mmio) {
+            qtest_send(chr, "FAIL Invalid MMIO index\n");
+            return;
+        }
+        size = memory_region_size(sysbus_mmio_get_region(dev, index));
+        if (qemu_strtou64(words[3], NULL, 0, &addr) ||
+            (size && addr > UINT64_MAX - (size - 1))) {
+            qtest_send(chr, "FAIL Invalid MMIO address\n");
+            return;
+        }
+        sysbus_mmio_map(dev, index, addr);
+        qtest_send(chr, "OK\n");
+    } else if (strcmp(words[0], "irq_intercept_out") == 0
         || strcmp(words[0], "irq_intercept_in") == 0) {
         DeviceState *dev;
         NamedGPIOList *ngl;

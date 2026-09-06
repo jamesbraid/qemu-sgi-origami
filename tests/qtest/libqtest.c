@@ -88,6 +88,7 @@ struct QTestState
     int expected_status;
     bool big_endian;
     bool irq_level[MAX_IRQ];
+    uint64_t irq_raise_count[MAX_IRQ];
     GString *rx;
     QTestTransportOps ops;
     GList *pending_events;
@@ -516,6 +517,7 @@ static QTestState *qtest_init_internal(const char *qemu_bin,
     s->rx = g_string_new("");
     for (i = 0; i < MAX_IRQ; i++) {
         s->irq_level[i] = false;
+        s->irq_raise_count[i] = 0;
     }
 
     s->fd = -1;
@@ -772,6 +774,7 @@ redo:
 
         if (strcmp(words[1], "raise") == 0) {
             s->irq_level[irq] = true;
+            s->irq_raise_count[irq]++;
         } else {
             s->irq_level[irq] = false;
         }
@@ -1232,6 +1235,22 @@ int64_t qtest_clock_set(QTestState *s, int64_t val)
 {
     qtest_sendf(s, "clock_set %"PRIi64"\n", val);
     return qtest_clock_rsp(s);
+}
+
+void qtest_sysbus_mmio_map(QTestState *s, const char *qom_path,
+                           int index, uint64_t addr)
+{
+    qtest_sendf(s, "sysbus_mmio_map %s %d 0x%" PRIx64 "\n",
+                qom_path, index, addr);
+    qtest_rsp(s);
+}
+
+uint64_t qtest_get_irq_raise_count(QTestState *s, int num)
+{
+    g_assert_cmpint(num, >=, 0);
+    g_assert_cmpint(num, <, MAX_IRQ);
+    qtest_inb(s, 0);
+    return s->irq_raise_count[num];
 }
 
 void qtest_irq_intercept_out(QTestState *s, const char *qom_path)
@@ -2144,6 +2163,7 @@ QTestState *qtest_inproc_init(QTestState **s, bool log, const char* arch,
     qts->wstatus = 0;
     for (int i = 0; i < MAX_IRQ; i++) {
         qts->irq_level[i] = false;
+        qts->irq_raise_count[i] = 0;
     }
 
     qtest_client_set_rx_handler(qts, qtest_client_inproc_recv_line);

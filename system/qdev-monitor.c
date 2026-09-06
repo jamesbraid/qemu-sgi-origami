@@ -18,6 +18,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "system/qtest.h"
 #include "hw/core/sysbus.h"
 #include "monitor/hmp.h"
 #include "monitor/hmp-completion.h"
@@ -272,9 +273,9 @@ static DeviceClass *qdev_get_device_class(const char **driver, Error **errp)
     }
 
     if (object_class_dynamic_cast(oc, TYPE_SYS_BUS_DEVICE)) {
-        /* sysbus devices need to be allowed by the machine */
+        /* Isolated qtests attach SysBus devices without a board. */
         MachineClass *mc = MACHINE_CLASS(object_get_class(qdev_get_machine()));
-        if (!device_type_is_dynamic_sysbus(mc, *driver)) {
+        if (!qtest_enabled() && !device_type_is_dynamic_sysbus(mc, *driver)) {
             error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "driver",
                        "a dynamic sysbus device type for the machine");
             return NULL;
