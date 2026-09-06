@@ -292,6 +292,10 @@ config SGI_IOC3
 config SGI_XBOW
     bool
 
+config SGI_XBRIDGE_XBOW
+    bool
+    default y if TEST_DEVICES
+
 config SGI_BRIDGE_DMA_TEST
     bool
     default y if TEST_DEVICES
