@@ -30,6 +30,12 @@ void sgi_bedrock_ni_regs_reset(SGIBedrockNIRegs *s)
     s->sideband = sideband;
 }
 
+/* Bits 52:24 raise the interrupt; the three byte counters below do not. */
+bool sgi_bedrock_ni_regs_error_level(const SGIBedrockNIRegs *s)
+{
+    return (s->errors & 0x1fffffff000000ULL) != 0;
+}
+
 bool sgi_bedrock_ni_regs_read(SGIBedrockNIRegs *s, uint64_t offset,
                              uint64_t *value)
 {

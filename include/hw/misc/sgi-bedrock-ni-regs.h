@@ -26,4 +26,5 @@ bool sgi_bedrock_ni_regs_read(SGIBedrockNIRegs *s, uint64_t offset,
 SGIBedrockNIWriteResult sgi_bedrock_ni_regs_write(SGIBedrockNIRegs *s,
                                                 uint64_t offset,
                                                 uint64_t value);
+bool sgi_bedrock_ni_regs_error_level(const SGIBedrockNIRegs *s);
 #endif

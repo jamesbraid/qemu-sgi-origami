@@ -118,6 +118,31 @@ static void test_read_only_writes(void)
     g_assert_cmphex(read_reg(&s, 0x118), ==, 0x33);
 }
 
+/*
+ * Port-error bits 52:24 raise the interrupt and the byte counters below
+ * them do not. Each word is fixture state naming one bit, not a link event.
+ */
+static void test_error_level(void)
+{
+    static const struct {
+        uint64_t errors;
+        bool level;
+    } cases[] = {
+        { 0, false },
+        { 1ULL << 52, true },   /* link reset in, the top interrupting bit */
+        { 1ULL << 24, true },   /* tail timeout count, the bottom one */
+        { 1ULL << 53, false },  /* reserved, above the field */
+        { 1ULL << 23, false },  /* retry count, a byte counter below it */
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        SGIBedrockNIRegs s = { .errors = cases[i].errors };
+
+        g_assert_cmpint(sgi_bedrock_ni_regs_error_level(&s), ==,
+                        cases[i].level);
+    }
+}
+
 static void test_unimplemented(void)
 {
     SGIBedrockNIRegs s = { 0 };
@@ -141,6 +166,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-bedrock-ni/error-clear", test_error_clear);
     g_test_add_func("/sgi-bedrock-ni/reset-retention", test_reset_retention);
     g_test_add_func("/sgi-bedrock-ni/read-only-writes", test_read_only_writes);
+    g_test_add_func("/sgi-bedrock-ni/error-level", test_error_level);
     g_test_add_func("/sgi-bedrock-ni/unimplemented", test_unimplemented);
     return g_test_run();
 }
