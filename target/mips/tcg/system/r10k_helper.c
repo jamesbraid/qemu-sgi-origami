@@ -27,6 +27,17 @@
 #include "accel/tcg/cpu-loop.h"
 #include "../tcg-internal.h"
 
+static unsigned int r10k_scache_sets(CPUMIPSState *env)
+{
+    return env->cfg.scache_size / R10K_SCACHE_LINE_SIZE /
+           R10K_SCACHE_WAYS;
+}
+
+static unsigned int r10k_scache_quad_sets(CPUMIPSState *env)
+{
+    return env->cfg.scache_size / 16 / R10K_SCACHE_WAYS;
+}
+
 /*
  * Invalidate one primary instruction-cache way: the state bit and the state
  * parity bit go to zero, and nothing else moves — the tag address, the tag
@@ -327,7 +338,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          */
         unsigned int way = paddr & 1;
         unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
-                           (R10K_SCACHE_SETS - 1);
+                           (r10k_scache_sets(env) - 1);
 
         if (env->r10k_scache_taglo[set * R10K_SCACHE_WAYS + way] &
             (3 << 10)) {
@@ -346,7 +357,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          * its operation found the block.
          */
         unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
-                           (R10K_SCACHE_SETS - 1);
+                           (r10k_scache_sets(env) - 1);
         unsigned int w;
         bool hit = false;
 
@@ -368,10 +379,9 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         return;
     }
     /*
-     * The CPU definition fixes the R10000 secondary cache at the Origin
-     * 200 reset-mode value: 1 MiB, two ways, and 128-byte blocks.  Its
-     * index diagnostic operations use the translated physical address
-     * and address bit zero selects the way.
+     * The CPU definition supplies the secondary-cache capacity. Its index
+     * diagnostic operations use the translated physical address and address
+     * bit zero selects the way.
      */
     if (cache_type == 3 && (cache_operation == 0b001 ||
                            cache_operation == 0b010 ||
@@ -381,7 +391,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
 
         if (cache_operation == 0b001 || cache_operation == 0b010) {
             unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
-                               (R10K_SCACHE_SETS - 1);
+                               (r10k_scache_sets(env) - 1);
             unsigned int tag = set * R10K_SCACHE_WAYS + way;
 
             /* TagHi's MRU bit is set-wide; its tag nibble is per-way. */
@@ -399,7 +409,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             }
         } else {
             unsigned int quad_set = (paddr / 16) &
-                (R10K_SCACHE_QUADWORDS / R10K_SCACHE_WAYS - 1);
+                (r10k_scache_quad_sets(env) - 1);
             unsigned int quad = quad_set * R10K_SCACHE_WAYS + way;
             unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
 
@@ -685,7 +695,7 @@ void helper_mtc0_r10k_diagnostic(CPUMIPSState *env, target_ulong arg1)
      */
     uint32_t idx, line, i;
 
-    env->CP0_Diagnostic = arg1 & CP0DI_WRITABLE;
+    env->CP0_Diagnostic = arg1 & env->cfg.diagnostic_rw_bitmask;
 
     idx = extract64(env->CP0_Diagnostic, CP0DI_BPIdx, 9);
     switch (extract64(env->CP0_Diagnostic, CP0DI_BPOp, 2)) {

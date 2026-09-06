@@ -5164,6 +5164,12 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
 
+    if (reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K) &&
+        sel >= ctx->performance_counter_pairs * 2) {
+        gen_reserved_instruction(ctx);
+        return;
+    }
+
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
@@ -5172,7 +5178,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
      * a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
-        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
+        !(reg == CP0_REGISTER_25 &&
+          sel < ctx->performance_counter_pairs * 2)) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -5813,40 +5820,46 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs >= 1);
             /* Assembled from the clock while the counter counts cycles. */
             gen_helper_mfc0_r10k_performance(arg, tcg_env,
                                              tcg_constant_i32(sel));
             register_name = "Performance1";
             break;
         case CP0_REG25__PERFCTL1:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs >= 2);
             gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[2]));
             register_name = "Performance2";
             break;
         case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs >= 2);
             /* Assembled from the clock while the counter counts cycles. */
             gen_helper_mfc0_r10k_performance(arg, tcg_env,
                                              tcg_constant_i32(sel));
             register_name = "Performance3";
             break;
         case CP0_REG25__PERFCTL2:
-            /* gen_helper_mfc0_performance4(arg); */
+            CP0_CHECK(ctx->performance_counter_pairs >= 3);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[4]));
             register_name = "Performance4";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCNT2:
-            /* gen_helper_mfc0_performance5(arg); */
+            CP0_CHECK(ctx->performance_counter_pairs >= 3);
+            gen_helper_mfc0_r10k_performance(arg, tcg_env,
+                                             tcg_constant_i32(sel));
             register_name = "Performance5";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCTL3:
-            /* gen_helper_mfc0_performance6(arg); */
+            CP0_CHECK(ctx->performance_counter_pairs >= 4);
+            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[6]));
             register_name = "Performance6";
-            goto cp0_unimplemented;
+            break;
         case CP0_REG25__PERFCNT3:
-            /* gen_helper_mfc0_performance7(arg); */
+            CP0_CHECK(ctx->performance_counter_pairs >= 4);
+            gen_helper_mfc0_r10k_performance(arg, tcg_env,
+                                             tcg_constant_i32(sel));
             register_name = "Performance7";
-            goto cp0_unimplemented;
+            break;
         default:
             goto cp0_unimplemented;
         }
@@ -5967,6 +5980,12 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     const char *register_name = "invalid";
     bool icount;
 
+    if (reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K) &&
+        sel >= ctx->performance_counter_pairs * 2) {
+        gen_reserved_instruction(ctx);
+        return;
+    }
+
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
@@ -5975,7 +5994,8 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
      * a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
-        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
+        !(reg == CP0_REGISTER_25 &&
+          sel < ctx->performance_counter_pairs * 2)) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -6596,7 +6616,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
              * MIPS32 one this helper was written for, and its two must agree
              * with each other.
              */
-            if (ctx->insn_flags & INSN_R10K) {
+            if (ctx->performance_counter_pairs) {
                 gen_helper_mtc0_r10k_performance(tcg_env, arg,
                                                  tcg_constant_i32(sel));
             } else {
@@ -6605,29 +6625,32 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
+            CP0_CHECK(ctx->performance_counter_pairs >= 1);
+            gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                             tcg_constant_i32(sel));
+            register_name = "Performance";
+            break;
         case CP0_REG25__PERFCTL1:
         case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs >= 2);
             gen_helper_mtc0_r10k_performance(tcg_env, arg,
                                              tcg_constant_i32(sel));
             register_name = "Performance";
             break;
         case CP0_REG25__PERFCTL2:
-            /* gen_helper_mtc0_performance4(arg); */
-            register_name = "Performance4";
-            goto cp0_unimplemented;
         case CP0_REG25__PERFCNT2:
-            /* gen_helper_mtc0_performance5(arg); */
-            register_name = "Performance5";
-            goto cp0_unimplemented;
+            CP0_CHECK(ctx->performance_counter_pairs >= 3);
+            gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                             tcg_constant_i32(sel));
+            register_name = "Performance4";
+            break;
         case CP0_REG25__PERFCTL3:
-            /* gen_helper_mtc0_performance6(arg); */
-            register_name = "Performance6";
-            goto cp0_unimplemented;
         case CP0_REG25__PERFCNT3:
-            /* gen_helper_mtc0_performance7(arg); */
-            register_name = "Performance7";
-            goto cp0_unimplemented;
+            CP0_CHECK(ctx->performance_counter_pairs >= 4);
+            gen_helper_mtc0_r10k_performance(tcg_env, arg,
+                                             tcg_constant_i32(sel));
+            register_name = "Performance6";
+            break;
         default:
             goto cp0_unimplemented;
         }
@@ -7359,23 +7382,24 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_25:
         switch (sel) {
         case CP0_REG25__PERFCTL0:
+            CP0_CHECK(ctx->performance_counter_pairs != 4);
             gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[0]));
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs == 2);
             /* Assembled from the clock while the counter counts cycles. */
             gen_helper_mfc0_r10k_performance(arg, tcg_env,
                                              tcg_constant_i32(sel));
             register_name = "Performance1";
             break;
         case CP0_REG25__PERFCTL1:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs == 2);
             gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[2]));
             register_name = "Performance2";
             break;
         case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs == 2);
             /* Assembled from the clock while the counter counts cycles. */
             gen_helper_mfc0_r10k_performance(arg, tcg_env,
                                              tcg_constant_i32(sel));
@@ -8130,18 +8154,20 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
              * MIPS32 one this helper was written for, and its two must agree
              * with each other.
              */
-            if (ctx->insn_flags & INSN_R10K) {
+            if (ctx->performance_counter_pairs == 2) {
                 gen_helper_mtc0_r10k_performance(tcg_env, arg,
                                                  tcg_constant_i32(sel));
-            } else {
+            } else if (!ctx->performance_counter_pairs) {
                 gen_helper_mtc0_performance0(tcg_env, arg);
+            } else {
+                goto cp0_unimplemented;
             }
             register_name = "Performance0";
             break;
         case CP0_REG25__PERFCNT0:
         case CP0_REG25__PERFCTL1:
         case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->insn_flags & INSN_R10K);
+            CP0_CHECK(ctx->performance_counter_pairs == 2);
             gen_helper_mtc0_r10k_performance(tcg_env, arg,
                                              tcg_constant_i32(sel));
             register_name = "Performance";
@@ -15444,6 +15470,7 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->eva = (env->CP0_Config5 >> CP0C5_EVA) & 1;
     ctx->sc = (env->CP0_Config3 >> CP0C3_SC) & 1;
     ctx->CP0_LLAddr_shift = env->CP0_LLAddr_shift;
+    ctx->performance_counter_pairs = env->cfg.performance_counter_pairs;
     ctx->cmgcr = (env->CP0_Config3 >> CP0C3_CMGCR) & 1;
     /* Restore delay slot state from the tb context.  */
     ctx->hflags = tb_flags & MIPS_HFLAG_TB_MASK;

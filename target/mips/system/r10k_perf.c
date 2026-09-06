@@ -92,7 +92,7 @@ bool cpu_mips_r10k_perf_mode_sensitive(CPUMIPSState *env)
     if (!env->r10k_perf_timer) {
         return false;
     }
-    for (ctr = 0; ctr < 2; ctr++) {
+    for (ctr = 0; ctr < env->cfg.performance_counter_pairs; ctr++) {
         uint32_t ctl = env->CP0_Performance[ctr * 2];
 
         if (((ctl >> CP0PC_EVENT) & 0xf) == 0 &&
@@ -118,7 +118,10 @@ bool cpu_mips_r10k_perf_ip7(CPUMIPSState *env)
 {
     unsigned ctr;
 
-    for (ctr = 0; ctr < 2; ctr++) {
+    if (!env->cfg.performance_counter_interrupts) {
+        return false;
+    }
+    for (ctr = 0; ctr < env->cfg.performance_counter_pairs; ctr++) {
         if ((env->CP0_Performance[ctr * 2] & CP0PC_IE) &&
             (cpu_mips_get_r10k_perf(env, ctr * 2 + 1) & 0x80000000u)) {
             return true;
@@ -146,7 +149,14 @@ static void mips_r10k_perf_update(CPUMIPSState *env)
     bool level = env->cp0_timer_ip7;
     unsigned ctr;
 
-    for (ctr = 0; ctr < 2; ctr++) {
+    /* R14000 counter interrupt behavior remains outside the cleared model. */
+    if (!env->cfg.performance_counter_interrupts) {
+        timer_del(env->r10k_perf_timer);
+        qemu_set_irq(env->irq[irq], level);
+        return;
+    }
+
+    for (ctr = 0; ctr < env->cfg.performance_counter_pairs; ctr++) {
         bool counting = mips_r10k_perf_counting(env, ctr);
         uint32_t v = env->CP0_Performance[ctr * 2 + 1];
         uint64_t wait;
@@ -199,7 +209,8 @@ void cpu_mips_store_r10k_perf(CPUMIPSState *env, uint32_t val, unsigned sel)
                 (uint32_t)env->CP0_Performance[sel + 1] +
                 mips_r10k_perf_cycles(env);
         }
-        env->CP0_Performance[sel] = val & CP0PC_MASK;
+        env->CP0_Performance[sel] =
+            val & env->cfg.performance_control_rw_bitmask;
         if (mips_r10k_perf_counting(env, sel >> 1)) {
             env->CP0_Performance[sel + 1] =
                 (uint32_t)env->CP0_Performance[sel + 1] -
@@ -224,7 +235,7 @@ void cpu_mips_r10k_perf_freeze(CPUMIPSState *env)
     if (!env->r10k_perf_timer) {
         return;
     }
-    for (ctr = 0; ctr < 2; ctr++) {
+    for (ctr = 0; ctr < env->cfg.performance_counter_pairs; ctr++) {
         if (mips_r10k_perf_counting(env, ctr)) {
             env->CP0_Performance[ctr * 2 + 1] =
                 (uint32_t)env->CP0_Performance[ctr * 2 + 1] +
@@ -240,7 +251,7 @@ void cpu_mips_r10k_perf_thaw(CPUMIPSState *env)
     if (!env->r10k_perf_timer) {
         return;
     }
-    for (ctr = 0; ctr < 2; ctr++) {
+    for (ctr = 0; ctr < env->cfg.performance_counter_pairs; ctr++) {
         if (mips_r10k_perf_counting(env, ctr)) {
             env->CP0_Performance[ctr * 2 + 1] =
                 (uint32_t)env->CP0_Performance[ctr * 2 + 1] -
@@ -274,7 +285,7 @@ void cpu_mips_r10k_perf_clock_init(MIPSCPU *cpu)
 {
     CPUMIPSState *env = &cpu->env;
 
-    if (!(env->cpu_model->insn_flags & INSN_R10K)) {
+    if (!env->cfg.performance_counter_pairs) {
         return;
     }
     env->r10k_perf_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,

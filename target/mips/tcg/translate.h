@@ -43,6 +43,7 @@ typedef struct DisasContext {
     bool eva;
     bool sc;
     int CP0_LLAddr_shift;
+    uint8_t performance_counter_pairs;
     bool ps;
     bool vp;
     bool cmgcr;

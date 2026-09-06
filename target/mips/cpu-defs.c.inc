@@ -731,7 +731,68 @@ const mips_def_t mips_defs[] =
             .stores_are_posted = true,
             .has_cache_diagnostics = true,
             .has_branch_prediction_table = true,
-            .has_performance_counters = true,
+            .performance_counter_pairs = 2,
+            .performance_control_rw_bitmask = CP0PC_MASK,
+            .performance_counter_interrupts = true,
+            .diagnostic_rw_bitmask = CP0DI_WRITABLE,
+            .scache_size = R10K_SCACHE_SIZE,
+            .compare_match_is_continuous = true,
+            .mtc0_entrylo_moves_64_bits = true,
+        },
+        .mmu_type = MMU_TYPE_R10000,
+    },
+    {
+        /*
+         * R14000 revision 2.4, using the reviewed R12000A compatibility
+         * policy where direct R14000 evidence is unavailable. Config0 bits
+         * 24..0 are reset inputs from the machine, so the CPU definition
+         * supplies only the cache fields above them. The selected machine
+         * must provide its own mode word.
+         */
+        .name = "R14000",
+        .CP0_PRid = 0x00000F24,
+        .CP0_Config0 = (3 << CP0C0_R10K_IC) | (3 << CP0C0_R10K_DC) |
+                       (2 << CP0C0_R10K_SS),
+        /* Config1 is internal metadata; this architecture exposes Config0. */
+        .CP0_Config1 = (1 << CP0C1_FP) | (63 << CP0C1_MMU),
+        .CP0_Config0_preserve_bitmask = 0xFFFFFFF8,
+        .CP0_PageMask_rw_bitmask = 0x01FFE000,
+        .CP0_Framemask_rw_bitmask = 0xFFFF,
+        .CP0_EntryLo_extra_rw_bitmask = 3ULL << CP0EnLo_UC,
+        .xkseg_limit = 0xC0000FFEFFFFFFFFULL,
+        .CP0_LLAddr_rw_bitmask = 0xFFFFFFFF,
+        .CP0_LLAddr_shift = 0,
+        .CP0_TagLo_rw_bitmask = 0xFFFFFFFF,
+        .CP0_ECC_rw_bitmask = 0x3FF,
+        .SYNCI_Step = 32,
+        .CCRes = 2,
+        .CP0_Status_rw_bitmask = 0xF67DFFFF,
+        .CP1_fcr0 = (0x9 << FCR0_PRID) | (0x0 << FCR0_REV),
+        .CP1_fcr31 = 0,
+        .CP1_fcr31_rw_bitmask = 0xFF83FFFF,
+        .SEGBITS = 44,
+        .PABITS = 40,
+        .insn_flags = CPU_MIPS4 | INSN_R10K,
+        .cfg = {
+            .uncached_attribute = true,
+            .erl_restricts_xuseg = true,
+            .watch_is_physical = true,
+            .warm_reset_reports_sr = true,
+            .cache_error_is_error_level = true,
+            .exception_breaks_ll_link = true,
+            .lladdr_is_scratch = true,
+            .fp_traps_denormal_result = true,
+            .fp_cvt_l_limited_to_51_bits = true,
+            .stores_are_posted = true,
+            .has_cache_diagnostics = true,
+            .has_branch_prediction_table = true,
+            .performance_counter_pairs = 4,
+            .performance_control_rw_bitmask =
+                CP0PC_IE | CP0PC_U | CP0PC_K | CP0PC_EXL,
+            /* Counter overflow and reset behavior remain unimplemented. */
+            .performance_counter_interrupts = false,
+            .diagnostic_rw_bitmask = CP0DI_WRITABLE | (1ULL << 26),
+            .scache_size = R14K_SCACHE_SIZE,
             .compare_match_is_continuous = true,
             .mtc0_entrylo_moves_64_bits = true,
             .partial_lwr_preserves_upper = true,
