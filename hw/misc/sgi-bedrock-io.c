@@ -224,6 +224,7 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
     unsigned index = ii_reqbuf_index(offset);
     int retained = ii_retained_index(offset);
 
+    /* Both keep all 64 bits: model policy, not an established field map. */
     if (retained >= 0) {
         s->retained[retained] = value;
         return;

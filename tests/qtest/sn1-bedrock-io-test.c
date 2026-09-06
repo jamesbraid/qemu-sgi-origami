@@ -343,6 +343,11 @@ static void test_probe_and_retained_registers(void)
                     UINT64_C(0x3ff0fff7d3f));
     qtest_writeq(s, REG_BASE + 0x138, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, REG_BASE + 0x138), ==, 0x101ff7f);
+    /*
+     * Model policy, per the datasheet: the rows it does not inventory,
+     * the graphics maps among them, are 64-bit retained storage in the
+     * model.  Their hardware field widths are not established.
+     */
     for (size_t i = 0; i < ARRAY_SIZE(retained_offsets); i++) {
         uint64_t value = UINT64_C(0xfeed000000000000) | i;
 
@@ -355,6 +360,11 @@ static void test_probe_and_retained_registers(void)
         g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0 + i * 8), ==,
                         0x1000 | (i << 8) | i);
     }
+    /*
+     * Model policy: the nine PIO request buffers keep all 64 bits as
+     * written.  The datasheet lists their fields but the model does not
+     * mask the rest, so this asserts storage, not a field map.
+     */
     for (unsigned i = 0; i < 9; i++) {
         uint64_t offset = i ? 0x198 + i * 8 : 0x198;
         qtest_writeq(s, REG_BASE + offset, UINT64_C(0x1000000000000000) | i);
