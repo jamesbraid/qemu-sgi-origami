@@ -53,6 +53,7 @@ tests = {
   'test-onewire': ['../../hw/1wire/crc.c', '../../hw/1wire/core.c',
                    '../../hw/1wire/ds2502.c', '../../hw/1wire/ds2505.c',
                    qom, hwcore, migration],
+  'test-i2c-masters': ['../../hw/i2c/core.c', qom, hwcore, migration, io],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],
