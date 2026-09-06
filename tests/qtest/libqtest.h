@@ -664,6 +664,20 @@ uint64_t qtest_readq(QTestState *s, uint64_t addr);
 void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size);
 
 /**
+ * qtest_memread_cpu:
+ * @s: QTestState instance to operate on.
+ * @cpu_index: CPU whose physical address space is accessed.
+ * @addr: Physical address to read from.
+ * @data: Buffer receiving the raw bytes.
+ * @size: Number of bytes to read.
+ *
+ * Returns false for an invalid CPU, leaving @data unchanged. A zero-size
+ * operation succeeds without sending a command.
+ */
+bool qtest_memread_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
+                       void *data, size_t size);
+
+/**
  * qtest_rtas_call:
  * @s: #QTestState instance to operate on.
  * @name: name of the command to call.
@@ -713,6 +727,20 @@ void qtest_bufread(QTestState *s, uint64_t addr, void *data, size_t size);
  * Write a buffer to guest memory.
  */
 void qtest_memwrite(QTestState *s, uint64_t addr, const void *data, size_t size);
+
+/**
+ * qtest_memwrite_cpu:
+ * @s: QTestState instance to operate on.
+ * @cpu_index: CPU whose physical address space is accessed.
+ * @addr: Physical address to write to.
+ * @data: Buffer containing the raw bytes.
+ * @size: Number of bytes to write.
+ *
+ * Returns false for an invalid CPU without writing memory. A zero-size
+ * operation succeeds without sending a command.
+ */
+bool qtest_memwrite_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
+                        const void *data, size_t size);
 
 /**
  * qtest_bufwrite:
