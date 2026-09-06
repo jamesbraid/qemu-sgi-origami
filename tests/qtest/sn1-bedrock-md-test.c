@@ -6,6 +6,10 @@
 #define BASE UINT64_C(0x78000000)
 #define MD(_x) (BASE + (_x))
 
+/*
+ * Bits 58:56 are write-only in the public definition. Reading them back,
+ * like the zero cold-reset value of the whole register, is model policy.
+ */
 #define MEMORY_CONFIG_MASK UINT64_C(0x373ff003fbfbfbfb)
 #define REPLY_QUEUE UINT64_C(0x001818180c0c0c00)
 #define REQUEST_QUEUE UINT64_C(0x0000000004040400)
@@ -91,8 +95,6 @@ static void test_reset(void)
 static void test_register_contract(void)
 {
     QTestState *s = start("");
-    const uint8_t bytes[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-    uint8_t actual[8];
 
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
     qtest_writeq(s, MD(0), 0);
@@ -125,17 +127,29 @@ static void test_register_contract(void)
     qtest_writeq(s, MD(0x10100), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, MD(0x10010)), ==,
                     (UINT64_C(1) << 41) - 1);
+    qtest_quit(s);
+}
+
+/*
+ * Every register is a big-endian 64-bit word. Byte order is the hardware
+ * contract. Refusing a narrower access is model policy: the datasheet
+ * states the width and nothing about a narrower access.
+ */
+static void test_access_width_policy(void)
+{
+    QTestState *s = start("");
+    const uint8_t bytes[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    const uint8_t expected[8] = { 0, 0, 3, 4, 5, 6, 7, 8 };
+    uint8_t actual[8];
 
     qtest_memwrite(s, MD(0x20008), bytes, sizeof(bytes));
     qtest_memread(s, MD(0x20008), actual, sizeof(actual));
-    {
-        const uint8_t expected[8] = { 0, 0, 3, 4, 5, 6, 7, 8 };
-
-        g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
-    }
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
     g_assert_cmphex(qtest_readq(s, MD(0x20008)), ==,
                     UINT64_C(0x030405060708));
     qtest_writeb(s, MD(0x20008), 0);
+    qtest_writew(s, MD(0x20008), 0);
+    qtest_writel(s, MD(0x20008), 0);
     g_assert_cmphex(qtest_readq(s, MD(0x20008)), ==,
                     UINT64_C(0x030405060708));
     qtest_quit(s);
@@ -375,6 +389,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/bedrock-md/register-contract", test_register_contract);
+    qtest_add_func("/sgi/bedrock-md/access-width-policy",
+                   test_access_width_policy);
     qtest_add_func("/sgi/bedrock-md/explicit-registers",
                    test_explicit_registers_independent);
     qtest_add_func("/sgi/bedrock-md/queue-sizes", test_queue_sizes_fixed);
