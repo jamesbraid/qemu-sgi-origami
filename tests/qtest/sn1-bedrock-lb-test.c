@@ -72,6 +72,26 @@ static void test_identity_and_permissions(void)
     qtest_quit(s);
 }
 
+/*
+ * The datasheet gives the permission registers no reset value and says only
+ * that every consumer's first access assumes its region is allowed. Reading
+ * all ones at power-on and after the block's own soft reset is the model's
+ * choice, asserted as such.
+ */
+static void test_permissive_reset(void)
+{
+    QTestState *s = lb_start("");
+
+    g_assert_cmphex(qtest_readq(s, LB_BASE + CPU_PERMISSION), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + IO_PERMISSION), ==, UINT64_MAX);
+    qtest_writeq(s, LB_BASE + CPU_PERMISSION, 0);
+    qtest_writeq(s, LB_BASE + IO_PERMISSION, 0);
+    qtest_writeq(s, LB_BASE + SOFT_RESET, 1);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + CPU_PERMISSION), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + IO_PERMISSION), ==, UINT64_MAX);
+    qtest_quit(s);
+}
+
 static void test_storage_masks_and_error(void)
 {
     QTestState *s = lb_start("");
@@ -181,6 +201,8 @@ static void test_scratch_aliases_and_reset(void)
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(0)), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(1)), ==, 0xdeadbef0);
+    /* The reboot mailbox is not reset, the block's own soft reset included. */
+    g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(2)), ==, 0xdeadbef1);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_BITS), ==, 4);
     qtest_quit(s);
 }
@@ -319,6 +341,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-lb/identity-permissions",
                    test_identity_and_permissions);
+    qtest_add_func("sn1/bedrock-lb/permissive-reset", test_permissive_reset);
     qtest_add_func("sn1/bedrock-lb/storage-masks-error",
                    test_storage_masks_and_error);
     qtest_add_func("sn1/bedrock-lb/byte-order-width",
