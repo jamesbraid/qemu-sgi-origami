@@ -144,6 +144,23 @@ static void test_head_dma_reaches_the_host(void)
     qtest_quit(qts);
 }
 
+static void test_warm_reset_reaches_the_heads(void)
+{
+    QTestState *qts = chip_start("");
+
+    reg_write(qts, 0xe, 0x28, 0x12345);
+    reg_write(qts, 0xf, 0x28, 0x23456);
+    reg_write(qts, 0, 0x20, 0xfe);
+    /* Head E's link fence excludes the host; head F's admits it. */
+    reg_write(qts, 0, 0x80 + (0xe - 8) * 8, 0xff & ~(1U << (HOST_PORT - 8)));
+    qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 1);
+    qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 0);
+    g_assert_cmphex(reg_read(qts, 0, 0x20), ==, 0x80);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0xfffff);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x28), ==, 0x12345);
+    qtest_quit(qts);
+}
+
 static void test_realize_checks(void)
 {
     if (g_test_subprocess()) {
@@ -184,6 +201,8 @@ int main(int argc, char **argv)
                    test_head_interrupts_reach_the_host);
     qtest_add_func("/sn1/xbridge-chip/head-dma-reaches-the-host",
                    test_head_dma_reaches_the_host);
+    qtest_add_func("/sn1/xbridge-chip/warm-reset-reaches-the-heads",
+                   test_warm_reset_reaches_the_heads);
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
     qtest_add_func("/sn1/xbridge-chip/realize-needs-fabric",
                    test_realize_needs_fabric);
