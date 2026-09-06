@@ -7,15 +7,23 @@
 #define REG_BASE UINT64_C(0x40000000)
 #define PIO_BASE UINT64_C(0x100000000)
 #define IN_BASE UINT64_C(0x20000000000)
-#define MACHINE \
+#define MACHINE_BASE \
     "-M none -cpu R10000 -m 256M " \
-    "-object memory-backend-ram,id=dma,size=2M " \
+    "-object memory-backend-ram,id=dma,size=32M " \
+    "-object memory-backend-ram,id=hub,size=8M " \
     "-object memory-backend-ram,id=widget8,size=2M " \
     "-object memory-backend-ram,id=widget9,size=2M " \
     "-device sgi-bedrock-io,id=io," \
     "dma-memory=/objects/dma/dma[0]," \
     "widget-8=/objects/widget8/widget8[0]," \
-    "widget-9=/objects/widget9/widget9[0] -S"
+    "widget-9=/objects/widget9/widget9[0]"
+#define MACHINE MACHINE_BASE ",hub-registers=/objects/hub/hub[0] -S"
+#define MACHINE_NO_HUB MACHINE_BASE " -S"
+
+/* Crosstalk address terms of the interrupt-send form. */
+#define XIO_REGISTER (UINT64_C(1) << 47)
+#define XIO_NODE(n) ((uint64_t)(n) << 39)
+#define HUB_REMOTE UINT64_C(0x1800000)
 
 #define WIDGET_CONTROL 0x20
 #define LOCAL_PROTECT  0x100
@@ -28,9 +36,9 @@
 #define BTE0           0x10000
 #define BTE1           0x20000
 
-static QTestState *io_start(const char *extra)
+static QTestState *io_start_machine(const char *machine, const char *extra)
 {
-    QTestState *s = qtest_initf(MACHINE " %s", extra);
+    QTestState *s = qtest_initf("%s %s", machine, extra);
 
     qtest_sysbus_mmio_map(s, IO_PATH, 0, REG_BASE);
     qtest_sysbus_mmio_map(s, IO_PATH, 1, PIO_BASE);
@@ -39,6 +47,11 @@ static QTestState *io_start(const char *extra)
         qtest_qmp_assert_success(s, "{'execute':'cont'}");
     }
     return s;
+}
+
+static QTestState *io_start(const char *extra)
+{
+    return io_start_machine(MACHINE, extra);
 }
 
 /*
@@ -84,6 +97,98 @@ static void assert_ram_filled(QTestState *s, uint64_t addr, uint8_t pattern,
     for (size_t i = 0; i < size; i++) {
         g_assert_cmphex(actual[i], ==, pattern);
     }
+}
+
+/*
+ * A widget's view of the node's register space: crosstalk bit 47 set, the
+ * node in bits 46:39, then the Bedrock's own small window in its remote
+ * form.  The linked hub-registers RAM is reachable only this way.
+ */
+static uint64_t xio_readq(QTestState *s, uint64_t address)
+{
+    return qtest_readq(s, IN_BASE + XIO_REGISTER + address);
+}
+
+static void xio_writeq(QTestState *s, uint64_t address, uint64_t value)
+{
+    qtest_writeq(s, IN_BASE + XIO_REGISTER + address, value);
+}
+
+static void test_inbound_register_access(void)
+{
+    static const uint64_t nowhere[] = {
+        XIO_NODE(1) | HUB_REMOTE | 0x90,      /* another node */
+        UINT64_C(0x1000090),                  /* local form, no bit 23 */
+        UINT64_C(0x2800090),                  /* widget 2's window */
+        UINT64_C(0x8800090),                  /* widget 8's window */
+        UINT64_C(0x20000090),                 /* big window 0 */
+        HUB_REMOTE | 0x90 | (UINT64_C(1) << 28), /* above the small windows */
+    };
+    QTestState *s = io_start("");
+
+    /*
+     * The DMA line at the same 39-bit address shows the register form
+     * never reaches memory, and the memory form never reaches a register.
+     */
+    dma_writeq(s, HUB_REMOTE + 0x90, UINT64_C(0x1111111111111111));
+    dma_writeq(s, 0x1000090, UINT64_C(0x3333333333333333));
+    xio_writeq(s, HUB_REMOTE + 0x90, 0x105);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0x105);
+    g_assert_cmphex(dma_readq(s, HUB_REMOTE + 0x90), ==,
+                    UINT64_C(0x1111111111111111));
+    dma_writeq(s, HUB_REMOTE + 0x90, UINT64_C(0x2222222222222222));
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0x105);
+
+    xio_writeq(s, HUB_REMOTE + 0x200090, 0x14a);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x200090), ==, 0x14a);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0x105);
+
+    qtest_writel(s, IN_BASE + XIO_REGISTER + HUB_REMOTE + 0x94, 0xaabbccdd);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0xaabbccdd);
+    g_assert_cmphex(qtest_readl(s, IN_BASE + XIO_REGISTER + HUB_REMOTE + 0x90),
+                    ==, 0);
+    qtest_writeb(s, IN_BASE + XIO_REGISTER + HUB_REMOTE + 0x97, 0xee);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0xaabbccee);
+
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(1 << 8));
+    xio_writeq(s, HUB_REMOTE + 0x90, 0x777);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0);
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0xaabbccee);
+
+    for (size_t i = 0; i < ARRAY_SIZE(nowhere); i++) {
+        xio_writeq(s, nowhere[i], 0x999);
+        g_assert_cmphex(xio_readq(s, nowhere[i]), ==, 0);
+        g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0xaabbccee);
+    }
+    g_assert_cmphex(dma_readq(s, HUB_REMOTE + 0x90), ==,
+                    UINT64_C(0x2222222222222222));
+    g_assert_cmphex(dma_readq(s, 0x1000090), ==,
+                    UINT64_C(0x3333333333333333));
+    qtest_quit(s);
+
+    s = io_start("-global sgi-bedrock-io.node-number=3");
+    xio_writeq(s, XIO_NODE(3) | HUB_REMOTE | 0x90, 0x123);
+    g_assert_cmphex(xio_readq(s, XIO_NODE(3) | HUB_REMOTE | 0x90), ==, 0x123);
+    xio_writeq(s, HUB_REMOTE | 0x90, 0x456);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE | 0x90), ==, 0);
+    g_assert_cmphex(xio_readq(s, XIO_NODE(3) | HUB_REMOTE | 0x90), ==, 0x123);
+    qtest_quit(s);
+
+    s = io_start("-global sgi-bedrock-io.device-mask-reset="
+                 "0xfffffffffffffffe");
+    xio_writeq(s, HUB_REMOTE | 0x90, 0x123);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, 1);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE | 0x90), ==, 0);
+    qtest_quit(s);
+
+    s = io_start_machine(MACHINE_NO_HUB, "");
+    dma_writeq(s, HUB_REMOTE + 0x90, UINT64_C(0x4444444444444444));
+    xio_writeq(s, HUB_REMOTE | 0x90, 0x123);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE | 0x90), ==, 0);
+    g_assert_cmphex(dma_readq(s, HUB_REMOTE + 0x90), ==,
+                    UINT64_C(0x4444444444444444));
+    qtest_quit(s);
 }
 
 static void test_dma_link_required(void)
@@ -544,6 +649,8 @@ int main(int argc, char **argv)
                    test_pio_translation_and_protection);
     qtest_add_func("/mips64/sn1/bedrock-io/inbound-protection",
                    test_inbound_protection);
+    qtest_add_func("/mips64/sn1/bedrock-io/inbound-register-access",
+                   test_inbound_register_access);
     qtest_add_func("/mips64/sn1/bedrock-io/bte", test_bte_copy_and_zero);
     qtest_add_func("/mips64/sn1/bedrock-io/bte-error-termination",
                    test_bte_error_and_termination);

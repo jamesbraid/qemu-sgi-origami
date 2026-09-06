@@ -10,6 +10,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockIOState, SGI_BEDROCK_IO)
 
 #define SGI_BEDROCK_IO_REG_SIZE 0x30010
 #define SGI_BEDROCK_IO_PIO_SIZE UINT64_C(0x100000000)
+/* A widget's crosstalk address: bit 47 selects registers over memory. */
+#define SGI_BEDROCK_IO_INBOUND_SIZE (UINT64_C(1) << 48)
 
 typedef struct SGIBedrockIOBTE {
     SGIBedrockIOState *io;
@@ -32,10 +34,14 @@ struct SGIBedrockIOState {
     MemoryRegion *dma_mr;
     AddressSpace linked_dma_as;
     bool linked_dma_as_initialized;
+    MemoryRegion *hub_mr;
+    AddressSpace hub_as;
+    bool hub_as_initialized;
     MemoryRegion *widget_mr[16];
     AddressSpace widget_as[16];
     bool widget_as_initialized[16];
     uint8_t local_region;
+    uint8_t node_number;
     uint8_t revision;
     uint8_t inbound_widget;
     uint8_t inbound_device;

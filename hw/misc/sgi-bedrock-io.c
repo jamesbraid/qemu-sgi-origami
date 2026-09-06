@@ -42,6 +42,19 @@
 #define II_BTE_ADDR_MASK UINT64_C(0xffffffff80)
 #define II_PASSWORD UINT64_C(0x53474972756c6573)
 
+/*
+ * Crosstalk bit 47 selects register space over memory.  The address map
+ * puts the target node in bits 46:39 and the Bedrock's own registers in
+ * small window 1 of the node's I/O space in the checked remote form (bit
+ * 23), 8 MB wide, with the second processor interface 0x200000 above the
+ * first.
+ */
+#define II_XIO_REGISTER   (UINT64_C(1) << 47)
+#define II_XIO_NODE_SHIFT 39
+#define II_XIO_NODE_WIDTH 8
+#define II_XIO_HUB_WINDOW UINT64_C(0x1800000)
+#define II_XIO_HUB_MASK   UINT64_C(0x7fffff)
+
 static int ii_retained_index(hwaddr offset)
 {
     static const hwaddr singleton[] = {
@@ -437,6 +450,34 @@ static MemTxResult ii_pio_rw(SGIBedrockIOState *s, hwaddr offset,
     return MEMTX_OK;
 }
 
+static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
+                                       void *buffer, size_t size, bool write)
+{
+    unsigned node = extract64(address, II_XIO_NODE_SHIFT, II_XIO_NODE_WIDTH);
+    hwaddr window = extract64(address, 0, II_XIO_NODE_SHIFT);
+
+    if (node != s->node_number) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: crosstalk register "
+                      "access to node %u arrives nowhere\n", node);
+        return MEMTX_DECODE_ERROR;
+    }
+    if ((window & ~II_XIO_HUB_MASK) != II_XIO_HUB_WINDOW) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: unsupported crosstalk "
+                      "register access at 0x%" HWADDR_PRIx "\n", window);
+        return MEMTX_DECODE_ERROR;
+    }
+    if (!s->hub_as_initialized) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: hub-registers not linked\n");
+        return MEMTX_DECODE_ERROR;
+    }
+    if (write) {
+        return address_space_write(&s->hub_as, window & II_XIO_HUB_MASK,
+                                   MEMTXATTRS_UNSPECIFIED, buffer, size);
+    }
+    return address_space_read(&s->hub_as, window & II_XIO_HUB_MASK,
+                              MEMTXATTRS_UNSPECIFIED, buffer, size);
+}
+
 MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                                       unsigned device, hwaddr address,
                                       void *buffer, size_t size, bool write)
@@ -448,6 +489,9 @@ MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
     if (widget >= 8 &&
         !(s->device_mask & (UINT64_C(1) << ((widget - 8) * 8 + device)))) {
         return MEMTX_ACCESS_ERROR;
+    }
+    if (address & II_XIO_REGISTER) {
+        return ii_inbound_register(s, address, buffer, size, write);
     }
     if (write) {
         return address_space_write(s->dma_as, address, MEMTXATTRS_UNSPECIFIED,
@@ -655,7 +699,8 @@ static void ii_init(Object *obj)
     memory_region_init_io(&s->pio, obj, &ii_pio_ops, s,
                           TYPE_SGI_BEDROCK_IO "-pio", SGI_BEDROCK_IO_PIO_SIZE);
     memory_region_init_io(&s->inbound, obj, &ii_inbound_ops, s,
-                          TYPE_SGI_BEDROCK_IO "-inbound", UINT64_C(1) << 40);
+                          TYPE_SGI_BEDROCK_IO "-inbound",
+                          SGI_BEDROCK_IO_INBOUND_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->regs);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->pio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->inbound);
@@ -675,6 +720,9 @@ static void ii_finalize(Object *obj)
     if (s->linked_dma_as_initialized) {
         address_space_destroy(&s->linked_dma_as);
     }
+    if (s->hub_as_initialized) {
+        address_space_destroy(&s->hub_as);
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_as); i++) {
         if (s->widget_as_initialized[i]) {
             address_space_destroy(&s->widget_as[i]);
@@ -684,12 +732,15 @@ static void ii_finalize(Object *obj)
 
 static const Property ii_properties[] = {
     DEFINE_PROP_UINT8("local-region", SGIBedrockIOState, local_region, 0),
+    DEFINE_PROP_UINT8("node-number", SGIBedrockIOState, node_number, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockIOState, revision, 1),
     DEFINE_PROP_UINT8("inbound-widget", SGIBedrockIOState, inbound_widget, 8),
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockIOState, inbound_device, 0),
     DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockIOState,
                        device_mask_reset, UINT64_MAX),
     DEFINE_PROP_LINK("dma-memory", SGIBedrockIOState, dma_mr,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("hub-registers", SGIBedrockIOState, hub_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("widget-0", SGIBedrockIOState, widget_mr[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
@@ -733,6 +784,10 @@ static void ii_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "local-region must be below 64");
         return;
     }
+    if (s->node_number >= 128) {
+        error_setg(errp, "node-number must be below 128");
+        return;
+    }
     if (s->revision >= 16) {
         error_setg(errp, "revision must fit four bits");
         return;
@@ -753,6 +808,11 @@ static void ii_realize(DeviceState *dev, Error **errp)
     } else if (!s->dma_as) {
         error_setg(errp, TYPE_SGI_BEDROCK_IO " 'dma-memory' link not set");
         return;
+    }
+    if (s->hub_mr) {
+        address_space_init(&s->hub_as, s->hub_mr,
+                           "sgi-bedrock-io.hub-registers");
+        s->hub_as_initialized = true;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_mr); i++) {
         if (s->widget_mr[i]) {
