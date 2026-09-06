@@ -119,6 +119,10 @@ static void test_storage_masks_and_error(void)
     const uint64_t rtc_filter_mask = 0x1fULL | (0xfffULL << 8) |
                                      (1ULL << 20) | (0x3ffULL << 24) |
                                      (0x3ffULL << 36) | (0x3ffULL << 48);
+    /* Command, supplemental, source, error type, overrun, valid. */
+    const uint64_t header_1_mask = 0x7fULL | (0x7ffULL << 8) |
+                                   (0x7ffULL << 20) | (0xfULL << 32) |
+                                   (1ULL << 40) | (1ULL << 44);
 
     qtest_irq_intercept_out_named(s, LB_PATH, "error");
     qtest_writeq(s, LB_BASE + REGION_PRESENT, 0x8000000000000001ULL);
@@ -134,6 +138,11 @@ static void test_storage_masks_and_error(void)
 
     qtest_writeq(s, LB_BASE + ERROR_HEADER_1, 1ULL << 44);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_1), ==, 1ULL << 44);
+    qtest_writeq(s, LB_BASE + ERROR_HEADER_1, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_1), ==,
+                    header_1_mask);
+    qtest_writeq(s, LB_BASE + ERROR_HEADER_1, ~header_1_mask);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_1), ==, 0);
     qtest_writeq(s, LB_BASE + ERROR_HEADER_2, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_HEADER_2), ==,
                     (1ULL << 38) - 1);
