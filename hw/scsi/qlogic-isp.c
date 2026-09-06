@@ -374,6 +374,7 @@ struct QLogicISPRequest {
     QLogicISPState *dev;
     SCSIRequest *sreq;
     QEMUSGList qsg;
+    uint64_t described;         /* Buffer bytes the descriptors named. */
     uint32_t handle;
     uint8_t channel;
     uint8_t target;
@@ -1081,13 +1082,25 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     uint16_t scsi_status = sreq->status;
     uint16_t completion;
     uint16_t state_flags;
+    uint64_t unused;
 
     sense_len = scsi_req_get_sense(sreq, sense, sizeof(sense));
     if (sense_len > 0) {
         scsi_status |= ISP_SCSI_STATUS_SENSE_VALID;
     }
 
-    completion = resid ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
+    /*
+     * The core counts what the command's own length did not deliver.
+     * Descriptors past that length were never offered to the target, so
+     * they went unfilled too, and the residual names every byte of the
+     * described buffer the transfer left alone.
+     */
+    unused = resid;
+    if (req->described > sreq->cmd.xfer) {
+        unused += req->described - sreq->cmd.xfer;
+    }
+
+    completion = unused ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
 
     /*
      * Auto-sense runs only after a CHECK CONDITION, so GOT_SENSE reports the
@@ -1101,7 +1114,7 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
 
     /* The timeout bit belongs to the missing-target answer alone. */
     qlogic_isp_post_status(s, req->handle, scsi_status, completion,
-                           state_flags, 0, resid, sense,
+                           state_flags, 0, unused, sense,
                            sense_len);
 
     qlogic_isp_free_request(req);
@@ -1186,6 +1199,8 @@ static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
 
         qemu_sglist_add(&req->qsg, base, len);
     }
+    /* The saved list is already capped, so it is all this request describes. */
+    req->described = req->qsg.size;
 
     return req;
 }
@@ -1248,14 +1263,35 @@ static void qlogic_isp_channel_pre_plug(HotplugHandler *hotplug_dev,
     }
 }
 
-static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
-                                     hwaddr rqst_addr, uint8_t entry_count,
-                                     uint16_t seg_count)
+/*
+ * One descriptor into the transfer. The descriptors name the host's
+ * buffer and the command names how much of it the target has to fill, so
+ * only that much is offered to the SCSI layer and a longer buffer keeps
+ * its tail. The whole named length is still counted: the residual the
+ * completion carries is measured against it.
+ */
+static void qlogic_isp_add_segment(QEMUSGList *qsg, uint64_t *described,
+                                   uint64_t max, uint64_t base, uint32_t len)
+{
+    uint64_t room = *described < max ? max - *described : 0;
+    uint64_t placed = MIN(len, room);
+
+    *described += len;
+    if (placed > 0) {
+        qemu_sglist_add(qsg, base, placed);
+    }
+}
+
+static uint64_t qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
+                                         hwaddr rqst_addr,
+                                         uint8_t entry_count,
+                                         uint16_t seg_count, uint64_t max)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t collected = 0;
     uint16_t cont_index = s->rqst_cons;
     int conts_left = entry_count - 1;
+    uint64_t described = 0;
     int i;
 
     for (i = 0; i < ISP_REQ_SEGS_INLINE && collected < seg_count; i++) {
@@ -1264,7 +1300,7 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
 
         addr = qlogic_isp_desc_ld32(pci, seg_addr);
         len = qlogic_isp_desc_ld32(pci, seg_addr + 4);
-        qemu_sglist_add(qsg, addr, len);
+        qlogic_isp_add_segment(qsg, &described, max, addr, len);
         collected++;
     }
 
@@ -1280,11 +1316,13 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
 
             addr = qlogic_isp_desc_ld32(pci, seg_addr);
             len = qlogic_isp_desc_ld32(pci, seg_addr + 4);
-            qemu_sglist_add(qsg, addr, len);
+            qlogic_isp_add_segment(qsg, &described, max, addr, len);
             collected++;
         }
         conts_left--;
     }
+
+    return described;
 }
 
 /*
@@ -1354,24 +1392,30 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
     /* A hint, never the raw seg_count: 65535 is a megabyte per request. */
     pci_dma_sglist_init(&req->qsg, pci, ISP_REQ_SEGS_INLINE);
-    qlogic_isp_read_segments(s, &req->qsg, addr, entry_count, seg_count);
 
+    /* The command comes first: its length is what caps the descriptors. */
     req->sreq = scsi_req_new(sdev, handle, lun, cdb,
                              MIN(cdb_len, sizeof(cdb)), req);
+    req->described = qlogic_isp_read_segments(s, &req->qsg, addr, entry_count,
+                                              seg_count,
+                                              req->sreq->cmd.xfer);
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
     }
     return true;
 }
 
-static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
-                                         hwaddr rqst_addr, uint8_t entry_count,
-                                         uint16_t seg_count)
+static uint64_t qlogic_isp_read_segments_a64(QLogicISPState *s,
+                                             QEMUSGList *qsg,
+                                             hwaddr rqst_addr,
+                                             uint8_t entry_count,
+                                             uint16_t seg_count, uint64_t max)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t collected = 0;
     uint16_t cont_index = s->rqst_cons;
     int conts_left = entry_count - 1;
+    uint64_t described = 0;
     int i;
 
     for (i = 0; i < ISP_A64_REQ_SEGS_INLINE && collected < seg_count; i++) {
@@ -1382,7 +1426,8 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
         lo = qlogic_isp_desc_ld32(pci, seg_addr);
         hi = qlogic_isp_desc_ld32(pci, seg_addr + 4);
         len = qlogic_isp_desc_ld32(pci, seg_addr + 8);
-        qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
+        qlogic_isp_add_segment(qsg, &described, max,
+                               lo | ((uint64_t)hi << 32), len);
         collected++;
     }
 
@@ -1400,11 +1445,14 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
             lo = qlogic_isp_desc_ld32(pci, seg_addr);
             hi = qlogic_isp_desc_ld32(pci, seg_addr + 4);
             len = qlogic_isp_desc_ld32(pci, seg_addr + 8);
-            qemu_sglist_add(qsg, lo | ((uint64_t)hi << 32), len);
+            qlogic_isp_add_segment(qsg, &described, max,
+                                   lo | ((uint64_t)hi << 32), len);
             collected++;
         }
         conts_left--;
     }
+
+    return described;
 }
 
 static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
@@ -1467,10 +1515,13 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
     /* A size hint only, for the reason the 32-bit path gives. */
     pci_dma_sglist_init(&req->qsg, pci, ISP_A64_REQ_SEGS_INLINE);
-    qlogic_isp_read_segments_a64(s, &req->qsg, addr, entry_count, seg_count);
 
+    /* Command first, for the reason the 32-bit path gives. */
     req->sreq = scsi_req_new(sdev, handle, lun, cdb,
                              MIN(cdb_len, sizeof(cdb)), req);
+    req->described = qlogic_isp_read_segments_a64(s, &req->qsg, addr,
+                                                  entry_count, seg_count,
+                                                  req->sreq->cmd.xfer);
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
     }
