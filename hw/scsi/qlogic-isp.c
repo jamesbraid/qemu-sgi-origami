@@ -1219,14 +1219,32 @@ static void qlogic_isp_channel_pre_plug(HotplugHandler *hotplug_dev,
     sdev->channel = chan->index;
 
     /*
-     * The bus checked the address before the stamp moved it. An address
-     * left to the bus to pick is picked after this, against the stamped
-     * channel, so only a fully specified one needs looking at again.
+     * The bus checked the address before the stamp moved the channel under
+     * it, so a fully specified one is checked again here. An address left
+     * to the bus to pick is picked after this, against the stamped channel,
+     * and needs nothing.
+     *
+     * The children are walked rather than asked through
+     * scsi_device_find(), which cannot answer this question: it stops at
+     * the first device holding the address, and on this path that device
+     * is the one being plugged, which it then discards for not being
+     * realized yet. The whole address has to match, so a second LUN behind
+     * a target that already has one is not a collision.
      */
-    if (sdev->id != -1 && sdev->lun != -1 &&
-        scsi_device_find(bus, sdev->channel, sdev->id, sdev->lun)) {
-        error_setg(errp, "target %d lun %d is already used on channel %u",
-                   sdev->id, sdev->lun, chan->index);
+    if (sdev->id != -1 && sdev->lun != -1) {
+        BusChild *kid;
+
+        QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+            SCSIDevice *other = SCSI_DEVICE(kid->child);
+
+            if (other != sdev && other->channel == sdev->channel &&
+                other->id == sdev->id && other->lun == sdev->lun) {
+                error_setg(errp,
+                           "target %d lun %d is already used on channel %u",
+                           sdev->id, sdev->lun, chan->index);
+                return;
+            }
+        }
     }
 }
 
@@ -1770,7 +1788,11 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     for (i = 0; i < info->nchannels; i++) {
         s->chan[i].dev = s;
         s->chan[i].index = i;
-        /* One channel per bus, so a bus accepts its own number and no other. */
+        /*
+         * The ceiling scsi_bus_check_address() tests before the stamp
+         * below runs. Channel 0's bus keeps it at zero, so the ISP1040
+         * still refuses a channel number it has no bus for.
+         */
         s->chan[i].info = qlogic_isp_scsi_info;
         s->chan[i].info.max_channel = i;
         scsi_bus_init(&s->chan[i].bus, sizeof(s->chan[i].bus), DEVICE(dev),
