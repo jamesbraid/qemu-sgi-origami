@@ -31,6 +31,8 @@ static void test_registers(void)
     QTestState *qts = head_start();
 
     g_assert_cmphex(reg_read(qts, 0), ==, 0x2d002049);
+    g_assert_cmphex(reg_read(qts, 8) & (1U << 5), ==, 1U << 5);
+    g_assert_cmphex(reg_read(qts, 0x200), ==, 0x18001000);
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(qts, 0x80), ==, 0x20000);
     g_assert_cmphex(reg_read(qts, 0xa0), ==, 0x20008);
@@ -237,6 +239,8 @@ static void test_interrupt_packets(void)
     reg_write(qts, 0x148, 0x4885);
     qtest_writeq(qts, TARGET_C + SCRATCH, 0x123456789abcdef0ULL);
     qtest_set_irq_in(qts, HEAD, NULL, 3, 1);
+    g_assert_cmphex(reg_read(qts, 0x100) & 8, ==, 8);
+    reg_write(qts, 0x100, 0);
     g_assert_cmphex(reg_read(qts, 0x100) & 8, ==, 8);
     g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==,
                     0x123456789abcdef0ULL);
@@ -604,6 +608,9 @@ static void test_page_faults(void)
     reg_write(qts, 0x208, 0x83012);
     reg_write(qts, 0x80, 0xa00000);
     g_assert_cmphex(tx_run(qts, 0x80008000), ==, 0);
+    /* The flush range completes; the rest of local space gets no response. */
+    g_assert_cmphex(tx_run(qts, 0x3fff8000), ==, 0);
+    g_assert_cmphex(tx_run(qts, 0x00008000), ==, 0xdead0002);
     for (unsigned i = 0; i < G_N_ELEMENTS(faults); i++) {
         qtest_writeq(qts, TARGET_A + 0x8000, 0x1122334455667788ULL);
         g_assert_cmphex(tx_run(qts, faults[i]), ==, 0xdead0002);
@@ -622,6 +629,7 @@ static void test_page_faults(void)
     reg_write(qts, 0x110, 2);
     ate_write(qts, 0, 0x8a21);
     qtest_writeq(qts, TARGET_A + 0x8000, 0x1122334455667788ULL);
+    /* Refused by the model's rule, not a claim about the chip. */
     for (unsigned i = 0; i < G_N_ELEMENTS(unresolved); i++) {
         g_assert_cmphex(tx_run(qts, unresolved[i]), ==, 0xdead0002);
         g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,

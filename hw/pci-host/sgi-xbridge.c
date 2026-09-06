@@ -288,6 +288,7 @@ static void xbridge_invalid(SGIXBridgeHeadState *s, hwaddr addr)
     REG(s, 0x100) |= 1U << 24;
     REG(s, 0x170) |= 1U << 24;
     if (first) {
+        /* Model behavior: the window offset, not a crosstalk address. */
         REG(s, 0x10) = addr >> 32;
         REG(s, 0x18) = addr;
         if (REG(s, 0x108) & (1U << 24)) {
