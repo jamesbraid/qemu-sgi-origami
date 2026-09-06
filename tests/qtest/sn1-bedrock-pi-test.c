@@ -14,7 +14,7 @@
 #define NI(reg) (BASE + 0x680000ULL + (reg))
 #define MACHINE "-M none -cpu R10000 -m 256M " \
                 "-object memory-backend-ram,id=bedrock-dma,size=2M " \
-                "-device sgi-bedrock,id=bedrock,processor-count=1," \
+                "-device sgi-bedrock,id=bedrock,processor-count=%u," \
                 "dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
 
 #define CPU_PROTECT 0x00
@@ -74,12 +74,17 @@
 #define RT_MASK ((1ULL << 55) - 1)
 #define RT_TICK_NS 800
 
-static QTestState *start(const char *extra)
+static QTestState *start_processors(unsigned count, const char *extra)
 {
-    QTestState *s = qtest_initf(MACHINE " %s", extra);
+    QTestState *s = qtest_initf(MACHINE " %s", count, extra);
 
     qtest_sysbus_mmio_map(s, BEDROCK_PATH, 0, BASE);
     return s;
+}
+
+static QTestState *start(const char *extra)
+{
+    return start_processors(1, extra);
 }
 
 static QTestState *start_clock(const char *extra)
@@ -108,6 +113,10 @@ static void test_identity_storage_and_width(void)
                                0x89, 0xab, 0xcd, 0xef };
     uint8_t actual[8];
 
+    /*
+     * A qtest access has no issuing processor; the model takes it as slot
+     * A, so bit 0 reads 0 and bit 1 carries the interface.
+     */
     g_assert_cmphex(qtest_readq(s, PI(0, CPU_NUMBER)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(1, CPU_NUMBER)), ==, 2);
     g_assert_cmphex(qtest_readq(s, PI(0, CPU_PRESENT_A)), ==, 1);
@@ -147,6 +156,25 @@ static void test_identity_storage_and_width(void)
     qtest_quit(s);
 }
 
+/*
+ * Presence follows the configured count, filling interface 0 before
+ * interface 1. Which interface a second pair sits on is a board fact the
+ * datasheet leaves to the configuration graph; this order is the model's
+ * until the machine states it.
+ */
+static void test_processor_presence(void)
+{
+    for (unsigned count = 1; count <= 4; count++) {
+        QTestState *s = start_processors(count, "");
+
+        g_assert_cmphex(qtest_readq(s, PI(0, CPU_PRESENT_A)), ==, count >= 1);
+        g_assert_cmphex(qtest_readq(s, PI(0, CPU_PRESENT_B)), ==, count >= 2);
+        g_assert_cmphex(qtest_readq(s, PI(1, CPU_PRESENT_A)), ==, count >= 3);
+        g_assert_cmphex(qtest_readq(s, PI(1, CPU_PRESENT_B)), ==, count >= 4);
+        qtest_quit(s);
+    }
+}
+
 static void test_pending_modify_and_reflection(void)
 {
     QTestState *s = start("");
@@ -158,6 +186,15 @@ static void test_pending_modify_and_reflection(void)
     qtest_writeq(s, PI(0, PENDING_ALIAS), 0x14a);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 10);
     qtest_writeq(s, PI(0, PENDING_ALIAS), 0x04a);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
+    /* The alias at 0x180 and the register at 0x90 are interchangeable. */
+    qtest_writeq(s, PI(0, PENDING_ALIAS), 0x107);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 1ULL << 7);
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x14a);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 10);
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x007);
+    qtest_writeq(s, PI(0, PENDING_ALIAS), 0x04a);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
 
     qtest_writeq(s, PI(0, PENDING_0), UINT64_MAX);
@@ -554,6 +591,13 @@ static void test_real_time_comparators(void)
     g_assert_false(qtest_get_irq(s, 12));
     qtest_writeq(s, PI(1, RT_PENDING_B), 0);
     g_assert_false(qtest_get_irq(s, 17));
+
+    /* Both interfaces count the one clock the local block supplies. */
+    qtest_writeq(s, PI(0, RT_COUNTER), 100);
+    qtest_writeq(s, PI(1, RT_COUNTER), 100);
+    qtest_clock_step(s, 3 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 103);
+    g_assert_cmphex(qtest_readq(s, PI(1, RT_COUNTER)), ==, 103);
     qtest_quit(s);
 }
 
@@ -758,6 +802,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-pi/identity-storage-width",
                    test_identity_storage_and_width);
+    qtest_add_func("sn1/bedrock-pi/processor-presence",
+                   test_processor_presence);
     qtest_add_func("sn1/bedrock-pi/pending-reflection",
                    test_pending_modify_and_reflection);
     qtest_add_func("sn1/bedrock-pi/masks-remap-isolation",
