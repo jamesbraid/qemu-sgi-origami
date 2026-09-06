@@ -377,10 +377,21 @@ static void test_access_errors(void)
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
     g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==, 0x193);
+    /* The first access owns the record; a second one changes nothing. */
+    g_assert_cmphex(reg_read(qts, 0x10), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0x20);
+    qtest_writeq(qts, TARGET_C + SCRATCH, 0);
+    qtest_writeq(qts, BASE + 0x28, 0);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0x20);
+    g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==, 0);
     reg_write(qts, 0x110, 1);
     g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
     reg_write(qts, 0x110, 8);
     g_assert_cmphex(reg_read(qts, 0x100), ==, 0);
+    /* Cleared and rearmed: the next invalid access is a first one again. */
+    qtest_writeq(qts, BASE + 0x30, 0);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0x30);
+    g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==, 0x193);
     reg_write(qts, 0xb0, UINT32_MAX);
     g_assert_cmphex(reg_read(qts, 0xb0) & 3, ==, 0);
     reg_write(qts, 0x178, UINT32_MAX);
@@ -405,7 +416,9 @@ static void test_requester_bounds(void)
 static void test_raw_pci_interrupts(void)
 {
     QTestState *qts = transport_start(
-        "-device sgi-bridge-dma-test,bus=head.0,addr=0.1");
+        "-device sgi-bridge-dma-test,bus=head.0,addr=0.1 "
+        "-device sgi-bridge-dma-test,bus=head.0,addr=2,interrupt-pin=3");
+    uint8_t one[4] = { 1 };
 
     qtest_writel(qts, BASE + 0x20110, 0x01200000);
     qtest_writel(qts, BASE + 0x20104, 6);
@@ -422,6 +435,14 @@ static void test_raw_pci_interrupts(void)
     card_write(qts, 0x10, 0);
     g_assert_false(qtest_get_irq(qts, 0));
     g_assert_cmphex(reg_read(qts, 0x100) & 0xff, ==, 0);
+    /* Slot 2's pin C is output 10, told apart from slot 0's pin A. */
+    qtest_writel(qts, BASE + 0x22010, 0x02000000);
+    qtest_writel(qts, BASE + 0x22004, 6);
+    reg_write(qts, 0x210, 0x83020);
+    qtest_memwrite(qts, BASE + 0x600000 + 0x10, one, sizeof(one));
+    g_assert_true(qtest_get_irq(qts, 10));
+    g_assert_false(qtest_get_irq(qts, 0));
+    g_assert_false(qtest_get_irq(qts, 8));
     qtest_quit(qts);
 }
 
