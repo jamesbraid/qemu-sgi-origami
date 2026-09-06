@@ -1130,14 +1130,14 @@ static void disks_create(DiskPair *disks)
     for (i = 0; i < SECTOR_BYTES; i++) {
         image[SECTOR_BYTES + i] = disk0_sector1_byte(i);
     }
-    disks->path[0] = g_build_filename(disks->dir, "channel0.raw", NULL);
+    disks->path[0] = g_build_filename(disks->dir, "disk0.raw", NULL);
     g_assert_true(g_file_set_contents(disks->path[0], (const char *)image,
                                       DISK_BYTES, &err));
     g_assert_no_error(err);
 
     memset(image, 0, DISK_BYTES);
     memset(image, DISK1_SECTOR0_FILL, SECTOR_BYTES);
-    disks->path[1] = g_build_filename(disks->dir, "channel1.raw", NULL);
+    disks->path[1] = g_build_filename(disks->dir, "disk1.raw", NULL);
     g_assert_true(g_file_set_contents(disks->path[1], (const char *)image,
                                       DISK_BYTES, &err));
     g_assert_no_error(err);
@@ -1358,11 +1358,12 @@ static void wait_status(QTestState *qts, uint32_t handle, uint8_t *status)
 
 /* A command with no data, run to completion; the caller reads the status. */
 static void run_simple(QTestState *qts, uint32_t handle, unsigned channel,
-                       unsigned target, uint8_t op, uint8_t *status)
+                       unsigned target, unsigned lun, uint8_t op,
+                       uint8_t *status)
 {
     uint8_t cdb[6] = { op };
 
-    submit_a64(qts, ring.rqst_next, handle, channel, target, 0, cdb,
+    submit_a64(qts, ring.rqst_next, handle, channel, target, lun, cdb,
                sizeof(cdb), 0, NULL, 0);
     wait_status(qts, handle, status);
 }
@@ -1373,11 +1374,13 @@ static void run_simple(QTestState *qts, uint32_t handle, unsigned channel,
  * a reset did read the completion themselves instead of calling here.
  */
 static void absorb_unit_attention(QTestState *qts, unsigned channel,
-                                  unsigned target, uint32_t handle)
+                                  unsigned target, unsigned lun,
+                                  uint32_t handle)
 {
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
 
-    run_simple(qts, handle, channel, target, SCSI_TEST_UNIT_READY, status);
+    run_simple(qts, handle, channel, target, lun, SCSI_TEST_UNIT_READY,
+               status);
 }
 
 static void put_lba10(uint8_t *cdb, uint32_t lba, uint16_t blocks)
@@ -1392,8 +1395,8 @@ static void put_lba10(uint8_t *cdb, uint32_t lba, uint16_t blocks)
 
 /* READ(10) of one sector into one descriptor, GOOD, into the caller's copy. */
 static void read_sector(QTestState *qts, unsigned channel, unsigned target,
-                        uint32_t handle, uint32_t lba, uint32_t buf_phys,
-                        uint8_t *out)
+                        unsigned lun, uint32_t handle, uint32_t lba,
+                        uint32_t buf_phys, uint8_t *out)
 {
     uint8_t cdb[10] = { SCSI_READ_10 };
     const RingSeg seg = { DIRECT64(buf_phys), SECTOR_BYTES };
@@ -1401,7 +1404,7 @@ static void read_sector(QTestState *qts, unsigned channel, unsigned target,
 
     put_lba10(cdb, lba, 1);
     qtest_memset(qts, buf_phys, 0xcc, SECTOR_BYTES);
-    submit_a64(qts, ring.rqst_next, handle, channel, target, 0, cdb,
+    submit_a64(qts, ring.rqst_next, handle, channel, target, lun, cdb,
                sizeof(cdb), ISP_REQ_CONTROL_DATA_IN, &seg, 1);
     wait_status(qts, handle, status);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
@@ -1417,8 +1420,8 @@ static void read_sector(QTestState *qts, unsigned channel, unsigned target,
  * correction leaves alone in either direction.
  */
 static void write_sector(QTestState *qts, unsigned channel, unsigned target,
-                         uint32_t handle, uint32_t lba, uint32_t buf_phys,
-                         uint8_t fill)
+                         unsigned lun, uint32_t handle, uint32_t lba,
+                         uint32_t buf_phys, uint8_t fill)
 {
     uint8_t cdb[10] = { SCSI_WRITE_10 };
     const RingSeg seg = { DIRECT64(buf_phys), SECTOR_BYTES };
@@ -1426,7 +1429,7 @@ static void write_sector(QTestState *qts, unsigned channel, unsigned target,
 
     put_lba10(cdb, lba, 1);
     qtest_memset(qts, buf_phys, fill, SECTOR_BYTES);
-    submit_a64(qts, ring.rqst_next, handle, channel, target, 0, cdb,
+    submit_a64(qts, ring.rqst_next, handle, channel, target, lun, cdb,
                sizeof(cdb), ISP_REQ_CONTROL_DATA_OUT, &seg, 1);
     wait_status(qts, handle, status);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
@@ -1472,8 +1475,8 @@ static void test_queue_init_in_both_orders_with_distinct_bases(const void *data)
         g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
         g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
 
-        absorb_unit_attention(qts, 0, DISK_TARGET, 0x000000a0);
-        read_sector(qts, 0, DISK_TARGET, 0x00000001, 0, BUF_PHYS, got);
+        absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
+        read_sector(qts, 0, DISK_TARGET, 0, 0x00000001, 0, BUF_PHYS, got);
         expect_sector(got, DISK0_SECTOR0_FILL);
 
         qtest_quit(qts);
@@ -1507,6 +1510,9 @@ static void test_response_queue_high_word_participates(const void *data)
     /* Nothing sits at this target, so the answer needs no disk. */
     submit_a64(qts, 0, 0x0000dead, 0, EMPTY_TARGET, 0, cdb, sizeof(cdb), 0,
                NULL, 0);
+
+    /* The entry was consumed, so the quiet ring below is the refusal. */
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
 
     qtest_memread(qts, RESP_PHYS, slot0, sizeof(slot0));
     g_assert_cmpmem(slot0, sizeof(slot0), sentinel, sizeof(sentinel));
@@ -1558,7 +1564,7 @@ static void test_a64_request_with_continuation_across_ring_wrap(
      * at the last slot, which is where the command has to go for its
      * continuation to wrap.
      */
-    absorb_unit_attention(qts, 0, DISK_TARGET, 0x000000a0);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
     memset(marker, 0, sizeof(marker));
     marker[ISP_ENTRY_OFF_TYPE] = ISP_ENTRY_TYPE_MARKER;
     marker[ISP_ENTRY_OFF_COUNT] = 1;
@@ -1626,14 +1632,57 @@ static void test_same_target_both_channels_read_different_disks(
     init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
                 RESP_SLOTS, true);
 
-    absorb_unit_attention(qts, 0, DISK_TARGET, 0x000000a0);
-    absorb_unit_attention(qts, 1, DISK_TARGET, 0x000000a1);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x000000a1);
 
     /* wait_status() refuses a completion carrying the other handle. */
-    read_sector(qts, 0, DISK_TARGET, 0x00000011, 0, BUF_PHYS, got);
+    read_sector(qts, 0, DISK_TARGET, 0, 0x00000011, 0, BUF_PHYS, got);
     expect_sector(got, DISK0_SECTOR0_FILL);
 
-    read_sector(qts, 1, DISK_TARGET, 0x00000022, 0, BUF_PHYS, got);
+    read_sector(qts, 1, DISK_TARGET, 0, 0x00000022, 0, BUF_PHYS, got);
+    expect_sector(got, DISK1_SECTOR0_FILL);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * Two LUNs behind one target. The core's device lookup answers the first
+ * device at a target when nothing sits at the LUN asked for, so a
+ * duplicate-address check that does not compare the LUN refuses the second
+ * disk and the machine will not start. Both are read, because starting is
+ * only half of it: a request has to reach the LUN it names.
+ */
+static void test_two_luns_behind_one_target(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts;
+    g_autofree char *args = NULL;
+    uint8_t got[SECTOR_BYTES];
+
+    disks_create(&disks);
+    args = g_strdup_printf(
+        MACHINE
+        " -drive if=none,id=d0,format=raw,file=%s"
+        " -device scsi-hd,bus=scsi.3,scsi-id=1,lun=0,drive=d0"
+        " -drive if=none,id=d1,format=raw,file=%s"
+        " -device scsi-hd,bus=scsi.3,scsi-id=1,lun=1,drive=d1",
+        disks.path[0], disks.path[1]);
+    qts = qtest_init(args);
+    aim_window_at_memory_bar(qts);
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x000000c0);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 1, 0x000000c1);
+
+    read_sector(qts, 1, DISK_TARGET, 0, 0x00000071, 0, BUF_PHYS, got);
+    expect_sector(got, DISK0_SECTOR0_FILL);
+
+    read_sector(qts, 1, DISK_TARGET, 1, 0x00000072, 0, BUF_PHYS, got);
     expect_sector(got, DISK1_SECTOR0_FILL);
 
     qtest_quit(qts);
@@ -1662,10 +1711,10 @@ static void test_write_persists_on_channel_1(const void *data)
      * Both power-on unit attentions collected, so the ones the tests read
      * after the reset can only have come from the reset.
      */
-    absorb_unit_attention(qts, 0, DISK_TARGET, 0x000000a0);
-    absorb_unit_attention(qts, 1, DISK_TARGET, 0x000000a1);
-    write_sector(qts, 1, DISK_TARGET, 0x00000031, 5, BUF_PHYS, 0x5a);
-    read_sector(qts, 1, DISK_TARGET, 0x00000032, 5, BUF_PHYS, got);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x000000a1);
+    write_sector(qts, 1, DISK_TARGET, 0, 0x00000031, 5, BUF_PHYS, 0x5a);
+    read_sector(qts, 1, DISK_TARGET, 0, 0x00000032, 5, BUF_PHYS, got);
     expect_sector(got, 0x5a);
 
     isp_writew(qts, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
@@ -1675,18 +1724,20 @@ static void test_write_persists_on_channel_1(const void *data)
                 RESP_SLOTS, true);
 
     /* Channel 1's disk saw the reset, the same as channel 0's. */
-    run_simple(qts, 0x00000041, 1, DISK_TARGET, SCSI_TEST_UNIT_READY, status);
+    run_simple(qts, 0x00000041, 1, DISK_TARGET, 0, SCSI_TEST_UNIT_READY,
+               status);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==,
                     ISP_SCSI_STATUS_CHECK_CONDITION);
-    run_simple(qts, 0x00000042, 0, DISK_TARGET, SCSI_TEST_UNIT_READY, status);
+    run_simple(qts, 0x00000042, 0, DISK_TARGET, 0, SCSI_TEST_UNIT_READY,
+               status);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==,
                     ISP_SCSI_STATUS_CHECK_CONDITION);
 
-    read_sector(qts, 1, DISK_TARGET, 0x00000033, 5, BUF_PHYS, got);
+    read_sector(qts, 1, DISK_TARGET, 0, 0x00000033, 5, BUF_PHYS, got);
     expect_sector(got, 0x5a);
 
     /* The other channel's block at the same number never took the write. */
-    read_sector(qts, 0, DISK_TARGET, 0x00000034, 5, BUF_PHYS, got);
+    read_sector(qts, 0, DISK_TARGET, 0, 0x00000034, 5, BUF_PHYS, got);
     expect_sector(got, 0x00);
 
     qtest_quit(qts);
@@ -1843,6 +1894,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/isp12160/same-target-both-channels-read-different-disks", NULL,
         test_same_target_both_channels_read_different_disks);
+    qtest_add_data_func("sn0/isp12160/two-luns-behind-one-target", NULL,
+                        test_two_luns_behind_one_target);
     qtest_add_data_func("sn0/isp12160/write-persists-on-channel-1", NULL,
                         test_write_persists_on_channel_1);
     qtest_add_data_func("sn0/isp12160/inquiry-real-payload-on-both-channels",
