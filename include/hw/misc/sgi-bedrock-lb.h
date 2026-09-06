@@ -33,6 +33,7 @@ struct SGIBedrockLBState {
     uint64_t rtc_local;
     uint64_t rtc_filter;
     uint64_t scratch[5];
+    uint64_t vector_params;
     uint64_t vector_route;
     uint64_t vector_data;
 };
