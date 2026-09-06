@@ -1801,6 +1801,15 @@ void mips_cpu_do_interrupt(CPUState *cs)
 
 bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
+    if (interrupt_request & CPU_INTERRUPT_NMI) {
+        CPUMIPSState *env = cpu_env(cs);
+
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_NMI);
+        cs->exception_index = EXCP_NMI;
+        env->error_code = 0;
+        mips_cpu_do_interrupt(cs);
+        return true;
+    }
     if ((interrupt_request & CPU_INTERRUPT_DWATCH) &&
         mips_r10k_deliver_delayed_watch(cs)) {
         return true;
