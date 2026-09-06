@@ -64,8 +64,35 @@
 /* Offsets in the adapter's own window: PCI space, so no plus-four applies. */
 #define ISP_REG_ID_LOW          0x00
 #define ISP_REG_ID_HIGH         0x02
+#define ISP_REG_BUS_CFG0        0x04
+#define ISP_REG_BUS_CFG1        0x06
+#define ISP_REG_BUS_CTRL        0x08
+#define ISP_REG_DMA_CMD_CFG     0x20
+#define ISP_REG_DMA_DATA_CFG    0x40
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX(n)          (ISP_REG_MAILBOX_BASE + (n) * 2)
+
+/* Two offsets inside the banked window at 0x80, far enough apart to differ. */
+#define ISP_REG_BANK_BASE       0x80
+#define ISP_REG_BANK_MIDDLE     0xa0
+
+#define ISP_BUS_CTRL_SOFT_RESET         0x0001
+#define ISP_BUS_CTRL_INT_ENABLE         0x0002
+#define ISP_BUS_CTRL_RISC_INT_ENABLE    0x0004
+
+/* Bus configuration 1 bits 9:8 are this family's four-way bank selector. */
+#define ISP_BANK_SEL_RISC       0x0000
+#define ISP_BANK_SEL_SXP0       0x0100
+#define ISP_BANK_SEL_SXP1       0x0200
+#define ISP_BANK_SEL_DMA        0x0300
+
+/*
+ * The zero selection comes last, so a model that ignores the field ends up
+ * with the RISC bank's value everywhere and fails the read-back loop.
+ */
+static const uint16_t bank_selections[] = {
+    ISP_BANK_SEL_SXP0, ISP_BANK_SEL_SXP1, ISP_BANK_SEL_DMA, ISP_BANK_SEL_RISC
+};
 
 #define ISP_VENDOR_ID           0x1077
 #define ISP12160_DEVICE_ID      0x1216
@@ -209,6 +236,149 @@ static void test_both_bars_alias_one_register_file(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Four banks share the window at 0x80, chosen by bus configuration 1 bits
+ * 9:8 rather than the ISP1040's single bit 3. Every selection writes two
+ * offsets and all eight words come back, so a model that aliases the SCSI
+ * processor and DMA banks, or decodes the older field, is rejected.
+ */
+static void test_three_banks_hold_distinct_words(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    unsigned i;
+
+    aim_window_at_memory_bar(qts);
+
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        uint16_t sel = bank_selections[i];
+
+        isp_writew(qts, ISP_REG_BUS_CFG1, sel);
+        isp_writew(qts, ISP_REG_BANK_BASE, 0x1000 + sel);
+        isp_writew(qts, ISP_REG_BANK_MIDDLE, 0x2000 + sel);
+    }
+
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        uint16_t sel = bank_selections[i];
+
+        isp_writew(qts, ISP_REG_BUS_CFG1, sel);
+        g_assert_cmphex(isp_readw(qts, ISP_REG_BANK_BASE), ==, 0x1000 + sel);
+        g_assert_cmphex(isp_readw(qts, ISP_REG_BANK_MIDDLE), ==, 0x2000 + sel);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The ISP1040 drops everything outside its threshold, burst and bank-select
+ * bits. This part's selector sits above that mask, and no source establishes
+ * a narrower one, so the register stores a write whole and hands it back.
+ */
+static void test_cfg1_reads_back_all_bits(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+
+    aim_window_at_memory_bar(qts);
+
+    isp_writew(qts, ISP_REG_BUS_CFG1, 0xb2c5);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0xb2c5);
+
+    isp_writew(qts, ISP_REG_BUS_CFG1, 0x0000);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0x0000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The guest's soft reset puts the window and its selector back to the
+ * power-on state. A bank that survived would hand a re-initialising driver
+ * the previous run's contents, and every selection is checked because
+ * clearing one bank is what a model with a single backing array does.
+ */
+static void test_soft_reset_clears_banks_and_cfg1(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    unsigned i;
+
+    aim_window_at_memory_bar(qts);
+
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        isp_writew(qts, ISP_REG_BUS_CFG1, bank_selections[i]);
+        isp_writew(qts, ISP_REG_BANK_BASE, 0x1000 + bank_selections[i]);
+    }
+
+    isp_writew(qts, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0);
+
+    for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
+        isp_writew(qts, ISP_REG_BUS_CFG1, bank_selections[i]);
+        g_assert_cmphex(isp_readw(qts, ISP_REG_BANK_BASE), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The ISP1040's two flat DMA blocks are not in this part's map; the family
+ * moved that state into the DMA bank. Storing a write at the old offsets
+ * would hand a driver back a configuration the adapter never applied.
+ */
+static void test_flat_dma_registers_are_unimplemented(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+
+    aim_window_at_memory_bar(qts);
+
+    isp_writew(qts, ISP_REG_DMA_CMD_CFG, 0xffff);
+    isp_writew(qts, ISP_REG_DMA_DATA_CFG, 0xffff);
+
+    g_assert_cmphex(isp_readw(qts, ISP_REG_DMA_CMD_CFG), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_DMA_DATA_CFG), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Nothing reads a revision from bus configuration 0 on this part and the
+ * contract assigns it none, so it reads zero rather than repeating the
+ * ISP1040's revision field.
+ */
+static void test_bus_cfg0_reads_zero(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+
+    aim_window_at_memory_bar(qts);
+
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG0), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Bit 0 requests the soft reset and the adapter clears it: that is the bit
+ * both drivers poll to learn the reset finished. The reset lands on the
+ * whole register, so enables written in the same word do not survive it
+ * either, which is how the ISP1040 already behaves. Both drivers enable
+ * interrupts in a later write, and that write is ordinary storage.
+ */
+static void test_interface_control_reset_self_clears(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+
+    aim_window_at_memory_bar(qts);
+
+    isp_writew(qts, ISP_REG_BUS_CTRL,
+               ISP_BUS_CTRL_SOFT_RESET | ISP_BUS_CTRL_INT_ENABLE |
+               ISP_BUS_CTRL_RISC_INT_ENABLE);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CTRL), ==, 0);
+
+    isp_writew(qts, ISP_REG_BUS_CTRL,
+               ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CTRL), ==,
+                    ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -218,6 +388,18 @@ int main(int argc, char **argv)
                         test_window_accepts_only_16_bit);
     qtest_add_data_func("sn0/isp12160/both-bars-alias-one-register-file",
                         NULL, test_both_bars_alias_one_register_file);
+    qtest_add_data_func("sn0/isp12160/three-banks-hold-distinct-words", NULL,
+                        test_three_banks_hold_distinct_words);
+    qtest_add_data_func("sn0/isp12160/cfg1-reads-back-all-bits", NULL,
+                        test_cfg1_reads_back_all_bits);
+    qtest_add_data_func("sn0/isp12160/soft-reset-clears-banks-and-cfg1", NULL,
+                        test_soft_reset_clears_banks_and_cfg1);
+    qtest_add_data_func("sn0/isp12160/flat-dma-registers-are-unimplemented",
+                        NULL, test_flat_dma_registers_are_unimplemented);
+    qtest_add_data_func("sn0/isp12160/bus-cfg0-reads-zero", NULL,
+                        test_bus_cfg0_reads_zero);
+    qtest_add_data_func("sn0/isp12160/interface-control-reset-self-clears",
+                        NULL, test_interface_control_reset_self_clears);
 
     return g_test_run();
 }
