@@ -293,6 +293,9 @@ static bool l1_task_command(uint32_t address, uint16_t command)
         return command == 3;
     }
     switch (command) {
+    case 1:
+    case 9:
+    case 0xa:
     case 2:
     case 3:
     case 5:
@@ -352,6 +355,18 @@ static void l1_request(SGIL1State *s)
         return;
     }
     switch (command) {
+    case 1:
+    case 9:
+    case 0xa:
+        if (count) {
+            error = -100;
+            break;
+        }
+        /* Fixed values for the single-chassis protocol model. */
+        field_count = command == 0xa ? 2 : 1;
+        field_length = 5 * field_count;
+        memset(fields, 0, field_length);
+        break;
     case 0x1004:
     case 0x1005:
         if (count != 1 || args[0] != 1) {
