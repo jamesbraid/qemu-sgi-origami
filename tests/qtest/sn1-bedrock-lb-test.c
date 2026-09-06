@@ -31,8 +31,17 @@
 #define SCRATCH(n)      (0x8000 + (n) * 8)
 #define SCRATCH_WZ(n)   (0x8040 + (n) * 8)
 #define SCRATCH_RS(n)   (0x8058 + ((n) - 3) * 8)
+#define VECTOR_PARAMS   0xc000
 #define VECTOR_ROUTE    0xc008
 #define VECTOR_DATA     0xc010
+#define VECTOR_STATUS   0xc020
+#define VECTOR_RETURN   0xc028
+#define VECTOR_READ     0xc030
+#define VECTOR_STATUS_CLEAR 0xc038
+
+/* The one-bit type field is the model's reading of an open width. */
+#define VECTOR_PARAMS_MASK (1ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
+                            (0x7ffULL << 40))
 
 static QTestState *lb_start(const char *extra)
 {
@@ -176,6 +185,66 @@ static void test_scratch_aliases_and_reset(void)
     qtest_quit(s);
 }
 
+/*
+ * The vector registers as the datasheet's checklist states them: parameters
+ * keep their fields with busy reading clear, a status-clear write is
+ * accepted, and route and data are plain storage. No peer can answer a
+ * launch on a one-node machine, so the launch is logged as unimplemented
+ * and status, return route and read data hold no reply.
+ */
+static void test_vector_registers(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn1-lb-vector-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", log);
+    s = lb_start(extra);
+
+    qtest_writeq(s, LB_BASE + VECTOR_ROUTE, 0xfedcba9876543210ULL);
+    qtest_writeq(s, LB_BASE + VECTOR_DATA, 0x1020304050607080ULL);
+    qtest_writeq(s, LB_BASE + VECTOR_PARAMS, UINT64_MAX);
+    /* Bit 1 reading 0 is the model's one-bit type, not a datasheet fact. */
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_PARAMS), ==,
+                    VECTOR_PARAMS_MASK);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_ROUTE), ==,
+                    0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_DATA), ==,
+                    0x1020304050607080ULL);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==, 0);
+    qtest_writeq(s, LB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
+    /* Read-clear is the family precedent and open here; status never sets. */
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS_CLEAR), ==, 0);
+    qtest_writeq(s, LB_BASE + VECTOR_STATUS, UINT64_MAX);
+    qtest_writeq(s, LB_BASE + VECTOR_RETURN, UINT64_MAX);
+    qtest_writeq(s, LB_BASE + VECTOR_READ, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==, 0);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "vector launch"));
+    g_assert_null(strstr(found, "unsupported write at 0xc000"));
+    g_assert_null(strstr(found, "unsupported read at 0xc020"));
+    g_assert_null(strstr(found, "unsupported read at 0xc028"));
+    g_assert_null(strstr(found, "unsupported read at 0xc030"));
+    g_assert_null(strstr(found, "unsupported write at 0xc038"));
+    g_assert_null(strstr(found, "unsupported read at 0xc038"));
+    g_assert_null(strstr(found, "read from write-only register 0xc038"));
+    g_assert_nonnull(strstr(found, "write to read-only register 0xc020"));
+    g_assert_nonnull(strstr(found, "write to read-only register 0xc028"));
+    g_assert_nonnull(strstr(found, "write to read-only register 0xc030"));
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
 static void wait_for_migration(QTestState *from)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -216,6 +285,7 @@ static void test_migration(void)
     qtest_writeq(from, LB_BASE + DEBUG_SELECT, 0x2a);
     qtest_writeq(from, LB_BASE + VECTOR_ROUTE, 0x123456789abcdef0ULL);
     qtest_writeq(from, LB_BASE + VECTOR_DATA, 0xfedcba9876543210ULL);
+    qtest_writeq(from, LB_BASE + VECTOR_PARAMS, 0x5a5a5a5a5a5a5a5aULL);
     qtest_irq_intercept_out_named(to, LB_PATH, "error");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -233,6 +303,8 @@ static void test_migration(void)
                     0x123456789abcdef0ULL);
     g_assert_cmphex(qtest_readq(to, LB_BASE + VECTOR_DATA), ==,
                     0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(to, LB_BASE + VECTOR_PARAMS), ==,
+                    0x5a5a5a5a5a5a5a5aULL & VECTOR_PARAMS_MASK);
     g_assert_true(qtest_get_irq(to, 0));
     qtest_writeq(to, LB_BASE + ERROR_CLEAR, 1ULL << 9);
     g_assert_false(qtest_get_irq(to, 0));
@@ -253,6 +325,7 @@ int main(int argc, char **argv)
                    test_byte_order_and_width);
     qtest_add_func("sn1/bedrock-lb/scratch-reset",
                    test_scratch_aliases_and_reset);
+    qtest_add_func("sn1/bedrock-lb/vector-registers", test_vector_registers);
     qtest_add_func("sn1/bedrock-lb/migration", test_migration);
     return g_test_run();
 }

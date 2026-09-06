@@ -29,10 +29,21 @@
 #define LB_SCRATCH_BASE    0x8000
 #define LB_SCRATCH_WZ_BASE 0x8040
 #define LB_SCRATCH_RS_BASE 0x8058
+#define LB_VECTOR_PARAMS   0xc000
 #define LB_VECTOR_ROUTE    0xc008
 #define LB_VECTOR_DATA     0xc010
+#define LB_VECTOR_STATUS   0xc020
+#define LB_VECTOR_RETURN   0xc028
+#define LB_VECTOR_READ     0xc030
+#define LB_VECTOR_STATUS_CLEAR 0xc038
 
 #define LB_PASSWORD 0x53474972756c6573ULL
+/*
+ * Type, address, write id and request id; busy (bit 63) never reads set.
+ * The type width is open: one bit in the union, two in the companion header.
+ */
+#define LB_VECTOR_PARAMS_MASK (1ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
+                               (0x7ffULL << 40))
 #define LB_ERROR_MASK 0x7ffULL
 #define LB_NODES_ABSENT_MASK 0x80ff80ff80ff80ffULL
 #define LB_RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
@@ -99,10 +110,22 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
         return s->rtc_local;
     case LB_RTC_FILTER:
         return s->rtc_filter;
+    case LB_VECTOR_PARAMS:
+        return s->vector_params;
     case LB_VECTOR_ROUTE:
         return s->vector_route;
     case LB_VECTOR_DATA:
         return s->vector_data;
+    case LB_VECTOR_STATUS:
+    case LB_VECTOR_RETURN:
+    case LB_VECTOR_READ:
+        /* No peer exists to answer a launch, so no reply is ever latched. */
+        return 0;
+    case LB_VECTOR_STATUS_CLEAR:
+        /* Whether a read or a write clears is open; status never sets. */
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: read of the vector "
+                      "status-clear alias; read-and-clear is not modelled\n");
+        return 0;
     case LB_CPU_OVERRIDE:
     case LB_SOFT_RESET:
     case LB_ERROR_CLEAR:
@@ -199,11 +222,27 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
     case LB_RTC_FILTER:
         s->rtc_filter = value & LB_RTC_FILTER_MASK;
         return;
+    case LB_VECTOR_PARAMS:
+        s->vector_params = value & LB_VECTOR_PARAMS_MASK;
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: vector launch along route "
+                      "0x%" PRIx64 " has no peer to answer\n",
+                      s->vector_route);
+        return;
     case LB_VECTOR_ROUTE:
         s->vector_route = value;
         return;
     case LB_VECTOR_DATA:
         s->vector_data = value;
+        return;
+    case LB_VECTOR_STATUS_CLEAR:
+        /* Valid already reads clear: nothing latches a reply here. */
+        return;
+    case LB_VECTOR_STATUS:
+    case LB_VECTOR_RETURN:
+    case LB_VECTOR_READ:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-lb: write to read-only register 0x%"
+                      HWADDR_PRIx "\n", offset);
         return;
     case LB_MICROLAN:
     case LB_DEBUG_PINS:
@@ -240,6 +279,7 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->scratch[0] = 0;
     s->scratch[3] = 0;
     s->scratch[4] = 0;
+    s->vector_params = 0;
     s->vector_route = 0;
     s->vector_data = 0;
 }
@@ -272,6 +312,7 @@ static const VMStateDescription vmstate_lb = {
         VMSTATE_UINT64(rtc_local, SGIBedrockLBState),
         VMSTATE_UINT64(rtc_filter, SGIBedrockLBState),
         VMSTATE_UINT64_ARRAY(scratch, SGIBedrockLBState, 5),
+        VMSTATE_UINT64(vector_params, SGIBedrockLBState),
         VMSTATE_UINT64(vector_route, SGIBedrockLBState),
         VMSTATE_UINT64(vector_data, SGIBedrockLBState),
         VMSTATE_END_OF_LIST()
