@@ -26,9 +26,11 @@ is reproduced.
 Identity and revisions
 ======================
 
-One PCI identity answers for the whole family; the configuration
-revision byte selects the part -- 5, the ISP1040C, matching a
-captured Origin 200 boot. A guest reads the revision from two places
+One PCI identity, ``0x1020``, answers for the ISP1020 and ISP1040
+members of the family; the configuration revision byte selects the
+part -- 5, the ISP1040C, matching a captured Origin 200 boot. The
+ISP12160 answers a distinct identity, ``0x1216``, rather than a
+revision of this one. A guest reads the revision from two places
 numbered from different origins: OpenBSD and IRIX read the PCI byte
 (and OpenBSD derives the transfer clock from it), Linux reads bus
 configuration 0's low four bits, which run one ahead across the
@@ -54,6 +56,151 @@ validation, and OpenBSD's fallback path prints that the NVRAM is
 corrupt and proceeds on built-in defaults. A real Origin 200's EEPROM
 contents were never sourced, so failing the way real silence would
 is the only honest answer.
+
+The ISP12160 and the family layout
+==================================
+
+The ISP12160 is a second member of this device family: two independent
+SCSI channels behind the same mailbox and ring protocol, sharing the
+ISP1040's firmware abstraction but differing in PCI identity, register
+bank layout, RAM policy and channel count. QEMU keeps one abstract base
+type for the family. Each part supplies its own record of values,
+applied by that part's own class-init function; a part differs from
+its sibling only where that record says so.
+
+The record fixes the PCI device identifier and revision, the channel
+count, whether bus configuration 0 reports a revision at all, whether
+the bank window at ``0x80``-``0xc0`` is the ISP1040's two-way select or
+the ISP1080 family's four-way select, whether a RAM command wraps at
+the end of controller RAM or is rejected instead, whether a mailbox
+submission arriving while the previous result is still held overwrites
+that result or is refused, whether the A64 RAM load command ``0x0009``
+is in the part's mailbox set, and the three about-firmware words
+``0x0008`` returns. The ISP1040 answers PCI identity ``0x1020``,
+revision ``0x05``, one channel, a revision through bus configuration 0,
+the two-way bank, wrapping RAM, an overwritten mailbox result, no A64
+RAM load, and firmware version 1.0.0. The ISP12160 answers PCI identity
+``0x1216``, revision ``0x06``, two channels, no revision through bus
+configuration 0, the four-way bank, non-wrapping RAM, a refused mailbox
+submission, the A64 RAM load command, and firmware version 10.4.0,
+matching the selected IRIX ISP12160 program. Vendor identity ``0x1077``
+and the SCSI storage class are common to both.
+
+Bus configuration 1 bits 9 and 8 are the ISP1080 family's bank
+selector: value 0 picks the RISC bank, matching the ISP1040's own bank
+0, and values 1, 2 and 3 pick SXP0, SXP1 and DMA. Each bank is separate
+32-word storage behind the same ``0x80``-``0xc0`` window the ISP1040
+presents its two banks through, so the observable of the select working
+is that offset holding four different values instead of two. The
+ISP12160 stores bus configuration 1 whole -- all sixteen written
+bits, reset to zero -- rather than the ISP1040's FIFO threshold and
+burst enable bits, because the ISP1040's field meanings belong to a
+register the ISP1080 family repurposes for bank selection. The flat DMA
+configuration and control registers at ``0x20``, ``0x22``, ``0x40`` and
+``0x42``, which the ISP1040 decodes directly, are unimplemented on the
+ISP12160: reads answer zero and log, writes are ignored and logged,
+because the banked layout replaces those registers rather than adding
+to them.
+
+The ISP12160 owns two SCSI buses where the ISP1040 owns one. Every
+request's device word and every mailbox channel selector carries a
+channel bit -- bit 15 of the word, equivalently bit 7 of the target
+byte at request offset ``0x09`` -- that picks between them; target and
+LUN numbers are local to the channel they arrive on. Each bus carries
+its own channel number stamped into it, and again into every SCSI
+device plugged onto it, so that QEMU's own address bookkeeping -- which
+otherwise assumes channel zero -- sees the same target number on two
+different addresses, one per channel, instead of a collision; the same
+stamp keeps the two channels' devices on distinct migration paths.
+
+The request ring and the response ring belong to the adapter, not to a
+channel: one pair of ring bases and one pair of ring cursors serves
+both buses, and the channel bit inside each entry routes that entry to
+the right one. The mailbox commands that initialise a queue carry no
+channel selector, so a queue pair per channel is not something the
+protocol can express; a guest that initialised two ring pairs expecting
+both to remain live would find the second initialisation replacing the
+first.
+
+Controller RAM is 65,536 16-bit words on both parts, cleared on device
+reset and on soft reset. The ISP1040 folds a RAM command whose range
+runs past the end of that array back to the start; the ISP12160 does
+not. A range whose widened start plus count exceeds 65,536 is rejected
+with parameter error ``0x4006`` and nothing is written. The whole
+transfer is read from host memory before any word of it is kept, so a
+DMA read the fabric refuses is rejected with host interface error
+``0x4002`` without committing a prefix into controller RAM -- a
+committed prefix would make the guest's own checksum blame the image
+for bytes the model invented rather than bytes the guest sent.
+
+A mailbox result and its pending interrupt persist until the guest
+acknowledges, in either order, by clearing the semaphore and issuing
+the RISC-interrupt-clear host command. On the ISP1040 a second
+submission arriving while that result is still held simply overwrites
+it. On the ISP12160 it does not: the submission is refused, logged as a
+guest error, and the held result is left in place, so a command's
+answer cannot be lost under a second command the guest had no business
+sending before acknowledging the first.
+
+The branch implements four recovery mailbox commands: command abort
+``0x0015``, abort device ``0x0016``, target reset ``0x0017``, and bus
+reset ``0x0018``. Command abort takes the channel in mailbox 1 bit 15,
+the target and LUN in the rest of mailbox 1, and the handle split
+across mailboxes 2 and 3, and cancels the one outstanding command
+identified by that handle on that channel, target and LUN. Abort
+device takes the same channel, target and LUN selector with mailboxes
+2 and 3 zero, and cancels every outstanding request for that LUN.
+Target reset takes the channel and target packed into mailbox 1's
+upper byte and cancels every outstanding request to that target on
+that channel, across LUNs. Bus reset takes the configured reset-delay
+value in mailbox 1 and the channel directly in mailbox 2, and cancels
+every outstanding request on that channel. A cancelled request retires
+through the response ring like any other completion, carrying a
+completion value distinct from the mailbox result the recovery command
+itself returns: command abort and abort device retire their victims
+with completion ``0x0005``; target reset and bus reset retire theirs
+with completion ``0x0004``; state flags are zero either way, since no
+further phase was reached after the cancellation. Command abort answers
+command error ``0x4005`` for a handle that is unknown or does not match
+the request found under that handle's channel, target and LUN, and
+touches nothing. All four commands answer parameter error ``0x4006``
+for a channel selector at or beyond the part's channel count. Abort
+device completes ``0x4000`` when nothing is outstanding for the
+selected LUN.
+
+The branch carries the ISP12160's additional state in a vmstate
+subsection, ``qlogic-isp/isp12160``, needed only when the part is
+banked or carries two channels, so it never appears in an ISP1040
+migration stream. The subsection carries the SXP1 and DMA banks the
+ISP1040 does not have, and the per-channel reset-delay values that
+mailbox command ``0x003a`` sets. The top-level ``qlogic-isp`` stream's
+version becomes 9 with its minimum version still 6; the ISP1040's own
+field list is unchanged, so an ISP1040 stream at any supported version
+loads exactly as it did before the ISP12160 existed.
+
+Several of the choices above are compatibility selections where the
+driver-sourced evidence does not establish the hardware's own answer.
+They are not claims about unobserved silicon:
+
+- Bus configuration 0 reads 0 on the ISP12160, because no consumer
+  evidence reads a revision from that offset on this part and the
+  datasheet assigns it no other meaning.
+- Bus configuration 1 stores all sixteen written bits on the ISP12160,
+  because the datasheet leaves the writable mask open.
+- Bank 0 of the four-way select is the RISC bank, matching the
+  ISP1040's own bank 0; getting this wrong would cost a guest register
+  contents it never reads back, since every bank is undecoded storage.
+- The reset-delay setter places channel 0's value in mailbox 1 and
+  channel 1's value in mailbox 2, following the family's pattern for
+  its other dual-channel setters; nothing reads either value back, so
+  only the vmstate fields and code review check that the two channels
+  stay independent.
+- The recovery retirement codes -- completion ``0x0005`` for an abort,
+  ``0x0004`` for a reset, command error ``0x4005`` for an unknown or
+  mismatched handle, parameter error ``0x4006`` for an out-of-range
+  channel, and ``0x4000`` for an abort device with nothing outstanding
+  -- are the selected scope for these commands, not values read back
+  from a captured device.
 
 Mailboxes and queue pointers
 ============================
