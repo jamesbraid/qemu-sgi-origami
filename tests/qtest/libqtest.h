@@ -468,6 +468,28 @@ void qtest_qom_tests(QTestState *s);
 bool qtest_get_irq(QTestState *s, int num);
 
 /**
+ * qtest_sysbus_mmio_map:
+ * @s: QTestState instance to operate on.
+ * @qom_path: Path to a realized SysBus device.
+ * @index: MMIO region number.
+ * @addr: Address in system memory to use for the test.
+ *
+ * Map the device region without requiring a board to attach it.
+ */
+void qtest_sysbus_mmio_map(QTestState *s, const char *qom_path,
+                           int index, uint64_t addr);
+
+/**
+ * qtest_get_irq_raise_count:
+ * @s: QTestState instance to operate on.
+ * @num: Intercepted IRQ number.
+ *
+ * Return the number of raise notifications observed during this session.
+ * Unlike qtest_get_irq(), this also records pulses that have already ended.
+ */
+uint64_t qtest_get_irq_raise_count(QTestState *s, int num);
+
+/**
  * qtest_irq_intercept_in:
  * @s: #QTestState instance to operate on.
  * @string: QOM path of a device.

@@ -87,6 +87,7 @@ struct QTestState
     int expected_status;
     bool big_endian;
     GArray *irq_level;
+    GArray *irq_raise_count;
     GString *rx;
     QTestTransportOps ops;
     GList *pending_events;
@@ -519,6 +520,7 @@ static QTestState *qtest_init_internal(const char *qemu_bin,
 
     s->rx = g_string_new("");
     s->irq_level = g_array_new(false, true, sizeof(bool));
+    s->irq_raise_count = g_array_new(false, true, sizeof(uint64_t));
 
     s->fd = -1;
     s->qmp_fd = -1;
@@ -688,6 +690,7 @@ void qtest_quit(QTestState *s)
     close(s->qmp_fd);
     g_string_free(s->rx, true);
     g_array_unref(s->irq_level);
+    g_array_unref(s->irq_raise_count);
 
     for (GList *it = s->pending_events; it != NULL; it = it->next) {
         qobject_unref((QDict *)it->data);
@@ -777,9 +780,11 @@ redo:
 
         if (s->irq_level->len <= irq) {
             g_array_set_size(s->irq_level, irq + 1);
+            g_array_set_size(s->irq_raise_count, irq + 1);
         }
         if (strcmp(words[1], "raise") == 0) {
             g_array_index(s->irq_level, bool, irq) = true;
+            g_array_index(s->irq_raise_count, uint64_t, irq)++;
         } else {
             g_array_index(s->irq_level, bool, irq) = false;
         }
@@ -1243,6 +1248,24 @@ int64_t qtest_clock_set(QTestState *s, int64_t val)
 {
     qtest_sendf(s, "clock_set %"PRIi64"\n", val);
     return qtest_clock_rsp(s);
+}
+
+void qtest_sysbus_mmio_map(QTestState *s, const char *qom_path,
+                           int index, uint64_t addr)
+{
+    qtest_sendf(s, "sysbus_mmio_map %s %d 0x%" PRIx64 "\n",
+                qom_path, index, addr);
+    qtest_rsp(s);
+}
+
+uint64_t qtest_get_irq_raise_count(QTestState *s, int num)
+{
+    g_assert_cmpint(num, >=, 0);
+    qtest_inb(s, 0);
+    if (s->irq_raise_count->len <= num) {
+        return 0;
+    }
+    return g_array_index(s->irq_raise_count, uint64_t, num);
 }
 
 void qtest_irq_intercept_out(QTestState *s, const char *qom_path)
@@ -2154,6 +2177,7 @@ QTestState *qtest_inproc_init(QTestState **s, bool log, const char* arch,
     *s = qts; /* Expose qts early on, since the query endianness relies on it */
     qts->wstatus = 0;
     qts->irq_level = g_array_new(false, true, sizeof(bool));
+    qts->irq_raise_count = g_array_new(false, true, sizeof(uint64_t));
 
     qtest_client_set_rx_handler(qts, qtest_client_inproc_recv_line);
 
