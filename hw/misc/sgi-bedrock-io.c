@@ -351,7 +351,7 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         s->request_management = value & UINT64_C(0x13ffffffff30f3);
         return;
     case II_REQ_CONTROL:
-        s->request_control = value & 0x1ffff;
+        s->request_control = value & 0x1ff0f;
         return;
     case II_REQ_TIMEOUT:
         s->request_timeout = value & 0xff;

@@ -301,7 +301,7 @@ static void test_probe_and_retained_registers(void)
         { 0x1f0, UINT64_MAX, UINT64_C(0x0fffffff03ffffff) },
         { 0x200, UINT64_MAX, 0x10f },
         { 0x3a8, UINT64_MAX, UINT64_C(0x13ffffffff30f3) },
-        { 0x3b0, UINT64_MAX, 0x1ffff },
+        { 0x3b0, UINT64_MAX, 0x1ff0f },
         { 0x3b8, UINT64_MAX, 0xff },
         { 0x3c0, UINT64_MAX, 0xffffff },
     };
