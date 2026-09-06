@@ -236,6 +236,10 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
             }
         }
     }
+    if (!object_property_set_link(OBJECT(&s->io), "hub-registers",
+                                  OBJECT(&s->io_registers), errp)) {
+        return;
+    }
     for (unsigned i = 0; i < 2; i++) {
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "interface", i);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-count",
