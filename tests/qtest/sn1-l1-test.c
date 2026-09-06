@@ -644,6 +644,121 @@ static void test_settings_queries(void)
     qtest_quit(s);
 }
 
+static void test_uart_interrupts(void)
+{
+    QTestState *s = start();
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+    uint8_t reply[129];
+
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1);
+    qtest_writeq(s, BASE + 8, 1);
+    qtest_writeq(s, BASE + 0x10, 1);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 4);
+    qtest_writeq(s, BASE + 8, 0);
+    qtest_irq_intercept_out_named(s, PATH, "uart");
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 8, 3);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 4);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 4);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_cmpuint(receive(s, reply), ==, 16);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 2);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1);
+    qtest_clock_step(s, 1000000000);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 8, 3);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE, 0x7e);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 2);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 0x18, 0x80);
+    qtest_writeq(s, BASE, 0x33);
+    qtest_writeq(s, BASE + 8, 0xff);
+    g_assert_cmphex(qtest_readq(s, BASE + 8), ==, 0xff);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 0x18, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 8), ==, 3);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1);
+    qtest_writeq(s, BASE + 8, 1);
+    qtest_writeq(s, BASE + 8, 3);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 0x18, 0x80);
+    qtest_writeq(s, BASE, 1);
+    qtest_writeq(s, BASE + 8, 0);
+    qtest_writeq(s, BASE + 0x18, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 8), ==, 3);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 8, 1);
+    g_assert_false(qtest_get_irq(s, 0));
+    send_frame(s, request, sizeof(request), false);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 8, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
+    qtest_writeq(s, BASE + 8, 1);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_cmpuint(receive(s, reply), ==, 16);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 8, 0xfc);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1);
+    qtest_writeq(s, BASE + 8, 2);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_system_reset(s);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_uart_irq_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-irq-migrate-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+    uint8_t reply[129];
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    for (unsigned state = 0; state < 3; state++) {
+        QTestState *from = start();
+        QTestState *to = qtest_init("-M none -cpu R10000 -S -incoming defer "
+                                    "-device sgi-l1,id=l1");
+        qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+        qtest_irq_intercept_out_named(to, PATH, "uart");
+        qtest_writeq(from, BASE + 8, 3);
+        if (state == 0) {
+            g_assert_cmphex(qtest_readq(from, BASE + 0x10), ==, 2);
+        } else if (state == 2) {
+            send_frame(from, request, sizeof(request), false);
+        }
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        wait_migration(from);
+        g_assert_cmpint(qtest_get_irq(to, 0), ==, state != 0);
+        if (state == 2) {
+            g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, 4);
+            g_assert_cmpuint(receive(to, reply), ==, 16);
+        }
+        g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, state ? 2 : 1);
+        g_assert_false(qtest_get_irq(to, 0));
+        g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, 1);
+        qtest_quit(from);
+        qtest_quit(to);
+        unlink(socket);
+    }
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -662,5 +777,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/route-rejection", test_route_rejection);
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
     qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
+    qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
+    qtest_add_func("sn1/l1/uart-irq-migration", test_uart_irq_migration);
     return g_test_run();
 }

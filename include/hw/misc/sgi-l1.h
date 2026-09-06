@@ -19,6 +19,8 @@ typedef struct SGIL1EEPROM {
 struct SGIL1State {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
+    qemu_irq uart;
+    bool thre_pending;
     CharFrontend chr;
     int32_t revision_major;
     int32_t revision_minor;
