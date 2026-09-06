@@ -593,17 +593,18 @@ static void sn0_kl_check_layout(void)
 }
 
 static unsigned int sn0_kl_board_component_count(
-    const SN0KlBoardModel *board, const SN0NodeState *node)
+    const SN0KlBoardModel *board, const SN0NodeState *node,
+    unsigned int *processor_templates)
 {
     unsigned int count = 0;
-    unsigned int processor_templates = 0;
     size_t component_index;
 
+    *processor_templates = 0;
     for (component_index = 0; component_index < board->component_count;
          component_index++) {
         switch (board->components[component_index].record_kind) {
         case SN0_KL_RECORD_PROCESSOR:
-            processor_templates++;
+            (*processor_templates)++;
             break;
         case SN0_KL_RECORD_COMPONENT:
         case SN0_KL_RECORD_HUB:
@@ -614,26 +615,10 @@ static unsigned int sn0_kl_board_component_count(
             g_assert_not_reached();
         }
     }
-    if (processor_templates) {
+    if (*processor_templates) {
         count += node->nr_cpus;
     }
     return count;
-}
-
-static unsigned int sn0_kl_component_count(const SN0KlConfigModel *klconfig,
-                                           const SN0NodeState *node)
-{
-    unsigned int component_count = 0;
-    size_t board_index;
-
-    sn0_kl_check_layout();
-    for (board_index = 0; board_index < klconfig->board_count;
-         board_index++) {
-        const SN0KlBoardModel *board = &klconfig->boards[board_index];
-
-        component_count += sn0_kl_board_component_count(board, node);
-    }
-    return component_count;
 }
 
 static void sn0_kl_component(uint8_t *graph,
@@ -765,10 +750,10 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     uint64_t widget;
     uint64_t console_device_window;
     unsigned int component_index = 0;
-    unsigned int expected_components;
     unsigned int board_index;
     unsigned int type_ordinals[UINT8_MAX + 1] = { };
 
+    sn0_kl_check_layout();
     for (board_index = 0; board_index < node->topology->pci_count;
          board_index++) {
         if (node->topology->pci[board_index].kind == SN0_COMPONENT_IOC3) {
@@ -780,7 +765,6 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     console_device_window = ioc3->bar[0] - bridge->offset;
     node_base = sn0_model_node_address(map, memory, node->nasid,
                                        klconfig->base);
-    expected_components = sn0_kl_component_count(klconfig, node);
     graph = g_malloc0(klconfig->size);
     console = graph + SN0_KL_CONFIG_HEADER_CONSOLE_OFFSET;
 
@@ -813,20 +797,14 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
     for (board_index = 0; board_index < klconfig->board_count;
          board_index++) {
         const SN0KlBoardModel *board = &klconfig->boards[board_index];
-        unsigned int board_components =
-            sn0_kl_board_component_count(board, node);
         unsigned int processor_templates = 0;
+        unsigned int board_components = sn0_kl_board_component_count(
+            board, node, &processor_templates);
+        unsigned int first_component = component_index;
         size_t template_index;
 
-        for (template_index = 0; template_index < board->component_count;
-             template_index++) {
-            if (board->components[template_index].record_kind ==
-                SN0_KL_RECORD_PROCESSOR) {
-                processor_templates++;
-            }
-        }
         sn0_kl_board(graph, klconfig, board, node, board_index,
-                     component_index, board_components);
+                     first_component, board_components);
         for (template_index = 0; template_index < board->component_count;
              template_index++) {
             SN0KlComponentModel live_component = sn0_kl_resolve_component(
@@ -861,9 +839,9 @@ static void sn0_build_graph(MachineState *machine, unsigned int node_index)
                                  component_index++, virtual_id, physical_id);
             }
         }
+        g_assert(component_index == first_component + board_components);
     }
 
-    g_assert(component_index == expected_components);
     {
         g_autofree char *name =
             g_strdup_printf("sn0.node%u.graph", node_index);
