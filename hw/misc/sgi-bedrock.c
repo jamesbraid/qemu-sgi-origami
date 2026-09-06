@@ -1,10 +1,98 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock.h"
+#include "hw/misc/sgi-l1.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
+
+#define BEDROCK_REMOTE_REGISTERS_SIZE 0x8000000
+#define BEDROCK_L1_UART_OFFSET 0x80
+
+static bool bedrock_remote_permitted(SGIBedrockState *s)
+{
+    return s->md.current_cell & (UINT64_C(1) << s->initiator_region);
+}
+
+static MemTxResult bedrock_remote_read(void *opaque, hwaddr addr,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+    uint8_t buffer[8];
+    MemTxResult result;
+
+    if (!s->l1_uart_as_initialized || !bedrock_remote_permitted(s) ||
+        addr < BEDROCK_L1_UART_OFFSET ||
+        addr + size > BEDROCK_L1_UART_OFFSET + SGI_L1_SIZE) {
+        return MEMTX_DECODE_ERROR;
+    }
+    result = address_space_read(&s->l1_uart_as,
+                                addr - BEDROCK_L1_UART_OFFSET,
+                                attrs, buffer, size);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    switch (size) {
+    case 1:
+        *value = buffer[0];
+        break;
+    case 2:
+        *value = lduw_be_p(buffer);
+        break;
+    case 4:
+        *value = ldl_be_p(buffer);
+        break;
+    case 8:
+        *value = ldq_be_p(buffer);
+        break;
+    default:
+        return MEMTX_DECODE_ERROR;
+    }
+    return MEMTX_OK;
+}
+
+static MemTxResult bedrock_remote_write(void *opaque, hwaddr addr,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+    uint8_t buffer[8];
+
+    if (!s->l1_uart_as_initialized || !bedrock_remote_permitted(s) ||
+        addr < BEDROCK_L1_UART_OFFSET ||
+        addr + size > BEDROCK_L1_UART_OFFSET + SGI_L1_SIZE) {
+        return MEMTX_DECODE_ERROR;
+    }
+    switch (size) {
+    case 1:
+        buffer[0] = value;
+        break;
+    case 2:
+        stw_be_p(buffer, value);
+        break;
+    case 4:
+        stl_be_p(buffer, value);
+        break;
+    case 8:
+        stq_be_p(buffer, value);
+        break;
+    default:
+        return MEMTX_DECODE_ERROR;
+    }
+    return address_space_write(&s->l1_uart_as,
+                               addr - BEDROCK_L1_UART_OFFSET,
+                               attrs, buffer, size);
+}
+
+static const MemoryRegionOps bedrock_remote_ops = {
+    .read_with_attrs = bedrock_remote_read,
+    .write_with_attrs = bedrock_remote_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
 
 static void bedrock_forward_irq(void *opaque, int n, int level)
 {
@@ -62,12 +150,22 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         error_setg(errp, TYPE_SGI_BEDROCK " 'dma-memory' link not set");
         return;
     }
+    if (s->l1_uart_mr && s->initiator_region >= 64) {
+        error_setg(errp, "initiator-region must be set below 64 when "
+                   "l1-uart is linked");
+        return;
+    }
     if (s->revision >= 16) {
         error_setg(errp, "revision must fit four bits");
         return;
     }
     address_space_init(&s->dma_as, s->dma_mr, "sgi-bedrock-dma");
     s->dma_as_initialized = true;
+    if (s->l1_uart_mr) {
+        address_space_init(&s->l1_uart_as, s->l1_uart_mr,
+                           "sgi-bedrock-l1-uart");
+        s->l1_uart_as_initialized = true;
+    }
     qdev_prop_set_uint8(DEVICE(&s->io), "revision", s->revision);
     qdev_prop_set_uint8(DEVICE(&s->io), "local-region", s->local_region);
     qdev_prop_set_uint8(DEVICE(&s->io), "inbound-widget", s->inbound_widget);
@@ -151,6 +249,10 @@ static const Property bedrock_properties[] = {
                        device_mask_reset, UINT64_MAX),
     DEFINE_PROP_LINK("dma-memory", SGIBedrockState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("l1-uart", SGIBedrockState, l1_uart_mr,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_UINT8("initiator-region", SGIBedrockState,
+                      initiator_region, UINT8_MAX),
 #define BEDROCK_WIDGET_PROP(_n) \
     DEFINE_PROP_LINK("widget-" #_n, SGIBedrockState, widget_mr[_n], \
                      TYPE_MEMORY_REGION, MemoryRegion *)
@@ -182,6 +284,10 @@ static void bedrock_init(Object *obj)
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 1));
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 2));
+    memory_region_init_io(&s->remote_registers, obj, &bedrock_remote_ops, s,
+                          TYPE_SGI_BEDROCK "-remote-registers",
+                          BEDROCK_REMOTE_REGISTERS_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->remote_registers);
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
@@ -200,6 +306,9 @@ static void bedrock_finalize(Object *obj)
 
     if (s->dma_as_initialized) {
         address_space_destroy(&s->dma_as);
+    }
+    if (s->l1_uart_as_initialized) {
+        address_space_destroy(&s->l1_uart_as);
     }
 }
 
