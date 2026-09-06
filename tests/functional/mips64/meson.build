@@ -37,6 +37,16 @@ test_mips64_timeouts = {
   # and run SGI's oldisk online diagnostic to a RSLT PASS (about 60s more).
   # BOOT_TIMEOUT_SECONDS in test_irix_diag.py keeps a 60s margin under this.
   'irix_diag' : 1560,
+  # Boot the installed IRIX disk with a scsi-tape attached and run SGI's
+  # oltape rw/thrash/block to a RSLT PASS (seconds on a fresh image). The
+  # boot is the long pole, same as irix_diag; BOOT_TIMEOUT_SECONDS in
+  # test_irix_oltape.py keeps a 60s margin under this.
+  'irix_oltape' : 1560,
+  # Boot the installed IRIX disk with a scsi-cd holding the generated data
+  # CD and run olcdrom -device over it (pattern and random-access passes).
+  # Above irix_oltape's budget for the CD read passes on top of the boot;
+  # BOOT_TIMEOUT_SECONDS in test_irix_olcdrom.py keeps a margin under this.
+  'irix_olcdrom' : 1800,
   # Boot the plain installed IRIX disk (same 265s to root login as
   # irix_diag above -- root.qcow2 is the base root-diags.qcow2 is built
   # from) and require who -r/uname -aR to show run level 2 under the
@@ -165,6 +175,8 @@ tests_mips64_system_thorough = [
   'prom_mdk_router',
   'irix_miniroot',
   'irix_diag',
+  'irix_oltape',
+  'irix_olcdrom',
   'irix_installed_boot',
   'irix_eg_net',
   'irix_eg_perf',
@@ -204,6 +216,8 @@ tests_mips64_unit = [
   'prom_diagnostics_verdict',
   'prom_fx_verdict',
   'irix_diag_verdict',
+  'irix_oltape_verdict',
+  'irix_olcdrom_verdict',
   'prom_mdk_instgen_verdict',
   'prom_mdk_memory_verdict',
   'prom_mdk_router_verdict',
