@@ -4,6 +4,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-bedrock-lb.h"
+#include "hw/misc/sgi-bedrock-io.h"
 #include "hw/misc/sgi-bedrock-ni.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 
@@ -16,12 +17,22 @@ struct SGIBedrockState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     SGIBedrockPIState pi[2];
+    SGIBedrockIOState io;
     SGIBedrockLBState lb;
     SGIBedrockNIState ni;
     qemu_irq hardware_irq[2 * SGI_BEDROCK_PI_PROCESSORS *
                            SGI_BEDROCK_PI_HW_IRQS];
     qemu_irq nmi[2 * SGI_BEDROCK_PI_PROCESSORS];
     uint32_t processor_count;
+    uint8_t revision;
+    uint8_t local_region;
+    uint8_t inbound_widget;
+    uint8_t inbound_device;
+    uint64_t device_mask_reset;
+    MemoryRegion *dma_mr;
+    AddressSpace dma_as;
+    bool dma_as_initialized;
+    MemoryRegion *widget_mr[16];
 };
 
 #endif
