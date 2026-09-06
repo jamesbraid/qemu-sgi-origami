@@ -21,6 +21,15 @@ enum i2c_event {
     I2C_RESTART /* Identified-master reselection, without STOP. */
 };
 
+enum i2c_wire_service {
+    I2C_WIRE_ADDRESS_SEND,
+    I2C_WIRE_ADDRESS_RECV,
+    I2C_WIRE_WRITE,
+    I2C_WIRE_READ_ACK,
+    I2C_WIRE_READ_NACK,
+    I2C_WIRE_SERVICE_COUNT,
+};
+
 typedef struct I2CNodeList I2CNodeList;
 
 #define TYPE_I2C_SLAVE "i2c-slave"
@@ -52,6 +61,13 @@ struct I2CSlaveClass {
     int (*event)(I2CSlave *s, enum i2c_event event);
 
     /*
+     * Notify a wire-mode endpoint after the ninth clock completes.  Returning
+     * true holds SCL low for service; i2c_wire_hold(..., false) releases that
+     * endpoint independently of other receivers.
+     */
+    bool (*wire_service)(I2CSlave *s, enum i2c_wire_service service);
+
+    /*
      * Check if this device matches the address provided.  Returns bool of
      * true if it matches (or broadcast), and updates the device list, false
      * otherwise.
@@ -68,6 +84,11 @@ struct I2CSlave {
     /* Remaining fields for internal use by the I2C code.  */
     uint8_t address;
     bool saved_selected;
+    bool wire_hold, wire_hold_pending, wire_hold_value;
+    int64_t wire_hold_at;
+    uint64_t wire_hold_phase, wire_service_phase;
+    uint8_t wire_service_kind;
+    bool wire_service_pending;
 };
 
 #define TYPE_I2C_BUS "i2c-bus"
@@ -90,6 +111,8 @@ struct I2CPendingMaster {
 typedef QLIST_HEAD(I2CNodeList, I2CNode) I2CNodeList;
 typedef QSIMPLEQ_HEAD(I2CPendingMasters, I2CPendingMaster) I2CPendingMasters;
 
+typedef struct I2CWire I2CWire;
+
 struct I2CBus {
     BusState qbus;
     I2CNodeList current_devs;
@@ -107,6 +130,10 @@ struct I2CBus {
     bool master_recv;
     bool address_valid;
     bool masters_loaded;        /* Migration subsection was present. */
+    I2CWire *wire;
+    bool wire_loaded;
+    bool wire_loading;
+    uint32_t wire_slaves_loaded;
 };
 
 /*
@@ -129,6 +156,38 @@ int i2c_master_send(I2CBus *bus, uint32_t master, uint8_t data);
 int i2c_master_recv(I2CBus *bus, uint32_t master, uint8_t *data);
 int i2c_master_nack(I2CBus *bus, uint32_t master);
 int i2c_master_end_transfer(I2CBus *bus, uint32_t master);
+/*
+ * Timed open-drain transport. Durations are caller-supplied nanoseconds, not
+ * inferred controller timings. One pending request per participant is allowed.
+ * Requests are future virtual deadlines; all requests at one deadline settle
+ * before the observer runs. True SDA releases the line. Clock enables that
+ * participant's configured clock generation. No request elects a sole owner.
+ */
+#define I2C_WIRE_MAX_MASTERS 32
+
+typedef struct I2CWireEvent {
+    int64_t time;
+    uint64_t contenders;
+    uint64_t lost;
+    int error;
+    bool scl;
+    bool sda;
+} I2CWireEvent;
+
+typedef void (*I2CWireObserver)(void *opaque, const I2CWireEvent *event);
+
+int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
+                         I2CWireObserver observe, void *opaque);
+int i2c_wire_configure(I2CBus *bus, uint32_t master, int64_t low_ns,
+                       int64_t high_ns, bool clock_after_loss);
+int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
+                   bool sda, bool clock);
+int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold);
+int i2c_wire_reset_master(I2CBus *bus, uint32_t master);
+bool i2c_wire_scl(I2CBus *bus);
+bool i2c_wire_sda(I2CBus *bus);
+uint64_t i2c_wire_contenders(I2CBus *bus);
+
 extern const VMStateDescription vmstate_i2c_bus;
 
 I2CBus *i2c_init_bus(DeviceState *parent, const char *name);

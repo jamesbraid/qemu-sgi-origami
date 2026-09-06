@@ -4121,6 +4121,7 @@ F: include/hw/i2c/i2c.h
 F: include/hw/i2c/smbus_master.h
 F: include/hw/i2c/smbus_slave.h
 F: include/hw/i2c/smbus_eeprom.h
+F: tests/unit/test-i2c-*.c
 
 I3C
 M: Joe Komlodi <komlodi@google.com>
