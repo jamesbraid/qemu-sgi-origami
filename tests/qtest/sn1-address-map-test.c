@@ -39,6 +39,7 @@
 #define NI_PORT_STATUS UINT64_C(0x0)
 
 #define ITTE_WIDGET(w) ((uint64_t)(w) << 8)
+#define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
 #define BIG_WINDOW(n) (SPACE_XTALK + UINT64_C(0x20000000) + \
                        (uint64_t)(n) * UINT64_C(0x20000000))
 
@@ -55,8 +56,12 @@
 
 #define BEDROCK_WIDGET_PART UINT64_C(0xc110)
 #define BEDROCK_WIDGET_MFG UINT64_C(0x036)
+#define XBRIDGE_XBOW_PART UINT64_C(0xd000)
+#define XBRIDGE_HEAD_PART UINT64_C(0xd002)
+#define XBRIDGE_HEAD_MFG UINT64_C(0x024)
 #define WIDGET_PART(v) (((v) >> 12) & 0xffff)
 #define WIDGET_MFG(v) (((v) >> 1) & 0x7ff)
+#define WIDGET_REV(v) ((v) >> 28)
 
 static char *prom_path;
 
@@ -186,6 +191,18 @@ static void check_access_has_no_storage(QTestState *qts, uint64_t address)
     g_assert_cmphex(qtest_readq(qts, address), ==, before);
 }
 
+static uint32_t xtalk_reg_read(QTestState *qts, unsigned int widget,
+                               uint64_t offset)
+{
+    return qtest_readl(qts, XTALK_WIDGET(widget) + offset + 4);
+}
+
+static void xtalk_reg_write(QTestState *qts, unsigned int widget,
+                            uint64_t offset, uint32_t value)
+{
+    qtest_writel(qts, XTALK_WIDGET(widget) + offset + 4, value);
+}
+
 static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
 {
     g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
@@ -292,6 +309,39 @@ static void test_crosstalk_big_window_routes(const void *data)
     /* The unimplemented PIO catch-all does not retain writes. */
     check_access_has_no_storage(qts,
                                 SPACE_XTALK + UINT64_C(0x10000000));
+
+    qtest_quit(qts);
+}
+
+static void test_xbridge_topology(const void *data)
+{
+    QTestState *qts = machine_start();
+    uint32_t identity;
+
+    identity = xtalk_reg_read(qts, 0, 0);
+    g_assert_cmphex(WIDGET_REV(identity), ==, 2);
+    g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_XBOW_PART);
+    g_assert_cmphex(WIDGET_MFG(identity), ==, 0);
+    g_assert_cmphex(identity & 1, ==, 1);
+    g_assert_cmphex((xtalk_reg_read(qts, 0, 8) >> 6) & 0xf, ==, 0xa);
+
+    identity = xtalk_reg_read(qts, 0xe, 0);
+    g_assert_cmphex(WIDGET_REV(identity), ==, 2);
+    g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_HEAD_PART);
+    g_assert_cmphex(WIDGET_MFG(identity), ==, XBRIDGE_HEAD_MFG);
+    g_assert_cmphex(identity & 1, ==, 1);
+    identity = xtalk_reg_read(qts, 0xf, 0);
+    g_assert_cmphex(WIDGET_REV(identity), ==, 2);
+    g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_HEAD_PART);
+    g_assert_cmphex(WIDGET_MFG(identity), ==, XBRIDGE_HEAD_MFG);
+    g_assert_cmphex(identity & 1, ==, 1);
+
+    xtalk_reg_write(qts, 0xe, 0x20, 0x0f00320e);
+    g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
+    g_assert_cmphex(xtalk_reg_read(qts, 0xf, 0x20), ==, 0x0f00320f);
+    xtalk_reg_write(qts, 0xf, 0x20, 0x0f00320d);
+    g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
+    g_assert_cmphex(xtalk_reg_read(qts, 0xf, 0x20), ==, 0x0f00320d);
 
     qtest_quit(qts);
 }
@@ -736,6 +786,8 @@ int main(int argc, char **argv)
                         test_bedrock_register_aliases);
     qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
                         test_crosstalk_big_window_routes);
+    qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,
+                        test_xbridge_topology);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func("sn1/address-map/prom-three-read-only-views", NULL,

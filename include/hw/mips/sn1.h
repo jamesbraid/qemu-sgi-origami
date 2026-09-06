@@ -20,6 +20,7 @@ struct SN1MachineState {
     bool cpu_b_enabled;
     DeviceState *bedrock;
     DeviceState *l1;
+    DeviceState *xbridge;
 
     MemoryRegion hub_memory;
     MemoryRegion bedrock_node;

@@ -14,6 +14,7 @@
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/pci-host/sgi-xbridge.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "system/reset.h"
@@ -190,8 +191,10 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
 
 static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
 {
+    static const unsigned int xbridge_widgets[] = { 0, 0xe, 0xf };
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
+    MemoryRegion *bedrock_widget;
     SysBusDevice *bedrock;
 
     s->l1 = qdev_new(TYPE_SGI_L1);
@@ -210,8 +213,27 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
                              &error_abort);
     object_property_set_link(OBJECT(s->bedrock), "l1-uart", OBJECT(l1_uart),
                              &error_abort);
+
+    s->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
+    object_property_add_child(OBJECT(machine), "xbridge", OBJECT(s->xbridge));
+    qdev_prop_set_uint8(s->xbridge, "host-port", 0xa);
+    bedrock_widget = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bedrock), 2);
+    object_property_set_link(OBJECT(s->xbridge), "fabric",
+                             OBJECT(bedrock_widget), &error_abort);
+    for (size_t i = 0; i < ARRAY_SIZE(xbridge_widgets); i++) {
+        unsigned int widget = xbridge_widgets[i];
+        g_autofree char *property = g_strdup_printf("widget-%u", widget);
+
+        object_property_set_link(OBJECT(s->bedrock), property,
+                                 OBJECT(sgi_xbridge_widget_view(
+                                     SGI_XBRIDGE(s->xbridge), widget)),
+                                 &error_abort);
+    }
+
     sysbus_realize(SYS_BUS_DEVICE(s->bedrock), &error_fatal);
     object_unref(OBJECT(s->bedrock));
+    sysbus_realize(SYS_BUS_DEVICE(s->xbridge), &error_fatal);
+    object_unref(OBJECT(s->xbridge));
     bedrock = SYS_BUS_DEVICE(s->bedrock);
 
     qdev_connect_gpio_out_named(s->bedrock, "cpu-enable", 1,
