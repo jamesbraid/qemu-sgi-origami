@@ -33,6 +33,8 @@ static void test_registers(void)
     g_assert_cmphex(reg_read(qts, 0), ==, 0x2d002049);
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(qts, 0x80), ==, 0x20000);
+    g_assert_cmphex(reg_read(qts, 0xa0), ==, 0x20008);
+    g_assert_cmphex(reg_read(qts, 0xc0), ==, 0x10000);
     reg_write(qts, 0x80, 0xa40025);
     g_assert_cmphex(reg_read(qts, 0x80), ==, 0xa00025);
     reg_write(qts, 0x80, 0xb00013);
@@ -43,6 +45,19 @@ static void test_registers(void)
     g_assert_cmphex(reg_read(qts, 0x108), ==, 0x7ffefeff);
     reg_write(qts, 0x200, UINT32_MAX);
     g_assert_cmphex(reg_read(qts, 0x200), ==, 0x1eefffff);
+    /* Carried over from the Bridge: stored with their documented fields. */
+    reg_write(qts, 0x70, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, 0x70), ==, 0xffffff);
+    reg_write(qts, 0xa0, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, 0xa0), ==, 0x3ff7f);
+    reg_write(qts, 0xc0, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, 0xc0), ==, 0x1f03ff);
+    reg_write(qts, 0x120, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, 0x120), ==, 0xffffff);
+    reg_write(qts, 0x280, 0x12345678);
+    reg_write(qts, 0x288, 0x9abcdef0);
+    g_assert_cmphex(reg_read(qts, 0x280), ==, 0x12345678);
+    g_assert_cmphex(reg_read(qts, 0x288), ==, 0x9abcdef0);
     qtest_quit(qts);
 }
 
