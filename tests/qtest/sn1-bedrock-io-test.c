@@ -1,0 +1,471 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#include "qemu/osdep.h"
+#include "libqtest.h"
+#include "qobject/qdict.h"
+
+#define IO_PATH "/machine/peripheral/io"
+#define REG_BASE UINT64_C(0x40000000)
+#define PIO_BASE UINT64_C(0x100000000)
+#define IN_BASE UINT64_C(0x20000000000)
+#define MACHINE \
+    "-M none -cpu R10000 -m 256M " \
+    "-object memory-backend-ram,id=widget8,size=2M " \
+    "-object memory-backend-ram,id=widget9,size=2M " \
+    "-device sgi-bedrock-io,id=io," \
+    "widget-8=/objects/widget8/widget8[0]," \
+    "widget-9=/objects/widget9/widget9[0] -S"
+
+#define WIDGET_CONTROL 0x20
+#define LOCAL_PROTECT  0x100
+#define OUT_ACCESS     0x110
+#define IN_ACCESS      0x118
+#define DEVICE_MASK    0x120
+#define LINK_STATUS    0x128
+#define SCRATCH0       0x150
+#define ITTE0          0x160
+#define BTE0           0x10000
+#define BTE1           0x20000
+
+static QTestState *io_start(const char *extra)
+{
+    QTestState *s = qtest_initf(MACHINE " %s", extra);
+
+    qtest_sysbus_mmio_map(s, IO_PATH, 0, REG_BASE);
+    qtest_sysbus_mmio_map(s, IO_PATH, 1, PIO_BASE);
+    qtest_sysbus_mmio_map(s, IO_PATH, 2, IN_BASE);
+    if (!strstr(extra, "incoming")) {
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    }
+    return s;
+}
+
+static void test_identity_and_registers(void)
+{
+    QTestState *s = io_start("");
+
+    g_assert_cmphex(qtest_readq(s, REG_BASE), ==, UINT64_C(0x1c11006c));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_CONTROL) & 0x2000f, ==,
+                    0xa);
+    g_assert_true(qtest_readq(s, REG_BASE + LINK_STATUS) & (1 << 13));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LOCAL_PROTECT), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + OUT_ACCESS), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + IN_ACCESS), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + DEVICE_MASK), ==, UINT64_MAX);
+
+    qtest_writeq(s, REG_BASE + WIDGET_CONTROL, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_CONTROL), ==, 0x7fe01f);
+    qtest_writeq(s, REG_BASE + SCRATCH0, UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, REG_BASE + ITTE0, 0x1822);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0), ==, 0x1802);
+    qtest_writeq(s, REG_BASE + LOCAL_PROTECT, 0x55);
+    qtest_writeq(s, REG_BASE + BTE0 + LOCAL_PROTECT, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LOCAL_PROTECT), ==, 0x55);
+    qtest_quit(s);
+}
+
+static void test_probe_and_retained_registers(void)
+{
+    QTestState *s = io_start("");
+    static const uint64_t retained_offsets[] = {
+        0x140, 0x148, 0x208, 0x210, 0x218, 0x220, 0x228, 0x300,
+        0x388, 0x390, 0x398, 0x3a0, 0x600, 0x608, 0x610,
+        0x30000, 0x30008,
+    };
+    static const struct {
+        uint64_t offset;
+        uint64_t value;
+        uint64_t expected;
+    } registers[] = {
+        { 0x1e0, UINT64_MAX, 0x3ffffff },
+        { 0x1e8, 0x10, 0x10 },
+        { 0x1f0, UINT64_MAX, UINT64_C(0x0fffffff03ffffff) },
+        { 0x200, UINT64_MAX, 0x10f },
+        { 0x3a8, UINT64_MAX, UINT64_C(0x13ffffffff30f3) },
+        { 0x3b0, UINT64_MAX, 0x1ffff },
+        { 0x3b8, UINT64_MAX, 0xff },
+        { 0x3c0, UINT64_MAX, 0xffffff },
+    };
+    const uint8_t bytes[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    for (size_t i = 0; i < ARRAY_SIZE(registers); i++) {
+        qtest_writeq(s, REG_BASE + registers[i].offset, registers[i].value);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + registers[i].offset), ==,
+                        registers[i].expected);
+    }
+    qtest_writeq(s, REG_BASE + LINK_STATUS, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LINK_STATUS), ==,
+                    UINT64_C(0x3ff0fff7d3f));
+    qtest_writeq(s, REG_BASE + 0x138, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x138), ==, 0x101ff7f);
+    for (size_t i = 0; i < ARRAY_SIZE(retained_offsets); i++) {
+        uint64_t value = UINT64_C(0xfeed000000000000) | i;
+
+        qtest_writeq(s, REG_BASE + retained_offsets[i], value);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + retained_offsets[i]), ==,
+                        value);
+    }
+    for (unsigned i = 0; i < 7; i++) {
+        qtest_writeq(s, REG_BASE + ITTE0 + i * 8, 0x1000 | (i << 8) | i);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0 + i * 8), ==,
+                        0x1000 | (i << 8) | i);
+    }
+    for (unsigned i = 0; i < 9; i++) {
+        uint64_t offset = i ? 0x198 + i * 8 : 0x198;
+        qtest_writeq(s, REG_BASE + offset, UINT64_C(0x1000000000000000) | i);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + offset), ==,
+                        UINT64_C(0x1000000000000000) | i);
+    }
+    for (unsigned i = 0; i < 60; i++) {
+        qtest_writeq(s, REG_BASE + 0x400 + i * 8,
+                     UINT64_C(0x8000000000000000) | i);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + 0x400 + i * 8), ==,
+                        UINT64_C(0x8000000000000000) | i);
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        qtest_writeq(s, REG_BASE + 0x308 + i * 8,
+                     UINT64_C(0x4000000000000000) | i);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + 0x308 + i * 8), ==,
+                        UINT64_C(0x4000000000000000) | i);
+    }
+    qtest_memwrite(s, REG_BASE + SCRATCH0, bytes, sizeof(bytes));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==,
+                    UINT64_C(0x0102030405060708));
+    qtest_writeb(s, REG_BASE + SCRATCH0 + 7, 0);
+    qtest_writew(s, REG_BASE + SCRATCH0 + 6, 0);
+    qtest_writel(s, REG_BASE + SCRATCH0 + 4, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==,
+                    UINT64_C(0x0102030405060708));
+    qtest_writeq(s, REG_BASE + 0x1f8, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + 0x1f8), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_pio_translation_and_protection(void)
+{
+    QTestState *s = io_start("");
+
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x1000000), ==, 0x1c11006c);
+    qtest_writel(s, PIO_BASE + 0x1000000, UINT32_MAX);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x1000000), ==, 0x1c11006c);
+    qtest_writel(s, 0x100, 0x0badcafe);
+    qtest_writeq(s, REG_BASE + ITTE0, 0x800);
+    qtest_writel(s, PIO_BASE + 0x20000100, 0x12345678);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0x12345678);
+    qtest_writeq(s, REG_BASE + ITTE0, 0x900);
+    qtest_writel(s, PIO_BASE + 0x20000100, 0x87654321);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0x87654321);
+    qtest_writeq(s, REG_BASE + ITTE0, 0x800);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(s, 0x100), ==, 0x0badcafe);
+    qtest_writeq(s, REG_BASE + OUT_ACCESS, 0);
+    qtest_writel(s, PIO_BASE + 0x20000100, 0xa5a5a5a5);
+    qtest_writeq(s, REG_BASE + OUT_ACCESS, 1 << 8);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0x12345678);
+    qtest_writeq(s, REG_BASE + LOCAL_PROTECT, 0);
+    qtest_writel(s, PIO_BASE + 0x20000100, 0xa5a5a5a5);
+    qtest_writeq(s, REG_BASE + LOCAL_PROTECT + 8,
+                 UINT64_C(0x53474972756c6573));
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0x12345678);
+    qtest_writel(s, PIO_BASE + 0x20000100, 0xa5a5a5a5);
+    g_assert_cmphex(qtest_readl(s, PIO_BASE + 0x20000100), ==, 0xa5a5a5a5);
+    qtest_quit(s);
+}
+
+static void test_inbound_protection(void)
+{
+    QTestState *s = io_start("");
+
+    qtest_writeq(s, IN_BASE + 0x190000, UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, 0x190000), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(1 << 8));
+    qtest_writeq(s, IN_BASE + 0x190000, UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, 0x190000), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
+    qtest_writel(s, IN_BASE + 0x190008, 0xa55a3cc3);
+    g_assert_cmphex(qtest_readl(s, 0x190008), ==, 0xa55a3cc3);
+    qtest_quit(s);
+
+    s = io_start("-global sgi-bedrock-io.device-mask-reset="
+                 "0xfffffffffffffffe");
+    qtest_writeq(s, IN_BASE + 0x190000, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, 0x190000), ==, 0);
+    qtest_quit(s);
+}
+
+static void fill_pattern(uint8_t *buf, size_t size, uint8_t salt)
+{
+    for (size_t i = 0; i < size; i++) {
+        buf[i] = (i * 37) ^ salt;
+    }
+}
+
+static void test_bte_copy_and_zero(void)
+{
+    QTestState *s = io_start("");
+    uint8_t source[256], actual[256], zero[128] = { 0 };
+
+    fill_pattern(source, sizeof(source), 0x5a);
+    qtest_memwrite(s, 0x100000, source, sizeof(source));
+    qtest_memset(s, 0x110000, 0xcc, sizeof(source));
+    qtest_writeq(s, REG_BASE + BTE0, 2 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x100000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x110000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x120000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_writeq(s, REG_BASE + BTE0, 7 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x130000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x140000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x28, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 20));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 8), ==, 0x100000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x10), ==, 0x110000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x20), ==, 0x120000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x28), ==, 0);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 20));
+    qtest_memread(s, 0x110000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, 128, source, 128);
+    for (size_t i = 128; i < sizeof(actual); i++) {
+        g_assert_cmphex(actual[i], ==, 0xcc);
+    }
+    qtest_clock_step(s, 1);
+    qtest_memread(s, 0x110000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
+    g_assert_cmphex(qtest_readq(s, 0x120000), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+
+    qtest_memset(s, 0x130000, 0xcc, sizeof(zero));
+    qtest_writeq(s, REG_BASE + BTE1, 1 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x130000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x140000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x18, 1 | (1 << 4));
+    qtest_clock_step(s, 1);
+    qtest_memread(s, 0x130000, actual, sizeof(zero));
+    g_assert_cmpmem(actual, sizeof(zero), zero, sizeof(zero));
+    g_assert_cmphex(qtest_readq(s, 0x140000), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_bte_error_and_termination(void)
+{
+    QTestState *s = io_start("");
+    uint8_t source[256], actual[256], unchanged[256];
+
+    fill_pattern(source, sizeof(source), 0x93);
+    memset(unchanged, 0xcc, sizeof(unchanged));
+    qtest_memwrite(s, 0x150000, source, sizeof(source));
+    qtest_memwrite(s, 0x160000, unchanged, sizeof(unchanged));
+    qtest_memwrite(s, 0x170000, unchanged, sizeof(unchanged));
+
+    qtest_writeq(s, REG_BASE + BTE0, 2 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x160000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x18), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
+
+    qtest_writeq(s, REG_BASE + BTE1, 2 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE1 + 8, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x170000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x18, 0);
+    qtest_clock_step(s, 1);
+    qtest_clock_step(s, 1);
+    qtest_memread(s, 0x160000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), unchanged, sizeof(unchanged));
+    qtest_memread(s, 0x170000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
+
+    qtest_writeq(s, REG_BASE + BTE0, 2 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, UINT64_C(0x80000000));
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x160000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x180000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 16));
+    g_assert_cmphex(qtest_readq(s, 0x180000), ==, 2 | (1 << 16));
+
+    qtest_writeq(s, REG_BASE + BTE0, 1 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, UINT64_C(0x80000000));
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x180080);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 16));
+    g_assert_cmphex(qtest_readq(s, 0x180080), ==, 1 | (1 << 16));
+
+    qtest_memset(s, 0x160000, 0, 128);
+    qtest_writeq(s, REG_BASE + BTE0, 1 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x160000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, UINT64_C(0x80000000));
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+    qtest_memread(s, 0x160000, actual, 128);
+    g_assert_cmpmem(actual, 128, source, 128);
+
+    qtest_writeq(s, REG_BASE + BTE0, 1 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 8);
+    qtest_clock_step(s, 2);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 20));
+    qtest_readq(s, REG_BASE + BTE0 + 0x18);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_bte_programming_edges(void)
+{
+    QTestState *s = io_start("");
+    uint8_t unchanged[256], actual[256];
+
+    memset(unchanged, 0x6d, sizeof(unchanged));
+    qtest_memwrite(s, 0x1c0000, unchanged, sizeof(unchanged));
+    qtest_writeq(s, 0x1d0000, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + BTE0, 1 << 20);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x1c0000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x1d0000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    qtest_clock_step(s, 2);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, 0x1d0000), ==, UINT64_MAX);
+    qtest_memread(s, 0x1c0000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), unchanged, sizeof(unchanged));
+
+    qtest_writeq(s, 0, UINT64_C(0x8877665544332211));
+    qtest_writeq(s, REG_BASE + BTE0, 2 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, UINT64_C(0xffffffff80));
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x1c0000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x1d0000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 16));
+    g_assert_cmphex(qtest_readq(s, 0x1d0000), ==, 2 | (1 << 16));
+    g_assert_cmphex(qtest_readq(s, 0), ==, UINT64_C(0x8877665544332211));
+    qtest_memread(s, 0x1c0000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), unchanged, sizeof(unchanged));
+
+    qtest_writeq(s, REG_BASE + BTE1, 2 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE1 + 8, 0x100000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x10, UINT64_C(0xffffffff80));
+    qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x1d0080);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x18, 1 << 4);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 2 | (1 << 16));
+    g_assert_cmphex(qtest_readq(s, 0x1d0080), ==, 2 | (1 << 16));
+    g_assert_cmphex(qtest_readq(s, 0), ==, UINT64_C(0x8877665544332211));
+    qtest_quit(s);
+}
+
+static void test_reset(void)
+{
+    QTestState *s = io_start("");
+
+    qtest_writeq(s, REG_BASE + SCRATCH0, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + ITTE0, 0x1802);
+    qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LOCAL_PROTECT), ==, UINT64_MAX);
+    qtest_quit(s);
+}
+
+static void migrate_wait(QTestState *from)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(from,
+                                             "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+static void test_migration_inflight(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-io-migration-XXXXXX",
+                                                &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    uint8_t source[256], actual[256];
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = io_start("");
+    to = io_start("-incoming defer");
+    fill_pattern(source, sizeof(source), 0xc7);
+    qtest_memwrite(from, 0x1a0000, source, sizeof(source));
+    qtest_memset(from, 0x1b0000, 0, sizeof(source));
+    qtest_writeq(from, REG_BASE + SCRATCH0, UINT64_C(0x13579bdf2468ace0));
+    qtest_writeq(from, REG_BASE + ITTE0, 0x1802);
+    qtest_writeq(from, REG_BASE + BTE0, 2 | (1 << 20));
+    qtest_writeq(from, REG_BASE + BTE0 + 8, 0x1a0000);
+    qtest_writeq(from, REG_BASE + BTE0 + 0x10, 0x1b0000);
+    qtest_writeq(from, REG_BASE + BTE0 + 0x18, 0);
+    qtest_clock_step(from, 1);
+    g_assert_cmphex(qtest_readq(from, REG_BASE + BTE0), ==,
+                    1 | (1 << 20));
+    qtest_memread(from, 0x1b0000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, 128, source, 128);
+    for (size_t i = 128; i < sizeof(actual); i++) {
+        g_assert_cmphex(actual[i], ==, 0);
+    }
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    migrate_wait(from);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    g_assert_cmphex(qtest_readq(to, REG_BASE + SCRATCH0), ==,
+                    UINT64_C(0x13579bdf2468ace0));
+    g_assert_cmphex(qtest_readq(to, REG_BASE + ITTE0), ==, 0x1802);
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0), ==,
+                    1 | (1 << 20));
+    qtest_clock_step_next(to);
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0), ==, 0);
+    qtest_memread(to, 0x1b0000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+int main(int argc, char **argv)
+{
+    g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/mips64/sn1/bedrock-io/identity-registers",
+                   test_identity_and_registers);
+    qtest_add_func("/mips64/sn1/bedrock-io/probe-retained",
+                   test_probe_and_retained_registers);
+    qtest_add_func("/mips64/sn1/bedrock-io/pio-translation",
+                   test_pio_translation_and_protection);
+    qtest_add_func("/mips64/sn1/bedrock-io/inbound-protection",
+                   test_inbound_protection);
+    qtest_add_func("/mips64/sn1/bedrock-io/bte", test_bte_copy_and_zero);
+    qtest_add_func("/mips64/sn1/bedrock-io/bte-error-termination",
+                   test_bte_error_and_termination);
+    qtest_add_func("/mips64/sn1/bedrock-io/bte-programming-edges",
+                   test_bte_programming_edges);
+    qtest_add_func("/mips64/sn1/bedrock-io/reset", test_reset);
+    qtest_add_func("/mips64/sn1/bedrock-io/migration-inflight",
+                   test_migration_inflight);
+    return g_test_run();
+}

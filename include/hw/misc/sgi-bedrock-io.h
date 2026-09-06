@@ -1,0 +1,70 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#ifndef HW_MISC_SGI_BEDROCK_IO_H
+#define HW_MISC_SGI_BEDROCK_IO_H
+
+#include "hw/core/sysbus.h"
+#include "qemu/timer.h"
+
+#define TYPE_SGI_BEDROCK_IO "sgi-bedrock-io"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockIOState, SGI_BEDROCK_IO)
+
+#define SGI_BEDROCK_IO_REG_SIZE 0x30010
+#define SGI_BEDROCK_IO_PIO_SIZE UINT64_C(0x100000000)
+
+typedef struct SGIBedrockIOBTE {
+    SGIBedrockIOState *io;
+    uint64_t status;
+    uint64_t source;
+    uint64_t destination;
+    uint64_t control;
+    uint64_t notification;
+    uint64_t interrupt;
+    bool active;
+    QEMUTimer *timer;
+} SGIBedrockIOBTE;
+
+struct SGIBedrockIOState {
+    SysBusDevice parent_obj;
+    MemoryRegion regs;
+    MemoryRegion pio;
+    MemoryRegion inbound;
+    AddressSpace *dma_as;
+    MemoryRegion *widget_mr[16];
+    AddressSpace widget_as[16];
+    bool widget_as_initialized[16];
+    uint8_t local_region;
+    uint8_t revision;
+    uint8_t inbound_widget;
+    uint8_t inbound_device;
+    uint64_t device_mask_reset;
+    uint64_t widget_control;
+    uint64_t local_protect;
+    uint64_t outbound_access;
+    uint64_t inbound_access;
+    uint64_t device_mask;
+    uint64_t link_status;
+    uint64_t link_log;
+    uint64_t interrupt_destination;
+    uint64_t credit_timeout;
+    uint64_t tail_timeout;
+    uint64_t bte_control;
+    uint64_t request_management;
+    uint64_t request_control;
+    uint64_t request_timeout;
+    uint64_t request_prescaler;
+    uint64_t misc_error_mask;
+    uint64_t scratch[2];
+    uint64_t itte[7];
+    uint64_t request_buffer[9];
+    uint64_t retained[96];
+    SGIBedrockIOBTE bte[2];
+};
+
+void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
+MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
+                                      unsigned device, hwaddr address,
+                                      void *buffer, size_t size, bool write);
+void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
+                                    unsigned device);
+
+#endif
