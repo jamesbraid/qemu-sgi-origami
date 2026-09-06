@@ -7,6 +7,27 @@
 #include "fpu_helper.h"
 #include "qemu/timer.h"
 
+static int cpu_pre_save(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    if (cpu->env.cfg.performance_counter_pairs == 4) {
+        /* Serialize R14000 guest-visible values, not running clock biases. */
+        cpu_mips_r10k_perf_freeze(&cpu->env);
+    }
+    return 0;
+}
+
+static void cpu_post_save(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    if (cpu->env.cfg.performance_counter_pairs == 4) {
+        /* Saving must not change a source VM that continues to run. */
+        cpu_mips_r10k_perf_thaw(&cpu->env);
+    }
+}
+
 static int cpu_post_load(void *opaque, int version_id)
 {
     MIPSCPU *cpu = opaque;
@@ -629,6 +650,8 @@ const VMStateDescription vmstate_mips_cpu = {
     .name = "cpu",
     .version_id = 22,
     .minimum_version_id = 22,
+    .pre_save = cpu_pre_save,
+    .post_save = cpu_post_save,
     .post_load = cpu_post_load,
     .fields = (const VMStateField[]) {
         /* Active TC */
