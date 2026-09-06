@@ -235,6 +235,10 @@ static void test_access_errors(void)
     g_assert_cmphex(reg_read(qts, 8) & (1U << 5), ==, 1U << 5);
     g_assert_cmphex(reg_read(qts, 0x50) & (1U << 5), ==, 1U << 5);
     g_assert_cmphex(reg_read(qts, 8) & (1U << 5), ==, 0);
+    /* A 64-bit write is refused whole, not applied by halves. */
+    qtest_writeq(qts, BASE_A + 0x20, UINT64_MAX);
+    g_assert_cmphex(reg_read(qts, 0x20), ==, 0x80);
+    g_assert_cmphex(reg_read(qts, 0x50) & (1U << 5), ==, 1U << 5);
     for (off = 0xd0; off <= 0xf8; off += 8) {
         reg_read(qts, off);
         g_assert_cmphex(reg_read(qts, 0x50) & (1U << 5), ==, 1U << 5);
@@ -297,7 +301,11 @@ static void test_interrupt_packets(void)
     g_assert_cmphex(qtest_readq(qts, TARGET_E + SCRATCH), ==,
                     0x123456789abcdef0ULL);
     reg_read(qts, 0x50);
-    /* Enabled: one set packet carrying the vector, then no second one. */
+    /*
+     * Enabled: one set packet carrying the vector, then no second one. With
+     * no link conditions modeled, only the widget-0 alias can acknowledge,
+     * so "clearing one leaves it outstanding" has no observable here.
+     */
     reg_write(qts, 0x20, 1U << 5);
     reg_read(qts, 0xd0);
     g_assert_cmphex(reg_read(qts, 8) & (1U << 23), ==, 1U << 23);
@@ -324,7 +332,11 @@ static void test_warm_reset(void)
     qtest_irq_intercept_out_named(qts, XBOW, "warm-reset-out");
     reg_write(qts, 0x20, 0xfe);
     reg_write(qts, 0xc0, 0x11);
-    /* Port A is fenced out of widget 0: nothing resets, nothing forwards. */
+    /*
+     * Port A is fenced out of widget 0: nothing resets, nothing forwards.
+     * The datasheet settles the first and leaves the second open; the
+     * no-forward half is model behavior.
+     */
     reg_write(qts, 0x78, 0xff & ~(1U << (PORT_A - 8)));
     qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 1);
     qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 0);

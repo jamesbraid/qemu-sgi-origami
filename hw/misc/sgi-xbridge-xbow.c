@@ -273,7 +273,7 @@ static const MemoryRegionOps xbow_ops = {
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
+    .impl.max_access_size = 8,
 };
 
 static void xbow_reset_core(SGIXBridgeXbowState *s)
