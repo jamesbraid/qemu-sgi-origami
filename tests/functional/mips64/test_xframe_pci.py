@@ -52,8 +52,10 @@ for this test keeps the usual 60s margin over this budget.
 Guarded the same way test_openbsd_login.py is: @skipBigDataTest() (the
 disk is 2 GiB), @skipSlowTest() (booting to firmware-plus-early-kernel is
 not instant even though this test stops well short of a full boot), and
-@skipIfMissingEnv('ORIGAMI_ASSETS') plus a skipTest() at method entry if
-either asset is missing.
+@skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no assets at
+all. ORIGAMI_ASSETS being set with either asset missing underneath it is
+a provisioning failure, not an absent-assets run, and fails the test
+loudly rather than skipping it, the same as test_openbsd_login.py.
 """
 
 import os
@@ -157,12 +159,18 @@ class XframePci(QemuSystemTest):
     def test_xframe_pci(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'no kernel/disk at '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a '
-                'checkout with the OpenBSD 6.9 kernel and installed '
-                'disk provisioned (nightly assets) to run this test')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing kernel or disk is a provisioning
+            # failure, not an absent-assets developer run, and must fail
+            # loudly: a silent skip here would let a real Xframe PCI
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
+                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         kernel, disk = paths
 
         self.require_netdev('user')
