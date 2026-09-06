@@ -123,9 +123,17 @@ class PromPod(QemuSystemTest):
     def test_prom_pod(self):
         prom = resolve_asset(os.environ['ORIGAMI_ASSETS'], FIRMWARE_REL)
         if prom is None:
-            self.skipTest(
-                f'no firmware at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- '
-                'point it at a checkout with the real PROM extracted')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing firmware image is a provisioning
+            # failure, not an absent-assets developer run, and must
+            # fail loudly: a silent skip here would let a real POD
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but no firmware is present '
+                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
 
         if file_sha256(prom) != PROM_SHA256:
             self.fail('PROM SHA-256 does not match the recorded release')
