@@ -163,8 +163,6 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
     }
 
     switch (offset) {
-    case LB_REVISION:
-        return;
     case LB_CPU_PERMISSION:
         s->cpu_permission = value;
         if (value != UINT64_MAX) {
@@ -237,6 +235,7 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
     case LB_VECTOR_STATUS_CLEAR:
         /* Valid already reads clear: nothing latches a reply here. */
         return;
+    case LB_REVISION:
     case LB_VECTOR_STATUS:
     case LB_VECTOR_RETURN:
     case LB_VECTOR_READ:
