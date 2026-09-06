@@ -252,6 +252,10 @@ static void test_access_errors(void)
     reg_write(qts, LINK(0xa) + 0x10, UINT32_MAX);
     g_assert_cmphex(reg_read(qts, 0x50) & (1U << 5), ==, 1U << 5);
     g_assert_cmphex(reg_read(qts, 8) & (1U << 5), ==, 0);
+    /* A read of a write-only link reset register is one as well. */
+    reg_read(qts, LINK(9) + 0x30);
+    g_assert_cmphex(reg_read(qts, 0x50) & (1U << 5), ==, 1U << 5);
+    g_assert_cmphex(reg_read(qts, 8) & (1U << 5), ==, 0);
     /* The clearing alias returns the value it clears, once. */
     qtest_writeb(qts, BASE_A + 0x24, 0);
     g_assert_cmphex(reg_read(qts, 0x50) & (1U << 5), ==, 1U << 5);
@@ -321,6 +325,12 @@ static void test_interrupt_packets(void)
     reg_write(qts, 0x30, 0x2a0d0000);
     reg_read(qts, 0xd0);
     g_assert_cmphex(reg_read(qts, 8) & (1U << 23), ==, 1U << 23);
+    reg_read(qts, 0x50);
+    /* A write-only link reset read raises the same condition, and sends. */
+    reg_write(qts, 0x30, 0x2a0e0000);
+    qtest_writeq(qts, TARGET_E + SCRATCH, 0);
+    reg_read(qts, LINK(9) + 0x30);
+    g_assert_cmphex(qtest_readq(qts, TARGET_E + SCRATCH), ==, 0x12a);
     reg_read(qts, 0x50);
     qtest_quit(qts);
 }
