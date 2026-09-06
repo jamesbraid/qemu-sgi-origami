@@ -58,9 +58,11 @@ Guarded by @skipBigDataTest() (the disk is 2 GiB) and @skipSlowTest()
 (the boot is minutes) -- the framework's own env-var-gated decorators
 ($QEMU_TEST_ALLOW_LARGE_STORAGE, $QEMU_TEST_ALLOW_SLOW;
 tests/functional/qemu_test/decorators.py) -- on top of
-@skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest() at method entry if
-either asset is missing. Both assets are provisioned
-into ORIGAMI_ASSETS by the nightly.
+@skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no assets at
+all. Both assets are provisioned into ORIGAMI_ASSETS by the nightly, so
+ORIGAMI_ASSETS being set with either one missing is a provisioning
+failure, not an absent-assets run, and fails the test loudly rather
+than skipping it.
 
 The pure verdict logic lives entirely in test_openbsd_login_verdict.py
 (imported below; it needs no qemu_test itself). What is left here is the
@@ -185,12 +187,18 @@ class OpenbsdLogin(QemuSystemTest):
     def test_openbsd_login(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'no kernel/disk at '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a '
-                'checkout with the OpenBSD 6.9 kernel and installed '
-                'disk provisioned (nightly assets) to run this test')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing kernel or disk is a provisioning
+            # failure, not an absent-assets developer run, and must fail
+            # loudly: a silent skip here would let a real login
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
+                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         kernel, disk = paths
 
         vm = self.get_vm(name='openbsd_login')
