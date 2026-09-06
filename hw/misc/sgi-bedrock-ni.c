@@ -39,6 +39,10 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
                       "0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
                       offset, value);
         break;
+    case SGI_BEDROCK_NI_READ_ONLY:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-ni: write to read-only "
+                      "register 0x%" HWADDR_PRIx "\n", offset);
+        break;
     case SGI_BEDROCK_NI_WRITTEN:
         break;
     }
