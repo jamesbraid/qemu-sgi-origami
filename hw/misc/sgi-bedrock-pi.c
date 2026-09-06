@@ -307,9 +307,16 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case PI_PENDING_0:
     case PI_PENDING_1:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-pi: write of 0x%"
+                      PRIx64 " to read-only pending register 0x%"
+                      HWADDR_PRIx "\n", value, offset);
+        return;
     case PI_CPU_NUMBER:
     case PI_CPU_PRESENT_A:
     case PI_CPU_PRESENT_B:
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: write of 0x%" PRIx64
+                      " to hardware-set register 0x%" HWADDR_PRIx
+                      " ignored\n", value, offset);
         return;
     case PI_MASK_0_A:
         s->mask[0][0] = value;
@@ -392,6 +399,11 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case PI_ERROR_STACK_SIZE:
         s->error_stack_size = value & 0xf;
+        if (s->error_stack_size) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: error spooling "
+                          "(stack size %u) is not implemented\n",
+                          s->error_stack_size);
+        }
         return;
     case PI_RT_COUNTER:
         s->rt_base = value & PI_RT_MASK;
