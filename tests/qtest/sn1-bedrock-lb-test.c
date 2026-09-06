@@ -73,6 +73,24 @@ static void test_identity_and_permissions(void)
 }
 
 /*
+ * The parent composes the block with only its revision set, so a
+ * one-chassis guest reads the property defaults: manufacturer 0x036 (the
+ * model's value from two public widget tables; the hardware word is
+ * unobserved), part 0x3012, node 0 and region size 0 (the model's chosen
+ * value, and what the Itanium port consults for the machine's size).
+ */
+static void test_default_identity(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 "
+                               "-device sgi-bedrock-lb,id=lb -S");
+
+    qtest_sysbus_mmio_map(s, LB_PATH, 0, LB_BASE);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==,
+                    (0x36ULL << 1) | (0x3012ULL << 12) | (2ULL << 28));
+    qtest_quit(s);
+}
+
+/*
  * The datasheet gives the permission registers no reset value and says only
  * that every consumer's first access assumes its region is allowed. Reading
  * all ones at power-on and after the block's own soft reset is the model's
@@ -341,6 +359,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-lb/identity-permissions",
                    test_identity_and_permissions);
+    qtest_add_func("sn1/bedrock-lb/default-identity", test_default_identity);
     qtest_add_func("sn1/bedrock-lb/permissive-reset", test_permissive_reset);
     qtest_add_func("sn1/bedrock-lb/storage-masks-error",
                    test_storage_masks_and_error);
