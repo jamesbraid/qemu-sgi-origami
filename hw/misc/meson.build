@@ -188,6 +188,7 @@ system_ss.add(when: 'CONFIG_AXIADO_CLK', if_true: files('axiado_clk.c'))
 system_ss.add(when: 'CONFIG_SGI_L1', if_true: files('sgi-l1.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_NI',
               if_true: files('sgi-bedrock-ni.c', 'sgi-bedrock-ni-regs.c'))
+system_ss.add(when: 'CONFIG_SGI_BEDROCK_MD', if_true: files('sgi-bedrock-md.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_IO', if_true: files('sgi-bedrock-io.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_LB',
               if_true: files('sgi-bedrock-lb.c'))

@@ -319,6 +319,10 @@ config SGI_BEDROCK_NI
     bool
     default y if TEST_DEVICES
 
+config SGI_BEDROCK_MD
+    bool
+    default y if TEST_DEVICES
+
 config SGI_BEDROCK_IO
     bool
     default y if TEST_DEVICES
