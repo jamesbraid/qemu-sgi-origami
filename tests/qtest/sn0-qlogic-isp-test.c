@@ -95,6 +95,14 @@
 #define PCI_TRANSLATED          0x40000000u
 #define PAGE_SIZE_4K            0x1000u
 #define TARGET_PAGE             0x00100000u
+#define DIRECT64(phys)          (0xa500000000000000ULL | (uint64_t)(phys))
+
+/*
+ * The memory size is stated rather than left to the board's default, since
+ * the address behind the last byte of it is what a refused transfer needs.
+ */
+#define MACHINE_WITH_64M        MACHINE_WITH_BRIDGE " -m 64"
+#define RAM_TOP_64M             0x04000000u
 
 #define ISP_REG_SEMAPHORE       0x0c
 #define ISP_REG_HOST_CMD        0xc0
@@ -117,6 +125,7 @@
 #define ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS 0x003a
 #define ISP_MBOX_COMPLETE           0x4000
 #define ISP_MBOX_INVALID            0x4001
+#define ISP_MBOX_HOST_INTERFACE_ERROR 0x4002
 #define ISP_MBOX_TEST_FAILED        0x4003
 
 /* Ring entry layout, restated here the same way the mailbox offsets are. */
@@ -185,6 +194,22 @@ static void isp_write_ram_word(QTestState *qts, uint16_t addr, uint16_t val)
     isp_mbox_ack(qts);
 }
 
+/* Mailbox 2 carries the answer, so it goes in holding something else. */
+static uint16_t isp_read_ram_word(QTestState *qts, uint16_t addr)
+{
+    uint16_t val;
+
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_READ_RAM_WORD);
+    isp_writew(qts, ISP_MAILBOX(1), addr);
+    isp_writew(qts, ISP_MAILBOX(2), 0x5a5a);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    val = isp_readw(qts, ISP_MAILBOX(2));
+    isp_mbox_ack(qts);
+    return val;
+}
+
 /*
  * Mailboxes loaded the way a driver loads them; 6 and 7 written even at
  * zero, because mailboxes persist and stale halves would be reassembled.
@@ -199,6 +224,21 @@ static void isp_ram_block(QTestState *qts, uint16_t cmd, uint16_t base,
     isp_writew(qts, ISP_MAILBOX(4), count);
     isp_writew(qts, ISP_MAILBOX(6), 0);
     isp_writew(qts, ISP_MAILBOX(7), 0);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+}
+
+/* The same four-mailbox split with the upper half carrying a real value. */
+static void isp_ram_block64(QTestState *qts, uint16_t cmd, uint16_t base,
+                            uint64_t pci_addr, uint16_t count)
+{
+    isp_writew(qts, ISP_MAILBOX(0), cmd);
+    isp_writew(qts, ISP_MAILBOX(1), base);
+    isp_writew(qts, ISP_MAILBOX(2), pci_addr >> 16);
+    isp_writew(qts, ISP_MAILBOX(3), pci_addr);
+    isp_writew(qts, ISP_MAILBOX(4), count);
+    isp_writew(qts, ISP_MAILBOX(6), pci_addr >> 48);
+    isp_writew(qts, ISP_MAILBOX(7), pci_addr >> 32);
     isp_writew(qts, ISP_REG_HOST_CMD,
                ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
 }
@@ -340,6 +380,78 @@ static void test_ram_dma_translates_through_the_bridge(const void *data)
                ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, second);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
+ * This part moves controller RAM one 16-bit cycle per word. Two words,
+ * because a single word cannot tell one reassembly order from another.
+ * The order is written down here rather than left to whichever
+ * decomposition the fabric is handed: at these alignments the per-word
+ * and block splits were measured to deliver the same bytes, so what this
+ * pins is the order, not the width.
+ */
+static void test_ram_load_reassembles_two_words_per_word(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    const uint16_t base = 0x1000;
+    const uint16_t first = 0x1234, second = 0xabcd;
+    uint8_t page[4];
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+    qtest_memset(qts, TARGET_PAGE, 0, PAGE_SIZE_4K);
+
+    /* Neither word is the value the load is meant to leave behind. */
+    isp_write_ram_word(qts, base, 0x5a5a);
+    isp_write_ram_word(qts, base + 1, 0x5a5a);
+
+    /*
+     * Raw bytes, laid out as the per-word correction reads them back:
+     * offset zero's halfword comes from offset two with its halves
+     * reversed, and offset two's from offset zero, the same swap
+     * test_ram_dma_translates_through_the_bridge pins one word at a time.
+     */
+    page[0] = second >> 8;
+    page[1] = second & 0xff;
+    page[2] = first >> 8;
+    page[3] = first & 0xff;
+    qtest_memwrite(qts, TARGET_PAGE, page, sizeof(page));
+
+    isp_ram_block(qts, ISP_MBOX_CMD_LOAD_RAM, base, PCI_TRANSLATED, 2);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(isp_read_ram_word(qts, base), ==, first);
+    g_assert_cmphex(isp_read_ram_word(qts, base + 1), ==, second);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A dump the fabric refuses is a failed command, not a completed one: a
+ * guest told the transfer completed would read back host memory the
+ * adapter never wrote and take whatever was already there for an image.
+ */
+static void test_ram_dump_failed_dma_answers_an_error(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_64M);
+    const uint16_t base = 0x1000;
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+
+    isp_write_ram_word(qts, base, 0x1234);
+
+    isp_ram_block64(qts, ISP_MBOX_CMD_DUMP_RAM, base, DIRECT64(RAM_TOP_64M),
+                    4);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_HOST_INTERFACE_ERROR);
     isp_mbox_ack(qts);
 
     qtest_quit(qts);
@@ -1279,6 +1391,10 @@ int main(int argc, char **argv)
                         NULL, test_ioc3_slot_is_exempt_at_the_same_stride);
     qtest_add_data_func("sn0/qlogic-isp/ram-dma-translates-through-the-bridge",
                         NULL, test_ram_dma_translates_through_the_bridge);
+    qtest_add_data_func("sn0/qlogic-isp/ram-load-reassembles-two-words",
+                        NULL, test_ram_load_reassembles_two_words_per_word);
+    qtest_add_data_func("sn0/qlogic-isp/ram-dump-failed-dma-answers-an-error",
+                        NULL, test_ram_dump_failed_dma_answers_an_error);
     qtest_add_data_func("sn0/qlogic-isp/read-ram-word-through-the-fabric",
                         NULL, test_read_ram_word_through_the_fabric);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-is-word-value", NULL,

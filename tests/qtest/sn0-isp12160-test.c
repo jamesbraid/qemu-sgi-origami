@@ -127,6 +127,7 @@ static const uint16_t bank_selections[] = {
 #define ISP_MBOX_NOT_READY      0x0004
 
 #define ISP_MBOX_CMD_EXEC_FIRMWARE          0x0002
+#define ISP_MBOX_CMD_DUMP_RAM               0x0003
 #define ISP_MBOX_CMD_WRITE_RAM_WORD         0x0004
 #define ISP_MBOX_CMD_READ_RAM_WORD          0x0005
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST       0x0006
@@ -235,8 +236,8 @@ static uint16_t isp_read_ram_word(QTestState *qts, uint16_t addr)
  * reassembled into the address. Mailbox 5 is not an input here; it is
  * written so the array reads as mailboxes 1 through 7 in order.
  */
-static uint16_t isp_ram_load_a64(QTestState *qts, uint16_t base, uint64_t addr,
-                                 uint16_t count)
+static uint16_t isp_ram_block(QTestState *qts, uint16_t cmd, uint16_t base,
+                              uint64_t addr, uint16_t count)
 {
     const uint16_t in[] = {
         base,
@@ -248,7 +249,20 @@ static uint16_t isp_ram_load_a64(QTestState *qts, uint16_t base, uint64_t addr,
         (uint16_t)(addr >> 32),
     };
 
-    return isp_mbox(qts, ISP_MBOX_CMD_LOAD_RAM_A64, in, ARRAY_SIZE(in));
+    return isp_mbox(qts, cmd, in, ARRAY_SIZE(in));
+}
+
+static uint16_t isp_ram_load_a64(QTestState *qts, uint16_t base, uint64_t addr,
+                                 uint16_t count)
+{
+    return isp_ram_block(qts, ISP_MBOX_CMD_LOAD_RAM_A64, base, addr, count);
+}
+
+/* The same seven mailboxes, read out of the adapter instead of into it. */
+static uint16_t isp_ram_dump(QTestState *qts, uint16_t base, uint64_t addr,
+                             uint16_t count)
+{
+    return isp_ram_block(qts, ISP_MBOX_CMD_DUMP_RAM, base, addr, count);
 }
 
 static void put16le(uint8_t *b, uint16_t v)
@@ -265,6 +279,9 @@ static void put16le(uint8_t *b, uint16_t v)
 static void normalise_words(uint8_t *buf, size_t len)
 {
     size_t i;
+
+    /* A tail short of a word would keep the fabric's order and say nothing. */
+    g_assert_cmpuint(len % 4, ==, 0);
 
     for (i = 0; i + 4 <= len; i += 4) {
         uint8_t t = buf[i];
@@ -760,6 +777,96 @@ static void test_a64_ram_load_failed_dma_commits_nothing(const void *data)
     for (i = 0; i < count; i++) {
         g_assert_cmphex(isp_read_ram_word(qts, base + i), ==, A64_SENTINEL);
     }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A second translated page for the dump direction, and where inside it the
+ * image lands: a whole word in, so a transfer that started short or ran
+ * long writes over a fence byte instead of falling off the page.
+ */
+#define DUMP_PAGE           (TARGET_PAGE + PAGE_SIZE_4K)
+#define DUMP_TRANSLATED     (PCI_TRANSLATED + PAGE_SIZE_4K)
+#define DUMP_OFFSET         16
+#define DUMP_FENCE          0x5a
+
+/*
+ * Load and dump are one transfer in two directions, so an image put into
+ * the adapter through a corrected slot has to come back out of it byte for
+ * byte. Comparing against the source bytes rather than against a
+ * recomputed expectation is the point: a load and a dump that agreed on
+ * some other order would still round-trip, and the source page is the one
+ * the load side already pins against the word stream the adapter sees.
+ */
+static void test_a64_load_then_dump_round_trips(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    uint8_t page[ARRAY_SIZE(a64_image) * 2];
+    uint8_t back[sizeof(page)];
+    uint8_t fence[4];
+    unsigned i;
+
+    aim_window_at_memory_bar(qts);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+    qtest_writeq(qts, ATE(1), ATE_ENTRY(DUMP_PAGE, 0));
+    qtest_memset(qts, TARGET_PAGE, 0, PAGE_SIZE_4K);
+    qtest_memset(qts, DUMP_PAGE, DUMP_FENCE, PAGE_SIZE_4K);
+
+    for (i = 0; i < ARRAY_SIZE(a64_image); i++) {
+        put16le(page + i * 2, a64_image[i]);
+    }
+    normalise_words(page, sizeof(page));
+    qtest_memwrite(qts, TARGET_PAGE, page, sizeof(page));
+
+    g_assert_cmphex(isp_ram_load_a64(qts, A64_LOAD_BASE, PCI_TRANSLATED,
+                                     ARRAY_SIZE(a64_image)), ==,
+                    ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(isp_ram_dump(qts, A64_LOAD_BASE,
+                                 DUMP_TRANSLATED + DUMP_OFFSET,
+                                 ARRAY_SIZE(a64_image)), ==,
+                    ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    qtest_memread(qts, DUMP_PAGE + DUMP_OFFSET, back, sizeof(back));
+    for (i = 0; i < sizeof(back); i++) {
+        g_assert_cmphex(back[i], ==, page[i]);
+    }
+
+    qtest_memread(qts, DUMP_PAGE + DUMP_OFFSET - sizeof(fence), fence,
+                  sizeof(fence));
+    for (i = 0; i < sizeof(fence); i++) {
+        g_assert_cmphex(fence[i], ==, DUMP_FENCE);
+    }
+
+    qtest_memread(qts, DUMP_PAGE + DUMP_OFFSET + sizeof(back), fence,
+                  sizeof(fence));
+    for (i = 0; i < sizeof(fence); i++) {
+        g_assert_cmphex(fence[i], ==, DUMP_FENCE);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The dump direction has the same duty the load direction has: a transfer
+ * the fabric refuses is a failed command. Answering complete would tell a
+ * guest to read back an image out of memory the adapter never wrote.
+ */
+static void test_a64_ram_dump_failed_dma_answers_an_error(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    const uint16_t base = 0x2000;
+
+    aim_window_at_memory_bar(qts);
+
+    isp_write_ram_word(qts, base, A64_SENTINEL);
+
+    g_assert_cmphex(isp_ram_dump(qts, base, DIRECT64(RAM_TOP_64M), 4), ==,
+                    ISP_MBOX_HOST_INTERFACE_ERROR);
+    isp_mbox_ack(qts);
 
     qtest_quit(qts);
 }
@@ -2792,6 +2899,10 @@ int main(int argc, char **argv)
                         NULL, test_a64_ram_load_reaches_the_last_word);
     qtest_add_data_func("sn0/isp12160/a64-ram-load-failed-dma-commits-nothing",
                         NULL, test_a64_ram_load_failed_dma_commits_nothing);
+    qtest_add_data_func("sn0/isp12160/a64-load-then-dump-round-trips",
+                        NULL, test_a64_load_then_dump_round_trips);
+    qtest_add_data_func("sn0/isp12160/a64-ram-dump-failed-dma-answers-error",
+                        NULL, test_a64_ram_dump_failed_dma_answers_an_error);
     qtest_add_data_func(
         "sn0/isp12160/checksum-passes-then-one-corrupt-word-fails", NULL,
         test_checksum_passes_then_one_corrupt_word_fails);
