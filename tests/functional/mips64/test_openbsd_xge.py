@@ -304,20 +304,34 @@ class OpenbsdXge(QemuSystemTest):
     def test_xge_traffic(self):
         paths = self._asset_paths()
         if paths is None:
+            # Deliberately still a skipTest, unlike every sibling
+            # asset check in this directory (self.fail() when
+            # ORIGAMI_ASSETS is set but the file is missing, since
+            # that names a provisioning failure -- see those tests'
+            # own commits). This one is an UNBUILT CAPABILITY, not a
+            # provisioning failure: no xge-enabled OpenBSD/IP27 kernel
+            # exists anywhere yet for the nightly to provision, so
+            # ORIGAMI_ASSETS being set can never make the asset
+            # appear. Failing loudly here would make this scaffold a
+            # permanent required-check red until someone builds the
+            # kernel -- a real engineering task, not a CI bug.
             self.skipTest(
                 'no xge-enabled kernel/disk at '
                 f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- this needs an OpenBSD/'
-                'IP27 kernel build carrying "xge* at pci?" (OpenBSD\'s '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- UNBUILT CAPABILITY, not '
+                'a provisioning failure: this needs an OpenBSD/IP27 '
+                'kernel build carrying "xge* at pci?" (OpenBSD\'s '
                 'driver for PCI vendor 0x17d5 product 0x5831, this '
                 'fork\'s own emulated Xframe adapter -- see this '
                 'module\'s own docstring). Stock GENERIC-IP27 (the '
                 'kernel every other OpenBSD test in this directory '
                 'boots) has no such driver; test_xframe_pci.py proves '
-                'that on a real passing boot. Provision that kernel '
-                'and a disk with the usual guest tools at the above '
-                'paths (or point KERNEL_REL/DISK_REL there) to run '
-                'this test')
+                'that on a real passing boot. No such kernel has been '
+                'built yet, so ORIGAMI_ASSETS being set does not make '
+                'this a CI red the way it does for this directory\'s '
+                'other asset-gated tests. Provision that kernel and a '
+                'disk with the usual guest tools at the above paths '
+                '(or point KERNEL_REL/DISK_REL there) to run this test')
         kernel, disk = paths
 
         self.require_netdev('user')
