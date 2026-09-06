@@ -139,6 +139,10 @@ static bool mips_cpu_has_work(CPUState *cs)
     CPUMIPSState *env = cpu_env(cs);
     bool has_work = false;
 
+    if (cpu_test_interrupt(cs, CPU_INTERRUPT_NMI)) {
+        return true;
+    }
+
     /*
      * Prior to MIPS Release 6 it is implementation dependent if non-enabled
      * interrupts wake-up the CPU, however most of the implementations only
@@ -247,6 +251,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
 
     mips_octeon_destroy_llm_state(&env->octeon_crypto);
     memset(env, 0, offsetof(CPUMIPSState, end_reset_fields));
+    cpu->nmi_level = false;
 
     /* Reset registers to their default values */
     env->CP0_PRid = env->cpu_model->CP0_PRid;
@@ -689,6 +694,23 @@ static void mips_cpu_unrealizefn(DeviceState *dev)
     mcc->parent_unrealize(dev);
 }
 
+#ifndef CONFIG_USER_ONLY
+static void mips_cpu_set_nmi(void *opaque, int irq, int level)
+{
+    MIPSCPU *cpu = opaque;
+    CPUState *cs = CPU(cpu);
+    bool asserted = level != 0;
+
+    /* CPU inputs can be driven without the BQL, including from MTTCG MMIO. */
+    if (qatomic_xchg(&cpu->nmi_level, asserted) == asserted) {
+        return;
+    }
+    if (asserted) {
+        cpu_interrupt(cs, CPU_INTERRUPT_NMI);
+    }
+}
+#endif
+
 static void mips_cpu_initfn(Object *obj)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
@@ -699,6 +721,9 @@ static void mips_cpu_initfn(Object *obj)
     cpu->count_div = clock_new(OBJECT(obj), "clk-div-count");
     cpu->count_clock = clock_new(OBJECT(obj), "clk-count");
     env->cpu_model = mcc->cpu_def;
+#ifndef CONFIG_USER_ONLY
+    qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_set_nmi, "nmi", 1);
+#endif
 }
 
 static char *mips_cpu_type_name(const char *cpu_model)

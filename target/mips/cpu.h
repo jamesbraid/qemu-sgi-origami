@@ -1591,6 +1591,14 @@ struct ArchCPU {
 
     CPUMIPSMVPContext *mvp;
 
+    /*
+     * The external NMI input queues one exception on each rising edge.  The
+     * supported Bedrock source uses qemu_irq_pulse(), so no asserted level
+     * persists at a reset or migration boundary.  CPUState.interrupt_request
+     * owns and migrates an edge that is waiting for exception entry.
+     */
+    bool nmi_level;
+
     /* Properties */
     bool is_big_endian;
 };
@@ -1711,6 +1719,9 @@ enum {
  * that empties the latch.
  */
 #define CPU_INTERRUPT_DWATCH CPU_INTERRUPT_TGT_INT_1
+
+/* An NMI input edge waits here until the execution loop takes the exception. */
+#define CPU_INTERRUPT_NMI CPU_INTERRUPT_TGT_EXT_0
 
 #define CPU_RESOLVING_TYPE TYPE_MIPS_CPU
 

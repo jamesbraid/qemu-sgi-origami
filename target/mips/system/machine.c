@@ -361,6 +361,24 @@ static bool mips_timer_needed(void *opaque)
     return cpu->env.timer != NULL;
 }
 
+static bool mips_nmi_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->nmi_level;
+}
+
+static const VMStateDescription mips_vmstate_nmi = {
+    .name = "cpu/nmi",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_nmi_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(nmi_level, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription mips_vmstate_timer = {
     .name = "cpu/timer",
     .version_id = 1,
@@ -766,6 +784,7 @@ const VMStateDescription vmstate_mips_cpu = {
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
+        &mips_vmstate_nmi,
         &mips_vmstate_timer,
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r14k_performance,
