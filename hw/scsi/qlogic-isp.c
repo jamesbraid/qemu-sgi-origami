@@ -18,6 +18,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
 #include "hw/scsi/qlogic-isp.h"
+#include "scsi/constants.h"
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
 #include "migration/vmstate.h"
@@ -1100,7 +1101,14 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
         unused += req->described - sreq->cmd.xfer;
     }
 
-    completion = unused ? ISP_IOCB_DATA_UNDERRUN : ISP_IOCB_COMPLETE;
+    /*
+     * Underrun is a short data transfer, not a refused command. A target
+     * that answers with a status of its own carries the failure there
+     * while the transport itself completed, and reporting underrun
+     * instead hides a check condition behind a transport code.
+     */
+    completion = (unused && sreq->status == GOOD) ? ISP_IOCB_DATA_UNDERRUN
+                                                  : ISP_IOCB_COMPLETE;
 
     /*
      * Auto-sense runs only after a CHECK CONDITION, so GOT_SENSE reports the
