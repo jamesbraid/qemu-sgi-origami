@@ -9,6 +9,7 @@
 #define INBOUND_BASE UINT64_C(0x20000000000)
 #define IO_BASE (BASE + UINT64_C(0x400000))
 #define LB_BASE (BASE + UINT64_C(0x600000))
+#define MD_BASE (BASE + UINT64_C(0x780000))
 
 #define MACHINE \
     "-M none -cpu R10000 -m 256M " \
@@ -85,6 +86,49 @@ static void test_parent_identity_and_pio(void)
     qtest_quit(s);
 }
 
+static void program_md(QTestState *s)
+{
+    qtest_writeq(s, MD_BASE + 0x8, UINT64_MAX);
+    qtest_writeq(s, MD_BASE + 0x20000, UINT64_C(0x8000000000000555));
+    qtest_writeq(s, MD_BASE + 0x40000, 3);
+    qtest_writeq(s, MD_BASE, 0);
+    qtest_writeq(s, MD_BASE + 0x10010, 0x12345);
+}
+
+static void check_md_soft_reset(QTestState *s)
+{
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x8), ==,
+                    UINT64_C(0x373ff003fbfbfbfb));
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x20000), ==,
+                    UINT64_C(0x8000000000000555));
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x40000), ==, 3);
+    g_assert_cmphex(qtest_readq(s, MD_BASE), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x10010), ==, 0);
+}
+
+static void test_parent_md_decode_and_reset(void)
+{
+    QTestState *s = bedrock_start("");
+
+    qtest_writeq(s, LB_BASE + 0x8008, UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, MD_BASE + 0x60040, 1);
+    qtest_writeq(s, MD_BASE + 0x60048, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x60040), ==, 1);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + 0x8008), ==,
+                    UINT64_C(0x0123456789abcdef));
+    program_md(s);
+    qtest_writeq(s, BASE + 0x680008, 4);
+    check_md_soft_reset(s);
+    program_md(s);
+    qtest_writeq(s, LB_BASE + 0x4018, 1);
+    check_md_soft_reset(s);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x8), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x20000), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD_BASE + 0x40000), ==, 0);
+    qtest_quit(s);
+}
+
 static void migrate_wait(QTestState *from)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -120,6 +164,8 @@ static void test_parent_migration(void)
     to = bedrock_start("-incoming defer");
     qtest_writeq(from, IO_BASE + 0x150, UINT64_C(0x13579bdf2468ace0));
     qtest_writeq(from, IO_BASE + 0x160, 0x800);
+    qtest_writeq(from, MD_BASE + 0x8, UINT64_MAX);
+    qtest_writeq(from, MD_BASE + 0x10010, UINT64_C(0x123456789ab));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -128,6 +174,10 @@ static void test_parent_migration(void)
     g_assert_cmphex(qtest_readq(to, IO_BASE + 0x150), ==,
                     UINT64_C(0x13579bdf2468ace0));
     g_assert_cmphex(qtest_readq(to, IO_BASE + 0x160), ==, 0x800);
+    g_assert_cmphex(qtest_readq(to, MD_BASE + 0x8), ==,
+                    UINT64_C(0x373ff003fbfbfbfb));
+    g_assert_cmphex(qtest_readq(to, MD_BASE + 0x10010), ==,
+                    UINT64_C(0x123456789ab));
     qtest_writel(to, PIO_BASE + 0x20000100, 0x55aa33cc);
     g_assert_cmphex(qtest_readl(to, PIO_BASE + 0x20000100), ==, 0x55aa33cc);
     qtest_quit(from);
@@ -145,5 +195,7 @@ int main(int argc, char **argv)
                    test_parent_dma_and_reset);
     qtest_add_func("/sgi/bedrock/composition/migration",
                    test_parent_migration);
+    qtest_add_func("/sgi/bedrock/composition/md-decode-reset",
+                   test_parent_md_decode_and_reset);
     return g_test_run();
 }

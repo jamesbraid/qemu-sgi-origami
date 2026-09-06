@@ -334,6 +334,7 @@ config SGI_BEDROCK_LB
 config SGI_BEDROCK
     bool
     select SGI_BEDROCK_IO
+    select SGI_BEDROCK_MD
     default y if TEST_DEVICES
     select SGI_BEDROCK_LB
     select SGI_BEDROCK_NI
