@@ -204,6 +204,11 @@ static void test_parent_dma_and_reset(void)
     qtest_writeq(s, IO_BASE + 0x150, UINT64_C(0xfeedfacecafebeef));
     qtest_writeq(s, LB_BASE + 0x8008, UINT64_C(0x0123456789abcdef));
     qtest_writeq(s, BASE + 0x680008, 4);
+    /*
+     * The I/O interface's scratch register has no stated reset value; zero
+     * after the local reset is the model's choice. Local-block scratch 1
+     * keeping its value is the header's statement.
+     */
     g_assert_cmphex(qtest_readq(s, IO_BASE + 0x150), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + 0x8008), ==,
                     UINT64_C(0x0123456789abcdef));
