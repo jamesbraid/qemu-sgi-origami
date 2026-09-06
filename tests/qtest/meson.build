@@ -46,8 +46,9 @@ slow_qtests = {
   # complete under load, resurfacing the same flake as a timeout kill.
   'sn0-elsc-test': 120,
   # sn0-isp12160-test holds a read behind a block filter in each recovery case,
-  # which puts it at 42-50s under host load and inside the 60s default only by
-  # luck; a timeout kill was measured there. Give it the 120s slow budget.
+  # so its runtime tracks host load: 75.9s measured at a load average near 90,
+  # against meson's 60s default, and a timeout kill was seen there. Give it the
+  # 120s slow budget.
   'sn0-isp12160-test': 120,
 }
 
