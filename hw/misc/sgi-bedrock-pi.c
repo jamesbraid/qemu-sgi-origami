@@ -219,6 +219,19 @@ static void pi_modify(SGIBedrockPIState *s, uint64_t value)
     sgi_bedrock_pi_recompute(s);
 }
 
+bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
+                              unsigned region)
+{
+    if (region >= 64 || !(s->io_protect & (1ULL << region))) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-pi: I/O interrupt write "
+                      "0x%" PRIx64 " from region %u denied by I/O protect\n",
+                      value, region);
+        return false;
+    }
+    pi_modify(s, value);
+    return true;
+}
+
 static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockPIState *s = opaque;

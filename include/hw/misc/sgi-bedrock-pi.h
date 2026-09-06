@@ -65,5 +65,12 @@ struct SGIBedrockPIState {
 void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_ni_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
+/*
+ * An I/O-issued write to the interrupt-pending-modify register from a
+ * requester in @region. Applied like a processor write when I/O protect
+ * permits the region; otherwise logged and dropped, returning false.
+ */
+bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
+                              unsigned region);
 
 #endif

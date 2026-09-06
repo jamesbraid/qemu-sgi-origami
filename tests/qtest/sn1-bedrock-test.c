@@ -8,6 +8,7 @@
 #define PIO_BASE UINT64_C(0x100000000)
 #define INBOUND_BASE UINT64_C(0x20000000000)
 #define REMOTE_BASE UINT64_C(0x30000000000)
+#define IO_REGISTERS_BASE UINT64_C(0x40000000000)
 #define L1_PATH "/machine/peripheral/l1"
 #define IO_BASE (BASE + UINT64_C(0x400000))
 #define LB_BASE (BASE + UINT64_C(0x600000))
@@ -383,6 +384,59 @@ static void test_parent_l1_missing_link(void)
     qtest_quit(s);
 }
 
+/*
+ * The remote form of the hub's own register window, as a widget's
+ * interrupt write reaches it. Only the two interrupt-pending-modify
+ * registers answer, and each write is qualified by the target interface's
+ * I/O protect bit for the node's local region.
+ */
+static void test_parent_io_interrupt_write(void)
+{
+    QTestState *s = bedrock_start("");
+
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 4, IO_REGISTERS_BASE);
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+    qtest_writeq(s, BASE + 0xa8, 1ULL << 7);
+    qtest_writeq(s, BASE + 0x2000b0, 1ULL << 10);
+
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x90, 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x200098), ==, 0);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x200090, 0x14a);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x2000a0), ==, 1ULL << 10);
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 0);
+    g_assert_true(qtest_get_irq(s, 11));
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x90, 0x007);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+
+    /* No other register is reachable this way, and none is readable. */
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x180, 0x107);
+    qtest_writeq(s, IO_REGISTERS_BASE + 0xa8, UINT64_MAX);
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x600040, 1);
+    qtest_writel(s, IO_REGISTERS_BASE + 0x94, 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa8), ==, 1ULL << 7);
+    g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IO_REGISTERS_BASE + 0x90), ==, 0);
+
+    /* I/O protect for the local region gates the write; CPU stores are not. */
+    qtest_writeq(s, BASE + 0x10, UINT64_MAX ^ 1);
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x90, 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, BASE + 0x10, UINT64_MAX);
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x90, 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    qtest_writeq(s, BASE + 0x10, 0);
+    qtest_writeq(s, IO_REGISTERS_BASE + 0x90, 0x007);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    qtest_writeq(s, BASE + 0x90, 0x007);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -398,6 +452,8 @@ int main(int argc, char **argv)
                    test_parent_l1_missing_region);
     qtest_add_func("/sgi/bedrock/composition/l1-missing-link",
                    test_parent_l1_missing_link);
+    qtest_add_func("/sgi/bedrock/composition/io-interrupt-write",
+                   test_parent_io_interrupt_write);
     qtest_add_func("/sgi/bedrock/composition/l1-protection",
                    test_parent_l1_protection);
     qtest_add_func("/sgi/bedrock/composition/md-decode-reset",

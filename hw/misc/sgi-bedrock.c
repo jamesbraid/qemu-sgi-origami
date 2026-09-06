@@ -5,10 +5,15 @@
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 
 #define BEDROCK_REMOTE_REGISTERS_SIZE 0x8000000
 #define BEDROCK_L1_UART_OFFSET 0x80
+/* The remote form of the hub's register window: offsets 22:0 under bit 23. */
+#define BEDROCK_IO_REGISTERS_SIZE 0x800000
+#define BEDROCK_PI_MODIFY_OFFSET 0x90
+#define BEDROCK_PI1_OFFSET 0x200000
 
 static bool bedrock_remote_permitted(SGIBedrockState *s)
 {
@@ -92,6 +97,45 @@ static const MemoryRegionOps bedrock_remote_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static MemTxResult bedrock_io_registers_read(void *opaque, hwaddr addr,
+                                             uint64_t *value, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-bedrock: crosstalk read of hub register "
+                  "0x%" HWADDR_PRIx " is not supported\n", addr);
+    *value = 0;
+    return MEMTX_DECODE_ERROR;
+}
+
+static MemTxResult bedrock_io_registers_write(void *opaque, hwaddr addr,
+                                              uint64_t value, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+
+    switch (addr) {
+    case BEDROCK_PI_MODIFY_OFFSET:
+        sgi_bedrock_pi_io_modify(&s->pi[0], value, s->local_region);
+        return MEMTX_OK;
+    case BEDROCK_PI1_OFFSET + BEDROCK_PI_MODIFY_OFFSET:
+        sgi_bedrock_pi_io_modify(&s->pi[1], value, s->local_region);
+        return MEMTX_OK;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: crosstalk write of 0x%"
+                      PRIx64 " to hub register 0x%" HWADDR_PRIx
+                      " is not supported\n", value, addr);
+        return MEMTX_DECODE_ERROR;
+    }
+}
+
+static const MemoryRegionOps bedrock_io_registers_ops = {
+    .read_with_attrs = bedrock_io_registers_read,
+    .write_with_attrs = bedrock_io_registers_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 8, .max_access_size = 8 },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
 static void bedrock_forward_irq(void *opaque, int n, int level)
@@ -288,6 +332,10 @@ static void bedrock_init(Object *obj)
                           TYPE_SGI_BEDROCK "-remote-registers",
                           BEDROCK_REMOTE_REGISTERS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->remote_registers);
+    memory_region_init_io(&s->io_registers, obj, &bedrock_io_registers_ops,
+                          s, TYPE_SGI_BEDROCK "-io-registers",
+                          BEDROCK_IO_REGISTERS_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->io_registers);
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
