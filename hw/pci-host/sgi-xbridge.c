@@ -95,6 +95,8 @@ static MemTxResult xbridge_swap_read(void *opaque, hwaddr addr,
     uint8_t bytes[4] = { 0 };
     MemTxResult result;
 
+    /* The implementation width is four; the helpers' wider cases are not. */
+    assert(size <= sizeof(bytes));
     result = address_space_read(&target->as, addr ^ (4 - size), attrs,
                                 bytes, size);
     *value = ldn_be_p(bytes, size);
@@ -108,6 +110,7 @@ static MemTxResult xbridge_swap_write(void *opaque, hwaddr addr,
     struct XBridgeTarget *target = opaque;
     uint8_t bytes[4];
 
+    assert(size <= sizeof(bytes));
     stn_be_p(bytes, size, value);
     return address_space_write(&target->as, addr ^ (4 - size), attrs,
                                bytes, size);
