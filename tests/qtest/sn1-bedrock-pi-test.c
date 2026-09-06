@@ -27,6 +27,8 @@
 #define CPU_PRESENT_B 0x48
 #define CPU_ENABLE_A 0x50
 #define CPU_ENABLE_B 0x58
+#define NMI_A 0x70
+#define NMI_B 0x78
 #define PENDING_MODIFY 0x90
 #define PENDING_0 0x98
 #define PENDING_1 0xa0
@@ -386,6 +388,28 @@ static void test_local_reset(void)
     qtest_quit(s);
 }
 
+/* A write to NMI A or B pulses that processor's line; the data is ignored. */
+static void test_nmi(void)
+{
+    QTestState *s = start("");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "nmi");
+    for (unsigned pi = 0; pi < 2; pi++) {
+        qtest_writeq(s, PI(pi, NMI_A), 0);
+        qtest_writeq(s, PI(pi, NMI_B), UINT64_MAX);
+    }
+    for (unsigned line = 0; line < 4; line++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(s, line), ==, 1);
+        g_assert_false(qtest_get_irq(s, line));
+    }
+    qtest_writeq(s, PI(1, NMI_A), 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 2), ==, 2);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 1), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 3), ==, 1);
+    qtest_quit(s);
+}
+
 /* The header says the error-pending register is not cleared at reset. */
 static void test_error_pending_survives_reset(void)
 {
@@ -656,6 +680,7 @@ int main(int argc, char **argv)
                    test_masks_remap_and_isolation);
     qtest_add_func("sn1/bedrock-pi/power-on-values", test_power_on_values);
     qtest_add_func("sn1/bedrock-pi/local-reset", test_local_reset);
+    qtest_add_func("sn1/bedrock-pi/nmi", test_nmi);
     qtest_add_func("sn1/bedrock-pi/error-pending-survives-reset",
                    test_error_pending_survives_reset);
     qtest_add_func("sn1/bedrock-pi/real-time-comparators",
