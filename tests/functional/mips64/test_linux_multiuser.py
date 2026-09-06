@@ -144,12 +144,18 @@ class LinuxMultiuser(QemuSystemTest):
     def test_linux_multiuser(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'no kernel/disk at '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a checkout '
-                'with the networked kernel and Gentoo rootfs provisioned '
-                '(nightly assets) to run this test')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing kernel or disk is a provisioning
+            # failure, not an absent-assets developer run, and must fail
+            # loudly: a silent skip here would let a real multiuser-boot
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
+                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         kernel, disk = paths
 
         vm = self.get_vm(name='linux_multiuser')
