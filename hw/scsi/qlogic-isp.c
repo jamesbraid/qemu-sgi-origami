@@ -506,19 +506,31 @@ static bool qlogic_isp_ram_range_ok(QLogicISPState *s, uint16_t base,
 }
 
 /*
+ * How wide a cycle the part runs its RAM transfers in: the older part has
+ * a 16-bit path and moves a word at a time, the newer one moves the whole
+ * block. The width belongs to the part, so the two are kept apart even
+ * though the fabric's byte-lane correction was measured to deliver the
+ * same bytes either way at the alignments a RAM transfer uses.
+ */
+static bool qlogic_isp_ram_dma_per_word(QLogicISPState *s)
+{
+    return QLOGIC_ISP_GET_CLASS(s)->info->ram_wraps;
+}
+
+/*
  * The whole transfer is read before a word of it is kept, so a refused
  * DMA leaves the array as it was; a committed prefix would make the
  * guest's own checksum blame the image for what the adapter invented.
  * The words arrive little-endian at the DMA interface whatever the
  * fabric between here and memory does to the byte lanes.
  */
-static uint16_t qlogic_isp_ram_load_a64(QLogicISPState *s)
+static uint16_t qlogic_isp_ram_load(QLogicISPState *s)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t base = s->mailbox[1];
     uint16_t count = s->mailbox[4];
     hwaddr host = qlogic_isp_ram_host_addr(s);
-    g_autofree uint8_t *bytes = NULL;
+    g_autofree uint16_t *words = NULL;
     uint16_t i;
 
     trace_qlogic_isp_firmware_load(base, count, host);
@@ -530,20 +542,35 @@ static uint16_t qlogic_isp_ram_load_a64(QLogicISPState *s)
         return ISP_MBOX_COMPLETE;
     }
 
-    bytes = g_malloc(count * 2u);
-    if (pci_dma_read(pci, host, bytes, count * 2u) != MEMTX_OK) {
-        return ISP_MBOX_HOST_INTERFACE_ERROR;
+    words = g_new(uint16_t, count);
+
+    if (qlogic_isp_ram_dma_per_word(s)) {
+        for (i = 0; i < count; i++) {
+            if (lduw_le_pci_dma(pci, host + i * 2, &words[i],
+                                MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                return ISP_MBOX_HOST_INTERFACE_ERROR;
+            }
+        }
+    } else {
+        g_autofree uint8_t *bytes = g_malloc(count * 2u);
+
+        if (pci_dma_read(pci, host, bytes, count * 2u) != MEMTX_OK) {
+            return ISP_MBOX_HOST_INTERFACE_ERROR;
+        }
+        for (i = 0; i < count; i++) {
+            words[i] = lduw_le_p(bytes + i * 2);
+        }
     }
 
     /* The truncation is the fold, on the part whose range check allows it. */
     for (i = 0; i < count; i++) {
-        s->risc_ram[(uint16_t)(base + i)] = lduw_le_p(bytes + i * 2);
+        s->risc_ram[(uint16_t)(base + i)] = words[i];
     }
 
     return ISP_MBOX_COMPLETE;
 }
 
-/* The other direction, where there is no prefix to withhold. */
+/* The other direction, in the same cycles the load side runs. */
 static void qlogic_isp_ram_dump(QLogicISPState *s)
 {
     PCIDevice *pci = PCI_DEVICE(s);
@@ -554,9 +581,23 @@ static void qlogic_isp_ram_dump(QLogicISPState *s)
 
     trace_qlogic_isp_firmware_dump(base, count, host);
 
-    for (i = 0; i < count; i++) {
-        stw_le_pci_dma(pci, host + i * 2, s->risc_ram[(uint16_t)(base + i)],
-                       MEMTXATTRS_UNSPECIFIED);
+    if (count == 0) {
+        return;
+    }
+
+    if (qlogic_isp_ram_dma_per_word(s)) {
+        for (i = 0; i < count; i++) {
+            stw_le_pci_dma(pci, host + i * 2,
+                           s->risc_ram[(uint16_t)(base + i)],
+                           MEMTXATTRS_UNSPECIFIED);
+        }
+    } else {
+        g_autofree uint8_t *bytes = g_malloc(count * 2u);
+
+        for (i = 0; i < count; i++) {
+            stw_le_p(bytes + i * 2, s->risc_ram[(uint16_t)(base + i)]);
+        }
+        pci_dma_write(pci, host, bytes, count * 2u);
     }
 }
 
@@ -654,7 +695,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     case ISP_MBOX_CMD_LOAD_RAM:
-        s->mailbox[0] = qlogic_isp_ram_load_a64(s);
+        s->mailbox[0] = qlogic_isp_ram_load(s);
         break;
 
     /* The same transfer, under an opcode only part of the family carries. */
@@ -663,7 +704,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             qlogic_isp_mbox_not_modelled(s, cmd);
             break;
         }
-        s->mailbox[0] = qlogic_isp_ram_load_a64(s);
+        s->mailbox[0] = qlogic_isp_ram_load(s);
         break;
 
     case ISP_MBOX_CMD_DUMP_RAM:
