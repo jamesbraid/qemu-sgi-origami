@@ -963,20 +963,14 @@ static void assert_aux_captured(QTestState *qts, const char *id,
 }
 
 /*
- * Each tower carries its own physical AUX connector, so a two-chassis
- * machine has two system controllers and a backend may be provisioned
- * for each: node 0's AUX on serial index 2 and node 1's on index 6.
- * The lines are node-major with a fixed stride of four, so node 1's
- * block starts at index 4 -- its base I/O ports on 4 and 5, left
- * unbacked here, and its AUX on 6. The model once handed index 2 to
- * every node's controller, so a two-node launch with the shipped
- * consoles provisioned -- the four-processor rig's exact configuration
- * -- died in chardev init ("chardev 'elsc' is already in use") before a
- * byte of console output. Launching at all is this test's first
- * assertion; the acp round-trips pin that each node's controller kept
- * its own backend and no capture leaked to the other tower's ringbuf.
+ * The Origin 200 external AUX port reaches only the master module.
+ * Provisioning a backend at node 1's node-major slot must leave it idle.
+ *
+ * The second transaction preserves QEMU's existing slave-local ELSC command
+ * path. That is a model regression, not a hardware claim: the Origin 200
+ * contract does not establish slave-local I2C or arbitration behavior.
  */
-static void test_two_towers_take_two_aux_backends(const void *data)
+static void test_two_towers_only_master_aux_active(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200 -m 128M "
@@ -1006,7 +1000,7 @@ static void test_two_towers_take_two_aux_backends(const void *data)
     g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
 
     assert_aux_captured(qts, "aux0", "n0");
-    assert_aux_captured(qts, "aux1", "n1");
+    assert_aux_captured(qts, "aux1", "");
 
     qtest_quit(qts);
 }
@@ -2531,8 +2525,8 @@ int main(int argc, char **argv)
                         NULL, test_new_request_supersedes_pending_response);
     qtest_add_data_func("sn0/elsc/acp-command-writes-to-console", NULL,
                         test_acp_command_writes_to_console);
-    qtest_add_data_func("sn0/elsc/two-towers-take-two-aux-backends", NULL,
-                        test_two_towers_take_two_aux_backends);
+    qtest_add_data_func("sn0/elsc/two-towers-only-master-aux-active", NULL,
+                        test_two_towers_only_master_aux_active);
     qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
                         test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,

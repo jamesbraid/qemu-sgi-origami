@@ -385,17 +385,25 @@ directly and never calls ``i2c_bus_release()``.
 AUX serial port
 ===============
 
-The controller is the far end of its module's AUX serial port. Every
-module carries the same serial connectors, so the ``-serial`` lines
-are node-major with a fixed stride of four: node *n* owns the block
-``[4n, 4n+4)``, and the AUX port is the third line in each block.
-Node 0's AUX is index 2, node 1's is index 6 (node 0's index 3 is the
-bring-up UART, which exists on node 0 only). Its one multiplexing
-rule (Origin 200 Owner's Guide, page 132): a byte sequence beginning
-0x14 is a command to the controller itself and is never queued for
-``get``; every other byte is console input. Nothing read for the
-datasheet states what ends an escaped command; the model discards
-through the next line terminator as a model choice.
+The master controller is the far end of the Origin 200's external AUX
+serial port. The ``-serial`` lines remain node-major with a fixed stride
+of four: node *n* owns the block ``[4n, 4n+4)``, and its nominal AUX slot
+is the third line in that block. The external AUX backend attaches only
+to the master, node 0 at index 2. A backend provisioned at the slave's
+nominal index 6 remains unattached. Node 0's index 3 is the bring-up UART,
+which exists on node 0 only.
+
+The external AUX port's one multiplexing rule (Origin 200 Owner's Guide,
+page 132) is that a byte sequence beginning 0x14 is a command to the
+controller itself and is never queued for ``get``. Every other byte is
+console input. Nothing read for the datasheet states what ends an escaped
+command. The model discards through the next line terminator as a model
+choice.
+
+QEMU continues to model the slave controller and its internal I2C command
+path. That preserves existing model behavior. It is not a hardware claim,
+because the available Origin 200 evidence does not establish slave-local
+I2C or arbitration behavior.
 
 The firmware redirects its console to this port after a failed
 power-on diagnostic. A guest flushing console output here with no
