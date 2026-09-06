@@ -642,6 +642,74 @@ static void test_page_faults(void)
     qtest_quit(qts);
 }
 
+/* The widget's space above the face: PCI memory by two aliases, PCI I/O. */
+#define MEM32 0x40000000ULL
+#define MEM64 0x80000000ULL
+#define PCI_IO 0x100000000ULL
+
+static void test_space_above_face(void)
+{
+    QTestState *qts = transport_start("");
+
+    /* The card's length register through the 32-bit alias, value kept. */
+    qtest_writel(qts, BASE + MEM32 + 0x01000004, 0x10);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + 0x01000004), ==, 0x10);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x200004), ==, 0x10000000);
+    /* Its wide scratch through the 64-bit alias, read back the same way. */
+    qtest_writel(qts, BASE + 0x20014, 0x01200000);
+    qtest_writeq(qts, BASE + MEM64 + 0x01200008, 0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(qts, BASE + MEM64 + 0x01200008), ==,
+                    0x1122334455667788ULL);
+    /*
+     * Seen through a direct 64-bit window the bytes sit mirrored within
+     * eight: the model's reading of the alias selecting the width.
+     */
+    reg_write(qts, 0x200, 0x483012);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x200008), ==, 0x88);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0x11);
+    /* With control bit 22 clear a byte store lands at offset ^ 3. */
+    qtest_writeb(qts, BASE + MEM32 + 0x0120000c, 0xaa);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0xaa);
+    /* Setting it moves the memory placement to the offset addressed. */
+    reg_write(qts, 0x20, 0x0f00320f | (1U << 22));
+    qtest_writeb(qts, BASE + MEM32 + 0x0120000c, 0xbb);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000c), ==, 0xbb);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0xaa);
+    qtest_writeb(qts, BASE + MEM64 + 0x0120000d, 0xcc);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000d), ==, 0xcc);
+    /* PCI I/O space through its range; bit 22 does not touch it. */
+    qtest_writel(qts, BASE + 0x20018, 0x1000);
+    qtest_writel(qts, BASE + 0x20004, 7);
+    qtest_writeb(qts, BASE + PCI_IO + 0x1004, 0xdd);
+    reg_write(qts, 0x200, 0x82000);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x201007), ==, 0xdd);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x201004), ==, 0);
+    /* Bit 23 moves the I/O placement. */
+    reg_write(qts, 0x20, 0x0f00320f | (1U << 23));
+    qtest_writeb(qts, BASE + PCI_IO + 0x1004, 0xee);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x201004), ==, 0xee);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x201007), ==, 0xdd);
+    /*
+     * Outside every range: an undefined address, recorded as the widget
+     * sees it, reaching no PCI space.
+     */
+    reg_write(qts, 0x110, 8);
+    qtest_writel(qts, BASE + 0x01200008, 0x99999999);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(reg_read(qts, 0x10), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0x01200008);
+    reg_write(qts, 0x110, 8);
+    qtest_readl(qts, BASE + 0xc0000004);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0xc0000004);
+    reg_write(qts, 0x110, 8);
+    qtest_readl(qts, BASE + 0x200000004ULL);
+    g_assert_cmphex(reg_read(qts, 0x10), ==, 2);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 4);
+    reg_write(qts, 0x200, 0x483012);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x200008), ==, 0x88);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -661,5 +729,6 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/page-dma", test_page_dma);
     qtest_add_func("/sn1/xbridge/page-boundaries", test_page_boundaries);
     qtest_add_func("/sn1/xbridge/page-faults", test_page_faults);
+    qtest_add_func("/sn1/xbridge/space-above-face", test_space_above_face);
     return g_test_run();
 }

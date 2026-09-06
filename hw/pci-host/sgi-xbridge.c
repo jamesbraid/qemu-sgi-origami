@@ -291,7 +291,7 @@ static void xbridge_invalid(SGIXBridgeHeadState *s, hwaddr addr)
     REG(s, 0x100) |= 1U << 24;
     REG(s, 0x170) |= 1U << 24;
     if (first) {
-        /* Model behavior: the window offset, not a crosstalk address. */
+        /* The widget-relative address; through the chip at most 44 bits. */
         REG(s, 0x10) = addr >> 32;
         REG(s, 0x18) = addr;
         if (REG(s, 0x108) & (1U << 24)) {
@@ -320,13 +320,137 @@ static uint32_t xbridge_config_address(SGIXBridgeHeadState *s,
     return (bus << 16) | (devfn << 8) | reg;
 }
 
+static void xbridge_reverse(uint8_t *bytes, unsigned size)
+{
+    unsigned i;
+
+    for (i = 0; i < size / 2; i++) {
+        uint8_t v = bytes[i];
+
+        bytes[i] = bytes[size - 1 - i];
+        bytes[size - 1 - i] = v;
+    }
+}
+
+/*
+ * The widget's space above its 16 MB face: two 1 GB aliases of PCI memory,
+ * for 32-bit and 64-bit targets, and the 4 GB of PCI I/O space, the offset
+ * within a range being the PCI address. Everything else is an undefined
+ * address.
+ */
+#define WIDGET_SPACE (1ULL << 44)
+#define FACE_SIZE 0x1000000
+#define MEM_ALIAS_SIZE (1ULL << 30)
+#define CONTROL_MEM_SWAP (1U << 22)
+#define CONTROL_IO_SWAP (1U << 23)
+
+static const struct {
+    const char *name;
+    hwaddr base;
+    uint64_t size;
+    bool io;
+    unsigned width;
+    uint32_t swap;
+} xbridge_ranges[SGI_XBRIDGE_HEAD_RANGES] = {
+    { "xbridge.pci-mem32", 0x40000000, MEM_ALIAS_SIZE, false, 4,
+      CONTROL_MEM_SWAP },
+    { "xbridge.pci-mem64", 0x80000000, MEM_ALIAS_SIZE, false, 8,
+      CONTROL_MEM_SWAP },
+    { "xbridge.pci-io-space", 0x100000000ULL, 1ULL << 32, true, 4,
+      CONTROL_IO_SWAP },
+};
+
+/*
+ * Placement follows the control register's swap bit for the space, not a
+ * device window's. With the bit clear a narrow access lands mirrored
+ * within the target's width, as a window places it without its swap bit.
+ * That the 64-bit alias mirrors within eight bytes is the datasheet's
+ * inference from the alias naming the target width.
+ */
+static MemTxResult xbridge_range_rw(struct XBridgeRange *range, hwaddr addr,
+                                    uint8_t *bytes, unsigned size, bool write)
+{
+    bool swap = REG(range->head, 0x20) & range->swap;
+    MemTxResult result;
+
+    if (size > range->width) {
+        result = xbridge_range_rw(range, addr, bytes, range->width, write);
+        return result | xbridge_range_rw(range, addr + range->width,
+                                         bytes + range->width,
+                                         size - range->width, write);
+    }
+    if (!swap) {
+        addr ^= range->width - size;
+        if (write) {
+            xbridge_reverse(bytes, size);
+        }
+    }
+    result = address_space_rw(range->as, addr, MEMTXATTRS_UNSPECIFIED,
+                              bytes, size, write);
+    if (!swap && !write) {
+        xbridge_reverse(bytes, size);
+    }
+    return result;
+}
+
+static uint64_t xbridge_range_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint8_t bytes[8] = { 0 };
+
+    xbridge_range_rw(opaque, addr, bytes, size, false);
+    return ldn_be_p(bytes, size);
+}
+
+static void xbridge_range_write(void *opaque, hwaddr addr, uint64_t value,
+                                unsigned size)
+{
+    uint8_t bytes[8];
+
+    stn_be_p(bytes, size, value);
+    xbridge_range_rw(opaque, addr, bytes, size, true);
+}
+
+static const MemoryRegionOps xbridge_range_ops = {
+    .read = xbridge_range_read,
+    .write = xbridge_range_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+/* Nothing decodes here: the undefined-address rule, address recorded. */
+static uint64_t xbridge_undefined_read(void *opaque, hwaddr addr,
+                                       unsigned size)
+{
+    xbridge_invalid(opaque, addr);
+    return 0;
+}
+
+static void xbridge_undefined_write(void *opaque, hwaddr addr,
+                                    uint64_t value, unsigned size)
+{
+    xbridge_invalid(opaque, addr);
+}
+
+static const MemoryRegionOps xbridge_undefined_ops = {
+    .read = xbridge_undefined_read,
+    .write = xbridge_undefined_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
 static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
                                uint8_t *bytes, unsigned size, bool write)
 {
     unsigned slot;
     hwaddr offset, base;
     uint32_t dev;
-    unsigned width, i;
+    unsigned width;
     AddressSpace *as;
     MemTxResult result;
 
@@ -352,21 +476,13 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     if (!(dev & (1U << 13))) {
         offset ^= width - size;
         if (write) {
-            for (i = 0; i < size / 2; i++) {
-                uint8_t v = bytes[i];
-                bytes[i] = bytes[size - 1 - i];
-                bytes[size - 1 - i] = v;
-            }
+            xbridge_reverse(bytes, size);
         }
     }
     result = address_space_rw(as, base + offset, MEMTXATTRS_UNSPECIFIED,
                               bytes, size, write);
     if (!(dev & (1U << 13)) && !write) {
-        for (i = 0; i < size / 2; i++) {
-            uint8_t v = bytes[i];
-            bytes[i] = bytes[size - 1 - i];
-            bytes[size - 1 - i] = v;
-        }
+        xbridge_reverse(bytes, size);
     }
     return result;
 }
@@ -617,8 +733,29 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         0, RAW_PCI_IRQS + 1, TYPE_PCI_BUS);
     pci_setup_iommu(PCI_HOST_BRIDGE(s)->bus, &xbridge_iommu_ops, s);
     pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus, ~0xffU);
-    memory_region_init_io(&s->widget, OBJECT(s), &xbridge_ops, s,
-                          TYPE_SGI_XBRIDGE_HEAD, 0x1000000);
+
+    /* The widget's space: the face, the PCI ranges, undefined elsewhere. */
+    memory_region_init(&s->widget, OBJECT(s), TYPE_SGI_XBRIDGE_HEAD,
+                       WIDGET_SPACE);
+    memory_region_init_io(&s->face, OBJECT(s), &xbridge_ops, s,
+                          "xbridge.face", FACE_SIZE);
+    memory_region_add_subregion(&s->widget, 0, &s->face);
+    for (i = 0; i < SGI_XBRIDGE_HEAD_RANGES; i++) {
+        struct XBridgeRange *range = &s->range[i];
+
+        range->head = s;
+        range->as = xbridge_ranges[i].io ? &s->pci_io_as : &s->pci_mem_as;
+        range->width = xbridge_ranges[i].width;
+        range->swap = xbridge_ranges[i].swap;
+        memory_region_init_io(&range->mr, OBJECT(s), &xbridge_range_ops,
+                              range, xbridge_ranges[i].name,
+                              xbridge_ranges[i].size);
+        memory_region_add_subregion(&s->widget, xbridge_ranges[i].base,
+                                    &range->mr);
+    }
+    memory_region_init_io(&s->undefined, OBJECT(s), &xbridge_undefined_ops,
+                          s, "xbridge.undefined", WIDGET_SPACE);
+    memory_region_add_subregion_overlap(&s->widget, 0, &s->undefined, -1);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->widget);
 }
 
@@ -717,7 +854,6 @@ static const TypeInfo xbridge_type = {
 
 #define CHIP_WIDGET_SHIFT 44
 #define CHIP_WIDGET_SPACE (1ULL << CHIP_WIDGET_SHIFT)
-#define CHIP_FACE_SIZE 0x1000000
 #define CHIP_HEAD_E 0xe
 #define CHIP_HEAD_F 0xf
 #define CHIP_LINK_FIRST 8
@@ -761,7 +897,7 @@ PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget)
     return PCI_HOST_BRIDGE(&s->head[widget - CHIP_HEAD_E])->bus;
 }
 
-/* Ports without a widget, and widget space beyond a child's 16 MB face. */
+/* Ports without a widget; a head answers for the whole of its own slot. */
 static uint64_t chip_unmapped_read(void *opaque, hwaddr addr, unsigned size)
 {
     qemu_log_mask(LOG_GUEST_ERROR,
