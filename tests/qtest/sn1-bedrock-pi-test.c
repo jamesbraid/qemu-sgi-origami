@@ -185,10 +185,14 @@ static void test_masks_remap_and_isolation(void)
     qtest_writeq(s, PI(0, PENDING_MODIFY), 0x145);
     qtest_writeq(s, PI(0, MASK_1_A), 1ULL << 5);
     g_assert_true(qtest_get_irq(s, 1));
+    /*
+     * The remap field retains its bits. Which of bank 1 bits 31:0 a field
+     * value redirects to hardware interrupt 0 is not stated, so no line is
+     * asserted here until the datasheet records the decode.
+     */
     qtest_writeq(s, PI(0, REMAP), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PI(0, REMAP)), ==, 0x1f);
-    g_assert_false(qtest_get_irq(s, 0));
-    g_assert_true(qtest_get_irq(s, 1));
+    qtest_writeq(s, PI(0, REMAP), 0);
 
     qtest_writeq(s, PI(0, ERROR_SET), (1ULL << 3) | (1ULL << 26));
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==,
