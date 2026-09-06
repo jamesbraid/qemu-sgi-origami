@@ -118,6 +118,7 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST   0x0006
 #define ISP_MBOX_CMD_VERIFY_CHECKSUM    0x0007
 #define ISP_MBOX_CMD_ABOUT_FIRMWARE     0x0008
+#define ISP_MBOX_CMD_LOAD_RAM_A64       0x0009
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE     0x0010
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE     0x0011
 #define ISP_MBOX_CMD_BUS_RESET          0x0018
@@ -142,7 +143,9 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 
 #define ISP_MBOX_COMPLETE           0x4000
 #define ISP_MBOX_INVALID            0x4001
+#define ISP_MBOX_HOST_INTERFACE_ERROR 0x4002
 #define ISP_MBOX_TEST_FAILED        0x4003
+#define ISP_MBOX_CMD_ERROR          0x4005
 #define ISP_MBOX_CMD_PARAM_ERROR    0x4006
 
 /*
@@ -302,6 +305,8 @@ typedef struct QLogicISPInfo {
     uint8_t nchannels;              /* SCSI buses realised */
     bool cfg0_reports_revision;     /* bus configuration 0 = revision + 1 */
     bool banked_dma;                /* 1080-family banks, no flat DMA */
+    bool ram_wraps;                 /* RAM commands fold at the array end */
+    bool reject_busy_mailbox;       /* a held result refuses a submission */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -320,6 +325,7 @@ typedef struct QLogicISPChannel {
     SCSIBus bus;
     QLogicISPState *dev;
     uint8_t index;
+    uint16_t reset_delay;   /* What this bus waits after a reset. */
 } QLogicISPChannel;
 
 struct QLogicISPState {
@@ -405,6 +411,8 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
  */
 static void qlogic_isp_reset_state(QLogicISPState *s)
 {
+    unsigned int i;
+
     s->bus_cfg1 = 0;
     s->bus_ctrl = 0;
     s->bus_status = 0;
@@ -428,6 +436,11 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     /* The guest re-downloads firmware after every reset. */
     memset(s->risc_ram, 0, sizeof(s->risc_ram));
 
+    /* Every channel setting is reprogrammed by the attach that follows. */
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        s->chan[i].reset_delay = 0;
+    }
+
     /* Zeroed so a stale ring cannot be acted on. */
     s->rqst_base = 0;
     s->resp_base = 0;
@@ -442,31 +455,81 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     qlogic_isp_update_irq(s);
 }
 
-static void qlogic_isp_ram_block_dma(QLogicISPState *s, bool to_adapter)
+/* Where the four address words live, shared by every block transfer. */
+static hwaddr qlogic_isp_ram_host_addr(QLogicISPState *s)
+{
+    return ISP_MBOX_ADDR_TOP(s->mailbox)
+         | ISP_MBOX_ADDR_HIGH(s->mailbox)
+         | ISP_MBOX_ADDR_MID(s->mailbox)
+         | ISP_MBOX_ADDR_LOW(s->mailbox);
+}
+
+/*
+ * A part that declares an end to its array has a hard edge there: a
+ * transfer running past it is refused rather than folded back to the
+ * start, where it would overwrite an image the guest already loaded.
+ */
+static bool qlogic_isp_ram_range_ok(QLogicISPState *s, uint16_t base,
+                                    uint16_t count)
+{
+    if (QLOGIC_ISP_GET_CLASS(s)->info->ram_wraps) {
+        return true;
+    }
+    return (uint32_t)base + count <= ISP_RISC_RAM_WORDS;
+}
+
+/*
+ * The whole transfer is read before a word of it is kept, so a refused
+ * DMA leaves the array as it was; a committed prefix would make the
+ * guest's own checksum blame the image for what the adapter invented.
+ * The words arrive little-endian at the DMA interface whatever the
+ * fabric between here and memory does to the byte lanes.
+ */
+static uint16_t qlogic_isp_ram_load_a64(QLogicISPState *s)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t base = s->mailbox[1];
     uint16_t count = s->mailbox[4];
-    hwaddr host = ISP_MBOX_ADDR_TOP(s->mailbox)
-                | ISP_MBOX_ADDR_HIGH(s->mailbox)
-                | ISP_MBOX_ADDR_MID(s->mailbox)
-                | ISP_MBOX_ADDR_LOW(s->mailbox);
+    hwaddr host = qlogic_isp_ram_host_addr(s);
+    g_autofree uint8_t *bytes = NULL;
     uint16_t i;
 
-    if (to_adapter) {
-        trace_qlogic_isp_firmware_load(base, count, host);
-    } else {
-        trace_qlogic_isp_firmware_dump(base, count, host);
+    trace_qlogic_isp_firmware_load(base, count, host);
+
+    if (!qlogic_isp_ram_range_ok(s, base, count)) {
+        return ISP_MBOX_CMD_PARAM_ERROR;
+    }
+    if (count == 0) {
+        return ISP_MBOX_COMPLETE;
     }
 
-    for (i = 0; i < count; i++) {
-        uint16_t *slot = &s->risc_ram[(uint16_t)(base + i)];
+    bytes = g_malloc(count * 2u);
+    if (pci_dma_read(pci, host, bytes, count * 2u) != MEMTX_OK) {
+        return ISP_MBOX_HOST_INTERFACE_ERROR;
+    }
 
-        if (to_adapter) {
-            lduw_le_pci_dma(pci, host + i * 2, slot, MEMTXATTRS_UNSPECIFIED);
-        } else {
-            stw_le_pci_dma(pci, host + i * 2, *slot, MEMTXATTRS_UNSPECIFIED);
-        }
+    /* The truncation is the fold, on the part whose range check allows it. */
+    for (i = 0; i < count; i++) {
+        s->risc_ram[(uint16_t)(base + i)] = lduw_le_p(bytes + i * 2);
+    }
+
+    return ISP_MBOX_COMPLETE;
+}
+
+/* The other direction, where there is no prefix to withhold. */
+static void qlogic_isp_ram_dump(QLogicISPState *s)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    uint16_t base = s->mailbox[1];
+    uint16_t count = s->mailbox[4];
+    hwaddr host = qlogic_isp_ram_host_addr(s);
+    uint16_t i;
+
+    trace_qlogic_isp_firmware_dump(base, count, host);
+
+    for (i = 0; i < count; i++) {
+        stw_le_pci_dma(pci, host + i * 2, s->risc_ram[(uint16_t)(base + i)],
+                       MEMTXATTRS_UNSPECIFIED);
     }
 }
 
@@ -494,13 +557,18 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
+    /* The family opcode and the A64 one name the same transfer. */
     case ISP_MBOX_CMD_LOAD_RAM:
-        qlogic_isp_ram_block_dma(s, true);
-        s->mailbox[0] = ISP_MBOX_COMPLETE;
+    case ISP_MBOX_CMD_LOAD_RAM_A64:
+        s->mailbox[0] = qlogic_isp_ram_load_a64(s);
         break;
 
     case ISP_MBOX_CMD_DUMP_RAM:
-        qlogic_isp_ram_block_dma(s, false);
+        if (!qlogic_isp_ram_range_ok(s, s->mailbox[1], s->mailbox[4])) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
+        qlogic_isp_ram_dump(s);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
@@ -553,11 +621,23 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /* Asynchronous and narrow: the true state of an unnegotiated bus. */
-    case ISP_MBOX_CMD_GET_TARGET_PARAMETERS:
+    case ISP_MBOX_CMD_GET_TARGET_PARAMETERS: {
+        const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+
+        if (ISP_DEVICE_BUS(s->mailbox[1]) >= info->nchannels) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
+
         s->mailbox[2] = 0;
         s->mailbox[3] = 0;
+        /* A two-channel part answers its rate negotiation in its own word. */
+        if (info->nchannels > 1) {
+            s->mailbox[6] = 0;
+        }
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
+    }
 
     /*
      * Setters for state nothing reads back; answering invalid is a fatal
@@ -576,10 +656,19 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    /* IRIX's bus-reset delay setter; same contract as the group above. */
-    case ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS:
+    /* IRIX's bus-reset delay setter: mailbox 1 and 2 are per channel. */
+    case ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS: {
+        const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+
+        s->chan[0].reset_delay = s->mailbox[1];
+        trace_qlogic_isp_reset_delay(0, s->mailbox[1]);
+        if (info->nchannels > 1) {
+            s->chan[1].reset_delay = s->mailbox[2];
+            trace_qlogic_isp_reset_delay(1, s->mailbox[2]);
+        }
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
+    }
 
     case ISP_MBOX_CMD_SET_PCI_CONTROL:
     case ISP_MBOX_CMD_SET_SYSTEM_PARAMETER:
@@ -679,6 +768,20 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
 
     /* "A mailbox command is ready" -- the trigger to process one. */
     case ISP_HOST_CMD_SET_HOST_INT:
+        /*
+         * Nothing is touched, not even the flag: the standing result is
+         * the answer to a command the guest has not collected yet, and
+         * replacing it loses that answer for good.
+         */
+        if ((s->semaphore & ISP_SEMAPHORE_LOCK) &&
+            QLOGIC_ISP_GET_CLASS(s)->info->reject_busy_mailbox) {
+            trace_qlogic_isp_mbox_busy(s->mailbox[0]);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "qlogic-isp: mailbox command 0x%04x submitted while "
+                          "an unacknowledged result is still held\n",
+                          s->mailbox[0]);
+            break;
+        }
         s->risc_flags |= ISP_RISC_FLAG_HOST_INT;
         qlogic_isp_mailbox_command(s);
         break;
@@ -1687,12 +1790,13 @@ static void qlogic_isp_part_class_init(ObjectClass *oc, const void *data)
 static const QLogicISPInfo qlogic_isp_infos[] = {
     { .name = TYPE_QLOGIC_ISP1040, .desc = "QLogic ISP1040 SCSI host adapter",
       .device_id = 0x1020, .revision = 0x05, .nchannels = 1,
-      .cfg0_reports_revision = true, .fw_version = { 1, 0, 0 } },
+      .cfg0_reports_revision = true, .ram_wraps = true,
+      .fw_version = { 1, 0, 0 } },
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
       .device_id = 0x1216, .revision = 0x06, .nchannels = 2,
       .cfg0_reports_revision = false, .banked_dma = true,
-      .fw_version = { 10, 4, 0 } },
+      .reject_busy_mailbox = true, .fw_version = { 10, 4, 0 } },
 };
 
 static const TypeInfo qlogic_isp_base_info = {
