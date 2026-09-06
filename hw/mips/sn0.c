@@ -1475,23 +1475,24 @@ static void sn0_init(MachineState *machine)
          * The runtime Hub state the machine owns: its programmed node number
          * (real firmware programs it later, so a real-PROM boot starts at
          * zero), the chassis DIP switches, the fabric endpoint, the system
-         * controller's AUX backend, and the bring-up UART. Every module has
-         * its own physical AUX connector, so each node's controller gets a
-         * separate -serial index, node-major with a fixed stride: node 0's
-         * AUX at 2, node 1's at 6. Resolved here because assigning one
-         * character backend to two frontends aborts the machine. The
-         * bring-up UART is
-         * a diagnostic device, not part of any shipped chassis; keeping it
-         * on the model's console node avoids the same collision.
+         * controller's external AUX backend, and the bring-up UART. Only the
+         * master module drives the external AUX port. Keep the node-major
+         * serial numbering, but leave a slave module's nominal AUX backend
+         * unattached. The bring-up UART is a diagnostic device, not part of
+         * any shipped chassis; keeping it on the model's console node avoids
+         * character-backend collisions.
          */
         qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
                              s->synthesized_firmware ? node_model->nasid : 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
-        aux_chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_ELSC_CHARDEV));
-        if (aux_chr) {
-            object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
-                                     OBJECT(aux_chr), &error_fatal);
+        if (node_model->module_role == SN0_MODULE_MASTER) {
+            aux_chr = serial_hd(SN0_NODE_SERIAL(node_index,
+                                                SN0_ELSC_CHARDEV));
+            if (aux_chr) {
+                object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
+                                         OBJECT(aux_chr), &error_fatal);
+            }
         }
         object_property_set_link(OBJECT(&node->hub), "fabric",
                                  OBJECT(s->fabric), &error_fatal);
