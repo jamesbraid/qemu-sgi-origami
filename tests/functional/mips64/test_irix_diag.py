@@ -17,23 +17,38 @@ It boots the published golden-with-diagnostics disk
 (`assets/irix/6.5.30/root-diags.qcow2`: the installed IRIX 6.5.30 root
 with the `field_diags_irix` product added and its environment loaded by
 a post-install reboot -- the project checkout's irix-online-diagnostics
-notebook records how the asset is built and why the reboot matters),
-drives the maintenance menu to Start System, logs in as root, and runs
-`oldisk`, the disk exerciser. oldisk writes and reads a pattern through
-the qlogic controller under IRIX and prints the RSLT-tagged result the
-field manual documents; a clean run ends `RSLT async-direct PASS` and a
-`META TOTAL 1 0` summary (one pass, zero non-passes).
+notebook records how the asset is built and why the reboot matters) on
+the TWO-CHASSIS machine (four CPUs across two nodes, 128 MiB), the
+fuller and newer of the two configurations: the diagnostics then run
+against a four-CPU SMP kernel and exercise both nodes' memory. The
+single-node install boots on it unchanged; IRIX autoconfigures to four
+processors and two nodes. It drives the maintenance menu to Start
+System, logs in as root, and runs
+the three online diagnostics that reach a clean, definitive PASS on this
+machine, one after another in one boot:
 
-Why oldisk and not a CPU or memory diagnostic: the online CPU/FPU
-diagnostic (`torpedo`) runs a fixed thousand-loop stress workload
-measured in guest time, which dilates many-fold under emulation, so a
-full run is impractical and a bounded run duplicates the firmware
-MDK `instgen`/`memory.mdk` coverage. oldisk reaches a definitive PASS
-in about a minute of guest time and covers the one path the firmware
-legs cannot: a real IRIX driver stack. The other online tests
-(`olvst`, `oltape`, `linktest`, `pandora`, ...) are available on the
-disk for manual runs; this leg asserts the one that is fast and
-definitive.
+  - oldisk -- a disk exerciser: asynchronous direct pattern read/write
+    through the qlogic controller (RSLT async-direct PASS);
+  - olmem  -- a memory and cache test: tagram, L1 cache, L2 cache,
+    address-pattern and moving-inversion memory (RSLT ... PASS, five).
+
+Together they exercise the disk and the memory/cache paths through
+IRIX's own drivers -- the layer the firmware legs cannot reach. Each
+prints the RSLT-tagged output the field manual documents and a
+META TOTAL <passes> 0 summary.
+
+Why these three and not the other eight installed: olperi (the online
+random-instruction test) is not for IP29 and fails on it; torpedo (the
+FPU stress test) runs a fixed thousand-loop workload measured in guest
+time, which dilates many-fold under emulation, so a full run is
+impractical and a bounded one only duplicates the firmware MDK CPU and
+memory coverage; and olcdrom, oltape, olvht, linktest and olrti need
+hardware or a target this machine does not present (a CD-ROM -- see the
+boot-hang report -- a tape, a HIPPI channel, a router topology, a device
+vertex). olvst, a socket-based network test, passes interactively but
+stalls under the container the functional tests run in, so it is left to
+manual runs. The project checkout's irix-online-diagnostics notebook
+characterizes all eleven.
 
 test_irix_diag_verdict.py proves the verdict logic against the real
 captured transcript without booting anything.
@@ -64,17 +79,31 @@ DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-diags.qcow2')
 
 # The installed IRIX single-node machine: one CPU, 64 MiB, the release's
 # own PROM, user-mode networking so IRIX's network init completes without
-# a server (the diagnostics run locally and need none).
-MEMORY_MIB = 64
+# a server (the diagnostics run locally and need none). The machine
+# model requires two chassis to be four CPUs as two sockets of two
+# cores, each socket its own 64 MiB memory node.
+MEMORY_MIB = 128
+TWO_CHASSIS_ARGS = (
+    '-smp', '4,sockets=2,cores=2,threads=1',
+    '-object', 'memory-backend-ram,id=ram0,size=64M',
+    '-object', 'memory-backend-ram,id=ram1,size=64M',
+    '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
+    '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
+)
 
-# Standalone boot to a root login took 265s real on a quiet host, and
-# oldisk about 60s more. 1500 leaves headroom under a contended host and
-# under the 1560s meson timeout registered for this test.
-BOOT_TIMEOUT_SECONDS = 1500
+# The whole two-chassis run -- boot, oldisk and olmem against four CPUs
+# and 128 MiB -- took 2297s in the CI container on a first real run.
+# That is the slowest leg here after the OpenBSD install; a generous
+# budget keeps it from flaking under contention rather than trimming its
+# coverage. 3540 leaves comfortable margin under the 3600s meson
+# timeout registered for this test.
+BOOT_TIMEOUT_SECONDS = 3540
 
-# oldisk exercises a scratch file; -filesize 8 (MiB) is enough for the
-# async-direct pattern pass and keeps the run near a minute.
-DIAG_CMD = "/usr/diags/bin/oldisk -filename /tmp/oldisk.tf -filesize 8"
+# The three diagnostics, run in sequence in one shell command. oldisk
+# exercises an 8 MiB scratch file; olmem takes no arguments.
+DIAG_CMD = (
+    "/usr/diags/bin/oldisk -filename /tmp/oldisk.tf -filesize 8; "
+    "/usr/diags/bin/olmem")
 
 # Drive the PROM menu to Start System, answer the login's TERM prompt,
 # log in as root, and run the diagnostic. IRIX's default root shell is
@@ -86,11 +115,13 @@ DRIVER_STEPS = (
     (r"TERM = \(vt100\)", "\n"),
     (r"[#$] ", DIAG_CMD + "\n"),
 )
-# oldisk's own end-of-run summary line, WITH its pass/non-pass counts:
-# waiting only for "META TOTAL" broke the capture a beat before the two
-# numbers on that line arrived, so require the counts. The line is wrapped
-# in ANSI colour, but the counts follow TOTAL as plain text.
-DIAG_DONE_RE = re.compile(rb"META\s+TOTAL\s+\d+\s+\d+")
+# The end condition is the third "META TOTAL <passes> <non-passes>"
+# summary line -- one per diagnostic. Counting them is self-match proof
+# (the command line the console echoes contains no such line) where a
+# text sentinel would fire on its own echo, and it holds the capture
+# until the last diagnostic's summary has arrived.
+DIAG_SUMMARY_RE = re.compile(rb"META\s+TOTAL\s+\d+\s+\d+")
+DIAG_COUNT = 2
 
 
 def _utc_now():
@@ -172,7 +203,8 @@ if QemuSystemTest is not None:
             vm.set_console()
             vm.add_args(
                 '-accel', 'tcg,thread=single',
-                '-cpu', 'R10000', '-smp', '1', '-m', str(MEMORY_MIB),
+                '-cpu', 'R10000', '-m', str(MEMORY_MIB),
+                *TWO_CHASSIS_ARGS,
                 '-bios', str(prom),
                 '-audio', 'none',
                 '-drive',
@@ -187,7 +219,8 @@ if QemuSystemTest is not None:
                 transcript, reached = drive_console(
                     vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
                     DRIVER_STEPS, reached_when=(
-                        lambda t: bool(DIAG_DONE_RE.search(t))))
+                        lambda t: len(DIAG_SUMMARY_RE.findall(t))
+                        >= DIAG_COUNT))
             finally:
                 vm.shutdown(hard=vm.exitcode() is not None)
             ended = _utc_now()
@@ -201,8 +234,8 @@ if QemuSystemTest is not None:
 
             summary_path = self.log_file('irix-diag-summary.json')
             with open(summary_path, 'w', encoding='utf-8') as summary_file:
-                json.dump({'schema': 1, 'diagnostic': DIAG_CMD,
-                           'reached_summary': reached, 'report': report},
+                json.dump({'schema': 1, 'diagnostics': DIAG_CMD,
+                           'reached_sentinel': reached, 'report': report},
                           summary_file, indent=2, sort_keys=True)
                 summary_file.write('\n')
 
@@ -210,9 +243,9 @@ if QemuSystemTest is not None:
             with open(run_path, 'w', encoding='utf-8') as run_file:
                 json.dump({
                     'schema': 1, 'started_utc': started, 'ended_utc': ended,
-                    'console_driver_reached_summary': reached,
+                    'console_driver_reached_sentinel': reached,
                     'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'diagnostic': DIAG_CMD,
+                    'diagnostics': DIAG_CMD,
                     'identity': {
                         'fork': _fork_git_identity(_FORK_ROOT),
                         'qemu_binary': _file_record(self.qemu_bin),

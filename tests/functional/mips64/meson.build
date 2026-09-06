@@ -33,10 +33,12 @@ test_mips64_timeouts = {
   # BOOT_TIMEOUT_SECONDS in test_irix_miniroot.py keeps a 60s margin under
   # this, the same margin test_prom_sash.py keeps against its own timeout.
   'irix_miniroot' : 900,
-  # Boot the installed IRIX disk (265s to root login on a quiet host)
-  # and run SGI's oldisk online diagnostic to a RSLT PASS (about 60s more).
-  # BOOT_TIMEOUT_SECONDS in test_irix_diag.py keeps a 60s margin under this.
-  'irix_diag' : 1560,
+  # Boot the installed IRIX disk on two chassis (four CPUs across two nodes,
+  # 128 MiB) and run SGI's oldisk and olmem online diagnostics to a RSLT PASS.
+  # The two-node boot and both diagnostics are the long pole; oldisk ~256s and
+  # olmem ~430s of quiet on top of the boot. BOOT_TIMEOUT_SECONDS in
+  # test_irix_diag.py keeps a 60s margin under this.
+  'irix_diag' : 3600,
   # Boot the installed IRIX disk with a scsi-tape attached and run SGI's
   # oltape rw/thrash/block to a RSLT PASS (seconds on a fresh image). The
   # boot is the long pole, same as irix_diag; BOOT_TIMEOUT_SECONDS in
