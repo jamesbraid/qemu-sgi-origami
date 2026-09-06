@@ -9,7 +9,7 @@
 
 static void ni_update_irq(SGIBedrockNIState *s)
 {
-    qemu_set_irq(s->error, !!(s->regs.errors & 0x1fffffff000000ULL));
+    qemu_set_irq(s->error, sgi_bedrock_ni_regs_error_level(&s->regs));
 }
 
 static uint64_t ni_read(void *opaque, hwaddr offset, unsigned size)
