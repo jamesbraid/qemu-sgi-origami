@@ -388,21 +388,21 @@ static void test_migration(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/sgi/bedrock-md/register-contract", test_register_contract);
-    qtest_add_func("/sgi/bedrock-md/access-width-policy",
+    qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
+    qtest_add_func("sn1/bedrock-md/access-width-policy",
                    test_access_width_policy);
-    qtest_add_func("/sgi/bedrock-md/explicit-registers",
+    qtest_add_func("sn1/bedrock-md/explicit-registers",
                    test_explicit_registers_independent);
-    qtest_add_func("/sgi/bedrock-md/queue-sizes", test_queue_sizes_fixed);
-    qtest_add_func("/sgi/bedrock-md/error-cluster-idle",
+    qtest_add_func("sn1/bedrock-md/queue-sizes", test_queue_sizes_fixed);
+    qtest_add_func("sn1/bedrock-md/error-cluster-idle",
                    test_error_cluster_idle);
-    qtest_add_func("/sgi/bedrock-md/policy-zero-writes",
+    qtest_add_func("sn1/bedrock-md/policy-zero-writes",
                    test_policy_zero_ignores_writes);
-    qtest_add_func("/sgi/bedrock-md/refresh-mask", test_refresh_mask);
-    qtest_add_func("/sgi/bedrock-md/perf-counter-lock-word",
+    qtest_add_func("sn1/bedrock-md/refresh-mask", test_refresh_mask);
+    qtest_add_func("sn1/bedrock-md/perf-counter-lock-word",
                    test_perf_counter_lock_word);
-    qtest_add_func("/sgi/bedrock-md/reset", test_reset);
-    qtest_add_func("/sgi/bedrock-md/migration", test_migration);
-    qtest_add_func("/sgi/bedrock-md/writable-masks", test_writable_masks);
+    qtest_add_func("sn1/bedrock-md/reset", test_reset);
+    qtest_add_func("sn1/bedrock-md/migration", test_migration);
+    qtest_add_func("sn1/bedrock-md/writable-masks", test_writable_masks);
     return g_test_run();
 }
