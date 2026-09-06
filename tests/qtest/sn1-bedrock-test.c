@@ -514,25 +514,25 @@ static void test_parent_widget_interrupt_write(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/sgi/bedrock/composition/identity-pio",
+    qtest_add_func("sn1/bedrock/composition/identity-pio",
                    test_parent_identity_and_pio);
-    qtest_add_func("/sgi/bedrock/composition/dma-reset",
+    qtest_add_func("sn1/bedrock/composition/dma-reset",
                    test_parent_dma_and_reset);
-    qtest_add_func("/sgi/bedrock/composition/migration",
+    qtest_add_func("sn1/bedrock/composition/migration",
                    test_parent_migration);
-    qtest_add_func("/sgi/bedrock/composition/l1-invalid-region",
+    qtest_add_func("sn1/bedrock/composition/l1-invalid-region",
                    test_parent_l1_invalid_region);
-    qtest_add_func("/sgi/bedrock/composition/l1-missing-region",
+    qtest_add_func("sn1/bedrock/composition/l1-missing-region",
                    test_parent_l1_missing_region);
-    qtest_add_func("/sgi/bedrock/composition/l1-missing-link",
+    qtest_add_func("sn1/bedrock/composition/l1-missing-link",
                    test_parent_l1_missing_link);
-    qtest_add_func("/sgi/bedrock/composition/io-interrupt-write",
+    qtest_add_func("sn1/bedrock/composition/io-interrupt-write",
                    test_parent_io_interrupt_write);
-    qtest_add_func("/sgi/bedrock/composition/widget-interrupt-write",
+    qtest_add_func("sn1/bedrock/composition/widget-interrupt-write",
                    test_parent_widget_interrupt_write);
-    qtest_add_func("/sgi/bedrock/composition/l1-protection",
+    qtest_add_func("sn1/bedrock/composition/l1-protection",
                    test_parent_l1_protection);
-    qtest_add_func("/sgi/bedrock/composition/md-decode-reset",
+    qtest_add_func("sn1/bedrock/composition/md-decode-reset",
                    test_parent_md_decode_and_reset);
     return g_test_run();
 }
