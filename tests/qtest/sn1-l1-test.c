@@ -482,6 +482,129 @@ static void test_poweroff(void)
     qtest_quit(s);
 }
 
+static void set_destination(uint8_t *request, uint32_t address)
+{
+    request[1] = address >> 24;
+    request[2] = address >> 16;
+    request[3] = address >> 8;
+    request[4] = address;
+}
+
+static void assert_display(QTestState *s, const char *expected)
+{
+    g_autoptr(QDict) result = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':"
+        "{'path':%s,'property':'display-line-2'}}", PATH);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, expected);
+}
+
+static void test_route_forms(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S "
+                              "-device sgi-l1,id=l1,rack=7,bay=11");
+    uint8_t request[] = { 0x12, 0, 0, 0, 0, 0, 3 };
+    uint8_t expected[] = { 0x32, 0, 0, 0, 0, 2,
+                           0, 0, 0, 1, 0xcb, 0, 0, 0, 0, 'C' };
+    uint8_t reply[129];
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    for (unsigned type = 0; type <= 4; type += 4) {
+        expected[15] = type ? 0x34 : 'C';
+        for (unsigned form = 0; form < 4; form++) {
+            unsigned rack = form & 1 ? 0x3ff : 7;
+            unsigned bay = form & 2 ? 0x3f : 11;
+            set_destination(request, (type << 28) | (rack << 18) |
+                                     (bay << 12) | 6);
+            send_frame(s, request, sizeof(request), false);
+            g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
+            g_assert_cmpmem(reply, sizeof(expected), expected,
+                            sizeof(expected));
+        }
+    }
+    qtest_quit(s);
+}
+
+static void reject_route(QTestState *s, uint32_t address, bool malformed)
+{
+    uint8_t request[] = { 0x10, 0, 0, 0, 0, 0x10, 5, 1,
+                          1, 'B', 'A', 'D', 0 };
+    const uint8_t recover[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1,
+                                1, 'k', 'e', 'e', 'p', 0 };
+    uint8_t reply[129];
+    set_destination(request, address);
+    if (malformed) {
+        request[7] = 2;
+    }
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    assert_display(s, "keep");
+    send_frame(s, recover, sizeof(recover), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    assert_display(s, "keep");
+}
+
+static void test_route_rejection(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S "
+                              "-device sgi-l1,id=l1,rack=7,bay=11");
+    const uint8_t initial[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1,
+                                1, 'k', 'e', 'e', 'p', 0 };
+    const uint32_t local = 0x0ffff006;
+    uint8_t reply[129];
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    send_frame(s, initial, sizeof(initial), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    for (unsigned malformed = 0; malformed < 2; malformed++) {
+        reject_route(s, (8 << 18) | (0x3f << 12) | 6, malformed);
+        reject_route(s, (0x3ff << 18) | (12 << 12) | 6, malformed);
+        reject_route(s, (8 << 18) | (12 << 12) | 6, malformed);
+        for (unsigned bit = 5; bit <= 11; bit++) {
+            reject_route(s, local | (1U << bit), malformed);
+        }
+        for (unsigned type = 1; type < 16; type++) {
+            if (type != 4) {
+                reject_route(s, local | (type << 28), malformed);
+            }
+        }
+        for (unsigned task = 0; task < 32; task++) {
+            if (task != 3 && task != 6) {
+                reject_route(s, (local & ~31U) | task, malformed);
+            }
+            if (task != 6) {
+                reject_route(s, 0x4ffff000 | task, malformed);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_task_commands(void)
+{
+    QTestState *s = start();
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 3, 0 };
+    uint8_t reply[129];
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    request[4] = 6;
+    request[6] = 0;
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    request[1] = 0x4f;
+    request[5] = 0x10;
+    request[6] = 5;
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    assert_display(s, "");
+    request[1] = 0x0f;
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -496,5 +619,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console", test_console);
     qtest_add_func("sn1/l1/metadata", test_metadata);
     qtest_add_func("sn1/l1/poweroff", test_poweroff);
+    qtest_add_func("sn1/l1/route-forms", test_route_forms);
+    qtest_add_func("sn1/l1/route-rejection", test_route_rejection);
+    qtest_add_func("sn1/l1/task-commands", test_task_commands);
     return g_test_run();
 }
