@@ -151,11 +151,18 @@ class PromFx(QemuSystemTest):
     def test_prom_fx(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'no firmware/fx.64 at '
-                f'<ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{FX_REL} -- tools/extract-irix boot '
-                'in the project checkout lands fx.64')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing PROM or fx.64 is a provisioning
+            # failure, not an absent-assets developer run, and must
+            # fail loudly: a silent skip here would let a real fx
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the firmware/fx.64 are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{FX_REL} -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         prom, fx = paths
 
         identity_problems = payload_identity_problems(
