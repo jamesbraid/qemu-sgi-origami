@@ -3504,6 +3504,335 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
     qtest_quit(qts);
 }
 
+static void test_bte_physical_node_ownership(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    const uint64_t node1 = NODE_STRIDE;
+    const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+    uint8_t got[BTE_LINE];
+    unsigned int i;
+
+    assign_node1_number(qts);
+
+    /* Zero-field addresses name node zero after NASID assignment. */
+    qtest_memset(qts, 0x01500000, 0xaa, BTE_LINE);
+    qtest_memset(qts, node1 + 0x01500000, 0xbb, BTE_LINE);
+    qtest_memset(qts, 0x01600000, 0xcc, BTE_LINE);
+    qtest_memset(qts, node1 + 0x01600000, 0xcc, BTE_LINE);
+
+    qtest_writeq(qts, hub1 + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, hub1 + BTE_SOURCE(0), BTE_CACHED_UPPER | 0x01500000);
+    qtest_writeq(qts, hub1 + BTE_DEST(0), BTE_CACHED_UPPER | 0x01600000);
+    qtest_writeq(qts, hub1 + BTE_INTERRUPT(0), BTE_INT_LEVEL(20) | 1);
+    qtest_writeq(qts, hub1 + BTE_CONTROL(0), 0);
+
+    g_assert_cmphex(qtest_readq(qts, hub1 + BTE_LENGTH(0)), ==, 0);
+    qtest_bufread(qts, 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xaa);
+    }
+    qtest_bufread(qts, node1 + 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xcc);
+    }
+
+    /* An interrupt aimed at the engine's programmed number stays home. */
+    g_assert_cmphex(qtest_readq(qts, hub1 + PI_INT_PEND0), ==, 1ULL << 20);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==, 0);
+
+    /* The notification address follows the same rule. */
+    qtest_memset(qts, 0x01700000, 0xff, 8);
+    qtest_memset(qts, node1 + 0x01700000, 0xff, 8);
+    qtest_writeq(qts, hub1 + BTE_LENGTH(1), BTE_BUSY | 1);
+    qtest_writeq(qts, hub1 + BTE_SOURCE(1), 0x01500000);
+    qtest_writeq(qts, hub1 + BTE_DEST(1), 0x01680000);
+    qtest_writeq(qts, hub1 + BTE_NOTIFY(1), 0x01700000);
+    qtest_writeq(qts, hub1 + BTE_CONTROL(1), BTE_CTL_NOTIFY);
+    g_assert_cmphex(qtest_readq(qts, 0x01700000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, node1 + 0x01700000), ==, ~0ULL);
+
+    /* And the mirror: node 0's engines leave node 1's memory alone. */
+    qtest_memset(qts, node1 + 0x01600000, 0xcc, BTE_LINE);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(0), 0x01500000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(0), 0x01600000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_INTERRUPT(0), BTE_INT_LEVEL(21));
+    qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(0), 0);
+    qtest_bufread(qts, 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xaa);
+    }
+    qtest_bufread(qts, node1 + 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xcc);
+    }
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_INT_PEND0), ==,
+                    1ULL << 21);
+
+    /* An explicit node number still reaches the other node. */
+    qtest_memset(qts, 0x01600000, 0xcc, BTE_LINE);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(0), node1 + 0x01500000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(0), 0x01600000);
+    qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(0), 0);
+    qtest_bufread(qts, 0x01600000, got, sizeof(got));
+    for (i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, 0xbb);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_bte_reset_retires_peer_claim(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    unsigned int engine;
+
+    assign_node1_number(qts);
+    qtest_memset(qts, NODE_STRIDE + 0x00800000, 0xaa, BTE_LINE);
+    qtest_system_reset(qts);
+    /* No NASID write after reset may be needed to retire the peer's claim. */
+    for (engine = 0; engine < 2; engine++) {
+        qtest_memset(qts, 0x00900000, 0xcc, BTE_LINE);
+        qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(engine),
+                     NODE_STRIDE + 0x00800000);
+        qtest_writeq(qts, HUB_LOCAL + BTE_DEST(engine), 0x00900000);
+        qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(engine), BTE_BUSY | 1);
+        qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(engine), 0);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(engine)),
+                        ==, BTE_BUSY | BTE_ERROR | 1);
+        g_assert_cmphex(qtest_readq(qts, 0x00900000),
+                        ==, 0xccccccccccccccccULL);
+    }
+    qtest_quit(qts);
+}
+
+/* Each address role varies independently across the two physical nodes. */
+static void test_bte_addresses_ignore_calias(const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+    const uint64_t hub = HUB_BY_NODE + NODE_STRIDE;
+    const uint64_t offsets[] = { 0x00800000, 0x01800000 };
+    const unsigned int calias[] = { 0, PI_CALIAS_SIZE_16M };
+    unsigned int c, o, engine, nodes, i;
+
+    for (c = 0; c < ARRAY_SIZE(calias); c++) {
+        qtest_writeq(qts, hub + PI_CALIAS_SIZE, calias[c]);
+        for (o = 0; o < ARRAY_SIZE(offsets); o++) {
+            uint64_t src = offsets[o];
+            uint64_t dst = src + 0x10000;
+            uint64_t notify = src + 0x20000;
+
+            for (engine = 0; engine < 2; engine++) {
+                for (nodes = 0; nodes < 8; nodes++) {
+                    unsigned int source_node = nodes & 1;
+                    unsigned int dest_node = (nodes >> 1) & 1;
+                    unsigned int notify_node = (nodes >> 2) & 1;
+                    uint8_t got[BTE_LINE];
+
+                    qtest_memset(qts, src, 0xaa, BTE_LINE);
+                    qtest_memset(qts, NODE_STRIDE + src, 0xbb, BTE_LINE);
+                    qtest_memset(qts, dst, 0xcc, BTE_LINE);
+                    qtest_memset(qts, NODE_STRIDE + dst, 0xcc, BTE_LINE);
+                    qtest_memset(qts, notify, 0xff, 8);
+                    qtest_memset(qts, NODE_STRIDE + notify, 0xff, 8);
+                    qtest_writeq(qts, hub + BTE_SOURCE(engine),
+                                 src + source_node * NODE_STRIDE);
+                    qtest_writeq(qts, hub + BTE_DEST(engine),
+                                 dst + dest_node * NODE_STRIDE);
+                    qtest_writeq(qts, hub + BTE_NOTIFY(engine),
+                                 notify + notify_node * NODE_STRIDE);
+                    qtest_writeq(qts, hub + BTE_LENGTH(engine), BTE_BUSY | 1);
+                    qtest_writeq(qts, hub + BTE_CONTROL(engine),
+                                 BTE_CTL_NOTIFY);
+                    g_assert_cmphex(qtest_readq(qts, hub + BTE_LENGTH(engine)),
+                                    ==, 0);
+                    qtest_bufread(qts, dst + dest_node * NODE_STRIDE,
+                                  got, sizeof(got));
+                    for (i = 0; i < sizeof(got); i++) {
+                        g_assert_cmphex(got[i], ==, source_node ? 0xbb : 0xaa);
+                    }
+                    qtest_bufread(qts, dst + (1 - dest_node) * NODE_STRIDE,
+                                  got, sizeof(got));
+                    for (i = 0; i < sizeof(got); i++) {
+                        g_assert_cmphex(got[i], ==, 0xcc);
+                    }
+                    g_assert_cmphex(qtest_readq(qts,
+                                    notify + notify_node * NODE_STRIDE), ==, 0);
+                    g_assert_cmphex(qtest_readq(qts,
+                                    notify + (1 - notify_node) * NODE_STRIDE),
+                                    ==, ~0ULL);
+                }
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+/* The loader writes through a named CPU's address space during reset. */
+static void bte_reset_write(GString *args, unsigned int cpu,
+                            uint64_t addr, uint64_t value)
+{
+    g_string_append_printf(args,
+        " -device loader,cpu-num=%u,addr=0x%" PRIx64
+        ",data=0x%" PRIx64 ",data-len=8,data-be=on", cpu, addr, value);
+}
+
+static void test_bte_routing_follows_nasid(const void *data)
+{
+    g_autoptr(GString) args = g_string_new(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    const uint64_t src = 0x00800000;
+    const uint64_t dst = 0x00900000;
+    const uint64_t notify = 0x00a00000;
+    QTestState *qts;
+    unsigned int node, engine, round;
+
+    for (node = 0; node < 2; node++) {
+        unsigned int cpu = node * 2;
+
+        /* Loader callbacks precede reset exit: make the reset claim usable. */
+        bte_reset_write(args, cpu, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE);
+        bte_reset_write(args, cpu, src,
+                        node ? 0xbbbbbbbbbbbbbbbbULL : 0xaaaaaaaaaaaaaaaaULL);
+        for (engine = 0; engine < 2; engine++) {
+            bte_reset_write(args, cpu, dst + engine * BTE_LINE, ~0ULL);
+            bte_reset_write(args, cpu, notify + engine * BTE_LINE, ~0ULL);
+            bte_reset_write(args, cpu, HUB_LOCAL + BTE_SOURCE(engine), src);
+            bte_reset_write(args, cpu, HUB_LOCAL + BTE_DEST(engine),
+                            dst + engine * BTE_LINE);
+            bte_reset_write(args, cpu, HUB_LOCAL + BTE_NOTIFY(engine),
+                            notify + engine * BTE_LINE);
+            bte_reset_write(args, cpu, HUB_LOCAL + BTE_LENGTH(engine),
+                            BTE_BUSY | 1);
+            bte_reset_write(args, cpu, HUB_LOCAL + BTE_CONTROL(engine),
+                            BTE_CTL_NOTIFY);
+        }
+    }
+    qts = qtest_init(args->str);
+    for (round = 0; round < 2; round++) {
+        /* Both Hubs claim zero at reset. Each engine must copy its own RAM. */
+        for (node = 0; node < 2; node++) {
+            for (engine = 0; engine < 2; engine++) {
+                g_assert_cmphex(cpu_view_word64(qts, node * 2,
+                                dst + engine * BTE_LINE), ==,
+                                node ? 0xbbbbbbbbbbbbbbbbULL :
+                                       0xaaaaaaaaaaaaaaaaULL);
+                g_assert_cmphex(cpu_view_word64(qts, node * 2,
+                                notify + engine * BTE_LINE), ==, 0);
+            }
+        }
+        assign_node1_number(qts);
+        qtest_memset(qts, dst, 0xcc, 2 * BTE_LINE);
+        qtest_memset(qts, notify, 0xff, 2 * BTE_LINE);
+        for (engine = 0; engine < 2; engine++) {
+            uint64_t hub = HUB_BY_NODE + NODE_STRIDE;
+
+            qtest_writeq(qts, hub + BTE_LENGTH(engine), BTE_BUSY | 1);
+            qtest_writeq(qts, hub + BTE_CONTROL(engine), BTE_CTL_NOTIFY);
+            g_assert_cmphex(qtest_readq(qts, dst + engine * BTE_LINE),
+                            ==, 0xaaaaaaaaaaaaaaaaULL);
+            g_assert_cmphex(qtest_readq(qts, notify + engine * BTE_LINE),
+                            ==, 0);
+            g_assert_cmphex(qtest_readq(qts,
+                            NODE_STRIDE + dst + engine * BTE_LINE),
+                            ==, 0xbbbbbbbbbbbbbbbbULL);
+        }
+        qtest_system_reset(qts);
+    }
+    assign_node1_number(qts);
+    qtest_memset(qts, dst, 0xcc, 2 * BTE_LINE);
+    qtest_memset(qts, notify, 0xff, 2 * BTE_LINE);
+    qtest_memset(qts, NODE_STRIDE + dst, 0xcc, 2 * BTE_LINE);
+    qtest_memset(qts, NODE_STRIDE + notify, 0xff, 2 * BTE_LINE);
+    /* Swap the programmed numbers: physical node zero now owns NASID one. */
+    qtest_writeq(qts, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE | (1ULL << 8));
+    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA, NI_REGION_SIZE);
+    vector_operation(qts, HUB_LOCAL, NI_STATUS, PIOTYPE_WRITE);
+    for (engine = 0; engine < 2; engine++) {
+        qtest_writeq(qts, HUB_BY_NODE + BTE_SOURCE(engine), NODE_STRIDE + src);
+        qtest_writeq(qts, HUB_BY_NODE + BTE_DEST(engine),
+                     NODE_STRIDE + dst + engine * BTE_LINE);
+        qtest_writeq(qts, HUB_BY_NODE + BTE_NOTIFY(engine),
+                     NODE_STRIDE + notify + engine * BTE_LINE);
+        qtest_writeq(qts, HUB_BY_NODE + BTE_LENGTH(engine), BTE_BUSY | 1);
+        qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(engine), BTE_CTL_NOTIFY);
+    }
+    qtest_writeq(qts, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE);
+    assign_node1_number(qts);
+    for (engine = 0; engine < 2; engine++) {
+        g_assert_cmphex(qtest_readq(qts, dst + engine * BTE_LINE),
+                        ==, 0xaaaaaaaaaaaaaaaaULL);
+        g_assert_cmphex(qtest_readq(qts, notify + engine * BTE_LINE), ==, 0);
+        g_assert_cmphex(qtest_readq(qts,
+                        NODE_STRIDE + dst + engine * BTE_LINE),
+                        ==, 0xccccccccccccccccULL);
+        g_assert_cmphex(qtest_readq(qts,
+                        NODE_STRIDE + notify + engine * BTE_LINE), ==, ~0ULL);
+    }
+    qtest_quit(qts);
+}
+
+static void test_bte_unclaimed_addresses_fail(const void *data)
+{
+    QTestState *qts = qtest_init_dual_node();
+    const uint64_t src = 0x00800000;
+    const uint64_t dst = 0x00900000;
+    const uint64_t notify = 0x00a00000;
+    unsigned int engine, role, node;
+
+    for (engine = 0; engine < 2; engine++) {
+        for (role = 0; role < 3; role++) {
+            for (node = 0; node < 2; node++) {
+                qtest_memset(qts, node * NODE_STRIDE + src, 0xaa, BTE_LINE);
+                qtest_memset(qts, node * NODE_STRIDE + dst, 0xcc, BTE_LINE);
+                qtest_memset(qts, node * NODE_STRIDE + notify, 0xff, BTE_LINE);
+            }
+            /* Both Hubs now claim one. Zero must not reach either RAM. */
+            qtest_writeq(qts, HUB_LOCAL + NI_STATUS,
+                         NI_REGION_SIZE | (1ULL << 8));
+            qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(engine),
+                         src + (role == 0 ? 0 : NODE_STRIDE));
+            qtest_writeq(qts, HUB_LOCAL + BTE_DEST(engine),
+                         dst + (role == 1 ? 0 : NODE_STRIDE));
+            qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(engine),
+                         notify + (role == 2 ? 0 : NODE_STRIDE));
+            qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(engine), BTE_BUSY | 1);
+            qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(engine), BTE_CTL_NOTIFY);
+            qtest_writeq(qts, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE);
+            g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(engine)),
+                            ==, role == 2 ? 0 : BTE_BUSY | BTE_ERROR | 1);
+            for (node = 0; node < 2; node++) {
+                g_assert_cmphex(qtest_readq(qts, node * NODE_STRIDE + notify),
+                                ==, ~0ULL);
+                g_assert_cmphex(qtest_readq(qts, node * NODE_STRIDE + dst), ==,
+                                role == 2 && node == 0 ?
+                                0xaaaaaaaaaaaaaaaaULL : 0xccccccccccccccccULL);
+            }
+            qtest_writeq(qts, HUB_LOCAL + IO_ERROR_CLEAR,
+                         1ULL << (17 + engine));
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void test_bte_zero_length_and_misalignment(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -3758,6 +4087,16 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/bte-zero-fill", NULL, test_bte_zero_fill);
     qtest_add_data_func("sn0/hub/bte-error-not-cleared-by-store", NULL,
                         test_bte_error_latches_and_no_store_clears_it);
+    qtest_add_data_func("sn0/hub/bte-physical-node-ownership", NULL,
+                        test_bte_physical_node_ownership);
+    qtest_add_data_func("sn0/hub/bte-addresses-ignore-calias", NULL,
+                        test_bte_addresses_ignore_calias);
+    qtest_add_data_func("sn0/hub/bte-reset-retires-peer-claim", NULL,
+                        test_bte_reset_retires_peer_claim);
+    qtest_add_data_func("sn0/hub/bte-routing-follows-nasid", NULL,
+                        test_bte_routing_follows_nasid);
+    qtest_add_data_func("sn0/hub/bte-unclaimed-addresses-fail", NULL,
+                        test_bte_unclaimed_addresses_fail);
     qtest_add_data_func("sn0/hub/bte-zero-length-and-misalignment", NULL,
                         test_bte_zero_length_and_misalignment);
 
