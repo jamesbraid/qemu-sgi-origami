@@ -457,6 +457,20 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     qlogic_isp_update_irq(s);
 }
 
+/*
+ * Every realised bus, not only the first: a disk on channel 1 has to see
+ * the reset a disk on channel 0 sees.
+ */
+static void qlogic_isp_reset_channel_buses(QLogicISPState *s)
+{
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+    unsigned int i;
+
+    for (i = 0; i < info->nchannels; i++) {
+        bus_cold_reset(BUS(&s->chan[i].bus));
+    }
+}
+
 /* Where the four address words live, shared by every block transfer. */
 static hwaddr qlogic_isp_ram_host_addr(QLogicISPState *s)
 {
@@ -1244,10 +1258,11 @@ static void qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
 static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
                                       uint8_t entry_count)
 {
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
     PCIDevice *pci = PCI_DEVICE(s);
     uint32_t handle;
     uint16_t device;
-    uint8_t target, lun;
+    uint8_t channel, target, lun;
     uint16_t cdb_len;
     uint16_t seg_count;
     uint8_t cdb[ISP_REQ_CDB_LEN];
@@ -1268,19 +1283,20 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
         return false;
     }
 
+    channel = ISP_DEVICE_BUS(device);
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
 
-    trace_qlogic_isp_request(handle, target, lun, cdb[0], seg_count);
+    trace_qlogic_isp_request(handle, channel, target, lun, cdb[0], seg_count);
 
-    /* One bus on this part: naming the second answers incomplete. */
-    if (ISP_DEVICE_BUS(device) != 0) {
+    /* A bus this part does not have: the single-channel answer, unchanged. */
+    if (channel >= info->nchannels) {
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                0, 0, 0, NULL, 0);
         return true;
     }
 
-    sdev = scsi_device_find(&s->chan[0].bus, 0, target, lun);
+    sdev = scsi_device_find(&s->chan[channel].bus, channel, target, lun);
     if (!sdev) {
         /*
          * GOT_BUS alone is Linux's DID_BAD_TARGET; the timeout bit beside
@@ -1295,7 +1311,7 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
-    req->channel = ISP_DEVICE_BUS(device);
+    req->channel = channel;
     req->target = target;
     req->lun = lun;
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
@@ -1357,10 +1373,11 @@ static void qlogic_isp_read_segments_a64(QLogicISPState *s, QEMUSGList *qsg,
 static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
                                           uint8_t entry_count)
 {
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
     PCIDevice *pci = PCI_DEVICE(s);
     uint32_t handle;
     uint16_t device;
-    uint8_t target, lun;
+    uint8_t channel, target, lun;
     uint16_t cdb_len;
     uint16_t seg_count;
     uint8_t cdb[ISP_REQ_CDB_LEN];
@@ -1382,19 +1399,20 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
         return false;
     }
 
+    channel = ISP_DEVICE_BUS(device);
     target = ISP_DEVICE_TARGET(device);
     lun = ISP_DEVICE_LUN(device);
 
-    trace_qlogic_isp_request(handle, target, lun, cdb[0], seg_count);
+    trace_qlogic_isp_request(handle, channel, target, lun, cdb[0], seg_count);
 
-    /* The same single-bus check as the 32-bit path. */
-    if (ISP_DEVICE_BUS(device) != 0) {
+    /* The same channel check as the 32-bit path. */
+    if (channel >= info->nchannels) {
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                0, 0, 0, NULL, 0);
         return true;
     }
 
-    sdev = scsi_device_find(&s->chan[0].bus, 0, target, lun);
+    sdev = scsi_device_find(&s->chan[channel].bus, channel, target, lun);
     if (!sdev) {
         /* The same missing-target answer as the 32-bit path. */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
@@ -1406,7 +1424,7 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
-    req->channel = ISP_DEVICE_BUS(device);
+    req->channel = channel;
     req->target = target;
     req->lun = lun;
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
@@ -1631,9 +1649,9 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
             qlogic_isp_reset_state(s);
             /*
              * Only here, not in reset_state(): the device's own reset
-             * phase reaches the child bus through the qdev tree.
+             * phase reaches the child buses through the qdev tree.
              */
-            bus_cold_reset(BUS(&s->chan[0].bus));
+            qlogic_isp_reset_channel_buses(s);
         }
         qlogic_isp_update_irq(s);
         break;
