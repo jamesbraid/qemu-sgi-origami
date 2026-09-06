@@ -52,6 +52,7 @@
 #define ERROR_MASK_A 0x408
 #define ERROR_MASK_B 0x410
 #define ERROR_STACK_A 0x418
+#define ERROR_STACK_B 0x420
 #define ERROR_STACK_SIZE 0x428
 #define RT_COUNTER 0x30100
 #define RT_MASK ((1ULL << 55) - 1)
@@ -214,32 +215,136 @@ static void test_masks_remap_and_isolation(void)
     qtest_quit(s);
 }
 
-static void test_local_reset(void)
+/*
+ * The datasheet gives no reset value for any register of this unit. These
+ * are the model's stated hypothesis (protection and region present all
+ * ones, cached alias, masks, pending banks and timers zero, the counter
+ * running), read before any write so a change to them is visible. Whether
+ * a system reset restores the soft-reset survivors is a model choice the
+ * datasheet has not stated; this test asserts nothing about that.
+ */
+static void test_power_on_values(void)
 {
-    QTestState *s = start("");
+    static const struct {
+        unsigned reg;
+        uint64_t value;
+    } expected[] = {
+        { CPU_PROTECT, UINT64_MAX }, { IO_PROTECT, UINT64_MAX },
+        { REGION_PRESENT, UINT64_MAX }, { CACHED_ALIAS, 0 },
+        { CPU_ENABLE_A, 0 }, { CPU_ENABLE_B, 0 },
+        { PENDING_0, 0 }, { PENDING_1, 0 },
+        { MASK_0_A, 0 }, { MASK_1_A, 0 }, { MASK_0_B, 0 }, { MASK_1_B, 0 },
+        { REMAP, 0 }, { ERROR_PENDING, 0 },
+        { ERROR_MASK_A, 0 }, { ERROR_MASK_B, 0 },
+        { ERROR_STACK_A, 0 }, { ERROR_STACK_B, 0 }, { ERROR_STACK_SIZE, 0 },
+        { RT_COMPARE_A, 0 }, { RT_COMPARE_B, 0 }, { PROFILE_COMPARE, 0 },
+        { RT_PENDING_A, 0 }, { RT_PENDING_B, 0 },
+        { PROFILE_PENDING_A, 0 }, { PROFILE_PENDING_B, 0 },
+        { RT_ENABLE_A, 0 }, { RT_ENABLE_B, 0 },
+        { PROFILE_ENABLE_A, 0 }, { PROFILE_ENABLE_B, 0 },
+        { RT_COUNTER, 0 },
+    };
+    QTestState *s = start_clock("");
 
+    qtest_clock_set(s, 0);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(expected); i++) {
+            g_assert_cmphex(qtest_readq(s, PI(pi, expected[i].reg)), ==,
+                            expected[i].value);
+        }
+    }
+    qtest_clock_step(s, 2 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 2);
+    g_assert_cmphex(qtest_readq(s, PI(1, RT_COUNTER)), ==, 2);
+    qtest_quit(s);
+}
+
+/* Registers the datasheet says survive a soft reset, and ones that must not. */
+static void write_reset_probe(QTestState *s)
+{
     qtest_writeq(s, PI(0, CPU_PROTECT), 0x1234);
     qtest_writeq(s, PI(0, IO_PROTECT), 0x5678);
     qtest_writeq(s, PI(0, REGION_PRESENT), 0x9abc);
     qtest_writeq(s, PI(0, CACHED_ALIAS), 7);
     qtest_writeq(s, PI(0, CPU_ENABLE_A), 1);
+    qtest_writeq(s, PI(0, CPU_ENABLE_B), 1);
     qtest_writeq(s, PI(0, ERROR_STACK_A), UINT64_MAX);
+    qtest_writeq(s, PI(0, ERROR_STACK_B), 0x123456780ULL);
     qtest_writeq(s, PI(0, ERROR_STACK_SIZE), UINT64_MAX);
-    qtest_writeq(s, LB(0x8008), 0xfeed);
-    qtest_writeq(s, LB(0x8000), 0xbeef);
-    qtest_writeq(s, NI(0x38), 0xa55a);
-    qtest_writeq(s, NI(0x08), 4);
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x107);
+    qtest_writeq(s, PI(0, MASK_0_A), 1ULL << 7);
+    qtest_writeq(s, PI(1, PENDING_MODIFY), 0x14a);
+    qtest_writeq(s, PI(1, MASK_1_B), 1ULL << 10);
+    qtest_writeq(s, PI(0, REMAP), 0x1f);
+    qtest_writeq(s, PI(0, RT_COMPARE_A), 0x5678);
+    qtest_writeq(s, PI(0, RT_ENABLE_A), 1);
+    qtest_writeq(s, PI(0, ERROR_MASK_A), 1ULL << 3);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_true(qtest_get_irq(s, 16));
+}
+
+static void check_reset_probe(QTestState *s)
+{
     g_assert_cmphex(qtest_readq(s, PI(0, CPU_PROTECT)), ==, 0x1234);
     g_assert_cmphex(qtest_readq(s, PI(0, IO_PROTECT)), ==, 0x5678);
     g_assert_cmphex(qtest_readq(s, PI(0, REGION_PRESENT)), ==, 0x9abc);
     g_assert_cmphex(qtest_readq(s, PI(0, CACHED_ALIAS)), ==, 7);
     g_assert_cmphex(qtest_readq(s, PI(0, CPU_ENABLE_A)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CPU_ENABLE_B)), ==, 1);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_STACK_A)), ==,
                     0x1fffffff8ULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERROR_STACK_B)), ==,
+                    0x123456780ULL);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_STACK_SIZE)), ==, 0xf);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, MASK_0_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, MASK_1_B)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, REMAP)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COMPARE_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_ENABLE_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERROR_MASK_A)), ==, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_false(qtest_get_irq(s, 16));
+}
+
+static void test_local_reset(void)
+{
+    QTestState *s = start("");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+    write_reset_probe(s);
+    qtest_writeq(s, LB(0x8008), 0xfeed);
+    qtest_writeq(s, LB(0x8000), 0xbeef);
+    qtest_writeq(s, NI(0x38), 0xa55a);
+    qtest_writeq(s, NI(0x08), 4);
+    check_reset_probe(s);
     g_assert_cmphex(qtest_readq(s, LB(0x8000)), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB(0x8008)), ==, 0xfeed);
     g_assert_cmphex(qtest_readq(s, NI(0x38)), ==, 0);
+
+    /* The local block's soft-reset register reaches the same parent reset. */
+    write_reset_probe(s);
+    qtest_writeq(s, LB(0x4018), 1);
+    check_reset_probe(s);
+    qtest_quit(s);
+}
+
+/* The header says the error-pending register is not cleared at reset. */
+static void test_error_pending_survives_reset(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, PI(0, ERROR_SET), (1ULL << 3) | (1ULL << 26));
+    qtest_writeq(s, PI(1, ERROR_SET), 1ULL << 34);
+    qtest_writeq(s, NI(0x08), 4);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==,
+                    (1ULL << 3) | (1ULL << 26));
+    g_assert_cmphex(qtest_readq(s, PI(1, ERROR_PENDING)), ==, 1ULL << 34);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==,
+                    (1ULL << 3) | (1ULL << 26));
+    g_assert_cmphex(qtest_readq(s, PI(1, ERROR_PENDING)), ==, 1ULL << 34);
     qtest_quit(s);
 }
 
@@ -493,7 +598,10 @@ int main(int argc, char **argv)
                    test_pending_modify_and_reflection);
     qtest_add_func("sn1/bedrock-pi/masks-remap-isolation",
                    test_masks_remap_and_isolation);
+    qtest_add_func("sn1/bedrock-pi/power-on-values", test_power_on_values);
     qtest_add_func("sn1/bedrock-pi/local-reset", test_local_reset);
+    qtest_add_func("sn1/bedrock-pi/error-pending-survives-reset",
+                   test_error_pending_survives_reset);
     qtest_add_func("sn1/bedrock-pi/real-time-comparators",
                    test_real_time_comparators);
     qtest_add_func("sn1/bedrock-pi/profile-counter-wrap",
