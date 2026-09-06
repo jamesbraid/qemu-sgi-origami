@@ -725,6 +725,7 @@ struct SGIXBridgeState {
     MemoryRegion crosstalk;
     MemoryRegion unmapped;
     MemoryRegion *fabric;
+    qemu_irq head_reset[2];
     uint8_t host_port;
     uint8_t pci_speed[2];
 };
@@ -760,12 +761,20 @@ static const MemoryRegionOps chip_unmapped_ops = {
     .impl.max_access_size = 8,
 };
 
-static void chip_link_host(Object *child, unsigned port, MemoryRegion *fabric,
+static bool chip_link_host(Object *child, unsigned port, MemoryRegion *fabric,
                            Error **errp)
 {
     g_autofree char *name = g_strdup_printf("target-%x", port);
 
-    object_property_set_link(child, name, OBJECT(fabric), errp);
+    return object_property_set_link(child, name, OBJECT(fabric), errp);
+}
+
+/* A warm reset the crossbar forwards to an internal port resets that head. */
+static void chip_head_reset(void *opaque, int line, int level)
+{
+    if (level) {
+        device_cold_reset(DEVICE(opaque));
+    }
 }
 
 static void chip_realize(DeviceState *dev, Error **errp)
@@ -793,8 +802,8 @@ static void chip_realize(DeviceState *dev, Error **errp)
                         (1U << (s->host_port - CHIP_LINK_FIRST)) |
                         (1U << (CHIP_HEAD_E - CHIP_LINK_FIRST)) |
                         (1U << (CHIP_HEAD_F - CHIP_LINK_FIRST)));
-    chip_link_host(OBJECT(&s->xbow), s->host_port, s->fabric, errp);
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
+    if (!chip_link_host(OBJECT(&s->xbow), s->host_port, s->fabric, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
         return;
     }
     memory_region_add_subregion(&s->crosstalk, 0,
@@ -805,18 +814,32 @@ static void chip_realize(DeviceState *dev, Error **errp)
         unsigned widget = i ? CHIP_HEAD_F : CHIP_HEAD_E;
 
         qdev_prop_set_uint8(DEVICE(&s->head[i]), "pci-speed", s->pci_speed[i]);
-        chip_link_host(OBJECT(&s->head[i]), s->host_port, s->fabric, errp);
-        if (!sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
+        if (!chip_link_host(OBJECT(&s->head[i]), s->host_port, s->fabric,
+                            errp) ||
+            !sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
             return;
         }
+        s->head_reset[i] = qemu_allocate_irq(chip_head_reset, &s->head[i], 0);
+        qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out",
+                                    widget - CHIP_LINK_FIRST,
+                                    s->head_reset[i]);
         memory_region_add_subregion(&s->crosstalk,
                                     (uint64_t)widget << CHIP_WIDGET_SHIFT,
                                     sysbus_mmio_get_region(
                                         SYS_BUS_DEVICE(&s->head[i]), 0));
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->crosstalk);
+    /* Outputs 0xe and 0xf are consumed above; the external ports pass out. */
     qdev_pass_gpios(DEVICE(&s->xbow), dev, "warm-reset");
     qdev_pass_gpios(DEVICE(&s->xbow), dev, "warm-reset-out");
+}
+
+static void chip_unrealize(DeviceState *dev)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(dev);
+
+    qemu_free_irq(s->head_reset[0]);
+    qemu_free_irq(s->head_reset[1]);
 }
 
 /* Bus speeds as OpenBSD reads them on an IP45: 66 MHz at 0xe, 33 at 0xf. */
@@ -843,6 +866,7 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     dc->desc = "SGI XBridge crosstalk-PCI bridge";
     dc->user_creatable = true;
     dc->realize = chip_realize;
+    dc->unrealize = chip_unrealize;
     dc->vmsd = &vmstate_chip;
     device_class_set_props(dc, chip_properties);
 }
