@@ -104,7 +104,7 @@ SGIBedrockNIWriteResult sgi_bedrock_ni_regs_write(SGIBedrockNIRegs *s,
     case 0x110:
     case 0x118:
     case 0x120:
-        return SGI_BEDROCK_NI_WRITTEN;
+        return SGI_BEDROCK_NI_READ_ONLY;
     default:
         return SGI_BEDROCK_NI_UNIMPLEMENTED;
     }

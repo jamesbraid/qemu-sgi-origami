@@ -119,6 +119,43 @@ static void test_disconnected(void)
     qtest_quit(s);
 }
 
+/*
+ * A write to a read-only register changes nothing and is logged as a guest
+ * error, so a guest driving the link's status or error capture leaves a
+ * trace instead of vanishing into accepted storage. The register-core unit
+ * test checks the unchanged state with seeded values; here every register
+ * is idle, so the log is what discriminates.
+ */
+static void test_read_only_writes(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn1-ni-readonly-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
+    static const uint64_t offsets[] = { 0, 0x100, 0x108, 0x110, 0x118, 0x120 };
+    QTestState *s;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d guest_errors -D %s", log);
+    s = ni_start(extra);
+    for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
+        qtest_writeq(s, NI_BASE + offsets[i], UINT64_MAX);
+        g_assert_cmphex(qtest_readq(s, NI_BASE + offsets[i]), ==, 0);
+    }
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
+        g_autofree char *line = g_strdup_printf(
+            "write to read-only register 0x%" PRIx64, offsets[i]);
+
+        g_assert_nonnull(strstr(found, line));
+    }
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
 static void test_system_reset(void)
 {
     QTestState *s = ni_start("");
@@ -196,6 +233,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-ni/routing-storage", test_routing_storage);
     qtest_add_func("sn1/bedrock-ni/reset-requests", test_reset_requests);
     qtest_add_func("sn1/bedrock-ni/disconnected", test_disconnected);
+    qtest_add_func("sn1/bedrock-ni/read-only-writes", test_read_only_writes);
     qtest_add_func("sn1/bedrock-ni/system-reset", test_system_reset);
     qtest_add_func("sn1/bedrock-ni/migration", test_migration);
     return g_test_run();

@@ -16,6 +16,7 @@ typedef struct SGIBedrockNIRegs {
 typedef enum SGIBedrockNIWriteResult {
     SGI_BEDROCK_NI_UNIMPLEMENTED,
     SGI_BEDROCK_NI_WRITTEN,
+    SGI_BEDROCK_NI_READ_ONLY,
     SGI_BEDROCK_NI_LOCAL_RESET,
 } SGIBedrockNIWriteResult;
 

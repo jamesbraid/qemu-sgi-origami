@@ -99,6 +99,25 @@ static void test_reset_retention(void)
     /* Unknown control reset values are not hardware assertions. */
 }
 
+static void test_read_only_writes(void)
+{
+    /* Seeded fixture state; no link event is faked. */
+    SGIBedrockNIRegs s = {
+        .errors = 1ULL << 30, .header = { 0x11, 0x22 }, .sideband = 0x33,
+    };
+    static const uint64_t offsets[] = { 0, 0x100, 0x108, 0x110, 0x118, 0x120 };
+
+    for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
+        g_assert_cmpint(sgi_bedrock_ni_regs_write(&s, offsets[i], UINT64_MAX),
+                        ==, SGI_BEDROCK_NI_READ_ONLY);
+    }
+    g_assert_cmphex(read_reg(&s, 0), ==, 0);
+    g_assert_cmphex(read_reg(&s, 0x100), ==, 1ULL << 30);
+    g_assert_cmphex(read_reg(&s, 0x108), ==, 0x11);
+    g_assert_cmphex(read_reg(&s, 0x110), ==, 0x22);
+    g_assert_cmphex(read_reg(&s, 0x118), ==, 0x33);
+}
+
 static void test_unimplemented(void)
 {
     SGIBedrockNIRegs s = { 0 };
@@ -121,6 +140,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-bedrock-ni/disconnected", test_disconnected);
     g_test_add_func("/sgi-bedrock-ni/error-clear", test_error_clear);
     g_test_add_func("/sgi-bedrock-ni/reset-retention", test_reset_retention);
+    g_test_add_func("/sgi-bedrock-ni/read-only-writes", test_read_only_writes);
     g_test_add_func("/sgi-bedrock-ni/unimplemented", test_unimplemented);
     return g_test_run();
 }
