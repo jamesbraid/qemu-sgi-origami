@@ -564,6 +564,29 @@ static void test_parent_widget_interrupt_write(void)
     qtest_quit(s);
 }
 
+/*
+ * The parent's cpu-enable group has four lines, interface times two plus
+ * processor, fanned out from the two interfaces' own groups.
+ */
+static void test_parent_cpu_enable_lines(void)
+{
+    QTestState *s = bedrock_start("");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "cpu-enable");
+    for (unsigned line = 0; line < 4; line++) {
+        uint64_t reg = BASE + (line / 2) * UINT64_C(0x200000) +
+                       (line % 2 ? 0x58 : 0x50);
+
+        qtest_writeq(s, reg, 1);
+        for (unsigned other = 0; other < 4; other++) {
+            g_assert_cmpint(qtest_get_irq(s, other), ==, other == line);
+        }
+        qtest_writeq(s, reg, 0);
+        g_assert_false(qtest_get_irq(s, line));
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -589,5 +612,7 @@ int main(int argc, char **argv)
                    test_parent_l1_protection);
     qtest_add_func("sn1/bedrock/composition/md-decode-reset",
                    test_parent_md_decode_and_reset);
+    qtest_add_func("sn1/bedrock/composition/cpu-enable-lines",
+                   test_parent_cpu_enable_lines);
     return g_test_run();
 }

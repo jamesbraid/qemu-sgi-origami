@@ -29,6 +29,7 @@ struct SGIBedrockState {
     qemu_irq hardware_irq[2 * SGI_BEDROCK_PI_PROCESSORS *
                            SGI_BEDROCK_PI_HW_IRQS];
     qemu_irq nmi[2 * SGI_BEDROCK_PI_PROCESSORS];
+    qemu_irq cpu_enable[2 * SGI_BEDROCK_PI_PROCESSORS];
     uint32_t processor_count;
     uint8_t revision;
     uint8_t local_region;
