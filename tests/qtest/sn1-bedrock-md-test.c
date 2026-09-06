@@ -6,6 +6,38 @@
 #define BASE UINT64_C(0x78000000)
 #define MD(_x) (BASE + (_x))
 
+#define MEMORY_CONFIG_MASK UINT64_C(0x373ff003fbfbfbfb)
+#define REPLY_QUEUE UINT64_C(0x001818180c0c0c00)
+#define REQUEST_QUEUE UINT64_C(0x0000000004040400)
+
+/* Every register with retained storage and its writable mask. */
+static const struct {
+    uint64_t offset;
+    uint64_t mask;
+} storage_registers[] = {
+    { 0x10, 0xff },
+    { 0x18, UINT64_C(0x100ff03ff) },
+    { 0x10000, UINT64_C(0x8fffffffffff7ff3) },
+    { 0x10008, UINT64_C(0x8fffffffffff7ff3) },
+    { 0x10010, UINT64_C(0x1ffffffffff) },
+    { 0x10018, UINT64_C(0x1ffffffffff) },
+    { 0x20008, UINT64_C(0xffffffffffff) },
+    { 0x20038, 0xff }, { 0x20060, 3 },
+    { 0x40040, UINT64_C(0x8000003f00007fff) },
+    { 0x40048, UINT64_C(0xc000003f00007fff) },
+    { 0x40060, 3 }, { 0x60000, 1 }, { 0x60040, 1 },
+};
+
+/*
+ * Captured status, self-test results, migration candidates and the LED
+ * banks read zero while the model generates no event. A guest write is
+ * dropped, so no valid, done or passed bit can come from guest input.
+ */
+static const uint64_t policy_zero_registers[] = {
+    0x20, 0x28, 0x20010, 0x20018, 0x20020, 0x20028, 0x20040, 0x20048,
+    0x40030, 0x40038, 0x40058, 0x60020, 0x60028, 0x60030, 0x60038,
+};
+
 static QTestState *start(const char *extra)
 {
     QTestState *s = qtest_initf("-M none -cpu R10000 "
@@ -14,26 +46,45 @@ static QTestState *start(const char *extra)
     return s;
 }
 
+static void program_all(QTestState *s)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        qtest_writeq(s, MD(storage_registers[i].offset), UINT64_MAX);
+    }
+    qtest_writeq(s, MD(0x8), UINT64_MAX);
+    qtest_writeq(s, MD(0x20000), UINT64_C(0x8000000000000555));
+    qtest_writeq(s, MD(0x40000), 3);
+    qtest_writeq(s, MD(0), 0);
+}
+
+static void assert_storage_zero(QTestState *s)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        g_assert_cmphex(qtest_readq(s, MD(storage_registers[i].offset)),
+                        ==, 0);
+    }
+}
+
 static void test_reset(void)
 {
     QTestState *s = start("");
 
-    qtest_writeq(s, MD(0x8), UINT64_MAX);
-    qtest_writeq(s, MD(0x20000), UINT64_C(0x8000000000000555));
-    qtest_writeq(s, MD(0x40000), 3);
-    qtest_writeq(s, MD(0x10010), 0x12345);
-    qtest_writeq(s, MD(0), 0);
+    program_all(s);
     qtest_set_irq_in(s, "/machine/peripheral/md", "soft-reset", 0, 1);
-    g_assert_cmphex(qtest_readq(s, MD(0x8)), ==,
-                    UINT64_C(0x373ff003fbfbfbfb));
+    assert_storage_zero(s);
+    g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, MEMORY_CONFIG_MASK);
     g_assert_cmphex(qtest_readq(s, MD(0x20000)), ==,
                     UINT64_C(0x8000000000000555));
     g_assert_cmphex(qtest_readq(s, MD(0x40000)), ==, 3);
-    g_assert_cmphex(qtest_readq(s, MD(0x10010)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
+
+    program_all(s);
     qtest_system_reset(s);
+    assert_storage_zero(s);
     g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0x20000)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(0x40000)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
     qtest_quit(s);
 }
 
@@ -47,8 +98,7 @@ static void test_register_contract(void)
     qtest_writeq(s, MD(0), 0);
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, 0);
     qtest_writeq(s, MD(0x8), UINT64_MAX);
-    g_assert_cmphex(qtest_readq(s, MD(0x8)), ==,
-                    UINT64_C(0x373ff003fbfbfbfb));
+    g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, MEMORY_CONFIG_MASK);
     qtest_writeq(s, MD(0x10), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, MD(0x10)), ==, 0xff);
     qtest_writeq(s, MD(0x10000), UINT64_MAX);
@@ -65,10 +115,8 @@ static void test_register_contract(void)
                     UINT64_C(0xffffffffffff));
     qtest_writeq(s, MD(0x40000), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, MD(0x40000)), ==, 3);
-    g_assert_cmphex(qtest_readq(s, MD(0x60)), ==,
-                    UINT64_C(0x001818180c0c0c00));
-    g_assert_cmphex(qtest_readq(s, MD(0x40050)), ==,
-                    UINT64_C(0x0000000004040400));
+    g_assert_cmphex(qtest_readq(s, MD(0x60)), ==, REPLY_QUEUE);
+    g_assert_cmphex(qtest_readq(s, MD(0x40050)), ==, REQUEST_QUEUE);
     qtest_writeq(s, MD(0x20030), 1);
     g_assert_cmphex(qtest_readq(s, MD(0x20030)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0x20048)), ==, 0);
@@ -93,37 +141,168 @@ static void test_register_contract(void)
     qtest_quit(s);
 }
 
-static void test_writable_masks(void)
+/* The registers outside the storage table keep state of their own. */
+static void test_explicit_registers_independent(void)
 {
     static const struct {
         uint64_t offset;
-        uint64_t mask;
+        uint64_t value;
     } registers[] = {
-        { 0x18, UINT64_C(0x100ff03ff) },
-        { 0x10000, UINT64_C(0x8fffffffffff7ff3) },
-        { 0x10008, UINT64_C(0x8fffffffffff7ff3) },
-        { 0x10010, UINT64_C(0x1ffffffffff) },
-        { 0x10018, UINT64_C(0x1ffffffffff) },
-        { 0x20038, 0xff }, { 0x20060, 3 },
-        { 0x40040, UINT64_C(0x8000003f00007fff) },
-        { 0x40048, UINT64_C(0xc000003f00007fff) },
-        { 0x40060, 3 }, { 0x60000, 1 }, { 0x60040, 1 },
+        { 0x0, UINT64_C(0x0123456789abcdef) },
+        { 0x8, UINT64_C(0x3000000000000101) },
+        { 0x10, 0x5a },
+        { 0x20000, UINT64_C(0x8000000000000c35) },
+        { 0x20008, UINT64_C(0x112233445566) },
+        { 0x40000, 2 },
     };
     QTestState *s = start("");
 
     for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
-        uint64_t value = UINT64_MAX ^ (UINT64_C(1) << (i + 2));
-
-        for (unsigned j = 0; j < ARRAY_SIZE(registers); j++) {
-            qtest_writeq(s, MD(registers[j].offset), 0);
-        }
-        qtest_writeq(s, MD(registers[i].offset), value);
+        qtest_writeq(s, MD(registers[i].offset), registers[i].value);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
         g_assert_cmphex(qtest_readq(s, MD(registers[i].offset)), ==,
-                        value & registers[i].mask);
+                        registers[i].value);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
+        qtest_writeq(s, MD(registers[i].offset), 0);
         for (unsigned j = 0; j < ARRAY_SIZE(registers); j++) {
             if (j != i) {
                 g_assert_cmphex(qtest_readq(s, MD(registers[j].offset)), ==,
-                                0);
+                                registers[j].value);
+            }
+        }
+        qtest_writeq(s, MD(registers[i].offset), registers[i].value);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * A write to the reply queue register resets hardware credit counters and
+ * the request queue fields are programmable up to four. The model has
+ * neither credits nor queues, so both keep their fixed reads.
+ */
+static void test_queue_sizes_fixed(void)
+{
+    QTestState *s = start("");
+
+    g_assert_cmphex(qtest_readq(s, MD(0x60)), ==, REPLY_QUEUE);
+    qtest_writeq(s, MD(0x60), 0);
+    g_assert_cmphex(qtest_readq(s, MD(0x60)), ==, REPLY_QUEUE);
+    qtest_writeq(s, MD(0x60), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MD(0x60)), ==, REPLY_QUEUE);
+    g_assert_cmphex(qtest_readq(s, MD(0x40050)), ==, REQUEST_QUEUE);
+    qtest_writeq(s, MD(0x40050), UINT64_C(0x0000000001010100));
+    g_assert_cmphex(qtest_readq(s, MD(0x40050)), ==, REQUEST_QUEUE);
+    qtest_writeq(s, MD(0x40050), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MD(0x40050)), ==, REQUEST_QUEUE);
+    qtest_quit(s);
+}
+
+/*
+ * The Itanium probe reads the four clear registers and expects the base
+ * error registers clean. Idle presence only: the model raises no error,
+ * so nothing here shows read-to-clear.
+ */
+static void test_error_cluster_idle(void)
+{
+    static const uint64_t clears[] = { 0x58, 0x40018, 0x40028, 0x60018 };
+    static const uint64_t bases[] = { 0x40, 0x48, 0x40010, 0x40020, 0x60010 };
+    QTestState *s = start("");
+
+    for (unsigned i = 0; i < ARRAY_SIZE(clears); i++) {
+        g_assert_cmphex(qtest_readq(s, MD(clears[i])), ==, 0);
+        g_assert_cmphex(qtest_readq(s, MD(clears[i])), ==, 0);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(bases); i++) {
+        g_assert_cmphex(qtest_readq(s, MD(bases[i])), ==, 0);
+    }
+    qtest_quit(s);
+}
+
+static void test_policy_zero_ignores_writes(void)
+{
+    /* Start, stop, reset, bank and DIMM selections, and all bits at once. */
+    static const uint64_t selftest_commands[] = { 1, 2, 4, 0x70, UINT64_MAX };
+    QTestState *s = start("");
+
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        qtest_writeq(s, MD(storage_registers[i].offset), UINT64_MAX);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(policy_zero_registers); i++) {
+        qtest_writeq(s, MD(policy_zero_registers[i]), UINT64_MAX);
+        g_assert_cmphex(qtest_readq(s, MD(policy_zero_registers[i])), ==, 0);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(selftest_commands); i++) {
+        qtest_writeq(s, MD(0x20030), selftest_commands[i]);
+        g_assert_cmphex(qtest_readq(s, MD(0x20030)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, MD(0x20040)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, MD(0x20048)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, MD(0x40058)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, MD(0x60020)), ==, 0);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        g_assert_cmphex(qtest_readq(s, MD(storage_registers[i].offset)), ==,
+                        storage_registers[i].mask);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * Bits 62:24 are reserved. Bits 23:12 are the live counter, whose write
+ * rule is open, so they are never set here.
+ */
+static void test_refresh_mask(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x20000), UINT64_C(0xffffffffff000c35));
+    g_assert_cmphex(qtest_readq(s, MD(0x20000)), ==,
+                    UINT64_C(0x8000000000000c35));
+    qtest_writeq(s, MD(0x20000), UINT64_C(0x7fffffffff000000));
+    g_assert_cmphex(qtest_readq(s, MD(0x20000)), ==, 0);
+    qtest_quit(s);
+}
+
+/* The Itanium L1 code sets and clears single bits of a 20-bit lock word. */
+static void test_perf_counter_lock_word(void)
+{
+    QTestState *s = start("");
+    uint64_t pattern = 0;
+
+    for (unsigned bit = 0; bit < 20; bit++) {
+        pattern |= UINT64_C(1) << bit;
+        qtest_writeq(s, MD(0x10010),
+                     qtest_readq(s, MD(0x10010)) | (UINT64_C(1) << bit));
+        g_assert_cmphex(qtest_readq(s, MD(0x10010)), ==, pattern);
+    }
+    for (unsigned bit = 0; bit < 20; bit++) {
+        pattern &= ~(UINT64_C(1) << bit);
+        qtest_writeq(s, MD(0x10010),
+                     qtest_readq(s, MD(0x10010)) & ~(UINT64_C(1) << bit));
+        g_assert_cmphex(qtest_readq(s, MD(0x10010)), ==, pattern);
+    }
+    qtest_quit(s);
+}
+
+static void test_writable_masks(void)
+{
+    QTestState *s = start("");
+
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        uint64_t value = UINT64_MAX ^ (UINT64_C(1) << (i + 2));
+
+        for (unsigned j = 0; j < ARRAY_SIZE(storage_registers); j++) {
+            qtest_writeq(s, MD(storage_registers[j].offset), 0);
+        }
+        qtest_writeq(s, MD(storage_registers[i].offset), value);
+        g_assert_cmphex(qtest_readq(s, MD(storage_registers[i].offset)), ==,
+                        value & storage_registers[i].mask);
+        for (unsigned j = 0; j < ARRAY_SIZE(storage_registers); j++) {
+            if (j != i) {
+                g_assert_cmphex(qtest_readq(s,
+                                            MD(storage_registers[j].offset)),
+                                ==, 0);
             }
         }
     }
@@ -163,19 +342,29 @@ static void test_migration(void)
     uri = g_strdup_printf("unix:%s", socket);
     from = start("");
     to = start("-incoming defer");
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        qtest_writeq(from, MD(storage_registers[i].offset),
+                     UINT64_MAX ^ (UINT64_C(1) << (i + 2)));
+    }
     qtest_writeq(from, MD(0), 0x55aa);
-    qtest_writeq(from, MD(0x10010), UINT64_C(0x123456789ab));
-    qtest_writeq(from, MD(0x20008), UINT64_C(0x112233445566));
+    qtest_writeq(from, MD(0x8), UINT64_MAX);
+    qtest_writeq(from, MD(0x20000), UINT64_C(0x8000000000000c35));
+    qtest_writeq(from, MD(0x40000), 3);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     migrate_wait(from);
+    for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
+        g_assert_cmphex(qtest_readq(to, MD(storage_registers[i].offset)), ==,
+                        (UINT64_MAX ^ (UINT64_C(1) << (i + 2))) &
+                        storage_registers[i].mask);
+    }
     g_assert_cmphex(qtest_readq(to, MD(0)), ==, 0x55aa);
-    g_assert_cmphex(qtest_readq(to, MD(0x10010)), ==,
-                    UINT64_C(0x123456789ab));
-    g_assert_cmphex(qtest_readq(to, MD(0x20008)), ==,
-                    UINT64_C(0x112233445566));
+    g_assert_cmphex(qtest_readq(to, MD(0x8)), ==, MEMORY_CONFIG_MASK);
+    g_assert_cmphex(qtest_readq(to, MD(0x20000)), ==,
+                    UINT64_C(0x8000000000000c35));
+    g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
@@ -186,6 +375,16 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/bedrock-md/register-contract", test_register_contract);
+    qtest_add_func("/sgi/bedrock-md/explicit-registers",
+                   test_explicit_registers_independent);
+    qtest_add_func("/sgi/bedrock-md/queue-sizes", test_queue_sizes_fixed);
+    qtest_add_func("/sgi/bedrock-md/error-cluster-idle",
+                   test_error_cluster_idle);
+    qtest_add_func("/sgi/bedrock-md/policy-zero-writes",
+                   test_policy_zero_ignores_writes);
+    qtest_add_func("/sgi/bedrock-md/refresh-mask", test_refresh_mask);
+    qtest_add_func("/sgi/bedrock-md/perf-counter-lock-word",
+                   test_perf_counter_lock_word);
     qtest_add_func("/sgi/bedrock-md/reset", test_reset);
     qtest_add_func("/sgi/bedrock-md/migration", test_migration);
     qtest_add_func("/sgi/bedrock-md/writable-masks", test_writable_masks);
