@@ -308,6 +308,7 @@ typedef struct QLogicISPInfo {
     bool banked_dma;                /* 1080-family banks, no flat DMA */
     bool ram_wraps;                 /* RAM commands fold at the array end */
     bool reject_busy_mailbox;       /* a held result refuses a submission */
+    bool a64_ram_load;              /* the 0x0009 RAM load is in the set */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -549,6 +550,14 @@ static void qlogic_isp_ram_dump(QLogicISPState *s)
     }
 }
 
+/* The answer for an opcode this part of the family does not carry. */
+static void qlogic_isp_mbox_not_modelled(QLogicISPState *s, uint16_t cmd)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "qlogic-isp: mailbox command 0x%04x not modelled\n", cmd);
+    s->mailbox[0] = ISP_MBOX_INVALID;
+}
+
 /* Synchronous: the protocol has no way to leave a command pending. */
 static void qlogic_isp_mailbox_command(QLogicISPState *s)
 {
@@ -573,9 +582,16 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    /* The family opcode and the A64 one name the same transfer. */
     case ISP_MBOX_CMD_LOAD_RAM:
+        s->mailbox[0] = qlogic_isp_ram_load_a64(s);
+        break;
+
+    /* The same transfer, under an opcode only part of the family carries. */
     case ISP_MBOX_CMD_LOAD_RAM_A64:
+        if (!QLOGIC_ISP_GET_CLASS(s)->info->a64_ram_load) {
+            qlogic_isp_mbox_not_modelled(s, cmd);
+            break;
+        }
         s->mailbox[0] = qlogic_isp_ram_load_a64(s);
         break;
 
@@ -640,7 +656,13 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     case ISP_MBOX_CMD_GET_TARGET_PARAMETERS: {
         const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
 
-        if (ISP_DEVICE_BUS(s->mailbox[1]) >= info->nchannels) {
+        /*
+         * A single-channel part does not read the selector: it answered for
+         * its one bus whatever bit 15 held long before a second bus existed,
+         * and rejecting the bit now would change what that part reports.
+         */
+        if (info->nchannels > 1 &&
+            ISP_DEVICE_BUS(s->mailbox[1]) >= info->nchannels) {
             s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
             break;
         }
@@ -744,10 +766,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "qlogic-isp: mailbox command 0x%04x not modelled\n",
-                      s->mailbox[0]);
-        s->mailbox[0] = ISP_MBOX_INVALID;
+        qlogic_isp_mbox_not_modelled(s, cmd);
         break;
     }
 
@@ -1853,7 +1872,8 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
       .device_id = 0x1216, .revision = 0x06, .nchannels = 2,
       .cfg0_reports_revision = false, .banked_dma = true,
-      .reject_busy_mailbox = true, .fw_version = { 10, 4, 0 } },
+      .reject_busy_mailbox = true, .a64_ram_load = true,
+      .fw_version = { 10, 4, 0 } },
 };
 
 static const TypeInfo qlogic_isp_base_info = {
