@@ -12,6 +12,16 @@
 #define NI_BASE 0x10000000ULL
 #define MACHINE "-M none -cpu R10000 -device sgi-bedrock-ni,id=ni -S"
 
+/* The whole Bedrock, for what only reaches this unit through its parent. */
+#define BEDROCK_PATH "/machine/peripheral/bedrock"
+#define BEDROCK_BASE 0x10000000ULL
+#define COMPOSED_LB(reg) (BEDROCK_BASE + 0x600000ULL + (reg))
+#define COMPOSED_NI(reg) (BEDROCK_BASE + 0x680000ULL + (reg))
+#define COMPOSED_MACHINE "-M none -cpu R10000 " \
+                         "-object memory-backend-ram,id=dma,size=2M " \
+                         "-device sgi-bedrock,id=bedrock," \
+                         "dma-memory=/objects/dma/dma[0] -S"
+
 static QTestState *ni_start(const char *extra)
 {
     QTestState *s = qtest_initf(MACHINE " %s", extra);
@@ -101,6 +111,39 @@ static void test_reset_requests(void)
     /* With no parent connected, the request does not reset this device. */
     g_assert_cmphex(qtest_readq(s, NI_BASE + 0x10), ==, 1);
     qtest_quit(s);
+}
+
+/*
+ * Through the parent, the words the consumers actually write reset the node
+ * with the enable armed as they arm it: OpenBSD writes local plus link reset
+ * (0x5), the Itanium port local plus port reset (0x6). The local block's
+ * scratch 0 clears while scratch 1 and 2 survive, on the model's equation of
+ * this reset with the header's; the interface's own registers return to
+ * zero, model policy.
+ */
+static void test_composed_consumer_resets(void)
+{
+    static const uint64_t commands[] = { 0x5, 0x6 };
+
+    if (!qtest_has_device("sgi-bedrock")) {
+        g_test_skip("the Bedrock parent is not built");
+        return;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(commands); i++) {
+        QTestState *s = qtest_init(COMPOSED_MACHINE);
+
+        qtest_sysbus_mmio_map(s, BEDROCK_PATH, 0, BEDROCK_BASE);
+        qtest_writeq(s, COMPOSED_LB(0x8000), 0xbeef);
+        qtest_writeq(s, COMPOSED_LB(0x8008), 0xfeed);
+        qtest_writeq(s, COMPOSED_LB(0x8010), 0x0ead0040);
+        qtest_writeq(s, COMPOSED_NI(0x10), 1);
+        qtest_writeq(s, COMPOSED_NI(0x08), commands[i]);
+        g_assert_cmphex(qtest_readq(s, COMPOSED_LB(0x8000)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, COMPOSED_LB(0x8008)), ==, 0xfeed);
+        g_assert_cmphex(qtest_readq(s, COMPOSED_LB(0x8010)), ==, 0x0ead0040);
+        g_assert_cmphex(qtest_readq(s, COMPOSED_NI(0x10)), ==, 0);
+        qtest_quit(s);
+    }
 }
 
 static void test_disconnected(void)
@@ -239,6 +282,8 @@ int main(int argc, char **argv)
                    test_byte_order_and_width);
     qtest_add_func("sn1/bedrock-ni/routing-storage", test_routing_storage);
     qtest_add_func("sn1/bedrock-ni/reset-requests", test_reset_requests);
+    qtest_add_func("sn1/bedrock-ni/composed-consumer-resets",
+                   test_composed_consumer_resets);
     qtest_add_func("sn1/bedrock-ni/disconnected", test_disconnected);
     qtest_add_func("sn1/bedrock-ni/read-only-writes", test_read_only_writes);
     qtest_add_func("sn1/bedrock-ni/reset-model-policy",
