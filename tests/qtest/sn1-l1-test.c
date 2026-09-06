@@ -605,6 +605,45 @@ static void test_task_commands(void)
     qtest_quit(s);
 }
 
+static void test_settings_queries(void)
+{
+    QTestState *s = start();
+    const uint8_t commands[] = { 1, 9, 10 };
+    uint8_t request[] = { 0x17, 0x0f, 0xff, 0xf0, 6, 0, 0, 0,
+                          0, 0, 0, 0, 0x55 };
+    uint8_t expected[16] = { 0x37, 0, 0, 0, 0, 1 };
+    const uint8_t bad_count[] = { 0x37, 0xff, 0xff, 0xff, 0x9c, 0 };
+    const uint8_t bad_task[] = { 0x37, 0xff, 0xff, 0xff, 0x9b, 0 };
+    uint8_t reply[129];
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
+        unsigned length = commands[i] == 10 ? 16 : 11;
+        request[6] = commands[i];
+        expected[5] = commands[i] == 10 ? 2 : 1;
+        for (unsigned count_byte = 0; count_byte < 2; count_byte++) {
+            send_frame(s, request, 7 + count_byte, false);
+            g_assert_cmpuint(receive(s, reply), ==, length);
+            g_assert_cmpmem(reply, length, expected, length);
+        }
+        request[7] = 1;
+        send_frame(s, request, sizeof(request), false);
+        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_count));
+        g_assert_cmpmem(reply, sizeof(bad_count), bad_count, sizeof(bad_count));
+        request[7] = 0;
+        request[4] = 3;
+        send_frame(s, request, 8, false);
+        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_task));
+        g_assert_cmpmem(reply, sizeof(bad_task), bad_task, sizeof(bad_task));
+        request[4] = 6;
+        request[1] = 0x4f;
+        send_frame(s, request, 8, false);
+        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_task));
+        g_assert_cmpmem(reply, sizeof(bad_task), bad_task, sizeof(bad_task));
+        request[1] = 0x0f;
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -622,5 +661,6 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/route-forms", test_route_forms);
     qtest_add_func("sn1/l1/route-rejection", test_route_rejection);
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
+    qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
     return g_test_run();
 }
