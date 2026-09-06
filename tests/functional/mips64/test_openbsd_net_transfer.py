@@ -65,10 +65,12 @@ that port between the check and QEMU's own bind.
 
 Guarded by @skipBigDataTest() (the disk is 2 GiB) and @skipSlowTest() (the
 boot plus three transfers is minutes), on top of
-@skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest() at method entry if
-either asset is missing --
-matching test_openbsd_login.py's own guards exactly, since this test
-shares the same kernel and disk.
+@skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no assets at all
+-- matching test_openbsd_login.py's own guards exactly, since this test
+shares the same kernel and disk. ORIGAMI_ASSETS being set with either
+asset missing underneath it is a provisioning failure, not an
+absent-assets run, and fails the test loudly rather than skipping it,
+the same as test_openbsd_login.py.
 """
 
 import hashlib
@@ -550,12 +552,18 @@ class OpenbsdNetTransfer(QemuSystemTest):
     def test_openbsd_net_transfer(self):
         paths = self._asset_paths()
         if paths is None:
-            self.skipTest(
-                'no kernel/disk at '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- point it at a '
-                'checkout with the OpenBSD 6.9 kernel and installed '
-                'disk provisioned (nightly assets) to run this test')
+            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
+            # the case where it is unset entirely -- getting here means
+            # it IS set, so a missing kernel or disk is a provisioning
+            # failure, not an absent-assets developer run, and must fail
+            # loudly: a silent skip here would let a real transfer
+            # regression pass CI unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
+                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
         kernel, disk = paths
 
         self.require_netdev('user')
