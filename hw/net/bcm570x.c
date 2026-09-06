@@ -1130,12 +1130,13 @@ send_whole:
 }
 
 static void bcm570x_tx_stop_on_dma_error(Bcm570xState *s,
+                                          uint16_t doorbell_start,
                                           uint16_t frame_start,
                                           unsigned int sent)
 {
     s->tx_cons = frame_start;
     s->tx_busy = false;
-    if (sent) {
+    if (frame_start != doorbell_start) {
         s->status_tx_cons = frame_start;
         bcm570x_tx_coalesce(s, sent);
     }
@@ -1155,9 +1156,10 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     unsigned int walked = 0;
     unsigned int sent = 0;
     uint16_t frame_flags = 0;
+    uint16_t doorbell_start;
+    uint16_t frame_start;
     unsigned int frame_mss = 0;
     bool frame_dropped = false;
-    uint16_t frame_start;
 
     if (ring_len == 0 || prod >= ring_len) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1176,7 +1178,8 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                                       BCM570X_RCB_HOSTADDR_LO));
 
     s->tx_busy = true;
-    frame_start = s->tx_cons;
+    doorbell_start = s->tx_cons;
+    frame_start = doorbell_start;
     while (s->tx_cons != prod && walked < ring_len) {
         uint8_t bd[BCM570X_TXBD_SIZE] = { 0 };
         uint64_t buf_addr;
@@ -1188,7 +1191,8 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "bcm570x: transmit descriptor %u read failed; "
                           "ring walk stopped\n", s->tx_cons);
-            bcm570x_tx_stop_on_dma_error(s, frame_start, sent);
+            bcm570x_tx_stop_on_dma_error(s, doorbell_start, frame_start,
+                                         sent);
             return;
         }
         buf_addr = ((uint64_t)bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_HI)
@@ -1203,7 +1207,8 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "bcm570x: transmit payload read at 0x%" PRIx64
                               " failed; frame left ready to retry\n", buf_addr);
-                bcm570x_tx_stop_on_dma_error(s, frame_start, sent);
+                bcm570x_tx_stop_on_dma_error(s, doorbell_start, frame_start,
+                                             sent);
                 return;
             }
             frame_len += len;
