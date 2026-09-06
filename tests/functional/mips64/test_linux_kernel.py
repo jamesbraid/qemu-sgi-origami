@@ -150,11 +150,17 @@ class LinuxKernel(QemuSystemTest):
     def _boot_and_capture(self, cpus, mem_mib, name):
         kernel = self._kernel_path()
         if kernel is None:
-            self.skipTest(
-                'no kernel at '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} -- point it at a '
-                'checkout with the embedded-userspace kernel built '
-                '(tools/linux-userspace) to run this test')
+            # Every caller is already @skipIfMissingEnv('ORIGAMI_ASSETS'),
+            # so getting here means it IS set and the kernel is simply
+            # missing underneath it -- a provisioning failure, not an
+            # absent-assets developer run. Fail loudly: a silent skip
+            # here would let a real linux-usercheck regression pass CI
+            # unnoticed.
+            self.fail(
+                'ORIGAMI_ASSETS is set but no kernel is present '
+                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} -- provision it '
+                '(nightly assets) rather than silently skipping a '
+                'claimed capability')
 
         vm = self.get_vm(name=name)
         vm.set_machine('origin200')
