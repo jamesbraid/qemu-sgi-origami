@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * QLogic ISP1020 family Fast/Wide SCSI host adapter.
+ * QLogic ISP SCSI host adapter family: the single-channel ISP1040 and the
+ * dual-channel ISP12160.
  *
  * The host hands whole SCSI commands to a request ring and collects
  * completions from a response ring; the guest's microcode download is
@@ -22,15 +23,10 @@
 #include "trace.h"
 #include "qom/object.h"
 
-#define TYPE_QLOGIC_ISP1040 "qlogic-isp1040"
-typedef struct QLogicISPState QLogicISPState;
 typedef struct QLogicISPRequest QLogicISPRequest;
-DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
+OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 
 #define QLOGIC_ISP_VENDOR_ID    0x1077
-#define QLOGIC_ISP_DEVICE_ID    0x1020
-
-#define QLOGIC_ISP_REVISION     0x05
 
 #define QLOGIC_ISP_REG_WINDOW_SIZE  0x100
 
@@ -47,8 +43,6 @@ DECLARE_INSTANCE_CHECKER(QLogicISPState, QLOGIC_ISP1040, TYPE_QLOGIC_ISP1040)
 #define ISP_REG_DMA_DATA_CFG  0x40  /* RW: data DMA block, config. */
 #define ISP_REG_DMA_DATA_CTRL 0x42  /* WO: data DMA block, control. */
 #define ISP_REG_HOST_CMD    0xc0    /* RW: command in, RISC state flags out. */
-
-#define ISP_BUS_CFG0_HWREV      (QLOGIC_ISP_REVISION + 1)
 
 #define ISP_BUS_CFG1_FIFO_MASK      0x0070
 #define ISP_BUS_CFG1_BANK_SELECT    0x0008
@@ -287,6 +281,34 @@ typedef struct QLogicISPPendingStatus {
     int sense_len;
 } QLogicISPPendingStatus;
 
+/* What one part of the family is, where the parts differ. */
+typedef struct QLogicISPInfo {
+    const char *name;               /* QOM type name */
+    const char *desc;               /* DeviceClass description */
+    uint16_t device_id;             /* PCI device identifier */
+    uint8_t revision;               /* PCI revision byte */
+    uint8_t nchannels;              /* SCSI buses realised */
+    bool cfg0_reports_revision;     /* bus configuration 0 = revision + 1 */
+    uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
+} QLogicISPInfo;
+
+struct QLogicISPClass {
+    PCIDeviceClass parent_class;
+    const QLogicISPInfo *info;
+};
+
+#define QLOGIC_ISP_MAX_CHANNELS 2
+
+/*
+ * One SCSI bus and the state that belongs to it alone. The back pointer is
+ * how a completion finds the adapter: the SCSI core hands back the bus.
+ */
+typedef struct QLogicISPChannel {
+    SCSIBus bus;
+    QLogicISPState *dev;
+    uint8_t index;
+} QLogicISPChannel;
+
 struct QLogicISPState {
     PCIDevice parent_obj;
 
@@ -306,7 +328,7 @@ struct QLogicISPState {
     uint16_t sxp_bank[ISP_SXP_RISC_COUNT];
     uint16_t risc_ram[ISP_RISC_RAM_WORDS];    /* Downloaded firmware. */
 
-    SCSIBus bus;
+    QLogicISPChannel chan[QLOGIC_ISP_MAX_CHANNELS];
 
     hwaddr rqst_base;
     hwaddr resp_base;
@@ -329,6 +351,9 @@ struct QLogicISPRequest {
     SCSIRequest *sreq;
     QEMUSGList qsg;
     uint32_t handle;
+    uint8_t channel;
+    uint8_t target;
+    uint8_t lun;
     QTAILQ_ENTRY(QLogicISPRequest) next;
 };
 
@@ -491,13 +516,16 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /* Printed by guests, never branched on. */
-    case ISP_MBOX_CMD_ABOUT_FIRMWARE:
-        s->mailbox[1] = 1;
-        s->mailbox[2] = 0;
-        s->mailbox[3] = 0;
+    case ISP_MBOX_CMD_ABOUT_FIRMWARE: {
+        const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+
+        s->mailbox[1] = info->fw_version[0];
+        s->mailbox[2] = info->fw_version[1];
+        s->mailbox[3] = info->fw_version[2];
         s->mailbox[6] = 0;
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
+    }
 
     /* Sizes the guest's queues and command budget. */
     case ISP_MBOX_CMD_GET_FIRMWARE_STATUS:
@@ -589,7 +617,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
 
     /* Resets the bus, not the adapter: chip state survives. */
     case ISP_MBOX_CMD_BUS_RESET:
-        bus_cold_reset(BUS(&s->bus));
+        bus_cold_reset(BUS(&s->chan[0].bus));
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
@@ -933,8 +961,8 @@ static void qlogic_isp_save_request(QEMUFile *f, SCSIRequest *sreq)
 
 static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
 {
-    SCSIBus *bus = sreq->bus;
-    QLogicISPState *s = container_of(bus, QLogicISPState, bus);
+    QLogicISPChannel *chan = container_of(sreq->bus, QLogicISPChannel, bus);
+    QLogicISPState *s = chan->dev;
     PCIDevice *pci = PCI_DEVICE(s);
     QLogicISPRequest *req;
     int i, n;
@@ -942,6 +970,9 @@ static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = qemu_get_be32(f);
+    req->channel = chan->index;
+    req->target = sreq->dev->id;
+    req->lun = sreq->lun;
     pci_dma_sglist_init(&req->qsg, pci, 1);
 
     scsi_req_ref(sreq);
@@ -1063,7 +1094,7 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
         return true;
     }
 
-    sdev = scsi_device_find(&s->bus, 0, target, lun);
+    sdev = scsi_device_find(&s->chan[0].bus, 0, target, lun);
     if (!sdev) {
         /*
          * GOT_BUS alone is Linux's DID_BAD_TARGET; the timeout bit beside
@@ -1078,6 +1109,9 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
+    req->channel = ISP_DEVICE_BUS(device);
+    req->target = target;
+    req->lun = lun;
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
     /* A hint, never the raw seg_count: 65535 is a megabyte per request. */
     pci_dma_sglist_init(&req->qsg, pci, ISP_REQ_SEGS_INLINE);
@@ -1174,7 +1208,7 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
         return true;
     }
 
-    sdev = scsi_device_find(&s->bus, 0, target, lun);
+    sdev = scsi_device_find(&s->chan[0].bus, 0, target, lun);
     if (!sdev) {
         /* The same missing-target answer as the 32-bit path. */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
@@ -1186,6 +1220,9 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     req = g_new0(QLogicISPRequest, 1);
     req->dev = s;
     req->handle = handle;
+    req->channel = ISP_DEVICE_BUS(device);
+    req->target = target;
+    req->lun = lun;
     QTAILQ_INSERT_TAIL(&s->requests, req, next);
     /* A size hint only, for the reason the 32-bit path gives. */
     pci_dma_sglist_init(&req->qsg, pci, ISP_A64_REQ_SEGS_INLINE);
@@ -1316,9 +1353,13 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
     case ISP_REG_ID_LOW:
         return QLOGIC_ISP_VENDOR_ID;
     case ISP_REG_ID_HIGH:
-        return QLOGIC_ISP_DEVICE_ID;
+        return QLOGIC_ISP_GET_CLASS(s)->info->device_id;
+    /* A part that publishes no revision here reads zero instead. */
     case ISP_REG_BUS_CFG0:
-        return ISP_BUS_CFG0_HWREV;
+        if (!QLOGIC_ISP_GET_CLASS(s)->info->cfg0_reports_revision) {
+            return 0;
+        }
+        return PCI_DEVICE(s)->config[PCI_REVISION_ID] + 1;
     case ISP_REG_BUS_CFG1:
         return s->bus_cfg1;
     case ISP_REG_BUS_CTRL:
@@ -1395,7 +1436,7 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
              * Only here, not in reset_state(): the device's own reset
              * phase reaches the child bus through the qdev tree.
              */
-            bus_cold_reset(BUS(&s->bus));
+            bus_cold_reset(BUS(&s->chan[0].bus));
         }
         qlogic_isp_update_irq(s);
         break;
@@ -1462,14 +1503,16 @@ static const MemoryRegionOps qlogic_isp_reg_ops = {
 
 static void qlogic_isp_reset_hold(Object *obj, ResetType type)
 {
-    QLogicISPState *s = QLOGIC_ISP1040(obj);
+    QLogicISPState *s = QLOGIC_ISP(obj);
 
     qlogic_isp_reset_state(s);
 }
 
 static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 {
-    QLogicISPState *s = QLOGIC_ISP1040(dev);
+    QLogicISPState *s = QLOGIC_ISP(dev);
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+    unsigned int i;
 
     /* The adapter presents one interrupt line, and it is a level. */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
@@ -1489,15 +1532,20 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     QTAILQ_INIT(&s->pending_status);
     QTAILQ_INIT(&s->requests);
 
-    scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev),
-                 &qlogic_isp_scsi_info);
+    assert(info->nchannels <= QLOGIC_ISP_MAX_CHANNELS);
+    for (i = 0; i < info->nchannels; i++) {
+        s->chan[i].dev = s;
+        s->chan[i].index = i;
+        scsi_bus_init(&s->chan[i].bus, sizeof(s->chan[i].bus), DEVICE(dev),
+                      &qlogic_isp_scsi_info);
+    }
 }
 
 void qlogic_isp_handle_legacy_cmdline(DeviceState *dev)
 {
-    QLogicISPState *s = QLOGIC_ISP1040(dev);
+    QLogicISPState *s = QLOGIC_ISP(dev);
 
-    scsi_bus_legacy_handle_cmdline(&s->bus);
+    scsi_bus_legacy_handle_cmdline(&s->chan[0].bus);
 }
 
 /*
@@ -1507,7 +1555,7 @@ void qlogic_isp_handle_legacy_cmdline(DeviceState *dev)
  */
 static void qlogic_isp_exit(PCIDevice *dev)
 {
-    QLogicISPState *s = QLOGIC_ISP1040(dev);
+    QLogicISPState *s = QLOGIC_ISP(dev);
 
     qlogic_isp_drop_pending_status(s);
 }
@@ -1554,26 +1602,68 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
     pc->realize = qlogic_isp_realize;
     pc->exit = qlogic_isp_exit;
     pc->vendor_id = QLOGIC_ISP_VENDOR_ID;
-    pc->device_id = QLOGIC_ISP_DEVICE_ID;
-    pc->revision = QLOGIC_ISP_REVISION;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
     rc->phases.hold = qlogic_isp_reset_hold;
     dc->vmsd = &vmstate_qlogic_isp;
-    dc->desc = "QLogic ISP1040 SCSI host adapter";
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
-static const TypeInfo qlogic_isp_types[] = {
-    {
-        .name = TYPE_QLOGIC_ISP1040,
-        .parent = TYPE_PCI_DEVICE,
-        .instance_size = sizeof(QLogicISPState),
-        .class_init = qlogic_isp_class_init,
-        .interfaces = (const InterfaceInfo[]) {
-            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
-            { },
-        },
+/* The part's own identity, kept where the behaviour can reach it. */
+static void qlogic_isp_part_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
+    QLogicISPClass *k = QLOGIC_ISP_CLASS(oc);
+
+    k->info = data;
+    pc->device_id = k->info->device_id;
+    pc->revision = k->info->revision;
+    dc->desc = k->info->desc;
+}
+
+static const QLogicISPInfo qlogic_isp_infos[] = {
+    { .name = TYPE_QLOGIC_ISP1040, .desc = "QLogic ISP1040 SCSI host adapter",
+      .device_id = 0x1020, .revision = 0x05, .nchannels = 1,
+      .cfg0_reports_revision = true, .fw_version = { 1, 0, 0 } },
+    { .name = TYPE_QLOGIC_ISP12160,
+      .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
+      .device_id = 0x1216, .revision = 0x06, .nchannels = 2,
+      .cfg0_reports_revision = false, .fw_version = { 10, 4, 0 } },
+};
+
+static const TypeInfo qlogic_isp_base_info = {
+    .name = TYPE_QLOGIC_ISP,
+    .parent = TYPE_PCI_DEVICE,
+    .instance_size = sizeof(QLogicISPState),
+    .class_size = sizeof(QLogicISPClass),
+    .class_init = qlogic_isp_class_init,
+    .abstract = true,
+    .interfaces = (const InterfaceInfo[]) {
+        { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+        { },
     },
 };
 
-DEFINE_TYPES(qlogic_isp_types)
+/*
+ * Built from the records rather than written out per part, so a part is one
+ * table row and the name in it is the name that gets registered.
+ */
+static void qlogic_isp_register_types(void)
+{
+    int i;
+
+    type_register_static(&qlogic_isp_base_info);
+    for (i = 0; i < ARRAY_SIZE(qlogic_isp_infos); i++) {
+        const QLogicISPInfo *info = &qlogic_isp_infos[i];
+        const TypeInfo type_info = {
+            .name = info->name,
+            .parent = TYPE_QLOGIC_ISP,
+            .class_init = qlogic_isp_part_class_init,
+            .class_data = info,
+        };
+
+        type_register_static(&type_info);
+    }
+}
+
+type_init(qlogic_isp_register_types)
