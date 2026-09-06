@@ -27,8 +27,6 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/net/bcm570x_phy.h"
-#include "hw/core/resettable.h"
-#include "migration/vmstate.h"
 
 bool bcm570x_phy_link_up(Bcm570xPhyState *s)
 {
@@ -252,23 +250,31 @@ void bcm570x_phy_reset(Bcm570xPhyState *s)
      */
 }
 
-static void bcm570x_phy_reset_hold(Object *obj, ResetType type)
+static void bcm570x_phy_init(Object *obj)
 {
-    bcm570x_phy_reset(BCM570X_PHY(obj));
-}
-
-static void bcm570x_phy_realize(DeviceState *dev, Error **errp)
-{
-    Bcm570xPhyState *s = BCM570X_PHY(dev);
+    Bcm570xPhyState *s = BCM570X_PHY(obj);
 
     s->settle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    bcm570x_phy_settle_done, s);
 }
 
-static const VMStateDescription vmstate_bcm570x_phy = {
+static void bcm570x_phy_finalize(Object *obj)
+{
+    Bcm570xPhyState *s = BCM570X_PHY(obj);
+
+    timer_free(s->settle_timer);
+}
+
+static bool bcm570x_phy_compat_needed(void *opaque)
+{
+    return false;
+}
+
+const VMStateDescription vmstate_bcm570x_phy = {
     .name = "bcm570x-phy",
     .version_id = 1,
     .minimum_version_id = 1,
+    .needed = bcm570x_phy_compat_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(bmcr, Bcm570xPhyState),
         VMSTATE_UINT16(anar, Bcm570xPhyState),
@@ -281,23 +287,13 @@ static const VMStateDescription vmstate_bcm570x_phy = {
     }
 };
 
-static void bcm570x_phy_class_init(ObjectClass *oc, const void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(oc);
-    ResettableClass *rc = RESETTABLE_CLASS(oc);
-
-    dc->desc = "Broadcom NetXtreme BCM570x copper PHY";
-    dc->realize = bcm570x_phy_realize;
-    dc->vmsd = &vmstate_bcm570x_phy;
-    rc->phases.hold = bcm570x_phy_reset_hold;
-}
-
 static const TypeInfo bcm570x_phy_types[] = {
     {
         .name = TYPE_BCM570X_PHY,
-        .parent = TYPE_SYS_BUS_DEVICE,
+        .parent = TYPE_OBJECT,
         .instance_size = sizeof(Bcm570xPhyState),
-        .class_init = bcm570x_phy_class_init,
+        .instance_init = bcm570x_phy_init,
+        .instance_finalize = bcm570x_phy_finalize,
     },
 };
 

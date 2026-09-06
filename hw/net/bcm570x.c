@@ -50,7 +50,6 @@
 #include "net/checksum.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci-host/sgi-bridge.h"
-#include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/bcm570x_phy.h"
 #include "migration/vmstate.h"
@@ -2025,14 +2024,6 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                           "bcm570x-bar0", BCM570X_BAR0_SIZE);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
 
-    /*
-     * Realize the PHY as a system-bus device so machine reset reaches it: a
-     * bus-less device is never reset (see sgi-ioc3-eth.c for the same note).
-     */
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->phy), errp)) {
-        return;
-    }
-
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(&net_bcm570x_info, &s->conf,
                           object_get_typename(OBJECT(dev)), ds->id,
@@ -2041,6 +2032,19 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                                           &ds->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
     bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
+
+    /*
+     * Version 6 streams carried the PHY as a standalone qdev section. Keep a
+     * load-only compatibility registration for that section while version 7
+     * and later carry the same state inside the MAC section.
+     */
+    if (vmstate_register_with_alias_id(VMSTATE_IF(dev),
+                                       VMSTATE_INSTANCE_ID_ANY,
+                                       &vmstate_bcm570x_phy, &s->phy,
+                                       -1, 0, errp) < 0) {
+        bcm570x_cleanup_net(s);
+        return;
+    }
 
     /*
      * The dual-port BCM5704 is one multifunction PCI device presenting two MAC
@@ -2076,6 +2080,8 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                              s->subsystem_vendor_id);
         qdev_prop_set_uint16(&f1->qdev, "subsystem-id", s->subsystem_id);
         if (!pci_realize_and_unref(f1, bus, errp)) {
+            vmstate_unregister(VMSTATE_IF(dev), &vmstate_bcm570x_phy,
+                               &s->phy);
             bcm570x_cleanup_net(s);
             return;
         }
@@ -2092,6 +2098,7 @@ static void bcm570x_exit(PCIDevice *dev)
 {
     Bcm570xState *s = BCM570X(dev);
 
+    vmstate_unregister(VMSTATE_IF(dev), &vmstate_bcm570x_phy, &s->phy);
     bcm570x_cleanup_net(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
@@ -2131,6 +2138,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
+    bcm570x_phy_reset(&s->phy);
     bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
 }
@@ -2139,15 +2147,15 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
  * The migration stream carries the interrupt's cause and its masks but not the
  * wire itself. Re-derive the line on the destination from the restored state so
  * it asserts INTA exactly when the source did, and so PCISTATE.INTR_NOT_ACTIVE
- * and the wire agree. The PHY migrates as its own section (it is a realized
- * child device with its own VMStateDescription), so it is not enumerated here.
+ * and the wire agree. The PHY state is nested in this device's migration
+ * section.
  */
 static int bcm570x_post_load(void *opaque, int version_id)
 {
     Bcm570xState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    /* The child PHY migrates its cable state; NetClientState does not. */
+    /* The PHY migrates its cable state; NetClientState does not. */
     qemu_get_queue(s->nic)->link_down = s->phy.link_down;
     if (version_id < 6) {
         s->tx_coal_pending = 0;
@@ -2180,7 +2188,7 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -2205,6 +2213,8 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_TIMER_V(coal_timer, Bcm570xState, 6),
         VMSTATE_TIMER_V(tx_coal_timer, Bcm570xState, 6),
         VMSTATE_TIMER_V(status_tick_timer, Bcm570xState, 6),
+        VMSTATE_STRUCT(phy, Bcm570xState, 7, vmstate_bcm570x_phy,
+                       Bcm570xPhyState),
         VMSTATE_END_OF_LIST()
     }
 };

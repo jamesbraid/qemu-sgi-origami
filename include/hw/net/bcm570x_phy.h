@@ -7,7 +7,7 @@
 #ifndef HW_NET_BCM570X_PHY_H
 #define HW_NET_BCM570X_PHY_H
 
-#include "hw/core/sysbus.h"
+#include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
 
@@ -104,7 +104,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_AUTONEG_SETTLE_NS (100 * SCALE_MS)
 
 struct Bcm570xPhyState {
-    SysBusDevice parent_obj;
+    Object parent_obj;
 
     /* Writable registers, held as the words a driver reads back. */
     uint16_t bmcr;
@@ -124,6 +124,8 @@ struct Bcm570xPhyState {
     QEMUTimer *settle_timer;
     bool settle_armed;
 };
+
+extern const VMStateDescription vmstate_bcm570x_phy;
 
 void bcm570x_phy_reset(Bcm570xPhyState *s);
 uint16_t bcm570x_phy_read(Bcm570xPhyState *s, int reg);
