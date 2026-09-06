@@ -1479,6 +1479,106 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     unlink(logfile);
 }
 
+/* Partial-error coalescing counts every completed descriptor. */
+static void test_transmit_partial_error_descriptor_coalescing(
+    const void *data)
+{
+    const unsigned int initial_ticks = 0x10000000;
+    const unsigned int retry_ticks = 50;
+    g_autofree char *logfile = NULL;
+    uint8_t first[60], second[60], got[sizeof(first)];
+    uint8_t ring[3 * 16] = { 0 };
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+    Bcm b;
+    unsigned int i;
+    uint32_t tag;
+    size_t len;
+    int logfd;
+    int sv[2];
+
+    for (i = 0; i < sizeof(first); i++) {
+        first[i] = (uint8_t)(i * 7 + 1);
+        second[i] = (uint8_t)(i * 5 + 3);
+    }
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    logfd = g_file_open_tmp("bcm570x-tx-partial-coalescing-XXXXXX",
+                            &logfile, NULL);
+    g_assert_cmpint(logfd, >=, 0);
+    close(logfd);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0"
+                             " -d guest_errors -D %s",
+                             sv[1], BCM_SLOT, logfile));
+
+    put32le(ring, TX_BUF_PHYS >> 32);
+    put32le(ring + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(ring + 8, BCM_TXBDFLAG_END);
+    put16le(ring + 10, sizeof(first));
+    put16le(ring + 24, BCM_TXBDFLAG_END);
+    put32le(ring + 32, UNMAPPED_PHYS >> 32);
+    put32le(ring + 36, UNMAPPED_PHYS & 0xffffffff);
+    put16le(ring + 40, BCM_TXBDFLAG_END);
+    put16le(ring + 42, sizeof(second));
+    qtest_memwrite(b.qts, TX_RING_PHYS, ring, sizeof(ring));
+    qtest_memwrite(b.qts, TX_BUF_PHYS, first, sizeof(first));
+    qtest_memset(b.qts, STATUS_PHYS, 0, sizeof(status));
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 2);
+    bar_writel(&b, BCM_HCC_TX_COAL_TICKS, initial_ticks);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    tag = read_status_tag(&b);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 3);
+    wait_for_log_marker(b.qts, logfile,
+                        "bcm570x: transmit payload read at 0x2000000 failed; "
+                        "frame left ready to retry");
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(first));
+    g_assert_cmpmem(got, len, first, sizeof(first));
+    net_socket_expect_no_frame(sv[0]);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_HCC_TX_COAL_TICKS, retry_ticks);
+
+    put32le(ring + 32, (TX_BUF_PHYS + 0x100) >> 32);
+    put32le(ring + 36, (TX_BUF_PHYS + 0x100) & 0xffffffff);
+    qtest_memwrite(b.qts, TX_RING_PHYS + 32, ring + 32, 16);
+    qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100, second, sizeof(second));
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 3);
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(second));
+    g_assert_cmpmem(got, len, second, sizeof(second));
+    net_socket_expect_no_frame(sv[0]);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+    g_assert_false(intr_line_up(b.dev));
+
+    qtest_clock_step(b.qts, (int64_t)retry_ticks * 1000 + 1000);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
+    unlink(logfile);
+}
+
 /*
  * Source-address insertion is a per-packet send-BD attribute. Bit 12 enables
  * replacement and bits 14:13 select one of the four programmed MAC slots; the
@@ -4452,6 +4552,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/transmit-complete-then-descriptor-"
                         "dma-error-retry", NULL,
                         test_transmit_complete_then_descriptor_dma_error_retry);
+    qtest_add_data_func("/bcm570x/transmit-partial-error-descriptor-"
+                        "coalescing", NULL,
+                        test_transmit_partial_error_descriptor_coalescing);
     qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
                         test_transmit_throughput);
     qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
