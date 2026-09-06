@@ -149,14 +149,44 @@ static void test_pending_modify_and_reflection(void)
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
 
+    /* A reflected bit cannot be set by software while its source is low. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x177);
+    qtest_writeq(s, PI(0, PENDING_ALIAS), 0x17e);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
+
     qtest_writeq(s, LB(0x4040), 1);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 55);
     g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 1ULL << 55);
-    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x177);
+    /* Nor cleared while the source is high, by a modify or a direct store. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x077);
+    qtest_writeq(s, PI(1, PENDING_ALIAS), 0x077);
+    qtest_writeq(s, PI(0, PENDING_1), 0);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 55);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 1ULL << 55);
     qtest_writeq(s, LB(0x4048), 1);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 0);
+
+    /*
+     * Bit 62 reflects the network interface's error line. The interface
+     * raises it from port errors nothing can produce without a link, so
+     * drive the parent's input directly: that proves the processor
+     * interface's half of the path and invents no network register.
+     */
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+    qtest_set_irq_in(s, BEDROCK_PATH, "ni-error", 0, 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 1ULL << 62);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 1ULL << 62);
+    qtest_writeq(s, PI(1, PENDING_MODIFY), 0x07e);
+    qtest_writeq(s, PI(1, PENDING_1), 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 1ULL << 62);
+    qtest_writeq(s, PI(1, MASK_1_B), 1ULL << 62);
+    g_assert_true(qtest_get_irq(s, 16));
+    g_assert_false(qtest_get_irq(s, 11));
+    qtest_set_irq_in(s, BEDROCK_PATH, "ni-error", 0, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==, 0);
+    g_assert_false(qtest_get_irq(s, 16));
     qtest_quit(s);
 }
 
