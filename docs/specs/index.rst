@@ -49,3 +49,4 @@ guest hardware that is specific to QEMU.
    sgi-ioc3
    sgi-origin200
    sgi-qlogic-isp
+   sgi-xbridge
