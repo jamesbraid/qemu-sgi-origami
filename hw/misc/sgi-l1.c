@@ -2,6 +2,7 @@
 /* Protocol responder for the processor-facing Origin 300 L1 UART. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -11,6 +12,22 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "system/runstate.h"
+
+static uint8_t l1_irq_cause(SGIL1State *s)
+{
+    if ((s->ier & 1) && s->queue_len) {
+        return 4;
+    }
+    if ((s->ier & 2) && s->thre_pending) {
+        return 2;
+    }
+    return 1;
+}
+
+static void l1_update_irq(SGIL1State *s)
+{
+    qemu_set_irq(s->uart, l1_irq_cause(s) != 1);
+}
 
 static uint16_t l1_fcs(uint16_t value, uint8_t byte)
 {
@@ -51,6 +68,7 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
         s->queue[(s->queue_head + s->queue_len++) % SGI_L1_QUEUE_SIZE] =
             encoded[i];
     }
+    l1_update_irq(s);
 }
 
 static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
@@ -492,12 +510,18 @@ static uint64_t l1_read(void *opaque, hwaddr offset, unsigned size)
         value = s->queue[s->queue_head];
         s->queue_head = (s->queue_head + 1) % SGI_L1_QUEUE_SIZE;
         s->queue_len--;
+        l1_update_irq(s);
         qemu_chr_fe_accept_input(&s->chr);
         return value;
     case 8:
         return s->lcr & 0x80 ? s->divisor[1] : s->ier;
     case 0x10:
-        return 1;
+        value = l1_irq_cause(s);
+        if (value == 2) {
+            s->thre_pending = false;
+            l1_update_irq(s);
+        }
+        return value;
     case 0x18:
         return s->lcr;
     case 0x20:
@@ -522,17 +546,23 @@ static void l1_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         if (s->lcr & 0x80) {
             s->divisor[0] = value;
         } else {
+            s->thre_pending = false;
+            l1_update_irq(s);
             l1_parse(s, value);
+            s->thre_pending = (s->ier & 2) != 0;
         }
         break;
     case 8:
         if (s->lcr & 0x80) {
             s->divisor[1] = value;
         } else {
+            if ((value & 2) && !(s->ier & 2)) {
+                s->thre_pending = true;
+            }
             s->ier = value;
-            if (value) {
+            if (value & 0xfc) {
                 qemu_log_mask(LOG_UNIMP,
-                              "sgi-l1: UART interrupts unavailable\n");
+                              "sgi-l1: unsupported UART interrupt enables\n");
             }
         }
         break;
@@ -555,6 +585,7 @@ static void l1_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
                       "sgi-l1: write to read-only UART register\n");
         break;
     }
+    l1_update_irq(s);
 }
 
 static const MemoryRegionOps l1_ops = {
@@ -570,12 +601,18 @@ static void l1_reset_enter(Object *obj, ResetType type)
     SGIL1State *s = SGI_L1(obj);
 
     s->lcr = s->ier = s->mcr = s->scratch = 0;
+    s->thre_pending = false;
     memset(s->divisor, 0, sizeof(s->divisor));
     s->frame_len = s->queue_head = s->queue_len = 0;
     s->in_frame = s->escape = s->overflow = false;
     s->console_mode = s->return_to_console = false;
     s->command_len = 0;
     memset(s->display, 0, sizeof(s->display));
+}
+
+static void l1_reset_hold(Object *obj, ResetType type)
+{
+    l1_update_irq(SGI_L1(obj));
 }
 
 static int l1_post_load(void *opaque, int version_id)
@@ -594,6 +631,10 @@ static int l1_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    if (version_id < 2) {
+        s->thre_pending = false;
+    }
+    l1_update_irq(s);
     return 0;
 }
 
@@ -624,7 +665,7 @@ static const VMStateDescription vmstate_l1_record = {
 
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
@@ -636,6 +677,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT32(command_len, SGIL1State),
         VMSTATE_UINT8(lcr, SGIL1State),
         VMSTATE_UINT8(ier, SGIL1State),
+        VMSTATE_BOOL_V(thre_pending, SGIL1State, 2),
         VMSTATE_UINT8(mcr, SGIL1State),
         VMSTATE_UINT8(scratch, SGIL1State),
         VMSTATE_UINT8_ARRAY(divisor, SGIL1State, 2),
@@ -737,6 +779,7 @@ static void l1_init(Object *obj)
 
     memory_region_init_io(&s->mmio, obj, &l1_ops, s, TYPE_SGI_L1, SGI_L1_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->uart, "uart", 1);
 }
 
 static void l1_class_init(ObjectClass *klass, const void *data)
@@ -750,6 +793,7 @@ static void l1_class_init(ObjectClass *klass, const void *data)
     dc->user_creatable = true;
     device_class_set_props(dc, l1_properties);
     rc->phases.enter = l1_reset_enter;
+    rc->phases.hold = l1_reset_hold;
     object_class_property_add_str(klass, "display-line-1", l1_display_first_get,
                                   NULL);
     object_class_property_add_str(klass, "display-line-2",
