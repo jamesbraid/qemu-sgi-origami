@@ -17,7 +17,8 @@ enum i2c_event {
     I2C_START_SEND,
     I2C_START_SEND_ASYNC,
     I2C_FINISH,
-    I2C_NACK /* Masker NACKed a receive byte.  */
+    I2C_NACK, /* Masker NACKed a receive byte.  */
+    I2C_RESTART /* Identified-master reselection, without STOP. */
 };
 
 typedef struct I2CNodeList I2CNodeList;
@@ -28,6 +29,8 @@ OBJECT_DECLARE_TYPE(I2CSlave, I2CSlaveClass,
 
 struct I2CSlaveClass {
     DeviceClass parent_class;
+    /* Explicit opt-in: event handles I2C_RESTART without STOP side effects. */
+    bool supports_master_ids;
 
     /* Master to slave. Returns non-zero for a NAK, 0 for success. */
     int (*send)(I2CSlave *s, uint8_t data);
@@ -64,6 +67,7 @@ struct I2CSlave {
 
     /* Remaining fields for internal use by the I2C code.  */
     uint8_t address;
+    bool saved_selected;
 };
 
 #define TYPE_I2C_BUS "i2c-bus"
@@ -95,7 +99,37 @@ struct I2CBus {
 
     /* Set from slave currently mastering the bus. */
     QEMUBH *bh;
+
+    /* Opt-in configuration: stable participant IDs are 0..master_count-1. */
+    uint32_t master_count;
+    uint32_t owner;             /* UINT32_MAX between STOP and resolved START */
+    uint8_t requested_address;
+    bool master_recv;
+    bool address_valid;
+    bool masters_loaded;        /* Migration subsection was present. */
 };
+
+/*
+ * Transfers for a resolved sole master, not arbitration. Configuration is fixed
+ * once enabled. The caller must establish a sole master before delivering a
+ * resolved START; this function must not be used to elect one from contenders.
+ * Negative errno values report API misuse or unsupported input. They are not
+ * hardware flags.
+ * Address transfer and send return 0 for ACK, 1 for NAK, or a negative
+ * API error. General-call writes select only address-accepting receivers;
+ * any receiver ACK produces ACK, and data NAK does not deselect a receiver.
+ * Address zero with recv=true is the START byte and receives no ACK.
+ * Anonymous transfer APIs must not be used on an opted-in bus.
+ */
+int i2c_bus_enable_master_ids(I2CBus *bus, uint32_t count);
+int i2c_bus_start_resolved(I2CBus *bus, uint32_t master);
+int i2c_master_start_transfer(I2CBus *bus, uint32_t master,
+                              uint8_t address, bool recv);
+int i2c_master_send(I2CBus *bus, uint32_t master, uint8_t data);
+int i2c_master_recv(I2CBus *bus, uint32_t master, uint8_t *data);
+int i2c_master_nack(I2CBus *bus, uint32_t master);
+int i2c_master_end_transfer(I2CBus *bus, uint32_t master);
+extern const VMStateDescription vmstate_i2c_bus;
 
 I2CBus *i2c_init_bus(DeviceState *parent, const char *name);
 int i2c_bus_busy(I2CBus *bus);
