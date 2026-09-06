@@ -481,7 +481,9 @@ static void test_bte_copy_and_zero(void)
 
 static void test_bte_error_and_termination(void)
 {
-    QTestState *s = io_start("");
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    QTestState *s = io_start_logged(log, "");
     uint8_t source[256], actual[256], unchanged[256];
 
     fill_pattern(source, sizeof(source), 0x93);
@@ -497,9 +499,15 @@ static void test_bte_error_and_termination(void)
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x18), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
 
+    /*
+     * Interrupt mode: a notification address is programmed but notify is
+     * clear, so completion must leave that line alone and is only logged.
+     */
+    dma_writeq(s, 0x1e0000, UINT64_MAX);
     qtest_writeq(s, REG_BASE + BTE1, 2 | (1 << 20));
     qtest_writeq(s, REG_BASE + BTE1 + 8, 0x150000);
     qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x170000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x1e0000);
     qtest_writeq(s, REG_BASE + BTE1 + 0x18, 0);
     qtest_clock_step(s, 1);
     qtest_clock_step(s, 1);
@@ -507,6 +515,7 @@ static void test_bte_error_and_termination(void)
     g_assert_cmpmem(actual, sizeof(actual), unchanged, sizeof(unchanged));
     dma_read(s, 0x170000, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
+    g_assert_cmphex(dma_readq(s, 0x1e0000), ==, UINT64_MAX);
 
     qtest_writeq(s, REG_BASE + BTE0, 2 | (1 << 20));
     qtest_writeq(s, REG_BASE + BTE0 + 8, UINT64_C(0x80000000));
@@ -544,6 +553,8 @@ static void test_bte_error_and_termination(void)
     qtest_readq(s, REG_BASE + BTE0 + 0x18);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1);
     qtest_quit(s);
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents, "interrupt-mode completion"));
 }
 
 static void test_bte_programming_edges(void)
