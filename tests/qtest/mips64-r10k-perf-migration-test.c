@@ -1,5 +1,5 @@
 /*
- * R10000-family performance-counter migration tests.
+ * R10000-family migration tests.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -13,6 +13,10 @@
 #define MAIN_LOOP           0x480
 #define RESET_CHECK         0x700
 #define RESET_LOOP          0x780
+#define CACHE_START         0x900
+#define CACHE_LOOP          0xa00
+#define CACHE_READ          0xa40
+#define CACHE_DONE          0xb00
 
 #define STATE_PHYS          0x00100000
 #define STATE_KSEG1_HI      0xa010
@@ -22,9 +26,25 @@
 #define POWER_ON_OFF        0x40
 #define NONZERO_OFF         0x80
 #define RESET_OFF           0xc0
+#define CACHE_READY_OFF     0x120
+#define CACHE_COMMAND_OFF   0x128
+#define CACHE_DONE_OFF      0x130
+#define CACHE_TAGLO_OFF     0x138
+#define CACHE_TAGHI_OFF     0x140
+#define CACHE_DATA_LO_OFF   0x148
+#define CACHE_DATA_HI_OFF   0x150
+#define CACHE_ECC_OFF       0x158
 #define READY_MAGIC         0x1400
 #define RESET_READY_MAGIC   0x1401
+#define CACHE_READY_MAGIC   0x14ca
+#define CACHE_DONE_MAGIC    0x14cb
 #define INITIAL_COUNT       0x12340000u
+#define CACHE_TAGLO         0x1234c5aau
+#define CACHE_TAGHI         0x0000000du
+#define CACHE_DATA_LO       0x2468ace0u
+#define CACHE_DATA_HI       0x13579bdfu
+#define CACHE_ECC           0x2aau
+#define CACHE_UPPER_HI      0x8008
 #define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
 #define ANALYZE_SCRIPT      "scripts/analyze-migration.py"
@@ -35,6 +55,7 @@
 #define OPC_BNE             (0x05u << 26)
 #define OPC_ADDIU           (0x09u << 26)
 #define OPC_ORI             (0x0du << 26)
+#define OPC_CACHE           (0x2fu << 26)
 #define OPC_AND             (0x24u | OPC_SPECIAL)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_CP0             (0x10u << 26)
@@ -52,6 +73,9 @@
 
 #define CP0_STATUS          12
 #define CP0_PERFORMANCE     25
+#define CP0_ERRCTL          26
+#define CP0_TAGLO           28
+#define CP0_TAGHI           29
 #define PERF_KERNEL         (1u << 1)
 
 typedef struct {
@@ -99,6 +123,17 @@ static void emit_mfc0(GuestImage *img, int rt, int rd, int sel)
 static void emit_mtc0(GuestImage *img, int rt, int rd, int sel)
 {
     emit(img, OPC_MTC0 | (rt << 16) | (rd << 11) | sel);
+}
+
+static void emit_load_u32(GuestImage *img, int rt, uint32_t value)
+{
+    emit(img, OPC_LUI | (rt << 16) | (value >> 16));
+    emit(img, OPC_ORI | (rt << 21) | (rt << 16) | (value & 0xffff));
+}
+
+static void emit_cache(GuestImage *img, int operation, int base, uint16_t off)
+{
+    emit(img, OPC_CACHE | (base << 21) | (operation << 16) | off);
 }
 
 static void write_guest_image(int fd, const TestConfig *config)
@@ -194,6 +229,73 @@ static void write_reset_guest_image(int fd)
 
     img.pos = RESET_LOOP;
     emit_branch(&img, RESET_LOOP);
+    emit(&img, 0);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void write_cache_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
+    emit_branch(&img, CACHE_START);
+    emit(&img, 0);
+
+    img.pos = CACHE_START;
+    emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
+    emit(&img, OPC_LUI | (R_T1 << 16) | CACHE_UPPER_HI);
+    emit_load_u32(&img, R_T0, CACHE_TAGLO);
+    emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
+    emit_load_u32(&img, R_T0, CACHE_TAGHI);
+    emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
+    emit_cache(&img, 0x0b, R_T1, 0);
+    emit_load_u32(&img, R_T0, CACHE_DATA_LO);
+    emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
+    emit_load_u32(&img, R_T0, CACHE_DATA_HI);
+    emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
+    emit_load_u32(&img, R_T0, CACHE_ECC);
+    emit_mtc0(&img, R_T0, CP0_ERRCTL, 0);
+    emit_cache(&img, 0x1f, R_T1, 8);
+    emit_load_u32(&img, R_T0, CACHE_READY_MAGIC);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_READY_OFF);
+    emit(&img, OPC_SYNC);
+
+    img.pos = CACHE_LOOP;
+    emit(&img, OPC_LD | (R_T2 << 21) | (R_T0 << 16) |
+               CACHE_COMMAND_OFF);
+    emit_bne(&img, R_T0, R_ZERO, CACHE_READ);
+    emit(&img, 0);
+    emit_branch(&img, CACHE_LOOP);
+    emit(&img, 0);
+
+    img.pos = CACHE_READ;
+    emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
+    emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
+    emit_cache(&img, 0x07, R_T1, 0);
+    emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_TAGLO_OFF);
+    emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_TAGHI_OFF);
+    emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
+    emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
+    emit_mtc0(&img, R_ZERO, CP0_ERRCTL, 0);
+    emit_cache(&img, 0x1b, R_T1, 8);
+    emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DATA_LO_OFF);
+    emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DATA_HI_OFF);
+    emit_mfc0(&img, R_T0, CP0_ERRCTL, 0);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_ECC_OFF);
+    emit_load_u32(&img, R_T0, CACHE_DONE_MAGIC);
+    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    img.pos = CACHE_DONE;
+    emit_branch(&img, CACHE_DONE);
     emit(&img, 0);
 
     written = write(fd, image, sizeof(image));
@@ -423,7 +525,9 @@ static void test_stream_representation(const void *opaque)
 
     if (!strcmp(config->cpu, "R10000")) {
         g_assert_null(strstr(json, "\"cpu/r14k-performance\""));
+        g_assert_null(strstr(json, "\"cpu/r14k-scache\""));
     } else {
+        g_assert_nonnull(strstr(json, "\"cpu/r14k-scache\""));
         stored = r14k_stream_counter(json);
         delta = stored - before;
         g_assert_cmpuint(delta, <, 1u << 24);
@@ -432,6 +536,66 @@ static void test_stream_representation(const void *opaque)
     unlink(image);
     unlink(stream);
     unlink(state);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+static void test_r14000_upper_scache_migration(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *error = NULL;
+    QTestState *from, *to;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    fd = g_file_open_tmp("mips64-r14k-scache-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    write_cache_guest_image(fd);
+    close(fd);
+    directory = g_dir_make_tmp("mips64-r14k-scache-migration-XXXXXX",
+                               &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    source_args = g_strdup_printf(
+        "-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
+        "-no-reboot -no-shutdown", image);
+    dest_args = g_strdup_printf(
+        "-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
+        "-no-reboot -no-shutdown -incoming defer", image);
+    from = qtest_init(source_args);
+    to = qtest_init(dest_args);
+    wait_for_state(from, CACHE_READY_OFF, CACHE_READY_MAGIC);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
+    wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
+
+    g_assert_cmphex(state_word(to, CACHE_TAGLO_OFF), ==, CACHE_TAGLO);
+    g_assert_cmphex(state_word(to, CACHE_TAGHI_OFF), ==, CACHE_TAGHI);
+    g_assert_cmphex(state_word(to, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
+    g_assert_cmphex(state_word(to, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
+    g_assert_cmphex(state_word(to, CACHE_ECC_OFF), ==, CACHE_ECC);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(image);
+    unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
@@ -487,5 +651,7 @@ int main(int argc, char **argv)
                         &configurations[1], test_stream_representation);
     qtest_add_func("mips64/r14000-perf/reset-values",
                    test_r14000_reset_values);
+    qtest_add_func("mips64/r14000-scache-migration/upper-half",
+                   test_r14000_upper_scache_migration);
     return g_test_run();
 }
