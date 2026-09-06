@@ -118,3 +118,8 @@ config SGI_BRIDGE
     bool
     select ONEWIRE
     select PCI
+
+config SGI_XBRIDGE
+    bool
+    default y if TEST_DEVICES
+    select PCI

@@ -300,3 +300,13 @@ config SGI_BRIDGE_DMA_TEST
 config SGI_L1
     bool
     default y if TEST_DEVICES
+
+config SGI_XTALK_TEST_TARGET
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES
+
+config SGI_IOMMU_NOTIFIER_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES

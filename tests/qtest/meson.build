@@ -252,7 +252,9 @@ qtests_mips64 = \
                                                    'sn0-ds1685-test',
                                                    'sn0-debug-test',
                                                    'sn0-fabric-test',
-                                                   'sn0-qtest-cpu-test'] : [])
+                                                   'sn0-qtest-cpu-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
+    ['sn1-xbridge-test'] : [])
 
 qtests_mips64el = qtests_mips
 
