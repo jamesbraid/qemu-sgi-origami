@@ -701,10 +701,11 @@ static void mips_cpu_set_nmi(void *opaque, int irq, int level)
     CPUState *cs = CPU(cpu);
     bool asserted = level != 0;
 
-    /* CPU inputs can be driven without the BQL, including from MTTCG MMIO. */
-    if (qatomic_xchg(&cpu->nmi_level, asserted) == asserted) {
+    /* Device and board wiring drives CPU inputs while holding the BQL. */
+    if (cpu->nmi_level == asserted) {
         return;
     }
+    cpu->nmi_level = asserted;
     if (asserted) {
         cpu_interrupt(cs, CPU_INTERRUPT_NMI);
     }
