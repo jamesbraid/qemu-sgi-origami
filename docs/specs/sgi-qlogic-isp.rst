@@ -1,27 +1,31 @@
-==========================
-QLogic ISP1040 SCSI adapter
-==========================
+=========================================
+QLogic ISP1040 and ISP12160 SCSI adapters
+=========================================
 
-The ISP1040 is an intelligent SCSI controller: vendor microcode on
-an internal RISC processor performs selection, message and data
-phases itself, and the host hands it whole commands as descriptors
-in a memory ring and collects completions from a second ring. QEMU
-(``hw/scsi/qlogic-isp.c``) implements what that microcode does --
-the mailbox command set and the two rings -- and never executes
-vendor code: guests download microcode at every attach, and the
-model accepts the download, retains it, and answers checksum
-verification honestly over what was actually sent. No vendor
+The ISP1040 and the ISP12160 are two members of one family of
+intelligent SCSI controllers: vendor microcode on an internal RISC
+processor performs selection, message and data phases itself, and the
+host hands the adapter whole commands as descriptors in a memory ring
+and collects completions from a second ring. One QEMU model
+(``hw/scsi/qlogic-isp.c``) covers both parts and this page does the
+same, naming the part wherever the two differ. The model implements
+what that microcode does -- the mailbox command set and the two rings
+-- and never executes vendor code: guests download microcode at every
+attach, and the model accepts the download, retains it, and answers
+checksum verification honestly over what was actually sent. No vendor
 firmware is present or required. Load-RAM and dump-RAM take the word
 offset within the adapter in mailbox 1 and the word count in mailbox
-4, with the host address in the usual four-mailbox split; the offset
-advances as a 16-bit quantity and wraps within storage sized to that
-range.
+4, with the host address in the usual four-mailbox split; on the
+ISP1040 that offset advances as a 16-bit quantity and wraps within
+storage sized to that range, and on the ISP12160 a range that would
+wrap is refused instead.
 
-The register contract is driver-sourced -- no vendor programming
-manual for this part exists. The Origami project tree's ISP1040
-datasheet records the cross-check (Linux qla1280 against NetBSD isp
-for the map, OpenBSD 7.9 qlw for behavior); no vendor or driver code
-is reproduced.
+The register contract is driver-sourced for both parts -- no vendor
+programming manual for either exists. The Origami project tree carries
+a datasheet per part recording the cross-check: Linux qla1280 against
+NetBSD isp for the map, with OpenBSD 7.9 qlw for ISP1040 behavior and
+a clean-room review of the selected IRIX guest for the ISP12160. No
+vendor or driver code is reproduced.
 
 Identity and revisions
 ======================
@@ -75,16 +79,18 @@ the ISP1080 family's four-way select, whether a RAM command wraps at
 the end of controller RAM or is rejected instead, whether a mailbox
 submission arriving while the previous result is still held overwrites
 that result or is refused, whether the A64 RAM load command ``0x0009``
-is in the part's mailbox set, and the three about-firmware words
+is in the part's mailbox set, whether the three abort mailboxes
+``0x0015``-``0x0017`` are, and the three about-firmware words
 ``0x0008`` returns. The ISP1040 answers PCI identity ``0x1020``,
 revision ``0x05``, one channel, a revision through bus configuration 0,
 the two-way bank, wrapping RAM, an overwritten mailbox result, no A64
-RAM load, and firmware version 1.0.0. The ISP12160 answers PCI identity
-``0x1216``, revision ``0x06``, two channels, no revision through bus
-configuration 0, the four-way bank, non-wrapping RAM, a refused mailbox
-submission, the A64 RAM load command, and firmware version 10.4.0,
-matching the selected IRIX ISP12160 program. Vendor identity ``0x1077``
-and the SCSI storage class are common to both.
+RAM load, no abort mailboxes, and firmware version 1.0.0. The ISP12160
+answers PCI identity ``0x1216``, revision ``0x06``, two channels, no
+revision through bus configuration 0, the four-way bank, non-wrapping
+RAM, a refused mailbox submission, the A64 RAM load command, the abort
+mailboxes, and firmware version 10.4.0, matching the selected IRIX
+ISP12160 program. Vendor identity ``0x1077`` and the SCSI storage class
+are common to both.
 
 Bus configuration 1 bits 9 and 8 are the ISP1080 family's bank
 selector: value 0 picks the RISC bank, matching the ISP1040's own bank
@@ -133,6 +139,19 @@ DMA read the fabric refuses is rejected with host interface error
 committed prefix would make the guest's own checksum blame the image
 for bytes the model invented rather than bytes the guest sent.
 
+The two parts move those words in different cycles. The ISP1040 has a
+16-bit data path and runs one cycle per word in both directions; the
+ISP12160 moves the whole block in a single transfer. The distinction is
+kept rather than collapsed onto one width because the width a part
+transfers in belongs to the part. The fabric between the adapter and
+memory does state its byte-lane correction per access size, but at the
+alignments a RAM transfer uses, the two decompositions were measured to
+deliver the same bytes; nothing observed so far tells them apart from
+the guest's side. A dump the fabric refuses answers the same host
+interface error ``0x4002`` a refused load answers: told the dump
+completed, a guest would read its image back out of memory the adapter
+never wrote and take whatever was already there.
+
 A mailbox result and its pending interrupt persist until the guest
 acknowledges, in either order, by clearing the semaphore and issuing
 the RISC-interrupt-clear host command. On the ISP1040 a second
@@ -142,12 +161,15 @@ guest error, and the held result is left in place, so a command's
 answer cannot be lost under a second command the guest had no business
 sending before acknowledging the first.
 
-The branch implements four recovery mailbox commands: command abort
-``0x0015``, abort device ``0x0016``, target reset ``0x0017``, and bus
-reset ``0x0018``. Command abort takes the channel in mailbox 1 bit 15,
-the target and LUN in the rest of mailbox 1, and the handle split
-across mailboxes 2 and 3, and cancels the one outstanding command
-identified by that handle on that channel, target and LUN. Abort
+Four recovery mailbox commands are implemented, three of them on the
+ISP12160 alone. Command abort ``0x0015``, abort device ``0x0016`` and
+target reset ``0x0017`` are not in the ISP1040's mailbox set and answer
+invalid command ``0x4001`` there; the ISP1040's one recovery command is
+bus reset ``0x0018``, which both parts carry. Command abort takes the
+channel in mailbox 1 bit 15, the target and LUN in the rest of mailbox
+1, and the handle split across mailboxes 2 and 3, and cancels the one
+outstanding command identified by that handle on that channel, target
+and LUN. Abort
 device takes the same channel, target and LUN selector with mailboxes
 2 and 3 zero, and cancels every outstanding request for that LUN.
 Target reset takes the channel and target packed into mailbox 1's
@@ -160,13 +182,24 @@ completion value distinct from the mailbox result the recovery command
 itself returns: command abort and abort device retire their victims
 with completion ``0x0005``; target reset and bus reset retire theirs
 with completion ``0x0004``; state flags are zero either way, since no
-further phase was reached after the cancellation. Command abort answers
-command error ``0x4005`` for a handle that is unknown or does not match
-the request found under that handle's channel, target and LUN, and
-touches nothing. All four commands answer parameter error ``0x4006``
-for a channel selector at or beyond the part's channel count. Abort
+further phase was reached after the cancellation. Bus reset does this
+on the ISP1040 too, where it is the only recovery command there is: a
+request outstanding when the bus goes down is retired ``0x0004``
+rather than vanishing. Command abort answers command error ``0x4005``
+for a handle that is unknown or does not match the request found under
+that handle's channel, target and LUN, and touches nothing. Abort
 device completes ``0x4000`` when nothing is outstanding for the
 selected LUN.
+
+All four commands answer parameter error ``0x4006`` for a channel
+selector at or beyond the part's channel count, and only bus reset can
+reach that answer today: its channel number is a whole mailbox, so a
+guest can name a bus that does not exist. The three abort commands take
+their channel from one selector bit, which on the only part that
+carries them names one of two channels and can never name a third, and
+the part with a single channel does not carry the commands at all. The
+check is there for a part with more channels than a selector bit can
+name, not because either of these two reaches it.
 
 The branch carries the ISP12160's additional state in a vmstate
 subsection, ``qlogic-isp/isp12160``, needed only when the part is
@@ -286,10 +319,14 @@ hardware.
 Reset and migration
 ===================
 
-Power-on, guest soft reset (a trigger bit the guest polls to
-completion) and the bus-reset mailbox command all land on one reset
-state, and both guest-visible resets cancel in-flight commands
-through the SCSI core. Reset values other than the signature are
+Power-on and the guest's soft reset -- a trigger bit the guest polls
+to completion -- land on one reset state, and both cancel in-flight
+commands silently through the SCSI core, since the same reset clears
+the rings a completion would have been posted to. The bus-reset
+mailbox command is not one of them: it resets the named channel's bus
+and leaves chip state standing, and every request outstanding on that
+bus is retired through the response ring with completion ``0x0004``
+before the bus goes down. Reset values other than the signature are
 zero under the standard for an unconfirmed value: no driver source
 contradicts them.
 
