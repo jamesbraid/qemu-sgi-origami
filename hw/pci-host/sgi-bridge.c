@@ -556,10 +556,13 @@ static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
     return !((s->self_ordered_slots | s->byte_lane_exempt) & (1u << slot));
 }
 
-/* Only the low two bits move: lanes are defined within one word. */
+/*
+ * Only the low two bits move: lanes are defined within one word. The mask
+ * is address-wide because the DMA path passes whole fabric addresses.
+ */
 static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 {
-    return (offset & ~3u) | ((offset & 3u) ^ (4u - size));
+    return (offset & ~(hwaddr)3) | ((offset & 3u) ^ (4u - size));
 }
 
 
