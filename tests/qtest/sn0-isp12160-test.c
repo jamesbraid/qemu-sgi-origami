@@ -1046,9 +1046,20 @@ static void test_submission_while_locked_is_ignored(const void *data)
 #define ISP_STATUS_OFF_HANDLE       4
 #define ISP_STATUS_OFF_SCSI_STATUS  8
 #define ISP_STATUS_OFF_COMPLETION   10
+#define ISP_STATUS_OFF_STATE_FLAGS  12
+#define ISP_STATUS_OFF_SENSE_LEN    18
+#define ISP_STATUS_OFF_RESID        20
+#define ISP_STATUS_OFF_SENSE_DATA   32
+#define ISP_STATUS_SENSE_MAX        32
 
 #define ISP_IOCB_COMPLETE           0x0000
 #define ISP_IOCB_INCOMPLETE         0x0001
+#define ISP_IOCB_DATA_UNDERRUN      0x0015
+
+/* One bit per SCSI phase the command reached. */
+#define ISP_STATE_FLAG_GOT_BUS      0x0100
+#define ISP_STATE_FLAG_GOT_STATUS   0x1000
+#define ISP_STATE_FLAG_GOT_SENSE    0x2000
 
 /* CHECK CONDITION, with the bit that says the entry carries sense. */
 #define ISP_SCSI_STATUS_CHECK_CONDITION 0x0202
@@ -1069,6 +1080,8 @@ static void test_submission_while_locked_is_ignored(const void *data)
 /* Both disks sit at the same target number, one on each channel. */
 #define DISK_TARGET             1
 #define EMPTY_TARGET            5
+/* A second empty target, so the answer is not one target number's. */
+#define ABSENT_TARGET           6
 
 #define SECTOR_BYTES            512
 #define DISK_BYTES              (1024 * 1024)
@@ -1265,15 +1278,15 @@ typedef struct RingSeg {
 } RingSeg;
 
 /*
- * One A64 command at the named slot. Segments past the two the command
- * entry holds spill into continuation entries in the slots that follow,
- * wrapping to slot zero the way a real ring does, and the whole chain is
- * published with one write of the request-in cursor.
+ * One A64 command written into the named slot, without publishing it.
+ * Segments past the two the command entry holds spill into continuation
+ * entries in the slots that follow, wrapping to slot zero the way a real
+ * ring does.
  */
-static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
-                       unsigned channel, unsigned target, unsigned lun,
-                       const uint8_t *cdb, unsigned cdb_len, uint16_t control,
-                       const RingSeg *segs, unsigned nsegs)
+static void place_a64(QTestState *qts, uint16_t slot, uint32_t handle,
+                      unsigned channel, unsigned target, unsigned lun,
+                      const uint8_t *cdb, unsigned cdb_len, uint16_t control,
+                      const RingSeg *segs, unsigned nsegs)
 {
     uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
     unsigned placed = 0;
@@ -1321,8 +1334,23 @@ static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
     }
 
     ring.rqst_next = (slot + count) % ring.rqst_len;
-    /* The entries are all in place; this write is what runs them. */
+}
+
+/* The entries are all in place; this write is what runs them. */
+static void publish_requests(QTestState *qts)
+{
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, ring.rqst_next);
+}
+
+/* One command placed and published, which is what most tests want. */
+static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
+                       unsigned channel, unsigned target, unsigned lun,
+                       const uint8_t *cdb, unsigned cdb_len, uint16_t control,
+                       const RingSeg *segs, unsigned nsegs)
+{
+    place_a64(qts, slot, handle, channel, target, lun, cdb, cdb_len, control,
+              segs, nsegs);
+    publish_requests(qts);
 }
 
 /*
@@ -1834,6 +1862,228 @@ static void test_cursor_roles_are_distinct(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A one-sector read into descriptors describing twice that much. The
+ * command asks for 512 bytes, so the rest of the described memory has to
+ * come back as the test left it and the entry has to say how many of the
+ * described bytes went unused. Padding the transfer instead would leave
+ * a driver believing a full buffer it never received.
+ */
+#define UNDERRUN_DESCRIBED  (2 * SECTOR_BYTES)
+
+static void test_underrun_reports_residual_and_leaves_sentinels(
+    const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    const RingSeg segs[2] = {
+        { DIRECT64(BUF_PHYS), SECTOR_BYTES },
+        { DIRECT64(BUF_PHYS + SECTOR_BYTES), SECTOR_BYTES },
+    };
+    uint8_t cdb[10] = { SCSI_READ_10 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t region[UNDERRUN_DESCRIBED], want[UNDERRUN_DESCRIBED];
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
+
+    /*
+     * The disk's second sector holds a pattern rather than more of the
+     * first sector's fill, so a transfer that ran on past the command's
+     * length is a mismatch here and not an accidental match.
+     */
+    memset(want, WRAP_SENTINEL, sizeof(want));
+    memset(want, DISK0_SECTOR0_FILL, SECTOR_BYTES);
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, sizeof(want));
+
+    put_lba10(cdb, 0, 1);
+    submit_a64(qts, ring.rqst_next, 0x00000081, 0, DISK_TARGET, 0, cdb,
+               sizeof(cdb), ISP_REQ_CONTROL_DATA_IN, segs, ARRAY_SIZE(segs));
+    wait_status(qts, 0x00000081, status);
+
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_DATA_UNDERRUN);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==, SECTOR_BYTES);
+
+    qtest_memread(qts, BUF_PHYS, region, sizeof(region));
+    normalise_words(region, sizeof(region));
+    g_assert_cmpmem(region, sizeof(region), want, sizeof(want));
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/* Far past the end of a one-megabyte disk. */
+#define LBA_BEYOND_DISK             0x7fffffffu
+
+/* Fixed-format sense: eighteen bytes, the key in byte 2's low nibble. */
+#define SENSE_FIXED_BYTES           18
+#define SENSE_KEY_MASK              0x0f
+#define SENSE_KEY_ILLEGAL_REQUEST   0x05
+
+/* What the response ring holds before the adapter writes any of it. */
+#define RESP_SENTINEL               0xee
+
+/*
+ * A read the target refuses. The transport did its work, so the entry
+ * has to carry the target's own status and its sense bytes rather than
+ * an empty failure: a driver that cannot see ILLEGAL REQUEST here has no
+ * way to tell a bad command from a broken disk. The sense area is 32
+ * bytes at 0x20 and the entry ends at 0x40, so a shorter count must not
+ * leave the adapter writing past the slot it was given.
+ */
+static void test_check_condition_carries_real_sense(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    const RingSeg seg = { DIRECT64(BUF_PHYS), SECTOR_BYTES };
+    uint8_t cdb[10] = { SCSI_READ_10 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t past[ISP_QUEUE_ENTRY_SIZE], untouched[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t sense_len, state;
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, RESP_SENTINEL,
+                 ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    memset(untouched, RESP_SENTINEL, sizeof(untouched));
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    /* Slot 0 takes the power-on unit attention, so this read lands in 1. */
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
+
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, SECTOR_BYTES);
+    put_lba10(cdb, LBA_BEYOND_DISK, 1);
+    submit_a64(qts, ring.rqst_next, 0x00000091, 0, DISK_TARGET, 0, cdb,
+               sizeof(cdb), ISP_REQ_CONTROL_DATA_IN, &seg, 1);
+    wait_status(qts, 0x00000091, status);
+
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==,
+                    ISP_SCSI_STATUS_CHECK_CONDITION);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+
+    state = get16le(status + ISP_STATUS_OFF_STATE_FLAGS);
+    g_assert_cmphex(state & ISP_STATE_FLAG_GOT_STATUS, ==,
+                    ISP_STATE_FLAG_GOT_STATUS);
+    g_assert_cmphex(state & ISP_STATE_FLAG_GOT_SENSE, ==,
+                    ISP_STATE_FLAG_GOT_SENSE);
+
+    sense_len = get16le(status + ISP_STATUS_OFF_SENSE_LEN);
+    g_assert_cmpuint(sense_len, >=, SENSE_FIXED_BYTES);
+    g_assert_cmpuint(sense_len, <=, ISP_STATUS_SENSE_MAX);
+    g_assert_cmphex(status[ISP_STATUS_OFF_SENSE_DATA + 2] & SENSE_KEY_MASK,
+                    ==, SENSE_KEY_ILLEGAL_REQUEST);
+
+    /* The slot after this one still holds what the test put there. */
+    qtest_memread(qts, ring_phys(ring.resp_iova) + 2 * ISP_QUEUE_ENTRY_SIZE,
+                  past, sizeof(past));
+    g_assert_cmpmem(past, sizeof(past), untouched, sizeof(untouched));
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * Nothing sits at this target on either channel. Both answers say the
+ * command never got past the bus, so a driver retries elsewhere instead
+ * of waiting on a device that is not there, and the handle comes back so
+ * it knows which command it is retiring.
+ */
+static void test_missing_target_on_each_channel(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
+    const uint32_t handles[2] = { 0x00000031, 0x00000032 };
+    unsigned channel;
+
+    aim_window_at_memory_bar(qts);
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    for (channel = 0; channel < 2; channel++) {
+        uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+        submit_a64(qts, ring.rqst_next, handles[channel], channel,
+                   ABSENT_TARGET, 0, cdb, sizeof(cdb), 0, NULL, 0);
+        /* wait_status() refuses an entry carrying any other handle. */
+        wait_status(qts, handles[channel], status);
+
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                        ISP_IOCB_INCOMPLETE);
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
+                        ISP_STATE_FLAG_GOT_BUS);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A refused command on one channel beside a good one on the other, both
+ * published together. The failure has to stay on its own channel: the
+ * other command's payload arrives whole, and the refused command's own
+ * medium is left as it was.
+ */
+static void test_a_failure_on_one_channel_leaves_the_other_alone(
+    const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    const RingSeg bad_seg = { DIRECT64(BUF_PHYS), SECTOR_BYTES };
+    const RingSeg good_seg = { DIRECT64(BUF_PHYS + SECTOR_BYTES),
+                               SECTOR_BYTES };
+    uint8_t bad_cdb[10] = { SCSI_READ_10 };
+    uint8_t good_cdb[10] = { SCSI_READ_10 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t payload[SECTOR_BYTES], sentinels[SECTOR_BYTES];
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x000000a1);
+
+    memset(sentinels, WRAP_SENTINEL, sizeof(sentinels));
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, 2 * SECTOR_BYTES);
+
+    put_lba10(bad_cdb, LBA_BEYOND_DISK, 1);
+    put_lba10(good_cdb, 0, 1);
+    place_a64(qts, ring.rqst_next, 0x000000b1, 1, DISK_TARGET, 0, bad_cdb,
+              sizeof(bad_cdb), ISP_REQ_CONTROL_DATA_IN, &bad_seg, 1);
+    place_a64(qts, ring.rqst_next, 0x000000b0, 0, DISK_TARGET, 0, good_cdb,
+              sizeof(good_cdb), ISP_REQ_CONTROL_DATA_IN, &good_seg, 1);
+    publish_requests(qts);
+
+    /* The refused command needs no medium, so it retires first. */
+    wait_status(qts, 0x000000b1, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==,
+                    ISP_SCSI_STATUS_CHECK_CONDITION);
+    qtest_memread(qts, BUF_PHYS, payload, sizeof(payload));
+    g_assert_cmpmem(payload, sizeof(payload), sentinels, sizeof(sentinels));
+
+    wait_status(qts, 0x000000b0, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    qtest_memread(qts, BUF_PHYS + SECTOR_BYTES, payload, sizeof(payload));
+    normalise_words(payload, sizeof(payload));
+    expect_sector(payload, DISK0_SECTOR0_FILL);
+
+    /* Channel 1's own medium is where it was before the refusal. */
+    read_sector(qts, 1, DISK_TARGET, 0, 0x000000b2, 0, BUF_PHYS, payload);
+    expect_sector(payload, DISK1_SECTOR0_FILL);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1902,6 +2152,16 @@ int main(int argc, char **argv)
                         NULL, test_inquiry_real_payload_on_both_channels);
     qtest_add_data_func("sn0/isp12160/cursor-roles-are-distinct", NULL,
                         test_cursor_roles_are_distinct);
+    qtest_add_data_func(
+        "sn0/isp12160/underrun-reports-residual-and-leaves-sentinels", NULL,
+        test_underrun_reports_residual_and_leaves_sentinels);
+    qtest_add_data_func("sn0/isp12160/check-condition-carries-real-sense",
+                        NULL, test_check_condition_carries_real_sense);
+    qtest_add_data_func("sn0/isp12160/missing-target-on-each-channel", NULL,
+                        test_missing_target_on_each_channel);
+    qtest_add_data_func(
+        "sn0/isp12160/a-failure-on-one-channel-leaves-the-other-alone", NULL,
+        test_a_failure_on_one_channel_leaves_the_other_alone);
 
     return g_test_run();
 }
