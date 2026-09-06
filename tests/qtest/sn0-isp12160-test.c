@@ -623,6 +623,9 @@ static void test_ram_word_round_trip_two_addresses(const void *data)
 #define A64_LOAD_BASE       0x1000
 #define A64_SENTINEL        0x7e7e
 
+/* One past the last word of the array, which is where a span may end. */
+#define ISP_RAM_WORDS       0x10000
+
 static const uint16_t a64_image[] = {
     0x1234, 0xabcd, 0x5678, 0x9aef, 0x0d71, 0xb3c5, 0x2f68, 0x4a97
 };
@@ -693,6 +696,40 @@ static void test_a64_ram_load_rejects_end_crossing(const void *data)
 
     g_assert_cmphex(isp_read_ram_word(qts, 0x0000), ==, A64_SENTINEL);
     g_assert_cmphex(isp_read_ram_word(qts, 0xfff0), ==, A64_SENTINEL);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The other side of the same edge: a span whose last word is the array's
+ * last word is a legitimate load, and the comparison that refuses the
+ * span above must not refuse this one. Reading the final word back is what
+ * separates an accepted request from a copy that stopped a word short.
+ */
+static void test_a64_ram_load_reaches_the_last_word(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    const uint16_t base = ISP_RAM_WORDS - ARRAY_SIZE(a64_image);
+    uint8_t page[ARRAY_SIZE(a64_image) * 2];
+    unsigned i;
+
+    aim_window_at_memory_bar(qts);
+    qtest_memset(qts, TARGET_PAGE, 0, PAGE_SIZE_4K);
+
+    for (i = 0; i < ARRAY_SIZE(a64_image); i++) {
+        put16le(page + i * 2, a64_image[i]);
+    }
+    normalise_words(page, sizeof(page));
+    qtest_memwrite(qts, TARGET_PAGE, page, sizeof(page));
+
+    g_assert_cmphex(isp_ram_load_a64(qts, base, DIRECT64(TARGET_PAGE),
+                                     ARRAY_SIZE(a64_image)), ==,
+                    ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    for (i = 0; i < ARRAY_SIZE(a64_image); i++) {
+        g_assert_cmphex(isp_read_ram_word(qts, base + i), ==, a64_image[i]);
+    }
 
     qtest_quit(qts);
 }
@@ -1777,6 +1814,8 @@ int main(int argc, char **argv)
                         NULL, test_a64_ram_load_through_translated_dma);
     qtest_add_data_func("sn0/isp12160/a64-ram-load-rejects-end-crossing",
                         NULL, test_a64_ram_load_rejects_end_crossing);
+    qtest_add_data_func("sn0/isp12160/a64-ram-load-reaches-the-last-word",
+                        NULL, test_a64_ram_load_reaches_the_last_word);
     qtest_add_data_func("sn0/isp12160/a64-ram-load-failed-dma-commits-nothing",
                         NULL, test_a64_ram_load_failed_dma_commits_nothing);
     qtest_add_data_func(
