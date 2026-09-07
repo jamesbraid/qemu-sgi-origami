@@ -103,6 +103,14 @@ static void mips_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     qemu_fprintf(f, "CP0 Status  0x%08x Cause   0x%08x EPC    0x"
                  TARGET_FMT_lx "\n",
                  env->CP0_Status, env->CP0_Cause, env->CP0_EPC);
+    qemu_fprintf(f, "    EntryHi 0x" TARGET_FMT_lx " ASID 0x%02x BadVAddr 0x"
+                 TARGET_FMT_lx "\n",
+                 env->CP0_EntryHi,
+                 (uint32_t)(env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask),
+                 env->CP0_BadVAddr);
+    qemu_fprintf(f, "    ErrorEPC 0x" TARGET_FMT_lx " Index 0x%08x Wired 0x%08x"
+                 "\n", env->CP0_ErrorEPC, (uint32_t)env->CP0_Index,
+                 (uint32_t)env->CP0_Wired);
     qemu_fprintf(f, "    Config0 0x%08x Config1 0x%08x LLAddr 0x%016"
                  PRIx64 "\n",
                  env->CP0_Config0, env->CP0_Config1, env->CP0_LLAddr);

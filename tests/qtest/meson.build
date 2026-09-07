@@ -308,7 +308,8 @@ qtests_mips64 = \
                                                    'sn0-ds1685-test',
                                                    'sn0-debug-test',
                                                    'sn0-fabric-test',
-                                                   'sn0-qtest-cpu-test'] : []) + \
+                                                   'sn0-qtest-cpu-test',
+                                                   'sn0-cpu-registers-test'] : []) + \
   sn1_xbridge_qtests
 
 qtests_mips64el = qtests_mips
