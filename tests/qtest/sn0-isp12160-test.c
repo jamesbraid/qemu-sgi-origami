@@ -2806,6 +2806,67 @@ static void test_retired_handle_is_reusable(const void *data)
     disks_remove(&disks);
 }
 
+/* Three times the throttle period, with margin past the old read's own. */
+#define OLD_READ_DEADLINE_US    (1500 * 1000)
+
+/*
+ * The old read on this handle would have completed about half a second
+ * after it was placed. Its handle is reused before that moment; after it
+ * has passed, only the replacement's entry may exist.
+ */
+static void test_reused_handle_outlives_the_old_read_deadline(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = recovery_start(&disks);
+    const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x65 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t before[SECTOR_BYTES];
+    uint8_t after[SECTOR_BYTES];
+
+    qtest_memset(qts, BUF_PHYS + SECTOR_BYTES, WRAP_SENTINEL, SECTOR_BYTES);
+    place_read(qts, 0x65, 1, BUF_PHYS);
+    publish_requests(qts);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+    g_assert_cmphex(wait_next_status(qts, status), ==, 0x65);
+    expect_retired(status, ISP_IOCB_ABORTED);
+
+    /*
+     * The read already issued to the block layer completes into this
+     * buffer before scsi_req_cancel() returns -- before the abort
+     * mailbox call above even completes -- so that transfer is already
+     * done by here. Snapshot it now: the guard's real property is that
+     * nothing lands here after this point, not that nothing ever did.
+     */
+    qtest_memread(qts, BUF_PHYS, before, sizeof(before));
+
+    /* The replacement, on the other channel so its payload tells them apart. */
+    place_read(qts, 0x65, 0, BUF_PHYS + SECTOR_BYTES);
+    publish_requests(qts);
+
+    /* Past the cancelled read's own completion time, with margin. */
+    g_usleep(OLD_READ_DEADLINE_US);
+
+    g_assert_cmphex(wait_next_status(qts, status), ==, 0x65);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    expect_survivor_payload(qts, BUF_PHYS + SECTOR_BYTES, DISK0_SECTOR0_FILL);
+
+    /*
+     * The old buffer's one settled transfer is still all that is there:
+     * nothing wrote to it after the snapshot above, in particular not a
+     * second, late delivery of the read the abort was supposed to stop.
+     */
+    qtest_memread(qts, BUF_PHYS, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    expect_no_further_status(qts);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
 /*
  * Migration. Everything the guest can still see after the stream is
  * replayed has to come back, and the two banks and the per-channel reset
@@ -3486,6 +3547,9 @@ int main(int argc, char **argv)
                         NULL, test_natural_completion_racing_an_abort);
     qtest_add_data_func("sn0/isp12160/retired-handle-is-reusable", NULL,
                         test_retired_handle_is_reusable);
+    qtest_add_data_func(
+        "sn0/isp12160/reused-handle-outlives-the-old-read-deadline", NULL,
+        test_reused_handle_outlives_the_old_read_deadline);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
     qtest_add_data_func(

@@ -203,6 +203,14 @@ nothing. The model returns command error ``0x4005`` there, but the
 datasheet leaves the exact code open, so the qtests pin only that the
 answer is not completion and that nothing is retired. Abort device
 completes ``0x4000`` when nothing is outstanding for the selected LUN.
+Retirement completes the backend cancellation before its entry is
+posted, so no callback for a retired handle can arrive after a guest
+reuses that handle; the wrapper is detached before it is freed, and a
+late callback for a detached request is ignored. A transfer already
+issued to the backend when the abort arrives may still complete into
+the guest's buffer before the abort mailbox call itself completes --
+the model's cancellation is synchronous, so nothing lands there
+afterward.
 
 All four commands answer parameter error ``0x4006`` for a channel
 selector at or beyond the part's channel count, and only bus reset can
