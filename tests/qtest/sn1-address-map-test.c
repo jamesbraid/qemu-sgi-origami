@@ -118,6 +118,53 @@
 #define IO8_USB_HCCA_IOVA 0x40000000
 #define IO8_USB_HCCA_FRAME 0x80
 
+#define IO8_IOC3_WIDGET 0xf
+#define IO8_IOC3_SLOT 4
+#define IO8_IOC3_CFG (XTALK_WIDGET(IO8_IOC3_WIDGET) + 0x20000 + \
+                     IO8_IOC3_SLOT * 0x1000)
+#define IO8_IOC3_WINDOW (XTALK_WIDGET(IO8_IOC3_WIDGET) + 0x800000)
+#define IO8_IOC3_BAR 0x10000000
+#define IO8_IOC3_SERIAL_A 0x20178
+#define IO8_IOC3_SERIAL_B 0x20170
+#define IO8_IOC3_SERIAL_SCRATCH 7
+#define IO8_IOC3_KBC_CONTROL 0x09c
+#define IO8_IOC3_INT_STATUS 0x01c
+#define IO8_IOC3_INT_ENABLE_SET 0x020
+#define IO8_IOC3_MICROLAN_CONTROL 0x030
+#define IO8_IOC3_PIN_CONTROL_SET 0x034
+#define IO8_IOC3_ENET_MAC_CONTROL 0x0f0
+#define IO8_IOC3_ENET_INT_STATUS 0x0f4
+#define IO8_IOC3_ENET_INT_ENABLE 0x0f8
+#define IO8_IOC3_ENET_RX_CONTROL 0x0fc
+#define IO8_IOC3_ENET_RX_RING_HI 0x100
+#define IO8_IOC3_ENET_RX_RING_LO 0x104
+#define IO8_IOC3_ENET_RX_CONSUME 0x10c
+#define IO8_IOC3_ENET_RX_PRODUCE 0x110
+#define IO8_IOC3_ENET_RX_TIMER 0x114
+#define IO8_IOC3_PARALLEL_ECR 0x2015a
+#define IO8_IOC3_BYTEBUS_DEV0 0x80000
+#define IO8_IOC3_RTC_CONTROL (IO8_IOC3_BYTEBUS_DEV0 + 0x7ff8)
+#define IO8_IOC3_RTC_SECONDS (IO8_IOC3_BYTEBUS_DEV0 + 0x7ff9)
+#define IO8_IOC3_RTC_YEAR (IO8_IOC3_BYTEBUS_DEV0 + 0x7fff)
+#define IO8_IOC3_RTC_READ 0x40
+#define IO8_IOC3_RTC_WRITE 0x80
+
+#define IOC3_MICROLAN_LEVEL (1U << 0)
+#define IOC3_PIN_MICROLAN_ENABLE (1U << 21)
+#define IOC3_MICROLAN_RESET_SLOT ((500U << 10) | (65U << 2))
+#define IOC3_INT_SERIAL_A (1U << 6)
+#define IOC3_ENET_MCR_PROMISC (1U << 1)
+#define IOC3_ENET_MCR_RX_DMA_EN (1U << 15)
+#define IOC3_ENET_MCR_RX_EN (1U << 16)
+#define IOC3_ENET_MCR_RX_OFFSET(halfwords) ((uint32_t)(halfwords) << 3)
+#define IOC3_ENET_INT_RX_TIMER (1U << 0)
+#define IOC3_ENET_RX_PRODUCE_ARM (1U << 31)
+#define IOC3_ENET_RX_HEADER_VALID (1U << 31)
+#define IOC3_RX_RING_PHYS 0x200000
+#define IOC3_RX_BUFFER_PHYS 0x201000
+#define IOC3_RX_RING_IOVA 0x40000000
+#define IOC3_RX_BUFFER_IOVA 0x40001000
+
 #define XBRIDGE_ATE0 0x10000
 #define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
 #define XBRIDGE_DEVICE_MEMORY (1U << 12)
@@ -134,6 +181,8 @@
 #define XBRIDGE_INT_LOWER 0x38
 #define XBRIDGE_INT_HOST(n) (0x130 + (n) * 8)
 #define XBRIDGE_USB_PIN 5
+#define XBRIDGE_IOC3_SUPERIO_PIN 0
+#define XBRIDGE_IOC3_ETH_PIN 4
 
 #define PI_PENDING_MODIFY 0x90
 #define PI_PENDING_0 0x98
@@ -815,6 +864,55 @@ static void io8_usb_writel(QTestState *qts, unsigned offset, uint32_t value)
     qtest_memwrite(qts, IO8_USB_WINDOW + offset, bytes, sizeof(bytes));
 }
 
+static uint32_t io8_ioc3_config_readl(QTestState *qts, unsigned offset)
+{
+    return qtest_readl(qts, IO8_IOC3_CFG + offset);
+}
+
+static void io8_ioc3_config_writel(QTestState *qts, unsigned offset,
+                                   uint32_t value)
+{
+    qtest_writel(qts, IO8_IOC3_CFG + offset, value);
+}
+
+static uint32_t io8_ioc3_readl(QTestState *qts, unsigned offset)
+{
+    uint8_t bytes[4];
+
+    qtest_memread(qts, IO8_IOC3_WINDOW + offset, bytes, sizeof(bytes));
+    return ldl_le_p(bytes);
+}
+
+static void io8_ioc3_writel(QTestState *qts, unsigned offset, uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_le_p(bytes, value);
+    qtest_memwrite(qts, IO8_IOC3_WINDOW + offset, bytes, sizeof(bytes));
+}
+
+static void io8_ioc3_attach(QTestState *qts)
+{
+    io8_ioc3_config_writel(qts, 0x10, IO8_IOC3_BAR);
+    io8_ioc3_config_writel(qts, 0x04, 0x0006);
+    xtalk_reg_write(qts, IO8_IOC3_WIDGET,
+                    XBRIDGE_DEVICE(IO8_IOC3_SLOT),
+                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
+                    (IO8_IOC3_BAR >> 20));
+}
+
+static void io8_route_interrupt(QTestState *qts, unsigned int pin,
+                                unsigned int pending_bit)
+{
+    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_UPPER,
+                    XBRIDGE_HOST_PORT << 16);
+    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_LOWER,
+                    PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_HOST(pin),
+                    (1U << 17) | pending_bit);
+    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_ENABLE, 1U << pin);
+}
+
 static uint16_t io8_usb_hcca_frame(QTestState *qts)
 {
     uint8_t bytes[2];
@@ -961,6 +1059,331 @@ static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
                                   XBRIDGE_ERR_UPPER) &
                     XBRIDGE_PAGE_FAULT, ==, 0);
     qtest_quit(qts);
+}
+
+static void test_io8_ioc3_attachment(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    g_assert_cmphex(io8_ioc3_config_readl(qts, 0x00), ==, 0x000310a9);
+    g_assert_cmphex(io8_ioc3_config_readl(qts, 0x08), ==, 0xff000001);
+    g_assert_cmphex(io8_ioc3_config_readl(qts, 0x2c), ==, 0xffff10a9);
+    g_assert_cmphex((io8_ioc3_config_readl(qts, 0x3c) >> 8) & 0xff, ==, 1);
+
+    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x24000), ==,
+                    0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + 0x100), ==, 0xffffffff);
+
+    io8_ioc3_config_writel(qts, 0x10, UINT32_MAX);
+    g_assert_cmphex(io8_ioc3_config_readl(qts, 0x10), ==, 0xfff00000);
+    io8_ioc3_attach(qts);
+
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A +
+                 IO8_IOC3_SERIAL_SCRATCH, 0x5a);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_B +
+                 IO8_IOC3_SERIAL_SCRATCH, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A +
+                                IO8_IOC3_SERIAL_SCRATCH), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_B +
+                                IO8_IOC3_SERIAL_SCRATCH), ==, 0xa5);
+
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_INT_ENABLE, 1);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_INT_ENABLE), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_PARALLEL_ECR), ==, 1);
+
+    io8_ioc3_writel(qts, IO8_IOC3_KBC_CONTROL, 0xffff);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_KBC_CONTROL), ==, 0);
+    io8_ioc3_writel(qts, IO8_IOC3_PIN_CONTROL_SET,
+                    IOC3_PIN_MICROLAN_ENABLE);
+    io8_ioc3_writel(qts, IO8_IOC3_MICROLAN_CONTROL,
+                    IOC3_MICROLAN_RESET_SLOT);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_MICROLAN_CONTROL) &
+                    IOC3_MICROLAN_LEVEL, ==, IOC3_MICROLAN_LEVEL);
+
+    qtest_quit(qts);
+}
+
+static void test_io8_ioc3_timekeeper(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    io8_ioc3_attach(qts);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_BYTEBUS_DEV0, 0x5a);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL - 1, 0xa5);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL,
+                 IO8_IOC3_RTC_READ);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_BYTEBUS_DEV0), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_RTC_CONTROL - 1), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_RTC_CONTROL), ==,
+                    IO8_IOC3_RTC_READ);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_io8_ioc3_nvram_drive(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-ioc3-nvram-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(path);
+    extra = g_strdup_printf("-drive if=none,id=sgi-nvram0,file=%s,format=raw",
+                            quoted);
+
+    qts = machine_start_with(prom_path, extra);
+    io8_ioc3_attach(qts);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_BYTEBUS_DEV0 + 0x100,
+                 0xc3);
+    qtest_quit(qts);
+
+    qts = machine_start_with(prom_path, extra);
+    io8_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_BYTEBUS_DEV0 + 0x100), ==, 0xc3);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_io8_ioc3_serial_chardevs(const void *data)
+{
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int a[2];
+    int b[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, a), ==, 0);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, b), ==, 0);
+    extra = g_strdup_printf(
+        "-S -serial null "
+        "-chardev socket,id=ioc3-a,fd=%d -serial chardev:ioc3-a "
+        "-chardev socket,id=ioc3-b,fd=%d -serial chardev:ioc3-b",
+        a[1], b[1]);
+    qts = machine_start_with(prom_path, extra);
+    g_assert_cmpint(close(a[1]), ==, 0);
+    g_assert_cmpint(close(b[1]), ==, 0);
+    io8_ioc3_attach(qts);
+
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A, 'A');
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_B, 'B');
+    expect_console_text(a[0], "A");
+    expect_console_text(b[0], "B");
+
+    qtest_quit(qts);
+    g_assert_cmpint(close(a[0]), ==, 0);
+    g_assert_cmpint(close(b[0]), ==, 0);
+}
+
+static void test_io8_ioc3_superio_interrupt(const void *data)
+{
+    const unsigned int pending_bit = 18;
+    const uint64_t pending = UINT64_C(1) << pending_bit;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int sv[2];
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    extra = g_strdup_printf(
+        "-S -serial null -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", sv[1]);
+    qts = machine_start_with(prom_path, extra);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    io8_ioc3_attach(qts);
+    io8_route_interrupt(qts, XBRIDGE_IOC3_SUPERIO_PIN, pending_bit);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) & 1, ==, 0);
+
+    io8_ioc3_writel(qts, IO8_IOC3_INT_ENABLE_SET, IOC3_INT_SERIAL_A);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A + 1, 0x01);
+    g_assert_cmpint(write(sv[0], "S", 1), ==, 1);
+    for (i = 0; i < POLL_TRIES; i++) {
+        if (qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) == pending) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_INT_STATUS) &
+                    IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) & 1, ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    pending);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, pending);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A),
+                    ==, 'S');
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) & 1, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    pending);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, pending_bit);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    qtest_quit(qts);
+    g_assert_cmpint(close(sv[0]), ==, 0);
+}
+
+static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
+{
+    static const uint8_t frame[14] = {
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        0x08, 0x00,
+    };
+    const unsigned int pending_bit = 19;
+    const uint64_t pending = UINT64_C(1) << pending_bit;
+    uint8_t packet[4 + sizeof(frame)];
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int sv[2];
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    extra = g_strdup_printf("-nic socket,fd=%d,id=ioc3-net", sv[1]);
+    qts = machine_start_with(prom_path, extra);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    io8_ioc3_attach(qts);
+    qtest_writeq(qts, XTALK_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0,
+                 IOC3_RX_RING_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+    qtest_writeq(qts, XTALK_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0 + 8,
+                 IOC3_RX_BUFFER_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+    io8_route_interrupt(qts, XBRIDGE_IOC3_ETH_PIN, pending_bit);
+
+    qtest_writel(qts, IOC3_RX_RING_PHYS, 0);
+    qtest_writel(qts, IOC3_RX_RING_PHYS + 4, IOC3_RX_BUFFER_IOVA);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_MAC_CONTROL,
+                    IOC3_ENET_MCR_PROMISC | IOC3_ENET_MCR_RX_DMA_EN |
+                    IOC3_ENET_MCR_RX_EN |
+                    IOC3_ENET_MCR_RX_OFFSET(33));
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_INT_ENABLE,
+                    IOC3_ENET_INT_RX_TIMER);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_RX_RING_HI, 0);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_RX_RING_LO, IOC3_RX_RING_IOVA);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_RX_TIMER, 0);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_RX_CONTROL, 0);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_RX_PRODUCE,
+                    8 | IOC3_ENET_RX_PRODUCE_ARM);
+
+    stl_be_p(packet, sizeof(frame));
+    memcpy(packet + 4, frame, sizeof(frame));
+    g_assert_cmpint(write(sv[0], packet, sizeof(packet)), ==,
+                    (int)sizeof(packet));
+    for (i = 0; i < POLL_TRIES; i++) {
+        if (io8_ioc3_readl(qts, IO8_IOC3_ENET_RX_CONSUME) == 8) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_RX_CONSUME), ==, 8);
+    g_assert_cmphex(qtest_readl(qts, IOC3_RX_BUFFER_PHYS) &
+                    IOC3_ENET_RX_HEADER_VALID, ==,
+                    IOC3_ENET_RX_HEADER_VALID);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_INT_STATUS) &
+                    IOC3_ENET_INT_RX_TIMER, ==, IOC3_ENET_INT_RX_TIMER);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_IOC3_ETH_PIN), ==,
+                    1U << XBRIDGE_IOC3_ETH_PIN);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    pending);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, pending);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+    io8_ioc3_writel(qts, IO8_IOC3_ENET_INT_STATUS,
+                    IOC3_ENET_INT_RX_TIMER);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_IOC3_ETH_PIN), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    pending);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, pending_bit);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    qtest_quit(qts);
+    g_assert_cmpint(close(sv[0]), ==, 0);
+}
+
+static void test_io8_ioc3_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-ioc3-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from;
+    QTestState *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = machine_start_with(
+        prom_path, "-rtc base=2026-08-11T12:30:05,clock=vm");
+    to = machine_start_with(
+        prom_path,
+        "-rtc base=2026-08-11T12:30:05,clock=vm -incoming defer");
+    io8_ioc3_attach(from);
+    io8_ioc3_attach(to);
+
+    qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_BYTEBUS_DEV0 + 0x100,
+                 0xc3);
+    qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL,
+                 IO8_IOC3_RTC_WRITE);
+    qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_SECONDS, 0x45);
+    qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_YEAR, 0x40);
+    qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL, 0);
+    qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL,
+                 IO8_IOC3_RTC_READ);
+    g_assert_cmphex(qtest_readb(from, IO8_IOC3_WINDOW +
+                                IO8_IOC3_RTC_SECONDS), ==, 0x45);
+    g_assert_cmphex(qtest_readb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_YEAR),
+                    ==, 0x40);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    wait_for_migration(to);
+
+    g_assert_cmphex(qtest_readb(to, IO8_IOC3_WINDOW +
+                                IO8_IOC3_BYTEBUS_DEV0 + 0x100), ==, 0xc3);
+    g_assert_cmphex(qtest_readb(to, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL),
+                    ==, IO8_IOC3_RTC_READ);
+    g_assert_cmphex(qtest_readb(to, IO8_IOC3_WINDOW + IO8_IOC3_RTC_SECONDS),
+                    ==, 0x45);
+    g_assert_cmphex(qtest_readb(to, IO8_IOC3_WINDOW + IO8_IOC3_RTC_YEAR),
+                    ==, 0x40);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 static void test_hub_special_register_windows(const void *data)
@@ -1576,6 +1999,20 @@ int main(int argc, char **argv)
                         test_io8_usb_attachment);
     qtest_add_data_func("sn1/address-map/io8-usb-invalid-ate", NULL,
                         test_io8_usb_rejects_invalid_ate_dma);
+    qtest_add_data_func("origin300/ioc3/attachment", NULL,
+                        test_io8_ioc3_attachment);
+    qtest_add_data_func("origin300/ioc3/timekeeper-compatibility", NULL,
+                        test_io8_ioc3_timekeeper);
+    qtest_add_data_func("origin300/ioc3/nvram-drive-persistence", NULL,
+                        test_io8_ioc3_nvram_drive);
+    qtest_add_data_func("origin300/ioc3/serial-chardev-indices", NULL,
+                        test_io8_ioc3_serial_chardevs);
+    qtest_add_data_func("origin300/ioc3/superio-interrupt", NULL,
+                        test_io8_ioc3_superio_interrupt);
+    qtest_add_data_func("origin300/ioc3/ethernet-dma-interrupt", NULL,
+                        test_io8_ioc3_ethernet_dma_interrupt);
+    qtest_add_data_func("origin300/ioc3/identical-build-migration", NULL,
+                        test_io8_ioc3_migration);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,

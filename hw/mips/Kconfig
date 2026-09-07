@@ -61,6 +61,7 @@ config SGI_SN1
     depends on MIPS64 && TARGET_BIG_ENDIAN
     imply TEST_DEVICES
     select SGI_BEDROCK
+    select SGI_IOC3
     select SGI_L1
     select SGI_XBRIDGE
     select USB_OHCI_PCI

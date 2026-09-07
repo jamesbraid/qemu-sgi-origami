@@ -6,6 +6,7 @@
 #include "qemu/datadir.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "chardev/char.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
@@ -13,11 +14,14 @@
 #include "hw/mips/sn1.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-pi.h"
+#include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/pci/pci.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
 #include "system/reset.h"
 #include "system/system.h"
 #include "cpu.h"
@@ -43,6 +47,9 @@
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 #define SN1_XBRIDGE_HEAD_F 0xf
+#define SN1_IO8_IOC3_SLOT 4
+#define SN1_IO8_IOC3_ETH_PIN 4
+#define SN1_IO8_IOC3_SUPERIO_PIN 0
 #define SN1_IO8_USB_SLOT 5
 #define SN1_IO8_USB_PIN 5
 
@@ -301,6 +308,55 @@ static void sn1_create_io8_usb(SN1MachineState *s, MachineState *machine)
                           &error_fatal);
 }
 
+static void sn1_create_io8_ioc3(SN1MachineState *s, MachineState *machine)
+{
+    PCIDevice *ioc3 = pci_new(PCI_DEVFN(SN1_IO8_IOC3_SLOT, 0),
+                              TYPE_SGI_IOC3);
+    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
+    BlockBackend *nvram_blk = nvram_dinfo ?
+        blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
+    Chardev *serial_a = serial_hd(1);
+    Chardev *serial_b = serial_hd(2);
+
+    object_property_add_child(OBJECT(machine), "io8-ioc3", OBJECT(ioc3));
+    if (serial_a) {
+        qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_a);
+    }
+    if (serial_b) {
+        qdev_prop_set_chr(DEVICE(ioc3), "chardev-b", serial_b);
+    }
+    if (parallel_hds[0]) {
+        qdev_prop_set_chr(DEVICE(ioc3), "parallel-chardev",
+                          parallel_hds[0]);
+    }
+    qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", 0xffff);
+    qdev_prop_set_uint32(DEVICE(ioc3), "population",
+                         SGI_IOC3_POPULATION_ETHERNET |
+                         SGI_IOC3_POPULATION_SERIAL_A |
+                         SGI_IOC3_POPULATION_SERIAL_B |
+                         SGI_IOC3_POPULATION_PARALLEL);
+    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
+                        SGI_IOC3_TIMEKEEPER_M48T35);
+    if (nvram_blk) {
+        qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", nvram_blk);
+    }
+
+    qdev_connect_gpio_out_named(
+        s->xbridge, "head-f-pci-intx",
+        SN1_IO8_IOC3_SLOT * PCI_NUM_PINS,
+        qdev_get_gpio_in_named(s->xbridge, "head-f-pin",
+                               SN1_IO8_IOC3_ETH_PIN));
+    pci_realize_and_unref(ioc3,
+                          sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
+                                              SN1_XBRIDGE_HEAD_F),
+                          &error_fatal);
+    pci_set_byte(ioc3->config + PCI_REVISION_ID, SGI_IOC3_REVISION);
+    qdev_connect_gpio_out(
+        DEVICE(ioc3), 0,
+        qdev_get_gpio_in_named(s->xbridge, "head-f-pin",
+                               SN1_IO8_IOC3_SUPERIO_PIN));
+}
+
 static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -340,6 +396,7 @@ static void origin300_init(MachineState *machine)
     }
     sn1_create_cpus(s, machine);
     sn1_create_bedrock(s, machine);
+    sn1_create_io8_ioc3(s, machine);
     sn1_create_io8_usb(s, machine);
 }
 
