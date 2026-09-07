@@ -399,6 +399,8 @@ struct Bcm570xState {
     NICState *nic;
     NICConf conf;
     QEMUBH *rx_flush_bh;
+    bool rx_flush_pending;
+    bool rx_flush_authorized;
 
     /* PCI identity, defaulting to the SGI board; overridable per instance. */
     char *model;
@@ -542,6 +544,24 @@ static void bcm570x_load_station_address(Bcm570xState *s)
     bcm570x_regfile_write(s, BCM570X_MAC_ADDR_0_LOW, lo);
 }
 
+/* Discard frames tied to the old rings and reopen backend delivery. */
+static void bcm570x_reset_rx_queue(Bcm570xState *s)
+{
+    if (s->nic) {
+        NetClientState *nc = qemu_get_queue(s->nic);
+
+        /*
+         * The purge helper first retries the queue. With reset registers that
+         * delivery is refused and sets receive_disabled again before the
+         * packet is purged, so clear the gate explicitly afterwards.
+         */
+        qemu_flush_or_purge_queued_packets(nc, true);
+        nc->receive_disabled = 0;
+    }
+    s->rx_flush_pending = false;
+    s->rx_flush_authorized = false;
+}
+
 /*
  * A global reset (the driver's write of MISC_CFG.RESET_CORE_CLOCKS, by either
  * access path) returns the register file and the on-chip SRAM to their reset
@@ -572,6 +592,7 @@ static void bcm570x_global_reset(Bcm570xState *s)
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
+    bcm570x_reset_rx_queue(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);
@@ -972,23 +993,53 @@ static void bcm570x_rx_coalesce(Bcm570xState *s)
     }
 }
 
+static bool bcm570x_rx_ready(Bcm570xState *s);
+
 /*
- * Release peer-queued receive frames from a bottom half. Posting a standard-
- * ring buffer makes the engine ready to receive, but flushing synchronously
- * from the mailbox write re-enters the receive path inside the driver's own
- * interrupt handler and re-asserts the status block, which the handler then
- * re-polls without bound. Deferring the flush lets the handler finish first.
+ * Release peer-queued receive frames only after the guest re-enables
+ * interrupts. Receive-ready writes can occur while its handler is still
+ * draining the status block; flushing from those writes can publish UPDATED
+ * underneath that handler before the guest executes again. The mailbox write
+ * is the driver's explicit boundary after clearing the previous update.
+ *
+ * The bottom half drains without a timer or per-frame delay. Normal receive
+ * traffic remains immediate, and a backlog runs until the rings fill again.
  */
 static void bcm570x_rx_flush(void *opaque)
 {
     Bcm570xState *s = opaque;
+    uint16_t producer = s->status_rx_prod;
 
+    s->rx_flush_pending = false;
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    if (s->rx_flush_pending && s->status_rx_prod == producer) {
+        /*
+         * The other receive ring may have made the device generally ready
+         * while the queued frame's selected ring remained empty. Preserve the
+         * acknowledgement only when the retry completed nothing; any
+         * completion consumes it so the next handler cannot be re-entered.
+         */
+        s->rx_flush_authorized = true;
+    }
 }
 
-static void bcm570x_schedule_rx_flush(Bcm570xState *s)
+static void bcm570x_defer_rx_flush(Bcm570xState *s)
 {
-    qemu_bh_schedule(s->rx_flush_bh);
+    s->rx_flush_pending = true;
+}
+
+static void bcm570x_retry_rx_flush(Bcm570xState *s)
+{
+    /*
+     * One re-enable authorizes one retry. Keep that authorization while a
+     * ring remains full, then consume it before scheduling so another refusal
+     * during this drain must wait for the next acknowledgement.
+     */
+    if (s->rx_flush_pending && s->rx_flush_authorized &&
+        bcm570x_rx_ready(s)) {
+        s->rx_flush_authorized = false;
+        qemu_bh_schedule(s->rx_flush_bh);
+    }
 }
 
 /*
@@ -1285,15 +1336,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         bcm570x_regfile_write(s, off, val);
         if (val & BCM570X_HCC_MODE_ENABLE) {
             bcm570x_arm_status_tick(s);
-            /*
-             * Enabling the block is the third way the receive path goes from
-             * refusing frames to accepting them, alongside posting buffers and
-             * freeing a return-ring entry. A frame refused before the block was
-             * enabled is still held by the back end, and if the driver enables
-             * the block without going on to ring a doorbell nothing would offer
-             * it again.
-             */
-            bcm570x_schedule_rx_flush(s);
+            bcm570x_retry_rx_flush(s);
         } else {
             timer_del(&s->status_tick_timer);
         }
@@ -1321,6 +1364,10 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         s->irq_masked = (val & 1) != 0;
         if (!(val & 1)) {
             s->irq_pending = false;
+            if (s->rx_flush_pending) {
+                s->rx_flush_authorized = true;
+                bcm570x_retry_rx_flush(s);
+            }
         }
         bcm570x_regfile_write(s, off, val);
         bcm570x_update_irq(s);
@@ -1344,7 +1391,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         }
         bcm570x_regfile_write(s, off, val);
         /* Room where there was none: take anything the peer had waiting. */
-        bcm570x_schedule_rx_flush(s);
+        bcm570x_retry_rx_flush(s);
         return;
     }
     case BCM570X_MBX_RX_STD_PROD_LO: {
@@ -1380,14 +1427,13 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
 
         /*
          * A newly posted buffer may release a frame the peer had queued, but
-         * deliver it from a bottom half rather than synchronously here. A
-         * synchronous receive would re-enter the receive path and re-DMA the
-         * status block -- re-asserting its "updated" bit -- while the driver is
-         * still inside its interrupt handler, which then re-polls that bit
-         * without bound and never returns (the observed bring-up hang). The BH
-         * lets the handler finish and take the buffer on the next interrupt.
+         * only after the interrupt-mailbox re-enable. A synchronous receive
+         * would re-enter the receive path and re-DMA the status block --
+         * re-asserting its "updated" bit -- while the driver is still inside
+         * its interrupt handler, which then re-polls that bit without bound and
+         * never returns (the observed bring-up hang).
          */
-        bcm570x_schedule_rx_flush(s);
+        bcm570x_retry_rx_flush(s);
         return;
     }
     case BCM570X_MBX_RX_CONS0_LO: {
@@ -1413,7 +1459,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
          * worth and then goes quiet for good, which looks like the link dying
          * partway through a transfer.
          */
-        bcm570x_schedule_rx_flush(s);
+        bcm570x_retry_rx_flush(s);
         return;
     }
     case BCM570X_MI_COMM: {
@@ -1654,9 +1700,13 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
 
 static bool bcm570x_can_receive(NetClientState *nc)
 {
-    Bcm570xState *s = qemu_get_nic_opaque(nc);
-
-    return bcm570x_rx_ready(s);
+    /*
+     * Let an offered frame reach bcm570x_receive(), which returns zero and
+     * records the deferred flush when the hardware is not ready. can_receive
+     * is also called speculatively, so recording work here would let an empty
+     * poll consume a later interrupt acknowledgement.
+     */
+    return true;
 }
 
 /*
@@ -1792,6 +1842,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     bool on_jumbo = false;
 
     if (!bcm570x_rx_ready(s)) {
+        bcm570x_defer_rx_flush(s);
         return 0;
     }
     if (!bcm570x_frame_accepted(s, buf, size)) {
@@ -1844,6 +1895,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
 
     if (framelen <= std_size) {
         if (std_prod == s->rx_std_cons) {
+            bcm570x_defer_rx_flush(s);
             return 0;
         }
         std_base = bcm570x_compose_hostaddr(s,
@@ -1852,6 +1904,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         idx = s->rx_std_cons;
     } else if (jumbo_size != 0 && jumbo_base != 0 && framelen <= jumbo_size) {
         if (jumbo_prod == s->rx_jumbo_cons) {
+            bcm570x_defer_rx_flush(s);
             return 0;
         }
         std_base = jumbo_base;
@@ -2135,6 +2188,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
+    bcm570x_reset_rx_queue(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
     timer_del(&s->status_tick_timer);

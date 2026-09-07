@@ -144,6 +144,7 @@
 #define BCM_HCC_STATUSBLK_HI    0x3c38u
 #define BCM_HCC_STATUSBLK_LO    0x3c3cu
 #define BCM_HCC_STATS_TICKS     0x3c28u
+#define BCM_STATUS_TICK_MAX_NS  (250 * 1000 * 1000)
 #define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* receive coalescing: microseconds */
 #define BCM_HCC_TX_COAL_TICKS   0x3c0cu
 #define BCM_HCC_TX_MAX_COAL_BDS 0x3c14u
@@ -2963,6 +2964,7 @@ static void test_receive_waits_for_standard_ring(const void *data)
     g_assert_cmpmem(got, sizeof(got), first, sizeof(first));
 
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     wait_for_rx_prod(&b, 2);
     qtest_memread(b.qts, STD_STALE_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), second, sizeof(second));
@@ -3018,6 +3020,14 @@ static void test_receive_waits_for_jumbo_ring(const void *data)
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
                     first, BCM_JUMBO_FRAME_LEN);
 
+    /*
+     * Re-enable while only the standard ring can take a frame. Retrying the
+     * queued jumbo makes no progress and must preserve this authorization for
+     * the jumbo producer that actually makes its selected ring ready.
+     */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
     bar_writel(&b, BCM_MBX_RX_JUMBO_PROD_LO, 2);
     wait_for_rx_prod(&b, 2);
     qtest_memread(b.qts, JUMBO_STALE_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
@@ -3295,8 +3305,7 @@ static void test_receive_ring_full_recovers(const void *data)
     uint8_t frame[64];
     uint8_t bd[BCM_RXBD_SIZE];
     uint8_t ret[BCM_RXBD_SIZE];
-    unsigned int i, j;
-    bool got;
+    unsigned int i;
 
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(i + 3);
@@ -3333,7 +3342,7 @@ static void test_receive_ring_full_recovers(const void *data)
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, LAP_STD_POSTED);
 
     /* Send a whole ring's worth without ever taking one, so it fills. */
-    for (i = 0; i < LAP_RET_LEN + 4; i++) {
+    for (i = 0; i < LAP_RET_LEN * 2 + 4; i++) {
         net_socket_send_frame(sv[0], frame, sizeof(frame));
     }
     g_usleep(200000);
@@ -3345,32 +3354,57 @@ static void test_receive_ring_full_recovers(const void *data)
                   ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-    /* The driver now takes everything and says so. */
+    /*
+     * Re-enable interrupts before the driver has taken any completions. The
+     * full ring cannot consume the queued frame, but the re-enable authorizes
+     * the next readiness transition to retry it.
+     */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_usleep(100000);
+    qtest_memread(b.qts, RET_RING_PHYS +
+                  (uint64_t)(LAP_RET_LEN - 1) * BCM_RXBD_SIZE,
+                  ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+
+    /*
+     * The driver now takes everything and says so. The earlier re-enable must
+     * authorize this readiness transition to retry immediately; there is no
+     * second interrupt acknowledgement or virtual-clock step.
+     */
     for (i = 0; i < LAP_RET_LEN; i++) {
         qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
                      BCM_RXBD_SIZE);
     }
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, LAP_RET_LEN - 1);
 
-    /* And the card starts delivering again. */
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
-    got = false;
-    for (j = 0; j < 200 && !got; j++) {
-        unsigned int k;
+    /* The retry fills the ring a second time. */
+    wait_for_rx_prod(&b, LAP_RET_LEN - 2);
+    qtest_memread(b.qts, RET_RING_PHYS +
+                  (uint64_t)(LAP_RET_LEN - 2) * BCM_RXBD_SIZE,
+                  ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-        for (k = 0; k < LAP_RET_LEN; k++) {
-            qtest_memread(b.qts, RET_RING_PHYS + (uint64_t)k * BCM_RXBD_SIZE,
-                          ret, sizeof(ret));
-            if (get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
-                got = true;
-                break;
-            }
-        }
-        if (!got) {
-            g_usleep(5000);
-        }
+    /*
+     * That retry consumed its authorization. Freeing the second full ring
+     * before acknowledging its interrupt must not publish another completion
+     * underneath the handler.
+     */
+    for (i = 0; i < LAP_RET_LEN; i++) {
+        qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
+                     BCM_RXBD_SIZE);
     }
-    g_assert_true(got);
+    bar_writel(&b, BCM_MBX_RX_CONS0_LO, LAP_RET_LEN - 2);
+    g_usleep(100000);
+    for (i = 0; i < LAP_RET_LEN; i++) {
+        qtest_memread(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                      ret, sizeof(ret));
+        g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END,
+                        ==, 0);
+    }
+
+    /* The second acknowledgement releases the remaining queued frames. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    wait_for_rx_prod(&b, LAP_RET_LEN - 4);
 
     bcm_close(&b);
     close(sv[0]);
@@ -3378,20 +3412,19 @@ static void test_receive_ring_full_recovers(const void *data)
 
 /*
  * A frame that arrived before the coalescing block was enabled is still owed to
- * the guest. Enabling the block is one of the three transitions from refusing
- * frames to accepting them, and a driver that enables it and then rings no
- * doorbell -- because its buffers were posted already -- would otherwise never
- * be offered that frame.
+ * the guest. Enabling the block makes the rings ready; the next interrupt
+ * re-enable releases queued work after the driver has cleared the old status.
+ * One re-enable drains the backlog without per-frame clock advancement.
  */
-static void test_receive_flush_on_enable(const void *data)
+static void test_receive_flush_after_enable_reenable(const void *data)
 {
+    enum { FRAMES = 4 };
     int sv[2];
     Bcm b;
     uint8_t frame[64];
     uint8_t bd[BCM_RXBD_SIZE];
     uint8_t ret[BCM_RXBD_SIZE];
-    unsigned int i, j;
-    bool got = false;
+    unsigned int i;
 
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(i + 11);
@@ -3429,46 +3462,177 @@ static void test_receive_flush_on_enable(const void *data)
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 8);
 
     /* Refused: the block is off. */
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    for (i = 0; i < FRAMES; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
     g_usleep(100000);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-    /* Enable it, and touch nothing else -- no doorbell, no consumer. */
+    /* Enable it, then cross the interrupt-handler boundary. */
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
 
-    for (j = 0; j < 200 && !got; j++) {
-        qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-        if (get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
-            got = true;
-            break;
-        }
-        g_usleep(5000);
+    wait_for_rx_prod(&b, FRAMES);
+    for (i = 0; i < FRAMES; i++) {
+        qtest_memread(b.qts, RET_RING_PHYS + i * BCM_RXBD_SIZE,
+                      ret, sizeof(ret));
+        g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END,
+                        ==, BCM_RXBDFLAG_END);
+        g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                        sizeof(frame) + BCM_ETH_FCS_LEN);
     }
-    g_assert_true(got);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
-                    sizeof(frame) + BCM_ETH_FCS_LEN);
 
     bcm_close(&b);
     close(sv[0]);
 }
 
 /*
- * Ask for removal, schedule a deferred receive flush while the device still
- * exists, then let reset finish the unplug. The backend must be releasable and
- * the main loop must remain responsive after the device state has gone away.
+ * A receive-ready MMIO write can come from inside the guest's interrupt
+ * handler. A frame held by the backend must not be published merely because
+ * virtual time passes: doing so can set UPDATED underneath the handler while
+ * it is draining the same status block, and the handler never returns.
+ *
+ * The periodic status update guarantees a later interrupt even if the frame
+ * was queued before any completion existed. Its mask/re-enable sequence is an
+ * explicit guest-execution boundary. Queue a frame while HCC is disabled and
+ * prove that enable, producer/consumer updates, and almost a whole status-tick
+ * interval do not publish it. The write-0 re-enable then releases it without a
+ * further clock delay.
  */
-static void test_receive_flush_hot_unplug(const void *data)
+static void test_queued_receive_waits_for_irq_reenable(const void *data)
 {
+    int sv[2];
     Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
+    uint8_t ret[BCM_RXBD_SIZE];
+
+    memset(frame, 0xa5, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    put32le(bd, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(100000);
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_RX_CONS0_LO, 0);
+
+    qtest_clock_step(b.qts, BCM_STATUS_TICK_MAX_NS - 1);
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    qtest_clock_step(b.qts, 1);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
+    g_assert_false(intr_line_up(b.dev));
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    wait_for_rx_prod(&b, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * A reset discards receive work queued against the old ring configuration and
+ * re-enables backend delivery. Queue one frame while the device is unready,
+ * reset it, build fresh rings, then prove a distinct post-reset frame reaches
+ * the new buffer. This exercises both the driver-triggered global reset and a
+ * machine reset because they share the same network-queue boundary.
+ */
+static void test_receive_queue_reset(const void *data)
+{
+    bool system_reset = GPOINTER_TO_INT(data);
+    int sv[2];
+    Bcm b;
+    uint8_t stale[64];
+    uint8_t fresh[64];
+    uint8_t got[64];
+
+    memset(stale, 0x51, sizeof(stale));
+    memset(stale, 0xff, 6);
+    memset(fresh, 0xa7, sizeof(fresh));
+    memset(fresh, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    net_socket_send_frame(sv[0], stale, sizeof(stale));
+    g_usleep(100000);
+
+    if (system_reset) {
+        qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
+        qtest_qmp_eventwait(b.qts, "RESET");
+        qpci_device_enable(b.dev);
+        b.bar = qpci_iomap(b.dev, 0, NULL);
+    } else {
+        bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    }
+
+    rx_open_one(&b, sv[0]);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    net_socket_send_frame(sv[0], fresh, sizeof(fresh));
+    wait_for_rx_prod(&b, 1);
+    qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), fresh, sizeof(fresh));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * Ask for removal with a refused frame queued against the device, then let
+ * reset finish the unplug. Queue teardown must release the backend and leave
+ * the main loop responsive after the device state has gone away.
+ */
+static void test_queued_receive_hot_unplug(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+
+    memset(frame, 0xff, sizeof(frame));
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
 
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -netdev user,id=n0"
+                             " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,id=tg0,addr=%02x.0,netdev=n0",
-                             BCM_SLOT));
+                             sv[1], BCM_SLOT));
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(100000);
 
     qtest_qmp_device_del_send(b.qts, "tg0");
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     qtest_system_reset_nowait(b.qts);
     qtest_qmp_eventwait(b.qts, "DEVICE_DELETED");
     qtest_clock_step(b.qts, 1000);
@@ -3478,6 +3642,7 @@ static void test_receive_flush_hot_unplug(const void *data)
                              "  'arguments': { 'id': 'n0' } }");
 
     bcm_close(&b);
+    close(sv[0]);
 }
 
 /*
@@ -4954,10 +5119,16 @@ int main(int argc, char **argv)
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,
                         test_receive_ring_full_recovers);
-    qtest_add_data_func("/bcm570x/receive-flush-on-enable", NULL,
-                        test_receive_flush_on_enable);
-    qtest_add_data_func("/bcm570x/receive-flush-hot-unplug", NULL,
-                        test_receive_flush_hot_unplug);
+    qtest_add_data_func("/bcm570x/receive-flush-after-enable-reenable", NULL,
+                        test_receive_flush_after_enable_reenable);
+    qtest_add_data_func("/bcm570x/queued-receive-waits-for-irq-reenable", NULL,
+                        test_queued_receive_waits_for_irq_reenable);
+    qtest_add_data_func("/bcm570x/receive-queue-global-reset",
+                        GINT_TO_POINTER(0), test_receive_queue_reset);
+    qtest_add_data_func("/bcm570x/receive-queue-system-reset",
+                        GINT_TO_POINTER(1), test_receive_queue_reset);
+    qtest_add_data_func("/bcm570x/queued-receive-hot-unplug", NULL,
+                        test_queued_receive_hot_unplug);
     qtest_add_data_func("/bcm570x/hot-unplug-exits-cleanly", NULL,
                         test_hot_unplug_exits_cleanly);
     qtest_add_data_func("/bcm570x/failed-realize-releases-backend", NULL,
