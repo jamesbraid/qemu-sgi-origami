@@ -318,6 +318,7 @@ typedef struct QLogicISPInfo {
     bool recovery_mailboxes;        /* the 0x0015-0x0017 abort commands */
     bool derived_phase_flags;   /* per-command phase bits, not all-phases */
     uint16_t cfg1_write_mask;   /* bits a bus config 1 write retains */
+    bool flat_ram_transfers;   /* 0x0001 load, 0x0003 dump RAM are in the set */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -708,6 +709,10 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     case ISP_MBOX_CMD_LOAD_RAM:
+        if (!QLOGIC_ISP_GET_CLASS(s)->info->flat_ram_transfers) {
+            qlogic_isp_mbox_not_modelled(s, cmd);
+            break;
+        }
         s->mailbox[0] = qlogic_isp_ram_load(s);
         break;
 
@@ -721,6 +726,10 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     case ISP_MBOX_CMD_DUMP_RAM:
+        if (!QLOGIC_ISP_GET_CLASS(s)->info->flat_ram_transfers) {
+            qlogic_isp_mbox_not_modelled(s, cmd);
+            break;
+        }
         if (!qlogic_isp_ram_range_ok(s, s->mailbox[1], s->mailbox[4])) {
             s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
             break;
@@ -2239,6 +2248,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .cfg0_reports_revision = true, .ram_wraps = true,
       .derived_phase_flags = false,
       .cfg1_write_mask = ISP_BUS_CFG1_WRITE_MASK,
+      .flat_ram_transfers = true,
       .fw_version = { 1, 0, 0 } },
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
@@ -2247,6 +2257,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .reject_busy_mailbox = true, .a64_ram_load = true,
       .recovery_mailboxes = true, .derived_phase_flags = true,
       .cfg1_write_mask = ISP_BUS_CFG1_BANK1080_MASK,
+      .flat_ram_transfers = false,
       .fw_version = { 10, 4, 0 } },
 };
 

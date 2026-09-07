@@ -13,12 +13,13 @@ what that microcode does -- the mailbox command set and the two rings
 -- and never executes vendor code: guests download microcode at every
 attach, and the model accepts the download, retains it, and answers
 checksum verification honestly over what was actually sent. No vendor
-firmware is present or required. Load-RAM and dump-RAM take the word
-offset within the adapter in mailbox 1 and the word count in mailbox
-4, with the host address in the usual four-mailbox split; on the
-ISP1040 that offset advances as a 16-bit quantity and wraps within
-storage sized to that range, and on the ISP12160 a range that would
-wrap is refused instead.
+firmware is present or required. On the ISP1040, load-RAM and
+dump-RAM take the word offset within the adapter in mailbox 1 and
+the word count in mailbox 4, with the host address in the usual
+four-mailbox split, and that offset advances as a 16-bit quantity and
+wraps within storage sized to that range. The ISP12160 carries the
+same load under a distinct A64 opcode, and the model carries no dump
+for it; a range that would wrap is refused instead.
 
 The register contract is driver-sourced for both parts -- no vendor
 programming manual for either exists. The Origami project tree carries
@@ -153,10 +154,14 @@ transfers in belongs to the part. The fabric between the adapter and
 memory does state its byte-lane correction per access size, but at the
 alignments a RAM transfer uses, the two decompositions were measured to
 deliver the same bytes; nothing observed so far tells them apart from
-the guest's side. A dump the fabric refuses answers the same host
-interface error ``0x4002`` a refused load answers: told the dump
-completed, a guest would read its image back out of memory the adapter
-never wrote and take whatever was already there.
+the guest's side. On the ISP1040, a dump the fabric refuses answers the
+same host interface error ``0x4002`` a refused load answers: told the
+dump completed, a guest would read its image back out of memory the
+adapter never wrote and take whatever was already there. Load RAM
+``0x0001`` and dump RAM ``0x0003`` are outside the ISP12160's cleared
+command set and answer invalid command ``0x4001`` there; only write
+word ``0x0004``, read word ``0x0005`` and the A64 load ``0x0009`` are
+modelled on that part.
 
 A mailbox result and its pending interrupt persist until the guest
 acknowledges, in either order, by clearing the semaphore and issuing
@@ -247,6 +252,12 @@ They are not claims about unobserved silicon:
   precedent above; the datasheet leaves the failure code open, and the
   test pins only that the command does not complete or report a
   checksum result.
+- Invalid command ``0x4001`` answers the flat load RAM ``0x0001`` and
+  dump RAM ``0x0003`` opcodes on the ISP12160, because the datasheet
+  places neither in that part's command set and records no answer of
+  its own for an opcode a part does not carry; both take what every
+  other unmodelled opcode gets. The test pins that neither completes
+  and that controller RAM is left as it was.
 
 Mailboxes and queue pointers
 ============================
