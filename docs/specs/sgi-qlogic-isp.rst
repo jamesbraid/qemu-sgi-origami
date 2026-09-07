@@ -196,11 +196,13 @@ with completion ``0x0004``; state flags are zero either way, since no
 further phase was reached after the cancellation. Bus reset does this
 on the ISP1040 too, where it is the only recovery command there is: a
 request outstanding when the bus goes down is retired ``0x0004``
-rather than vanishing. Command abort answers command error ``0x4005``
-for a handle that is unknown or does not match the request found under
-that handle's channel, target and LUN, and touches nothing. Abort
-device completes ``0x4000`` when nothing is outstanding for the
-selected LUN.
+rather than vanishing. Command abort answers a non-complete mailbox
+result for a handle that is unknown or does not match the request
+found under that handle's channel, target and LUN, and touches
+nothing. The model returns command error ``0x4005`` there, but the
+datasheet leaves the exact code open, so the qtests pin only that the
+answer is not completion and that nothing is retired. Abort device
+completes ``0x4000`` when nothing is outstanding for the selected LUN.
 
 All four commands answer parameter error ``0x4006`` for a channel
 selector at or beyond the part's channel count, and only bus reset can
@@ -242,11 +244,14 @@ They are not claims about unobserved silicon:
   only the vmstate fields and code review check that the two channels
   stay independent.
 - The recovery retirement codes -- completion ``0x0005`` for an abort,
-  ``0x0004`` for a reset, command error ``0x4005`` for an unknown or
-  mismatched handle, parameter error ``0x4006`` for an out-of-range
-  channel, and ``0x4000`` for an abort device with nothing outstanding
-  -- are the selected scope for these commands, not values read back
-  from a captured device.
+  ``0x0004`` for a reset, parameter error ``0x4006`` for an
+  out-of-range channel, and ``0x4000`` for an abort device with
+  nothing outstanding -- are the selected scope for these commands,
+  not values read back from a captured device. Command error
+  ``0x4005`` for an unknown or mismatched handle is the same kind of
+  selection, but unreviewed even as a choice; the qtests pin only that
+  the answer does not complete and retires nothing, not the code
+  itself.
 - The ``0x4006`` answer for a checksum header or span past the end of
   ISP12160 controller RAM is a selection following the RAM-command
   precedent above; the datasheet leaves the failure code open, and the
