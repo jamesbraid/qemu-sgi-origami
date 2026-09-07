@@ -731,12 +731,26 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    /* The word at base+3 is the image's length; a real image sums to 0. */
+    /*
+     * The word at base+3 is the image's length; a real image sums to 0.
+     * A part with a hard RAM edge refuses a header or a span past it
+     * rather than folding either back to the start of the array.
+     */
     case ISP_MBOX_CMD_VERIFY_CHECKSUM: {
         uint16_t start = s->mailbox[1];
-        uint16_t len = s->risc_ram[(uint16_t)(start + 3)];
+        uint16_t len;
         uint16_t sum = 0;
-        uint16_t i;
+        uint32_t i;
+
+        if (!qlogic_isp_ram_range_ok(s, start, 4)) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
+        len = s->risc_ram[(uint16_t)(start + 3)];
+        if (!qlogic_isp_ram_range_ok(s, start, len)) {
+            s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
+            break;
+        }
 
         for (i = 0; i < len; i++) {
             sum += s->risc_ram[(uint16_t)(start + i)];

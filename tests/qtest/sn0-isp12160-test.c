@@ -917,6 +917,61 @@ static void test_checksum_passes_then_one_corrupt_word_fails(const void *data)
 }
 
 /*
+ * A wrapping implementation reads the header from word 0x0002 and sums
+ * words 0xfffe, 0xffff, 0x0000, 0x0001: the fixture makes that wrapped
+ * sum zero, so only a model that refuses the span answers an error.
+ */
+static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE);
+    const uint16_t header_wraps[] = { 0xfffe, NOT_THE_ANSWER };
+    const uint16_t span_wraps[] = { 0xfffc, NOT_THE_ANSWER };
+
+    aim_window_at_memory_bar(qts);
+
+    /* Header at 0xfffe + 3 = 0x10001: only reachable by wrapping to 0x0001. */
+    isp_write_ram_word(qts, 0x0001, 0x0004);
+    isp_write_ram_word(qts, 0xfffe, 0x1000);
+    isp_write_ram_word(qts, 0xffff, 0x2000);
+    isp_write_ram_word(qts, 0x0000, (uint16_t)(0 - 0x3000 - 0x0004));
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_VERIFY_CHECKSUM, header_wraps,
+                             ARRAY_SIZE(header_wraps)), !=, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), !=, ISP_MBOX_TEST_FAILED);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, NOT_THE_ANSWER);
+    isp_mbox_ack(qts);
+
+    /* Header in range at 0xffff, but its length 8 runs past the last word. */
+    isp_write_ram_word(qts, 0xffff, 0x0008);
+    isp_write_ram_word(qts, 0xfffc, 0x0100);
+    isp_write_ram_word(qts, 0xfffd, 0x0200);
+    isp_write_ram_word(qts, 0xfffe, 0x0300);
+    isp_write_ram_word(qts, 0x0000, 0x0000);
+    isp_write_ram_word(qts, 0x0001, 0x0000);
+    isp_write_ram_word(qts, 0x0002, 0x0000);
+    isp_write_ram_word(qts, 0x0003, (uint16_t)(0 - 0x0600 - 0x0008));
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_VERIFY_CHECKSUM, span_wraps,
+                             ARRAY_SIZE(span_wraps)), !=, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), !=, ISP_MBOX_TEST_FAILED);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, NOT_THE_ANSWER);
+    isp_mbox_ack(qts);
+
+    /*
+     * The last word itself is still reachable: a four-word image based at
+     * 0xfffc, whose length word at 0xffff is the array's last, passes.
+     */
+    isp_write_ram_word(qts, 0xfffc, 0x0000);
+    isp_write_ram_word(qts, 0xfffd, 0x0000);
+    isp_write_ram_word(qts, 0xfffe, 0x0000);
+    isp_write_ram_word(qts, 0xffff, 0x0004);
+    isp_write_ram_word(qts, 0xfffc, (uint16_t)(0 - 0x0004));
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_VERIFY_CHECKSUM, span_wraps,
+                             ARRAY_SIZE(span_wraps)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    qtest_quit(qts);
+}
+
+/*
  * Execute is acknowledged without anything being interpreted, and the
  * modelled interface stays live afterwards: a model that treated execute as
  * handing the adapter over to a downloaded program would answer these two
@@ -2906,6 +2961,9 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/isp12160/checksum-passes-then-one-corrupt-word-fails", NULL,
         test_checksum_passes_then_one_corrupt_word_fails);
+    qtest_add_data_func(
+        "sn0/isp12160/checksum-refuses-a-span-past-the-ram-end", NULL,
+        test_checksum_refuses_a_span_past_the_ram_end);
     qtest_add_data_func("sn0/isp12160/execute-then-stateful-commands", NULL,
                         test_execute_then_stateful_commands);
     qtest_add_data_func("sn0/isp12160/about-firmware-and-status", NULL,
