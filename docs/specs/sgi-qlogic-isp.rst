@@ -272,6 +272,14 @@ They are not claims about unobserved silicon:
   its own for an opcode a part does not carry; both take what every
   other unmodelled opcode gets. The test pins that neither completes
   and that controller RAM is left as it was.
+- The selection-timeout bit in an ISP12160 missing target's status-flags
+  word, because that part's datasheet leaves the word unresolved for
+  this case. Unlike the selections above it is backed by a consumer
+  observation rather than only by the absence of one: IRIX 6.5.30 logs a
+  hard error for every absent target when the bit is clear and scans
+  silently when it is set, on both channels. The datasheet extension
+  recording that case has landed on the Origami side, and the per-part
+  field stays so the choice is visible per part.
 
 Mailboxes and queue pointers
 ============================
@@ -326,12 +334,15 @@ Linux's ladder turns it into which failure to report. The
 status-flags word is distinct: IRIX accepts an incomplete completion
 as a benign empty slot only when its selection-timeout bit is set,
 a stricter check than any of the public parallel-SCSI drivers.
-Sense-data validity rides in the SCSI status word's own bit 9. On the
-ISP1040, a missing target is answered incomplete with bus-reached plus
-selection-timeout -- the one answer all four guests read as an empty
-slot rather than a fault. The ISP12160's datasheet leaves this
-status-flags word unresolved for a missing target; the model answers
-incomplete there with bus-reached alone and a zero status-flags word.
+Sense-data validity rides in the SCSI status word's own bit 9. A missing
+target is answered incomplete with bus-reached plus selection-timeout --
+the one answer all four guests read as an empty slot rather than a
+fault. That is the ISP1040's established answer. The ISP12160's
+datasheet leaves the status-flags word unresolved for this case, and the
+model gives the same answer there because a guest settles it: booting
+IRIX 6.5.30 against the model with the bit clear turns every absent
+target on both channels into a logged hard error, and setting it makes
+the same scan silent.
 
 The model applies each part's own rule for what a completed command's
 phase bits mean, per its reviewed datasheet. The ISP12160's datasheet

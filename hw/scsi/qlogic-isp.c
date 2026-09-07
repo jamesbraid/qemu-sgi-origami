@@ -1768,8 +1768,10 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
         /*
          * GOT_BUS alone is Linux's DID_BAD_TARGET; the timeout bit beside
          * it is what lets IRIX treat the empty slot as benign. The
-         * ISP12160's datasheet leaves this status-flag word unresolved
-         * for this case, so it is left clear there.
+         * ISP12160's datasheet leaves this status-flags word unresolved
+         * for this case, and an IRIX boot settles it: without the bit,
+         * every absent target is logged as a hard error. Both parts set
+         * it; the per-part field keeps that a stated choice.
          */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
                                ISP_STATE_FLAG_GOT_BUS,
@@ -2573,7 +2575,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .recovery_mailboxes = true, .derived_phase_flags = true,
       .cfg1_write_mask = ISP_BUS_CFG1_BANK1080_MASK,
       .flat_ram_transfers = false,
-      .missing_target_timeout = false,
+      .missing_target_timeout = true,
       .fw_version = { 10, 4, 0 } },
 };
 
