@@ -127,6 +127,9 @@
 #define XBRIDGE_ATE_NO_SWAP (1U << 5)
 #define XBRIDGE_INT_STATUS 0x100
 #define XBRIDGE_INT_ENABLE 0x108
+#define XBRIDGE_INT_RESET 0x110
+#define XBRIDGE_ERR_UPPER 0x170
+#define XBRIDGE_PAGE_FAULT (1U << 30)
 #define XBRIDGE_INT_UPPER 0x30
 #define XBRIDGE_INT_LOWER 0x38
 #define XBRIDGE_INT_HOST(n) (0x130 + (n) * 8)
@@ -135,7 +138,6 @@
 #define PI_PENDING_MODIFY 0x90
 #define PI_PENDING_0 0x98
 #define PI_MASK_0_A 0xa8
-#define PI_IO_REGISTER (UINT64_C(1) << 47)
 #define PI_REMOTE_WINDOW 0x1800000
 #define PI_TEST_PENDING_BIT 17
 #define MIPS_CAUSE_HARDWARE_IRQ0 (1U << 10)
@@ -873,8 +875,6 @@ static void test_io8_usb_attachment(const void *data)
                     (1U << 17) | PI_TEST_PENDING_BIT);
     xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_ENABLE,
                     1U << XBRIDGE_USB_PIN);
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A,
-                 UINT64_C(1) << PI_TEST_PENDING_BIT);
 
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
     g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
@@ -896,6 +896,11 @@ static void test_io8_usb_attachment(const void *data)
                     1U << XBRIDGE_USB_PIN);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     UINT64_C(1) << PI_TEST_PENDING_BIT);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A,
+                 UINT64_C(1) << PI_TEST_PENDING_BIT);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    UINT64_C(1) << PI_TEST_PENDING_BIT);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
                     MIPS_CAUSE_HARDWARE_IRQ0);
 
@@ -903,6 +908,10 @@ static void test_io8_usb_attachment(const void *data)
     g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
                                   XBRIDGE_INT_STATUS) &
                     (1U << XBRIDGE_USB_PIN), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    UINT64_C(1) << PI_TEST_PENDING_BIT);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
     /* The guest acknowledges its selected pending bit after INTA falls. */
     qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY,
                  PI_TEST_PENDING_BIT);
@@ -910,6 +919,47 @@ static void test_io8_usb_attachment(const void *data)
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
     io8_usb_writel(qts, OHCI_HC_CONTROL, OHCI_CONTROL_SUSPEND);
 
+    qtest_quit(qts);
+}
+
+static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
+{
+    uint8_t sentinel[0x100];
+    uint8_t actual[sizeof(sentinel)];
+    QTestState *qts = machine_start();
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, IO8_USB_HCCA_PHYS, sentinel, sizeof(sentinel));
+    io8_usb_config_writel(qts, 0x10, IO8_USB_BAR);
+    io8_usb_config_writel(qts, 4, 6);
+    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
+                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
+                    (IO8_USB_BAR >> 20));
+    qtest_writeq(qts, XTALK_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
+                 IO8_USB_HCCA_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP);
+
+    io8_usb_writel(qts, OHCI_HC_HCCA, IO8_USB_HCCA_IOVA);
+    io8_usb_writel(qts, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    qtest_clock_step_next(qts);
+
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    XBRIDGE_PAGE_FAULT, ==, XBRIDGE_PAGE_FAULT);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_ERR_UPPER) &
+                    XBRIDGE_PAGE_FAULT, ==, XBRIDGE_PAGE_FAULT);
+    qtest_memread(qts, IO8_USB_HCCA_PHYS, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), sentinel, sizeof(sentinel));
+
+    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_RESET, 2);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    XBRIDGE_PAGE_FAULT, ==, 0);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_ERR_UPPER) &
+                    XBRIDGE_PAGE_FAULT, ==, 0);
     qtest_quit(qts);
 }
 
@@ -1524,6 +1574,8 @@ int main(int argc, char **argv)
                         test_xbridge_topology);
     qtest_add_data_func("sn1/address-map/io8-usb-attachment", NULL,
                         test_io8_usb_attachment);
+    qtest_add_data_func("sn1/address-map/io8-usb-invalid-ate", NULL,
+                        test_io8_usb_rejects_invalid_ate_dma);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,
