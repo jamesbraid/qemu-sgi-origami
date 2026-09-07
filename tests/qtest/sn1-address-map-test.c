@@ -68,6 +68,23 @@
 #define EXEC_CODE_OFFSET 0x400
 #define EXEC_XKPHYS_OFFSET 0x500
 
+#define EXEC_TLB_SETUP_OFFSET 0x18
+#define EXEC_TLB_STATE_OFFSET 0x20
+#define EXEC_TLB_EXCEPTION_OFFSET 0x28
+#define EXEC_TLB_SETUP_MARKER UINT64_C(0x3366)
+#define EXEC_TLB_MARKER UINT64_C(0x4499)
+#define EXEC_TLB_REFILL_MARKER UINT64_C(0xe201)
+#define EXEC_XTLB_REFILL_MARKER UINT64_C(0xe281)
+#define EXEC_CACHE_ERROR_MARKER UINT64_C(0xe301)
+#define EXEC_GENERAL_EXCEPTION_MARKER UINT64_C(0xe381)
+#define EXEC_TLB_VIRTUAL_HI 0xc000
+#define EXEC_TLB_VIRTUAL_PAGE 0x1fc02000
+#define EXEC_TLB_VIRTUAL_OFFSET 0x1fc021a0
+/* UC=3, PFN=0x1fc01, C=2, D=1, V=1. */
+#define EXEC_TLB_ENTRYLO_MEMORY_HI 0xc000
+#define EXEC_TLB_ENTRYLO_MEMORY_LOW 0x7f0056
+#define EXEC_TLB_PHYSICAL_OFFSET 0x11a0
+
 #define BEDROCK_WIDGET_PART UINT64_C(0xc110)
 #define BEDROCK_WIDGET_MFG UINT64_C(0x036)
 #define XBRIDGE_XBOW_PART UINT64_C(0xd000)
@@ -181,6 +198,92 @@ static char *create_xkphys_fetch_prom(void)
                            EXEC_XKPHYS_STATE_OFFSET);
 
     fd = g_file_open_tmp("sn1-xkphys-fetch-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static char *create_tlb_fetch_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+
+    write_execution_report(image, 0x200, EXEC_TLB_REFILL_MARKER,
+                           EXEC_TLB_EXCEPTION_OFFSET);
+    write_execution_report(image, 0x280, EXEC_XTLB_REFILL_MARKER,
+                           EXEC_TLB_EXCEPTION_OFFSET);
+    write_execution_report(image, 0x300, EXEC_CACHE_ERROR_MARKER,
+                           EXEC_TLB_EXCEPTION_OFFSET);
+    write_execution_report(image, 0x380, EXEC_GENERAL_EXCEPTION_MARKER,
+                           EXEC_TLB_EXCEPTION_OFFSET);
+
+    /* Report setup before entering the mapped 64-bit segment. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x00,
+             0x3c080000 | EXEC_STATE_KSEG1_HI);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x04,
+             0x34090000 | EXEC_TLB_SETUP_MARKER);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x08,
+             0xfd090000 | EXEC_TLB_SETUP_OFFSET);
+
+    /* Enable 64-bit kernel addresses. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x0c, 0x400a6000); /* mfc0 t2, Status */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x10, 0x354a0080); /* ori t2, t2, KX */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x14, 0x408a6000); /* mtc0 t2, Status */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x18, 0x000000c0); /* ehb */
+
+    /* Install a 4 KiB uncached mapping to PROM physical 0x1fc01000. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x1c,
+             0x3c0a0000 | EXEC_TLB_VIRTUAL_HI);           /* lui t2, 0xc000 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x20,
+             0x000a503c);                                /* dsll32 t2, t2, 0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x24, 0x3c0b1fc0); /* lui t3, 0x1fc0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x28,
+             0x356b0000 | (EXEC_TLB_VIRTUAL_PAGE & 0xffff));
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x2c, 0x014b5025); /* or t2, t2, t3 */
+    /* dmtc0 t2, EntryHi */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x30, 0x40aa5000);
+    /* mtc0 zero, PageMask */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x34, 0x40802800);
+    /* Uncached attribute 3 selects the memory window. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x38,
+             0x3c0a0000 | EXEC_TLB_ENTRYLO_MEMORY_HI);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x3c, 0x000a503c); /* dsll32 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x40, 0x3c0b007f); /* lui t3 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x44,
+             0x356b0000 | (EXEC_TLB_ENTRYLO_MEMORY_LOW & 0xffff));
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x48, 0x014b5025); /* or t2, t2, t3 */
+    /* dmtc0 t2, EntryLo0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x4c, 0x40aa1000);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x50, 0x340a0000); /* ori t2, zero, 0 */
+    /* dmtc0 t2, EntryLo1 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x54, 0x40aa1800);
+    /* mtc0 zero, Index */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x58, 0x40800000);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x5c, 0x42000002); /* tlbwi */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x60, 0x000000c0); /* ehb */
+
+    /* Jump through the mapping to 0xc00000001fc021a0. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x64,
+             0x3c0a0000 | EXEC_TLB_VIRTUAL_HI);           /* lui t2, 0xc000 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x68,
+             0x000a503c);                                /* dsll32 t2, t2, 0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x6c, 0x3c0b1fc0); /* lui t3, 0x1fc0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x70,
+             0x356b0000 | (EXEC_TLB_VIRTUAL_OFFSET & 0xffff));
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x74, 0x014b5025); /* or t2, t2, t3 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x78, 0x01400008); /* jr t2 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x7c, 0x00000000); /* nop */
+
+    write_execution_report(image, EXEC_TLB_PHYSICAL_OFFSET,
+                           EXEC_TLB_MARKER, EXEC_TLB_STATE_OFFSET);
+
+    fd = g_file_open_tmp("sn1-tlb-fetch-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
@@ -806,6 +909,47 @@ static void test_prom_executes_from_reset_and_xkphys(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_prom_executes_from_tlb_mapped_xkseg(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint64_t reached = 0;
+    uint64_t exception = 0;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_tlb_fetch_prom();
+    qts = machine_start_with(path, "-accel tcg -no-shutdown -S");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    for (unsigned int tries = 0; tries < 10000; tries++) {
+        reached = qtest_readq(qts, EXEC_STATE_PHYS + EXEC_TLB_STATE_OFFSET);
+        exception = qtest_readq(qts, EXEC_STATE_PHYS +
+                                EXEC_TLB_EXCEPTION_OFFSET);
+        if (reached || exception) {
+            break;
+        }
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, EXEC_STATE_PHYS + EXEC_TLB_SETUP_OFFSET),
+                    ==, EXEC_TLB_SETUP_MARKER);
+    if (exception) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers 0");
+
+        g_test_message("CPU state after xkseg TLB fetch exception");
+        g_test_message("%s", registers);
+    }
+    g_assert_cmphex(exception, ==, 0);
+    g_assert_cmphex(reached, ==, EXEC_TLB_MARKER);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 static void test_prom_migration(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -970,6 +1114,8 @@ int main(int argc, char **argv)
                         test_cpu_b_follows_enable);
     qtest_add_data_func("sn1/address-map/prom-executes-reset-and-xkphys", NULL,
                         test_prom_executes_from_reset_and_xkphys);
+    qtest_add_data_func("sn1/address-map/prom-executes-tlb-mapped-xkseg", NULL,
+                        test_prom_executes_from_tlb_mapped_xkseg);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
     qtest_add_data_func("sn1/address-map/cpu-b-enabled-migration", NULL,
