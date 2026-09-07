@@ -834,6 +834,12 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
     g_assert_cmphex(xtalk_reg_read(qts, 0xf, 0x20), ==, 0x0f00320d);
 
+    /* The two head-E option positions are unpopulated. */
+    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x21000), ==,
+                    0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x22000), ==,
+                    0xffffffff);
+
     qtest_quit(qts);
 }
 
@@ -989,8 +995,7 @@ static void test_io8_usb_attachment(const void *data)
     }
     g_assert_cmphex(io8_usb_hcca_frame(qts), !=, 0);
     g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_USB_PIN), ==,
+                                  XBRIDGE_INT_STATUS) & 0xff, ==,
                     1U << XBRIDGE_USB_PIN);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     UINT64_C(1) << PI_TEST_PENDING_BIT);
