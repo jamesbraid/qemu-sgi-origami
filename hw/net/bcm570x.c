@@ -428,9 +428,11 @@ struct Bcm570xState {
     /* Interrupt state: a mask set through the 0x0204 mailbox and a pending
      * latch set when a status-block update awaits the driver. The line is the
      * conjunction of the latch with neither mask (mailbox nor MISC_CTL global)
-     * set; tx_busy above is transient and not migrated, these two are. */
+     * set. tx_busy is transient; the remaining state is migrated.
+     */
     bool irq_masked;
     bool irq_pending;
+    bool rx_flush_on_unmask;
     bool status_kick_done;  /* bring-up status update posted once past enable */
     uint8_t status_tag;         /* monotonic per status-block update, delivered in the block */
 
@@ -585,6 +587,7 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->rx_jumbo_cons = 0;
     s->irq_masked = true;
     s->irq_pending = false;
+    s->rx_flush_on_unmask = false;
     s->status_kick_done = false;
     s->status_tag = 0;
     s->rx_coal_pending = 0;
@@ -1351,24 +1354,28 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         break;
     case BCM570X_MBX_IRQ0_LO:
         /*
-         * The interrupt mailbox. Bit 0 masks the line, and writing 0
-         * re-enables it. When an update is pending, that write is also the
-         * acknowledgement: the IRIX driver takes the update from the status
-         * block and writes 0 here, which clears the pending latch so the line
-         * drops and re-asserts only on the next update. With no update pending,
-         * the same write is only the initial enable and must not release queued
-         * receive work. The line is a level, so a write that does not clear the
-         * latch keeps it asserted --
-         * clearing on the mask write instead was tried and stormed at runtime,
-         * because the driver's runtime acknowledgement is the write-0 with no
-         * preceding mask. Completions are read from the status block, not here,
-         * so the rest of the value is only for read-back.
+         * Writing 1 masks and acknowledges the current update. A later update
+         * posted while masked remains pending, so writing 0 to re-enable makes
+         * the level reassert. The IRIX driver also uses a write-0-only runtime
+         * acknowledgement; when already unmasked, retain that observed path by
+         * clearing the pending update. A write 0 from reset is only the initial
+         * enable because there was no acknowledgement to complete.
          */
-        s->irq_masked = (val & 1) != 0;
-        if (!(val & 1)) {
-            bool acknowledged = s->irq_pending;
-
+        if (val & 1) {
+            s->rx_flush_on_unmask |= s->irq_pending;
             s->irq_pending = false;
+            s->irq_masked = true;
+        } else {
+            bool acknowledged;
+
+            if (s->irq_masked) {
+                acknowledged = s->rx_flush_on_unmask;
+                s->rx_flush_on_unmask = false;
+                s->irq_masked = false;
+            } else {
+                acknowledged = s->irq_pending;
+                s->irq_pending = false;
+            }
             if (acknowledged && s->rx_flush_pending) {
                 s->rx_flush_authorized = true;
                 bcm570x_retry_rx_flush(s);
@@ -2186,6 +2193,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->tx_busy = false;
     s->irq_masked = true;
     s->irq_pending = false;
+    s->rx_flush_on_unmask = false;
     s->status_kick_done = false;
     s->status_tag = 0;
     s->rx_coal_pending = 0;
@@ -2219,6 +2227,9 @@ static int bcm570x_post_load(void *opaque, int version_id)
     if (version_id < 6) {
         s->tx_coal_pending = 0;
     }
+    if (version_id < 8) {
+        s->rx_flush_on_unmask = false;
+    }
     bcm570x_update_irq(s);
     /*
      * Version 6 carries the timers themselves. Older streams carried only the
@@ -2247,7 +2258,7 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 7,
+    .version_id = 8,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -2274,6 +2285,7 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_TIMER_V(status_tick_timer, Bcm570xState, 6),
         VMSTATE_STRUCT(phy, Bcm570xState, 7, vmstate_bcm570x_phy,
                        Bcm570xPhyState),
+        VMSTATE_BOOL_V(rx_flush_on_unmask, Bcm570xState, 8),
         VMSTATE_END_OF_LIST()
     }
 };

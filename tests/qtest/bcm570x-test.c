@@ -2963,8 +2963,12 @@ static void test_receive_waits_for_standard_ring(const void *data)
     memset(first, 0x5a, sizeof(first));
     g_assert_cmpmem(got, sizeof(got), first, sizeof(first));
 
-    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+    /* Unmask the existing update, then acknowledge it. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
     wait_for_rx_prod(&b, 2);
     qtest_memread(b.qts, STD_STALE_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), second, sizeof(second));
@@ -3026,6 +3030,9 @@ static void test_receive_waits_for_jumbo_ring(const void *data)
      * the jumbo producer that actually makes its selected ring ready.
      */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
     g_usleep(100000);
     g_assert_cmpuint(read_rx_prod(&b), ==, 1);
     bar_writel(&b, BCM_MBX_RX_JUMBO_PROD_LO, 2);
@@ -3356,10 +3363,14 @@ static void test_receive_ring_full_recovers(const void *data)
 
     /*
      * Re-enable interrupts before the driver has taken any completions. The
-     * full ring cannot consume the queued frame, but the re-enable authorizes
-     * the next readiness transition to retry it.
+     * status update posted while masked asserts now, and the driver's
+     * write-0-only acknowledgement authorizes the next readiness transition
+     * to retry the queued frame.
      */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
     g_usleep(100000);
     qtest_memread(b.qts, RET_RING_PHYS +
                   (uint64_t)(LAP_RET_LEN - 1) * BCM_RXBD_SIZE,
@@ -4365,8 +4376,13 @@ static void test_interrupt_mailbox(const void *data)
     bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
     g_assert_false(intr_line_up(b.dev));
 
-    /* Write 0 re-enables; the acknowledge cleared the latch, so the line stays
-     * down until a fresh update re-asserts it. */
+    /* A completion posted while masked remains pending across the unmask. */
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_true(intr_line_up(b.dev));
+
+    /* The IRIX write-0-only acknowledgement clears that pending update. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
@@ -4516,9 +4532,9 @@ static void test_vmstate_versions_nested_phy(const void *data)
     root = qobject_to(QDict, root_obj);
     g_assert_false(qdict_haskey(root, "bcm570x-phy"));
     section = qdict_get_qdict(root, "bcm570x");
-    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 7);
+    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 8);
     description = qdict_get_qdict(section, "Description");
-    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 7);
+    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 8);
     fields = qdict_get_qlist(description, "Fields");
     phy = bcm570x_vmstate_field(fields, "phy");
     g_assert_nonnull(phy);
@@ -4872,6 +4888,86 @@ static void test_state_survives_migration(const void *data)
 }
 
 /*
+ * A write-one mailbox acknowledgement can precede the driver's matching
+ * unmask. Preserve that half-completed handshake across migration so a frame
+ * queued on the destination is released when the driver writes zero, just as
+ * it would have been without the move.
+ */
+static void test_masked_acknowledgement_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+    int source_sv[2], dest_sv[2];
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
+    uint8_t ret[BCM_RXBD_SIZE];
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    memset(frame, 0xa6, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, source_sv), ==, 0);
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0",
+                           source_sv[1], BCM_SLOT);
+    bcm_open(&from, from_qts);
+    bcm_arm_status(&from);
+    bar_writel(&from, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&from, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&from, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB, RET_RING_PHYS >> 32);
+    ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    put32le(bd, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(from.qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(from.qts, RET_RING_PHYS, 0, sizeof(ret));
+    qtest_memset(from.qts, RX_BUF_PHYS, 0, sizeof(frame));
+    bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    bar_writel(&from, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&from, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_true(intr_line_up(from.dev));
+    bar_writel(&from, BCM_MBX_IRQ0_LO, 1);
+    g_assert_false(intr_line_up(from.dev));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0"
+                           " -incoming %s", dest_sv[1], BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from.qts, uri);
+
+    net_socket_send_frame(dest_sv[0], frame, sizeof(frame));
+    g_usleep(100000);
+    qtest_memread(to.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+
+    bar_writel(&to, BCM_MBX_RX_STD_PROD_LO, 1);
+    qtest_memread(to.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    bar_writel(&to, BCM_MBX_IRQ0_LO, 0);
+    wait_for_rx_prod(&to, 1);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    close(source_sv[0]);
+    close(dest_sv[0]);
+    g_rmdir(tmpfs);
+}
+
+/*
  * Arm a BCM5704 function's status-block DMA entirely through its own config
  * space: enable bus mastering, give its transmit ring a length so a doorbell
  * passes the range guard, program the status block's host page, and enable the
@@ -5185,6 +5281,9 @@ int main(int argc, char **argv)
                         test_v6_phy_state_migrates);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
+    qtest_add_data_func(
+        "/bcm570x/masked-acknowledgement-survives-migration", NULL,
+        test_masked_acknowledgement_survives_migration);
     qtest_add_data_func("/bcm570x/migration/link-down", GINT_TO_POINTER(0),
                         test_migrated_link_controls_egress);
     qtest_add_data_func("/bcm570x/migration/link-up", GINT_TO_POINTER(1),
