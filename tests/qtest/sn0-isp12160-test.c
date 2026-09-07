@@ -2359,8 +2359,6 @@ static QTestState *isp12160_start_with_throttled_disks(DiskPair *disks)
 #define ISP_MBOX_CMD_ABORT_TARGET   0x0017
 #define ISP_MBOX_CMD_BUS_RESET      0x0018
 
-#define ISP_MBOX_CMD_ERROR          0x4005
-
 /* What a retired request carries where a finished one carries its result. */
 #define ISP_IOCB_RESET              0x0004
 #define ISP_IOCB_ABORTED            0x0005
@@ -2580,14 +2578,16 @@ static void test_abort_command_checks_the_whole_selector(const void *data)
     QTestState *qts = recovery_start(&disks);
     const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x71 };
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t result;
 
     /* The one outstanding command is this target and LUN on channel 0. */
     qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, SECTOR_BYTES);
     place_read(qts, 0x71, 0, BUF_PHYS);
     publish_requests(qts);
 
-    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
-                             ARRAY_SIZE(in)), ==, ISP_MBOX_CMD_ERROR);
+    result = isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in, ARRAY_SIZE(in));
+    g_assert_cmphex(result, !=, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(result & 0xf000, ==, 0x4000);
     isp_mbox_ack(qts);
 
     g_assert_cmphex(wait_next_status(qts, status), ==, 0x71);
@@ -2632,19 +2632,21 @@ static void test_abort_device_with_nothing_outstanding(const void *data)
  * host that a command it is still waiting on has been retired, and
  * posting an entry for a handle the host never issued is worse.
  */
-static void test_abort_unknown_handle_is_a_command_error(const void *data)
+static void test_abort_unknown_handle_is_refused(const void *data)
 {
     DiskPair disks;
     QTestState *qts = isp12160_start_with_disks(&disks);
     const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x77 };
+    uint16_t result;
 
     qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
     qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
     init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
                 RESP_SLOTS, true);
 
-    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
-                             ARRAY_SIZE(in)), ==, ISP_MBOX_CMD_ERROR);
+    result = isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in, ARRAY_SIZE(in));
+    g_assert_cmphex(result, !=, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(result & 0xf000, ==, 0x4000);
     isp_mbox_ack(qts);
 
     expect_no_further_status(qts);
@@ -2741,6 +2743,7 @@ static void test_natural_completion_racing_an_abort(const void *data)
     QTestState *qts = isp12160_start_with_disks(&disks);
     const uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0x62 };
     uint8_t payload[SECTOR_BYTES];
+    uint16_t result;
 
     qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
     qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
@@ -2752,8 +2755,9 @@ static void test_natural_completion_racing_an_abort(const void *data)
     read_sector(qts, 1, DISK_TARGET, 0, 0x62, 0, BUF_PHYS, payload);
     expect_sector(payload, DISK1_SECTOR0_FILL);
 
-    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
-                             ARRAY_SIZE(in)), ==, ISP_MBOX_CMD_ERROR);
+    result = isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in, ARRAY_SIZE(in));
+    g_assert_cmphex(result, !=, ISP_MBOX_COMPLETE);
+    g_assert_cmphex(result & 0xf000, ==, 0x4000);
     isp_mbox_ack(qts);
 
     expect_no_further_status(qts);
@@ -3064,9 +3068,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/isp12160/abort-device-with-nothing-outstanding", NULL,
         test_abort_device_with_nothing_outstanding);
-    qtest_add_data_func(
-        "sn0/isp12160/abort-unknown-handle-is-a-command-error", NULL,
-        test_abort_unknown_handle_is_a_command_error);
+    qtest_add_data_func("sn0/isp12160/abort-unknown-handle-is-refused", NULL,
+                        test_abort_unknown_handle_is_refused);
     qtest_add_data_func("sn0/isp12160/target-reset-is-channel-scoped", NULL,
                         test_target_reset_is_channel_scoped);
     qtest_add_data_func("sn0/isp12160/bus-reset-is-channel-scoped", NULL,
