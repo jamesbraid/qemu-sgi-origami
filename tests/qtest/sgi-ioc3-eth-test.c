@@ -14,6 +14,7 @@
 /* The chip's window in the PCI hole; scratch in RAM nothing uses. */
 #define IOC3_BAR_ADDR   0xc0000000u
 #define RAM_SCRATCH     0x02000000u
+#define PC_RAM_END      0x08000000u
 
 #define IOC3_PCI_SLOT   4
 
@@ -123,6 +124,7 @@
 
 /* Linux gates every delivered frame on ERXBUF_GOODPKT. */
 #define RXE_GOODPKT       0x40000000u
+#define RXE_BROADCAST     0x08000000u
 
 /*
  * OpenBSD drops any frame wearing either bit; the engine sets both on a
@@ -212,7 +214,7 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf,
     QTestState *qts;
 
     /* -nic would be claimed by the machine's own default device. */
-    qts = qtest_initf("-M pc -display none "
+    qts = qtest_initf("-M pc -m 128M -display none "
                       "-netdev user,id=n0 "
                       "-device sgi-ioc3,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
     ioc3_bring_up(qts, ring, rxbuf, buffers);
@@ -1323,6 +1325,115 @@ static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
     qtest_quit(qts);
 }
 
+static void assert_receive_not_published(QTestState *qts, uint32_t rxbuf)
+{
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) &
+                    (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==, 0);
+}
+
+/*
+ * Only the first header word fits in RAM.  Publishing it before the rest
+ * would expose a valid buffer whose status and payload were never written.
+ */
+static void test_a_status_failure_does_not_publish_valid(const void *data)
+{
+    QTestState *qts;
+    uint8_t frame[60];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = PC_RAM_END - sizeof(uint32_t);
+
+    build_arp_request(frame, sizeof(frame));
+    qts = ioc3_start(ring, rxbuf, 1);
+    dma_stl_be(qts, rxbuf, 0x11223344);
+    ioc3_writel(qts, ENET_MAC_CONTROL,
+                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    assert_receive_not_published(qts, rxbuf);
+
+    qtest_quit(qts);
+}
+
+/* The status fits, but a MAC-looped payload crosses the end of RAM. */
+static void test_a_payload_failure_does_not_publish_valid(const void *data)
+{
+    QTestState *qts;
+    uint8_t frame[96];
+    uint32_t base = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = PC_RAM_END - 128;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = i + 1;
+    }
+    qts = ioc3_start(ring, rxbuf, 1);
+    dma_stl_be(qts, rxbuf, 0x11223344);
+    dma_stl_be(qts, rxbuf + 4, 0x55667788);
+    ioc3_writel(qts, ENET_MAC_CONTROL,
+                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4), ==, 0);
+    assert_receive_not_published(qts, rxbuf);
+
+    qtest_quit(qts);
+}
+
+/* The complete payload fits; only the following FCS write crosses RAM. */
+static void test_an_fcs_failure_does_not_publish_valid(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[60];
+    uint8_t landed[sizeof(frame)];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = PC_RAM_END - 128;
+    uint32_t status = 0x55667788;
+    unsigned int attempt, i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = i + 1;
+    }
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M pc -m 128M -display none "
+                      "-netdev socket,fd=%d,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0",
+                      sv[1], IOC3_PCI_SLOT);
+    ioc3_bring_up(qts, ring, rxbuf, 1);
+    dma_stl_be(qts, rxbuf, 0x11223344);
+    dma_stl_be(qts, rxbuf + 4, 0x55667788);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    for (attempt = 0; attempt < 200; attempt++) {
+        status = dma_ldl_be(qts, rxbuf + 4);
+        if (status != 0x55667788) {
+            break;
+        }
+        g_usleep(5000);
+    }
+
+    g_assert_cmphex(status, ==, RXE_GOODPKT | RXE_BROADCAST | (8u << 16));
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    assert_receive_not_published(qts, rxbuf);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 /*
  * Stands alone so it inherits no wait; the MAC control write is spelled
  * out to pin both loopback selections clear.
@@ -1371,6 +1482,12 @@ int main(int argc, char **argv)
                         test_a_queued_frame_lands_when_phy_loopback_clears);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-ring-entry-drops-the-frame",
                         NULL, test_a_frame_whose_ring_entry_cannot_be_read);
+    qtest_add_data_func("sgi-ioc3-eth/status-failure-does-not-publish-valid",
+                        NULL, test_a_status_failure_does_not_publish_valid);
+    qtest_add_data_func("sgi-ioc3-eth/payload-failure-does-not-publish-valid",
+                        NULL, test_a_payload_failure_does_not_publish_valid);
+    qtest_add_data_func("sgi-ioc3-eth/fcs-failure-does-not-publish-valid",
+                        NULL, test_an_fcs_failure_does_not_publish_valid);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
                         test_a_transmit_descriptor_that_cannot_be_read);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-buffer", NULL,
