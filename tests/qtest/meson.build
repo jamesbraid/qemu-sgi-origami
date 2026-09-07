@@ -229,7 +229,7 @@ qtests_mipsel = qtests_mips
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
-  (config_all_devices.has_key('CONFIG_USB_OHCI_PCI') ?
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
     ['usb-lucent-ohci-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test'] : []) + \
@@ -279,9 +279,13 @@ qtests_mips64 = \
                                                    'sn0-debug-test',
                                                    'sn0-fabric-test',
                                                    'sn0-qtest-cpu-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
-    ['sn1-xbridge-test', 'sn1-xbridge-xbow-test',
-     'sn1-xbridge-chip-test'] : [])
+  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') and
+   config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST') and
+   config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET') ?
+    ['sn1-xbridge-test', 'sn1-xbridge-chip-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') and
+   config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET') ?
+    ['sn1-xbridge-xbow-test'] : [])
 
 qtests_mips64el = qtests_mips
 
