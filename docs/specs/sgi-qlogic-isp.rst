@@ -93,20 +93,20 @@ ISP12160 program. Vendor identity ``0x1077`` and the SCSI storage class
 are common to both.
 
 Bus configuration 1 bits 9 and 8 are the ISP1080 family's bank
-selector: value 0 picks the RISC bank, matching the ISP1040's own bank
-0, and values 1, 2 and 3 pick SXP0, SXP1 and DMA. Each bank is separate
-32-word storage behind the same ``0x80``-``0xc0`` window the ISP1040
-presents its two banks through, so the observable of the select working
-is that offset holding four different values instead of two. The
-ISP12160 stores bus configuration 1 whole -- all sixteen written
-bits, reset to zero -- rather than the ISP1040's FIFO threshold and
-burst enable bits, because the ISP1040's field meanings belong to a
-register the ISP1080 family repurposes for bank selection. The flat DMA
-configuration and control registers at ``0x20``, ``0x22``, ``0x40`` and
-``0x42``, which the ISP1040 decodes directly, are unimplemented on the
-ISP12160: reads answer zero and log, writes are ignored and logged,
-because the banked layout replaces those registers rather than adding
-to them.
+selector: value 0 picks the RISC bank, matching the ISP1040's own
+bank 0, and values 1, 2 and 3 pick SXP0, SXP1 and DMA. Each bank is
+separate 32-word storage behind the same ``0x80``-``0xc0`` window
+the ISP1040 presents its two banks through, so the observable of the
+select working is that offset holding four different values instead
+of two. The ISP12160 retains only bits 9 and 8 of bus configuration
+1 -- the bank selector -- reset to zero. Other written bits are
+logged as unimplemented and read back as zero, because the datasheet
+establishes the bank selector and leaves the rest of the writable mask
+open. The flat DMA configuration and control registers at ``0x20``,
+``0x22``, ``0x40`` and ``0x42``, which the ISP1040 decodes directly,
+are unimplemented on the ISP12160: reads answer zero and log, writes
+are ignored and logged, because the banked layout replaces those
+registers rather than adding to them.
 
 The ISP12160 owns two SCSI buses where the ISP1040 owns one. Every
 request's device word and every mailbox channel selector carries a
@@ -224,8 +224,10 @@ They are not claims about unobserved silicon:
 - Bus configuration 0 reads 0 on the ISP12160, because no consumer
   evidence reads a revision from that offset on this part and the
   datasheet assigns it no other meaning.
-- Bus configuration 1 stores all sixteen written bits on the ISP12160,
-  because the datasheet leaves the writable mask open.
+- Bus configuration 1 retains only the bank-selector bits on the
+  ISP12160 and logs every other written bit as unimplemented, because
+  the datasheet establishes the selector and leaves the rest of the
+  writable mask open.
 - Bank 0 of the four-way select is the RISC bank, matching the
   ISP1040's own bank 0; getting this wrong would cost a guest register
   contents it never reads back, since every bank is undecoded storage.

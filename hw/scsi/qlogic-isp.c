@@ -317,6 +317,7 @@ typedef struct QLogicISPInfo {
     bool a64_ram_load;              /* the 0x0009 RAM load is in the set */
     bool recovery_mailboxes;        /* the 0x0015-0x0017 abort commands */
     bool derived_phase_flags;   /* per-command phase bits, not all-phases */
+    uint16_t cfg1_write_mask;   /* bits a bus config 1 write retains */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -1982,10 +1983,17 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
     }
 
     switch (addr) {
-    case ISP_REG_BUS_CFG1:
-        s->bus_cfg1 = QLOGIC_ISP_GET_CLASS(s)->info->banked_dma ?
-                      val : (val & ISP_BUS_CFG1_WRITE_MASK);
+    case ISP_REG_BUS_CFG1: {
+        uint16_t mask = QLOGIC_ISP_GET_CLASS(s)->info->cfg1_write_mask;
+
+        if (val & ~mask) {
+            qemu_log_mask(LOG_UNIMP,
+                          "qlogic-isp: bus configuration 1 bits 0x%04x are "
+                          "not modelled\n", (unsigned)(val & ~mask));
+        }
+        s->bus_cfg1 = val & mask;
         break;
+    }
 
     /* Applied after the enables are stored, so the reset wins. */
     case ISP_REG_BUS_CTRL:
@@ -2230,6 +2238,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .device_id = 0x1020, .revision = 0x05, .nchannels = 1,
       .cfg0_reports_revision = true, .ram_wraps = true,
       .derived_phase_flags = false,
+      .cfg1_write_mask = ISP_BUS_CFG1_WRITE_MASK,
       .fw_version = { 1, 0, 0 } },
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
@@ -2237,6 +2246,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .cfg0_reports_revision = false, .banked_dma = true,
       .reject_busy_mailbox = true, .a64_ram_load = true,
       .recovery_mailboxes = true, .derived_phase_flags = true,
+      .cfg1_write_mask = ISP_BUS_CFG1_BANK1080_MASK,
       .fw_version = { 10, 4, 0 } },
 };
 

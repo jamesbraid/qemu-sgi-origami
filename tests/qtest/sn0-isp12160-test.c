@@ -447,19 +447,18 @@ static void test_three_banks_hold_distinct_words(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * The ISP1040 drops everything outside its threshold, burst and bank-select
- * bits. This part's selector sits above that mask, and no source establishes
- * a narrower one, so the register stores a write whole and hands it back.
- */
-static void test_cfg1_reads_back_all_bits(const void *data)
+/* Only the bank selector is established for this register on the ISP12160. */
+static void test_cfg1_retains_only_the_bank_select(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE);
 
     aim_window_at_memory_bar(qts);
 
     isp_writew(qts, ISP_REG_BUS_CFG1, 0xb2c5);
-    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0xb2c5);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0x0200);
+
+    isp_writew(qts, ISP_REG_BUS_CFG1, 0x0100);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0x0100);
 
     isp_writew(qts, ISP_REG_BUS_CFG1, 0x0000);
     g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0x0000);
@@ -3006,8 +3005,8 @@ int main(int argc, char **argv)
                         NULL, test_both_bars_alias_one_register_file);
     qtest_add_data_func("sn0/isp12160/three-banks-hold-distinct-words", NULL,
                         test_three_banks_hold_distinct_words);
-    qtest_add_data_func("sn0/isp12160/cfg1-reads-back-all-bits", NULL,
-                        test_cfg1_reads_back_all_bits);
+    qtest_add_data_func("sn0/isp12160/cfg1-retains-only-the-bank-select", NULL,
+                        test_cfg1_retains_only_the_bank_select);
     qtest_add_data_func("sn0/isp12160/soft-reset-clears-banks-and-cfg1", NULL,
                         test_soft_reset_clears_banks_and_cfg1);
     qtest_add_data_func("sn0/isp12160/flat-dma-registers-are-unimplemented",
