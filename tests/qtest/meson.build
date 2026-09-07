@@ -229,6 +229,8 @@ qtests_mipsel = qtests_mips
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
+  (config_all_devices.has_key('CONFIG_USB_OHCI_PCI') ?
+    ['usb-lucent-ohci-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
