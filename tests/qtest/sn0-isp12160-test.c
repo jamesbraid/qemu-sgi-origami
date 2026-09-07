@@ -2326,13 +2326,13 @@ static void test_a_failure_on_one_channel_leaves_the_other_alone(
  */
 #define THROTTLE_BPS_READ   1024
 
-static QTestState *isp12160_start_with_throttled_disks(DiskPair *disks)
-{
-    QTestState *qts;
-    g_autofree char *args = NULL;
+/* Named so a test can take the channel-1 disk away again. */
+#define THROTTLED_DISK1_ID  "hd1"
 
-    disks_create(disks);
-    args = g_strdup_printf(
+/* Separate from the start-up below, so a migration can name the same set. */
+static char *isp12160_throttled_disk_args(const DiskPair *disks)
+{
+    return g_strdup_printf(
         MACHINE
         " -object throttle-group,id=tg,x-bps-read=%u"
         " -blockdev driver=file,node-name=f0,filename=%s"
@@ -2340,8 +2340,17 @@ static QTestState *isp12160_start_with_throttled_disks(DiskPair *disks)
         " -device scsi-hd,bus=scsi.2,scsi-id=1,drive=t0"
         " -blockdev driver=file,node-name=f1,filename=%s"
         " -blockdev driver=throttle,node-name=t1,throttle-group=tg,file=f1"
-        " -device scsi-hd,bus=scsi.3,scsi-id=1,drive=t1",
+        " -device scsi-hd,bus=scsi.3,scsi-id=1,drive=t1,id=" THROTTLED_DISK1_ID,
         THROTTLE_BPS_READ, disks->path[0], disks->path[1]);
+}
+
+static QTestState *isp12160_start_with_throttled_disks(DiskPair *disks)
+{
+    QTestState *qts;
+    g_autofree char *args = NULL;
+
+    disks_create(disks);
+    args = isp12160_throttled_disk_args(disks);
 
     qts = qtest_init(args);
     aim_window_at_memory_bar(qts);
@@ -2970,6 +2979,405 @@ static void test_migration_preserves_distinct_state(const void *data)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+/*
+ * The backlog. A response ring of four slots holds three entries, so five
+ * completions leave two waiting for room. The request ring stops being
+ * consumed while any completion is held, and both the held entries and
+ * the unconsumed request survive migration.
+ */
+#define BACKLOG_RESP_SLOTS      4
+
+/*
+ * A throttled read costs about four tenths of a second, so a second
+ * apiece is generous for the ones still behind the full ring. The stall
+ * observation only has to outlast a consume, which is synchronous.
+ */
+#define READ_THROTTLE_SLACK_US  (1000 * 1000)
+#define STALL_OBSERVATION_US    (300 * 1000)
+
+/*
+ * Mailbox 5 answers the adapter's response producer index, the same
+ * register wait_next_status() polls. Real time, not the guest clock: what
+ * the caller is waiting on is a block filter's own timer.
+ */
+static void wait_for_response_producer(QTestState *qts, uint16_t prod)
+{
+    gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
+
+    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != prod) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(10 * 1000);
+    }
+}
+
+/*
+ * A recovery command arriving on a ring that has an entry it has not
+ * taken in. Retiring requests is no time to start a command: the entry
+ * is still the guest's, so no retirement answer may be written for it,
+ * and it has to run normally once the command is over.
+ *
+ * Reaching that state takes some doing. The adapter refuses new entries
+ * while any completion is held, so a full response ring stalls the ring
+ * but also stops a retirement from taking anything in -- the same
+ * observation either way, which proves nothing. What is needed is a
+ * stalled entry with the backlog already gone, and re-initialising the
+ * response queue is the one thing a guest can do that discards held
+ * completions without also letting consumption resume. The reads whose
+ * answers it discards are only scaffolding; the two the test reads back
+ * are the aborted command and the entry the abort must not have touched.
+ *
+ * The throttle group passes THROTTLE_BPS_READ bytes a second, and a read
+ * queued behind it waits (bytes already accounted - THROTTLE_BPS_READ/10)
+ * / THROTTLE_BPS_READ seconds. The three reads are sized to open a window
+ * wide enough to act inside:
+ *
+ *   fill    one sector, admitted at once, fills the response ring
+ *   widen   four sectors, admitted 0.4 s later and then held, and its
+ *           size is what pushes the one after it out
+ *   victim  one sector, not admitted until 2.4 s, so still in flight
+ *
+ * STALL_SETTLE_US lands between the last two, 0.8 s after the backlog
+ * forms and 1.2 s before the victim would finish.
+ */
+#define STALL_RESP_SLOTS        2
+#define STALL_RESP_SLOTS_AFTER  4
+#define STALL_WIDEN_SECTORS     4
+#define STALL_SETTLE_US         (1200 * 1000)
+
+/* Handles for this test, distinct from the backlog test's above. */
+#define STALL_UA_HANDLE         0x000000a0
+#define STALL_FILL_HANDLE       0x000000b1
+#define STALL_WIDEN_HANDLE      0x000000b2
+#define STALL_VICTIM_HANDLE     0x000000b3
+#define STALL_STRANDED_HANDLE   0x000000b4
+
+/*
+ * The response queue re-initialised while the rings are live. Not
+ * init_one_queue(): that writes every input mailbox from 1 upwards, and
+ * with a live ring mailboxes 4 and 5 are the request producer and the
+ * response consumer rather than parking places, so writing zeros there
+ * unpublishes the ring and acknowledges responses. The command itself
+ * reads only the count and the four address words.
+ */
+static void reinit_response_queue(QTestState *qts, uint16_t count,
+                                  uint64_t iova)
+{
+    isp_writew(qts, ISP_MAILBOX(1), count);
+    isp_writew(qts, ISP_MAILBOX(2), (uint16_t)(iova >> 16));
+    isp_writew(qts, ISP_MAILBOX(3), (uint16_t)iova);
+    isp_writew(qts, ISP_MAILBOX(6), (uint16_t)(iova >> 48));
+    isp_writew(qts, ISP_MAILBOX(7), (uint16_t)(iova >> 32));
+    isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_INIT_RSP_QUEUE_A64);
+    isp_writew(qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+}
+
+/*
+ * The read still in flight has to stay in flight until the command under
+ * test arrives. The re-initialisation above put the response producer back
+ * to zero, so anything posted since means the throttle window closed
+ * early: the fixture has stopped building the state under test, rather
+ * than the adapter having taken the stranded entry in.
+ */
+static void assert_stall_fixture_holds(QTestState *qts, const char *before)
+{
+    unsigned prod = isp_readw(qts, ISP_REG_RESPONSE_QUEUE);
+
+    if (prod != 0) {
+        g_error("stalled-ring fixture: response producer is %u before the "
+                "%s, so the in-flight read already posted; the %d us settle "
+                "no longer lands inside the throttle window",
+                prod, before, STALL_SETTLE_US);
+    }
+}
+
+/* A read of more than one sector, placed but not published. */
+static void place_wide_read(QTestState *qts, uint32_t handle, unsigned channel,
+                            uint32_t buf_phys, unsigned sectors)
+{
+    uint8_t cdb[10] = { SCSI_READ_10 };
+    const RingSeg seg = { DIRECT64(buf_phys), sectors * SECTOR_BYTES };
+
+    put_lba10(cdb, 0, sectors);
+    place_a64(qts, ring.rqst_next, handle, channel, DISK_TARGET, 0, cdb,
+              sizeof(cdb), ISP_REQ_CONTROL_DATA_IN, &seg, 1);
+}
+
+static void test_recovery_with_a_stalled_ring_consumes_nothing(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts;
+    const uint16_t in[] = { ISP_DEVICE_WORD(0, DISK_TARGET, 0) };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    const uint32_t stranded_buf = BUF_PHYS + 6 * SECTOR_BYTES;
+    uint16_t stalled_cursor;
+
+    qts = isp12160_start_with_throttled_disks(&disks);
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0,
+                 ISP_QUEUE_ENTRY_SIZE * STALL_RESP_SLOTS_AFTER);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                STALL_RESP_SLOTS, true);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, STALL_UA_HANDLE);
+
+    /* One usable slot, so the second read to finish is held behind it. */
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, 7 * SECTOR_BYTES);
+    place_read(qts, STALL_FILL_HANDLE, 0, BUF_PHYS);
+    place_wide_read(qts, STALL_WIDEN_HANDLE, 0, BUF_PHYS + SECTOR_BYTES,
+                    STALL_WIDEN_SECTORS);
+    place_read(qts, STALL_VICTIM_HANDLE, 0, BUF_PHYS + 5 * SECTOR_BYTES);
+    publish_requests(qts);
+
+    wait_for_response_producer(qts,
+        (ring.resp_next + STALL_RESP_SLOTS - 1) % STALL_RESP_SLOTS);
+    g_usleep(STALL_SETTLE_US);
+
+    /*
+     * Published while a completion is held, so it is not taken in. Read
+     * back at once rather than after a pause: the mailbox write consumes
+     * what it is going to consume before it returns, and waiting only
+     * gives the victim less time to still be in flight.
+     */
+    stalled_cursor = isp_readw(qts, ISP_REG_REQUEST_QUEUE);
+    place_read(qts, STALL_STRANDED_HANDLE, 0, stranded_buf);
+    publish_requests(qts);
+    g_assert_cmpuint(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==,
+                     stalled_cursor);
+
+    /*
+     * Discards the backlog, and the two answers in it with it, without
+     * freeing the stranded entry: the response queue starts empty again
+     * and the request ring is still sitting on that entry.
+     */
+    reinit_response_queue(qts, STALL_RESP_SLOTS_AFTER, DIRECT64(RESP_PHYS));
+    ring.resp_len = STALL_RESP_SLOTS_AFTER;
+    ring.resp_next = 0;
+    g_assert_cmpuint(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==,
+                     stalled_cursor);
+
+    assert_stall_fixture_holds(qts, "abort");
+
+    /* Retires the victim, which is the only command still in flight. */
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_DEVICE, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    /*
+     * The victim's retirement, and nothing else from the abort. An
+     * adapter that took the stranded entry in while it was retiring
+     * answers this one too, with the abort's own completion code.
+     */
+    g_assert_cmphex(wait_next_status(qts, status), ==, STALL_VICTIM_HANDLE);
+    expect_retired(status, ISP_IOCB_ABORTED);
+
+    /* Taken in after the command, and run like any other read. */
+    g_assert_cmphex(wait_next_status(qts, status), ==, STALL_STRANDED_HANDLE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    expect_survivor_payload(qts, stranded_buf, DISK0_SECTOR0_FILL);
+    expect_no_further_status(qts);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * A device removed while the request ring has an entry it has not taken
+ * in. Purging the leaving device's requests drains its block backend, and
+ * a command finishing on another target inside that drain reaches the
+ * deferred resume, so the removal has to hold that resume off rather than
+ * let it hand work to a device on its way out.
+ *
+ * The state is built the way the abort test above builds it, and for the
+ * same reasons: a full response ring with a completion held behind it to
+ * stall the entry, the response queue then re-initialised in place so the
+ * backlog is gone while the entry stays untaken. The read still in flight
+ * is on the disk being removed this time, so the purge has something to
+ * wait for instead of returning at once.
+ *
+ * What this does not do is make the collision happen. The resume runs
+ * from a bottom half that a command finishing on its own schedules, and
+ * such a bottom half runs at the next turn of the main loop, so it is
+ * never still pending when a later qtest command arrives; landing one
+ * inside the removal's drain would need a completion timed to a window
+ * milliseconds wide, which nothing here can arrange.
+ *
+ * What it does pin is the rest of the contract, and that is not free:
+ * with the removal left as the plain unplug callback nothing resumes
+ * consumption afterwards at all, the entry below is never taken in, and
+ * the wait for its answer runs out.
+ */
+#define UNPLUG_UA_CHANNEL0      0x000000c0
+#define UNPLUG_UA_CHANNEL1      0x000000c1
+#define UNPLUG_FILL_HANDLE      0x000000c2
+#define UNPLUG_WIDEN_HANDLE     0x000000c3
+#define UNPLUG_PURGED_HANDLE    0x000000c4
+#define UNPLUG_STRANDED_HANDLE  0x000000c5
+
+static void test_unplug_with_a_stalled_ring_takes_nothing_in(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    const uint32_t stranded_buf = BUF_PHYS + 6 * SECTOR_BYTES;
+    uint16_t stalled_cursor;
+
+    qts = isp12160_start_with_throttled_disks(&disks);
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0,
+                 ISP_QUEUE_ENTRY_SIZE * STALL_RESP_SLOTS_AFTER);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                STALL_RESP_SLOTS, true);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, UNPLUG_UA_CHANNEL0);
+    absorb_unit_attention(qts, 1, DISK_TARGET, 0, UNPLUG_UA_CHANNEL1);
+
+    /*
+     * The third read is on channel 1, the disk that leaves, and the second
+     * one's four sectors are what keep it queued that long.
+     */
+    qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, 7 * SECTOR_BYTES);
+    place_read(qts, UNPLUG_FILL_HANDLE, 0, BUF_PHYS);
+    place_wide_read(qts, UNPLUG_WIDEN_HANDLE, 0, BUF_PHYS + SECTOR_BYTES,
+                    STALL_WIDEN_SECTORS);
+    place_read(qts, UNPLUG_PURGED_HANDLE, 1, BUF_PHYS + 5 * SECTOR_BYTES);
+    publish_requests(qts);
+
+    wait_for_response_producer(qts,
+        (ring.resp_next + STALL_RESP_SLOTS - 1) % STALL_RESP_SLOTS);
+    g_usleep(STALL_SETTLE_US);
+
+    /* Published while a completion is held, so it is not taken in. */
+    stalled_cursor = isp_readw(qts, ISP_REG_REQUEST_QUEUE);
+    place_read(qts, UNPLUG_STRANDED_HANDLE, 0, stranded_buf);
+    publish_requests(qts);
+    g_assert_cmpuint(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==,
+                     stalled_cursor);
+
+    /* Discards the backlog; the stranded entry is still the guest's. */
+    reinit_response_queue(qts, STALL_RESP_SLOTS_AFTER, DIRECT64(RESP_PHYS));
+    ring.resp_len = STALL_RESP_SLOTS_AFTER;
+    ring.resp_next = 0;
+    g_assert_cmpuint(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==,
+                     stalled_cursor);
+
+    assert_stall_fixture_holds(qts, "device removal");
+
+    qtest_qmp_assert_success(qts,
+        "{ 'execute': 'device_del', 'arguments': { 'id': %s } }",
+        THROTTLED_DISK1_ID);
+
+    /*
+     * The read that went with the disk may or may not have an answer:
+     * draining a throttle filter restarts its queue, so the purge races
+     * the read it is cancelling, and either the cancellation wins and the
+     * host is told nothing -- a purge is not a completion it asked for --
+     * or the read finishes first and reports normally. Both are the SCSI
+     * core's call rather than this adapter's, so one entry for that handle
+     * is allowed here and nothing else is.
+     */
+    if (wait_next_status(qts, status) == UNPLUG_PURGED_HANDLE) {
+        g_assert_cmphex(wait_next_status(qts, status), ==,
+                        UNPLUG_STRANDED_HANDLE);
+    } else {
+        g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==,
+                        UNPLUG_STRANDED_HANDLE);
+    }
+
+    /* Taken in after the removal, and run like any other read. */
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    expect_survivor_payload(qts, stranded_buf, DISK0_SECTOR0_FILL);
+    expect_no_further_status(qts);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+static void test_full_ring_holds_completions_and_migrates_them(const void *data)
+{
+    DiskPair disks;
+    g_autofree char *args = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
+    const uint32_t reads[] = { 0x91, 0x92, 0x93, 0x94, 0x95 };
+    uint16_t stalled_cursor;
+    uint16_t full;
+    unsigned i;
+
+    disks_create(&disks);
+    args = isp12160_throttled_disk_args(&disks);
+    dir = g_dir_make_tmp("isp12160-backlog-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init(args);
+    aim_window_at_memory_bar(from);
+    qtest_memset(from, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(from, RESP_PHYS, 0,
+                 ISP_QUEUE_ENTRY_SIZE * BACKLOG_RESP_SLOTS);
+    init_queues(from, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                BACKLOG_RESP_SLOTS, true);
+    absorb_unit_attention(from, 0, DISK_TARGET, 0, 0x90);
+
+    /*
+     * One slot is reserved, so this is the producer index of a full ring,
+     * and nothing moves it again until the guest acknowledges something.
+     */
+    full = (ring.resp_next + BACKLOG_RESP_SLOTS - 1) % BACKLOG_RESP_SLOTS;
+
+    /* Five reads into a ring with three usable slots. */
+    for (i = 0; i < ARRAY_SIZE(reads); i++) {
+        qtest_memset(from, BUF_PHYS + i * SECTOR_BYTES, WRAP_SENTINEL,
+                     SECTOR_BYTES);
+        place_read(from, reads[i], 0, BUF_PHYS + i * SECTOR_BYTES);
+        if ((i + 1) % (RQST_SLOTS - 1) == 0 || i + 1 == ARRAY_SIZE(reads)) {
+            publish_requests(from);
+        }
+    }
+
+    /* Wait for the ring to fill, then for the rest to finish behind it. */
+    wait_for_response_producer(from, full);
+    g_usleep(READ_THROTTLE_SLACK_US *
+             (ARRAY_SIZE(reads) - (BACKLOG_RESP_SLOTS - 1)));
+
+    /* A further request is not consumed while completions are held. */
+    stalled_cursor = isp_readw(from, ISP_REG_REQUEST_QUEUE);
+    submit_a64(from, ring.rqst_next, 0x96, 0, DISK_TARGET, 0, cdb,
+               sizeof(cdb), 0, NULL, 0);
+    g_usleep(STALL_OBSERVATION_US);
+    g_assert_cmpuint(isp_readw(from, ISP_REG_REQUEST_QUEUE), ==,
+                     stalled_cursor);
+
+    to = qtest_initf("%s -incoming %s", args, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    migrate_stopped_vm(from, uri);
+    qtest_quit(from);
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+
+    /* The three ring entries, then the two held ones, then the stalled TUR. */
+    for (i = 0; i < ARRAY_SIZE(reads); i++) {
+        g_assert_cmphex(wait_next_status(to, status), ==, reads[i]);
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                        ISP_IOCB_COMPLETE);
+        expect_survivor_payload(to, BUF_PHYS + i * SECTOR_BYTES,
+                                DISK0_SECTOR0_FILL);
+    }
+    g_assert_cmphex(wait_next_status(to, status), ==, 0x96);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    expect_no_further_status(to);
+
+    qtest_quit(to);
+    disks_remove(&disks);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3080,6 +3488,15 @@ int main(int argc, char **argv)
                         test_retired_handle_is_reusable);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
+    qtest_add_data_func(
+        "sn0/isp12160/full-ring-holds-completions-and-migrates-them", NULL,
+        test_full_ring_holds_completions_and_migrates_them);
+    qtest_add_data_func(
+        "sn0/isp12160/recovery-with-a-stalled-ring-consumes-nothing", NULL,
+        test_recovery_with_a_stalled_ring_consumes_nothing);
+    qtest_add_data_func(
+        "sn0/isp12160/unplug-with-a-stalled-ring-takes-nothing-in", NULL,
+        test_unplug_with_a_stalled_ring_takes_nothing_in);
 
     return g_test_run();
 }
