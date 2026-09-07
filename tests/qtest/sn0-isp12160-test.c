@@ -937,6 +937,7 @@ static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
     g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_VERIFY_CHECKSUM, header_wraps,
                              ARRAY_SIZE(header_wraps)), !=, ISP_MBOX_COMPLETE);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), !=, ISP_MBOX_TEST_FAILED);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1)), ==, header_wraps[0]);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, NOT_THE_ANSWER);
     isp_mbox_ack(qts);
 
@@ -952,6 +953,7 @@ static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
     g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_VERIFY_CHECKSUM, span_wraps,
                              ARRAY_SIZE(span_wraps)), !=, ISP_MBOX_COMPLETE);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), !=, ISP_MBOX_TEST_FAILED);
+    g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1)), ==, span_wraps[0]);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, NOT_THE_ANSWER);
     isp_mbox_ack(qts);
 
@@ -1221,9 +1223,13 @@ static void test_submission_while_locked_is_ignored(const void *data)
 #define ISP_IOCB_DATA_UNDERRUN      0x0015
 
 /* One bit per SCSI phase the command reached. */
-#define ISP_STATE_FLAG_GOT_BUS      0x0100
-#define ISP_STATE_FLAG_GOT_STATUS   0x1000
-#define ISP_STATE_FLAG_GOT_SENSE    0x2000
+#define ISP_STATE_FLAG_GOT_BUS            0x0100
+#define ISP_STATE_FLAG_GOT_TARGET         0x0200
+#define ISP_STATE_FLAG_SENT_CDB           0x0400
+#define ISP_STATE_FLAG_TRANSFERRED_DATA   0x0800
+#define ISP_STATE_FLAG_GOT_STATUS         0x1000
+#define ISP_STATE_FLAG_GOT_SENSE          0x2000
+#define ISP_STATE_FLAG_TRANSFER_COMPLETE  0x4000
 
 /* CHECK CONDITION, with the bit that says the entry carries sense. */
 #define ISP_SCSI_STATUS_CHECK_CONDITION 0x0202
@@ -2085,10 +2091,80 @@ static void test_underrun_reports_residual_and_leaves_sentinels(
                     ISP_IOCB_DATA_UNDERRUN);
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
     g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==, SECTOR_BYTES);
+    /*
+     * The target delivered the one sector it was asked for, but the
+     * request described a second one it never touched: data moved, but
+     * not a transfer that ran to the end of what was described.
+     */
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
+                    ISP_STATE_FLAG_SENT_CDB |
+                    ISP_STATE_FLAG_TRANSFERRED_DATA |
+                    ISP_STATE_FLAG_GOT_STATUS);
 
     qtest_memread(qts, BUF_PHYS, region, sizeof(region));
     normalise_words(region, sizeof(region));
     g_assert_cmpmem(region, sizeof(region), want, sizeof(want));
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * TEST UNIT READY moves no data: a status entry claiming a data phase for
+ * it reports work the target never did.
+ */
+static void test_zero_data_command_reports_no_data_phase(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = isp12160_start_with_disks(&disks);
+    uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
+    uint8_t cdb10[10] = { SCSI_READ_10 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    const RingSeg seg = { DIRECT64(BUF_PHYS), SECTOR_BYTES };
+    uint8_t payload[SECTOR_BYTES];
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x81);
+
+    submit_a64(qts, ring.rqst_next, 0x82, 0, DISK_TARGET, 0, cdb, sizeof(cdb),
+               0, NULL, 0);
+    wait_status(qts, 0x82, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
+                    ISP_STATE_FLAG_SENT_CDB | ISP_STATE_FLAG_GOT_STATUS);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
+
+    /*
+     * The same word on a command that did move every byte it described.
+     * read_sector() does not hand the status entry back, so this one is
+     * submitted directly.
+     */
+    put_lba10(cdb10, 0, 1);
+    qtest_memset(qts, BUF_PHYS, 0xcc, SECTOR_BYTES);
+    submit_a64(qts, ring.rqst_next, 0x83, 0, DISK_TARGET, 0, cdb10,
+               sizeof(cdb10), ISP_REQ_CONTROL_DATA_IN, &seg, 1);
+    wait_status(qts, 0x83, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
+                    ISP_STATE_FLAG_SENT_CDB |
+                    ISP_STATE_FLAG_TRANSFERRED_DATA |
+                    ISP_STATE_FLAG_GOT_STATUS |
+                    ISP_STATE_FLAG_TRANSFER_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
+
+    qtest_memread(qts, BUF_PHYS, payload, SECTOR_BYTES);
+    normalise_words(payload, SECTOR_BYTES);
+    expect_sector(payload, DISK0_SECTOR0_FILL);
 
     qtest_quit(qts);
     disks_remove(&disks);
@@ -2997,6 +3073,9 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/isp12160/underrun-reports-residual-and-leaves-sentinels", NULL,
         test_underrun_reports_residual_and_leaves_sentinels);
+    qtest_add_data_func(
+        "sn0/isp12160/zero-data-command-reports-no-data-phase", NULL,
+        test_zero_data_command_reports_no_data_phase);
     qtest_add_data_func("sn0/isp12160/check-condition-carries-real-sense",
                         NULL, test_check_condition_carries_real_sense);
     qtest_add_data_func("sn0/isp12160/missing-target-on-each-channel", NULL,
