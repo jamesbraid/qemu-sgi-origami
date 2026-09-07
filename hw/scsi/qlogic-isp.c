@@ -12,6 +12,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/queue.h"
 #include "hw/core/hotplug.h"
@@ -300,8 +301,19 @@ typedef struct QLogicISPPendingStatus {
     uint16_t status_flags;
     uint32_t resid;
     uint8_t sense[ISP_STATUS_SENSE_MAX];
-    int sense_len;
+    int32_t sense_len;
 } QLogicISPPendingStatus;
+
+/*
+ * The most completions the model can hold: one per command of the budget
+ * the adapter announces, plus the one an entry naming no target answers
+ * without becoming a command. That sum is an upper bound rather than a
+ * reachable length -- the extra answer only gets through with nothing held
+ * and at most 511 outstanding, so 512 is the most that piles up -- and it
+ * is also what a migration stream is held to, so the check refuses only
+ * counts no version of the model could have written.
+ */
+#define QLOGIC_ISP_HELD_MAX (ISP_FIRMWARE_STATUS_MAX_REQUESTS + 1)
 
 /* What one part of the family is, where the parts differ. */
 typedef struct QLogicISPInfo {
@@ -373,8 +385,45 @@ struct QLogicISPState {
     uint16_t resp_prod;    /* Next response slot this device will write. */
     uint16_t resp_cons;    /* Next response slot the guest has acknowledged. */
 
-    /* Not migrated: real hardware never reaches the condition. */
+    /* Completions waiting for response room, oldest first. */
     QTAILQ_HEAD(, QLogicISPPendingStatus) pending_status;
+
+    /*
+     * The same backlog as a counted array, which is the form it migrates
+     * in: the count is bounded by a field the loader checks before it
+     * reads an entry, so no stream can make the load allocate more than
+     * the model itself could hold.
+     * Meaningful only across a save or a load.
+     */
+    uint32_t held_count;
+    QLogicISPPendingStatus held_wire[QLOGIC_ISP_HELD_MAX];
+
+    /*
+     * A command finishing on its own frees one of the announced budget's
+     * slots, and the ring may be stalled on it. Resuming here rather than
+     * from the completion callback keeps the consume loop out of the SCSI
+     * core's own call: freeing a request can happen part-way through a
+     * device's purge, where starting a fresh command would be wrong.
+     */
+    QEMUBH *resume_bh;
+
+    /*
+     * Set while a recovery command is retiring requests or resetting a
+     * bus. Cancelling a request polls the block layer, which runs bottom
+     * halves, so the resume above can otherwise land in the middle of one.
+     */
+    bool recovering;
+
+    /*
+     * The consume loop steps its cursor only once an entry has been
+     * dispatched, so a second walk started inside it would issue the same
+     * entry twice. A guarded bottom half only records re-entry and runs
+     * anyway, and any nested block-layer poll can reach one, so the loop
+     * refuses re-entry itself and repeats on the way out instead.
+     * Transient: neither flag travels in the migration stream.
+     */
+    bool processing;
+    bool reprocess;
 
     /* In-flight requests, for the guest-reset and migration paths. */
     QTAILQ_HEAD(, QLogicISPRequest) requests;
@@ -468,6 +517,9 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->resp_cons = 0;
 
     qlogic_isp_drop_pending_status(s);
+
+    /* Nothing left to resume into: the guest rebuilds both rings. */
+    qemu_bh_cancel(s->resume_bh);
 
     qlogic_isp_update_irq(s);
 }
@@ -674,6 +726,34 @@ static void qlogic_isp_reset_target(QLogicISPState *s, int channel,
         if (sdev->id == target) {
             device_cold_reset(DEVICE(sdev));
         }
+    }
+}
+
+/*
+ * Removing a device purges its requests and drains its block backend, and
+ * a command finishing on another target inside that drain would otherwise
+ * resume consumption and hand a fresh command to the device being purged.
+ * The flag the recovery commands use holds the resume off until the
+ * removal is over.
+ *
+ * Saved and restored rather than simply cleared: cancelling a request
+ * polls, so a removal can be dispatched from inside a recovery command
+ * that is still retiring, and clearing the flag there would let the ring
+ * be consumed in the middle of it. The mailbox tail re-arms the resume
+ * when that command finishes, which is why only an unplug that owns the
+ * flag schedules one here.
+ */
+static void qlogic_isp_channel_unplug(HotplugHandler *hotplug_dev,
+                                      DeviceState *dev, Error **errp)
+{
+    QLogicISPState *s = QLOGIC_ISP(hotplug_dev);
+    bool was_recovering = s->recovering;
+
+    s->recovering = true;
+    qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
+    s->recovering = was_recovering;
+    if (!was_recovering) {
+        qemu_bh_schedule(s->resume_bh);
     }
 }
 
@@ -901,6 +981,13 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->resp_prod = 0;
         s->resp_cons = 0;
         /* From here reads of the pointer address answer resp_prod. */
+
+        /*
+         * The backlog goes with the ring it was waiting for, and nothing
+         * resumes consumption here: that is the state
+         * test_recovery_with_a_stalled_ring_consumes_nothing and
+         * test_unplug_with_a_stalled_ring_takes_nothing_in are built on.
+         */
         qlogic_isp_drop_pending_status(s);
         trace_qlogic_isp_queue_init("response", addr, s->resp_len);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
@@ -946,6 +1033,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             completion = ISP_IOCB_RESET;
         }
 
+        /* Held off until the tail below; see the resume bottom half. */
+        s->recovering = true;
         retired = qlogic_isp_retire(s, channel, target, lun, handle,
                                     completion);
         trace_qlogic_isp_recovery(cmd, channel, target, lun,
@@ -986,6 +1075,8 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             channel = s->mailbox[2];
         }
 
+        /* Held off across the bus reset too, not just the retirements. */
+        s->recovering = true;
         retired = qlogic_isp_retire(s, channel, -1, -1, -1, ISP_IOCB_RESET);
         trace_qlogic_isp_recovery(cmd, channel, -1, -1, 0, retired);
         bus_cold_reset(BUS(&s->chan[channel].bus));
@@ -999,6 +1090,17 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     }
 
     trace_qlogic_isp_mbox_complete(cmd, s->mailbox[0]);
+
+    /*
+     * A retirement through the cancel path schedules nothing, so this is
+     * the only resume a recovery command gets. Whatever it freed, the
+     * request ring is looked at once the command has finished retiring
+     * and resetting rather than part-way through it.
+     */
+    if (s->recovering) {
+        s->recovering = false;
+        qemu_bh_schedule(s->resume_bh);
+    }
 
     s->semaphore = ISP_SEMAPHORE_LOCK;
     s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
@@ -1372,6 +1474,15 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
                            sense_len);
 
     qlogic_isp_free_request(req);
+
+    /*
+     * The one retirement that has to unstall the request ring by itself.
+     * A cancellation does not: a recovery command re-arms the resume once
+     * it has finished retiring, a removal arms its own once its purge is
+     * done, and a reset is taking the ring away rather than freeing room
+     * in it.
+     */
+    qemu_bh_schedule(s->resume_bh);
 }
 
 /*
@@ -1803,12 +1914,52 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     return true;
 }
 
+static unsigned qlogic_isp_outstanding(QLogicISPState *s)
+{
+    QLogicISPRequest *req;
+    unsigned n = 0;
+
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        n++;
+    }
+    return n;
+}
+
+/*
+ * The budget the adapter announced in its firmware status is also the
+ * ceiling on what it will take in: with that many commands outstanding,
+ * or with a completion already waiting for response room, the request
+ * ring is left where it is until something retires or the guest frees a
+ * slot. Held completions therefore never exceed the requests that were
+ * in flight when the ring filled by more than one: an entry naming no
+ * target, or carrying no entry type the model knows, is answered without
+ * becoming a command, so one such answer can still be held after this
+ * check let it through. It only gets through with nothing held and the
+ * budget not yet full, so the list reaches 512 at most; the budget plus
+ * one is the bound the load check enforces, not a length reachable here.
+ */
+static bool qlogic_isp_can_take_request(QLogicISPState *s)
+{
+    unsigned outstanding = qlogic_isp_outstanding(s);
+    unsigned held = 0;
+    QLogicISPPendingStatus *pending;
+
+    QTAILQ_FOREACH(pending, &s->pending_status, next) {
+        held++;
+    }
+    if (held == 0 && outstanding < ISP_FIRMWARE_STATUS_MAX_REQUESTS) {
+        return true;
+    }
+    trace_qlogic_isp_request_stalled(s->rqst_cons, outstanding, held);
+    return false;
+}
+
 /*
  * No exact-equality exit terminates for every guest-supplied index and
  * entry_count -- a stride sharing a factor with the ring length loops
  * forever -- so the walk is budgeted by the count of published entries.
  */
-static void qlogic_isp_process_requests(QLogicISPState *s)
+static void qlogic_isp_consume_requests(QLogicISPState *s)
 {
     uint16_t prod;
     uint16_t budget;
@@ -1826,6 +1977,10 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         hwaddr addr = qlogic_isp_rqst_entry_addr(s, s->rqst_cons);
         uint8_t entry_type;
         uint8_t entry_count;
+
+        if (!qlogic_isp_can_take_request(s)) {
+            return;
+        }
 
         entry_type = qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_TYPE);
         entry_count = qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_COUNT);
@@ -1872,6 +2027,44 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
         s->rqst_cons = (s->rqst_cons + entry_count) % s->rqst_len;
         budget -= entry_count;
     }
+}
+
+/*
+ * A command that finishes inside the consume loop asks for consumption to
+ * resume from within it, on a cursor the loop has not stepped yet. The
+ * request is recorded and served once the loop returns instead.
+ */
+static void qlogic_isp_process_requests(QLogicISPState *s)
+{
+    if (s->processing) {
+        s->reprocess = true;
+        return;
+    }
+    s->processing = true;
+    do {
+        s->reprocess = false;
+        qlogic_isp_consume_requests(s);
+    } while (s->reprocess);
+    s->processing = false;
+}
+
+/*
+ * The deferred resume a finished command asks for. Every state refused
+ * here has a caller that either resumes consumption itself or leaves
+ * nothing to consume: a recovery command re-arms this on its way out, an
+ * adapter that is unrealised or in reset is about to lose its rings, and
+ * a zero length is a ring the guest has not built yet.
+ */
+static void qlogic_isp_resume_bh(void *opaque)
+{
+    QLogicISPState *s = opaque;
+    DeviceState *dev = DEVICE(s);
+
+    if (s->rqst_len == 0 || s->recovering ||
+        !qdev_is_realized(dev) || device_is_in_reset(dev)) {
+        return;
+    }
+    qlogic_isp_process_requests(s);
 }
 
 static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
@@ -1972,6 +2165,7 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
         s->resp_cons = val % s->resp_len;
         trace_qlogic_isp_response_ring(s->resp_prod, s->resp_cons);
         qlogic_isp_drain_pending_status(s);
+        qlogic_isp_process_requests(s);
         return;
     }
 
@@ -2116,6 +2310,9 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     QTAILQ_INIT(&s->pending_status);
     QTAILQ_INIT(&s->requests);
 
+    s->resume_bh = qemu_bh_new_guarded(qlogic_isp_resume_bh, s,
+                                       &DEVICE(dev)->mem_reentrancy_guard);
+
     assert(info->nchannels <= QLOGIC_ISP_MAX_CHANNELS);
     for (i = 0; i < info->nchannels; i++) {
         s->chan[i].dev = s;
@@ -2149,6 +2346,7 @@ static void qlogic_isp_exit(PCIDevice *dev)
 {
     QLogicISPState *s = QLOGIC_ISP(dev);
 
+    qemu_bh_delete(s->resume_bh);
     qlogic_isp_drop_pending_status(s);
 }
 
@@ -2179,15 +2377,107 @@ static const VMStateDescription vmstate_qlogic_isp_isp12160 = {
 };
 
 /*
+ * One completion the guest has not been given room for. Its version is
+ * the entry format's own: a struct field is loaded at the version its
+ * descriptor names, and the stream version that first carried the array
+ * belongs to the array field instead.
+ */
+static const VMStateDescription vmstate_qlogic_isp_pending_status = {
+    .name = "qlogic-isp/pending-status",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(handle, QLogicISPPendingStatus),
+        VMSTATE_UINT16(scsi_status, QLogicISPPendingStatus),
+        VMSTATE_UINT16(completion, QLogicISPPendingStatus),
+        VMSTATE_UINT16(state_flags, QLogicISPPendingStatus),
+        VMSTATE_UINT16(status_flags, QLogicISPPendingStatus),
+        VMSTATE_UINT32(resid, QLogicISPPendingStatus),
+        VMSTATE_UINT8_ARRAY(sense, QLogicISPPendingStatus,
+                            ISP_STATUS_SENSE_MAX),
+        VMSTATE_INT32(sense_len, QLogicISPPendingStatus),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Flatten the backlog into the array the stream carries it in. */
+static bool qlogic_isp_pre_save(void *opaque, Error **errp)
+{
+    QLogicISPState *s = opaque;
+    QLogicISPPendingStatus *pending;
+
+    s->held_count = 0;
+    QTAILQ_FOREACH(pending, &s->pending_status, next) {
+        /* Intake stops at the bound, so the backlog cannot pass it. */
+        assert(s->held_count < QLOGIC_ISP_HELD_MAX);
+        s->held_wire[s->held_count++] = *pending;
+    }
+
+    return true;
+}
+
+/* The stream replaces the backlog rather than adding to it. */
+static bool qlogic_isp_pre_load(void *opaque, Error **errp)
+{
+    QLogicISPState *s = opaque;
+
+    qlogic_isp_drop_pending_status(s);
+    s->held_count = 0;
+
+    return true;
+}
+
+/*
+ * The count the stream offered, checked before the array field beside it
+ * is read. vmstate_load_state() walks a description's fields in the order
+ * they are declared, and a field marked VMS_MUST_EXIST whose test says no
+ * ends the load right there, so a count past the bound is refused with
+ * nothing copied into the fixed array and nothing allocated for it.
+ */
+static bool qlogic_isp_held_count_valid(void *opaque, int version_id)
+{
+    QLogicISPState *s = opaque;
+
+    return s->held_count < QLOGIC_ISP_HELD_MAX;
+}
+
+/* Rebuild the live backlog from the entries the stream carried. */
+static bool qlogic_isp_post_load(void *opaque, int version_id, Error **errp)
+{
+    QLogicISPState *s = opaque;
+    uint32_t i;
+
+    for (i = 0; i < s->held_count; i++) {
+        QLogicISPPendingStatus *pending = g_new0(QLogicISPPendingStatus, 1);
+
+        /* The stale linkage copied with it is reset by the insert. */
+        *pending = s->held_wire[i];
+        QTAILQ_INSERT_TAIL(&s->pending_status, pending, next);
+    }
+
+    memset(s->held_wire, 0, s->held_count * sizeof(s->held_wire[0]));
+    s->held_count = 0;
+
+    return true;
+}
+
+/*
  * Version 7 added resp_cons; an older stream loads with it at 0, which
  * is exactly what an unacknowledged guest means. Version 9 marks the
  * subsection below, which an older stream simply omits, so the minimum
- * stays where it was.
+ * stays where it was. Version 10 adds the held completions as a count and
+ * a bounded array; an older stream loads with none held. Nothing has to be
+ * kicked after a load: the request ring stays where the source left it
+ * until the guest acknowledges an entry or a request retires, and both of
+ * those already resume consumption.
  */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
-    .version_id = 9,
+    .version_id = 10,
     .minimum_version_id = 6,
+    .pre_save_errp = qlogic_isp_pre_save,
+    .pre_load_errp = qlogic_isp_pre_load,
+    .post_load_errp = qlogic_isp_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, QLogicISPState),
         VMSTATE_UINT16(bus_cfg1, QLogicISPState),
@@ -2209,6 +2499,12 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(rqst_cons, QLogicISPState),
         VMSTATE_UINT16(resp_prod, QLogicISPState),
         VMSTATE_UINT16_V(resp_cons, QLogicISPState, 7),
+        VMSTATE_UINT32_V(held_count, QLogicISPState, 10),
+        VMSTATE_VALIDATE("held completion count within the ring rule",
+                         qlogic_isp_held_count_valid),
+        VMSTATE_STRUCT_VARRAY_UINT32(held_wire, QLogicISPState, held_count,
+                                     10, vmstate_qlogic_isp_pending_status,
+                                     QLogicISPPendingStatus),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -2231,7 +2527,7 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
     rc->phases.hold = qlogic_isp_reset_hold;
     /* Taken from the SCSI bus, which supplies exactly this unplug. */
     hc->pre_plug = qlogic_isp_channel_pre_plug;
-    hc->unplug = qdev_simple_device_unplug_cb;
+    hc->unplug = qlogic_isp_channel_unplug;
     dc->vmsd = &vmstate_qlogic_isp;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
