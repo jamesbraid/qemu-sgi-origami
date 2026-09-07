@@ -1127,6 +1127,7 @@ static void test_io8_ioc3_timekeeper(const void *data)
 
 static void test_io8_ioc3_nvram_drive(const void *data)
 {
+    const char *drive_options = data;
     g_autofree char *path = NULL;
     g_autofree char *quoted = NULL;
     g_autofree char *extra = NULL;
@@ -1138,7 +1139,7 @@ static void test_io8_ioc3_nvram_drive(const void *data)
     g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     quoted = g_shell_quote(path);
-    extra = g_strdup_printf("-drive if=none,id=sgi-nvram0,file=%s,format=raw",
+    extra = g_strdup_printf("-drive %s,file=%s,format=raw", drive_options,
                             quoted);
 
     qts = machine_start_with(prom_path, extra);
@@ -1219,6 +1220,9 @@ static void test_io8_ioc3_superio_interrupt(const void *data)
                     IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
     g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
                                   XBRIDGE_INT_STATUS) & 1, ==, 1);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_IOC3_ETH_PIN), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     pending);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
@@ -1307,6 +1311,9 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
                                   XBRIDGE_INT_STATUS) &
                     (1U << XBRIDGE_IOC3_ETH_PIN), ==,
                     1U << XBRIDGE_IOC3_ETH_PIN);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_IOC3_SUPERIO_PIN), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     pending);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
@@ -2003,8 +2010,10 @@ int main(int argc, char **argv)
                         test_io8_ioc3_attachment);
     qtest_add_data_func("origin300/ioc3/timekeeper-compatibility", NULL,
                         test_io8_ioc3_timekeeper);
-    qtest_add_data_func("origin300/ioc3/nvram-drive-persistence", NULL,
-                        test_io8_ioc3_nvram_drive);
+    qtest_add_data_func("origin300/ioc3/nvram-drive-persistence/named",
+                        "if=none,id=sgi-nvram0", test_io8_ioc3_nvram_drive);
+    qtest_add_data_func("origin300/ioc3/nvram-drive-persistence/legacy-mtd",
+                        "if=mtd", test_io8_ioc3_nvram_drive);
     qtest_add_data_func("origin300/ioc3/serial-chardev-indices", NULL,
                         test_io8_ioc3_serial_chardevs);
     qtest_add_data_func("origin300/ioc3/superio-interrupt", NULL,
