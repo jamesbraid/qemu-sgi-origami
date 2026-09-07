@@ -23,6 +23,8 @@ slow_qtests = {
   # sn0-qtest-cpu-test runs four sequential TCG cases with 30s polling
   # deadlines. Allow startup and teardown headroom beyond those 120s.
   'sn0-qtest-cpu-test': 180,
+  # Thirty-two MTTCG resets took 43s alone and exceeded 60s under host load.
+  'sn0-warm-reset-test': 180,
   # The hub and IOC3 suites have grown past that budget: 115-119s (hub) and
   # ~106s (IOC3) measured under host load, so the 120s ceiling kills them
   # with zero failing subtests. Give both twice the measured wall time.
@@ -53,9 +55,10 @@ slow_qtests = {
 }
 
 qtest_priorities = {
-  # This four-vCPU MTTCG test needs a longer timeout, but promoting it with
+  # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
   # long SN0 device suites causes host contention and unrelated timeouts.
   'sn0-qtest-cpu-test': 60,
+  'sn0-warm-reset-test': 60,
 }
 
 qtests_generic = [
@@ -299,6 +302,7 @@ qtests_mips64 = \
                                                    'sn0-model-test',
                                                    'sn0-smp-test',
                                                    'sn0-cross-node-test',
+                                                   'sn0-warm-reset-test',
                                                    'sn0-migration-test',
                                                    'sn0-snapshot-test',
                                                    'sn0-ds1685-test',
