@@ -441,17 +441,39 @@ static void wait_for_cpu_gpr(QTestState *qts, unsigned int cpu,
     g_assert_cmphex(cpu_gpr(qts, cpu, name), ==, expected);
 }
 
+static uint64_t wait_for_cpu_gpr_change(QTestState *qts, unsigned int cpu,
+                                        const char *name, uint64_t previous)
+{
+    uint64_t current = previous;
+
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        current = cpu_gpr(qts, cpu, name);
+        if (current != previous) {
+            return current;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(current, !=, previous);
+    return current;
+}
+
 static void stop_vm(QTestState *qts)
 {
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
     qtest_qmp_eventwait(qts, "STOP");
 }
 
-static void run_vm_for_10ms(QTestState *qts)
+static uint64_t run_vm_until_cpu_gpr_changes(QTestState *qts,
+                                              unsigned int cpu,
+                                              const char *name,
+                                              uint64_t previous)
 {
+    uint64_t current;
+
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    g_usleep(10 * 1000);
+    current = wait_for_cpu_gpr_change(qts, cpu, name, previous);
     stop_vm(qts);
+    return current;
 }
 
 static void stop_vm_if_running(QTestState *qts)
@@ -922,44 +944,43 @@ static void test_cpu_b_follows_enable(const void *data)
 
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    run_vm_for_10ms(qts);
-    g_assert_cmphex(cpu_gpr(qts, 0, "t0"), !=, 0);
+    run_vm_until_cpu_gpr_changes(qts, 0, "t0", 0);
     stopped = cpu_gpr(qts, 1, "t0");
     g_assert_cmphex(stopped, ==, 0);
 
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    run_vm_for_10ms(qts);
+    run_vm_until_cpu_gpr_changes(qts, 0, "t0", cpu_gpr(qts, 0, "t0"));
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, stopped);
 
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    run_vm_for_10ms(qts);
+    run_vm_until_cpu_gpr_changes(qts, 1, "t0", stopped);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, stopped);
 
     stopped = cpu_gpr(qts, 1, "t0");
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    run_vm_for_10ms(qts);
+    run_vm_until_cpu_gpr_changes(qts, 1, "t0", stopped);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, stopped);
 
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    g_usleep(10 * 1000);
+    wait_for_cpu_gpr_change(qts, 1, "t0", cpu_gpr(qts, 1, "t0"));
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    g_usleep(10 * 1000);
+    wait_for_cpu_gpr_change(qts, 0, "t0", cpu_gpr(qts, 0, "t0"));
     stop_vm(qts);
     stopped = cpu_gpr(qts, 1, "t0");
-    run_vm_for_10ms(qts);
+    run_vm_until_cpu_gpr_changes(qts, 0, "t0", cpu_gpr(qts, 0, "t0"));
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, stopped);
 
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
     qtest_system_reset(qts);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
-    run_vm_for_10ms(qts);
+    run_vm_until_cpu_gpr_changes(qts, 1, "t0", 0);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, 0);
 
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
     qtest_system_reset(qts);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
-    run_vm_for_10ms(qts);
+    run_vm_until_cpu_gpr_changes(qts, 0, "t0", 0);
     g_assert_cmphex(cpu_gpr(qts, 0, "t0"), !=, 0);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
 
@@ -1166,7 +1187,7 @@ static void test_cpu_b_enabled_migration(const void *data)
         path, "-accel tcg,thread=multi -no-shutdown -S -incoming defer");
 
     qtest_writeq(from, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    run_vm_for_10ms(from);
+    run_vm_until_cpu_gpr_changes(from, 1, "t0", 0);
     g_assert_cmphex(cpu_gpr(from, 1, "t0"), !=, 0);
 
     qtest_qmp_assert_success(to,
@@ -1181,11 +1202,11 @@ static void test_cpu_b_enabled_migration(const void *data)
     stopped = cpu_gpr(to, 1, "t0");
     g_assert_cmphex(stopped, !=, 0);
     qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    run_vm_for_10ms(to);
+    run_vm_until_cpu_gpr_changes(to, 0, "t0", cpu_gpr(to, 0, "t0"));
     g_assert_cmphex(cpu_gpr(to, 1, "t0"), ==, stopped);
 
     qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    run_vm_for_10ms(to);
+    run_vm_until_cpu_gpr_changes(to, 1, "t0", stopped);
     g_assert_cmphex(cpu_gpr(to, 1, "t0"), !=, stopped);
 
     qtest_quit(from);
