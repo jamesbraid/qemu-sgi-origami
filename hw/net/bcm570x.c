@@ -894,8 +894,18 @@ static void bcm570x_arm_status_tick(Bcm570xState *s)
               MIN(ns, BCM570X_STATUS_TICK_MAX_NS));
 }
 
-/* The driver programs the receive coalescing tick budget in microseconds. */
+/* The driver programs both coalescing tick budgets in microseconds. */
 #define BCM570X_COAL_TICK_NS 1000
+
+/* Retry later instead of spinning on an address the guest has not repaired. */
+static void bcm570x_arm_coal_retry(QEMUTimer *timer, uint32_t ticks)
+{
+    uint64_t ns = ticks ? (uint64_t)ticks * BCM570X_COAL_TICK_NS :
+                  BCM570X_COAL_TICK_NS;
+
+    timer_mod(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              MIN(ns, BCM570X_STATUS_TICK_MAX_NS));
+}
 
 /*
  * Flush a coalesced receive group: report every frame accumulated since the last
@@ -905,12 +915,19 @@ static void bcm570x_arm_status_tick(Bcm570xState *s)
  */
 static void bcm570x_rx_coal_flush(Bcm570xState *s)
 {
+    uint32_t ticks;
+
     if (s->rx_coal_pending == 0) {
         return;
     }
-    s->rx_coal_pending = 0;
-    timer_del(&s->coal_timer);
-    bcm570x_dma_status_block(s);
+    if (bcm570x_dma_status_block(s)) {
+        s->rx_coal_pending = 0;
+        timer_del(&s->coal_timer);
+        return;
+    }
+
+    ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
+    bcm570x_arm_coal_retry(&s->coal_timer, ticks);
 }
 
 static void bcm570x_coal_timer(void *opaque)
@@ -934,12 +951,19 @@ static void bcm570x_coal_timer(void *opaque)
  */
 static void bcm570x_tx_coal_flush(Bcm570xState *s)
 {
+    uint32_t ticks;
+
     if (s->tx_coal_pending == 0) {
         return;
     }
-    s->tx_coal_pending = 0;
-    timer_del(&s->tx_coal_timer);
-    bcm570x_dma_status_block(s);
+    if (bcm570x_dma_status_block(s)) {
+        s->tx_coal_pending = 0;
+        timer_del(&s->tx_coal_timer);
+        return;
+    }
+
+    ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
+    bcm570x_arm_coal_retry(&s->tx_coal_timer, ticks);
 }
 
 static void bcm570x_tx_coal_timer(void *opaque)

@@ -2255,6 +2255,49 @@ static void test_transmit_coalescing_zero_ticks(const void *data)
     close(sv[0]);
 }
 
+/* A failed status DMA must leave a completed transmit group retryable. */
+static void test_transmit_coalescing_status_dma_retry(const void *data)
+{
+    const unsigned int ticks = 50;
+    uint8_t frame[64], got[sizeof(frame)];
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+    Bcm b;
+    int sv[2];
+
+    memset(frame, 0x9b, sizeof(frame));
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 1, ticks);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, UNMAPPED_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, UNMAPPED_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+
+    txc_post(&b, frame, sizeof(frame), 1);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+    g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 1);
+    g_assert_cmphex(read_status_tag(&b), ==, 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 /*
  * The MAC status word's change bits are latches, and the driver clears one by
  * writing it back. Storing what it wrote instead leaves every bit it tried to
@@ -4120,6 +4163,63 @@ static void test_receive_coalescing_zero_ticks(const void *data)
     close(sv[0]);
 }
 
+/* A failed status DMA must leave a completed receive group retryable. */
+static void test_receive_coalescing_status_dma_retry(const void *data)
+{
+    const unsigned int ticks = 50;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+    Bcm b;
+    int sv[2];
+
+    memset(frame, 0x6d, sizeof(frame));
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    put32le(bd, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, UNMAPPED_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, UNMAPPED_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, ticks);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_ret_end(&b, 0);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 1);
+    g_assert_cmphex(read_status_tag(&b), ==, 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 /*
  * Rebuild only the status-DMA plumbing after a reset. The coalescing controls
  * stay at their reset values, so any update before the default one-second
@@ -5199,6 +5299,8 @@ int main(int argc, char **argv)
                         test_transmit_coalescing_timer);
     qtest_add_data_func("/bcm570x/transmit-coalescing-zero-ticks", NULL,
                         test_transmit_coalescing_zero_ticks);
+    qtest_add_data_func("/bcm570x/transmit-coalescing-status-dma-retry", NULL,
+                        test_transmit_coalescing_status_dma_retry);
     qtest_add_data_func("/bcm570x/receive-coalescing-cost", NULL,
                         test_receive_coalescing_cost);
     qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,
@@ -5259,6 +5361,8 @@ int main(int argc, char **argv)
                         test_receive_coalescing_timer);
     qtest_add_data_func("/bcm570x/receive-coalescing-zero-ticks", NULL,
                         test_receive_coalescing_zero_ticks);
+    qtest_add_data_func("/bcm570x/receive-coalescing-status-dma-retry", NULL,
+                        test_receive_coalescing_status_dma_retry);
     qtest_add_data_func("/bcm570x/global-reset-cancels-rx-coalescing", NULL,
                         test_global_reset_cancels_receive_coalescing);
     qtest_add_data_func("/bcm570x/system-reset-cancels-tx-coalescing", NULL,
