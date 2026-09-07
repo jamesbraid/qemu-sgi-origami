@@ -312,10 +312,12 @@ Linux's ladder turns it into which failure to report. The
 status-flags word is distinct: IRIX accepts an incomplete completion
 as a benign empty slot only when its selection-timeout bit is set,
 a stricter check than any of the public parallel-SCSI drivers.
-Sense-data validity rides in the SCSI status word's own bit 9. A
-missing target is answered incomplete with bus-reached plus
+Sense-data validity rides in the SCSI status word's own bit 9. On the
+ISP1040, a missing target is answered incomplete with bus-reached plus
 selection-timeout -- the one answer all four guests read as an empty
-slot rather than a fault.
+slot rather than a fault. The ISP12160's datasheet leaves this
+status-flags word unresolved for a missing target; the model answers
+incomplete there with bus-reached alone and a zero status-flags word.
 
 The model applies each part's own rule for what a completed command's
 phase bits mean, per its reviewed datasheet. The ISP12160's datasheet

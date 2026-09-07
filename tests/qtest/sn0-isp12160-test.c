@@ -2243,6 +2243,7 @@ static void test_missing_target_on_each_channel(const void *data)
                         ISP_IOCB_INCOMPLETE);
         g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
                         ISP_STATE_FLAG_GOT_BUS);
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
     }
 
     qtest_quit(qts);

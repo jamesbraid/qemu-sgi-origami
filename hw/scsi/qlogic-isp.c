@@ -316,9 +316,10 @@ typedef struct QLogicISPInfo {
     bool reject_busy_mailbox;       /* a held result refuses a submission */
     bool a64_ram_load;              /* the 0x0009 RAM load is in the set */
     bool recovery_mailboxes;        /* the 0x0015-0x0017 abort commands */
-    bool derived_phase_flags;   /* per-command phase bits, not all-phases */
-    uint16_t cfg1_write_mask;   /* bits a bus config 1 write retains */
-    bool flat_ram_transfers;   /* 0x0001 load, 0x0003 dump RAM are in the set */
+    bool derived_phase_flags;       /* per-command phase bits, not all-phases */
+    uint16_t cfg1_write_mask;       /* bits a bus config 1 write retains */
+    bool flat_ram_transfers;        /* 0x0001/0x0003 RAM pair is in the set */
+    bool missing_target_timeout;    /* absent target's status has 0x0040 */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -1644,10 +1645,14 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     if (!sdev) {
         /*
          * GOT_BUS alone is Linux's DID_BAD_TARGET; the timeout bit beside
-         * it is what lets IRIX treat the empty slot as benign.
+         * it is what lets IRIX treat the empty slot as benign. The
+         * ISP12160's datasheet leaves this status-flag word unresolved
+         * for this case, so it is left clear there.
          */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
+                               ISP_STATE_FLAG_GOT_BUS,
+                               info->missing_target_timeout ?
+                               ISP_STATUS_FLAG_TIMEOUT : 0,
                                0, NULL, 0);
         return true;
     }
@@ -1769,7 +1774,9 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     if (!sdev) {
         /* The same missing-target answer as the 32-bit path. */
         qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS, ISP_STATUS_FLAG_TIMEOUT,
+                               ISP_STATE_FLAG_GOT_BUS,
+                               info->missing_target_timeout ?
+                               ISP_STATUS_FLAG_TIMEOUT : 0,
                                0, NULL, 0);
         return true;
     }
@@ -2249,6 +2256,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .derived_phase_flags = false,
       .cfg1_write_mask = ISP_BUS_CFG1_WRITE_MASK,
       .flat_ram_transfers = true,
+      .missing_target_timeout = true,
       .fw_version = { 1, 0, 0 } },
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
@@ -2258,6 +2266,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .recovery_mailboxes = true, .derived_phase_flags = true,
       .cfg1_write_mask = ISP_BUS_CFG1_BANK1080_MASK,
       .flat_ram_transfers = false,
+      .missing_target_timeout = false,
       .fw_version = { 10, 4, 0 } },
 };
 
