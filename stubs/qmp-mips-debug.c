@@ -17,3 +17,10 @@ MipsDebugBreakpointList *qmp_x_query_mips_debug_breakpoints(Error **errp)
     error_setg(errp, "MIPS debug breakpoints are not supported on this target");
     return NULL;
 }
+
+MipsTlbState *qmp_x_query_mips_tlb(int64_t cpu_index, bool has_shadow,
+                                   bool shadow, Error **errp)
+{
+    error_setg(errp, "MIPS TLB queries are not supported on this target");
+    return NULL;
+}

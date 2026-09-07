@@ -136,6 +136,15 @@ static inline void sn0_emit_mtc0(SN0Image *p, unsigned int rt, unsigned int rd)
     }
 }
 
+static inline void sn0_emit_dmtc0(SN0Image *p, unsigned int rt,
+                                  unsigned int rd)
+{
+    sn0_emit(p, 0x40a00000 | (rt << 16) | (rd << 11));
+    for (unsigned int i = 0; i < 4; i++) {
+        sn0_emit_nop(p);
+    }
+}
+
 static inline void sn0_emit_mfc0(SN0Image *p, unsigned int rt, unsigned int rd)
 {
     sn0_emit(p, 0x40000000 | (rt << 16) | (rd << 11));
@@ -211,6 +220,14 @@ static inline void sn0_emit_break(SN0Image *p)
 static inline void sn0_emit_tlbwi(SN0Image *p)
 {
     sn0_emit(p, 0x42000002);
+    for (unsigned int i = 0; i < 4; i++) {
+        sn0_emit_nop(p);
+    }
+}
+
+static inline void sn0_emit_tlbwr(SN0Image *p)
+{
+    sn0_emit(p, 0x42000006);
     for (unsigned int i = 0; i < 4; i++) {
         sn0_emit_nop(p);
     }
