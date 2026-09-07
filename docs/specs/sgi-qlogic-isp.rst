@@ -304,6 +304,23 @@ missing target is answered incomplete with bus-reached plus
 selection-timeout -- the one answer all four guests read as an empty
 slot rather than a fault.
 
+The model applies each part's own rule for what a completed command's
+phase bits mean, per its reviewed datasheet. The ISP12160's datasheet
+forbids a phase flag for work the command skipped: its status entry
+always reports bus, target, CDB and status, adds the data-transferred
+bit only once a byte has moved, adds transfer-complete only once every
+byte the request described has moved, and adds the sense bit only
+once sense data was collected. A zero-data command such as TEST UNIT
+READY therefore reports neither data bit even on success.
+
+The ISP1040's datasheet instead records the all-phases mask a
+completed command traverses: every phase bit except sense is set, and
+sense alone is gated on the completion actually carrying sense.
+Applying that mask to a zero-data command -- raising bits for a data
+phase that never ran -- is an acknowledged approximation of that part
+rather than a case its datasheet excerpt tests directly, and stands
+until revisited against the ISP1040's own datasheet.
+
 Completions that find the response ring full are queued and posted
 as the guest's acknowledgements free slots; real hardware never
 reaches that case (it completes one command at a time with real bus
