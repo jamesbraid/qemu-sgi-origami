@@ -52,6 +52,12 @@ static const VMStateDescription vmstate_sn1_machine = {
     },
 };
 
+static void sn1_cpu_unhalt(CPUState *cs, run_on_cpu_data data)
+{
+    cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
+    cs->halted = 0;
+}
+
 static void sn1_cpu_b_enable(void *opaque, int n, int level)
 {
     SN1MachineState *s = opaque;
@@ -60,12 +66,7 @@ static void sn1_cpu_b_enable(void *opaque, int n, int level)
     BQL_LOCK_GUARD();
     if (level && !s->cpu_b_enabled) {
         s->cpu_b_enabled = true;
-        cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
-        cs->halted = 0;
-        qemu_cpu_kick(cs);
-        if (current_cpu && current_cpu != cs) {
-            cpu_exit(current_cpu);
-        }
+        async_safe_run_on_cpu(cs, sn1_cpu_unhalt, RUN_ON_CPU_NULL);
     } else if (!level && s->cpu_b_enabled) {
         s->cpu_b_enabled = false;
         cpu_interrupt(cs, CPU_INTERRUPT_HALT);
