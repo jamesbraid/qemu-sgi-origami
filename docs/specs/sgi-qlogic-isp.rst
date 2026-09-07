@@ -219,10 +219,11 @@ subsection, ``qlogic-isp/isp12160``, needed only when the part is
 banked or carries two channels, so it never appears in an ISP1040
 migration stream. The subsection carries the SXP1 and DMA banks the
 ISP1040 does not have, and the per-channel reset-delay values that
-mailbox command ``0x003a`` sets. The top-level ``qlogic-isp`` stream's
-version becomes 9 with its minimum version still 6; the ISP1040's own
-field list is unchanged, so an ISP1040 stream at any supported version
-loads exactly as it did before the ISP12160 existed.
+mailbox command ``0x003a`` sets. The held completions are not in it:
+they travel as top-level fields both parts carry, a count of zero for
+an adapter whose response ring never filled. The top-level
+``qlogic-isp`` stream is version 10 and its minimum version is still
+6, so a stream written before either addition loads as it did.
 
 Several of the choices above are compatibility selections where the
 driver-sourced evidence does not establish the hardware's own answer.
@@ -341,14 +342,30 @@ phase that never ran -- is an acknowledged approximation of that part
 rather than a case its datasheet excerpt tests directly, and stands
 until revisited against the ISP1040's own datasheet.
 
-Completions that find the response ring full are queued and posted
-as the guest's acknowledgements free slots; real hardware never
-reaches that case (it completes one command at a time with real bus
-latency), but a model with none can. Transfers the fabric refuses
-are dropped, never guessed at: a refused CDB read drops the request
-with the consume index left on the entry, a refused status store
-neither advances the produce index nor raises the interrupt, and
-each drop is logged with its entry address.
+A completion that finds the response ring full is held in the order
+it finished and posted once the guest's acknowledgement frees a
+slot. The number that can pile up is bounded by the budget the
+adapter announces in its firmware status: the model consumes no
+further request entry while any completion is held, or while that
+many commands are outstanding, and resumes when a held completion is
+posted or a request retires. Held completions therefore never exceed
+the commands that were in flight when the ring filled by more than
+one -- an entry naming no target is answered without becoming a
+command, and only while fewer than 512 are outstanding -- so at
+most the announced 512. A stream offering
+more than that on load is refused. Real hardware never reaches the
+full-ring case -- it completes one command at a time with real bus
+latency -- but a model with none can. Re-initialising the response
+queue while the rings are live is model behaviour, not a documented
+hardware answer: it discards every held completion without posting it,
+and a request ring stalled behind that backlog stays stalled until the
+guest writes the request-in pointer or acknowledges a response.
+
+Transfers the fabric refuses are dropped, never guessed at: a
+refused CDB read drops the request with the consume index left on
+the entry, a refused status store neither advances the produce index
+nor raises the interrupt, and each drop is logged with its entry
+address.
 
 The reported request-queue capacity is 512: no source states a real
 adapter's number, and OpenBSD clamps whatever is reported to 512, so
@@ -381,5 +398,9 @@ contradicts them.
 In-flight requests migrate with the SCSI core's request stream; the
 segment count read back on load is bounded by the entry format's
 ceiling and a stream claiming more fails the migration. Held
-completions do not migrate -- the condition that creates them is one
-real hardware never reaches.
+completions migrate too, in the top-level ``qlogic-isp`` stream rather
+than the ISP12160 subsection, and a stream written before they existed
+loads with none held. The backlog travels as a counted array bounded to
+512 entries, the most the ring rule above allows; a stream claiming
+more is refused before a single entry is read, so a stream can never
+make the load allocate more than the model itself could hold.
