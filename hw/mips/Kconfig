@@ -55,6 +55,15 @@ config SGI_SN0
     select SGI_XBOW
     select TIGON
 
+config SGI_SN1
+    bool
+    default y
+    depends on MIPS64 && TARGET_BIG_ENDIAN
+    imply TEST_DEVICES
+    select SGI_BEDROCK
+    select SGI_L1
+    select SGI_XBRIDGE
+
 config FULOONG
     bool
     default y
