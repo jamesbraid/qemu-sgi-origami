@@ -627,24 +627,24 @@ static void bcm570x_swap_span(uint8_t *p, unsigned int span,
  * Bridge's plain space when there is one, the slot's own (swap-corrected)
  * space otherwise. See plain_dma for the scalar and payload distinction.
  */
-static void bcm570x_dma_read_buf(Bcm570xState *s, uint64_t addr,
-                                 void *buf, unsigned int len)
+static MemTxResult bcm570x_dma_read_buf(Bcm570xState *s, uint64_t addr,
+                                        void *buf, unsigned int len)
 {
     if (s->plain_dma) {
-        dma_memory_read(s->plain_dma, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
-    } else {
-        pci_dma_read(PCI_DEVICE(s), addr, buf, len);
+        return dma_memory_read(s->plain_dma, addr, buf, len,
+                               MEMTXATTRS_UNSPECIFIED);
     }
+    return pci_dma_read(PCI_DEVICE(s), addr, buf, len);
 }
 
-static void bcm570x_dma_write_buf(Bcm570xState *s, uint64_t addr,
-                                  const void *buf, unsigned int len)
+static MemTxResult bcm570x_dma_write_buf(Bcm570xState *s, uint64_t addr,
+                                         const void *buf, unsigned int len)
 {
     if (s->plain_dma) {
-        dma_memory_write(s->plain_dma, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
-    } else {
-        pci_dma_write(PCI_DEVICE(s), addr, buf, len);
+        return dma_memory_write(s->plain_dma, addr, buf, len,
+                                MEMTXATTRS_UNSPECIFIED);
     }
+    return pci_dma_write(PCI_DEVICE(s), addr, buf, len);
 }
 
 /*
@@ -714,28 +714,32 @@ static bool bcm570x_frame_swap(Bcm570xState *s, bool *bswap, bool *wswap)
  * It reverses whole 32-bit words at their physical alignment, so read the
  * word-aligned span the fragment falls in, swap it, and take the fragment out.
  */
-static void bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
-                                   uint64_t phys, uint8_t *dst, unsigned int len)
+static MemTxResult bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
+                                          uint64_t phys, uint8_t *dst,
+                                          unsigned int len)
 {
     bool bswap, wswap;
     uint64_t astart;
     unsigned int lead, span;
     uint8_t tmp[BCM570X_MAX_FRAME + 8];
+    MemTxResult result;
 
     if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        bcm570x_dma_read_buf(s, phys, dst, len);
-        return;
+        return bcm570x_dma_read_buf(s, phys, dst, len);
     }
     astart = phys & ~(uint64_t)3;
     lead = (unsigned int)(phys - astart);
     span = (lead + len + 3) & ~3u;
     if (span > sizeof(tmp)) {
-        pci_dma_read(pci, phys, dst, len);
-        return;
+        return pci_dma_read(pci, phys, dst, len);
     }
-    pci_dma_read(pci, astart, tmp, span);
+    result = pci_dma_read(pci, astart, tmp, span);
+    if (result != MEMTX_OK) {
+        return result;
+    }
     bcm570x_swap_span(tmp, span, bswap, wswap);
     memcpy(dst, tmp + lead, len);
+    return MEMTX_OK;
 }
 
 /*
@@ -744,9 +748,9 @@ static void bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
  * padding around the fragment is written too; it lands outside the frame the
  * driver reads and is harmless.
  */
-static void bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
-                                    uint64_t phys, const uint8_t *src,
-                                    unsigned int len)
+static MemTxResult bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
+                                           uint64_t phys, const uint8_t *src,
+                                           unsigned int len)
 {
     bool bswap, wswap;
     uint64_t astart;
@@ -754,20 +758,18 @@ static void bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
     uint8_t tmp[BCM570X_MAX_FRAME + 8];
 
     if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        bcm570x_dma_write_buf(s, phys, src, len);
-        return;
+        return bcm570x_dma_write_buf(s, phys, src, len);
     }
     astart = phys & ~(uint64_t)3;
     lead = (unsigned int)(phys - astart);
     span = (lead + len + 3) & ~3u;
     if (span > sizeof(tmp)) {
-        pci_dma_write(pci, phys, src, len);
-        return;
+        return pci_dma_write(pci, phys, src, len);
     }
     memset(tmp, 0, span);
     memcpy(tmp + lead, src, len);
     bcm570x_swap_span(tmp, span, bswap, wswap);
-    pci_dma_write(pci, astart, tmp, span);
+    return pci_dma_write(pci, astart, tmp, span);
 }
 
 /*
@@ -784,6 +786,7 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 {
     uint8_t blk[BCM570X_STATUS_BLK_SIZE];
     uint64_t base;
+    uint8_t next_tag;
 
     if (!(bcm570x_regfile_read(s, BCM570X_HCC_MODE) & BCM570X_HCC_MODE_ENABLE)) {
         return false;
@@ -794,12 +797,18 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
                bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_LO));
 
     memset(blk, 0, sizeof(blk));
-    s->status_tag++;
+    next_tag = s->status_tag + 1;
     bcm570x_dma_st32(s, blk, BCM570X_STATFLAG_UPDATED);
-    bcm570x_dma_st32(s, blk + BCM570X_STATUS_TAG_OFF, s->status_tag);
+    bcm570x_dma_st32(s, blk + BCM570X_STATUS_TAG_OFF, next_tag);
     bcm570x_dma_st16(s, blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
     bcm570x_dma_st16(s, blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
-    bcm570x_dma_write_buf(s, base, blk, sizeof(blk));
+    if (bcm570x_dma_write_buf(s, base, blk, sizeof(blk)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: status block write at 0x%" PRIx64
+                      " failed; update not posted\n", base);
+        return false;
+    }
+    s->status_tag = next_tag;
 
     /*
      * The block now carries an update the driver has not taken. The line asserts
@@ -1127,6 +1136,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     uint16_t frame_flags = 0;
     unsigned int frame_mss = 0;
     bool frame_dropped = false;
+    uint16_t frame_start;
 
     if (ring_len == 0 || prod >= ring_len) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1145,14 +1155,22 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                                       BCM570X_RCB_HOSTADDR_LO));
 
     s->tx_busy = true;
+    frame_start = s->tx_cons;
     while (s->tx_cons != prod && walked < ring_len) {
-        uint8_t bd[BCM570X_TXBD_SIZE];
+        uint8_t bd[BCM570X_TXBD_SIZE] = { 0 };
         uint64_t buf_addr;
         uint16_t len, flags;
 
-        bcm570x_dma_read_buf(s,
-                             ring_base + (uint64_t)s->tx_cons *
-                             BCM570X_TXBD_SIZE, bd, sizeof(bd));
+        if (bcm570x_dma_read_buf(s,
+                ring_base + (uint64_t)s->tx_cons * BCM570X_TXBD_SIZE,
+                bd, sizeof(bd)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: transmit descriptor %u read failed; "
+                          "ring walk stopped\n", s->tx_cons);
+            s->tx_cons = frame_start;
+            s->tx_busy = false;
+            return;
+        }
         buf_addr = ((uint64_t)bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_HI)
                     << 32) |
                    bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_LO);
@@ -1160,7 +1178,15 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         flags = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_FLAGS);
 
         if (!frame_dropped && frame_len + len <= sizeof(frame)) {
-            bcm570x_frame_dma_read(pci, s, buf_addr, frame + frame_len, len);
+            if (bcm570x_frame_dma_read(pci, s, buf_addr, frame + frame_len,
+                                       len) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "bcm570x: transmit payload read at 0x%" PRIx64
+                              " failed; frame left ready to retry\n", buf_addr);
+                s->tx_cons = frame_start;
+                s->tx_busy = false;
+                return;
+            }
             frame_len += len;
         } else if (!frame_dropped) {
             /*
@@ -1195,6 +1221,9 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         }
 
         s->tx_cons = (s->tx_cons + 1) % ring_len;
+        if (flags & BCM570X_TXBDFLAG_END) {
+            frame_start = s->tx_cons;
+        }
         walked++;
     }
     s->tx_busy = false;
@@ -1820,13 +1849,27 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                      BCM570X_RCB_HOSTADDR_LO));
 
     /* The posted buffer's host address, from the chosen ring's descriptor. */
-    bcm570x_dma_read_buf(s, std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
-                         std_bd, sizeof(std_bd));
+    memset(std_bd, 0, sizeof(std_bd));
+    if (bcm570x_dma_read_buf(s,
+                            std_base + (uint64_t)idx * BCM570X_RXBD_SIZE,
+                            std_bd, sizeof(std_bd)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: receive descriptor %u read failed; "
+                      "frame dropped without consuming it\n", idx);
+        return size;
+    }
     buf_addr = ((uint64_t)bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_HI)
                 << 32) |
                bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_LO);
 
-    bcm570x_frame_dma_write(pci, s, buf_addr, buf, framelen);
+    if (bcm570x_frame_dma_write(pci, s, buf_addr, buf,
+                                framelen) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: receive payload write at 0x%" PRIx64
+                      " failed; frame dropped without consuming descriptor "
+                      "%u\n", buf_addr, idx);
+        return size;
+    }
     csum = bcm570x_rx_offload_checksum(buf, framelen, &rx_flags);
 
     /* The completed descriptor uses the selected DMA route's scalar layout. */
@@ -1840,8 +1883,15 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_OPAQUE,
                      bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_OPAQUE));
 
-    bcm570x_dma_write_buf(s, ret_base + (uint64_t)s->status_rx_prod *
-                          BCM570X_RXBD_SIZE, ret_bd, sizeof(ret_bd));
+    if (bcm570x_dma_write_buf(s,
+                             ret_base + (uint64_t)s->status_rx_prod *
+                             BCM570X_RXBD_SIZE, ret_bd,
+                             sizeof(ret_bd)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: receive completion %u write failed; "
+                      "descriptor not consumed\n", s->status_rx_prod);
+        return size;
+    }
 
     if (on_jumbo) {
         s->rx_jumbo_cons =

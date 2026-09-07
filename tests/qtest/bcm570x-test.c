@@ -172,6 +172,7 @@
 #define BCM_RX_STD_RCB_LO       0x2454u
 #define BCM_RX_STD_RCB_MAXLEN   0x2458u
 #define BCM_SRAM_RX_RETURN_RCB  0x0200u
+#define BCM_TXBD_SIZE           16
 #define BCM_RXBD_SIZE           32
 #define BCM_RXBD_LEN            0x08   /* idx_len word: length in the low half */
 #define BCM_RXBD_IDX            0x0a   /* idx_len word: ring index in the high half */
@@ -226,6 +227,7 @@
 #define STD_STALE_BUF_PHYS    0x00280000ULL
 #define JUMBO_STALE_BUF_PHYS  0x00290000ULL
 #define JUMBO_BUF_SIZE        9216u
+#define UNMAPPED_PHYS         0x02000000ULL
 #define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
 /* A ring and buffer area big enough to time a burst rather than a packet. */
@@ -1118,6 +1120,61 @@ static void test_transmit_round_trip(const void *data)
     /* Raw bytes prove the order: little-endian 1 is {0x01, 0x00}. */
     g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF], ==, 0x01);
     g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF + 1], ==, 0x00);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/* A refused transmit-descriptor read must leave the doorbell retryable. */
+static void test_transmit_descriptor_dma_error(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[60];
+    uint8_t bd[BCM_TXBD_SIZE] = { 0 };
+    uint8_t got[sizeof(frame)];
+    unsigned int i;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 7 + 1);
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0,
+                   UNMAPPED_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   UNMAPPED_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
+    net_socket_expect_no_frame(sv[0]);
+    g_assert_cmphex(read_status_tag(&b), ==, 0);
+
+    put32le(bd + 0, TX_BUF_PHYS >> 32);
+    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_END);
+    put16le(bd + 10, sizeof(frame));
+    qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
+    qtest_memwrite(b.qts, TX_BUF_PHYS, frame, sizeof(frame));
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   TX_RING_PHYS & 0xffffffff);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
 
     bcm_close(&b);
     close(sv[0]);
@@ -2905,6 +2962,56 @@ static void test_receive_round_trip(const void *data)
     close(sv[0]);
 }
 
+/* A refused completion write leaves the posted receive slot retryable. */
+static void test_receive_completion_dma_error(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t landed[sizeof(frame)];
+    uint8_t ret[BCM_RXBD_SIZE];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0,
+                   UNMAPPED_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   UNMAPPED_PHYS & 0xffffffff);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    for (i = 0; i < 200; i++) {
+        qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
+        if (memcmp(landed, frame, sizeof(frame)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    g_assert_cmphex(read_rx_prod(&b), ==, 0);
+
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 1);
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 /*
  * Interrupt coalescing on receive. The host-coalescing block batches completed
  * receive descriptors into one status-block update and one interrupt instead of
@@ -3399,6 +3506,35 @@ static void test_status_block_gated_by_hcc(const void *data)
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
     g_assert_cmphex(get32le(sb) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
+
+    bcm_close(&b);
+}
+
+/* A failed status write advances neither its tag nor the interrupt state. */
+static void test_status_dma_error(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev user,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             BCM_SLOT));
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, UNMAPPED_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, UNMAPPED_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_cmphex(read_status_tag(&b), ==, 1);
+    g_assert_true(intr_line_up(b.dev));
 
     bcm_close(&b);
 }
@@ -3925,6 +4061,8 @@ int main(int argc, char **argv)
                         test_transmit_round_trip);
     qtest_add_data_func("/bcm570x/transmit-source-address", NULL,
                         test_transmit_source_address);
+    qtest_add_data_func("/bcm570x/transmit-descriptor-dma-error", NULL,
+                        test_transmit_descriptor_dma_error);
     qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
                         test_transmit_throughput);
     qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
@@ -3949,6 +4087,8 @@ int main(int argc, char **argv)
                         test_tx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
                         test_receive_round_trip);
+    qtest_add_data_func("/bcm570x/receive-completion-dma-error", NULL,
+                        test_receive_completion_dma_error);
     qtest_add_data_func("/bcm570x/receive-ring-laps", NULL,
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,
@@ -3995,6 +4135,8 @@ int main(int argc, char **argv)
                         test_interrupt_mailbox);
     qtest_add_data_func("/bcm570x/status-block-gated-by-hcc", NULL,
                         test_status_block_gated_by_hcc);
+    qtest_add_data_func("/bcm570x/status-dma-error", NULL,
+                        test_status_dma_error);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
     qtest_add_data_func("/bcm570x/migration/link-down", GINT_TO_POINTER(0),
