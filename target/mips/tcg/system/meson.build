@@ -1,5 +1,6 @@
 mips_system_ss.add(files(
   'cp0_helper.c',
+  'debug.c',
   'r10k_helper.c',
   'special_helper.c',
   'tlb_helper.c',
