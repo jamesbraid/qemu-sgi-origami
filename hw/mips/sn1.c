@@ -14,6 +14,7 @@
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/pci/pci.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
@@ -41,6 +42,9 @@
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
+#define SN1_XBRIDGE_HEAD_F 0xf
+#define SN1_IO8_USB_SLOT 5
+#define SN1_IO8_USB_PIN 5
 
 static const VMStateDescription vmstate_sn1_machine = {
     .name = "sn1-machine",
@@ -281,6 +285,22 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     }
 }
 
+static void sn1_create_io8_usb(SN1MachineState *s, MachineState *machine)
+{
+    PCIDevice *usb = pci_new(PCI_DEVFN(SN1_IO8_USB_SLOT, 0),
+                             "lucent-ohci");
+
+    object_property_add_child(OBJECT(machine), "io8-usb", OBJECT(usb));
+    qdev_connect_gpio_out_named(
+        s->xbridge, "head-f-pci-intx",
+        SN1_IO8_USB_SLOT * PCI_NUM_PINS,
+        qdev_get_gpio_in_named(s->xbridge, "head-f-pin", SN1_IO8_USB_PIN));
+    pci_realize_and_unref(usb,
+                          sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
+                                              SN1_XBRIDGE_HEAD_F),
+                          &error_fatal);
+}
+
 static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -320,6 +340,7 @@ static void origin300_init(MachineState *machine)
     }
     sn1_create_cpus(s, machine);
     sn1_create_bedrock(s, machine);
+    sn1_create_io8_usb(s, machine);
 }
 
 static void origin300_class_init(ObjectClass *oc, const void *data)

@@ -108,6 +108,48 @@
 #define WIDGET_MFG(v) (((v) >> 1) & 0x7ff)
 #define WIDGET_REV(v) ((v) >> 28)
 
+#define IO8_USB_WIDGET 0xf
+#define IO8_USB_SLOT 5
+#define IO8_USB_CFG (XTALK_WIDGET(IO8_USB_WIDGET) + 0x20000 + \
+                     IO8_USB_SLOT * 0x1000)
+#define IO8_USB_WINDOW (XTALK_WIDGET(IO8_USB_WIDGET) + 0x900000)
+#define IO8_USB_BAR 0x10000000
+#define IO8_USB_HCCA_PHYS 0x100000
+#define IO8_USB_HCCA_IOVA 0x40000000
+#define IO8_USB_HCCA_FRAME 0x80
+
+#define XBRIDGE_ATE0 0x10000
+#define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
+#define XBRIDGE_DEVICE_MEMORY (1U << 12)
+#define XBRIDGE_DEVICE_PIO_NO_SWAP (1U << 13)
+#define XBRIDGE_HOST_PORT 0xa
+#define XBRIDGE_ATE_VALID 1
+#define XBRIDGE_ATE_NO_SWAP (1U << 5)
+#define XBRIDGE_INT_STATUS 0x100
+#define XBRIDGE_INT_ENABLE 0x108
+#define XBRIDGE_INT_UPPER 0x30
+#define XBRIDGE_INT_LOWER 0x38
+#define XBRIDGE_INT_HOST(n) (0x130 + (n) * 8)
+#define XBRIDGE_USB_PIN 5
+
+#define PI_PENDING_MODIFY 0x90
+#define PI_PENDING_0 0x98
+#define PI_MASK_0_A 0xa8
+#define PI_IO_REGISTER (UINT64_C(1) << 47)
+#define PI_REMOTE_WINDOW 0x1800000
+#define PI_TEST_PENDING_BIT 17
+#define MIPS_CAUSE_HARDWARE_IRQ0 (1U << 10)
+
+#define OHCI_HC_CONTROL 0x04
+#define OHCI_HC_INTERRUPT_STATUS 0x0c
+#define OHCI_HC_INTERRUPT_ENABLE 0x10
+#define OHCI_HC_HCCA 0x18
+#define OHCI_HC_RH_DESCRIPTOR_A 0x48
+#define OHCI_CONTROL_OPERATIONAL 0x80
+#define OHCI_CONTROL_SUSPEND 0xc0
+#define OHCI_INTERRUPT_SF 0x04
+#define OHCI_INTERRUPT_MIE 0x80000000
+
 static char *prom_path;
 
 typedef struct TlbFetchCase {
@@ -492,6 +534,18 @@ static uint64_t cpu_gpr(QTestState *qts, unsigned int cpu, const char *name)
     return value;
 }
 
+static uint32_t cpu_cause(QTestState *qts, unsigned int cpu)
+{
+    g_autofree char *registers = qtest_hmp(qts, "info registers %u", cpu);
+    const char *value_text = strstr(registers, "Cause   0x");
+    uint32_t value;
+
+    g_assert_nonnull(value_text);
+    value_text += strlen("Cause   0x");
+    g_assert_cmpint(sscanf(value_text, "%" SCNx32, &value), ==, 1);
+    return value;
+}
+
 static void wait_for_cpu_gpr(QTestState *qts, unsigned int cpu,
                              const char *name, uint64_t expected)
 {
@@ -728,6 +782,133 @@ static void test_xbridge_topology(const void *data)
     xtalk_reg_write(qts, 0xf, 0x20, 0x0f00320d);
     g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
     g_assert_cmphex(xtalk_reg_read(qts, 0xf, 0x20), ==, 0x0f00320d);
+
+    qtest_quit(qts);
+}
+
+static uint32_t io8_usb_config_readl(QTestState *qts, unsigned offset)
+{
+    return qtest_readl(qts, IO8_USB_CFG + offset);
+}
+
+static void io8_usb_config_writel(QTestState *qts, unsigned offset,
+                                  uint32_t value)
+{
+    qtest_writel(qts, IO8_USB_CFG + offset, value);
+}
+
+static uint32_t io8_usb_readl(QTestState *qts, unsigned offset)
+{
+    uint8_t bytes[4];
+
+    qtest_memread(qts, IO8_USB_WINDOW + offset, bytes, sizeof(bytes));
+    return ldl_le_p(bytes);
+}
+
+static void io8_usb_writel(QTestState *qts, unsigned offset, uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_le_p(bytes, value);
+    qtest_memwrite(qts, IO8_USB_WINDOW + offset, bytes, sizeof(bytes));
+}
+
+static uint16_t io8_usb_hcca_frame(QTestState *qts)
+{
+    uint8_t bytes[2];
+
+    qtest_memread(qts, IO8_USB_HCCA_PHYS + IO8_USB_HCCA_FRAME,
+                  bytes, sizeof(bytes));
+    return lduw_le_p(bytes);
+}
+
+static void test_io8_usb_attachment(const void *data)
+{
+    static const unsigned bars[] = { 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24 };
+    uint8_t hcca[0x100] = { 0 };
+    QTestState *qts = machine_start();
+    uint32_t identity;
+    unsigned i;
+
+    identity = io8_usb_config_readl(qts, 0);
+    g_assert_cmphex(identity, ==, 0x580211c1);
+    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x25000), ==,
+                    0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, IO8_USB_CFG + 0x100), ==, 0xffffffff);
+    g_assert_cmphex(io8_usb_config_readl(qts, 8), ==, 0x0c031010);
+    g_assert_cmphex(io8_usb_config_readl(qts, 0x2c), ==, 0xffffffff);
+    g_assert_cmphex((io8_usb_config_readl(qts, 0x3c) >> 8) & 0xff, ==, 1);
+
+    for (i = 0; i < G_N_ELEMENTS(bars); i++) {
+        io8_usb_config_writel(qts, bars[i], UINT32_MAX);
+        if (i == 0) {
+            g_assert_cmphex(io8_usb_config_readl(qts, bars[i]) &
+                            0xfffffff0, !=, 0);
+            g_assert_cmphex(io8_usb_config_readl(qts, bars[i]) & 1, ==, 0);
+        } else {
+            g_assert_cmphex(io8_usb_config_readl(qts, bars[i]), ==, 0);
+        }
+    }
+    io8_usb_config_writel(qts, 0x10, IO8_USB_BAR);
+    io8_usb_config_writel(qts, 4, 6);
+    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
+                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
+                    (IO8_USB_BAR >> 20));
+    g_assert_cmphex(io8_usb_readl(qts, 0), ==, 0x10);
+    g_assert_cmphex(io8_usb_readl(qts, OHCI_HC_RH_DESCRIPTOR_A) & 0xff, ==,
+                    2);
+
+    qtest_memwrite(qts, IO8_USB_HCCA_PHYS, hcca, sizeof(hcca));
+    qtest_writeq(qts, XTALK_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
+                 IO8_USB_HCCA_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+
+    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_UPPER,
+                    XBRIDGE_HOST_PORT << 16);
+    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_LOWER,
+                    PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    xtalk_reg_write(qts, IO8_USB_WIDGET,
+                    XBRIDGE_INT_HOST(XBRIDGE_USB_PIN),
+                    (1U << 17) | PI_TEST_PENDING_BIT);
+    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_ENABLE,
+                    1U << XBRIDGE_USB_PIN);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A,
+                 UINT64_C(1) << PI_TEST_PENDING_BIT);
+
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_USB_PIN), ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    io8_usb_writel(qts, OHCI_HC_HCCA, IO8_USB_HCCA_IOVA);
+    io8_usb_writel(qts, OHCI_HC_INTERRUPT_ENABLE,
+                   OHCI_INTERRUPT_MIE | OHCI_INTERRUPT_SF);
+    io8_usb_writel(qts, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    for (i = 0; i < 64 && io8_usb_hcca_frame(qts) == 0; i++) {
+        qtest_clock_step_next(qts);
+    }
+    g_assert_cmphex(io8_usb_hcca_frame(qts), !=, 0);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_USB_PIN), ==,
+                    1U << XBRIDGE_USB_PIN);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    UINT64_C(1) << PI_TEST_PENDING_BIT);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+
+    io8_usb_writel(qts, OHCI_HC_INTERRUPT_STATUS, OHCI_INTERRUPT_SF);
+    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
+                                  XBRIDGE_INT_STATUS) &
+                    (1U << XBRIDGE_USB_PIN), ==, 0);
+    /* The guest acknowledges its selected pending bit after INTA falls. */
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY,
+                 PI_TEST_PENDING_BIT);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    io8_usb_writel(qts, OHCI_HC_CONTROL, OHCI_CONTROL_SUSPEND);
 
     qtest_quit(qts);
 }
@@ -1341,6 +1522,8 @@ int main(int argc, char **argv)
                         test_crosstalk_big_window_routes);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,
                         test_xbridge_topology);
+    qtest_add_data_func("sn1/address-map/io8-usb-attachment", NULL,
+                        test_io8_usb_attachment);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,
