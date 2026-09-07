@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/datadir.h"
@@ -32,6 +33,7 @@
 #define SN1_HUB_LOCAL_MEMORY_SIZE (256 * MiB)
 #define SN1_HUB_SPECIAL_WINDOW_SIZE (128 * MiB)
 #define SN1_PROM_SIZE UINT64_C(0x1686a8)
+#define SN1_CONFIG0_RESET_INPUT UINT32_C(0x009aa985)
 
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_SPACE_XTALK UINT64_C(0x20000000000)
@@ -112,7 +114,11 @@ static void sn1_machine_finalize(Object *obj)
 
 static void sn1_cpu_reset(void *opaque)
 {
-    cpu_reset(CPU(opaque));
+    MIPSCPU *cpu = MIPS_CPU(opaque);
+
+    cpu_reset(CPU(cpu));
+    cpu->env.CP0_Config0 = deposit32(cpu->env.CP0_Config0, 0, 25,
+                                    SN1_CONFIG0_RESET_INPUT);
 }
 
 static void sn1_machine_reset(MachineState *machine, ResetType type)
