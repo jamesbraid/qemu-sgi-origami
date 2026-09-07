@@ -202,12 +202,15 @@ static inline void sn0_emit_tlbwi(SN0Image *p)
 
 /*
  * Map one 4 KiB page pair at @vaddr onto @paddr, cached, dirty, valid and
- * global, with @asid left in EntryHi afterwards.  Clobbers t0.
+ * global, with @asid left in EntryHi afterwards.  Clobbers t0.  Returns
+ * the image offset of the tlbwi itself.
  */
-static inline void sn0_emit_map_page(SN0Image *p, unsigned int index,
-                                     uint32_t vaddr, uint32_t paddr,
-                                     unsigned int asid)
+static inline unsigned int sn0_emit_map_page(SN0Image *p, unsigned int index,
+                                             uint32_t vaddr, uint32_t paddr,
+                                             unsigned int asid)
 {
+    unsigned int tlbwi;
+
     sn0_emit_i(p, SN0_OPC_ADDIU, 0, SN0_R_T0, index);
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_INDEX);
     sn0_emit_mtc0(p, SN0_R_ZERO, SN0_CP0_PAGEMASK);
@@ -217,7 +220,9 @@ static inline void sn0_emit_map_page(SN0Image *p, unsigned int index,
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_ENTRYLO0);
     sn0_emit_i(p, SN0_OPC_ADDIU, 0, SN0_R_T0, 1); /* odd half: G only */
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_ENTRYLO1);
+    tlbwi = p->pos;
     sn0_emit_tlbwi(p);
+    return tlbwi;
 }
 
 /* Load this processor's Hub-local number (0 or 1) into @rt.  Clobbers t0. */

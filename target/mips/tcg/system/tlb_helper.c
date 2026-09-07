@@ -31,6 +31,7 @@
 #include "exec/log.h"
 #include "hw/core/cpu.h"
 #include "exec/helper-proto.h"
+#include "../trace.h"
 
 /* TLB management */
 void r4k_mips_tlb_flush_extra(CPUMIPSState *env, int first)
@@ -82,6 +83,10 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
     lo0 &= ~framemask;
     lo1 &= ~framemask;
 #endif
+
+    trace_mips_tlb_write(env_cpu(env)->cpu_index, idx, env->CP0_EntryHi,
+                         env->CP0_EntryLo0, env->CP0_EntryLo1,
+                         env->CP0_PageMask, env->active_tc.PC);
 
     /*
      * The R10000 family invalidates conflicting entries before this fill
@@ -1778,6 +1783,20 @@ void mips_cpu_do_interrupt(CPUState *cs)
      */
     if (env->cfg.exception_breaks_ll_link) {
         env->lladdr = 1;
+    }
+    if (cs->exception_index != EXCP_EXT_INTERRUPT) {
+        uint32_t asid = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+
+        trace_mips_exception(cs->cpu_index, asid, cause,
+                             mips_exception_name(cs->exception_index),
+                             last_pc, env->CP0_BadVAddr, env->CP0_Status,
+                             env->CP0_Cause);
+        if (cs->exception_index == EXCP_SYSCALL) {
+            trace_mips_syscall(cs->cpu_index, asid, last_pc,
+                               env->active_tc.gpr[2], env->active_tc.gpr[4],
+                               env->active_tc.gpr[5], env->active_tc.gpr[6],
+                               env->active_tc.gpr[7]);
+        }
     }
     if (qemu_loglevel_mask(CPU_LOG_INT)
         && cs->exception_index != EXCP_EXT_INTERRUPT) {
