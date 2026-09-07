@@ -49,9 +49,12 @@ slow_qtests = {
   'sn0-elsc-test': 120,
   # sn0-isp12160-test holds a read behind a block filter in each recovery case,
   # so its runtime tracks host load: 75.9s measured at a load average near 90,
-  # against meson's 60s default, and a timeout kill was seen there. Give it the
-  # 120s slow budget.
-  'sn0-isp12160-test': 120,
+  # against meson's 60s default, and a timeout kill was seen there. The backlog,
+  # recovery and unplug cases added later hold reads the same way, and the whole
+  # suite then measured between 45s and 108s across repeated runs on a
+  # workstation that was also building and testing other trees. 180s leaves that
+  # spread the same room the 120s left the figure it was set from.
+  'sn0-isp12160-test': 180,
 }
 
 qtest_priorities = {
