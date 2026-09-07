@@ -225,6 +225,19 @@ qtests_mips = \
 
 qtests_mipsel = qtests_mips
 
+# The XBridge qtests use test-only Crosstalk and PCI endpoints.  Keep the
+# registration visible under the device guard, then omit tests whose fixtures
+# are not present in a minimal device build.
+sn1_xbridge_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
+    ['sn1-xbridge-test', 'sn1-xbridge-chip-test',
+     'sn1-xbridge-xbow-test'] : [])
+if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+  sn1_xbridge_qtests = []
+elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
+  sn1_xbridge_qtests = ['sn1-xbridge-xbow-test']
+endif
+
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
@@ -279,13 +292,7 @@ qtests_mips64 = \
                                                    'sn0-debug-test',
                                                    'sn0-fabric-test',
                                                    'sn0-qtest-cpu-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') and
-   config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST') and
-   config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET') ?
-    ['sn1-xbridge-test', 'sn1-xbridge-chip-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') and
-   config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET') ?
-    ['sn1-xbridge-xbow-test'] : [])
+  sn1_xbridge_qtests
 
 qtests_mips64el = qtests_mips
 
