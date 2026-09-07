@@ -139,6 +139,12 @@ DMA read the fabric refuses is rejected with host interface error
 committed prefix would make the guest's own checksum blame the image
 for bytes the model invented rather than bytes the guest sent.
 
+The checksum-verification command reads that same array without a DMA
+transfer, so the same range rule applies directly: on the ISP12160 it
+refuses, with parameter error ``0x4006`` and the sum mailboxes left
+untouched, a header word or a summed span that would pass the end of
+controller RAM, instead of wrapping as the ISP1040 does.
+
 The two parts move those words in different cycles. The ISP1040 has a
 16-bit data path and runs one cycle per word in both directions; the
 ISP12160 moves the whole block in a single transfer. The distinction is
@@ -234,6 +240,11 @@ They are not claims about unobserved silicon:
   channel, and ``0x4000`` for an abort device with nothing outstanding
   -- are the selected scope for these commands, not values read back
   from a captured device.
+- The ``0x4006`` answer for a checksum header or span past the end of
+  ISP12160 controller RAM is a selection following the RAM-command
+  precedent above; the datasheet leaves the failure code open, and the
+  test pins only that the command does not complete or report a
+  checksum result.
 
 Mailboxes and queue pointers
 ============================
