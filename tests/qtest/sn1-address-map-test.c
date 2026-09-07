@@ -96,6 +96,9 @@
 #define NMI_READY_MARKER UINT64_C(0x1400)
 #define NMI_TAKEN_MARKER UINT64_C(0x4e4d)
 #define CPU_ENABLE_RACE_DONE UINT64_C(0x1d0e)
+#define CONFIG0_READY_MARKER UINT64_C(0xc0f0)
+#define CONFIG0_RESET_READBACK UINT64_C(0x6c9aa985)
+#define CONFIG0_MUTATED_READBACK UINT64_C(0x6c9aa982)
 #define POLL_TRIES 10000
 #define POLL_INTERVAL_US 1000
 
@@ -295,6 +298,35 @@ static char *create_nmi_control_prom(void)
     stl_be_p(image + 0x438, 0x00000000); /* nop */
 
     fd = g_file_open_tmp("sn1-nmi-control-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static char *create_config0_reset_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
+    }
+
+    stl_be_p(image + 0x400, 0x40108000); /* mfc0 s0, Config0 */
+    stl_be_p(image + 0x404, 0x34080002); /* ori t0, zero, 2 */
+    stl_be_p(image + 0x408, 0x40888000); /* mtc0 t0, Config0 */
+    stl_be_p(image + 0x40c, 0x000000c0); /* ehb */
+    stl_be_p(image + 0x410, 0x40118000); /* mfc0 s1, Config0 */
+    stl_be_p(image + 0x414, 0x3412c0f0); /* ori s2, zero, ready */
+    stl_be_p(image + 0x418, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x41c, 0x00000000); /* nop */
+
+    fd = g_file_open_tmp("sn1-config0-reset-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
@@ -1717,6 +1749,57 @@ static void test_cpu_b_follows_enable(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_config0_cold_reset(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_config0_reset_prom();
+    qts = machine_start_with(
+        path, "-accel tcg,thread=multi -no-shutdown -S");
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        wait_for_cpu_gpr(qts, cpu, "s2", CONFIG0_READY_MARKER);
+    }
+    stop_vm(qts);
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s0"), ==,
+                        CONFIG0_RESET_READBACK);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s1"), ==,
+                        CONFIG0_MUTATED_READBACK);
+    }
+
+    qtest_system_reset(qts);
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s0"), ==, 0);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s1"), ==, 0);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s2"), ==, 0);
+    }
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        wait_for_cpu_gpr(qts, cpu, "s2", CONFIG0_READY_MARKER);
+    }
+    stop_vm(qts);
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s0"), ==,
+                        CONFIG0_RESET_READBACK);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s1"), ==,
+                        CONFIG0_MUTATED_READBACK);
+    }
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 static void test_cpu_b_disable_overtakes_queued_unhalt(const void *data)
 {
     g_autofree char *path = NULL;
@@ -2049,6 +2132,8 @@ int main(int argc, char **argv)
                         test_machine_defaults);
     qtest_add_data_func("sn1/address-map/cpu-b-follows-enable", NULL,
                         test_cpu_b_follows_enable);
+    qtest_add_data_func("sn1/address-map/config0-cold-reset", NULL,
+                        test_config0_cold_reset);
     qtest_add_data_func("sn1/address-map/cpu-b-disable-overtakes-unhalt", NULL,
                         test_cpu_b_disable_overtakes_queued_unhalt);
     qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-a", &nmi_a,
