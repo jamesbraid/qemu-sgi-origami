@@ -1495,6 +1495,17 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
+    /*
+     * Tolerates a callback for a request the model has already retired and
+     * detached: there is no wrapper left to report through. Defensive --
+     * this tree's SCSI core reaches a device's cancel callback at most
+     * once per request, so when the callback arrives is the core's
+     * business rather than something the model drives.
+     */
+    if (req == NULL) {
+        return;
+    }
+
     trace_qlogic_isp_request_cancelled(req->handle);
     if (req->retire_completion != 0) {
         qlogic_isp_post_status(req->dev, req->handle, 0,
