@@ -15,6 +15,8 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include <poll.h>
+#include <sys/socket.h>
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -125,6 +127,25 @@ static QTestState *machine_start_bare(const char *extra)
 static QTestState *machine_start(void)
 {
     return machine_start_with(prom_path, "");
+}
+
+static void expect_console_text(int fd, const char *expected)
+{
+    g_autofree char *actual = g_malloc(strlen(expected) + 1);
+    size_t length = strlen(expected);
+    size_t offset = 0;
+
+    while (offset < length) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        ssize_t count;
+
+        g_assert_cmpint(poll(&pfd, 1, 3000), ==, 1);
+        count = read(fd, actual + offset, length - offset);
+        g_assert_cmpint(count, >, 0);
+        offset += count;
+    }
+    actual[length] = 0;
+    g_assert_cmpstr(actual, ==, expected);
 }
 
 static uint64_t cpu_gpr(QTestState *qts, unsigned int cpu, const char *name)
@@ -361,6 +382,24 @@ static void test_hub_special_register_windows(const void *data)
     check_access_has_no_storage(qts, HUB_REMOTE_REGISTERS + 0x1000);
 
     qtest_quit(qts);
+}
+
+static void test_l1_operator_console_uses_serial0(const void *data)
+{
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    extra = g_strdup_printf("-S -chardev socket,id=l1-console,fd=%d "
+                            "-serial chardev:l1-console", sv[1]);
+    qts = machine_start_with(prom_path, extra);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    expect_console_text(sv[0], "001c01-L1> ");
+
+    qtest_quit(qts);
+    g_assert_cmpint(close(sv[0]), ==, 0);
 }
 
 static void test_prom_three_read_only_views(const void *data)
@@ -790,6 +829,8 @@ int main(int argc, char **argv)
                         test_xbridge_topology);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
+    qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,
+                        test_l1_operator_console_uses_serial0);
     qtest_add_data_func("sn1/address-map/prom-three-read-only-views", NULL,
                         test_prom_three_read_only_views);
     qtest_add_data_func("sn1/address-map/prom-flat-view-extents", NULL,
