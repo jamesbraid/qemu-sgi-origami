@@ -56,6 +56,18 @@
 #define PROM_SIZE UINT64_C(0x1686a8)
 #define PROM_CONFIG_OFFSET UINT64_C(0x60)
 
+#define EXEC_STATE_PHYS UINT64_C(0x100000)
+#define EXEC_STATE_KSEG1_HI 0xa010
+#define EXEC_RESET_OFFSET 0x00
+#define EXEC_XKPHYS_STATE_OFFSET 0x08
+#define EXEC_FAULT_OFFSET 0x10
+#define EXEC_RESET_MARKER UINT64_C(0x1155)
+#define EXEC_XKPHYS_MARKER UINT64_C(0x2277)
+#define EXEC_FAULT_MARKER UINT64_C(0xdead)
+#define EXEC_XKPHYS_MEMORY_HI 0xbe00
+#define EXEC_CODE_OFFSET 0x400
+#define EXEC_XKPHYS_OFFSET 0x500
+
 #define BEDROCK_WIDGET_PART UINT64_C(0xc110)
 #define BEDROCK_WIDGET_MFG UINT64_C(0x036)
 #define XBRIDGE_XBOW_PART UINT64_C(0xd000)
@@ -103,6 +115,72 @@ static char *create_cpu_control_prom(void)
     stl_be_p(image + 0x404, 0x1000fffe); /* beq zero, zero, 0x400 */
 
     fd = g_file_open_tmp("sn1-cpu-control-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void write_execution_report(uint8_t *image, unsigned int offset,
+                                   uint16_t marker, uint16_t state_offset)
+{
+    stl_be_p(image + offset + 0x00,
+             0x3c080000 | EXEC_STATE_KSEG1_HI); /* lui t0, 0xa010 */
+    stl_be_p(image + offset + 0x04,
+             0x34090000 | marker);               /* ori t1, zero, marker */
+    stl_be_p(image + offset + 0x08,
+             0xfd090000 | state_offset);         /* sd t1, offset(t0) */
+    stl_be_p(image + offset + 0x0c, 0x0000000f); /* sync */
+    stl_be_p(image + offset + 0x10, 0x1000ffff); /* beq zero, zero, self */
+}
+
+static char *create_xkphys_fetch_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        write_execution_report(image, offset, EXEC_FAULT_MARKER,
+                               EXEC_FAULT_OFFSET);
+    }
+
+    /* Report the reset fetch before entering XKPHYS. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x00,
+             0x3c080000 | EXEC_STATE_KSEG1_HI);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x04,
+             0x34090000 | EXEC_RESET_MARKER);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x08,
+             0xfd090000 | EXEC_RESET_OFFSET);
+
+    /*
+     * Enable 64-bit kernel addresses, then use uncached attribute 3 to
+     * reach physical 0x1fc00500 in the memory window.
+     */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x0c, 0x400a6000); /* mfc0 t2, Status */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x10, 0x354a0080); /* ori t2, t2, KX */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x14, 0x408a6000); /* mtc0 t2, Status */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x18, 0x000000c0); /* ehb */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x1c,
+             0x3c0a0000 | EXEC_XKPHYS_MEMORY_HI);         /* lui t2, 0xbe00 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x20,
+             0x000a503c);                                /* dsll32 t2, t2, 0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x24, 0x3c0b1fc0); /* lui t3, 0x1fc0 */
+    /* ori t3, t3, 0x500 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x28,
+             0x356b0000 | EXEC_XKPHYS_OFFSET);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x2c, 0x014b5025); /* or t2, t2, t3 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x30, 0x01400008); /* jr t2 */
+
+    write_execution_report(image, EXEC_XKPHYS_OFFSET,
+                           EXEC_XKPHYS_MARKER,
+                           EXEC_XKPHYS_STATE_OFFSET);
+
+    fd = g_file_open_tmp("sn1-xkphys-fetch-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
@@ -687,6 +765,47 @@ static void test_cpu_b_follows_enable(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_prom_executes_from_reset_and_xkphys(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint64_t xkphys = 0;
+    uint64_t fault = 0;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_xkphys_fetch_prom();
+    qts = machine_start_with(path, "-accel tcg -no-shutdown -S");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    for (unsigned int tries = 0; tries < 10000; tries++) {
+        xkphys = qtest_readq(qts, EXEC_STATE_PHYS +
+                             EXEC_XKPHYS_STATE_OFFSET);
+        fault = qtest_readq(qts, EXEC_STATE_PHYS + EXEC_FAULT_OFFSET);
+        if (xkphys || fault) {
+            break;
+        }
+        g_usleep(1000);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, EXEC_STATE_PHYS + EXEC_RESET_OFFSET), ==,
+                    EXEC_RESET_MARKER);
+    if (fault) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers 0");
+
+        g_test_message("CPU state after XKPHYS fetch fault");
+        g_test_message("%s", registers);
+    }
+    g_assert_cmphex(fault, ==, 0);
+    g_assert_cmphex(xkphys, ==, EXEC_XKPHYS_MARKER);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 static void test_prom_migration(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -849,6 +968,8 @@ int main(int argc, char **argv)
                         test_machine_defaults);
     qtest_add_data_func("sn1/address-map/cpu-b-follows-enable", NULL,
                         test_cpu_b_follows_enable);
+    qtest_add_data_func("sn1/address-map/prom-executes-reset-and-xkphys", NULL,
+                        test_prom_executes_from_reset_and_xkphys);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
     qtest_add_data_func("sn1/address-map/cpu-b-enabled-migration", NULL,
