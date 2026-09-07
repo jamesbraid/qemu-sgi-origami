@@ -225,6 +225,15 @@ qtests_mips = \
 
 qtests_mipsel = qtests_mips
 
+# Origin 200 normally selects Lucent OHCI, but a minimal device configuration
+# can disable the controller while retaining the machine.
+sn0_ohci_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
+    ['usb-lucent-ohci-test'] : [])
+if not config_all_devices.has_key('CONFIG_USB_OHCI_PCI')
+  sn0_ohci_qtests = []
+endif
+
 # The XBridge qtests use test-only Crosstalk and PCI endpoints.  Keep the
 # registration visible under the device guard, then omit tests whose fixtures
 # are not present in a minimal device build.
@@ -236,14 +245,18 @@ if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
   sn1_xbridge_qtests = []
 elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
   sn1_xbridge_qtests = ['sn1-xbridge-xbow-test']
+elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
+     not config_all_devices.has_key('CONFIG_SGI_IOMMU_NOTIFIER_TEST') or \
+     not config_all_devices.has_key('CONFIG_IOMMU_TESTDEV')
+  sn1_xbridge_qtests = ['sn1-xbridge-chip-test',
+                        'sn1-xbridge-xbow-test']
 endif
 
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['usb-lucent-ohci-test'] : []) + \
+  sn0_ohci_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
