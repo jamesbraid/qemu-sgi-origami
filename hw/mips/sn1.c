@@ -58,6 +58,11 @@ static void sn1_cpu_unhalt(CPUState *cs, run_on_cpu_data data)
     cs->halted = 0;
 }
 
+static void sn1_cpu_halt(CPUState *cs, run_on_cpu_data data)
+{
+    cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+}
+
 static void sn1_cpu_b_enable(void *opaque, int n, int level)
 {
     SN1MachineState *s = opaque;
@@ -69,7 +74,11 @@ static void sn1_cpu_b_enable(void *opaque, int n, int level)
         async_safe_run_on_cpu(cs, sn1_cpu_unhalt, RUN_ON_CPU_NULL);
     } else if (!level && s->cpu_b_enabled) {
         s->cpu_b_enabled = false;
-        cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+        /*
+         * Queue both edges on CPU B.  Work-list order prevents an older
+         * unhalt from clearing this newer halt request.
+         */
+        async_run_on_cpu(cs, sn1_cpu_halt, RUN_ON_CPU_NULL);
     }
 }
 
