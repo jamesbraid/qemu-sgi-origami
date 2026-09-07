@@ -192,6 +192,7 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
 static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
 {
     static const unsigned int xbridge_widgets[] = { 0, 0xe, 0xf };
+    Chardev *l1_console = serial_hd(0);
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
     MemoryRegion *bedrock_widget;
@@ -199,6 +200,9 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
 
     s->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(machine), "l1", OBJECT(s->l1));
+    if (l1_console) {
+        qdev_prop_set_chr(s->l1, "chardev", l1_console);
+    }
     sysbus_realize(SYS_BUS_DEVICE(s->l1), &error_fatal);
     object_unref(OBJECT(s->l1));
     l1_uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->l1), 0);
