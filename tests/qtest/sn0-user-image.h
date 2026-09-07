@@ -31,6 +31,16 @@
 
 /* Hub-local processor number: bit 0 is 0 for CPU A, 1 for CPU B. */
 #define SN0_PI_CPU_NUM      0x9200000001000020ULL
+/* Node identity word the host seeds through each node's own CPUs. */
+#define SN0_NODE_ID_PHYS    0x02000000u
+
+#define SN0_TWO_NODE_TOPOLOGY \
+    "-m 128M " \
+    "-object memory-backend-ram,id=ram0,size=64M " \
+    "-object memory-backend-ram,id=ram1,size=64M " \
+    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
+    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-smp 4,sockets=2,cores=2,threads=1"
 
 #define SN0_R_ZERO  0
 #define SN0_R_V0    2
@@ -147,6 +157,12 @@ static inline void sn0_emit_sll(SN0Image *p, unsigned int rd, unsigned int rt,
                                 unsigned int sa)
 {
     sn0_emit(p, (rt << 16) | (rd << 11) | (sa << 6));
+}
+
+static inline void sn0_emit_srl(SN0Image *p, unsigned int rd, unsigned int rt,
+                                unsigned int sa)
+{
+    sn0_emit(p, (rt << 16) | (rd << 11) | (sa << 6) | 0x02);
 }
 
 /* Branch with a delay-slot nop; the target is patched in later. */

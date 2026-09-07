@@ -644,6 +644,9 @@ void mips_debug_excp_handler(CPUState *cs)
         cpu_env(cs)->error_code = 0;
         cpu_loop_exit(cs);
     }
+    if (!wp) {
+        mips_debug_breakpoint_hit(cs);
+    }
 }
 
 /*

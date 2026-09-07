@@ -310,7 +310,8 @@ qtests_mips64 = \
                                                    'sn0-fabric-test',
                                                    'sn0-qtest-cpu-test',
                                                    'sn0-cpu-registers-test',
-                                                   'sn0-syscall-trace-test'] : []) + \
+                                                   'sn0-syscall-trace-test',
+                                                   'sn0-debug-breakpoint-test'] : []) + \
   sn1_xbridge_qtests
 
 qtests_mips64el = qtests_mips

@@ -250,6 +250,10 @@ void cpu_mips_r10k_perf_thaw(CPUMIPSState *env);
 void cpu_mips_r10k_perf_post_load(CPUMIPSState *env);
 void cpu_mips_r10k_perf_clock_init(MIPSCPU *cpu);
 
+/* tcg/system/debug.c */
+void mips_debug_breakpoint_update(MIPSCPU *cpu, const MIPSDebugBreakpoint *bp,
+                                  bool remove, Error **errp);
+
 static inline void mips_env_set_pc(CPUMIPSState *env, target_ulong value)
 {
     env->active_tc.PC = value & ~(target_ulong)1;

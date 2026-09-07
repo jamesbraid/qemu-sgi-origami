@@ -821,6 +821,7 @@ static const TCGCPUOps mips_tcg_ops = {
     .pointer_wrap = mips_pointer_wrap,
     .cpu_exec_interrupt = mips_cpu_exec_interrupt,
     .debug_check_watchpoint = mips_debug_check_watchpoint,
+    .debug_check_breakpoint = mips_debug_check_breakpoint,
     .debug_excp_handler = mips_debug_excp_handler,
     .cpu_exec_halt = mips_cpu_has_work,
     .cpu_exec_reset = cpu_reset,

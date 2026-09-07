@@ -45,6 +45,8 @@ void do_raise_exception(CPUMIPSState *env,
 void mips_cpu_do_interrupt(CPUState *cpu);
 bool mips_cpu_exec_interrupt(CPUState *cpu, int int_req);
 bool mips_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp);
+bool mips_debug_check_breakpoint(CPUState *cs);
+void mips_debug_breakpoint_hit(CPUState *cs);
 void mips_debug_excp_handler(CPUState *cs);
 
 void mmu_init(CPUMIPSState *env, const mips_def_t *def);

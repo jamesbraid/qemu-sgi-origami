@@ -260,3 +260,88 @@
   'data': { '*event-limit': 'uint32' },
   'returns': 'SgiOriginState',
   'features': [ 'unstable' ] }
+
+##
+# @MipsDebugBreakpoint:
+#
+# One breakpoint planted by @x-mips-debug-breakpoint.
+#
+# @cpu-index: CPU the breakpoint is planted on
+#
+# @pc: virtual address the breakpoint matches
+#
+# @asid: EntryHi ASID the CPU must hold for the breakpoint to fire
+#
+# @exccode: Cause.ExcCode the CPU must hold for the breakpoint to fire
+#
+# Since: 11.2
+##
+{ 'struct': 'MipsDebugBreakpoint',
+  'data': { 'cpu-index': 'int',
+            'pc': 'uint64',
+            '*asid': 'uint16',
+            '*exccode': 'uint8' } }
+
+##
+# @x-mips-debug-breakpoint:
+#
+# Plant or remove a breakpoint on one MIPS CPU that fires only while
+# the CPU holds a given EntryHi ASID and Cause.ExcCode.  A hit stops
+# the machine in the debug run state and an attached gdb sees SIGTRAP
+# there; a hit whose filters do not match runs on at full speed.  The
+# next resume after a hit runs past the stop PC without firing again
+# for that stop.  The CPU's breakpoint table is changed on its own
+# thread, and planting queues a translation-block flush so blocks
+# already chained through @pc cannot skip the check.  The table is
+# host debug state and is not migrated.
+#
+# @cpu-index: CPU to plant the breakpoint on
+#
+# @pc: virtual address to stop at
+#
+# @asid: fire only while the EntryHi ASID field holds this value
+#
+# @exccode: fire only while Cause.ExcCode holds this value
+#
+# @remove: remove the breakpoint planted with exactly these arguments
+#     instead of planting one (default: false)
+#
+# Features:
+#
+# @unstable: This command is meant for debugging.
+#
+# Errors:
+#     - If @cpu-index names no CPU
+#     - If @asid does not fit the CPU's ASID field or @exccode exceeds
+#       31
+#     - If the CPU's breakpoint table is full
+#     - If the breakpoint is already planted, or is not planted on
+#       removal
+#
+# Since: 11.2
+##
+{ 'command': 'x-mips-debug-breakpoint',
+  'data': { 'cpu-index': 'int',
+            'pc': 'uint64',
+            '*asid': 'uint16',
+            '*exccode': 'uint8',
+            '*remove': 'bool' },
+  'features': [ 'unstable' ] }
+
+##
+# @x-query-mips-debug-breakpoints:
+#
+# List the breakpoints planted by @x-mips-debug-breakpoint on every
+# CPU.
+#
+# Features:
+#
+# @unstable: This command is meant for debugging.
+#
+# Returns: the planted breakpoints in CPU index order
+#
+# Since: 11.2
+##
+{ 'command': 'x-query-mips-debug-breakpoints',
+  'returns': ['MipsDebugBreakpoint'],
+  'features': [ 'unstable' ] }

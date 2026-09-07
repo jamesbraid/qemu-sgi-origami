@@ -1581,6 +1581,18 @@ typedef struct CPUArchState {
  *
  * A MIPS CPU.
  */
+#define MIPS_DEBUG_BREAKPOINTS 8
+
+/* A breakpoint planted by x-mips-debug-breakpoint. */
+typedef struct MIPSDebugBreakpoint {
+    uint64_t pc;
+    uint16_t asid;
+    uint8_t exccode;
+    bool has_asid;
+    bool has_exccode;
+    bool used;
+} MIPSDebugBreakpoint;
+
 struct ArchCPU {
     CPUState parent_obj;
 
@@ -1600,6 +1612,11 @@ struct ArchCPU {
      * edge that is waiting for exception entry.
      */
     bool nmi_level;
+
+    /* Host debug state for the debug commands, not migrated. */
+    MIPSDebugBreakpoint debug_bp[MIPS_DEBUG_BREAKPOINTS];
+    bool debug_bp_skip;
+    uint64_t debug_bp_skip_pc;
 
     /* Properties */
     bool is_big_endian;
