@@ -26,6 +26,7 @@
 #include "exec/translation-block.h"
 #include "internal.h"
 #include "../tcg-internal.h"
+#include "../trace.h"
 
 /* Specials */
 target_ulong helper_di(CPUMIPSState *env)
@@ -149,6 +150,11 @@ void helper_eret(CPUMIPSState *env)
         env->CP0_LLAddr = 1;
     }
     env->lladdr = 1;
+    trace_mips_eret(env_cpu(env)->cpu_index,
+                    env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask,
+                    env->active_tc.PC, env->CP0_Status,
+                    env->active_tc.gpr[2], env->active_tc.gpr[7],
+                    (env->hflags & MIPS_HFLAG_KSU) == MIPS_HFLAG_UM);
 }
 
 void helper_eretnc(CPUMIPSState *env)

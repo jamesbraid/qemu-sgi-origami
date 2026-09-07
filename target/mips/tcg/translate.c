@@ -8842,6 +8842,7 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
         if (!env->tlb->helper_tlbwi) {
             goto die;
         }
+        save_cpu_state(ctx, 1);
         gen_helper_tlbwi(tcg_env);
         break;
     case OPC_TLBINV:
@@ -8869,6 +8870,7 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
         }
         /* Mark as an IO operation: the random victim reads the time.  */
         translator_io_start(&ctx->base);
+        save_cpu_state(ctx, 1);
         gen_helper_tlbwr(tcg_env);
         break;
     case OPC_TLBP:
