@@ -28,6 +28,7 @@ struct SN1MachineState {
     MemoryRegion prom;
     MemoryRegion prom_reset;
     MemoryRegion prom_local;
+    MemoryRegion prom_local_high;
     MemoryRegion prom_remote;
 };
 

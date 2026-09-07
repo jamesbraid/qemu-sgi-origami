@@ -43,6 +43,7 @@
 
 #define SN1_HUB_LOCAL_REGISTERS (SN1_SPACE_HUB + UINT64_C(0x10000000))
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
+#define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_REGISTERS (SN1_SPACE_HUB + UINT64_C(0x30000000))
 #define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
@@ -207,11 +208,16 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                              "sn1.prom.reset", &s->prom, 0, SN1_PROM_SIZE);
     memory_region_init_alias(&s->prom_local, OBJECT(machine),
                              "sn1.prom.local", &s->prom, 0, SN1_PROM_SIZE);
+    memory_region_init_alias(&s->prom_local_high, OBJECT(machine),
+                             "sn1.prom.local-high", &s->prom, 0,
+                             SN1_PROM_SIZE);
     memory_region_init_alias(&s->prom_remote, OBJECT(machine),
                              "sn1.prom.remote", &s->prom, 0, SN1_PROM_SIZE);
     memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
                                         &s->prom_reset, 1);
     memory_region_add_subregion(system, SN1_HUB_LOCAL_BOOT, &s->prom_local);
+    memory_region_add_subregion(system, SN1_HUB_LOCAL_HIGH_BOOT,
+                                &s->prom_local_high);
     memory_region_add_subregion(system, SN1_HUB_REMOTE_BOOT, &s->prom_remote);
     return true;
 }
