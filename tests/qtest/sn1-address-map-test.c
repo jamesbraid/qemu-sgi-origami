@@ -78,12 +78,18 @@
 #define EXEC_CACHE_ERROR_MARKER UINT64_C(0xe301)
 #define EXEC_GENERAL_EXCEPTION_MARKER UINT64_C(0xe381)
 #define EXEC_TLB_VIRTUAL_HI 0xc000
-#define EXEC_TLB_VIRTUAL_PAGE 0x1fc02000
 #define EXEC_TLB_VIRTUAL_OFFSET 0x1fc021a0
-/* UC=3, PFN=0x1fc01, C=2, D=1, V=1. */
 #define EXEC_TLB_ENTRYLO_MEMORY_HI 0xc000
-#define EXEC_TLB_ENTRYLO_MEMORY_LOW 0x7f0056
-#define EXEC_TLB_PHYSICAL_OFFSET 0x11a0
+/* UC=3, PFN=0x1fc01, C=2, D=1, V=1. */
+#define EXEC_TLB_4K_ENTRYHI_LOW 0x1fc02000
+#define EXEC_TLB_4K_ENTRYLO0_LOW 0x7f0056
+#define EXEC_TLB_4K_PHYSICAL_OFFSET 0x11a0
+/* ASID=1, UC=3, 1 MiB PFNs 0x1fc00/0x1fd00, C=2, V=1. */
+#define EXEC_TLB_1M_ENTRYHI_LOW 0x1fc00001
+#define EXEC_TLB_1M_PAGEMASK 0x1fe000
+#define EXEC_TLB_1M_ENTRYLO0_LOW 0x7f0012
+#define EXEC_TLB_1M_ENTRYLO1_LOW 0x7f4012
+#define EXEC_TLB_1M_PHYSICAL_OFFSET 0x21a0
 
 #define BEDROCK_WIDGET_PART UINT64_C(0xc110)
 #define BEDROCK_WIDGET_MFG UINT64_C(0x036)
@@ -95,6 +101,28 @@
 #define WIDGET_REV(v) ((v) >> 28)
 
 static char *prom_path;
+
+typedef struct TlbFetchCase {
+    uint32_t entryhi_low;
+    uint32_t pagemask;
+    uint32_t entrylo0_low;
+    uint32_t entrylo1_low;
+    unsigned int physical_offset;
+} TlbFetchCase;
+
+static const TlbFetchCase tlb_fetch_4k = {
+    .entryhi_low = EXEC_TLB_4K_ENTRYHI_LOW,
+    .entrylo0_low = EXEC_TLB_4K_ENTRYLO0_LOW,
+    .physical_offset = EXEC_TLB_4K_PHYSICAL_OFFSET,
+};
+
+static const TlbFetchCase tlb_fetch_1m = {
+    .entryhi_low = EXEC_TLB_1M_ENTRYHI_LOW,
+    .pagemask = EXEC_TLB_1M_PAGEMASK,
+    .entrylo0_low = EXEC_TLB_1M_ENTRYLO0_LOW,
+    .entrylo1_low = EXEC_TLB_1M_ENTRYLO1_LOW,
+    .physical_offset = EXEC_TLB_1M_PHYSICAL_OFFSET,
+};
 
 static char *create_prom(uint8_t first, uint8_t config, uint8_t last)
 {
@@ -205,7 +233,10 @@ static char *create_xkphys_fetch_prom(void)
     return path;
 }
 
-static char *create_tlb_fetch_prom(void)
+static char *create_tlb_fetch_prom(uint32_t entryhi_low, uint32_t pagemask,
+                                   uint32_t entrylo0_low,
+                                   uint32_t entrylo1_low,
+                                   unsigned int physical_offset)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
@@ -237,50 +268,65 @@ static char *create_tlb_fetch_prom(void)
     stl_be_p(image + EXEC_CODE_OFFSET + 0x14, 0x408a6000); /* mtc0 t2, Status */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x18, 0x000000c0); /* ehb */
 
-    /* Install a 4 KiB uncached mapping to PROM physical 0x1fc01000. */
+    /* Install the requested uncached mapping into the PROM backing. */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x1c,
              0x3c0a0000 | EXEC_TLB_VIRTUAL_HI);           /* lui t2, 0xc000 */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x20,
              0x000a503c);                                /* dsll32 t2, t2, 0 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x24, 0x3c0b1fc0); /* lui t3, 0x1fc0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x24,
+             0x3c0b0000 | (entryhi_low >> 16));           /* lui t3 */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x28,
-             0x356b0000 | (EXEC_TLB_VIRTUAL_PAGE & 0xffff));
+             0x356b0000 | (entryhi_low & 0xffff));
     stl_be_p(image + EXEC_CODE_OFFSET + 0x2c, 0x014b5025); /* or t2, t2, t3 */
     /* dmtc0 t2, EntryHi */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x30, 0x40aa5000);
-    /* mtc0 zero, PageMask */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x34, 0x40802800);
-    /* Uncached attribute 3 selects the memory window. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x34,
+             0x3c0c0000 | (pagemask >> 16));              /* lui t4 */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x38,
+             0x358c0000 | (pagemask & 0xffff));           /* ori t4 */
+    /* mtc0 t4, PageMask */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x3c, 0x408c2800);
+    /* Uncached attribute 3 selects the memory window. */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x40,
              0x3c0a0000 | EXEC_TLB_ENTRYLO_MEMORY_HI);
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x3c, 0x000a503c); /* dsll32 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x40, 0x3c0b007f); /* lui t3 */
     stl_be_p(image + EXEC_CODE_OFFSET + 0x44,
-             0x356b0000 | (EXEC_TLB_ENTRYLO_MEMORY_LOW & 0xffff));
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x48, 0x014b5025); /* or t2, t2, t3 */
+             0x000a503c);                                /* dsll32 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x48,
+             0x3c0b0000 | (entrylo0_low >> 16));          /* lui t3 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x4c,
+             0x356b0000 | (entrylo0_low & 0xffff));
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x50, 0x014b5025); /* or t2, t2, t3 */
     /* dmtc0 t2, EntryLo0 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x4c, 0x40aa1000);
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x50, 0x340a0000); /* ori t2, zero, 0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x54, 0x40aa1000);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x58,
+             0x3c0a0000 | EXEC_TLB_ENTRYLO_MEMORY_HI);    /* lui t2 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x5c,
+             0x000a503c);                                /* dsll32 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x60,
+             0x3c0b0000 | (entrylo1_low >> 16));          /* lui t3 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x64,
+             0x356b0000 | (entrylo1_low & 0xffff));
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x68, 0x014b5025); /* or t2, t2, t3 */
     /* dmtc0 t2, EntryLo1 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x54, 0x40aa1800);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x6c, 0x40aa1800);
     /* mtc0 zero, Index */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x58, 0x40800000);
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x5c, 0x42000002); /* tlbwi */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x60, 0x000000c0); /* ehb */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x70, 0x40800000);
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x74, 0x42000002); /* tlbwi */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x78, 0x000000c0); /* ehb */
 
     /* Jump through the mapping to 0xc00000001fc021a0. */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x64,
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x7c,
              0x3c0a0000 | EXEC_TLB_VIRTUAL_HI);           /* lui t2, 0xc000 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x68,
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x80,
              0x000a503c);                                /* dsll32 t2, t2, 0 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x6c, 0x3c0b1fc0); /* lui t3, 0x1fc0 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x70,
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x84, 0x3c0b1fc0); /* lui t3, 0x1fc0 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x88,
              0x356b0000 | (EXEC_TLB_VIRTUAL_OFFSET & 0xffff));
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x74, 0x014b5025); /* or t2, t2, t3 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x78, 0x01400008); /* jr t2 */
-    stl_be_p(image + EXEC_CODE_OFFSET + 0x7c, 0x00000000); /* nop */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x8c, 0x014b5025); /* or t2, t2, t3 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x90, 0x01400008); /* jr t2 */
+    stl_be_p(image + EXEC_CODE_OFFSET + 0x94, 0x00000000); /* nop */
 
-    write_execution_report(image, EXEC_TLB_PHYSICAL_OFFSET,
+    write_execution_report(image, physical_offset,
                            EXEC_TLB_MARKER, EXEC_TLB_STATE_OFFSET);
 
     fd = g_file_open_tmp("sn1-tlb-fetch-prom-XXXXXX.bin", &path, &error);
@@ -911,6 +957,7 @@ static void test_prom_executes_from_reset_and_xkphys(const void *data)
 
 static void test_prom_executes_from_tlb_mapped_xkseg(const void *data)
 {
+    const TlbFetchCase *test = data;
     g_autofree char *path = NULL;
     QTestState *qts;
     uint64_t reached = 0;
@@ -921,7 +968,9 @@ static void test_prom_executes_from_tlb_mapped_xkseg(const void *data)
         return;
     }
 
-    path = create_tlb_fetch_prom();
+    path = create_tlb_fetch_prom(test->entryhi_low, test->pagemask,
+                                 test->entrylo0_low, test->entrylo1_low,
+                                 test->physical_offset);
     qts = machine_start_with(path, "-accel tcg -no-shutdown -S");
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 
@@ -1114,7 +1163,11 @@ int main(int argc, char **argv)
                         test_cpu_b_follows_enable);
     qtest_add_data_func("sn1/address-map/prom-executes-reset-and-xkphys", NULL,
                         test_prom_executes_from_reset_and_xkphys);
-    qtest_add_data_func("sn1/address-map/prom-executes-tlb-mapped-xkseg", NULL,
+    qtest_add_data_func("sn1/address-map/prom-executes-tlb-mapped-xkseg",
+                        &tlb_fetch_4k,
+                        test_prom_executes_from_tlb_mapped_xkseg);
+    qtest_add_data_func("sn1/address-map/prom-executes-1m-tlb-mapped-xkseg",
+                        &tlb_fetch_1m,
                         test_prom_executes_from_tlb_mapped_xkseg);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
