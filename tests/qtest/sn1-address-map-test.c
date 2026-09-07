@@ -49,6 +49,7 @@
 
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
+#define HUB_LOCAL_HIGH_BOOT (SPACE_HUB + UINT64_C(0x1fc00000))
 #define HUB_REMOTE_REGISTERS (SPACE_HUB + UINT64_C(0x30000000))
 #define HUB_REMOTE_BOOT (SPACE_HUB + UINT64_C(0x38000000))
 #define L1_UART UINT64_C(0x80)
@@ -1465,11 +1466,11 @@ static void test_l1_operator_console_uses_serial0(const void *data)
     g_assert_cmpint(close(sv[0]), ==, 0);
 }
 
-static void test_prom_three_read_only_views(const void *data)
+static void test_prom_four_read_only_views(const void *data)
 {
     QTestState *qts = machine_start();
     static const uint64_t views[] = {
-        PROM_RESET, HUB_LOCAL_BOOT, HUB_REMOTE_BOOT,
+        PROM_RESET, HUB_LOCAL_BOOT, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
     };
     static const struct {
         uint64_t offset;
@@ -1480,18 +1481,30 @@ static void test_prom_three_read_only_views(const void *data)
         { PROM_SIZE - 1, 0x93 },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
-        for (size_t j = 0; j < ARRAY_SIZE(probes); j++) {
-            uint64_t address = views[i] + probes[j].offset;
+    for (size_t i = 0; i < ARRAY_SIZE(probes); i++) {
+        for (size_t j = 0; j < ARRAY_SIZE(views); j++) {
+            g_assert_cmphex(qtest_readb(qts, views[j] + probes[i].offset), ==,
+                            probes[i].value);
+        }
 
-            g_assert_cmphex(qtest_readb(qts, address), ==, probes[j].value);
-            qtest_writeb(qts, address, probes[j].value ^ 0xff);
-            g_assert_cmphex(qtest_readb(qts, address), ==, probes[j].value);
+        for (size_t write_view = 0;
+             write_view < ARRAY_SIZE(views); write_view++) {
+            qtest_writeb(qts, views[write_view] + probes[i].offset,
+                         probes[i].value ^ 0xff);
+            for (size_t read_view = 0;
+                 read_view < ARRAY_SIZE(views); read_view++) {
+                g_assert_cmphex(qtest_readb(qts,
+                                            views[read_view] +
+                                            probes[i].offset), ==,
+                                probes[i].value);
+            }
         }
     }
 
-    /* Both boot aliases stop at the exact supplied length. */
+    /* All three boot aliases stop at the exact supplied length. */
     assert_flat_view_unmapped(qts, HUB_LOCAL_BOOT + PROM_SIZE);
+    assert_flat_view_unmapped(qts, HUB_LOCAL_HIGH_BOOT - 1);
+    assert_flat_view_unmapped(qts, HUB_LOCAL_HIGH_BOOT + PROM_SIZE);
     assert_flat_view_unmapped(qts, HUB_REMOTE_BOOT + PROM_SIZE);
 
     /* The reset view ends there too and reveals the RAM underneath. */
@@ -1525,6 +1538,7 @@ static void test_prom_flat_view_extents(const void *data)
 
     assert_flat_view_extent(qts, PROM_RESET, PROM_SIZE);
     assert_flat_view_extent(qts, HUB_LOCAL_BOOT, PROM_SIZE);
+    assert_flat_view_extent(qts, HUB_LOCAL_HIGH_BOOT, PROM_SIZE);
     assert_flat_view_extent(qts, HUB_REMOTE_BOOT, PROM_SIZE);
 
     qtest_quit(qts);
@@ -1959,7 +1973,7 @@ static void test_prom_migration(const void *data)
     QTestState *from;
     QTestState *to;
     static const uint64_t views[] = {
-        PROM_RESET, HUB_LOCAL_BOOT, HUB_REMOTE_BOOT,
+        PROM_RESET, HUB_LOCAL_BOOT, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
     };
     static const struct {
         uint64_t offset;
@@ -2114,8 +2128,8 @@ int main(int argc, char **argv)
                         test_hub_special_register_windows);
     qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,
                         test_l1_operator_console_uses_serial0);
-    qtest_add_data_func("sn1/address-map/prom-three-read-only-views", NULL,
-                        test_prom_three_read_only_views);
+    qtest_add_data_func("sn1/address-map/prom-four-read-only-views", NULL,
+                        test_prom_four_read_only_views);
     qtest_add_data_func("sn1/address-map/prom-flat-view-extents", NULL,
                         test_prom_flat_view_extents);
     qtest_add_data_func("sn1/address-map/prom-size-is-exact", NULL,
