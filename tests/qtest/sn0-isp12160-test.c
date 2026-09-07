@@ -1201,6 +1201,9 @@ static void test_submission_while_locked_is_ignored(const void *data)
 #define ISP_STATE_FLAG_GOT_SENSE          0x2000
 #define ISP_STATE_FLAG_TRANSFER_COMPLETE  0x4000
 
+/* A different word: selection ran out of time, so nobody answered. */
+#define ISP_STATUS_FLAG_TIMEOUT           0x0040
+
 /* CHECK CONDITION, with the bit that says the entry carries sense. */
 #define ISP_SCSI_STATUS_CHECK_CONDITION 0x0202
 
@@ -2216,7 +2219,9 @@ static void test_check_condition_carries_real_sense(const void *data)
  * Nothing sits at this target on either channel. Both answers say the
  * command never got past the bus, so a driver retries elsewhere instead
  * of waiting on a device that is not there, and the handle comes back so
- * it knows which command it is retiring.
+ * it knows which command it is retiring. The selection-timeout bit in
+ * the status-flags word is what IRIX reads the empty slot by: without
+ * it, its scan reports every absent target as a hard error.
  */
 static void test_missing_target_on_each_channel(const void *data)
 {
@@ -2243,7 +2248,8 @@ static void test_missing_target_on_each_channel(const void *data)
                         ISP_IOCB_INCOMPLETE);
         g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
                         ISP_STATE_FLAG_GOT_BUS);
-        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==,
+                        ISP_STATUS_FLAG_TIMEOUT);
     }
 
     qtest_quit(qts);
