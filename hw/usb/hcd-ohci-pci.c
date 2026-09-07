@@ -33,6 +33,8 @@
 #define TYPE_PCI_OHCI "pci-ohci"
 OBJECT_DECLARE_SIMPLE_TYPE(OHCIPCIState, PCI_OHCI)
 
+#define TYPE_LUCENT_OHCI "lucent-ohci"
+
 struct OHCIPCIState {
     /*< private >*/
     PCIDevice parent_obj;
@@ -154,9 +156,38 @@ static const TypeInfo ohci_pci_info = {
     },
 };
 
+static void lucent_ohci_instance_init(Object *obj)
+{
+    OHCIPCIState *ohci = PCI_OHCI(obj);
+
+    ohci->num_ports = 2;
+}
+
+static void lucent_ohci_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+
+    k->vendor_id = 0x11c1;
+    k->device_id = 0x5802;
+    k->revision = 0x10;
+    /* The hardware values are unknown; these are emulator placeholders. */
+    k->subsystem_vendor_id = 0xffff;
+    k->subsystem_id = 0xffff;
+    dc->desc = "AT&T/Lucent USB Controller";
+}
+
+static const TypeInfo lucent_ohci_info = {
+    .name          = TYPE_LUCENT_OHCI,
+    .parent        = TYPE_PCI_OHCI,
+    .instance_init = lucent_ohci_instance_init,
+    .class_init    = lucent_ohci_class_init,
+};
+
 static void ohci_pci_register_types(void)
 {
     type_register_static(&ohci_pci_info);
+    type_register_static(&lucent_ohci_info);
 }
 
 type_init(ohci_pci_register_types)
