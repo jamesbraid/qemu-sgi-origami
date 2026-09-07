@@ -301,15 +301,18 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                           sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME),
                           ring_base, buf_addr, offset, wire_len, word0, word1);
 
-    res = stl_be_dma(&s->dma_as, buf_addr + 0, word0, MEMTXATTRS_UNSPECIFIED);
-    res |= stl_be_dma(&s->dma_as, buf_addr + 4, short_circuit ? 0 : word1,
-                      MEMTXATTRS_UNSPECIFIED);
+    res = stl_be_dma(&s->dma_as, buf_addr + 4, short_circuit ? 0 : word1,
+                     MEMTXATTRS_UNSPECIFIED);
     res |= dma_memory_write(&s->dma_as, buf_addr + offset, buf, size,
                             MEMTXATTRS_UNSPECIFIED);
     if (!short_circuit) {
         /* The phantom FCS bytes, written as the zero they were summed as. */
         res |= stl_be_dma(&s->dma_as, buf_addr + offset + size, 0,
                           MEMTXATTRS_UNSPECIFIED);
+    }
+    if (res == MEMTX_OK) {
+        /* Valid publishes the completed status and payload to the guest. */
+        res = stl_be_dma(&s->dma_as, buf_addr, word0, MEMTXATTRS_UNSPECIFIED);
     }
 
     /* An unreachable buffer is not a delivered frame; the index stays. */
