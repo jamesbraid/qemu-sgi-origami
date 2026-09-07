@@ -3469,8 +3469,15 @@ static void test_receive_flush_after_enable_reenable(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-    /* Enable it, then cross the interrupt-handler boundary. */
+    /* Initial enable does not release the backlog. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    /* A real status interrupt and its acknowledgement release it. */
+    qtest_clock_step(b.qts, BCM_STATUS_TICK_MAX_NS);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
+    g_assert_false(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
 
     wait_for_rx_prod(&b, FRAMES);
@@ -3495,10 +3502,11 @@ static void test_receive_flush_after_enable_reenable(const void *data)
  *
  * The periodic status update guarantees a later interrupt even if the frame
  * was queued before any completion existed. Its mask/re-enable sequence is an
- * explicit guest-execution boundary. Queue a frame while HCC is disabled and
- * prove that enable, producer/consumer updates, and almost a whole status-tick
- * interval do not publish it. The write-0 re-enable then releases it without a
- * further clock delay.
+ * explicit guest-execution boundary. Queue a frame while HCC is disabled,
+ * before the driver's initial interrupt enable, and prove that initial enable,
+ * HCC enable, producer/consumer updates, and almost a whole status-tick
+ * interval do not publish it. The first real write-1/write-0 acknowledgement
+ * then releases it without a further clock delay.
  */
 static void test_queued_receive_waits_for_irq_reenable(const void *data)
 {
@@ -3531,14 +3539,14 @@ static void test_queued_receive_waits_for_irq_reenable(const void *data)
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
-
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     g_usleep(100000);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
+    /* Initial enable is not an acknowledgement of an interrupt. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 0);
 

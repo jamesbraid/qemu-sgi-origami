@@ -1351,20 +1351,25 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         break;
     case BCM570X_MBX_IRQ0_LO:
         /*
-         * The interrupt mailbox. Bit 0 masks the line, and writing 0 to re-enable
-         * is the acknowledgement: the IRIX driver takes the update from the status
+         * The interrupt mailbox. Bit 0 masks the line, and writing 0
+         * re-enables it. When an update is pending, that write is also the
+         * acknowledgement: the IRIX driver takes the update from the status
          * block and writes 0 here, which clears the pending latch so the line
-         * drops and re-asserts only on the next update. The line is a level, so a
-         * write that does not clear the latch keeps it asserted -- clearing on the
-         * mask write instead was tried and stormed at runtime, because the
-         * driver's runtime acknowledgement is the write-0 with no preceding mask.
-         * Completions are read from the status block, not here, so the rest of the
-         * value is only for read-back.
+         * drops and re-asserts only on the next update. With no update pending,
+         * the same write is only the initial enable and must not release queued
+         * receive work. The line is a level, so a write that does not clear the
+         * latch keeps it asserted --
+         * clearing on the mask write instead was tried and stormed at runtime,
+         * because the driver's runtime acknowledgement is the write-0 with no
+         * preceding mask. Completions are read from the status block, not here,
+         * so the rest of the value is only for read-back.
          */
         s->irq_masked = (val & 1) != 0;
         if (!(val & 1)) {
+            bool acknowledged = s->irq_pending;
+
             s->irq_pending = false;
-            if (s->rx_flush_pending) {
+            if (acknowledged && s->rx_flush_pending) {
                 s->rx_flush_authorized = true;
                 bcm570x_retry_rx_flush(s);
             }
