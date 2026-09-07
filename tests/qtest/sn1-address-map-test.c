@@ -34,6 +34,8 @@
 
 #define PI_CPU_NUMBER UINT64_C(0x20)
 #define PI_CPU_ENABLE_B UINT64_C(0x58)
+#define PI_NMI_A UINT64_C(0x70)
+#define PI_NMI_B UINT64_C(0x78)
 #define IO_WIDGET_ID UINT64_C(0x0)
 #define IO_SCRATCH0 UINT64_C(0x150)
 #define IO_ITTE0 UINT64_C(0x160)
@@ -90,6 +92,11 @@
 #define EXEC_TLB_1M_ENTRYLO0_LOW 0x7f0012
 #define EXEC_TLB_1M_ENTRYLO1_LOW 0x7f4012
 #define EXEC_TLB_1M_PHYSICAL_OFFSET 0x21a0
+
+#define NMI_READY_MARKER UINT64_C(0x1400)
+#define NMI_TAKEN_MARKER UINT64_C(0x4e4d)
+#define POLL_TRIES 10000
+#define POLL_INTERVAL_US 1000
 
 #define BEDROCK_WIDGET_PART UINT64_C(0xc110)
 #define BEDROCK_WIDGET_MFG UINT64_C(0x036)
@@ -160,6 +167,40 @@ static char *create_cpu_control_prom(void)
     stl_be_p(image + 0x404, 0x1000fffe); /* beq zero, zero, 0x400 */
 
     fd = g_file_open_tmp("sn1-cpu-control-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static char *create_nmi_control_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
+    }
+
+    /* Both reset and NMI enter through the reset vector. */
+    stl_be_p(image + 0x400, 0x40086000); /* mfc0 t0, Status */
+    stl_be_p(image + 0x404, 0x3c090008); /* lui t1, Status.NMI >> 16 */
+    stl_be_p(image + 0x408, 0x01094824); /* and t1, t0, t1 */
+    stl_be_p(image + 0x40c, 0x15200008); /* bne t1, zero, 0x430 */
+    stl_be_p(image + 0x410, 0x00000000); /* nop */
+    stl_be_p(image + 0x414, 0x34101400); /* ori s0, zero, ready */
+    stl_be_p(image + 0x418, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x41c, 0x00000000); /* nop */
+
+    stl_be_p(image + 0x430, 0x34104e4d); /* ori s0, zero, taken */
+    stl_be_p(image + 0x434, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x438, 0x00000000); /* nop */
+
+    fd = g_file_open_tmp("sn1-nmi-control-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
@@ -386,6 +427,18 @@ static uint64_t cpu_gpr(QTestState *qts, unsigned int cpu, const char *name)
     value_text += strlen(field);
     g_assert_cmpint(sscanf(value_text, "%" SCNx64, &value), ==, 1);
     return value;
+}
+
+static void wait_for_cpu_gpr(QTestState *qts, unsigned int cpu,
+                             const char *name, uint64_t expected)
+{
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        if (cpu_gpr(qts, cpu, name) == expected) {
+            return;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(cpu_gpr(qts, cpu, name), ==, expected);
 }
 
 static void stop_vm(QTestState *qts)
@@ -914,6 +967,37 @@ static void test_cpu_b_follows_enable(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_nmi_routes_to_cpu(const void *data)
+{
+    uint64_t nmi_register = *(const uint64_t *)data;
+    unsigned int target_cpu = nmi_register == PI_NMI_A ? 0 : 1;
+    unsigned int other_cpu = target_cpu ^ 1;
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_nmi_control_prom();
+    qts = machine_start_with(
+        path, "-accel tcg,thread=multi -no-shutdown -S");
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        wait_for_cpu_gpr(qts, cpu, "s0", NMI_READY_MARKER);
+    }
+
+    qtest_writeq(qts, BEDROCK_LOCAL + nmi_register, 0);
+    wait_for_cpu_gpr(qts, target_cpu, "s0", NMI_TAKEN_MARKER);
+    g_assert_cmphex(cpu_gpr(qts, other_cpu, "s0"), ==, NMI_READY_MARKER);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 static void test_prom_executes_from_reset_and_xkphys(const void *data)
 {
     g_autofree char *path = NULL;
@@ -1126,6 +1210,8 @@ static void test_system_reset_clears_bedrock_state(const void *data)
 
 int main(int argc, char **argv)
 {
+    static const uint64_t nmi_a = PI_NMI_A;
+    static const uint64_t nmi_b = PI_NMI_B;
     int result;
 
     g_test_init(&argc, &argv, NULL);
@@ -1161,6 +1247,10 @@ int main(int argc, char **argv)
                         test_machine_defaults);
     qtest_add_data_func("sn1/address-map/cpu-b-follows-enable", NULL,
                         test_cpu_b_follows_enable);
+    qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-a", &nmi_a,
+                        test_nmi_routes_to_cpu);
+    qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-b", &nmi_b,
+                        test_nmi_routes_to_cpu);
     qtest_add_data_func("sn1/address-map/prom-executes-reset-and-xkphys", NULL,
                         test_prom_executes_from_reset_and_xkphys);
     qtest_add_data_func("sn1/address-map/prom-executes-tlb-mapped-xkseg",

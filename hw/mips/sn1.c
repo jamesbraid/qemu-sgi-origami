@@ -259,6 +259,9 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     for (unsigned int cpu = 0; cpu < SN1_PROCESSORS; cpu++) {
         MIPSCPU *mips_cpu = MIPS_CPU(s->cpu[cpu]);
 
+        qdev_connect_gpio_out_named(
+            s->bedrock, "nmi", cpu,
+            qdev_get_gpio_in_named(DEVICE(mips_cpu), "nmi", 0));
         for (unsigned int line = 0; line < SGI_BEDROCK_PI_HW_IRQS; line++) {
             qdev_connect_gpio_out_named(
                 s->bedrock, "hardware-irq",
