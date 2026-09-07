@@ -122,3 +122,70 @@ MipsDebugBreakpointList *qmp_x_query_mips_debug_breakpoints(Error **errp)
     }
     return head;
 }
+
+typedef struct MIPSTlbQuery {
+    bool shadow;
+    MipsTlbState *state;
+} MIPSTlbQuery;
+
+/* Runs on the CPU's own thread, so registers and entries are one snapshot. */
+static void mips_tlb_query_work(CPUState *cs, run_on_cpu_data data)
+{
+    MIPSTlbQuery *q = data.host_ptr;
+    CPUMIPSState *env = cpu_env(cs);
+    MipsTlbState *state = g_new0(MipsTlbState, 1);
+    MipsTlbEntryList **tail = &state->entries;
+    uint32_t count = q->shadow ? env->tlb->tlb_in_use : env->tlb->nb_tlb;
+    uint32_t i;
+
+    state->cpu_index = cs->cpu_index;
+    state->entryhi = env->CP0_EntryHi;
+    state->asid = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    state->index = env->CP0_Index;
+    state->wired = env->CP0_Wired;
+    state->nb_tlb = env->tlb->nb_tlb;
+    state->tlb_in_use = env->tlb->tlb_in_use;
+    for (i = 0; i < count; i++) {
+        const r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
+        MipsTlbEntry *e = g_new0(MipsTlbEntry, 1);
+
+        e->index = i;
+        e->vpn2 = tlb->VPN;
+        e->asid = tlb->ASID;
+        e->global = tlb->G;
+        e->page_mask = tlb->PageMask;
+        e->pfn0 = tlb->PFN[0];
+        e->valid0 = tlb->V0;
+        e->dirty0 = tlb->D0;
+        e->cache0 = tlb->C0;
+        e->uc0 = tlb->UC0;
+        e->pfn1 = tlb->PFN[1];
+        e->valid1 = tlb->V1;
+        e->dirty1 = tlb->D1;
+        e->cache1 = tlb->C1;
+        e->uc1 = tlb->UC1;
+        QAPI_LIST_APPEND(tail, e);
+    }
+    q->state = state;
+}
+
+MipsTlbState *qmp_x_query_mips_tlb(int64_t cpu_index, bool has_shadow,
+                                   bool shadow, Error **errp)
+{
+    MIPSTlbQuery q = { .shadow = has_shadow && shadow };
+    MIPSCPU *cpu = mips_qmp_cpu(cpu_index, errp);
+
+    if (!cpu) {
+        return NULL;
+    }
+    switch (cpu->env.cpu_model->mmu_type) {
+    case MMU_TYPE_R4000:
+    case MMU_TYPE_R10000:
+        break;
+    default:
+        error_setg(errp, "CPU %" PRId64 " has no standard TLB", cpu_index);
+        return NULL;
+    }
+    run_on_cpu(CPU(cpu), mips_tlb_query_work, RUN_ON_CPU_HOST_PTR(&q));
+    return q.state;
+}

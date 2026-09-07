@@ -345,3 +345,126 @@
 { 'command': 'x-query-mips-debug-breakpoints',
   'returns': ['MipsDebugBreakpoint'],
   'features': [ 'unstable' ] }
+
+##
+# @MipsTlbEntry:
+#
+# One entry of a MIPS CPU's TLB as the emulator holds it.
+#
+# @index: position in the TLB; positions at or past the architectural
+#     entry count are the emulator's shadow copies of entries a random
+#     write displaced
+#
+# @vpn2: virtual address of the even page of the pair, as EntryHi
+#     holds it
+#
+# @asid: address space the entry belongs to
+#
+# @global: whether the entry matches every ASID
+#
+# @page-mask: PageMask register value the entry was written with
+#
+# @pfn0: physical address of the even page
+#
+# @valid0: whether the even page is valid
+#
+# @dirty0: whether the even page is writable
+#
+# @cache0: cache coherency attribute of the even page
+#
+# @uc0: uncached attribute of the even page, on the R10000 family
+#
+# @pfn1: physical address of the odd page
+#
+# @valid1: whether the odd page is valid
+#
+# @dirty1: whether the odd page is writable
+#
+# @cache1: cache coherency attribute of the odd page
+#
+# @uc1: uncached attribute of the odd page, on the R10000 family
+#
+# Since: 11.2
+##
+{ 'struct': 'MipsTlbEntry',
+  'data': { 'index': 'int',
+            'vpn2': 'uint64',
+            'asid': 'uint16',
+            'global': 'bool',
+            'page-mask': 'uint32',
+            'pfn0': 'uint64',
+            'valid0': 'bool',
+            'dirty0': 'bool',
+            'cache0': 'uint8',
+            'uc0': 'uint8',
+            'pfn1': 'uint64',
+            'valid1': 'bool',
+            'dirty1': 'bool',
+            'cache1': 'uint8',
+            'uc1': 'uint8' } }
+
+##
+# @MipsTlbState:
+#
+# One MIPS CPU's TLB and the CP0 registers that address it.
+#
+# @cpu-index: CPU the state was read from
+#
+# @entryhi: EntryHi register
+#
+# @asid: ASID field of EntryHi
+#
+# @index: Index register
+#
+# @wired: Wired register
+#
+# @nb-tlb: number of architectural entries
+#
+# @tlb-in-use: architectural entries plus the emulator's shadow copies
+#
+# @entries: entries in index order
+#
+# Since: 11.2
+##
+{ 'struct': 'MipsTlbState',
+  'data': { 'cpu-index': 'int',
+            'entryhi': 'uint64',
+            'asid': 'uint16',
+            'index': 'uint32',
+            'wired': 'uint32',
+            'nb-tlb': 'uint32',
+            'tlb-in-use': 'uint32',
+            'entries': ['MipsTlbEntry'] } }
+
+##
+# @x-query-mips-tlb:
+#
+# Read one MIPS CPU's TLB and TLB-related CP0 registers.  Unlike
+# @x-query-origin-state this reads live architectural state: the read
+# runs on the CPU's own thread between two instructions, so a running
+# CPU is briefly interrupted and the result is one consistent
+# snapshot.
+#
+# @cpu-index: CPU to read
+#
+# @shadow: also return the emulator's shadow copies of entries a
+#     random write displaced, which follow the architectural entries
+#     (default: false)
+#
+# Features:
+#
+# @unstable: This command is meant for debugging.
+#
+# Returns: the CPU's TLB state
+#
+# Errors:
+#     - If @cpu-index names no CPU
+#     - If the CPU has no standard TLB
+#
+# Since: 11.2
+##
+{ 'command': 'x-query-mips-tlb',
+  'data': { 'cpu-index': 'int',
+            '*shadow': 'bool' },
+  'returns': 'MipsTlbState',
+  'features': [ 'unstable' ] }
