@@ -316,6 +316,7 @@ typedef struct QLogicISPInfo {
     bool reject_busy_mailbox;       /* a held result refuses a submission */
     bool a64_ram_load;              /* the 0x0009 RAM load is in the set */
     bool recovery_mailboxes;        /* the 0x0015-0x0017 abort commands */
+    bool derived_phase_flags;   /* per-command phase bits, not all-phases */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -1298,6 +1299,7 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     uint16_t completion;
     uint16_t state_flags;
     uint64_t unused;
+    uint64_t moved;
 
     sense_len = scsi_req_get_sense(sreq, sense, sizeof(sense));
     if (sense_len > 0) {
@@ -1325,11 +1327,30 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
                                                   : ISP_IOCB_COMPLETE;
 
     /*
-     * Auto-sense runs only after a CHECK CONDITION, so GOT_SENSE reports the
-     * sense phase alone; setting it on a clean command makes a driver that
-     * checks the phase mask retry without bound.
+     * The two parts disagree on what a completed command's phase bits
+     * mean. The ISP1040's datasheet records the all-phases mask a
+     * completed command traverses, gated only by whether it actually
+     * collected sense; the ISP12160's forbids a phase flag for work the
+     * command skipped, so each of its data-phase bits is earned by what
+     * the request did: a zero-data command reports no data phase, and a
+     * short transfer reports data moved but not a transfer that ran to
+     * its end. Auto-sense runs only after a CHECK CONDITION on either
+     * part, so got-sense is always gated on the completion carrying
+     * sense.
      */
-    state_flags = ISP_STATE_FLAGS_ALL_PHASES & ~ISP_STATE_FLAG_GOT_SENSE;
+    if (QLOGIC_ISP_GET_CLASS(s)->info->derived_phase_flags) {
+        moved = sreq->cmd.xfer > resid ? sreq->cmd.xfer - resid : 0;
+        state_flags = ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
+                      ISP_STATE_FLAG_SENT_CDB | ISP_STATE_FLAG_GOT_STATUS;
+        if (moved > 0) {
+            state_flags |= ISP_STATE_FLAG_TRANSFERRED_DATA;
+        }
+        if (moved > 0 && unused == 0) {
+            state_flags |= ISP_STATE_FLAG_TRANSFER_COMPLETE;
+        }
+    } else {
+        state_flags = ISP_STATE_FLAGS_ALL_PHASES & ~ISP_STATE_FLAG_GOT_SENSE;
+    }
     if (sense_len > 0) {
         state_flags |= ISP_STATE_FLAG_GOT_SENSE;
     }
@@ -2208,13 +2229,14 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
     { .name = TYPE_QLOGIC_ISP1040, .desc = "QLogic ISP1040 SCSI host adapter",
       .device_id = 0x1020, .revision = 0x05, .nchannels = 1,
       .cfg0_reports_revision = true, .ram_wraps = true,
+      .derived_phase_flags = false,
       .fw_version = { 1, 0, 0 } },
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",
       .device_id = 0x1216, .revision = 0x06, .nchannels = 2,
       .cfg0_reports_revision = false, .banked_dma = true,
       .reject_busy_mailbox = true, .a64_ram_load = true,
-      .recovery_mailboxes = true,
+      .recovery_mailboxes = true, .derived_phase_flags = true,
       .fw_version = { 10, 4, 0 } },
 };
 
