@@ -10,7 +10,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1State, SGI_L1)
 #define TYPE_SGI_L1_UART "sgi-l1-uart"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_SIZE 0x40
-#define SGI_L1_FRAME_SIZE 129
+/* 256 payload bytes plus the two check bytes: the firmware's receive cap. */
+#define SGI_L1_FRAME_SIZE 258
 #define SGI_L1_QUEUE_SIZE 4096
 #define SGI_L1_LOG_ENTRIES 128
 #define SGI_L1_LOG_TEXT 48
@@ -39,6 +40,8 @@ struct SGIL1State {
     bool console_mode;
     bool escaped;
     bool warned_off;
+    bool promreq_debug;
+    GString *capture;
     uint8_t command[128];
     uint32_t command_len;
     char **chassis_files;

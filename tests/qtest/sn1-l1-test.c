@@ -8,6 +8,8 @@
 #include <sys/socket.h>
 
 #define BASE 0x11000000ULL
+
+static void expect_router_error(QTestState *s, uint8_t subchannel);
 #define PATH "/machine/peripheral/l1"
 #define L1 "/machine/peripheral/l1c"
 #define UART " -device sgi-l1-uart,id=l1,controller=l1c"
@@ -153,10 +155,8 @@ static void test_identity(void)
         g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
     }
     request[1] = 0x4f;
-    expected[15] = 0x34;
     send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
-    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+    expect_router_error(s, 17);
     qtest_quit(s);
 }
 
@@ -489,7 +489,8 @@ static void test_console(void)
     int fd;
     QTestState *s = console_start(&fd, "", "");
     uint8_t reply[129];
-    const uint8_t output[] = { 0x44, 'P', 'R', 'O', 'M' };
+    /* The PROM prints on its CPU's subchannel, which keeps input there. */
+    const uint8_t output[] = { 0x40, 'P', 'R', 'O', 'M' };
 
     console_expect(fd, POWERING ENTER_CPU0);
     send_frame(s, output, sizeof(output), false);
@@ -982,84 +983,334 @@ static void assert_display(QTestState *s, const char *expected)
     g_assert_cmpstr(qdict_get_str(result, "return"), ==, expected);
 }
 
+static void expect_router_error(QTestState *s, uint8_t subchannel)
+{
+    const uint8_t expected[] = { 0x20 | subchannel, 0xff, 0xff, 0xff, 0xff,
+                                 0, 0, 0, 8 };
+    uint8_t reply[129];
+
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+}
+
+static void expect_identity(QTestState *s, uint8_t subchannel,
+                            uint16_t packed)
+{
+    const uint8_t expected[] = { 0x20 | subchannel, 0, 0, 0, 0, 2,
+                                 0, 0, 0, packed >> 8, packed, 0, 0, 0, 0,
+                                 'C' };
+    uint8_t reply[129];
+
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+}
+
+/* One 20-bit key routes: the local identity or the all-local sentinel. */
 static void test_route_forms(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                              "-device sgi-l1,id=l1c,rack=7,bay=11" UART);
+                               "-device sgi-l1,id=l1c,rack=7,bay=11" UART);
     uint8_t request[] = { 0x12, 0, 0, 0, 0, 0, 3 };
-    uint8_t expected[] = { 0x32, 0, 0, 0, 0, 2,
-                           0, 0, 0, 1, 0xcb, 0, 0, 0, 0, 'C' };
-    uint8_t reply[129];
-    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
-    for (unsigned type = 0; type <= 4; type += 4) {
-        expected[15] = type ? 0x34 : 'C';
-        for (unsigned form = 0; form < 4; form++) {
-            unsigned rack = form & 1 ? 0x3ff : 7;
-            unsigned bay = form & 2 ? 0x3f : 11;
-            set_destination(request, (type << 28) | (rack << 18) |
-                                     (bay << 12) | 6);
-            send_frame(s, request, sizeof(request), false);
-            g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
-            g_assert_cmpmem(reply, sizeof(expected), expected,
-                            sizeof(expected));
-        }
-    }
-    qtest_quit(s);
-}
+    const uint32_t local = 0x0ffff006, own = (7 << 18) | (11 << 12) | 6;
+    const uint32_t local_forms[] = { local, own, local | (1 << 5),
+                                     local | (1 << 11), own | (0x7f << 5) };
+    const uint32_t foreign_forms[] = {
+        (0x3ff << 18) | (11 << 12) | 6, (7 << 18) | (0x3f << 12) | 6,
+        (8 << 18) | (11 << 12) | 6, (7 << 18) | (12 << 12) | 6,
+        (1 << 28) | local, (2 << 28) | local, (3 << 28) | local,
+        (4 << 28) | local, (5 << 28) | local, (6 << 28) | local,
+        (7 << 28) | local, (8 << 28) | local, (0xf << 28) | own,
+    };
 
-static void reject_route(QTestState *s, uint32_t address, bool malformed)
-{
-    uint8_t request[] = { 0x10, 0, 0, 0, 0, 0x10, 5, 1,
-                          1, 'B', 'A', 'D', 0 };
-    const uint8_t recover[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1,
-                                1, 'k', 'e', 'e', 'p', 0 };
-    uint8_t reply[129];
-    set_destination(request, address);
-    if (malformed) {
-        request[7] = 2;
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    for (unsigned i = 0; i < G_N_ELEMENTS(local_forms); i++) {
+        set_destination(request, local_forms[i]);
+        send_frame(s, request, sizeof(request), false);
+        expect_identity(s, 18, 0x1cb);
     }
+    for (unsigned i = 0; i < G_N_ELEMENTS(foreign_forms); i++) {
+        set_destination(request, foreign_forms[i]);
+        send_frame(s, request, sizeof(request), false);
+        expect_router_error(s, 18);
+    }
+    /* Any subchannel carries a request and gets its reply on the same one. */
+    request[0] = 0x00;
+    set_destination(request, local);
     send_frame(s, request, sizeof(request), false);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
-    assert_display(s, "keep");
-    send_frame(s, recover, sizeof(recover), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0);
-    assert_display(s, "keep");
+    expect_identity(s, 0, 0x1cb);
+    request[0] = 0x1f;
+    send_frame(s, request, sizeof(request), false);
+    expect_identity(s, 31, 0x1cb);
+    qtest_quit(s);
 }
 
-static void test_route_rejection(void)
+static void expect_silence(QTestState *s, const uint8_t *request, size_t n)
 {
-    QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                              "-device sgi-l1,id=l1c,rack=7,bay=11" UART);
-    const uint8_t initial[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1,
-                                1, 'k', 'e', 'e', 'p', 0 };
-    const uint32_t local = 0x0ffff006;
+    const uint8_t recover[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+
+    send_frame(s, request, n, false);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    send_frame(s, recover, sizeof(recover), false);
+    expect_identity(s, 16, 0x41);
+}
+
+/* Which local tasks answer, echo, or drop. */
+static void test_tasks(void)
+{
+    QTestState *s = start();
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+    const uint8_t loopback[] = { 0x10, 0x0f, 0xff, 0xf0, 18, 0xab, 0xcd, 2,
+                                 0, 0, 0, 0, 5, 1, 'h', 'i', 0 };
+    const uint8_t echoed[] = { 0x30, 0, 0, 0xab, 0xcd, 2,
+                               0, 0, 0, 0, 5, 1, 'h', 'i', 0 };
+    const uint8_t console_in[] = { 0x10, 0x0f, 0xff, 0xf0, 4 << 5 | 5,
+                                   0x00, 0x41 };
+    const uint8_t console_in_21[] = { 0x10, 0x0f, 0xff, 0xf0, 2 << 5 | 21,
+                                      0x12, 0x62 };
+    static const unsigned silent[] = {
+        0, 1, 4, 7, 8, 9, 10, 11, 12, 13, 15, 17, 20, 22, 23, 24, 25, 26,
+        27, 28, 29, 30, 31, 2, 14, 16, 19
+    };
     uint8_t reply[129];
-    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
-    send_frame(s, initial, sizeof(initial), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    for (unsigned malformed = 0; malformed < 2; malformed++) {
-        reject_route(s, (8 << 18) | (0x3f << 12) | 6, malformed);
-        reject_route(s, (0x3ff << 18) | (12 << 12) | 6, malformed);
-        reject_route(s, (8 << 18) | (12 << 12) | 6, malformed);
-        for (unsigned bit = 5; bit <= 11; bit++) {
-            reject_route(s, local | (1U << bit), malformed);
-        }
-        for (unsigned type = 1; type < 16; type++) {
-            if (type != 4) {
-                reject_route(s, local | (type << 28), malformed);
-            }
-        }
-        for (unsigned task = 0; task < 32; task++) {
-            if (task != 3 && task != 6) {
-                reject_route(s, (local & ~31U) | task, malformed);
-            }
-            if (task != 6) {
-                reject_route(s, 0x4ffff000 | task, malformed);
-            }
-        }
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(silent); i++) {
+        set_destination(request, 0x0ffff000 | silent[i]);
+        expect_silence(s, request, sizeof(request));
     }
+    send_frame(s, loopback, sizeof(loopback), false);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(echoed));
+    g_assert_cmpmem(reply, sizeof(echoed), echoed, sizeof(echoed));
+    /* The Bedrock console tasks send the code's low byte back as input. */
+    send_frame(s, console_in, sizeof(console_in), false);
+    g_assert_cmpuint(receive(s, reply), ==, 2);
+    g_assert_cmphex(reply[0], ==, 4);
+    g_assert_cmphex(reply[1], ==, 'A');
+    send_frame(s, console_in_21, sizeof(console_in_21), false);
+    g_assert_cmpuint(receive(s, reply), ==, 2);
+    g_assert_cmphex(reply[0], ==, 2);
+    g_assert_cmphex(reply[1], ==, 'b');
     qtest_quit(s);
+}
+
+static void text_request(uint8_t *request, size_t *n, uint16_t code,
+                         const char *text)
+{
+    request[0] = 0x10;
+    set_destination(request, 0x0ffff003);
+    request[5] = code >> 8;
+    request[6] = code;
+    request[7] = 1;
+    request[8] = 1;
+    memcpy(request + 9, text, strlen(text) + 1);
+    *n = 10 + strlen(text);
+}
+
+/* The command interpreter runs any code's text and returns its lines. */
+static void test_command_interpreter(void)
+{
+    QTestState *s = start();
+    uint8_t request[128], reply[129];
+    size_t n;
+    const uint8_t version[] = { 0x30, 0, 0, 0, 0, 1, 1,
+                                'L', '1', ' ', 'p', 'r', 'o', 't', 'o', 'c',
+                                'o', 'l', ' ', 'r', 'e', 's', 'p', 'o', 'n',
+                                'd', 'e', 'r', ';', ' ', 'f', 'i', 'r', 'm',
+                                'w', 'a', 'r', 'e', ' ', 'r', 'e', 'v', 'i',
+                                's', 'i', 'o', 'n', ' ', 'u', 'n', 'a', 'v',
+                                'a', 'i', 'l', 'a', 'b', 'l', 'e', 0 };
+    const uint8_t two_lines[] = { 0x30, 0, 0, 0, 0, 2,
+                                  1, 'c', 'o', 'n', 's', 'o', 'l', 'e', ' ',
+                                  'i', 'n', 'p', 'u', 't', ':', ' ', '0', '0',
+                                  '1', 'c', '0', '1', ' ', 'C', 'P', 'U', '0',
+                                  0,
+                                  1, 'c', 'o', 'n', 's', 'o', 'l', 'e', ' ',
+                                  'o', 'u', 't', 'p', 'u', 't', ':', ' ', 'n',
+                                  'o', 't', ' ', 'f', 'i', 'l', 't', 'e', 'r',
+                                  'e', 'd', '.', 0 };
+    const uint8_t unknown[] = { 0x30, 0xff, 0xff, 0xff, 0xff, 1,
+                                1, 'E', 'R', 'R', 'O', 'R', ':', ' ', 'c',
+                                'o', 'm', 'm', 'a', 'n', 'd', ' ', 'n', 'o',
+                                't', ' ', 'f', 'o', 'u', 'n', 'd', '.', 0 };
+
+    text_request(request, &n, 0x1234, "version");
+    send_frame(s, request, n, false);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(version));
+    g_assert_cmpmem(reply, sizeof(version), version, sizeof(version));
+    text_request(request, &n, 0, "* select");
+    send_frame(s, request, n, false);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(two_lines));
+    g_assert_cmpmem(reply, sizeof(two_lines), two_lines, sizeof(two_lines));
+    text_request(request, &n, 0, "bogus");
+    send_frame(s, request, n, false);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(unknown));
+    g_assert_cmpmem(reply, sizeof(unknown), unknown, sizeof(unknown));
+    /* Not one text argument: minus 100, a model choice. */
+    request[7] = 0;
+    send_frame(s, request, 8, false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    request[7] = 1;
+    request[8] = 0;
+    send_frame(s, request, 13, false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    /* The command ran only through the interpreter: no console text. */
+    assert_display(s, "Powered Up");
+    qtest_quit(s);
+}
+
+static void raw_bytes(QTestState *s, const uint8_t *bytes, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        qtest_writeq(s, BASE, bytes[i]);
+    }
+}
+
+/* The link reader's tolerance, from the firmware's frame reader. */
+static void test_receive_tolerance(void)
+{
+    QTestState *s = start();
+    const uint8_t identity[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+    uint8_t reply[129], big[300];
+    uint16_t crc;
+    size_t n;
+
+    /* Frames of one to four bytes are dropped; a good frame follows. */
+    for (unsigned length = 1; length <= 4; length++) {
+        uint8_t frame[4] = { 0x10, 0x0f, 0xff, 0xf0 };
+        qtest_writeq(s, BASE, 0x7e);
+        raw_bytes(s, frame, length);
+        qtest_writeq(s, BASE, 0x7e);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+        send_frame(s, identity, sizeof(identity), false);
+        expect_identity(s, 16, 0x41);
+    }
+    /* A three-byte frame with a good check is still short. */
+    crc = ~fcs(0xffff, 0x10);
+    qtest_writeq(s, BASE, 0x7e);
+    qtest_writeq(s, BASE, 0x10);
+    put(s, crc);
+    put(s, crc >> 8);
+    qtest_writeq(s, BASE, 0x7e);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    /*
+     * An escape before the closing flag drops the frame; that flag opens
+     * the next one, so the next frame needs no flag of its own.
+     */
+    qtest_writeq(s, BASE, 0x7e);
+    qtest_writeq(s, BASE, 0x10);
+    qtest_writeq(s, BASE, 0x7d);
+    qtest_writeq(s, BASE, 0x7e);
+    crc = 0xffff;
+    for (unsigned i = 0; i < sizeof(identity); i++) {
+        crc = fcs(crc, identity[i]);
+        put(s, identity[i]);
+    }
+    crc = ~crc;
+    put(s, crc);
+    put(s, crc >> 8);
+    qtest_writeq(s, BASE, 0x7e);
+    expect_identity(s, 16, 0x41);
+    /* Escape after escape re-arms: the header 0x10 sent as 7d 7d 30. */
+    qtest_writeq(s, BASE, 0x7e);
+    qtest_writeq(s, BASE, 0x7d);
+    qtest_writeq(s, BASE, 0x7d);
+    qtest_writeq(s, BASE, 0x30);
+    crc = fcs(0xffff, 0x10);
+    for (unsigned i = 1; i < sizeof(identity); i++) {
+        crc = fcs(crc, identity[i]);
+        put(s, identity[i]);
+    }
+    crc = ~crc;
+    put(s, crc);
+    put(s, crc >> 8);
+    qtest_writeq(s, BASE, 0x7e);
+    expect_identity(s, 16, 0x41);
+    /* A 136-byte payload is within the 256-byte receive cap. */
+    memcpy(big, identity, 4);
+    big[4] = 6;
+    big[5] = 0;
+    big[6] = 0x0e;
+    big[7] = 1;
+    big[8] = 0xff;
+    memset(big + 9, 0x5a, 127);
+    n = 136;
+    send_frame(s, big, n, false);
+    g_assert_cmpuint(receive(s, reply), ==, 11);
+    g_assert_cmphex(reply[4], ==, 0);
+    /* Two such arguments make 264 bytes: over the cap, dropped, recovered. */
+    big[7] = 2;
+    big[136] = 0xff;
+    memset(big + 137, 0xa5, 127);
+    n = 264;
+    send_frame(s, big, n, false);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    send_frame(s, identity, sizeof(identity), false);
+    expect_identity(s, 16, 0x41);
+    qtest_quit(s);
+}
+
+/* The PROM-request debugging switch logs each general-task request. */
+static void test_request_log(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", RTC);
+    const uint8_t identity[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+    const uint8_t command[] = { 0x11, 0x0f, 0xff, 0xf0, 3, 0, 0, 1,
+                                1, 'l', '1', 0 };
+    uint8_t reply[129];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024l1dbg\r");
+    console_expect(fd, ESCAPE "L1 PROM request debugging is off\r\n"
+                       RETURN_CPU0);
+    console_send(fd, "\024l1dbg promreq on\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    console_send(fd, "\024l1dbg\r");
+    console_expect(fd, ESCAPE "L1 PROM request debugging is on\r\n"
+                       RETURN_CPU0);
+    send_frame(s, identity, sizeof(identity), false);
+    expect_identity(s, 16, 0x41);
+    /* A command-interpreter request is not logged; it returns its line. */
+    send_frame(s, command, sizeof(command), false);
+    g_assert_cmpuint(receive(s, reply), ==, 55);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 1);
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "L1REQ: 00041205 - 0003\r\n" RETURN_CPU0);
+    console_send(fd, "\024l1dbg req off\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    send_frame(s, identity, sizeof(identity), false);
+    expect_identity(s, 16, 0x41);
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "L1REQ: 00041205 - 0003\r\n" RETURN_CPU0);
+    qtest_quit(s);
+    close(fd);
+}
+
+/* Console output on a subchannel retargets the operator's input to it. */
+static void test_console_retarget(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "");
+    const uint8_t output[] = { 0x50, 'P', 'R', 'O', 'M' };
+    uint8_t reply[129];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    send_frame(s, output, sizeof(output), false);
+    console_expect(fd, "PROM");
+    console_send(fd, "x");
+    console_frame(s, reply, 2);
+    g_assert_cmphex(reply[0], ==, 0x10);
+    g_assert_cmphex(reply[1], ==, 'x');
+    qtest_quit(s);
+    close(fd);
 }
 
 static void test_task_commands(void)
@@ -1067,9 +1318,10 @@ static void test_task_commands(void)
     QTestState *s = start();
     uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 3, 0 };
     uint8_t reply[129];
+    /* The interpreter takes any code; without its text it answers minus 100. */
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9b);
+    g_assert_cmphex(reply[4], ==, 0x9c);
     request[4] = 6;
     request[6] = 0;
     send_frame(s, request, sizeof(request), false);
@@ -1079,9 +1331,8 @@ static void test_task_commands(void)
     request[5] = 0x10;
     request[6] = 5;
     send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9b);
-    /* Rejected on the I/O view, so the L1's own line stays. */
+    /* The attached-I/O address is not local: router error, line unchanged. */
+    expect_router_error(s, 16);
     assert_display(s, "Powered Up");
     request[1] = 0x0f;
     send_frame(s, request, sizeof(request), false);
@@ -1098,7 +1349,6 @@ static void test_settings_queries(void)
                           0, 0, 0, 0, 0x55 };
     uint8_t expected[16] = { 0x37, 0, 0, 0, 0, 1 };
     const uint8_t bad_count[] = { 0x37, 0xff, 0xff, 0xff, 0x9c, 0 };
-    const uint8_t bad_task[] = { 0x37, 0xff, 0xff, 0xff, 0x9b, 0 };
     uint8_t reply[129];
 
     for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
@@ -1116,14 +1366,14 @@ static void test_settings_queries(void)
         g_assert_cmpmem(reply, sizeof(bad_count), bad_count, sizeof(bad_count));
         request[7] = 0;
         request[4] = 3;
+        /* The interpreter takes any code but wants one text argument. */
         send_frame(s, request, 8, false);
-        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_task));
-        g_assert_cmpmem(reply, sizeof(bad_task), bad_task, sizeof(bad_task));
+        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_count));
+        g_assert_cmpmem(reply, sizeof(bad_count), bad_count, sizeof(bad_count));
         request[4] = 6;
         request[1] = 0x4f;
         send_frame(s, request, 8, false);
-        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_task));
-        g_assert_cmpmem(reply, sizeof(bad_task), bad_task, sizeof(bad_task));
+        expect_router_error(s, 23);
         request[1] = 0x0f;
     }
     qtest_quit(s);
@@ -1325,20 +1575,24 @@ static void test_node_position(void)
     /* Neither code is served on the command interpreter or the I/O view. */
     set_destination(request, 0x4ffff006);
     send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9b);
+    expect_router_error(s, 16);
+    /* The interpreter takes any code but wants one text argument. */
     set_destination(request, 0x0ffff003);
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9b);
+    g_assert_cmphex(reply[4], ==, 0x9c);
     set_destination(request, 0x0ffff006);
     for (unsigned i = 0; i < 2; i++) {
         uint8_t select[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
                              0, 0, 0, 0, 0x40 };
         set_destination(select, i ? 0x0ffff003 : 0x4ffff006);
         send_frame(s, select, sizeof(select), false);
-        g_assert_cmpuint(receive(s, reply), ==, 6);
-        g_assert_cmphex(reply[4], ==, 0x9b);
+        if (i) {
+            g_assert_cmpuint(receive(s, reply), ==, 6);
+            g_assert_cmphex(reply[4], ==, 0x9c);
+        } else {
+            expect_router_error(s, 16);
+        }
     }
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
     /* A node reset does not reach the controller; a controller restart does. */
@@ -1474,7 +1728,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/lifecycle-persistence", test_lifecycle_persistence);
     qtest_add_func("sn1/l1/lifecycle-migration", test_lifecycle_migration);
     qtest_add_func("sn1/l1/route-forms", test_route_forms);
-    qtest_add_func("sn1/l1/route-rejection", test_route_rejection);
+    qtest_add_func("sn1/l1/tasks", test_tasks);
+    qtest_add_func("sn1/l1/command-interpreter", test_command_interpreter);
+    qtest_add_func("sn1/l1/receive-tolerance", test_receive_tolerance);
+    qtest_add_func("sn1/l1/request-log", test_request_log);
+    qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
     qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
