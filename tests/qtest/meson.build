@@ -258,6 +258,15 @@ elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
                         'sn1-xbridge-xbow-test']
 endif
 
+# The Crossbow qtest builds its own populated switch out of test-only
+# Crosstalk endpoints.  Keep the registration under the machine guard, then
+# omit it where that fixture is not present in a minimal device build.
+sn0_xbow_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-xbow-test'] : [])
+if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+  sn0_xbow_qtests = []
+endif
+
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
@@ -316,6 +325,7 @@ qtests_mips64 = \
                                                    'sn0-syscall-trace-test',
                                                    'sn0-debug-breakpoint-test',
                                                    'sn0-tlb-query-test'] : []) + \
+  sn0_xbow_qtests + \
   sn1_xbridge_qtests
 
 qtests_mips64el = qtests_mips
