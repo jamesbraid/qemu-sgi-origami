@@ -880,23 +880,14 @@ static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
     }
 }
 
-/*
- * Wake the other processor and end this one's slice; no successor is
- * chosen. Firmware polls the other processor through Hub registers with an
- * instruction-count timeout one slice can exhaust before it runs. Changes
- * no Hub state.
- */
-static void sgi_hub_yield_to_processor(CPUState *other)
+/* Wake the other processor without changing Hub state. */
+static void sgi_hub_kick_peer(CPUState *peer)
 {
-    if (!other || other == current_cpu) {
+    if (!peer || peer == current_cpu) {
         return;
     }
 
-    qemu_cpu_kick(other);
-
-    if (current_cpu) {
-        cpu_exit(current_cpu);
-    }
+    qemu_cpu_kick(peer);
 }
 
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
@@ -914,14 +905,14 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     }
     sgi_hub_update_irq(s);
 
-    /* Credit slice B a PEND1 snapshot before it yields: the PROM's bit 113. */
+    /* Credit slice B a PEND1 snapshot before kicking it: the PROM's bit 113. */
     if (bank == 1 && number == 113 && primary && current_cpu == primary) {
         s->pi_int_pend1_primary_credit = true;
     }
 
     /* The PROM uses pending bits as barrier mailboxes; release the pollers. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_yield_to_processor(qemu_get_cpu(s->cpu_base + i));
+        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i));
     }
 }
 
@@ -938,7 +929,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
         if (s->pi_int_pend1_primary_credit) {
             s->pi_int_pend1_primary_credit = false;
         } else {
-            sgi_hub_yield_to_processor(primary);
+            sgi_hub_kick_peer(primary);
         }
         return value;
     }
@@ -958,14 +949,14 @@ static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
 
     /* A remote scratch write is a discovery phase change; release the node. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_yield_to_processor(qemu_get_cpu(s->cpu_base + i));
+        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i));
     }
 }
 
 /*
- * Only an unchanged re-read hands off: a read whose value moved is an answered
- * poll and the reader keeps its slice. Keyed on neither the bank's value nor
- * the masks; both name the wrong reads.
+ * Only an unchanged re-read kicks the peers: a read whose value moved is an
+ * answered poll. Keyed on neither the bank's value nor the masks; both name
+ * the wrong reads.
  */
 static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
 {
@@ -981,7 +972,7 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     if (s->pi_int_pend_seen_valid[i][bank] &&
         s->pi_int_pend_seen[i][bank] == value) {
         for (i = 0; i < s->cpus; i++) {
-            sgi_hub_yield_to_processor(qemu_get_cpu(s->cpu_base + i));
+            sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i));
         }
         return value;
     }
@@ -1212,7 +1203,7 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
     CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
-    sgi_hub_yield_to_processor(owner);
+    sgi_hub_kick_peer(owner);
     return s->pi_rt_compare[arg];
 }
 
@@ -1724,14 +1715,13 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
 
     /*
      * A progress mailbox only while the slice's interrupt is disabled: the
-     * PROM arbitrates through it that way, and ending the writer's slice
-     * keeps the other processor's instruction-count timeout from expiring
-     * unrun. A deadline writer has the interrupt enabled and must keep its
-     * slice, or its own read-back finds every deadline already passed.
+     * PROM arbitrates through it that way, so kick the other processor before
+     * its instruction-count timeout expires. A deadline writer has the
+     * interrupt enabled and does not kick the peer.
      */
     other = qemu_get_cpu(s->cpu_base + (arg ^ 1));
     if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
-        sgi_hub_yield_to_processor(other);
+        sgi_hub_kick_peer(other);
     }
 }
 
