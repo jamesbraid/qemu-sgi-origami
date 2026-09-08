@@ -1014,6 +1014,15 @@ static void pcf8584_realize(DeviceState *dev, Error **errp)
                        s->wire_master, rc);
             return;
         }
+        /*
+         * Both lines low is not a state an idle open-drain wire can be in,
+         * and it is what zero-initialisation leaves behind. Seed the
+         * remembered levels from the wire the way reset does: a START is
+         * classified against them, so an adapter that starts from the
+         * impossible pair never recognises its own and waits for ever.
+         */
+        s->wire_scl = i2c_wire_scl(s->bus);
+        s->wire_sda = i2c_wire_sda(s->bus);
     }
 
     rx = PCF8584_BCAST_RX(i2c_slave_create_simple(s->bus,
