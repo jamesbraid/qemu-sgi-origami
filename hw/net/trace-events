@@ -553,6 +553,7 @@ dp83840_update_link(const char *s) "%s"
 dp83840_reset(void) ""
 
 # tigon.c
+tigon_dma(const char *direction, uint64_t addr, uint32_t len, unsigned result) "%s 0x%" PRIx64 " %u bytes result %u"
 tigon_rx_ring(const char *ring, uint32_t len, uint32_t posted) "%s ring, %u bytes, %u buffers posted"
 tigon_irq_line(unsigned level, unsigned pending, unsigned holdoff) "line %u (pending %u holdoff %u)"
 tigon_coal_write(const char *reg, uint32_t val) "%s = %u"

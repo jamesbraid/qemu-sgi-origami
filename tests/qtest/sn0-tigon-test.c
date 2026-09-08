@@ -67,6 +67,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
  */
 #define IOVA_PREFIX         0xa500000000000000ULL
 #define IOVA(phys)          (IOVA_PREFIX | (uint32_t)(phys))
+#define DIRECT_IOVA(phys)   (0x80000000u | (uint32_t)(phys))
 
 /* Where the card's BAR is parked in PCI memory space (1 MB aligned). */
 #define ADAPTER_MMIO        0x10000000u
@@ -171,10 +172,15 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define GIB_JUMBO_RX_RCB        0x440
 
 /* Write a ring control block's 64-bit host address (two words, hi then lo). */
+static void write_rcb_dma_addr(QTestState *qts, uint32_t rcb, uint64_t addr)
+{
+    qtest_writel(qts, rcb + 0, addr >> 32);
+    qtest_writel(qts, rcb + 4, addr);
+}
+
 static void write_rcb_addr(QTestState *qts, uint32_t rcb, uint32_t phys)
 {
-    qtest_writel(qts, rcb + 0, 0);
-    qtest_writel(qts, rcb + 4, phys);
+    write_rcb_dma_addr(qts, rcb, phys);
 }
 
 /*
@@ -516,6 +522,82 @@ static QTestState *tigon_init_netdev_128m(int guest_fd)
                        guest_fd);
 }
 
+static QTestState *tigon_init_netdev_128m_dma_traced(int guest_fd,
+                                                      const char *logfile)
+{
+    return qtest_initf("-M origin200 -m 128M "
+                       "-netdev socket,fd=%d,id=n0 "
+                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
+                       "-d guest_errors,trace:tigon_dma -D %s",
+                       guest_fd, logfile);
+}
+
+static char *tigon_test_log_new(void)
+{
+    char *logfile = NULL;
+    int fd = g_file_open_tmp("tigon-dma-XXXXXX", &logfile, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    return logfile;
+}
+
+static void wait_log_contains(const char *logfile, const char *needle)
+{
+    g_autofree char *log = NULL;
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        g_clear_pointer(&log, g_free);
+        g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
+        if (strstr(log, needle)) {
+            return;
+        }
+        g_usleep(5000);
+    }
+
+    g_error("log did not contain '%s'", needle);
+}
+
+static const char *find_tigon_dma_once(const char *log,
+                                       const char *direction,
+                                       uint64_t addr, uint32_t bytes,
+                                       unsigned result)
+{
+    g_autofree char *needle = g_strdup_printf(
+        "tigon_dma %s 0x%" PRIx64 " %u bytes result %u",
+        direction, addr, bytes, result);
+    const char *match = strstr(log, needle);
+
+    g_assert_nonnull(match);
+    g_assert_null(strstr(match + strlen(needle), needle));
+    return match;
+}
+
+static unsigned count_tigon_dma_in_range(const char *log, uint64_t start,
+                                         uint64_t bytes)
+{
+    static const char event[] = "tigon_dma ";
+    const char *cursor = log;
+    unsigned count = 0;
+
+    while ((cursor = strstr(cursor, event)) != NULL) {
+        char direction[6];
+        uint64_t addr;
+        uint32_t len;
+        unsigned result;
+
+        if (sscanf(cursor, "tigon_dma %5s 0x%" SCNx64
+                   " %" SCNu32 " bytes result %u",
+                   direction, &addr, &len, &result) == 4 &&
+            addr < start + bytes && start < addr + len) {
+            count++;
+        }
+        cursor += sizeof(event) - 1;
+    }
+    return count;
+}
+
 /* The same machine, with the Bridge's DMA-route trace points logged. */
 static QTestState *tigon_init_netdev_traced(int guest_fd, const char *logfile)
 {
@@ -651,6 +733,97 @@ static void test_transmit(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
+}
+
+/* Descriptor DMA is batched, while completion stays a separate last write. */
+static void test_descriptor_dma_batches_producer_last(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    g_autofree char *logfile = tigon_test_log_new();
+    g_autofree char *log = NULL;
+    const char *event_desc, *event_prod, *tx_desc, *tx_cons;
+    const char *rx_desc, *rx_return, *rx_prod;
+    uint8_t got[sizeof(test_frame)];
+    uint32_t word2;
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_128m_dma_traced(sv[1], logfile);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    enable_dma_big_endian(qts);
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) | DEV_SWAP_DIRECT);
+    build_gib(qts);
+    write_rcb_dma_addr(qts, GIB_PHYS + GIB_RETURN_PROD_PTR,
+                       DIRECT_IOVA(RETURN_PROD_PHYS));
+    publish_gib(qts);
+    release_cpu(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(test_frame));
+    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    write_rcb_addr(qts, STD_RX_RING_PHYS, RX_BUF_PHYS);
+    qtest_writel(qts, STD_RX_RING_PHYS + 8, (7u << 16) | 2048);
+    qtest_writel(qts, STD_RX_RING_PHYS + 12,
+                 (uint32_t)TI_BDTYPE_RECV_BD << 16);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    net_send_frame(sv[0], test_frame, sizeof(test_frame));
+
+    wait_log_contains(logfile,
+                      "tigon: receive return producer write at "
+                      "0x80250000 failed");
+    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 7);
+    g_assert_false(irq_asserted(qts));
+
+    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
+    event_desc = find_tigon_dma_once(log, "write", EVENT_RING_PHYS, 8, 0);
+    event_prod = find_tigon_dma_once(log, "write", EV_PROD_PHYS, 4, 0);
+    tx_desc = find_tigon_dma_once(log, "read", TX_RING_PHYS, 12, 0);
+    tx_cons = find_tigon_dma_once(log, "write", TX_CONS_PHYS, 4, 0);
+    rx_desc = find_tigon_dma_once(log, "read", STD_RX_RING_PHYS, 12, 0);
+    rx_return = find_tigon_dma_once(log, "write", RETURN_RING_PHYS, 32, 0);
+    rx_prod = find_tigon_dma_once(log, "write",
+                                  DIRECT_IOVA(RETURN_PROD_PHYS), 4, 2);
+    g_assert_cmpuint(count_tigon_dma_in_range(log, EVENT_RING_PHYS, 8), ==,
+                     1);
+    g_assert_cmpuint(count_tigon_dma_in_range(log, TX_RING_PHYS, 16), ==, 1);
+    g_assert_cmpuint(count_tigon_dma_in_range(log, STD_RX_RING_PHYS, 32), ==,
+                     1);
+    g_assert_cmpuint(count_tigon_dma_in_range(log, RETURN_RING_PHYS, 32), ==,
+                     1);
+    g_assert_cmpuint(count_tigon_dma_in_range(log, EV_PROD_PHYS, 4), ==, 1);
+    g_assert_cmpuint(count_tigon_dma_in_range(log, TX_CONS_PHYS, 4), ==, 1);
+    g_assert_cmpuint(count_tigon_dma_in_range(
+                         log, DIRECT_IOVA(RETURN_PROD_PHYS), 4), ==, 1);
+    g_assert_true(event_desc < event_prod);
+    g_assert_true(event_prod < tx_desc);
+    g_assert_true(tx_desc < tx_cons);
+    g_assert_true(tx_cons < rx_desc);
+    g_assert_true(rx_desc < rx_return);
+    g_assert_true(rx_return < rx_prod);
+
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    unlink(logfile);
 }
 
 /* A refused payload fetch must not send or consume its descriptor. */
@@ -2454,6 +2627,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/descriptor-dma-batches-producer-last",
+                        NULL, test_descriptor_dma_batches_producer_last);
     qtest_add_data_func("/sn0/tigon/transmit-payload-dma-error", NULL,
                         test_transmit_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/transmit-fragment-dma-error-retry", NULL,
