@@ -38,6 +38,8 @@ struct SGIL1State {
     SGIL1EEPROM records[48];
     uint32_t rack;
     uint32_t bay;
+    uint32_t node_position;
+    uint8_t port_field;
     uint8_t lcr;
     uint8_t ier;
     uint8_t mcr;

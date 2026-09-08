@@ -759,6 +759,165 @@ static void test_uart_irq_migration(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void expect_wire(QTestState *s, const uint8_t *wire, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
+        g_assert_cmphex(qtest_readq(s, BASE), ==, wire[i]);
+    }
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+}
+
+static uint32_t node_position(QTestState *s, uint32_t address)
+{
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0x0e };
+    uint8_t reply[129];
+    set_destination(request, address);
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 11);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 1);
+    g_assert_cmphex(reply[6], ==, 0);
+    return reply[10];
+}
+
+static void console_select(QTestState *s, uint32_t argument, int32_t code)
+{
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
+                          0, argument >> 24, argument >> 16, argument >> 8,
+                          argument };
+    uint8_t reply[129];
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, (uint8_t)code);
+    g_assert_cmphex(reply[5], ==, 0);
+}
+
+static void test_node_position(void)
+{
+    QTestState *s = start();
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0x0e, 0 };
+    const uint8_t wire[] = { 0x7e, 0x30, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+                             0x30, 0x98, 0x7e };
+    const uint8_t wire_two[] = { 0x7e, 0x30, 0, 0, 0, 0, 1, 0, 0, 0, 0, 2,
+                                 0x22, 0xbb, 0x7e };
+    const uint8_t two_ints[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0x0e, 2,
+                                 0, 0, 0, 0, 1, 0, 0, 0, 0, 2 };
+    const uint8_t text[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0x0e, 1,
+                             1, 'x', 0 };
+    const uint8_t select_none[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 0 };
+    const uint8_t select_text[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
+                                    1, 'x', 0 };
+    const uint8_t wire_range[] = { 0x7e, 0x30, 0xff, 0xff, 0xff, 0x97, 0,
+                                   0x71, 0x92, 0x7e };
+    uint8_t reply[129];
+
+    send_frame(s, request, sizeof(request), false);
+    expect_wire(s, wire, sizeof(wire));
+    send_frame(s, request, sizeof(request) - 1, false);
+    expect_wire(s, wire, sizeof(wire));
+    send_frame(s, two_ints, sizeof(two_ints), false);
+    expect_wire(s, wire, sizeof(wire));
+    send_frame(s, text, sizeof(text), false);
+    expect_wire(s, wire, sizeof(wire));
+    console_select(s, 4, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 0);
+    console_select(s, 0x40, 0);
+    send_frame(s, request, sizeof(request), false);
+    expect_wire(s, wire_two, sizeof(wire_two));
+    console_select(s, 4, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    send_frame(s, select_none, sizeof(select_none), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    send_frame(s, select_text, sizeof(select_text), false);
+    expect_wire(s, wire_range, sizeof(wire_range));
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    send_frame(s, request, sizeof(request), false);
+    expect_wire(s, wire_two, sizeof(wire_two));
+    /* Neither code is served on the command interpreter or the I/O view. */
+    set_destination(request, 0x4ffff006);
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    set_destination(request, 0x0ffff003);
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    set_destination(request, 0x0ffff006);
+    for (unsigned i = 0; i < 2; i++) {
+        uint8_t select[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
+                             0, 0, 0, 0, 0x40 };
+        set_destination(select, i ? 0x0ffff003 : 0x4ffff006);
+        send_frame(s, select, sizeof(select), false);
+        g_assert_cmpuint(receive(s, reply), ==, 6);
+        g_assert_cmphex(reply[4], ==, 0x9b);
+    }
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    qtest_system_reset(s);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 0);
+    qtest_quit(s);
+
+    s = qtest_init("-M none -cpu R10000 -S "
+                   "-device sgi-l1,id=l1,node-position=2");
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    console_select(s, 4, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    /* Position bits are only ever or-ed in: from 2, bit 5 makes 3. */
+    console_select(s, 0x20, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 3);
+    qtest_system_reset(s);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    console_select(s, 0x20, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 3);
+    qtest_quit(s);
+}
+
+static void test_node_position_range(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*node-position must be 0 to 3*");
+        return;
+    }
+    s = qtest_init("-M none -cpu R10000 -S "
+                   "-device sgi-l1,id=l1,node-position=4");
+    qtest_quit(s);
+}
+
+static void test_node_position_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-position-migrate-XXXXXX",
+                                         &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from = start(), *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    to = qtest_init("-M none -cpu R10000 -S -incoming defer "
+                    "-device sgi-l1,id=l1");
+    qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+    console_select(from, 0x60, 0);
+    g_assert_cmpuint(node_position(from, 0x0ffff006), ==, 3);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_migration(from);
+    g_assert_cmpuint(node_position(to, 0x0ffff006), ==, 3);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -779,5 +938,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
     qtest_add_func("sn1/l1/uart-irq-migration", test_uart_irq_migration);
+    qtest_add_func("sn1/l1/node-position", test_node_position);
+    qtest_add_func("sn1/l1/node-position-migration",
+                   test_node_position_migration);
+    qtest_add_func("sn1/l1/node-position-range", test_node_position_range);
     return g_test_run();
 }
