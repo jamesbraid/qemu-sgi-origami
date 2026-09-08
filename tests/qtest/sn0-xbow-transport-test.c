@@ -88,9 +88,18 @@ static void test_attributes_errors(void)
     qtest_writeq(qts, CONTROL + 0x88, 1);
     g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), ==, 0);
     g_assert_cmphex(field(qts, 3, 24), ==, 0x1234);
+    qtest_writeq(qts, CONTROL + 0x88, 2);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), ==, 0);
+    g_assert_cmphex(field(qts, 3, 16), ==, 0x1032547698badcfeULL);
+    g_assert_cmphex(field(qts, 3, 24), ==, 0x1234);
     qtest_writeq(qts, CONTROL + 0x80, (10ULL << 48) | 0xdead0);
     qtest_writeq(qts, CONTROL + 0x88, 1);
     g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+    qtest_writeq(qts, CONTROL + 0x88, 2);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+    g_assert_cmphex(field(qts, 3, 0), ==, 4);
+    g_assert_cmphex(field(qts, 3, 16), ==, 0x1032547698badcfeULL);
+    g_assert_cmphex(field(qts, 3, 24), ==, 0x1234);
     qtest_quit(qts);
 }
 
@@ -132,7 +141,7 @@ static void test_interrupt_packet_face(void)
     qtest_quit(qts);
 }
 
-static void test_migration(void)
+static void test_migration(gconstpointer opaque)
 {
     g_autofree char *dir = g_dir_make_tmp("xbow-transport-XXXXXX", NULL);
     g_autofree char *socket = g_strdup_printf("%s/migrate.sock", dir);
@@ -141,9 +150,11 @@ static void test_migration(void)
     QTestState *from = start("");
     QTestState *to = start(extra);
     uint64_t address = PACKET + (10ULL << 48) + (1ULL << 47) + 0x100;
+    uint64_t cpu_address = CPU + (10ULL << 34) + (1ULL << 33);
 
     qtest_writeq(from, address, 0xaabbccdd);
-    health(from, 0x300);
+    qtest_writeq(from, cpu_address, 0x99887766);
+    health(from, GPOINTER_TO_UINT(opaque));
     qtest_qmp_assert_success(from,
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
     g_test_timer_start();
@@ -160,11 +171,17 @@ static void test_migration(void)
         g_usleep(1000);
     }
     qtest_writeq(to, address, 0x11223344);
+    qtest_writeq(to, cpu_address, 0x55667788);
+    qtest_readq(to, address);
+    qtest_readq(to, cpu_address);
     g_assert_cmphex(field(to, 3, 16), ==, 0xaabbccdd);
+    g_assert_cmphex(field(to, 2, 16), ==, 0x99887766);
+    g_assert_cmphex(field(to, 3, 0), ==, 1);
+    g_assert_cmphex(field(to, 2, 0), ==, 1);
     health(to, 0x700);
     qtest_writeq(to, address, 0x11223344);
     g_assert_cmphex(field(to, 3, 16), ==, 0x11223344);
-    qtest_writeq(to, CPU + (10ULL << 34) + (1ULL << 33), 0x55667788);
+    qtest_writeq(to, cpu_address, 0x55667788);
     g_assert_cmphex(field(to, 2, 16), ==, 0x55667788);
     qtest_quit(to);
     qtest_quit(from);
@@ -178,7 +195,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/xbow-transport/bounds-guards", test_bounds_guards);
     qtest_add_func("/sn0/xbow-transport/interrupt-packet-face",
                    test_interrupt_packet_face);
-    qtest_add_func("/sn0/xbow-transport/migration", test_migration);
+    qtest_add_data_func("/sn0/xbow-transport/migration/source-down",
+                        GUINT_TO_POINTER(0x500), test_migration);
+    qtest_add_data_func("/sn0/xbow-transport/migration/destination-down",
+                        GUINT_TO_POINTER(0x300), test_migration);
     qtest_add_func("/sn0/xbow-transport/separate-faces", test_separate_faces);
     qtest_add_func("/sn0/xbow-transport/gating", test_gating);
     qtest_add_func("/sn0/xbow-transport/attributes-errors",
