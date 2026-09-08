@@ -67,6 +67,10 @@ static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
     va_start(ap, fmt);
     text = g_strdup_vprintf(fmt, ap);
     va_end(ap);
+    if (s->capture) {
+        g_string_append(s->capture, text);
+        return;
+    }
     qemu_chr_fe_write_all(&s->chr, (const uint8_t *)text, strlen(text));
 }
 
@@ -228,6 +232,7 @@ static void l1_boot(SGIL1State *s)
     s->frame_len = 0;
     s->in_frame = s->escape = s->overflow = false;
     s->port_field = s->node_position << 5;
+    s->promreq_debug = false;
     /* A registered event subchannel of 4 or more is non-volatile. */
     if (s->event_subchannel < 4) {
         s->events_enabled = false;
@@ -429,18 +434,24 @@ static void l1_version(SGIL1State *s)
     }
 }
 
-static void l1_command(SGIL1State *s)
+/*
+ * Run one command line. Returns false for a command the interpreter does
+ * not know. When @console is set the prompt or the return to console mode
+ * follows; the request interpreter collects the output instead.
+ */
+static bool l1_run_line(SGIL1State *s, const char *text, bool console)
 {
     char line[sizeof(s->command)];
+    char original[sizeof(s->command)];
     char *argv[8];
     const char *rest = NULL;
     int argc = 0;
     char *p;
     bool own_prompt = false;
+    bool found = true;
 
-    s->command[s->command_len] = 0;
-    pstrcpy(line, sizeof(line), (char *)s->command);
-    s->command_len = 0;
+    pstrcpy(line, sizeof(line), text);
+    pstrcpy(original, sizeof(original), text);
     for (p = line; argc < ARRAY_SIZE(argv); ) {
         while (*p == ' ') {
             p++;
@@ -451,7 +462,7 @@ static void l1_command(SGIL1State *s)
         argv[argc++] = p;
         if (argc == 3) {
             /* The third word may be a text argument with spaces in it. */
-            rest = (char *)s->command + (p - line);
+            rest = original + (p - line);
         }
         while (*p && *p != ' ') {
             p++;
@@ -466,8 +477,10 @@ static void l1_command(SGIL1State *s)
         rest = NULL;
     }
     if (!argc) {
-        l1_prompt(s);
-        return;
+        if (console) {
+            l1_prompt(s);
+        }
+        return true;
     }
     if (l1_word(argv[0], "power", "pwr")) {
         if (argc == 2 && l1_word(argv[1], "up", "u")) {
@@ -500,7 +513,17 @@ static void l1_command(SGIL1State *s)
         }
     } else if (!strcmp(argv[0], "reboot_l1")) {
         l1_boot(s);
-        return;
+        return true;
+    } else if (!strcmp(argv[0], "l1dbg")) {
+        if (argc == 1) {
+            l1_printf(s, "L1 PROM request debugging is %s\r\n",
+                      s->promreq_debug ? "on" : "off");
+        } else if (argc == 3 && l1_word(argv[1], "promreq", "req") &&
+                   (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+            s->promreq_debug = !strcmp(argv[2], "on");
+        } else {
+            l1_invalid(s, "l1dbg");
+        }
     } else if (l1_word(argv[0], "version", "ver")) {
         l1_version(s);
     } else if (!strcmp(argv[0], "l1")) {
@@ -573,9 +596,10 @@ static void l1_command(SGIL1State *s)
     } else {
         l1_printf(s, "ERROR: command not found.\r\n");
         qemu_log_mask(LOG_UNIMP, "sgi-l1: unsupported operator command\n");
+        found = false;
     }
-    if (own_prompt) {
-        return;
+    if (!console || own_prompt) {
+        return found;
     }
     if (s->escaped && s->node_power) {
         l1_mode_message(s, true);
@@ -583,6 +607,52 @@ static void l1_command(SGIL1State *s)
         s->escaped = false;
         l1_prompt(s);
     }
+    return found;
+}
+
+static void l1_command(SGIL1State *s)
+{
+    s->command[s->command_len] = 0;
+    s->command_len = 0;
+    l1_run_line(s, (const char *)s->command, true);
+}
+
+/* Task 3: any code with one text argument runs it and returns its lines. */
+static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
+                         unsigned count)
+{
+    g_autofree char *output = NULL;
+    uint8_t fields[121];
+    unsigned length = 0, fields_count = 0;
+    bool found;
+    char **lines;
+
+    if (count != 1 || args[0] != 1) {
+        l1_reply(s, channel, -100, 0, NULL, 0);
+        return;
+    }
+    s->capture = g_string_new(NULL);
+    found = l1_run_line(s, (const char *)args + 1, false);
+    output = g_string_free(s->capture, FALSE);
+    s->capture = NULL;
+    lines = g_strsplit(output, "\r\n", -1);
+    for (char **line = lines; *line; line++) {
+        unsigned n = strlen(*line);
+
+        if (!n) {
+            continue;
+        }
+        if (length + 2 + n > sizeof(fields)) {
+            break;
+        }
+        fields[length++] = 1;
+        memcpy(fields + length, *line, n + 1);
+        length += n + 1;
+        fields_count++;
+    }
+    g_strfreev(lines);
+    /* A status of minus 1 for an unknown command is a model choice. */
+    l1_reply(s, channel, found ? 0 : -1, fields_count, fields, length);
 }
 
 static int l1_console_can_receive(void *opaque)
@@ -638,39 +708,44 @@ static void l1_console_event(void *opaque, QEMUChrEvent event)
 {
 }
 
-static bool l1_route(SGIL1State *s, uint32_t address)
+/* The router matches bits 31:12 against the identity or the all-local key. */
+static bool l1_local(SGIL1State *s, uint32_t address)
 {
-    unsigned type = address >> 28;
-    unsigned rack = (address >> 18) & 0x3ff;
-    unsigned bay = (address >> 12) & 0x3f;
-    unsigned task = address & 0x1f;
+    uint32_t key = address >> 12;
 
-    if (address & 0xfe0) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-l1: reserved destination bits set: 0x%08x\n",
-                      address);
-        return false;
-    }
-    rack = rack == 0x3ff ? s->rack : rack;
-    bay = bay == 0x3f ? s->bay : bay;
-    if ((type != 0 && type != 4) || rack != s->rack || bay != s->bay ||
-        (type == 0 && task != 3 && task != 6) ||
-        (type == 4 && task != 6)) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-l1: destination not modeled: 0x%08x\n", address);
-        return false;
-    }
-    return true;
+    return key == ((s->rack << 6) | s->bay) || key == 0xffff;
 }
 
-static bool l1_task_command(uint32_t address, uint16_t command)
+/* A destination nobody serves gets the router's own error reply. */
+static void l1_router_error(SGIL1State *s, uint8_t channel)
 {
-    if ((address & 0x1f) == 3) {
-        return command == 0;
+    uint8_t payload[] = { 0x20 | channel, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 8 };
+
+    l1_emit(s, payload, sizeof(payload));
+}
+
+/* Task 18 echoes the request: its code as the reply code, up to three args. */
+static void l1_loopback(SGIL1State *s, uint8_t channel, uint16_t command,
+                        const uint8_t *args, unsigned args_len, unsigned count)
+{
+    unsigned offset = 0, echoed = MIN(count, 3);
+
+    for (unsigned i = 0; i < echoed; i++) {
+        uint8_t tag = args[offset++];
+
+        if (tag == 0) {
+            offset += 4;
+        } else if (tag == 1) {
+            offset += strlen((const char *)args + offset) + 1;
+        } else {
+            offset += tag & 0x7f;
+        }
     }
-    if ((address >> 28) == 4) {
-        return command == 3;
-    }
+    l1_reply(s, channel, command, echoed, args, MIN(offset, 121));
+}
+
+static bool l1_task_command(uint16_t command)
+{
     switch (command) {
     case 1:
     case 9:
@@ -704,7 +779,9 @@ static void l1_request(SGIL1State *s)
     uint8_t fields[15];
     unsigned field_count = 0, field_length = 0;
 
-    if ((p[0] & 0xe0) == 0x40 && channel <= 4) {
+    if ((p[0] & 0xe0) == 0x40) {
+        /* Console output on any subchannel retargets the operator's input. */
+        s->port_field = (s->port_field & 0x60) | channel;
         if (s->console_mode && s->node_power) {
             qemu_chr_fe_write_all(&s->chr, p + 1, length - 1);
         } else {
@@ -713,26 +790,66 @@ static void l1_request(SGIL1State *s)
         }
         return;
     }
-    if ((p[0] & 0xe0) != 0 || channel < 16 || length < 7) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-l1: unsupported packet type or channel\n");
+    if ((p[0] & 0xe0) != 0 || length < 7) {
         return;
     }
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
-    if (!l1_route(s, address)) {
+    if (!l1_local(s, address)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-l1: no receiver for destination 0x%08x\n", address);
+        l1_router_error(s, channel);
         return;
     }
-    if (!l1_task_command(address, command)) {
+    count = length == 7 ? 0 : p[7];
+    args = p + MIN(length, 8);
+    args_len = length > 8 ? length - 8 : 0;
+    switch (address & 0x1f) {
+    case 6:
+        break;
+    case 3:
+        if (l1_arguments(args, args_len, count)) {
+            l1_interpret(s, channel, args, count);
+        } else {
+            l1_reply(s, channel, -100, 0, NULL, 0);
+        }
+        return;
+    case 5:
+    case 21: {
+        /* The Bedrock console tasks hand the code's low byte back as input. */
+        uint8_t payload[] = { (address >> 5) & 0x1f, command };
+
+        l1_emit(s, payload, sizeof(payload));
+        return;
+    }
+    case 18:
+        if (l1_arguments(args, args_len, count)) {
+            l1_loopback(s, channel, command, args, args_len, count);
+        }
+        return;
+    case 2:
+    case 14:
+    case 16:
+    case 19:
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: task %u not modeled\n",
+                      address & 0x1f);
+        return;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1: no receiver for task %u\n",
+                      address & 0x1f);
+        return;
+    }
+    if (s->promreq_debug) {
+        l1_log(s, "L1REQ: %08x - %04x", (s->rack << 18) | (s->bay << 12) |
+               ((((s->port_field >> 5) << 5) | channel) << 5) | 5, command);
+    }
+    if (!l1_task_command(command)) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: request 0x%04x unavailable at 0x%08x\n",
                       command, address);
         l1_reply(s, channel, -101, 0, NULL, 0);
         return;
     }
-    count = length == 7 ? 0 : p[7];
-    args = p + MIN(length, 8);
-    args_len = length > 8 ? length - 8 : 0;
     if (!l1_arguments(args, args_len, count)) {
         l1_reply(s, channel, -100, 0, NULL, 0);
         return;
@@ -799,7 +916,7 @@ static void l1_request(SGIL1State *s)
         field_length = 5;
         if (command == 3) {
             fields[5] = 0;
-            stl_be_p(fields + 6, (address >> 28) == 4 ? 0x34 : 'C');
+            stl_be_p(fields + 6, 'C');
             field_count = 2;
             field_length = 10;
         }
@@ -829,19 +946,6 @@ static void l1_request(SGIL1State *s)
         }
         l1_eeprom(s, channel, args);
         return;
-    case 0:
-        if ((address & 0x1f) != 3) {
-            error = -101;
-        } else if (count != 1 || args[0] != 1) {
-            error = -100;
-        } else if (!strcmp((const char *)args + 1, "* pwr d")) {
-            l1_reply(s, channel, 0, 0, NULL, 0);
-            l1_power_down(s, "COMMAND");
-            return;
-        } else {
-            error = -101;
-        }
-        break;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-l1: request 0x%04x unavailable\n",
                       command);
@@ -854,7 +958,7 @@ static void l1_request(SGIL1State *s)
 static void l1_parse(SGIL1State *s, uint8_t byte)
 {
     if (byte == 0x7e) {
-        if (s->in_frame && !s->overflow && !s->escape && s->frame_len >= 3) {
+        if (s->in_frame && !s->overflow && !s->escape && s->frame_len >= 5) {
             uint16_t crc = 0xffff;
             for (unsigned i = 0; i < s->frame_len; i++) {
                 crc = l1_fcs(crc, s->frame[i]);
@@ -872,7 +976,8 @@ static void l1_parse(SGIL1State *s, uint8_t byte)
     if (!s->in_frame || s->overflow) {
         return;
     }
-    if (!s->escape && byte == 0x7d) {
+    if (byte == 0x7d) {
+        /* A second escape only re-arms the first. */
         s->escape = true;
         return;
     }
@@ -1050,11 +1155,11 @@ static const VMStateDescription vmstate_l1_record = {
     },
 };
 
-/* Version 5 added the lifecycle state: power, log, selection and settings. */
+/* Version 6 widened the receive frame to the firmware's cap. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
@@ -1064,6 +1169,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_BOOL(console_mode, SGIL1State),
         VMSTATE_BOOL(escaped, SGIL1State),
         VMSTATE_BOOL(warned_off, SGIL1State),
+        VMSTATE_BOOL(promreq_debug, SGIL1State),
         VMSTATE_UINT8_ARRAY(command, SGIL1State, 128),
         VMSTATE_UINT32(command_len, SGIL1State),
         VMSTATE_UINT32(rack, SGIL1State),
