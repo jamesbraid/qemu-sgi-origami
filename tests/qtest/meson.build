@@ -25,13 +25,12 @@ slow_qtests = {
   # sn0-qtest-cpu-test runs four sequential TCG cases with 30s polling
   # deadlines. Allow startup and teardown headroom beyond those 120s.
   'sn0-qtest-cpu-test': 180,
-  # Thirty-two MTTCG resets took 43s alone and exceeded 60s under host load.
-  'sn0-warm-reset-test': 180,
-  # The hub and IOC3 suites have grown past that budget: 115-119s (hub) and
-  # ~106s (IOC3) measured under host load, so the 120s ceiling kills them
-  # with zero failing subtests. Give both twice the measured wall time.
+  # The full 32-reset run took 265s under load. Keep headroom for all cycles.
+  'sn0-warm-reset-test': 600,
+  # IOC3 took about 106s under load; keep twice that measured wall time.
   'sn0-ioc3-test': 240,
-  'sn0-hub-test': 240,
+  # Hub's 115 cases took 212s alone and exceeded 240s in the parallel suite.
+  'sn0-hub-test': 600,
   # Model and bridge have grown the same way: 57s and 62s measured solo on a
   # loaded workstation, and in CI they were the second and fourth most killed
   # tests over Aug 30 - Sep 3 (105 and 20 timeout kills at the 120s ceiling,
@@ -64,6 +63,8 @@ slow_qtests = {
 }
 
 qtest_priorities = {
+  # Keep the Hub suite's scheduling order independent of its larger budget.
+  'sn0-hub-test': 240,
   # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
   # long SN0 device suites causes host contention and unrelated timeouts.
   'sn0-qtest-cpu-test': 60,
