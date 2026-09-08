@@ -33,7 +33,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIO2000ModuleMgmtState, SGI_O2000_MODULE_MGMT)
  * The model builds it from eight 256-byte parts, which decides one thing the
  * contract does not: a sequential read running off the end of a page wraps to
  * the start of that same page, where one 2 KiB part occupying eight addresses
- * would carry on into the next. No firmware path reads across that boundary.
+ * would carry on into the next.
  */
 #define SGI_O2000_NVRAM_FIRST_ADDR  0x50
 #define SGI_O2000_NVRAM_ADDRESSES   8

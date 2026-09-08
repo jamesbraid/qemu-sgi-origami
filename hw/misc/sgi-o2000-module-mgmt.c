@@ -78,7 +78,8 @@ static void mgmt_reset_state(SGIO2000ModuleMgmtState *s)
  * a shared bus, and what an owner's reset does to a peer's transfer is not
  * settled, so the node adapters and the shared NVRAM stay untouched here. A
  * module reset reaches the nodes through the reset line the machine wires.
- * Never called from a reset phase, where resetting another object aborts.
+ * The endpoint loses its framing queues and keeps everything that is not a
+ * queue, which is as much as the datasheet gives this path.
  */
 static void mgmt_reinitialize(SGIO2000ModuleMgmtState *s)
 {
@@ -88,7 +89,7 @@ static void mgmt_reinitialize(SGIO2000ModuleMgmtState *s)
                       "sgi-o2000-module-management: reinitialised while "
                       "driving the shared wire\n");
     }
-    device_cold_reset(DEVICE(s->msc));
+    sgi_elsc_reinitialize(s->msc);
 }
 
 static void mgmt_recovery_tick(SGIO2000ModuleMgmtState *s)
