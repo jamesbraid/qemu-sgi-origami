@@ -87,6 +87,13 @@ static void setup(Fixture *f, gconstpointer unused)
     static const char *const names[] = { "reset", "nmi", "power" };
     unsigned i;
 
+    /*
+     * Deliberately no cold reset here. A machine resets after it builds, so
+     * driving a freshly realized complex is the case a machine never reaches
+     * and therefore the one nothing else covers; test_machine_reset in the
+     * sibling file drives the reset path. Adding a reset here would look
+     * tidier and would delete that cover.
+     */
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
         qdev_connect_gpio_out_named(dev, names[i], 0,
@@ -641,16 +648,12 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
 
     /*
-     * Once the pulse ends the same command is accepted again. The controller
-     * reinitialised its protocol queues on the way out of the pulse, and the
-     * supervisor gate is part of those, so it has to be opened again first.
+     * Once the pulse ends the same command is accepted again, without the
+     * guest re-opening the supervisor gate: reinitialisation takes the
+     * protocol queues and leaves what is not a queue, and the gate is not
+     * one.
      */
     advance_to(f->module->pulse_deadline);
-    total = msc_command(f, 0, "rst", response, sizeof(response));
-    g_assert_cmpint(memcmp(&response[1], "err perm", 8), ==, 0);
-
-    total = msc_command(f, 0, "pas none", response, sizeof(response));
-    g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
     total = msc_command(f, 0, "rst", response, sizeof(response));
     g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
     while (aio_poll(qemu_get_aio_context(), false)) {

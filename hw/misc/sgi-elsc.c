@@ -1311,6 +1311,34 @@ static int elsc_can_receive(void *opaque)
     return room < 32 ? (int)room : 32;
 }
 
+/*
+ * The controller's own reinitialisation, which its recovery timeout and its
+ * reset and power paths reach. The datasheet gives it the protocol queues
+ * and nothing else, so the framing state goes and the rest stays: the
+ * supervisor gate, the display, the lock and any committed destructive
+ * action are not queues, and no source says a reinitialisation disturbs
+ * them. An in-flight request is abandoned. An action already acknowledged
+ * to a guest still happens.
+ *
+ * Two of the fields cleared here are a model choice rather than a contract.
+ * Queued alternate-console input goes with the framing, and so does the
+ * message indication that announces it, but nothing establishes that a
+ * five-second I2C recovery drops characters a terminal already sent.
+ * Retaining them would be as defensible. They are named here because a
+ * test now asserts that they go.
+ */
+void sgi_elsc_reinitialize(SGIElscState *s)
+{
+    s->rxlen = 0;
+    s->txlen = 0;
+    s->txpos = 0;
+    s->resp_owner = -1;
+    s->rx_queue_len = 0;
+    s->in_escape = false;
+    elsc_module_slave_active(s, false);
+    elsc_module_console_input(s, false);
+}
+
 static void elsc_reset_hold(Object *obj, ResetType type)
 {
     SGIElscState *s = SGI_ELSC(obj);

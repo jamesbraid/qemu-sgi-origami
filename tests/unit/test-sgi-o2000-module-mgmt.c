@@ -116,6 +116,11 @@ static void setup(Fixture *f, gconstpointer unused)
     static const char *const names[] = { "reset", "nmi", "power" };
     unsigned i;
 
+    /*
+     * No cold reset here on purpose; test_machine_reset drives that path
+     * explicitly, and leaving setup unreset keeps the freshly realized
+     * complex under test.
+     */
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
         qdev_connect_gpio_out_named(dev, names[i], 0,

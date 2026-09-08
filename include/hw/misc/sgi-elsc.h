@@ -201,6 +201,13 @@ struct SGIElscState {
 };
 
 /* Install the module owner. Wiring, so it must precede realize. */
+/*
+ * Clear the protocol queues without resetting the controller. A module
+ * owner's recovery, reset and power paths reinitialise this much and no
+ * more.
+ */
+void sgi_elsc_reinitialize(SGIElscState *s);
+
 void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
                              void *opaque);
 
