@@ -68,6 +68,15 @@ struct I2CSlaveClass {
     bool (*wire_service)(I2CSlave *s, enum i2c_wire_service service);
 
     /*
+     * A complete address phase, acknowledged or not, reported to every
+     * endpoint on a wire-mode bus rather than only to the selected ones.
+     * An endpoint that models passive address observation decides for
+     * itself what to keep; observing is not selection, and this callback
+     * must not acknowledge, hold SCL or change addressed-as-slave state.
+     */
+    void (*wire_address)(I2CSlave *s, uint8_t address_byte);
+
+    /*
      * Check if this device matches the address provided.  Returns bool of
      * true if it matches (or broadcast), and updates the device list, false
      * otherwise.
@@ -184,6 +193,17 @@ int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
                    bool sda, bool clock);
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold);
 int i2c_wire_reset_master(I2CBus *bus, uint32_t master);
+/*
+ * Stop a driving master's clock generator while it goes on holding SCL low,
+ * for a controller that waits between bytes. Staging its clock again resumes
+ * from the high phase. One observer per participant may be attached; it sees
+ * every published event alongside the bus-wide observer.
+ */
+int i2c_wire_pause_master(I2CBus *bus, uint32_t master);
+int i2c_wire_set_observer(I2CBus *bus, uint32_t master,
+                          I2CWireObserver observe, void *opaque);
+int i2c_wire_clear_observer(I2CBus *bus, uint32_t master,
+                            I2CWireObserver observe, void *opaque);
 bool i2c_wire_scl(I2CBus *bus);
 bool i2c_wire_sda(I2CBus *bus);
 uint64_t i2c_wire_contenders(I2CBus *bus);

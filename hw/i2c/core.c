@@ -23,6 +23,8 @@ typedef struct I2CWireMaster {
     int64_t deadline, staged_at;
     bool configured, sda, clock, scl_low;
     bool pending, staged_sda, staged_clock;
+    /* Clock generation stopped with SCL still held low, awaiting a resume. */
+    bool paused;
     bool clock_after_loss;
 } I2CWireMaster;
 
@@ -31,6 +33,8 @@ struct I2CWire {
     QEMUTimer *timer;
     I2CWireObserver observe;
     void *opaque;
+    I2CWireObserver master_observe[I2C_WIRE_MAX_MASTERS];
+    void *master_opaque[I2C_WIRE_MAX_MASTERS];
     I2CWireMaster masters[I2C_WIRE_MAX_MASTERS];
     uint64_t contenders;
     bool scl, sda, occupied, start_hold;
@@ -74,7 +78,7 @@ static void i2c_bus_reset_hold(Object *obj, ResetType type)
         I2CWireMaster *m = &wire->masters[i];
 
         m->sda = true;
-        m->clock = m->scl_low = m->pending = false;
+        m->clock = m->scl_low = m->pending = m->paused = false;
         m->deadline = -1;
     }
     QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
@@ -120,7 +124,7 @@ static const TypeInfo i2c_bus_info = {
 
 static const VMStateDescription vmstate_i2c_wire_master = {
     .name = "i2c-wire-master",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_INT64(low_ns, I2CWireMaster),
@@ -135,6 +139,7 @@ static const VMStateDescription vmstate_i2c_wire_master = {
         VMSTATE_BOOL(staged_sda, I2CWireMaster),
         VMSTATE_BOOL(staged_clock, I2CWireMaster),
         VMSTATE_BOOL(clock_after_loss, I2CWireMaster),
+        VMSTATE_BOOL_V(paused, I2CWireMaster, 2),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -171,8 +176,10 @@ static int i2c_wire_post_load(void *opaque, int version_id)
         I2CWireMaster *m = &wire->masters[i];
 
         if ((m->configured && (m->low_ns <= 0 || m->high_ns <= 0)) ||
-            (!m->configured && (m->clock || m->pending)) ||
-            (!m->clock && m->scl_low) || m->deadline < -1) {
+            (!m->configured && (m->clock || m->pending || m->paused)) ||
+            (!m->clock && m->scl_low && !m->paused) ||
+            (m->paused && (m->clock || !m->scl_low)) ||
+            m->deadline < -1) {
             return -EINVAL;
         }
     }
@@ -891,10 +898,21 @@ static void i2c_slave_class_init(ObjectClass *klass, const void *data)
     sc->match_and_add = i2c_slave_match;
 }
 
+/*
+ * A slave created after the wire was enabled would otherwise start on the
+ * first service kind rather than on "none", which is not a state the wire's
+ * own invariants accept.
+ */
+static void i2c_slave_instance_init(Object *obj)
+{
+    I2C_SLAVE(obj)->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+}
+
 static const TypeInfo i2c_slave_type_info = {
     .name = TYPE_I2C_SLAVE,
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(I2CSlave),
+    .instance_init = i2c_slave_instance_init,
     .abstract = true,
     .class_size = sizeof(I2CSlaveClass),
     .class_init = i2c_slave_class_init,
@@ -1321,7 +1339,7 @@ static void i2c_wire_tick(void *opaque)
 
         if (m->pending && m->staged_at <= now) {
             m->pending = false;
-            if (!m->clock && m->staged_clock && !old_scl) {
+            if (!m->clock && m->staged_clock && !old_scl && !m->paused) {
                 /* Joining a clock mid-low has no common falling edge. */
                 wire->error = -ENOTSUP;
                 continue;
@@ -1339,8 +1357,12 @@ static void i2c_wire_tick(void *opaque)
                 wire->contenders |= 1ULL << i;
             }
             if (m->clock != m->staged_clock) {
+                bool resume = m->paused && m->staged_clock;
+
                 m->clock = m->staged_clock;
-                m->scl_low = m->clock;
+                m->paused = false;
+                /* A resumed master already holds SCL: run its high phase. */
+                m->scl_low = resume ? false : m->clock;
                 m->deadline = -1;
             }
         }
@@ -1472,7 +1494,20 @@ static void i2c_wire_tick(void *opaque)
             bool was_address = wire->address_byte;
             bool target_acked = wire->ack;
             bool master_acked = !old_sda;
+            uint8_t address_byte = wire->byte;
 
+            if (was_address) {
+                BusChild *child;
+
+                QTAILQ_FOREACH(child, &wire->bus->qbus.children, sibling) {
+                    I2CSlave *slave = I2C_SLAVE(child->child);
+                    I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(slave);
+
+                    if (sc->wire_address) {
+                        sc->wire_address(slave, address_byte);
+                    }
+                }
+            }
             wire->bits = wire->byte = 0;
             wire->address_byte = wire->ack = false;
             if (wire->bus->master_recv &&
@@ -1512,15 +1547,27 @@ publish:
     }
     wire->scl = scl;
     wire->sda = sda;
-    if (wire->observe && (old_scl != scl || old_sda != sda ||
-                         old_contenders != wire->contenders ||
-                         old_error != wire->error)) {
+    if (old_scl != scl || old_sda != sda ||
+        old_contenders != wire->contenders || old_error != wire->error) {
         I2CWireEvent event = {
             .time = now, .contenders = wire->contenders, .lost = lost,
             .scl = scl, .sda = sda, .error = wire->error,
         };
 
-        wire->observe(wire->opaque, &event);
+        if (wire->observe) {
+            wire->observe(wire->opaque, &event);
+        }
+        /*
+         * Each controller reads the shared lines for itself, so the same
+         * event goes to every attached observer before anything is
+         * rescheduled: one of them may pause its clock or stage the next
+         * transition from inside the callback.
+         */
+        for (unsigned i = 0; i < wire->bus->master_count; i++) {
+            if (wire->master_observe[i]) {
+                wire->master_observe[i](wire->master_opaque[i], &event);
+            }
+        }
     }
     i2c_wire_schedule(wire);
 }
@@ -1642,10 +1689,64 @@ int i2c_wire_reset_master(I2CBus *bus, uint32_t master)
         return -ENOTSUP;
     }
     m->pending = false;
+    m->paused = false;
     m->sda = true;
     m->scl_low = false;
     m->deadline = -1;
     i2c_wire_schedule(bus->wire);
+    return 0;
+}
+
+int i2c_wire_pause_master(I2CBus *bus, uint32_t master)
+{
+    I2CWireMaster *m;
+
+    if (!bus->wire || master >= bus->master_count) {
+        return -EINVAL;
+    }
+    m = &bus->wire->masters[master];
+    /*
+     * Only a master that is currently driving the low phase can pause: it
+     * goes on holding SCL down while its clock generator stops, which is how
+     * a controller waits for its host between bytes. Pausing on a high phase
+     * would release a line the caller believes it still owns.
+     */
+    if (!m->clock || !m->scl_low || m->pending || bus->wire->scl) {
+        return -EINVAL;
+    }
+    m->clock = false;
+    m->paused = true;
+    m->deadline = -1;
+    i2c_wire_schedule(bus->wire);
+    return 0;
+}
+
+int i2c_wire_set_observer(I2CBus *bus, uint32_t master,
+                          I2CWireObserver observe, void *opaque)
+{
+    if (!bus->wire || master >= bus->master_count || !observe) {
+        return -EINVAL;
+    }
+    if (bus->wire->master_observe[master]) {
+        return -EBUSY;
+    }
+    bus->wire->master_observe[master] = observe;
+    bus->wire->master_opaque[master] = opaque;
+    return 0;
+}
+
+int i2c_wire_clear_observer(I2CBus *bus, uint32_t master,
+                            I2CWireObserver observe, void *opaque)
+{
+    if (!bus->wire || master >= bus->master_count) {
+        return -EINVAL;
+    }
+    if (bus->wire->master_observe[master] != observe ||
+        bus->wire->master_opaque[master] != opaque) {
+        return -ENOENT;
+    }
+    bus->wire->master_observe[master] = NULL;
+    bus->wire->master_opaque[master] = NULL;
     return 0;
 }
 

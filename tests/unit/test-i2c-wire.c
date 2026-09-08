@@ -29,7 +29,8 @@ void cpus_set_virtual_clock(int64_t value)
 
 typedef struct TestSlave {
     I2CSlave parent_obj;
-    unsigned starts, writes, reads, stops, restarts, nacks;
+    unsigned starts, writes, reads, stops, restarts, nacks, addresses;
+    uint8_t last_address;
     unsigned services[I2C_WIRE_SERVICE_COUNT];
     unsigned reads_at_service[I2C_WIRE_SERVICE_COUNT];
     enum i2c_wire_service hold_service;
@@ -87,6 +88,14 @@ static bool slave_wire_service(I2CSlave *slave,
     return service == s->hold_service;
 }
 
+static void slave_wire_address(I2CSlave *slave, uint8_t address_byte)
+{
+    TestSlave *s = (TestSlave *)slave;
+
+    s->addresses++;
+    s->last_address = address_byte;
+}
+
 static void slave_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
@@ -96,6 +105,7 @@ static void slave_class_init(ObjectClass *oc, const void *data)
     sc->send = slave_send;
     sc->recv = slave_recv;
     sc->wire_service = slave_wire_service;
+    sc->wire_address = slave_wire_address;
 }
 
 typedef struct Fixture {
@@ -685,6 +695,142 @@ static void test_deadline_exact_max(Fixture *f, gconstpointer unused)
     g_assert_cmpint(event->error, ==, -ERANGE);
 }
 
+/*
+ * A controller that waits for its host between bytes stops clocking without
+ * letting SCL go: the low phase then lasts as long as the host takes.
+ */
+static void test_pause_holds_clock(Fixture *f, gconstpointer unused)
+{
+    TestSlave *a = (TestSlave *)f->a;
+    int64_t paused_at;
+
+    begin_bytes(f);
+    g_assert_true(write_byte(f, 0x40, 0xff, true));
+    g_assert_cmpuint(a->starts, ==, 1);
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 1);
+    g_assert_false(i2c_wire_scl(f->bus));
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 0), ==, 0);
+    paused_at = virtual_time;
+    advance_to(paused_at + 1000);
+    g_assert_false(i2c_wire_scl(f->bus));
+    g_assert_true(i2c_bus_busy(f->bus));
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 1);
+    /* Resuming starts the next bit's high phase from the resume instant. */
+    g_assert_cmpint(i2c_wire_stage(f->bus, 0, virtual_time + 1, true, true),
+                    ==, 0);
+    advance_to(virtual_time + 1);
+    g_assert_true(i2c_wire_scl(f->bus));
+    advance_to(virtual_time + 5);
+    g_assert_false(i2c_wire_scl(f->bus));
+}
+
+static void test_pause_rejects(Fixture *f, gconstpointer unused)
+{
+    begin_bytes(f);
+    /* Not clocking, and no such participant. */
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 0), ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 2), ==, -EINVAL);
+    g_assert_true(write_byte(f, 0x40, 0xff, true));
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 0), ==, 0);
+    /* Already paused: the clock generator is stopped. */
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 0), ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 0, virtual_time + 1, true, true),
+                    ==, 0);
+    /* A staged request has not settled onto the line yet. */
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 0), ==, -EINVAL);
+    advance_to(virtual_time + 1);
+    g_assert_true(i2c_wire_scl(f->bus));
+    /* Pausing on a high phase would drop a line the caller still owns. */
+    g_assert_cmpint(i2c_wire_pause_master(f->bus, 0), ==, -EINVAL);
+}
+
+/*
+ * Address observation is not selection: every endpoint sees the completed
+ * byte, and an unmatched address selects nobody while still being seen.
+ */
+static void test_address_observation(Fixture *f, gconstpointer unused)
+{
+    TestSlave *a = (TestSlave *)f->a;
+    TestSlave *b = (TestSlave *)f->b;
+
+    begin_bytes(f);
+    g_assert_true(write_byte(f, 0x40, 0x40, true));
+    g_assert_cmpuint(a->addresses, ==, 1);
+    g_assert_cmpuint(b->addresses, ==, 1);
+    g_assert_cmphex(a->last_address, ==, 0x40);
+    g_assert_cmphex(b->last_address, ==, 0x40);
+    g_assert_cmpuint(a->starts, ==, 1);
+    g_assert_cmpuint(b->starts, ==, 0);
+    /* A data byte is not an address phase. */
+    g_assert_true(write_byte(f, 0xa5, 0xa5, false));
+    g_assert_cmpuint(a->addresses, ==, 1);
+    g_assert_cmpuint(b->addresses, ==, 1);
+    stop_bytes(f);
+
+    /* An address nobody answers still reaches both endpoints. */
+    stage_pair(f, virtual_time + 10, false, false);
+    advance_to(virtual_time + 10);
+    g_assert_false(write_byte(f, 0xe0, 0xe0, true));
+    g_assert_cmpuint(a->addresses, ==, 2);
+    g_assert_cmpuint(b->addresses, ==, 2);
+    g_assert_cmphex(a->last_address, ==, 0xe0);
+    g_assert_cmphex(b->last_address, ==, 0xe0);
+    g_assert_cmpuint(a->starts, ==, 1);
+    g_assert_cmpuint(b->starts, ==, 0);
+}
+
+typedef struct MasterObserver {
+    unsigned count;
+    I2CWireEvent last;
+} MasterObserver;
+
+static void master_observe(void *opaque, const I2CWireEvent *event)
+{
+    MasterObserver *observer = opaque;
+
+    observer->count++;
+    observer->last = *event;
+}
+
+static void test_master_observers(Fixture *f, gconstpointer unused)
+{
+    MasterObserver zero = { 0 }, one = { 0 };
+    const I2CWireEvent *last;
+    unsigned seen;
+
+    g_assert_cmpint(i2c_wire_set_observer(f->bus, 0, master_observe, &zero),
+                    ==, 0);
+    g_assert_cmpint(i2c_wire_set_observer(f->bus, 0, master_observe, &one),
+                    ==, -EBUSY);
+    g_assert_cmpint(i2c_wire_set_observer(f->bus, 2, master_observe, &one),
+                    ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_set_observer(f->bus, 1, NULL, &one), ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_set_observer(f->bus, 1, master_observe, &one),
+                    ==, 0);
+
+    begin_bytes(f);
+    g_assert_true(write_byte(f, 0x40, 0xff, true));
+    seen = f->events->len;
+    g_assert_cmpuint(seen, >, 0);
+    g_assert_cmpuint(zero.count, ==, seen);
+    g_assert_cmpuint(one.count, ==, seen);
+    last = &g_array_index(f->events, I2CWireEvent, seen - 1);
+    g_assert_cmpint(zero.last.time, ==, last->time);
+    g_assert_cmpint(zero.last.scl, ==, last->scl);
+    g_assert_cmpint(zero.last.sda, ==, last->sda);
+    g_assert_cmphex(one.last.contenders, ==, last->contenders);
+
+    g_assert_cmpint(i2c_wire_clear_observer(f->bus, 0, master_observe, &one),
+                    ==, -ENOENT);
+    g_assert_cmpint(i2c_wire_clear_observer(f->bus, 2, master_observe, &zero),
+                    ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_clear_observer(f->bus, 0, master_observe, &zero),
+                    ==, 0);
+    g_assert_true(write_byte(f, 0xa5, 0xa5, false));
+    g_assert_cmpuint(zero.count, ==, seen);
+    g_assert_cmpuint(one.count, ==, f->events->len);
+}
+
 static QEMUFile *state_file(int fd, bool save)
 {
     QIOChannelFile *ioc;
@@ -699,7 +845,7 @@ static QEMUFile *state_file(int fd, bool save)
 }
 
 enum {
-    WIRE_MASTER_STATE_SIZE = 4 * sizeof(uint64_t) + 8,
+    WIRE_MASTER_STATE_SIZE = 4 * sizeof(uint64_t) + 9,
     WIRE_CONTENDERS_OFFSET = I2C_WIRE_MAX_MASTERS * WIRE_MASTER_STATE_SIZE,
     WIRE_OCCUPIED_OFFSET = WIRE_CONTENDERS_OFFSET + sizeof(uint64_t) + 2,
     WIRE_ADDRESS_BYTE_OFFSET = WIRE_OCCUPIED_OFFSET + 2,
@@ -1424,6 +1570,14 @@ int main(int argc, char **argv)
                setup, test_post_ack_service, teardown);
     g_test_add("/i2c-wire/post-ack-service-reversed", Fixture,
                GINT_TO_POINTER(1), setup, test_post_ack_service, teardown);
+    g_test_add("/i2c-wire/pause-holds-clock", Fixture, NULL,
+               setup, test_pause_holds_clock, teardown);
+    g_test_add("/i2c-wire/pause-rejects", Fixture, NULL,
+               setup, test_pause_rejects, teardown);
+    g_test_add("/i2c-wire/address-observation", Fixture, NULL,
+               setup, test_address_observation, teardown);
+    g_test_add("/i2c-wire/master-observers", Fixture, NULL,
+               setup, test_master_observers, teardown);
     g_test_add("/i2c-wire/restart-nack", Fixture, NULL,
                setup, test_restart_nack, teardown);
     g_test_add("/i2c-wire/read-ack-arbitration", Fixture, NULL,
