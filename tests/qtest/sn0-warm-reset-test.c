@@ -10,6 +10,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 #define IMAGE_SIZE       0x1000
 #define CODE_START       0x400
@@ -183,10 +184,209 @@ static void test_warm_reset_rendezvous(void)
     qtest_quit(qts);
 }
 
+#define HUB_BY_NODE       0x20001800000ULL
+#define PI_INT_PEND_MOD   0x90
+#define PI_INT_PEND0      0x98
+#define NI_SCRATCH_REG0   0x600100
+#define NI_SCRATCH_REG1   0x600108
+#define PUBLISH_BIT       7
+#define ACK_BIT           8
+#define DONE_BIT          9
+#define READBACK_FAIL_BIT 10
+#define STALE_FAIL_BIT    11
+#define COMPLETE_BITS    ((1u << PUBLISH_BIT) | (1u << ACK_BIT) | \
+                          (1u << DONE_BIT))
+#define OWNED_BITS       (COMPLETE_BITS | (1u << READBACK_FAIL_BIT) | \
+                          (1u << STALE_FAIL_BIT))
+#define CONSUMER          0x600
+#define READBACK_FAIL     0x700
+#define STALE_FAIL        0x740
+
+static void emit_pending(GuestImage *img, unsigned int bit)
+{
+    emit_i(img, 13, 0, 12, 0x100 | bit); /* ori t4, zero, set|bit */
+    emit_i(img, 63, 8, 12, PI_INT_PEND_MOD);
+    emit_i(img, 55, 8, 12, PI_INT_PEND0);
+    emit(img, 0x0000000f);               /* sync 0 */
+}
+
+static void emit_wait_pending(GuestImage *img, unsigned int bit)
+{
+    unsigned int poll = img->pos;
+
+    emit_i(img, 55, 8, 12, PI_INT_PEND0);
+    emit_i(img, 12, 12, 12, 1u << bit);
+    emit_branch(img, 4, 12, 0, poll);
+    emit(img, 0x0000000f);               /* sync 0 */
+}
+
+static void write_scratch_publish_image(int fd)
+{
+    GuestImage img = { };
+    ssize_t written;
+
+    emit_branch(&img, 4, 0, 0, CODE_START);
+    img.pos = CODE_START;
+    emit(&img, 0x40086000);          /* mfc0 t0, Status */
+    emit_i(&img, 13, 8, 8, 0x80);   /* ori t0, t0, KX */
+    emit(&img, 0x40886000);          /* mtc0 t0, Status */
+    for (unsigned int i = 0; i < 4; i++) {
+        emit(&img, 0);
+    }
+    emit_li64(&img, 8, HUB_LOCAL);
+    emit_i(&img, 55, 8, 9, PI_CPU_NUM);
+    emit_li64(&img, 10, HUB_LOCAL + NI_SCRATCH_REG0);
+    emit_i(&img, 55, 10, 16, 0);     /* ld s0, expected token */
+    emit_branch(&img, 5, 9, 0, CONSUMER);
+
+    /* Complete the uncached publication before telling the other slice. */
+    emit_i(&img, 63, 10, 16, 8);    /* sd s0, SCRATCH_REG1 */
+    emit_i(&img, 55, 10, 11, 8);    /* ld t3, SCRATCH_REG1 */
+    emit(&img, 0x0000000f);         /* sync 0 */
+    emit_branch(&img, 5, 11, 16, READBACK_FAIL);
+    emit_pending(&img, PUBLISH_BIT);
+    emit_wait_pending(&img, ACK_BIT);
+    emit_pending(&img, DONE_BIT);
+    emit_branch(&img, 4, 0, 0, PARK);
+    g_assert_cmpuint(img.pos, <=, CONSUMER);
+
+    img.pos = CONSUMER;
+    emit_wait_pending(&img, PUBLISH_BIT);
+    emit_i(&img, 55, 10, 11, 8);    /* ld t3, SCRATCH_REG1 */
+    emit_branch(&img, 5, 11, 16, STALE_FAIL);
+    emit_pending(&img, ACK_BIT);
+    emit_branch(&img, 4, 0, 0, PARK);
+    g_assert_cmpuint(img.pos, <=, READBACK_FAIL);
+
+    img.pos = READBACK_FAIL;
+    emit_pending(&img, READBACK_FAIL_BIT);
+    emit_branch(&img, 4, 0, 0, PARK);
+    img.pos = STALE_FAIL;
+    emit_i(&img, 63, 10, 11, 0);    /* Preserve the peer's observed value. */
+    emit_i(&img, 55, 10, 12, 0);
+    emit(&img, 0x0000000f);
+    emit_pending(&img, STALE_FAIL_BIT);
+    emit_branch(&img, 4, 0, 0, PARK);
+    img.pos = PARK;
+    emit_branch(&img, 4, 0, 0, PARK);
+    written = write(fd, img.code, sizeof(img.code));
+    g_assert_cmpint(written, ==, sizeof(img.code));
+}
+
+static void wait_for_scratch_publish(QTestState *qts, unsigned int phase)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    uint64_t pending[2] = { };
+
+    for (;;) {
+        bool done = true;
+
+        for (unsigned int node = 0; node < 2; node++) {
+            uint64_t base = HUB_BY_NODE + node * NODE_STRIDE;
+            uint64_t expected = 0x13579bdf24680000ULL + phase * 0x100 + node;
+
+            pending[node] = qtest_readq(qts, base + PI_INT_PEND0);
+            g_assert_false(pending[node] & (1u << READBACK_FAIL_BIT));
+            if (pending[node] & (1u << STALE_FAIL_BIT)) {
+                g_error("phase %u node %u: notification preceded stale data; "
+                        "expected 0x%" PRIx64 ", observed 0x%" PRIx64,
+                        phase, node,
+                        expected,
+                        qtest_readq(qts, base + NI_SCRATCH_REG0));
+            }
+            if (pending[node] & (1u << DONE_BIT)) {
+                g_assert_cmphex(pending[node] & COMPLETE_BITS, ==,
+                                COMPLETE_BITS);
+                g_assert_cmphex(qtest_readq(qts, base + NI_SCRATCH_REG1), ==,
+                                expected);
+            } else {
+                done = false;
+            }
+        }
+        if (done) {
+            return;
+        }
+        if (g_get_monotonic_time() >= deadline) {
+            g_error("phase %u: host deadline, not a visibility verdict; "
+                    "pending node 0=0x%" PRIx64 " node 1=0x%" PRIx64,
+                    phase, pending[0], pending[1]);
+        }
+        g_usleep(1000);
+    }
+}
+
+/*
+ * R10000 User's Manual v2.0 (1996), p. 56: uncached readback plus SYNC
+ * completes publication. Linux db2ddb87143519e20a95aa36c60b36107b736a58,
+ * arch/mips/include/asm/sn/intr.h, supplies PI pending set/clear semantics.
+ * No firmware timing, CPU start order, or reset register value is assumed.
+ */
+static void test_scratch_publish(const void *opaque)
+{
+    const char *thread = opaque;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    fd = g_file_open_tmp("sn0-scratch-publish-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_scratch_publish_image(fd);
+    close(fd);
+    qts = qtest_initf(
+        "-M origin200 -m 128M -cpu R10000 "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-bios %s -accel tcg,thread=%s -S -no-shutdown", image, thread);
+    unlink(image);
+
+    for (unsigned int phase = 0; phase < 2; phase++) {
+        QDict *status;
+
+        if (phase) {
+            qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+            qtest_writeq(qts, HUB_BY_NODE + NI_PORT_RESET, WARM_LOCAL_RESET);
+            qtest_qmp_eventwait(qts, "RESET");
+        }
+        /* Pausing at the register boundary lets us initialize both phases. */
+        status = qtest_qmp(qts, "{'execute':'query-status'}");
+        g_assert_false(qdict_get_bool(qdict_get_qdict(status, "return"),
+                                      "running"));
+        qobject_unref(status);
+        for (unsigned int node = 0; node < 2; node++) {
+            uint64_t base = HUB_BY_NODE + node * NODE_STRIDE;
+
+            for (unsigned int bit = PUBLISH_BIT; bit <= STALE_FAIL_BIT; bit++) {
+                qtest_writeq(qts, base + PI_INT_PEND_MOD, bit);
+            }
+            g_assert_cmphex(qtest_readq(qts, base + PI_INT_PEND0) &
+                            OWNED_BITS, ==, 0);
+            qtest_writeq(qts, base + NI_SCRATCH_REG0,
+                         0x13579bdf24680000ULL + phase * 0x100 + node);
+            qtest_writeq(qts, base + NI_SCRATCH_REG1, 0);
+        }
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        wait_for_scratch_publish(qts, phase);
+        g_test_message("phase %u: both nodes published and acknowledged",
+                       phase);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn0/warm-reset/four-cpu-rendezvous",
                    test_warm_reset_rendezvous);
+    qtest_add_data_func("sn0/warm-reset/scratch-publish-single", "single",
+                       test_scratch_publish);
+    qtest_add_data_func("sn0/warm-reset/scratch-publish-multi", "multi",
+                       test_scratch_publish);
     return g_test_run();
 }
