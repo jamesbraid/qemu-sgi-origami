@@ -43,11 +43,38 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 #define PCF8584_STS_LAB     0x02    /* lost arbitration */
 #define PCF8584_STS_BB      0x01    /* bus not busy */
 
+/* "wire-master" default: this adapter drives its own untimed private bus. */
+#define PCF8584_NO_WIRE     UINT32_MAX
+
+/* Where the adapter is in the byte it is clocking onto the shared wire. */
+typedef enum {
+    PCF8584_WIRE_IDLE,          /* driving nothing */
+    PCF8584_WIRE_START_SDA,     /* SDA fall staged, awaiting it on the line */
+    PCF8584_WIRE_START_HOLD,    /* SDA low and SCL high, awaiting the clock */
+    PCF8584_WIRE_BITS,          /* clocking the eight address or data bits */
+    PCF8584_WIRE_ACK,           /* the ninth, acknowledgement, clock */
+    PCF8584_WIRE_PAUSED,        /* SCL held low, awaiting the host */
+    PCF8584_WIRE_RESTART_SCL,   /* clock resumed to place a repeated START */
+    PCF8584_WIRE_STOP_SCL,      /* clock resumed to place a STOP */
+    PCF8584_WIRE_STOP_SDA,      /* SDA rise staged, awaiting STOP on the line */
+    PCF8584_WIRE_LOST,          /* arbitration lost, waiting the winner out */
+    PCF8584_WIRE_PHASE_COUNT,
+} PCF8584WirePhase;
+
+/* Which host access releases an addressed adapter's own SCL hold. */
+typedef enum {
+    PCF8584_HOLD_NONE,
+    PCF8584_HOLD_READ,          /* receiver: a data-register read */
+    PCF8584_HOLD_WRITE,         /* transmitter: a data-register write */
+    PCF8584_HOLD_COUNT,
+} PCF8584Hold;
+
 struct PCF8584State {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
     I2CBus *bus;
+    I2CSlave *rx;               /* this adapter's own endpoint on that bus */
     qemu_irq irq;
     DeviceDiagnosticSink *diagnostic;
 
@@ -80,6 +107,34 @@ struct PCF8584State {
      * the I2C core cannot (pcf8584_start()).
      */
     uint8_t cur_addr7;
+
+    /*
+     * Participant id on the shared timed wire, or PCF8584_NO_WIRE for the
+     * untimed single-owner path. Several of these sit on one Origin 2000
+     * module bus, so the transfer runs as staged SDA/SCL transitions rather
+     * than as one indivisible core call.
+     */
+    uint32_t wire_master;
+
+    uint8_t wire_phase;         /* PCF8584WirePhase */
+    uint8_t wire_bit;           /* 0-7 data bit, 8 the acknowledgement clock */
+    uint8_t wire_shift;         /* byte being clocked out */
+    uint8_t wire_recv_byte;     /* byte being clocked in */
+    uint8_t wire_hold_release;  /* PCF8584Hold */
+    bool wire_active;           /* this adapter owns an open transfer */
+    bool wire_address_byte;     /* the byte in flight is the address */
+    bool wire_ack_nak;          /* acknowledgement bit sampled on clock nine */
+    bool wire_scl, wire_sda;    /* line levels as this adapter last saw them */
+    int64_t wire_free_at;       /* earliest fresh START after the last STOP */
 };
+
+/*
+ * The registers as a guest access reaches them, for an in-process driver that
+ * would otherwise have to stand up the whole memory-dispatch path. The machine
+ * still goes through the MMIO ops.
+ */
+uint64_t pcf8584_read_register(PCF8584State *s, hwaddr addr, unsigned size);
+void pcf8584_write_register(PCF8584State *s, hwaddr addr, uint64_t value,
+                            unsigned size);
 
 #endif /* HW_I2C_PCF8584_H */

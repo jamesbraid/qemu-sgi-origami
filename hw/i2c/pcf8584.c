@@ -15,6 +15,8 @@
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
+#include "qapi/error.h"
+#include "qemu/timer.h"
 #include "trace.h"
 
 /*
@@ -74,6 +76,399 @@ static void pcf8584_complete(PCF8584State *s, bool nacked)
         s->status &= ~PCF8584_STS_LRB;
     }
     pcf8584_update_irq(s);
+}
+
+/*
+ * The wire's timing. Firmware programs a 12 MHz input with the 90 kHz
+ * bus-speed select and nothing else, so that is the only rate modelled. The
+ * period is split evenly: a deterministic approximation from the published
+ * nominal rate, not a measured duty cycle, since the specification calls the
+ * selected rates approximate and fixes no duty cycle. Both halves clear the
+ * published 4.7 us low and 4.0 us high minimums, and one high interval also
+ * serves as the START setup and hold.
+ */
+#define PCF8584_SCL_LOW_NS      5556
+#define PCF8584_SCL_HIGH_NS     5556
+/* Published minimum bus-free interval ahead of a fresh START. */
+#define PCF8584_BUS_FREE_NS     4700
+
+static bool pcf8584_on_wire(PCF8584State *s)
+{
+    return s->wire_master != PCF8584_NO_WIRE;
+}
+
+static int64_t pcf8584_now(void)
+{
+    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+/*
+ * Stage one line transition. The virtual clock keeps running while an event
+ * is being delivered, so a deadline derived from that event's own timestamp
+ * can already have passed by the time it is requested; the floor keeps the
+ * request in the future rather than losing it to that skew.
+ */
+static void pcf8584_wire_stage(PCF8584State *s, int64_t at, bool sda,
+                               bool clock)
+{
+    int rc = i2c_wire_stage(s->bus, s->wire_master,
+                            MAX(at, pcf8584_now() + 1), sda, clock);
+
+    if (rc) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: the shared wire refused a line "
+                      "transition (%d); this transfer is abandoned\n", rc);
+        s->wire_phase = PCF8584_WIRE_IDLE;
+        s->wire_active = false;
+    }
+}
+
+/* What this adapter drives on SDA for the clock it is about to run. */
+static bool pcf8584_wire_bit(PCF8584State *s)
+{
+    if (s->wire_bit >= 8) {
+        /* Clock nine: a transmitter releases SDA, a receiver drives ACK. */
+        return s->wire_address_byte || !s->recv ||
+               !(s->control & PCF8584_CTL_ACK);
+    }
+    if (s->recv && !s->wire_address_byte) {
+        return true;            /* the target drives the data bits */
+    }
+    return (s->wire_shift >> (7 - s->wire_bit)) & 1;
+}
+
+/* A fresh START: SDA falls with both lines released, after the free time. */
+static void pcf8584_wire_begin_start(PCF8584State *s)
+{
+    s->start_address_staged = false;
+    s->wire_shift = s->data;
+    s->recv = s->data & 1;
+    s->cur_addr7 = s->data >> 1;
+    s->wire_address_byte = true;
+    s->wire_active = true;
+    s->wire_phase = PCF8584_WIRE_START_SDA;
+    /* Staging floors this at the present, so an elapsed free time is now. */
+    pcf8584_wire_stage(s, s->wire_free_at, false, false);
+}
+
+/*
+ * A repeated START keeps the bus: the clock resumes so SCL rises with SDA
+ * released, and the SDA fall that follows is placed while it is still high.
+ */
+static void pcf8584_wire_begin_restart(PCF8584State *s, uint8_t addr)
+{
+    if (s->wire_phase != PCF8584_WIRE_PAUSED) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: repeated START part way through a "
+                      "byte is unsupported\n");
+        return;
+    }
+    s->wire_shift = addr;
+    s->recv = addr & 1;
+    s->cur_addr7 = addr >> 1;
+    s->wire_address_byte = true;
+    s->wire_phase = PCF8584_WIRE_RESTART_SCL;
+    pcf8584_wire_stage(s, pcf8584_now() + 1, true, true);
+}
+
+/*
+ * Resume the paused clock into the next byte. The pause left SCL low, so the
+ * resume is that bit's rising edge and its SDA is sampled there.
+ */
+static void pcf8584_wire_next_byte(PCF8584State *s, uint8_t shift)
+{
+    s->wire_shift = shift;
+    s->wire_recv_byte = 0;
+    s->wire_address_byte = false;
+    s->wire_bit = 0;
+    s->wire_phase = PCF8584_WIRE_BITS;
+    s->status |= PCF8584_STS_PIN;
+    pcf8584_wire_stage(s, pcf8584_now() + 1, pcf8584_wire_bit(s), true);
+}
+
+static void pcf8584_wire_request_stop(PCF8584State *s)
+{
+    if (!s->wire_active) {
+        /*
+         * Not the owner. A losing or reset non-owner must not end the
+         * winner's transfer, so only local state moves.
+         */
+        s->start_pending = false;
+        s->start_address_staged = false;
+        return;
+    }
+    if (s->wire_phase != PCF8584_WIRE_PAUSED) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: STOP requested part way through a "
+                      "byte is unsupported\n");
+        return;
+    }
+    trace_pcf8584_stop();
+    s->start_pending = false;
+    s->wire_phase = PCF8584_WIRE_STOP_SCL;
+    pcf8584_wire_stage(s, pcf8584_now() + 1, false, true);
+}
+
+static void pcf8584_wire_release_hold(PCF8584State *s)
+{
+    s->wire_hold_release = PCF8584_HOLD_NONE;
+    if (i2c_wire_hold(s->rx, pcf8584_now() + 1, false)) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: the shared wire refused this "
+                      "adapter's clock release\n");
+    }
+}
+
+/*
+ * BER: the datasheet makes a misplaced START or STOP report PIN active and
+ * BB free, so BB stops following the line until a PIN write clears BER.
+ */
+static void pcf8584_wire_bus_error(PCF8584State *s)
+{
+    s->status |= PCF8584_STS_BER | PCF8584_STS_BB;
+    s->status &= ~PCF8584_STS_PIN;
+    s->wire_active = false;
+    s->wire_phase = PCF8584_WIRE_IDLE;
+    s->start_pending = false;
+    if (i2c_wire_reset_master(s->bus, s->wire_master) == -ENOTSUP) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: recovery from a misplaced START or "
+                      "STOP while driving is unmodelled\n");
+    }
+    pcf8584_update_irq(s);
+}
+
+/* The ninth clock has fallen: the byte, its acknowledgement included, is in. */
+static void pcf8584_wire_byte_done(PCF8584State *s)
+{
+    bool nacked = s->wire_ack_nak;
+
+    if (s->wire_address_byte) {
+        trace_pcf8584_start(s->cur_addr7, s->recv, !nacked);
+    } else if (s->recv) {
+        /* This adapter drove clock nine, so nothing was received on it. */
+        s->data = s->wire_recv_byte;
+        nacked = false;
+        trace_pcf8584_recv(s->data);
+    } else {
+        trace_pcf8584_send(s->wire_shift, !nacked);
+    }
+    /*
+     * Between bytes the chip keeps SCL low and waits for its host rather
+     * than releasing the line, so the clock stops without a rising edge.
+     */
+    if (i2c_wire_pause_master(s->bus, s->wire_master)) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: the shared wire refused the "
+                      "between-byte clock hold\n");
+    }
+    s->wire_phase = PCF8584_WIRE_PAUSED;
+    pcf8584_complete(s, nacked);
+}
+
+static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
+{
+    PCF8584State *s = opaque;
+    bool was_scl = s->wire_scl, was_sda = s->wire_sda;
+    bool start = was_scl && event->scl && was_sda && !event->sda;
+    bool stop = was_scl && event->scl && !was_sda && event->sda;
+    bool rise = !was_scl && event->scl;
+    bool fall = was_scl && !event->scl;
+    int64_t now = event->time;
+
+    s->wire_scl = event->scl;
+    s->wire_sda = event->sda;
+
+    if (event->error) {
+        qemu_log_mask(LOG_UNIMP, "pcf8584: the shared wire stopped with %d; "
+                      "no further transfers are represented\n", event->error);
+        s->wire_phase = PCF8584_WIRE_IDLE;
+        s->wire_active = false;
+        return;
+    }
+    if (event->lost & (1ULL << s->wire_master)) {
+        /*
+         * LAB reports the loss at the mismatching bit. PIN stays inactive
+         * until the winning byte finishes after its acknowledgement clock,
+         * so the loser keeps counting the winner's clocks out.
+         */
+        s->status |= PCF8584_STS_LAB;
+        s->wire_active = false;
+        s->start_pending = false;
+        s->wire_phase = PCF8584_WIRE_LOST;
+    }
+
+    if ((start || stop) && (s->wire_phase == PCF8584_WIRE_BITS ||
+                            s->wire_phase == PCF8584_WIRE_ACK)) {
+        pcf8584_wire_bus_error(s);
+        return;
+    }
+
+    switch (s->wire_phase) {
+    case PCF8584_WIRE_START_SDA:
+        if (!start) {
+            break;
+        }
+        if (!(i2c_wire_contenders(s->bus) & (1ULL << s->wire_master))) {
+            /*
+             * A peer opened the bus in the interval between the host's
+             * control write and this adapter's own line transition. That is
+             * the busy-START case again, which the chip sources leave
+             * undefined, so the request is dropped rather than queued.
+             */
+            qemu_log_mask(LOG_UNIMP, "pcf8584: a peer's START overtook this "
+                          "adapter's own request\n");
+            s->wire_phase = PCF8584_WIRE_IDLE;
+            s->wire_active = false;
+            i2c_wire_reset_master(s->bus, s->wire_master);
+            break;
+        }
+        s->wire_bit = 0;
+        s->wire_phase = PCF8584_WIRE_START_HOLD;
+        pcf8584_wire_stage(s, now + PCF8584_SCL_HIGH_NS,
+                           pcf8584_wire_bit(s), true);
+        break;
+    case PCF8584_WIRE_START_HOLD:
+        if (fall) {
+            s->wire_phase = PCF8584_WIRE_BITS;
+        }
+        break;
+    case PCF8584_WIRE_BITS:
+        if (rise && s->recv && !s->wire_address_byte) {
+            s->wire_recv_byte = (s->wire_recv_byte << 1) | event->sda;
+        } else if (fall) {
+            s->wire_bit++;
+            if (s->wire_bit >= 8) {
+                s->wire_phase = PCF8584_WIRE_ACK;
+            }
+            pcf8584_wire_stage(s, now + 1, pcf8584_wire_bit(s), true);
+        }
+        break;
+    case PCF8584_WIRE_ACK:
+        if (rise) {
+            s->wire_ack_nak = event->sda;
+        } else if (fall) {
+            pcf8584_wire_byte_done(s);
+        }
+        break;
+    case PCF8584_WIRE_RESTART_SCL:
+        if (rise) {
+            s->wire_phase = PCF8584_WIRE_START_SDA;
+            pcf8584_wire_stage(s, now + PCF8584_SCL_HIGH_NS, false, false);
+        }
+        break;
+    case PCF8584_WIRE_STOP_SCL:
+        if (rise) {
+            s->wire_phase = PCF8584_WIRE_STOP_SDA;
+            pcf8584_wire_stage(s, now + PCF8584_SCL_HIGH_NS, true, false);
+        }
+        break;
+    case PCF8584_WIRE_STOP_SDA:
+        if (stop) {
+            s->wire_phase = PCF8584_WIRE_IDLE;
+            s->wire_active = false;
+            s->wire_address_byte = false;
+            s->wire_free_at = now + PCF8584_BUS_FREE_NS;
+        }
+        break;
+    case PCF8584_WIRE_LOST:
+        if (rise && s->wire_bit >= 8) {
+            s->wire_ack_nak = event->sda;
+        } else if (fall && s->wire_bit >= 8) {
+            s->wire_phase = PCF8584_WIRE_IDLE;
+            s->wire_address_byte = false;
+            pcf8584_complete(s, s->wire_ack_nak);
+        } else if (fall) {
+            s->wire_bit++;
+        }
+        break;
+    default:
+        break;
+    }
+
+    /* Status follows the line: START clears BB and STOP sets it. */
+    if (!(s->status & PCF8584_STS_BER)) {
+        if (i2c_bus_busy(s->bus)) {
+            s->status &= ~PCF8584_STS_BB;
+        } else {
+            s->status |= PCF8584_STS_BB;
+        }
+    }
+}
+
+static void pcf8584_wire_write_data(PCF8584State *s, uint8_t val)
+{
+    if (s->wire_hold_release == PCF8584_HOLD_WRITE) {
+        /* Addressed as a transmitter: the byte written releases our hold. */
+        s->data = val;
+        pcf8584_wire_release_hold(s);
+        return;
+    }
+    if (s->start_pending) {
+        /* A repeated start's address arrives after its control write. */
+        s->start_pending = false;
+        s->data = val;
+        pcf8584_wire_begin_restart(s, val);
+        return;
+    }
+    if (!s->wire_active) {
+        /*
+         * No transfer of ours is open, so this is the address staged ahead
+         * of a first start. A peer occupying the bus is not our transfer.
+         */
+        s->data = val;
+        s->start_address_staged = true;
+        return;
+    }
+    if (s->recv) {
+        qemu_log_mask(LOG_GUEST_ERROR, "pcf8584: data written during a "
+                      "receive transfer, ignored\n");
+        return;
+    }
+    if (s->wire_phase != PCF8584_WIRE_PAUSED) {
+        qemu_log_mask(LOG_GUEST_ERROR, "pcf8584: data written while a byte "
+                      "is still on the bus, ignored\n");
+        return;
+    }
+    s->data = val;
+    pcf8584_wire_next_byte(s, val);
+}
+
+static uint8_t pcf8584_wire_read_data(PCF8584State *s)
+{
+    uint8_t val = s->data;
+
+    if (s->wire_hold_release == PCF8584_HOLD_READ) {
+        /* Addressed as a receiver: the read releases our own clock hold. */
+        pcf8584_wire_release_hold(s);
+        return val;
+    }
+    if (s->wire_active && s->recv &&
+        s->wire_phase == PCF8584_WIRE_PAUSED) {
+        /* The read advances the pipeline: it clocks the next byte in. */
+        if (!(s->control & PCF8584_CTL_ACK)) {
+            trace_pcf8584_nack();
+        }
+        pcf8584_wire_next_byte(s, 0);
+    }
+    return val;
+}
+
+static void pcf8584_wire_request_start(PCF8584State *s)
+{
+    if (s->wire_active) {
+        /* Repeated start: the address byte has not been written yet. */
+        s->start_pending = true;
+        s->status |= PCF8584_STS_PIN;
+        return;
+    }
+    if (i2c_bus_busy(s->bus)) {
+        /*
+         * The chip sources do not define a start requested while a peer
+         * occupies the bus. It is not by itself lost arbitration or a bus
+         * error, and no queue or status result is established for it, so
+         * leave the request unsupported rather than inventing one.
+         */
+        qemu_log_mask(LOG_UNIMP, "pcf8584: START requested while another "
+                      "master occupies the shared bus\n");
+        return;
+    }
+    s->status |= PCF8584_STS_PIN;
+    pcf8584_wire_begin_start(s);
 }
 
 static void pcf8584_stop(PCF8584State *s)
@@ -137,6 +532,11 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
 {
     int rc;
 
+    if (pcf8584_on_wire(s)) {
+        pcf8584_wire_write_data(s, val);
+        return;
+    }
+
     if (s->start_pending) {
         s->start_pending = false;
         pcf8584_start(s, val);
@@ -173,8 +573,13 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
 
 static uint8_t pcf8584_read_data(PCF8584State *s)
 {
-    uint8_t val = s->data;
+    uint8_t val;
 
+    if (pcf8584_on_wire(s)) {
+        return pcf8584_wire_read_data(s);
+    }
+
+    val = s->data;
     if (s->transfer && s->recv) {
         /* Held byte first, then fetch: fetch-first is off by one all packet. */
         if (!(s->control & PCF8584_CTL_ACK)) {
@@ -206,7 +611,9 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
     }
 
     if (val & PCF8584_CTL_STA) {
-        if (!(s->status & PCF8584_STS_BB)) {
+        if (pcf8584_on_wire(s)) {
+            pcf8584_wire_request_start(s);
+        } else if (!(s->status & PCF8584_STS_BB)) {
             /* Repeated start: the address byte has not been written yet. */
             s->start_pending = true;
             s->status |= PCF8584_STS_PIN;
@@ -219,7 +626,11 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
     }
 
     if (val & PCF8584_CTL_STO) {
-        pcf8584_stop(s);
+        if (pcf8584_on_wire(s)) {
+            pcf8584_wire_request_stop(s);
+        } else {
+            pcf8584_stop(s);
+        }
         s->status |= PCF8584_STS_PIN;
         pcf8584_update_irq(s);
         return;
@@ -336,6 +747,17 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
                              addr, val, size, true, before, after);
 }
 
+uint64_t pcf8584_read_register(PCF8584State *s, hwaddr addr, unsigned size)
+{
+    return pcf8584_read(s, addr, size);
+}
+
+void pcf8584_write_register(PCF8584State *s, hwaddr addr, uint64_t value,
+                            unsigned size)
+{
+    pcf8584_write(s, addr, value, size);
+}
+
 /*
  * impl.max is 8: the default of 4 splits the firmware's eight-byte accesses
  * and runs the data register's read side effect twice.
@@ -420,13 +842,97 @@ static int pcf8584_bcast_rx_send(I2CSlave *dev, uint8_t data)
     return 0;
 }
 
+static uint8_t pcf8584_bcast_rx_recv(I2CSlave *dev)
+{
+    return PCF8584_BCAST_RX(dev)->chip->data;
+}
+
+/* PIN goes active only after all nine clocks, the acknowledgement included. */
+static void pcf8584_service_pin(PCF8584State *s)
+{
+    s->status &= ~PCF8584_STS_PIN;
+    pcf8584_update_irq(s);
+}
+
+/*
+ * Addressed service on the shared wire. Each adapter owns its own clock hold
+ * and keeps it until its own host moves the byte, so servicing one adapter
+ * cannot release another's.
+ */
+static bool pcf8584_bcast_rx_wire_service(I2CSlave *dev,
+                                          enum i2c_wire_service service)
+{
+    PCF8584State *s = PCF8584_BCAST_RX(dev)->chip;
+
+    if (s->wire_active) {
+        /*
+         * This adapter is driving the transfer. Its master half already owns
+         * the status and the clock, and stretching SCL against itself would
+         * stall the transfer it is in the middle of.
+         */
+        return false;
+    }
+
+    switch (service) {
+    case I2C_WIRE_ADDRESS_SEND:
+    case I2C_WIRE_WRITE:
+        s->wire_hold_release = PCF8584_HOLD_READ;
+        pcf8584_service_pin(s);
+        return true;
+    case I2C_WIRE_ADDRESS_RECV:
+        s->wire_hold_release = PCF8584_HOLD_WRITE;
+        pcf8584_service_pin(s);
+        return true;
+    case I2C_WIRE_READ_ACK:
+        /* As a transmitter the acknowledgement bit is a received one. */
+        s->wire_hold_release = PCF8584_HOLD_WRITE;
+        pcf8584_complete(s, false);
+        return true;
+    case I2C_WIRE_READ_NACK:
+        /* The master is done with us and drives STOP or a repeated START. */
+        s->wire_hold_release = PCF8584_HOLD_NONE;
+        pcf8584_complete(s, true);
+        return false;
+    default:
+        return false;
+    }
+}
+
+/*
+ * A software-required approximation, not measured PCF8584 behaviour: the chip
+ * sources guarantee passive buffering only with own address zero, while the
+ * module grant protocol needs the last unmatched address readable from a
+ * nonzero-address adapter, retained through STOP and idle until a later
+ * completed address phase replaces it. Observing is not selection -- no
+ * acknowledgement, no addressed-as-slave, no PIN, no interrupt and no clock
+ * hold -- and only address phases are copied here, never payload.
+ */
+static void pcf8584_bcast_rx_wire_address(I2CSlave *dev, uint8_t address_byte)
+{
+    PCF8584State *s = PCF8584_BCAST_RX(dev)->chip;
+
+    if (!s->own_address || (address_byte >> 1) == s->own_address ||
+        address_byte == I2C_BROADCAST) {
+        return;
+    }
+    /* Same reason as the receive side: a staged start address is not data. */
+    if (s->start_address_staged) {
+        return;
+    }
+    s->data = address_byte;
+}
+
 static void pcf8584_bcast_rx_class_init(ObjectClass *klass, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
 
+    sc->supports_master_ids = true;
     sc->match_and_add = pcf8584_bcast_rx_match_and_add;
     sc->event = pcf8584_bcast_rx_event;
     sc->send = pcf8584_bcast_rx_send;
+    sc->recv = pcf8584_bcast_rx_recv;
+    sc->wire_service = pcf8584_bcast_rx_wire_service;
+    sc->wire_address = pcf8584_bcast_rx_wire_address;
 }
 
 static void pcf8584_reset_hold(Object *obj, ResetType type)
@@ -445,6 +951,30 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->start_pending = false;
     s->start_address_staged = false;
     s->cur_addr7 = 0;
+
+    s->wire_phase = PCF8584_WIRE_IDLE;
+    s->wire_bit = 0;
+    s->wire_shift = 0;
+    s->wire_recv_byte = 0;
+    s->wire_hold_release = PCF8584_HOLD_NONE;
+    s->wire_active = false;
+    s->wire_address_byte = false;
+    s->wire_ack_nak = false;
+    s->wire_free_at = 0;
+    s->wire_scl = s->wire_sda = true;
+    if (pcf8584_on_wire(s) && s->bus) {
+        /*
+         * Reset reaches this adapter alone. An owning adapter's reset
+         * waveform is unestablished, and a losing or reset non-owner must
+         * not end the winner's transfer, so the peer transfer is left alone.
+         */
+        if (i2c_wire_reset_master(s->bus, s->wire_master) == -ENOTSUP) {
+            qemu_log_mask(LOG_UNIMP, "pcf8584: reset while this adapter owns "
+                          "the shared bus is unsupported\n");
+        }
+        s->wire_scl = i2c_wire_scl(s->bus);
+        s->wire_sda = i2c_wire_sda(s->bus);
+    }
     pcf8584_update_irq(s);
 }
 
@@ -458,17 +988,90 @@ static void pcf8584_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 
-    s->bus = i2c_init_bus(dev, "i2c");
+    if (!s->bus) {
+        if (pcf8584_on_wire(s)) {
+            error_setg(errp, "wire-master needs a bus link to share");
+            return;
+        }
+        s->bus = i2c_init_bus(dev, "i2c");
+    } else if (pcf8584_on_wire(s)) {
+        /*
+         * clock_after_loss is false: a loser stops contributing to the
+         * clock at once. The chip sources do not distinguish that from
+         * clocking the rest of the winning byte, so it is a model policy.
+         */
+        int rc = i2c_wire_configure(s->bus, s->wire_master,
+                                    PCF8584_SCL_LOW_NS, PCF8584_SCL_HIGH_NS,
+                                    false);
+
+        if (!rc) {
+            rc = i2c_wire_set_observer(s->bus, s->wire_master,
+                                       pcf8584_wire_event, s);
+        }
+        if (rc) {
+            error_setg(errp, "wire-master %" PRIu32
+                       " is not available on the linked bus (%d)",
+                       s->wire_master, rc);
+            return;
+        }
+    }
 
     rx = PCF8584_BCAST_RX(i2c_slave_create_simple(s->bus,
                                                    TYPE_PCF8584_BCAST_RX, 0));
     rx->chip = s;
+    s->rx = I2C_SLAVE(rx);
+}
+
+static void pcf8584_unrealize(DeviceState *dev)
+{
+    PCF8584State *s = PCF8584(dev);
+
+    if (pcf8584_on_wire(s) && s->bus) {
+        i2c_wire_clear_observer(s->bus, s->wire_master,
+                                pcf8584_wire_event, s);
+    }
+}
+
+/* Combinations the state machine cannot produce must not load. */
+static int pcf8584_post_load(void *opaque, int version_id)
+{
+    PCF8584State *s = opaque;
+
+    if (s->wire_phase >= PCF8584_WIRE_PHASE_COUNT ||
+        s->wire_hold_release >= PCF8584_HOLD_COUNT ||
+        s->wire_bit > 8 || s->wire_free_at < 0 ||
+        (s->start_pending && s->start_address_staged)) {
+        return -EINVAL;
+    }
+    if (!pcf8584_on_wire(s)) {
+        /* The untimed path drives none of this. */
+        if (s->wire_phase != PCF8584_WIRE_IDLE || s->wire_active ||
+            s->wire_address_byte || s->wire_bit ||
+            s->wire_hold_release != PCF8584_HOLD_NONE) {
+            return -EINVAL;
+        }
+        return 0;
+    }
+    /* The wire path never opens an untimed core transfer. */
+    if (s->transfer) {
+        return -EINVAL;
+    }
+    if (s->wire_active != (s->wire_phase != PCF8584_WIRE_IDLE &&
+                           s->wire_phase != PCF8584_WIRE_LOST)) {
+        return -EINVAL;
+    }
+    if (s->wire_phase == PCF8584_WIRE_IDLE &&
+        (s->wire_address_byte || s->start_pending)) {
+        return -EINVAL;
+    }
+    return 0;
 }
 
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
+    .post_load = pcf8584_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(own_address, PCF8584State),
         VMSTATE_UINT8(clock, PCF8584State),
@@ -481,8 +1084,30 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL(start_pending, PCF8584State),
         VMSTATE_BOOL_V(start_address_staged, PCF8584State, 2),
         VMSTATE_UINT8(cur_addr7, PCF8584State),
+        VMSTATE_UINT8_V(wire_phase, PCF8584State, 3),
+        VMSTATE_UINT8_V(wire_bit, PCF8584State, 3),
+        VMSTATE_UINT8_V(wire_shift, PCF8584State, 3),
+        VMSTATE_UINT8_V(wire_recv_byte, PCF8584State, 3),
+        VMSTATE_UINT8_V(wire_hold_release, PCF8584State, 3),
+        VMSTATE_BOOL_V(wire_active, PCF8584State, 3),
+        VMSTATE_BOOL_V(wire_address_byte, PCF8584State, 3),
+        VMSTATE_BOOL_V(wire_ack_nak, PCF8584State, 3),
+        VMSTATE_BOOL_V(wire_scl, PCF8584State, 3),
+        VMSTATE_BOOL_V(wire_sda, PCF8584State, 3),
+        VMSTATE_INT64_V(wire_free_at, PCF8584State, 3),
         VMSTATE_END_OF_LIST()
     },
+};
+
+static const Property pcf8584_properties[] = {
+    /*
+     * Left unset the adapter makes its own private bus, which is the
+     * one-controller Origin 200 wiring. An Origin 2000 module links four
+     * adapters to one bus and gives each its own wire participant id.
+     */
+    DEFINE_PROP_LINK("bus", PCF8584State, bus, TYPE_I2C_BUS, I2CBus *),
+    DEFINE_PROP_UINT32("wire-master", PCF8584State, wire_master,
+                       PCF8584_NO_WIRE),
 };
 
 static void pcf8584_class_init(ObjectClass *klass, const void *data)
@@ -492,7 +1117,9 @@ static void pcf8584_class_init(ObjectClass *klass, const void *data)
 
     dc->desc = "Philips PCF8584 I2C-bus controller";
     dc->realize = pcf8584_realize;
+    dc->unrealize = pcf8584_unrealize;
     dc->vmsd = &vmstate_pcf8584;
+    device_class_set_props(dc, pcf8584_properties);
     rc->phases.hold = pcf8584_reset_hold;
 }
 
