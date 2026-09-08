@@ -72,12 +72,9 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 /* The whole of the widget's crosstalk space belongs to this chip. */
 #define SGI_BRIDGE_WIDGET_SIZE  (16 * MiB)
 
-/*
- * A destination widget number is four bits, so this is the furthest one can
- * be shifted and still be inside a 64-bit address.
- */
-#define SGI_BRIDGE_WIDGET_BITS      4
-#define SGI_BRIDGE_WIDGET_SHIFT_MAX (64 - SGI_BRIDGE_WIDGET_BITS)
+/* Switched packets use four widget bits above their full 48-bit address. */
+#define SGI_BRIDGE_WIDGET_BITS         4
+#define SGI_BRIDGE_PACKET_ADDRESS_BITS 48
 
 /*
  * The local register block: 64 KB decoded, the first 0x300 bytes defined,
@@ -214,7 +211,7 @@ struct SGIBridgeState {
     uint32_t fabric_node_shift;
 
     /*
-     * Which four bits of a fabric address this machine spends on the
+     * The fixed four bits above a packet address used for the
      * destination widget. Crosstalk carries that number in a packet header
      * beside the address; a QEMU address space has no header, so a machine
      * with a switch to route through has to make room for it in the address

@@ -8,6 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci_device.h"
@@ -68,6 +69,7 @@ struct SGIBridgeDMATestState {
      * which is what an ordinary card says.
      */
     bool byte_lane_self_ordered;
+    bool plain_dma;
 
     /* Settable: the four-onto-eight pin fold needs more than one pin. */
     uint8_t interrupt_pin;
@@ -125,7 +127,12 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
     }
 
     /* One call for the whole transfer: the per-page distinction lives here. */
-    pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+    if (s->plain_dma) {
+        address_space_write(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
+                            MEMTXATTRS_UNSPECIFIED, buf, s->length);
+    } else {
+        pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+    }
 }
 
 /*
@@ -143,8 +150,18 @@ static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
         return;
     }
 
-    pci_dma_read(PCI_DEVICE(s), s->source, buf, s->length);
-    pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+    if (s->plain_dma) {
+        address_space_read(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->source,
+                           MEMTXATTRS_UNSPECIFIED, buf, s->length);
+    } else {
+        pci_dma_read(PCI_DEVICE(s), s->source, buf, s->length);
+    }
+    if (s->plain_dma) {
+        address_space_write(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
+                            MEMTXATTRS_UNSPECIFIED, buf, s->length);
+    } else {
+        pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+    }
 }
 
 static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
@@ -306,6 +323,11 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
 
+    if (s->plain_dma && !sgi_bridge_plain_dma_as(dev)) {
+        error_setg(errp, "plain DMA fixture requires an SGI Bridge");
+        return;
+    }
+
     /* Say in configuration space which pin this device uses. */
     pci_config_set_interrupt_pin(dev->config, s->interrupt_pin);
 
@@ -366,6 +388,7 @@ static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_UINT16("device-id", SGIBridgeDMATestState, device_id,
                        SGI_BRIDGE_DMA_TEST_DEVICE),
     /* Settable, so one card type covers both sides of the exemption. */
+    DEFINE_PROP_BOOL("plain-dma", SGIBridgeDMATestState, plain_dma, false),
     DEFINE_PROP_BOOL(SGI_BRIDGE_BYTE_LANE_SELF_ORDERED, SGIBridgeDMATestState,
                      byte_lane_self_ordered, false),
 };
