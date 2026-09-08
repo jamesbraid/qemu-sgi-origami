@@ -309,9 +309,9 @@ typedef struct QLogicISPPendingStatus {
  * the adapter announces, plus the one an entry naming no target answers
  * without becoming a command. That sum is an upper bound rather than a
  * reachable length -- the extra answer only gets through with nothing held
- * and at most 511 outstanding, so 512 is the most that piles up -- and it
- * is also what a migration stream is held to, so the check refuses only
- * counts no version of the model could have written.
+ * and at most 511 outstanding, so 512 is the most that piles up -- and a
+ * migration stream is held to that same 512, so the load check refuses
+ * only counts no version of the model could have written.
  */
 #define QLOGIC_ISP_HELD_MAX (ISP_FIRMWARE_STATUS_MAX_REQUESTS + 1)
 
@@ -1948,8 +1948,9 @@ static unsigned qlogic_isp_outstanding(QLogicISPState *s)
  * target, or carrying no entry type the model knows, is answered without
  * becoming a command, so one such answer can still be held after this
  * check let it through. It only gets through with nothing held and the
- * budget not yet full, so the list reaches 512 at most; the budget plus
- * one is the bound the load check enforces, not a length reachable here.
+ * budget not yet full, so the list reaches 512 at most, which is also
+ * what the migration load check enforces; the wire array's extra slot
+ * is spare storage, not a length reachable here.
  */
 static bool qlogic_isp_can_take_request(QLogicISPState *s)
 {
