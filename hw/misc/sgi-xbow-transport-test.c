@@ -89,13 +89,13 @@ static void control_write(void *opaque, hwaddr addr, uint64_t value,
 {
     XbowTransportTest *s = opaque;
     MemTxAttrs attrs = { .requester_id = 0x1234 };
-    uint8_t bytes[8];
+    uint8_t bytes[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
 
     if (addr == 0x80) {
         s->probe = value;
     } else if (addr == 0x88) {
-        s->result = address_space_read(&s->packets, s->probe, attrs,
-                                       bytes, sizeof(bytes));
+        s->result = address_space_rw(&s->packets, s->probe, attrs,
+                                     bytes, sizeof(bytes), value == 2);
     }
 }
 
