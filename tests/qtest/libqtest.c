@@ -1358,6 +1358,25 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value)
     qtest_write(s, "writel", addr, value);
 }
 
+uint32_t qtest_writel_then_readl(QTestState *s, uint64_t write_addr,
+                                 uint32_t value, uint64_t read_addr)
+{
+    gchar **args;
+    uint64_t result;
+    int ret;
+
+    qtest_sendf(s, "writel 0x%" PRIx64 " 0x%x\n"
+                   "readl 0x%" PRIx64 "\n",
+                write_addr, value, read_addr);
+    qtest_rsp(s);
+    args = qtest_rsp_args(s, 2);
+    ret = qemu_strtou64(args[1], NULL, 0, &result);
+    g_assert(!ret && result <= UINT32_MAX);
+    g_strfreev(args);
+
+    return result;
+}
+
 void qtest_writeq(QTestState *s, uint64_t addr, uint64_t value)
 {
     qtest_write(s, "writeq", addr, value);

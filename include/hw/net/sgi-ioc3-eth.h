@@ -166,7 +166,11 @@ struct SGIIOC3EthState {
     /* Set with mac when the address came from the default generator. */
     bool mac_generated;
     NICState *nic;
+    QEMUBH *rx_flush_bh;
     uint8_t frame[SGI_IOC3_ENET_FRAME_MAX];
+
+    /* Backend replies wait until the transmit walk has published its state. */
+    bool defer_backend_rx;
 
     DP83840State phy;
 
