@@ -14,7 +14,10 @@
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "system/reset.h"
+#include "system/rtc.h"
 #include "system/runstate.h"
 
 /* The UART window: registers, interrupt and the byte queue toward the node. */
@@ -54,7 +57,193 @@ static bool l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n)
     return true;
 }
 
-/* The controller side. */
+/* The controller side: operator console text, display and log. */
+
+static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
+{
+    g_autofree char *text = NULL;
+    va_list ap;
+
+    va_start(ap, fmt);
+    text = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)text, strlen(text));
+}
+
+static void l1_prompt(SGIL1State *s)
+{
+    l1_printf(s, "%03uc%02u-L1> ", s->rack, s->bay);
+}
+
+static const char *l1_designation(SGIL1State *s)
+{
+    static const char *const names[] = {
+        "CPU0", "CPU1", "CPU2", "CPU3", "console"
+    };
+    unsigned subchannel = s->port_field & 0x1f;
+
+    return names[subchannel <= 4 ? subchannel : 4];
+}
+
+static void l1_mode_message(SGIL1State *s, bool returning)
+{
+    s->console_mode = true;
+    s->escaped = false;
+    s->warned_off = false;
+    l1_printf(s, "%s console mode  %03uc%02u %s, <CTRL_T> to escape to L1"
+              "\r\n", returning ? "returning to" : "entering", s->rack,
+              s->bay, l1_designation(s));
+}
+
+static void G_GNUC_PRINTF(2, 3) l1_log(SGIL1State *s, const char *fmt, ...)
+{
+    unsigned slot = (s->log_head + s->log_len) % SGI_L1_LOG_ENTRIES;
+    struct tm tm;
+    va_list ap;
+
+    if (s->log_len == SGI_L1_LOG_ENTRIES) {
+        s->log_head = (s->log_head + 1) % SGI_L1_LOG_ENTRIES;
+    } else {
+        s->log_len++;
+    }
+    qemu_get_timedate(&tm, s->clock_offset);
+    s->log_time[slot] = mktimegm(&tm);
+    va_start(ap, fmt);
+    vsnprintf((char *)s->log_text[slot], SGI_L1_LOG_TEXT, fmt, ap);
+    va_end(ap);
+}
+
+static void l1_log_print(SGIL1State *s)
+{
+    if (!s->log_len) {
+        l1_printf(s, "log is empty.\r\n");
+        return;
+    }
+    for (unsigned i = 0; i < s->log_len; i++) {
+        unsigned slot = (s->log_head + i) % SGI_L1_LOG_ENTRIES;
+        time_t when = s->log_time[slot];
+        struct tm tm;
+
+        gmtime_r(&when, &tm);
+        l1_printf(s, "%02d/%02d/%02d %02d:%02d:%02d %s\r\n", tm.tm_mon + 1,
+                  tm.tm_mday, tm.tm_year % 100, tm.tm_hour, tm.tm_min,
+                  tm.tm_sec, s->log_text[slot]);
+    }
+}
+
+static void l1_display_set(SGIL1State *s, unsigned line, const char *text)
+{
+    pstrcpy((char *)s->display[line], sizeof(s->display[line]), text);
+}
+
+static void l1_display_id(SGIL1State *s)
+{
+    g_autofree char *id = g_strdup_printf("%03uc%02u     /", s->rack, s->bay);
+
+    l1_display_set(s, 0, id);
+}
+
+static void l1_display_print(SGIL1State *s)
+{
+    l1_printf(s, "revision: 2.0\r\nline 1: \"%-12.12s\"\r\n"
+              "line 2: \"%-12.12s\"\r\n"
+              "leds:  PWR=%-6sSERVICE=off     FAULT=off\r\n",
+              (char *)s->display[0], (char *)s->display[1],
+              s->node_power ? "on" : "off");
+}
+
+/* Node power and reset as the L1 drives them. */
+
+static void l1_power_down(SGIL1State *s, const char *source)
+{
+    if (!s->node_power) {
+        return;
+    }
+    s->node_power = false;
+    l1_display_set(s, 1, "Powered Down");
+    l1_log(s, "power down (%s)", source);
+    qemu_set_irq(s->node_power_out, 0);
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+}
+
+static void l1_power_up(SGIL1State *s, const char *source, bool restart)
+{
+    bool returning = s->escaped;
+
+    s->node_power = true;
+    /* The selection returns to CPU 0 at every power-up. */
+    s->port_field &= 0x60;
+    l1_display_set(s, 1, "Powered Up");
+    l1_log(s, "power up (%s)", source);
+    qemu_set_irq(s->node_power_out, 1);
+    if (restart) {
+        s->power_up_pending = true;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+    if (!returning) {
+        /* From the locked prompt the L1 prints a fresh prompt line first. */
+        l1_prompt(s);
+        l1_printf(s, "\r\n");
+    }
+    l1_mode_message(s, returning);
+}
+
+static void l1_node_reset(SGIL1State *s)
+{
+    if (!s->node_power) {
+        return;
+    }
+    l1_display_set(s, 1, "Reset done");
+    l1_log(s, "reset (COMMAND)");
+    /* The hold time is not modeled: the line pulses. */
+    qemu_irq_pulse(s->node_reset_out);
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+}
+
+/* The machine resumes only once the reset that power-up asked for has run. */
+static void l1_after_node_reset(void *opaque)
+{
+    SGIL1State *s = opaque;
+
+    if (s->power_up_pending) {
+        s->power_up_pending = false;
+        qemu_bh_schedule(s->power_up_bh);
+    }
+}
+
+static void l1_power_up_bh(void *opaque)
+{
+    if (!runstate_is_running()) {
+        vm_start();
+    }
+}
+
+/* The controller's own start: mains applied, or the reboot_l1 command. */
+static void l1_boot(SGIL1State *s)
+{
+    s->rack = s->pending_rack;
+    s->bay = s->pending_bay;
+    s->console_mode = s->escaped = s->warned_off = false;
+    s->command_len = 0;
+    s->frame_len = 0;
+    s->in_frame = s->escape = s->overflow = false;
+    s->port_field = s->node_position << 5;
+    /* A registered event subchannel of 4 or more is non-volatile. */
+    if (s->event_subchannel < 4) {
+        s->events_enabled = false;
+        s->event_subchannel = 0;
+    }
+    l1_display_id(s);
+    l1_display_set(s, 1, "L1 running");
+    if (s->revision_major >= 0) {
+        l1_log(s, "L1 booting %d.%d.%d", s->revision_major, s->revision_minor,
+               s->revision_patch);
+    } else {
+        l1_log(s, "L1 booting");
+    }
+}
+
+/* The packet protocol. */
 
 static uint16_t l1_fcs(uint16_t value, uint8_t byte)
 {
@@ -199,52 +388,199 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
     }
 }
 
-static void l1_console_write(SGIL1State *s, const char *text)
+/* The operator's commands. */
+
+static bool l1_word(const char *word, const char *name, const char *alias)
 {
-    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)text, strlen(text));
+    return !strcmp(word, name) || (alias && !strcmp(word, alias));
 }
 
-static void l1_prompt(SGIL1State *s)
+static void l1_invalid(SGIL1State *s, const char *command)
 {
-    g_autofree char *text = g_strdup_printf("%03uc%02u-L1> ", s->rack, s->bay);
-    l1_console_write(s, text);
+    l1_printf(s, "ERROR: invalid arguments for '%s' command, "
+              "try \"help %s\"\r\n", command, command);
 }
 
-static void l1_enter_console(SGIL1State *s, bool returning)
+static bool l1_select(SGIL1State *s, const char *word)
 {
-    g_autofree char *text = g_strdup_printf(
-        "%s console mode %03uc%02u console, <CTRL-T> to escape to L1\r\n",
-        returning ? "re-entering" : "entering", s->rack, s->bay);
-    s->console_mode = true;
-    s->return_to_console = false;
-    l1_console_write(s, text);
+    unsigned subchannel;
+
+    if (!strcmp(word, "console")) {
+        subchannel = 4;
+    } else if (strlen(word) == 1 && word[0] >= '0' && word[0] <= '4') {
+        subchannel = word[0] - '0';
+    } else if (strlen(word) == 1 && word[0] >= 'a' && word[0] <= 'd') {
+        subchannel = word[0] - 'a';
+    } else {
+        return false;
+    }
+    s->port_field = (s->port_field & 0x60) | subchannel;
+    return true;
 }
 
-static void l1_console_command(SGIL1State *s)
+static void l1_version(SGIL1State *s)
 {
-    const char *command = (char *)s->command;
+    if (s->revision_major < 0) {
+        l1_printf(s, "L1 protocol responder; "
+                  "firmware revision unavailable\r\n");
+    } else {
+        l1_printf(s, "L1 %d.%d.%d (Image A) [Fuel/PE/O300 1MB image]\r\n",
+                  s->revision_major, s->revision_minor, s->revision_patch);
+    }
+}
+
+static void l1_command(SGIL1State *s)
+{
+    char line[sizeof(s->command)];
+    char *argv[8];
+    const char *rest = NULL;
+    int argc = 0;
+    char *p;
+    bool own_prompt = false;
 
     s->command[s->command_len] = 0;
-    if (!strcmp(command, "l1")) {
-        s->return_to_console = false;
-    } else if (!strcmp(command, "version")) {
-        if (s->revision_major < 0) {
-            l1_console_write(s, "L1 protocol responder; "
-                             "firmware revision unavailable\r\n");
-        } else {
-            g_autofree char *text = g_strdup_printf(
-                "L1 %d.%d.%d (protocol responder)\r\n",
-                s->revision_major, s->revision_minor, s->revision_patch);
-            l1_console_write(s, text);
+    pstrcpy(line, sizeof(line), (char *)s->command);
+    s->command_len = 0;
+    for (p = line; argc < ARRAY_SIZE(argv); ) {
+        while (*p == ' ') {
+            p++;
         }
+        if (!*p) {
+            break;
+        }
+        argv[argc++] = p;
+        if (argc == 3) {
+            /* The third word may be a text argument with spaces in it. */
+            rest = (char *)s->command + (p - line);
+        }
+        while (*p && *p != ' ') {
+            p++;
+        }
+        if (*p) {
+            *p++ = 0;
+        }
+    }
+    if (argc && !strcmp(argv[0], "*")) {
+        argc--;
+        memmove(argv, argv + 1, argc * sizeof(argv[0]));
+        rest = NULL;
+    }
+    if (!argc) {
+        l1_prompt(s);
+        return;
+    }
+    if (l1_word(argv[0], "power", "pwr")) {
+        if (argc == 2 && l1_word(argv[1], "up", "u")) {
+            if (s->node_power) {
+                l1_printf(s, "Power is already on\r\n");
+            } else {
+                l1_power_up(s, "COMMAND", true);
+                own_prompt = true;
+            }
+        } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
+            l1_power_down(s, "COMMAND");
+        } else if (argc == 2 && !strcmp(argv[1], "check")) {
+            l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
+        } else {
+            l1_invalid(s, "power");
+        }
+    } else if (l1_word(argv[0], "reset", "rst")) {
+        l1_node_reset(s);
+    } else if (l1_word(argv[0], "softreset", "softrst")) {
+        if (s->node_power) {
+            l1_display_set(s, 1, "Sft rst done");
+            l1_log(s, "soft reset (COMMAND)");
+            qemu_irq_pulse(s->soft_reset_out);
+        }
+    } else if (!strcmp(argv[0], "nmi")) {
+        if (s->node_power) {
+            l1_display_set(s, 1, "NMI done");
+            l1_log(s, "NMI (COMMAND)");
+            qemu_irq_pulse(s->nmi_out);
+        }
+    } else if (!strcmp(argv[0], "reboot_l1")) {
+        l1_boot(s);
+        return;
+    } else if (l1_word(argv[0], "version", "ver")) {
+        l1_version(s);
+    } else if (!strcmp(argv[0], "l1")) {
+        s->escaped = false;
+        l1_printf(s, "L1 command processor engaged, <CTRL-D> to exit.\r\n");
+    } else if (l1_word(argv[0], "select", "sel")) {
+        if (argc == 1) {
+            l1_printf(s, "console input: %03uc%02u %s\r\n"
+                      "console output: not filtered.\r\n", s->rack, s->bay,
+                      l1_designation(s));
+        } else if (!l1_select(s, argv[argc - 1]) ||
+                   (argc == 3 && !l1_word(argv[1], "subchannel", "sub") &&
+                    strcmp(argv[1], "s")) || argc > 3) {
+            l1_printf(s, "ERROR: bad subchanel selection.\r\n");
+        }
+    } else if (l1_word(argv[0], "display", "dsp")) {
+        if (argc == 1) {
+            l1_display_print(s);
+        } else if (argc >= 3 && rest && argv[1][1] == 0 &&
+                   (argv[1][0] == '1' || argv[1][0] == '2')) {
+            l1_display_set(s, argv[1][0] - '1', rest);
+        } else {
+            l1_invalid(s, "display");
+        }
+    } else if (!strcmp(argv[0], "log")) {
+        if (argc == 1) {
+            l1_log_print(s);
+        } else if (argc == 2 && (!strcmp(argv[1], "clear") ||
+                                 !strcmp(argv[1], "reset"))) {
+            s->log_head = s->log_len = 0;
+            l1_printf(s, "log reset.\r\n");
+        } else if (argc >= 3 && rest && !strcmp(argv[1], "insert")) {
+            l1_log(s, "%s", rest);
+            l1_printf(s, "log entry made.\r\n");
+        } else {
+            l1_invalid(s, "log");
+        }
+    } else if (!strcmp(argv[0], "brick")) {
+        unsigned long value = 0;
+
+        if (argc == 1) {
+            l1_printf(s, "rack: %03u, slot: %02u, partition: none, "
+                      "type: C (IP45) [1MB flash], serial: unavailable, "
+                      "source: EEPROM\r\n", s->rack, s->bay);
+        } else if (argc == 3 && !strcmp(argv[1], "slot") &&
+                   !qemu_strtoul(argv[2], NULL, 10, &value)) {
+            if (value < 1 || value > 39) {
+                l1_printf(s, "Invalid slot specified.  "
+                          "Valid slot numbers are 1-39.\r\n");
+            } else {
+                s->pending_bay = value;
+                l1_printf(s, "brick slot set to %02lu (takes effect on next "
+                          "L1 reboot/power cycle)\r\n", value);
+            }
+        } else if (argc == 3 && !strcmp(argv[1], "rack") &&
+                   !qemu_strtoul(argv[2], NULL, 10, &value) && value < 0x3ff) {
+            s->pending_rack = value;
+            l1_printf(s, "brick rack set to %03lu (takes effect on next "
+                      "L1 reboot/power cycle)\r\n", value);
+        } else {
+            l1_invalid(s, "brick");
+        }
+    } else if (l1_word(argv[0], "help", "hlp")) {
+        l1_printf(s, "Commands are:\r\n"
+                  "     brick        display      help|hlp     l1\r\n"
+                  "     log          nmi          power|pwr    reboot_l1\r\n"
+                  "     reset|rst    select|sel   softreset|softrst\r\n"
+                  "     version|ver\r\n"
+                  "enter 'hlp <cmd>' for more help on a single command.\r\n");
     } else {
-        l1_console_write(s, "command unavailable in protocol responder\r\n");
+        l1_printf(s, "ERROR: command not found.\r\n");
         qemu_log_mask(LOG_UNIMP, "sgi-l1: unsupported operator command\n");
     }
-    s->command_len = 0;
-    if (s->return_to_console) {
-        l1_enter_console(s, true);
+    if (own_prompt) {
+        return;
+    }
+    if (s->escaped && s->node_power) {
+        l1_mode_message(s, true);
     } else {
+        s->escaped = false;
         l1_prompt(s);
     }
 }
@@ -266,18 +602,25 @@ static void l1_console_receive(void *opaque, const uint8_t *buf, int size)
         if (s->console_mode) {
             if (byte == 0x14) {
                 s->console_mode = false;
-                s->return_to_console = true;
-                l1_console_write(s, "escaping to L1 system controller\r\n");
+                s->escaped = true;
+                l1_printf(s, "escaping to L1 system controller\r\n");
                 l1_prompt(s);
+            } else if (!s->node_power) {
+                /* Once per entry into console mode: a model choice. */
+                if (!s->warned_off) {
+                    s->warned_off = true;
+                    l1_printf(s, "WARNING: power appears off, "
+                              "console unavailable\r\n");
+                }
             } else {
-                uint8_t payload[] = { 4, byte };
+                uint8_t payload[] = { s->port_field & 0x1f, byte };
                 l1_emit(s, payload, sizeof(payload));
             }
         } else if (byte == 4) {
             s->command_len = 0;
-            l1_enter_console(s, false);
+            l1_mode_message(s, false);
         } else if (byte == '\r' || byte == '\n') {
-            l1_console_command(s);
+            l1_command(s);
         } else if (byte == 8 || byte == 0x7f) {
             if (s->command_len) {
                 s->command_len--;
@@ -293,11 +636,6 @@ static void l1_console_receive(void *opaque, const uint8_t *buf, int size)
 
 static void l1_console_event(void *opaque, QEMUChrEvent event)
 {
-    SGIL1State *s = opaque;
-
-    if (event == CHR_EVENT_OPENED && !s->console_mode) {
-        l1_prompt(s);
-    }
 }
 
 static bool l1_route(SGIL1State *s, uint32_t address)
@@ -343,8 +681,10 @@ static bool l1_task_command(uint32_t address, uint16_t command)
     case 6:
     case 0xe:
     case 0x1002:
+    case 0x1003:
     case 0x1004:
     case 0x1005:
+    case 0x1007:
         return true;
     default:
         return false;
@@ -364,8 +704,8 @@ static void l1_request(SGIL1State *s)
     uint8_t fields[15];
     unsigned field_count = 0, field_length = 0;
 
-    if ((p[0] & 0xe0) == 0x40 && channel == 4) {
-        if (s->console_mode) {
+    if ((p[0] & 0xe0) == 0x40 && channel <= 4) {
+        if (s->console_mode && s->node_power) {
             qemu_chr_fe_write_all(&s->chr, p + 1, length - 1);
         } else {
             qemu_log_mask(LOG_UNIMP,
@@ -418,6 +758,7 @@ static void l1_request(SGIL1State *s)
         field_length = 5;
         break;
     case 0x1002:
+    case 0x1007:
         if (count != 1) {
             error = -100;
             break;
@@ -426,7 +767,16 @@ static void l1_request(SGIL1State *s)
             error = -105;
             break;
         }
-        s->port_field = ((s->port_field & 0x60) | ldl_be_p(args + 1)) & 0x7f;
+        if (command == 0x1002) {
+            s->port_field = ((s->port_field & 0x60) | ldl_be_p(args + 1)) &
+                            0x7f;
+        } else {
+            s->event_subchannel = ldl_be_p(args + 1);
+            s->events_enabled = true;
+        }
+        break;
+    case 0x1003:
+        /* Volunteering the only node changes nothing visible. */
         break;
     case 0x1004:
     case 0x1005:
@@ -486,7 +836,7 @@ static void l1_request(SGIL1State *s)
             error = -100;
         } else if (!strcmp((const char *)args + 1, "* pwr d")) {
             l1_reply(s, channel, 0, 0, NULL, 0);
-            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+            l1_power_down(s, "COMMAND");
             return;
         } else {
             error = -101;
@@ -646,14 +996,7 @@ static const MemoryRegionOps l1_uart_ops = {
 
 static void l1_reset_enter(Object *obj, ResetType type)
 {
-    SGIL1State *s = SGI_L1(obj);
-
-    s->frame_len = 0;
-    s->in_frame = s->escape = s->overflow = false;
-    s->console_mode = s->return_to_console = false;
-    s->command_len = 0;
-    memset(s->display, 0, sizeof(s->display));
-    s->port_field = s->node_position << 5;
+    l1_boot(SGI_L1(obj));
 }
 
 static int l1_post_load(void *opaque, int version_id)
@@ -663,6 +1006,10 @@ static int l1_post_load(void *opaque, int version_id)
     if (s->command_len >= sizeof(s->command) ||
         s->frame_len > SGI_L1_FRAME_SIZE ||
         s->port_field > 0x7f ||
+        s->log_head >= SGI_L1_LOG_ENTRIES ||
+        s->log_len > SGI_L1_LOG_ENTRIES ||
+        s->rack >= 0x3ff || s->bay >= 0x3f ||
+        s->pending_rack >= 0x3ff || s->pending_bay >= 0x3f ||
         s->display[0][127] || s->display[1][127]) {
         return -EINVAL;
     }
@@ -671,6 +1018,10 @@ static int l1_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    for (unsigned i = 0; i < SGI_L1_LOG_ENTRIES; i++) {
+        s->log_text[i][SGI_L1_LOG_TEXT - 1] = 0;
+    }
+    qemu_set_irq(s->node_power_out, s->node_power);
     return 0;
 }
 
@@ -699,26 +1050,41 @@ static const VMStateDescription vmstate_l1_record = {
     },
 };
 
-/* Version 4 moved the UART window's registers and queue to their own device. */
+/* Version 5 added the lifecycle state: power, log, selection and settings. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
                              vmstate_l1_record, SGIL1EEPROM),
+        VMSTATE_BOOL(node_power, SGIL1State),
+        VMSTATE_BOOL(power_up_pending, SGIL1State),
         VMSTATE_BOOL(console_mode, SGIL1State),
-        VMSTATE_BOOL(return_to_console, SGIL1State),
+        VMSTATE_BOOL(escaped, SGIL1State),
+        VMSTATE_BOOL(warned_off, SGIL1State),
         VMSTATE_UINT8_ARRAY(command, SGIL1State, 128),
         VMSTATE_UINT32(command_len, SGIL1State),
+        VMSTATE_UINT32(rack, SGIL1State),
+        VMSTATE_UINT32(bay, SGIL1State),
+        VMSTATE_UINT32(pending_rack, SGIL1State),
+        VMSTATE_UINT32(pending_bay, SGIL1State),
+        VMSTATE_UINT8(port_field, SGIL1State),
+        VMSTATE_UINT8(event_subchannel, SGIL1State),
+        VMSTATE_BOOL(events_enabled, SGIL1State),
+        VMSTATE_INT64(clock_offset, SGIL1State),
+        VMSTATE_INT64_ARRAY(log_time, SGIL1State, SGI_L1_LOG_ENTRIES),
+        VMSTATE_UINT8_2DARRAY(log_text, SGIL1State, SGI_L1_LOG_ENTRIES,
+                              SGI_L1_LOG_TEXT),
+        VMSTATE_UINT32(log_head, SGIL1State),
+        VMSTATE_UINT32(log_len, SGIL1State),
         VMSTATE_UINT8_ARRAY(frame, SGIL1State, SGI_L1_FRAME_SIZE),
         VMSTATE_UINT32(frame_len, SGIL1State),
         VMSTATE_BOOL(in_frame, SGIL1State),
         VMSTATE_BOOL(escape, SGIL1State),
         VMSTATE_BOOL(overflow, SGIL1State),
         VMSTATE_UINT8_2DARRAY(display, SGIL1State, 2, 128),
-        VMSTATE_UINT8(port_field, SGIL1State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -776,9 +1142,21 @@ static void l1_realize(DeviceState *dev, Error **errp)
             record->data = (uint8_t *)data;
         }
     }
+    s->pending_rack = s->rack;
+    s->pending_bay = s->bay;
+    s->power_up_bh = qemu_bh_new(l1_power_up_bh, s);
+    qemu_register_reset(l1_after_node_reset, s);
     qemu_chr_fe_set_handlers(&s->chr, l1_console_can_receive,
                              l1_console_receive, l1_console_event, NULL,
                              s, NULL, true);
+    l1_boot(s);
+    if (s->auto_power) {
+        /* The real countdown is skipped: a model choice. */
+        l1_log(s, "auto power up initiated");
+        l1_printf(s, "INFO: %03uc%02u powering up the system.\r\n", s->rack,
+                  s->bay);
+        l1_power_up(s, "COMMAND", false);
+    }
 }
 
 static char *l1_display_get(Object *obj, Error **errp)
@@ -805,7 +1183,20 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("rack", SGIL1State, rack, 1),
     DEFINE_PROP_UINT32("bay", SGIL1State, bay, 1),
     DEFINE_PROP_UINT32("node-position", SGIL1State, node_position, 0),
+    DEFINE_PROP_BOOL("auto-power", SGIL1State, auto_power, true),
 };
+
+static void l1_init(Object *obj)
+{
+    SGIL1State *s = SGI_L1(obj);
+
+    qdev_init_gpio_out_named(DEVICE(obj), &s->node_power_out, "node-power", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->node_reset_out, "node-reset", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset_out, "soft-reset", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
+    object_property_add_uint8_ptr(obj, "event-subchannel", &s->event_subchannel,
+                                  OBJ_PROP_FLAG_READ);
+}
 
 static void l1_class_init(ObjectClass *klass, const void *data)
 {
@@ -816,6 +1207,7 @@ static void l1_class_init(ObjectClass *klass, const void *data)
     dc->realize = l1_realize;
     dc->vmsd = &vmstate_l1;
     dc->user_creatable = true;
+    dc->hotpluggable = false;
     device_class_set_props(dc, l1_properties);
     rc->phases.enter = l1_reset_enter;
     object_class_property_add_str(klass, "display-line-1", l1_display_first_get,
@@ -842,20 +1234,6 @@ static void l1_uart_reset_enter(Object *obj, ResetType type)
     u->thre_pending = false;
     memset(u->divisor, 0, sizeof(u->divisor));
     u->queue_head = u->queue_len = 0;
-}
-
-static ResettableChildForeach l1_uart_parent_child_foreach;
-
-/* The bus-less controller is reset as this window's child for now. */
-static void l1_uart_reset_child_foreach(Object *obj, ResettableChildCallback cb,
-                                        void *opaque, ResetType type)
-{
-    SGIL1UARTState *u = SGI_L1_UART(obj);
-
-    l1_uart_parent_child_foreach(obj, cb, opaque, type);
-    if (u->controller) {
-        cb(OBJECT(u->controller), opaque, type);
-    }
 }
 
 static void l1_uart_reset_hold(Object *obj, ResetType type)
@@ -943,8 +1321,6 @@ static void l1_uart_class_init(ObjectClass *klass, const void *data)
     dc->user_creatable = true;
     rc->phases.enter = l1_uart_reset_enter;
     rc->phases.hold = l1_uart_reset_hold;
-    l1_uart_parent_child_foreach = rc->child_foreach;
-    rc->child_foreach = l1_uart_reset_child_foreach;
 }
 
 static const TypeInfo l1_types[] = {
@@ -952,6 +1328,7 @@ static const TypeInfo l1_types[] = {
         .name = TYPE_SGI_L1,
         .parent = TYPE_DEVICE,
         .instance_size = sizeof(SGIL1State),
+        .instance_init = l1_init,
         .instance_finalize = l1_finalize,
         .class_init = l1_class_init,
     },

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Isolated L1 protocol checks; this fixture does not execute firmware. */
 #include "qemu/osdep.h"
+#include "qemu/cutils.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include <poll.h>
@@ -423,69 +424,546 @@ static void console_send(int fd, const char *text)
     g_assert_cmpint(write(fd, text, strlen(text)), ==, strlen(text));
 }
 
-static void test_console(void)
+static void assert_display(QTestState *s, const char *expected);
+static uint32_t node_position(QTestState *s, uint32_t address);
+
+#define ID "001c01"
+#define PROMPT ID "-L1> "
+#define ENTER_CPU0 \
+    "entering console mode  " ID " CPU0, <CTRL_T> to escape to L1\r\n"
+#define RETURN_CPU0 \
+    "returning to console mode  " ID " CPU0, <CTRL_T> to escape to L1\r\n"
+#define ESCAPE "escaping to L1 system controller\r\n" PROMPT
+#define POWERING "INFO: " ID " powering up the system.\r\n" PROMPT "\r\n"
+#define ENGAGED "L1 command processor engaged, <CTRL-D> to exit.\r\n" PROMPT
+#define OFF_WARNING "WARNING: power appears off, console unavailable\r\n"
+#define STAMP "09/07/26 00:00:00 "
+#define RTC "-rtc base=2026-09-07T00:00:00,clock=vm"
+
+static QTestState *console_start(int *fd, const char *props,
+                                 const char *extra)
 {
     int sv[2];
     QTestState *s;
-    uint8_t reply[129];
-    const uint8_t output[] = { 0x44, 'P', 'R', 'O', 'M' };
+
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    s = qtest_initf("-M none -cpu R10000 -S -chardev socket,id=console,fd=%d "
-                    "-device sgi-l1,id=l1c,chardev=console" UART, sv[1]);
+    s = qtest_initf("-M none -cpu R10000 -S %s "
+                    "-chardev socket,id=console,fd=%d "
+                    "-device sgi-l1,id=l1c,chardev=console%s" UART,
+                    extra, sv[1], props);
     close(sv[1]);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
-    console_expect(sv[0], "001c01-L1> ");
-    console_send(sv[0], "\004");
-    console_expect(sv[0], "entering console mode 001c01 console, "
-                          "<CTRL-T> to escape to L1\r\n");
+    *fd = sv[0];
+    return s;
+}
+
+static void console_frame(QTestState *s, uint8_t *reply, size_t expected)
+{
+    for (unsigned i = 0; !(qtest_readq(s, BASE + 0x28) & 1); i++) {
+        g_assert_cmpuint(i, <, 1000);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(receive(s, reply), ==, expected);
+}
+
+static const char *status(QTestState *s)
+{
+    static char text[32];
+    g_autoptr(QDict) reply = qtest_qmp(s, "{'execute':'query-status'}");
+    pstrcpy(text, sizeof(text),
+            qdict_get_str(qdict_get_qdict(reply, "return"), "status"));
+    return text;
+}
+
+static void wait_running(QTestState *s)
+{
+    for (unsigned i = 0; strcmp(status(s), "running"); i++) {
+        g_assert_cmpuint(i, <, 3000);
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+}
+
+static void test_console(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "");
+    uint8_t reply[129];
+    const uint8_t output[] = { 0x44, 'P', 'R', 'O', 'M' };
+
+    console_expect(fd, POWERING ENTER_CPU0);
     send_frame(s, output, sizeof(output), false);
-    console_expect(sv[0], "PROM");
+    console_expect(fd, "PROM");
     g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
-    console_send(sv[0], "x");
-    for (unsigned i = 0; !(qtest_readq(s, BASE + 0x28) & 1); i++) {
-        g_assert_cmpuint(i, <, 1000);
-        g_usleep(1000);
-    }
-    g_assert_cmpuint(receive(s, reply), ==, 2);
-    g_assert_cmphex(reply[0], ==, 4);
+    console_send(fd, "x");
+    console_frame(s, reply, 2);
+    g_assert_cmphex(reply[0], ==, 0);
     g_assert_cmphex(reply[1], ==, 'x');
-    console_send(sv[0], "\024");
-    console_expect(sv[0], "escaping to L1 system controller\r\n001c01-L1> ");
-    console_send(sv[0], "version\r");
-    console_expect(sv[0], "L1 protocol responder; "
-                          "firmware revision unavailable\r\n"
-                          "re-entering console mode 001c01 console, "
-                          "<CTRL-T> to escape to L1\r\n");
-    console_send(sv[0], "\004");
-    for (unsigned i = 0; !(qtest_readq(s, BASE + 0x28) & 1); i++) {
-        g_assert_cmpuint(i, <, 1000);
-        g_usleep(1000);
-    }
-    g_assert_cmpuint(receive(s, reply), ==, 2);
+    console_send(fd, "\024");
+    console_expect(fd, ESCAPE);
+    console_send(fd, "version\r");
+    console_expect(fd, "L1 protocol responder; "
+                       "firmware revision unavailable\r\n" RETURN_CPU0);
+    console_send(fd, "\004");
+    console_frame(s, reply, 2);
+    g_assert_cmphex(reply[0], ==, 0);
     g_assert_cmphex(reply[1], ==, 4);
-    console_send(sv[0], "\024l1\r");
-    console_expect(sv[0], "escaping to L1 system controller\r\n001c01-L1> "
-                          "001c01-L1> ");
-    console_send(sv[0], "\004");
-    console_expect(sv[0], "entering console mode 001c01 console, "
-                          "<CTRL-T> to escape to L1\r\n");
+    console_send(fd, "\024l1\r");
+    console_expect(fd, ESCAPE ENGAGED);
+    console_send(fd, "bogus\r");
+    console_expect(fd, "ERROR: command not found.\r\n" PROMPT);
+    console_send(fd, "\004");
+    console_expect(fd, ENTER_CPU0);
+    console_send(fd, "\024bogus\r");
+    console_expect(fd, ESCAPE "ERROR: command not found.\r\n" RETURN_CPU0);
     qtest_quit(s);
-    close(sv[0]);
+    close(fd);
+}
+
+static void test_fresh_off(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",auto-power=off", RTC);
+
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    console_send(fd, "display\r");
+    console_expect(fd, "revision: 2.0\r\n"
+                       "line 1: \"" ID "     /\"\r\n"
+                       "line 2: \"L1 running  \"\r\n"
+                       "leds:  PWR=off   SERVICE=off     FAULT=off\r\n" PROMPT);
+    console_send(fd, "power check\r");
+    console_expect(fd, "power appears off\r\n" PROMPT);
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n" PROMPT);
+    console_send(fd, "\004");
+    console_expect(fd, ENTER_CPU0);
+    console_send(fd, "x");
+    console_expect(fd, OFF_WARNING);
+    console_send(fd, "y");
+    g_usleep(20000);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    console_send(fd, "\024power up\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    assert_display(s, "Powered Up");
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "power up (COMMAND)\r\n" RETURN_CPU0);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_power(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    assert_display(s, "Powered Up");
+    console_send(fd, "\024power check\r");
+    console_expect(fd, ESCAPE "power appears on\r\n" RETURN_CPU0);
+    console_send(fd, "\024power up\r");
+    console_expect(fd, ESCAPE "Power is already on\r\n" RETURN_CPU0);
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    /* A machine that never ran stays in prelaunch; a running one stops. */
+    g_assert_cmpstr(status(s), !=, "running");
+    assert_display(s, "Powered Down");
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "power down (COMMAND)\r\n" PROMPT);
+    console_send(fd, "power check\r");
+    console_expect(fd, "power appears off\r\n" PROMPT);
+    console_send(fd, "power up\r");
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    assert_display(s, "Powered Up");
+    qtest_quit(s);
+    close(fd);
 }
 
 static void test_poweroff(void)
 {
-    QTestState *s = qtest_init("-M none -cpu R10000 -S -no-shutdown "
-                              "-device sgi-l1,id=l1c" UART);
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 0, 1,
                                 1, '*', ' ', 'p', 'w', 'r', ' ', 'd', 0 };
     uint8_t reply[129];
-    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+
+    console_expect(fd, POWERING ENTER_CPU0);
     send_frame(s, request, sizeof(request), false);
     qtest_qmp_eventwait(s, "SHUTDOWN");
     g_assert_cmpuint(receive(s, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0);
+    assert_display(s, "Powered Down");
+    console_send(fd, "\024power check\r");
+    console_expect(fd, ESCAPE "power appears off\r\n" PROMPT);
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "power down (COMMAND)\r\n" PROMPT);
     qtest_quit(s);
+    close(fd);
+}
+
+static void test_node_reset(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", RTC);
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    qtest_irq_intercept_out_named(s, L1, "node-reset");
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
+    qtest_writeq(s, BASE + 0x18, 3);
+    console_send(fd, "\024reset\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 0);
+    assert_display(s, "Reset done");
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "reset (COMMAND)\r\n" RETURN_CPU0);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_signals_off(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",auto-power=off", RTC);
+
+    qtest_irq_intercept_out_named(s, L1, "nmi");
+    console_send(fd, "nmi\r");
+    console_expect(fd, PROMPT);
+    console_send(fd, "softreset\r");
+    console_expect(fd, PROMPT);
+    console_send(fd, "reset\r");
+    console_expect(fd, PROMPT);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
+    assert_display(s, "L1 running");
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n" PROMPT);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_node_power_line(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
+    uint8_t select[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
+                         0, 0, 0, 0, 4 };
+    uint8_t reply[129];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    qtest_irq_intercept_out_named(s, L1, "node-power");
+    send_frame(s, select, sizeof(select), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    g_assert_false(qtest_get_irq(s, 0));
+    console_send(fd, "power up\r");
+    /* The selection returns to CPU 0 with the power. */
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    g_assert_true(qtest_get_irq(s, 0));
+    wait_running(s);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_version_metadata(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",revision-major=1,revision-minor=44,"
+                                  "revision-patch=0", RTC);
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024version\r");
+    console_expect(fd, ESCAPE "L1 1.44.0 (Image A) [Fuel/PE/O300 1MB image]\r\n"
+                       RETURN_CPU0);
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting 1.44.0\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n" RETURN_CPU0);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_log_capacity(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",auto-power=off", RTC);
+    g_autofree char *expected = NULL;
+    GString *text = g_string_new(NULL);
+
+    /* 128 entries fit; the 129th drops the oldest, the boot line. */
+    for (unsigned i = 1; i <= 128; i++) {
+        g_autofree char *command = g_strdup_printf("log insert e%u\r", i);
+        console_send(fd, command);
+        console_expect(fd, "log entry made.\r\n" PROMPT);
+    }
+    for (unsigned i = 1; i <= 128; i++) {
+        g_string_append_printf(text, STAMP "e%u\r\n", i);
+    }
+    g_string_append(text, PROMPT);
+    expected = g_string_free(text, FALSE);
+    console_send(fd, "log\r");
+    console_expect(fd, expected);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_signals(void)
+{
+    static const struct {
+        const char *command, *line, *display, *log;
+    } cases[] = {
+        { "softreset", "soft-reset", "Sft rst done", "soft reset (COMMAND)" },
+        { "nmi", "nmi", "NMI done", "NMI (COMMAND)" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        int fd;
+        QTestState *s = console_start(&fd, "", RTC);
+        g_autofree char *command = g_strdup_printf("\024%s\r",
+                                                   cases[i].command);
+        g_autofree char *log = g_strdup_printf(
+            ESCAPE STAMP "L1 booting\r\n" STAMP "auto power up initiated\r\n"
+            STAMP "power up (COMMAND)\r\n" STAMP "%s\r\n" RETURN_CPU0,
+            cases[i].log);
+
+        console_expect(fd, POWERING ENTER_CPU0);
+        qtest_irq_intercept_out_named(s, L1, cases[i].line);
+        console_send(fd, command);
+        console_expect(fd, ESCAPE RETURN_CPU0);
+        g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+        g_assert_false(qtest_get_irq(s, 0));
+        assert_display(s, cases[i].display);
+        console_send(fd, "\024log\r");
+        console_expect(fd, log);
+        qtest_quit(s);
+        close(fd);
+    }
+}
+
+static void test_reboot_l1(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", RTC);
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024brick slot 02\r");
+    console_expect(fd, ESCAPE "brick slot set to 02 "
+                       "(takes effect on next L1 reboot/power cycle)\r\n"
+                       RETURN_CPU0);
+    console_send(fd, "\024brick slot 40\r");
+    console_expect(fd, ESCAPE "Invalid slot specified.  "
+                       "Valid slot numbers are 1-39.\r\n" RETURN_CPU0);
+    console_send(fd, "\024reboot_l1\r");
+    console_expect(fd, ESCAPE);
+    console_send(fd, "\r");
+    console_expect(fd, "001c02-L1> ");
+    g_assert_cmpstr(status(s), ==, "prelaunch");
+    console_send(fd, "display\r");
+    console_expect(fd, "revision: 2.0\r\n"
+                       "line 1: \"001c02     /\"\r\n"
+                       "line 2: \"L1 running  \"\r\n"
+                       "leds:  PWR=on    SERVICE=off     FAULT=off\r\n"
+                       "001c02-L1> ");
+    console_send(fd, "power check\r");
+    console_expect(fd, "power appears on\r\n001c02-L1> ");
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "L1 booting\r\n" "001c02-L1> ");
+    console_send(fd, "\004");
+    console_expect(fd, "entering console mode  001c02 CPU0, "
+                       "<CTRL_T> to escape to L1\r\n");
+    qtest_quit(s);
+    close(fd);
+
+    /* An event subchannel of 4 or more is non-volatile; a lower one is not. */
+    for (unsigned subchannel = 1; subchannel <= 23; subchannel += 22) {
+        uint8_t events[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x07, 1,
+                             0, 0, 0, 0, subchannel };
+        uint8_t reply[129];
+        g_autoptr(QDict) result = NULL;
+
+        s = console_start(&fd, "", "");
+        console_expect(fd, POWERING ENTER_CPU0);
+        send_frame(s, events, sizeof(events), false);
+        g_assert_cmpuint(receive(s, reply), ==, 6);
+        console_send(fd, "\024reboot_l1\r");
+        console_expect(fd, ESCAPE);
+        console_send(fd, "\r");
+        console_expect(fd, PROMPT);
+        result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                              "{'path':%s,'property':'event-subchannel'}}", L1);
+        g_assert_cmpint(qdict_get_int(result, "return"), ==,
+                        subchannel >= 4 ? subchannel : 0);
+        qtest_quit(s);
+        close(fd);
+    }
+}
+
+static void test_selection(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "");
+    uint8_t select[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
+                         0, 0, 0, 0, 4 };
+    const uint8_t volunteer[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x03 };
+    const uint8_t events[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x07, 1,
+                               0, 0, 0, 0, 23 };
+    uint8_t reply[129];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024select\r");
+    console_expect(fd, ESCAPE "console input: " ID " CPU0\r\n"
+                       "console output: not filtered.\r\n" RETURN_CPU0);
+    send_frame(s, select, sizeof(select), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    console_send(fd, "x");
+    console_frame(s, reply, 2);
+    g_assert_cmphex(reply[0], ==, 4);
+    console_send(fd, "\024select\r");
+    console_expect(fd, ESCAPE "console input: " ID " console\r\n"
+                       "console output: not filtered.\r\n"
+                       "returning to console mode  " ID " console, "
+                       "<CTRL_T> to escape to L1\r\n");
+    send_frame(s, volunteer, sizeof(volunteer), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    send_frame(s, events, sizeof(events), false);
+    g_assert_cmpuint(receive(s, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    console_send(fd, "\024select subchannel 1\r");
+    console_expect(fd, ESCAPE "returning to console mode  " ID " CPU1, "
+                       "<CTRL_T> to escape to L1\r\n");
+    console_send(fd, "\024select subchannel 9\r");
+    console_expect(fd, ESCAPE "ERROR: bad subchanel selection.\r\n"
+                       "returning to console mode  " ID " CPU1, "
+                       "<CTRL_T> to escape to L1\r\n");
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 0);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_display_command(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024display 2 hello\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    assert_display(s, "hello");
+    console_send(fd, "\024display\r");
+    console_expect(fd, ESCAPE "revision: 2.0\r\n"
+                       "line 1: \"" ID "     /\"\r\n"
+                       "line 2: \"hello       \"\r\n"
+                       "leds:  PWR=on    SERVICE=off     FAULT=off\r\n"
+                       RETURN_CPU0);
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    assert_display(s, "Powered Down");
+    console_send(fd, "display 2 again\r");
+    console_expect(fd, PROMPT);
+    assert_display(s, "again");
+    console_send(fd, "power up\r");
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    assert_display(s, "Powered Up");
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_lifecycle_persistence(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", RTC);
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
+    uint8_t reply[129];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024display 2 kept\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
+    /* A node reset clears the window and nothing the controller keeps. */
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    assert_display(s, "kept");
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n" RETURN_CPU0);
+    send_frame(s, request, sizeof(request), false);
+    g_assert_cmpuint(receive(s, reply), ==, 16);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_lifecycle_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-lifecycle-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    int from_fd, to_fd;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = console_start(&from_fd, "", RTC);
+    to = console_start(&to_fd, ",auto-power=off", "-incoming defer " RTC);
+    console_expect(from_fd, POWERING ENTER_CPU0);
+    console_send(from_fd, "\024brick slot 02\r");
+    console_expect(from_fd, ESCAPE "brick slot set to 02 "
+                            "(takes effect on next L1 reboot/power cycle)\r\n"
+                            RETURN_CPU0);
+    console_send(from_fd, "\024display 2 moved\r");
+    console_expect(from_fd, ESCAPE RETURN_CPU0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_migration(from);
+    assert_display(to, "moved");
+    console_send(to_fd, "\024log\r");
+    console_expect(to_fd, ESCAPE STAMP "L1 booting\r\n"
+                          STAMP "auto power up initiated\r\n"
+                          STAMP "power up (COMMAND)\r\n" RETURN_CPU0);
+    console_send(to_fd, "\024reboot_l1\r");
+    console_expect(to_fd, ESCAPE);
+    console_send(to_fd, "\r");
+    console_expect(to_fd, "001c02-L1> ");
+    qtest_quit(from);
+    qtest_quit(to);
+    close(from_fd);
+    close(to_fd);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 static void set_destination(uint8_t *request, uint32_t address)
@@ -603,7 +1081,8 @@ static void test_task_commands(void)
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x9b);
-    assert_display(s, "");
+    /* Rejected on the I/O view, so the L1's own line stays. */
+    assert_display(s, "Powered Up");
     request[1] = 0x0f;
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
@@ -802,6 +1281,7 @@ static void console_select(QTestState *s, uint32_t argument, int32_t code)
 static void test_node_position(void)
 {
     QTestState *s = start();
+    int fd;
     uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0x0e, 0 };
     const uint8_t wire[] = { 0x7e, 0x30, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
                              0x30, 0x98, 0x7e };
@@ -861,8 +1341,9 @@ static void test_node_position(void)
         g_assert_cmphex(reply[4], ==, 0x9b);
     }
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    /* A node reset does not reach the controller; a controller restart does. */
     qtest_system_reset(s);
-    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
     qtest_quit(s);
 
     s = qtest_init("-M none -cpu R10000 -S "
@@ -875,10 +1356,22 @@ static void test_node_position(void)
     console_select(s, 0x20, 0);
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 3);
     qtest_system_reset(s);
-    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
-    console_select(s, 0x20, 0);
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 3);
     qtest_quit(s);
+
+    s = console_start(&fd, ",node-position=2", "");
+    console_expect(fd, POWERING "entering console mode  " ID " CPU0, "
+                       "<CTRL_T> to escape to L1\r\n");
+    console_select(s, 0x20, 0);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 3);
+    console_send(fd, "\024reboot_l1\r");
+    console_expect(fd, ESCAPE);
+    /* The prompt proves the restart ran before the next frame is sent. */
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
+    qtest_quit(s);
+    close(fd);
 }
 
 static void test_node_position_range(void)
@@ -967,6 +1460,19 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console", test_console);
     qtest_add_func("sn1/l1/metadata", test_metadata);
     qtest_add_func("sn1/l1/poweroff", test_poweroff);
+    qtest_add_func("sn1/l1/fresh-off", test_fresh_off);
+    qtest_add_func("sn1/l1/power", test_power);
+    qtest_add_func("sn1/l1/node-reset", test_node_reset);
+    qtest_add_func("sn1/l1/signals", test_signals);
+    qtest_add_func("sn1/l1/signals-off", test_signals_off);
+    qtest_add_func("sn1/l1/node-power-line", test_node_power_line);
+    qtest_add_func("sn1/l1/version-metadata", test_version_metadata);
+    qtest_add_func("sn1/l1/log-capacity", test_log_capacity);
+    qtest_add_func("sn1/l1/reboot-l1", test_reboot_l1);
+    qtest_add_func("sn1/l1/selection", test_selection);
+    qtest_add_func("sn1/l1/display-command", test_display_command);
+    qtest_add_func("sn1/l1/lifecycle-persistence", test_lifecycle_persistence);
+    qtest_add_func("sn1/l1/lifecycle-migration", test_lifecycle_migration);
     qtest_add_func("sn1/l1/route-forms", test_route_forms);
     qtest_add_func("sn1/l1/route-rejection", test_route_rejection);
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
