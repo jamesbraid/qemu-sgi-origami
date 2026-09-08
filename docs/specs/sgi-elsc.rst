@@ -234,6 +234,16 @@ boundary. A stream migrated in this window is handled the same way -- a
 committed action is re-armed on load only once its frame was consumed
 (txlen zero); one still open waits for the destination's boundary.
 
+Where an Origin 2000 module complex owns this controller, the module
+decides what a reset or a power-off actually reaches, and it is asked
+before the command is answered rather than after. A command the module
+cannot carry out is answered ``err cmd``. The ``ok`` is the caller's
+proof that the action happened -- it will not fall back to its own
+hardware reset afterwards -- so acknowledging an action that will not
+happen is a lie with nothing in the protocol to expose it. With no module
+owner, which is the Origin 200, the controller is the whole module and
+answers for itself exactly as it always did.
+
 A destructive command that arrives while another is already *committed*
 cannot change it: the committed action wins and fires. The new command
 still answers ``ok``, deliberately -- refusing would make the IRIX caller
@@ -381,6 +391,15 @@ bus traces from a real machine. When the bus is busy with a real transaction the
 rotation defers by short retry rather than through the I2C core's
 pending-master queue, because the PCF8584 model drives transactions
 directly and never calls ``i2c_bus_release()``.
+
+The rotation is this model's synthesis of a mechanism the Origin 200
+midplane provides some other way, so the ``arbitration`` property (on by
+default) switches it off. An Origin 2000 module needs that: its grants
+are real address-only bus traffic published by the module controller
+itself, onto a bus whose participants the I2C core identifies -- and the
+broadcast drives the core's anonymous transfer calls, which assert that no
+participant ids are configured. Left on, the rotation would abort such a
+machine rather than quietly do the wrong thing.
 
 AUX serial port
 ===============

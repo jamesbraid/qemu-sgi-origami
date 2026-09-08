@@ -78,6 +78,40 @@ static const char *elsc_action_name(uint8_t action)
 }
 
 /*
+ * The module hooks. Each is optional, and with no module installed the
+ * answers are the Origin 200's: this controller is the whole module, so it
+ * can carry out its own actions and there is nobody to report the rest to.
+ */
+static bool elsc_module_can_execute(SGIElscState *s, SGIElscAction action)
+{
+    if (!s->module_ops || !s->module_ops->can_execute) {
+        return true;
+    }
+    return s->module_ops->can_execute(s->module_opaque, action);
+}
+
+static void elsc_module_slave_active(SGIElscState *s, bool active)
+{
+    if (s->module_ops && s->module_ops->slave_active) {
+        s->module_ops->slave_active(s->module_opaque, active);
+    }
+}
+
+static void elsc_module_console_owner(SGIElscState *s, unsigned processor)
+{
+    if (s->module_ops && s->module_ops->console_owner) {
+        s->module_ops->console_owner(s->module_opaque, processor);
+    }
+}
+
+static void elsc_module_console_input(SGIElscState *s, bool pending)
+{
+    if (s->module_ops && s->module_ops->console_input) {
+        s->module_ops->console_input(s->module_opaque, pending);
+    }
+}
+
+/*
  * "get": firmware checks four of the six header bytes and copies from byte
  * six, so the shape must be exact; the selector is always "0".
  */
@@ -94,6 +128,9 @@ static void elsc_handle_get(SGIElscState *s)
 
     memmove(s->rx_queue, &s->rx_queue[n], s->rx_queue_len - n);
     s->rx_queue_len -= n;
+    if (before && !s->rx_queue_len) {
+        elsc_module_console_input(s, false);
+    }
     trace_sgi_elsc_get(before, s->rx_queue_len, n);
     if (n) {
         trace_sgi_elsc_rx_dequeue(n, s->rx_queue_len);
@@ -144,6 +181,14 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
 
     snprintf(resp, sizeof(resp), "ok %x", n);
     elsc_frame_response_str(s, resp);
+    /*
+     * Writing console output claims the module's one alternate console: the
+     * module's automatic input selection follows the processor that most
+     * recently sent output to it.
+     */
+    if (n > 0 && s->resp_owner >= 0) {
+        elsc_module_console_owner(s, (unsigned)s->resp_owner);
+    }
 }
 
 /* "pas": supervisor gate; the factory default password is "none". */
@@ -298,6 +343,10 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             elsc_frame_response_str(s, "err perm");
             return;
         }
+        if (!elsc_module_can_execute(s, ELSC_ACTION_SHUTDOWN)) {
+            elsc_frame_response_str(s, "err cmd");
+            return;
+        }
         elsc_frame_response_str(s, "ok");
         /*
          * Arm only if nothing is committed yet. A committed action is past
@@ -334,6 +383,10 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         }
         if (!s->supervisor) {
             elsc_frame_response_str(s, "err perm");
+            return;
+        }
+        if (!elsc_module_can_execute(s, ELSC_ACTION_CYCLE)) {
+            elsc_frame_response_str(s, "err cmd");
             return;
         }
         elsc_frame_response_str(s, "ok");
@@ -636,6 +689,17 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
             elsc_frame_response_str(s, "err perm");
             return;
         }
+        /*
+         * A module owner decides what a reset reaches, and it is asked
+         * before the acknowledgement is framed rather than after. Answering
+         * "ok" for an action that will not happen is undetectable to the
+         * caller, which takes the "ok" as proof and will not fall back to
+         * its own hardware reset; "err cmd" leaves it that fallback.
+         */
+        if (!elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
+            elsc_frame_response_str(s, "err cmd");
+            return;
+        }
         elsc_frame_response_str(s, "ok");
         /*
          * Arm only if nothing is committed yet. A committed action is past
@@ -741,24 +805,33 @@ static void elsc_deferred_action_bh(void *opaque)
      * three leave this controller matched (the NACK-without-STOP path never
      * ended the transfer) and none of them ends it themselves, so a survived
      * shutdown wedges the bus exactly as a reset would.
+     *
+     * Which call releases it depends on the bus. i2c_end_transfer() is the
+     * anonymous path and asserts that no participant ids are configured, so
+     * a shared module bus needs its owning master named instead. Neither is
+     * called on an idle bus: there is nothing matched to release, and no
+     * owner is resolved between a stop and the next start.
      */
-    i2c_end_transfer(s->bus);
+    if (i2c_bus_busy(s->bus)) {
+        if (s->bus->master_count) {
+            i2c_master_end_transfer(s->bus, s->bus->owner);
+        } else {
+            i2c_end_transfer(s->bus);
+        }
+    }
 
     switch (action) {
     case ELSC_ACTION_CYCLE:
         /*
          * A power-cycle is a cold restart, so re-arm the cold-power latch
          * for the post-reset "pwr q". elsc_reset_hold leaves the latch alone
-         * (a warm "rst" must not re-arm it), so setting it here, just before
-         * the reset, carries it through. Then fall through to the reset.
+         * (a warm "rst" must not re-arm it), so setting it here, before the
+         * action fires, carries it through whoever carries it out.
          */
         s->cold_power_on = true;
-        /* fall through */
-    case ELSC_ACTION_RESET:
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         break;
+    case ELSC_ACTION_RESET:
     case ELSC_ACTION_SHUTDOWN:
-        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
         break;
     default:
         /*
@@ -766,6 +839,22 @@ static void elsc_deferred_action_bh(void *opaque)
          * any other value, so reaching here is a model bug.
          */
         g_assert_not_reached();
+    }
+
+    /*
+     * A module owner decides what the action reaches -- the datasheet's
+     * reset is module-scoped, and only the single-module Origin 200 can
+     * read that as the whole machine.
+     */
+    if (s->module_ops && s->module_ops->execute) {
+        s->module_ops->execute(s->module_opaque, action);
+        return;
+    }
+
+    if (action == ELSC_ACTION_SHUTDOWN) {
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+    } else {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     }
 }
 
@@ -844,11 +933,13 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
      */
     switch (event) {
     case I2C_START_SEND:
+        elsc_module_slave_active(s, true);
         /* A new request is arriving; its START is one such boundary. */
         elsc_fire_committed_action(s);
         s->rxlen = 0;
         break;
     case I2C_START_RECV:
+        elsc_module_slave_active(s, true);
         /*
          * Direction switch: the request just written is complete. A committed
          * action is not canceled here, so schedule it -- this covers a
@@ -870,6 +961,7 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         elsc_fire_committed_action(s);
         break;
     case I2C_FINISH:
+        elsc_module_slave_active(s, false);
         s->rxlen = 0;
         /*
          * An unconsumed response stays pending for its requester --
@@ -1159,6 +1251,7 @@ static void elsc_receive(void *opaque, const uint8_t *buf, int size)
 {
     SGIElscState *s = opaque;
     bool diagnostic = unlikely(s->diagnostic);
+    bool was_pending = s->rx_queue_len > 0;
     int i;
 
     for (i = 0; i < size; i++) {
@@ -1195,6 +1288,10 @@ static void elsc_receive(void *opaque, const uint8_t *buf, int size)
                           "dropped\n");
         }
     }
+
+    if (!was_pending && s->rx_queue_len) {
+        elsc_module_console_input(s, true);
+    }
 }
 
 static int elsc_can_receive(void *opaque)
@@ -1230,6 +1327,19 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->tas_lock = 0;
     /* The power-on content is unstated; blank spaces are a model choice. */
     memset(s->display, ' ', sizeof(s->display));
+
+    /* Tell the module what reset just made true of this controller. */
+    elsc_module_slave_active(s, false);
+    elsc_module_console_input(s, false);
+}
+
+void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
+                             void *opaque)
+{
+    /* Wiring, not runtime state: reset and the bus already run off it. */
+    assert(!DEVICE(s)->realized);
+    s->module_ops = ops;
+    s->module_opaque = opaque;
 }
 
 static void elsc_realize(DeviceState *dev, Error **errp)
@@ -1244,8 +1354,14 @@ static void elsc_realize(DeviceState *dev, Error **errp)
      * does, which realize models. A migrated stream overwrites it on load.
      */
     s->cold_power_on = true;
+    /*
+     * The timer exists either way so that unrealize and the migration
+     * stream keep one shape; only starting it makes the rotation run.
+     */
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
-    timer_mod(s->arb_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
+    if (s->arbitration) {
+        timer_mod(s->arb_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
+    }
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -1376,6 +1492,13 @@ static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_UINT32("num-cpus", SGIElscState, num_cpus, 1),
     DEFINE_PROP_UINT32("cpu-base", SGIElscState, cpu_base, 0),
     DEFINE_PROP_UINT8("dip-switches", SGIElscState, dip_switches, 0),
+    /*
+     * The synthesized arbitration rotation, on by default. An Origin 2000
+     * module publishes real address-only grants from its module controller,
+     * onto a bus with identified participants, which the broadcast's own
+     * anonymous transfer calls assert against, so a module switches it off.
+     */
+    DEFINE_PROP_BOOL("arbitration", SGIElscState, arbitration, true),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
 
@@ -1392,6 +1515,7 @@ static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, sgi_elsc_properties);
     rc->phases.hold = elsc_reset_hold;
 
+    sc->supports_master_ids = true;
     sc->event = elsc_event;
     sc->send = elsc_send;
     sc->recv = elsc_recv;

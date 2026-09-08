@@ -40,17 +40,49 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
  * power-cycles (a reset that also re-arms the cold-power latch) and "pwr d"
  * shuts down.
  */
-enum {
-    ELSC_ACTION_NONE = 0,
-    ELSC_ACTION_RESET,
-    ELSC_ACTION_CYCLE,
-    ELSC_ACTION_SHUTDOWN,
-};
+typedef enum SGIElscAction {
+    SGI_ELSC_ACTION_NONE = 0,
+    SGI_ELSC_ACTION_RESET,
+    SGI_ELSC_ACTION_CYCLE,
+    SGI_ELSC_ACTION_SHUTDOWN,
+} SGIElscAction;
+
+/* The unprefixed spellings the model and its migration state are written in. */
+#define ELSC_ACTION_NONE     SGI_ELSC_ACTION_NONE
+#define ELSC_ACTION_RESET    SGI_ELSC_ACTION_RESET
+#define ELSC_ACTION_CYCLE    SGI_ELSC_ACTION_CYCLE
+#define ELSC_ACTION_SHUTDOWN SGI_ELSC_ACTION_SHUTDOWN
+
+/*
+ * An Origin 2000 module complex owns what is module-scoped rather than
+ * node-scoped here: what a reset or a power-off actually reaches, when this
+ * controller occupies the shared bus, and which processor the module's one
+ * alternate console belongs to. It installs these before realize
+ * (sgi_elsc_set_module_ops). Every member is optional, and with none
+ * installed the controller answers for its own module, which is what the
+ * single-module Origin 200 needs.
+ */
+typedef struct SGIElscModuleOps {
+    /* True when the module can actually carry the action out. */
+    bool (*can_execute)(void *opaque, SGIElscAction action);
+    /* Carry it out. Only called after can_execute() returned true. */
+    void (*execute)(void *opaque, SGIElscAction action);
+    /* This controller is being addressed as a target, or has finished. */
+    void (*slave_active)(void *opaque, bool active);
+    /* The processor that most recently sent console output. */
+    void (*console_owner)(void *opaque, unsigned processor);
+    /* Queued alternate-console input is or is not waiting. */
+    void (*console_input)(void *opaque, bool pending);
+} SGIElscModuleOps;
 
 struct SGIElscState {
     I2CSlave parent_obj;
     DeviceDiagnosticSink *diagnostic;
     bool diagnostic_arbitration_broadcast;
+
+    /* The module owner, or NULL where this controller is the whole module. */
+    const SGIElscModuleOps *module_ops;
+    void *module_opaque;
 
     /*
      * The request, one byte per I2C send; sized one over the legal maximum
@@ -77,6 +109,12 @@ struct SGIElscState {
      */
     I2CBus *bus;
     QEMUTimer *arb_timer;
+    /*
+     * Whether the rotation runs at all. An Origin 2000 module's grants are
+     * real address-only traffic from its module controller, so the
+     * synthesized broadcast is switched off there.
+     */
+    bool arbitration;
     /*
      * Hub-supplied and currently inert: the rotation always covers all
      * eight codes and only code 0 has a real input queue.
@@ -161,5 +199,9 @@ struct SGIElscState {
     /* Warn once per dark-console boot, not once per dropped flush. */
     bool aux_no_backend_warned;
 };
+
+/* Install the module owner. Wiring, so it must precede realize. */
+void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
+                             void *opaque);
 
 #endif /* HW_MISC_SGI_ELSC_H */
