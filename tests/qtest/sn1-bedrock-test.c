@@ -168,9 +168,10 @@ static void test_parent_l1_protection(void)
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0x98), ==, 0);
     g_assert_cmphex(qtest_readq(s, REMOTE_BASE + 0xb8), ==, 0);
+    /* The node's reset does not reach the L1, which keeps its display. */
     result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
                          "{'path':%s,'property':'display-line-2'}}", L1_PATH);
-    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "");
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, "b");
     qtest_quit(s);
 }
 
