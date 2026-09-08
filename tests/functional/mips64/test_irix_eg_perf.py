@@ -506,14 +506,39 @@ if base.QemuSystemTest is not None:
                             copies.append({"host_cksum": host_crc,
                                            "host_bytes": host_bytes})
 
+                        # Keep the timed legs on ttcp's sink path so they are
+                        # comparable to the retained measurements. Run the
+                        # byte-checked copies separately below: writing each
+                        # timed stream to the guest disk measures that disk as
+                        # well as the adapter.
+                        con.send(
+                            "ttcp -r -s -p %d -l 65536 "
+                            ">/dev/null 2>&1 &" % (TCP_GUEST_PORT + 1))
+                        time.sleep(3)
+                        single, single_rate_sent = _parallel_send(
+                            ports[:1], payloads[:1])
+                        con.run("wait", "parsinglerate",
+                                timeout=LEG_TIMEOUT_SECONDS)
+
+                        for i in range(PARALLEL):
+                            con.send(
+                                "ttcp -r -s -p %d -l 65536 "
+                                ">/dev/null 2>&1 &" %
+                                (TCP_GUEST_PORT + 1 + i))
+                        time.sleep(3)
+                        aggregate, stream_rate_sent = _parallel_send(
+                            ports, payloads[1:])
+                        con.run("wait", "paraggregaterate",
+                                timeout=LEG_TIMEOUT_SECONDS)
+
                         con.send(
                             "ttcp -r -p %d -l 65536 "
                             ">/tmp/eg-par-single.bin 2>/dev/null &" %
                             (TCP_GUEST_PORT + 1))
                         time.sleep(3)
-                        single, sent = _parallel_send(
+                        _, single_copy_sent = _parallel_send(
                             ports[:1], payloads[:1])
-                        con.run("wait", "parsingle",
+                        con.run("wait", "parsinglecopy",
                                 timeout=LEG_TIMEOUT_SECONDS)
                         gcrc, gbytes = con.two_values(
                             "dd if=/tmp/eg-par-single.bin bs=8192 count=%d "
@@ -523,7 +548,7 @@ if base.QemuSystemTest is not None:
                             rb"CK=(\d+)\s+(\d+)",
                             timeout=120)
                         single_copy = dict(copies[0])
-                        single_copy.update({"sent_bytes": sent[0],
+                        single_copy.update({"sent_bytes": single_copy_sent[0],
                                             "guest_cksum": gcrc,
                                             "guest_bytes": gbytes})
 
@@ -533,9 +558,9 @@ if base.QemuSystemTest is not None:
                                 ">/tmp/eg-par-%d.bin 2>/dev/null &" %
                                 (TCP_GUEST_PORT + 1 + i, i))
                         time.sleep(3)
-                        aggregate, sent = _parallel_send(
+                        _, copy_sent = _parallel_send(
                             ports, payloads[1:])
-                        con.run("wait", "paraggregate",
+                        con.run("wait", "paraggregatecopy",
                                 timeout=LEG_TIMEOUT_SECONDS)
                         stream_copies = []
                         for i in range(PARALLEL):
@@ -547,7 +572,7 @@ if base.QemuSystemTest is not None:
                                 rb"CK=(\d+)\s+(\d+)",
                                 timeout=120)
                             copy = dict(copies[i + 1])
-                            copy.update({"sent_bytes": sent[i],
+                            copy.update({"sent_bytes": copy_sent[i],
                                          "guest_cksum": gcrc,
                                          "guest_bytes": gbytes})
                             stream_copies.append(copy)
@@ -555,7 +580,9 @@ if base.QemuSystemTest is not None:
                         results["parallel"] = {
                             "streams": PARALLEL,
                             "single_mbps": round(single, 1),
+                            "single_rate_bytes": single_rate_sent[0],
                             "aggregate_mbps": round(aggregate, 1),
+                            "stream_rate_bytes": stream_rate_sent,
                             "scaling": (round(aggregate / single, 2)
                                         if single else 0),
                             "single_copy": single_copy,

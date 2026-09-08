@@ -102,8 +102,9 @@ def eg_perf_verdict(login_reached, eg_up, results):
          "tcp_segments_delta": int or None}
 
         Parallel mode instead carries mode="parallel" and a parallel dict
-        with one single_copy, one copy per stream, and both rates. Each copy
-        records host, sender, and guest byte counts plus host/guest checksums.
+        with one single_copy, one copy per stream, both rates, and exact byte
+        counts for each timed stream. Each checked copy records host, sender,
+        and guest byte counts plus host/guest checksums.
 
     Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
     clause holds; problems names every clause that did not, so one run reports
@@ -135,8 +136,21 @@ def eg_perf_verdict(login_reached, eg_up, results):
                 _check_copy(problems, f"parallel stream {index}", copy)
             if parallel.get("single_mbps") is None:
                 problems.append("no single-stream baseline was measured")
+            single_rate_bytes = parallel.get("single_rate_bytes")
+            if not isinstance(single_rate_bytes, int) or single_rate_bytes <= 0:
+                problems.append(
+                    "the single-stream baseline byte count is invalid")
             if parallel.get("aggregate_mbps") is None:
                 problems.append("no parallel aggregate rate was measured")
+            rate_counts = parallel.get("stream_rate_bytes") or []
+            if isinstance(streams, int) and streams > 0:
+                if len(rate_counts) != streams:
+                    problems.append(
+                        f"parallel rate counts cover {len(rate_counts)} of "
+                        f"{streams} streams")
+                elif any(not isinstance(count, int) or count <= 0
+                         for count in rate_counts):
+                    problems.append("a parallel rate byte count is invalid")
         return {
             "verdict": "PASS" if not problems else "FAIL",
             "problems": problems,
@@ -247,7 +261,9 @@ def _good_parallel_results():
         "parallel": {
             "streams": 2,
             "single_mbps": 258.1,
+            "single_rate_bytes": 4194304,
             "aggregate_mbps": 527.2,
+            "stream_rate_bytes": [4194304, 4194304],
             "single_copy": copy(0),
             "copies": [copy(1), copy(2)],
         },
@@ -301,6 +317,17 @@ class EgPerfVerdictTest(unittest.TestCase):
         r = eg_perf_verdict(True, True, res)
         self.assertEqual(r["verdict"], "FAIL")
         self.assertTrue(any("sender byte count" in p for p in r["problems"]))
+
+    def test_parallel_missing_rate_counts_fails(self):
+        res = _good_parallel_results()
+        del res["parallel"]["single_rate_bytes"]
+        res["parallel"]["stream_rate_bytes"].pop()
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("baseline byte count" in p
+                            for p in r["problems"]))
+        self.assertTrue(any("rate counts cover 1 of 2" in p
+                            for p in r["problems"]))
 
     def test_mtu_ioctl_error_refuses_zero_status(self):
         result = mtu_probe_result(
