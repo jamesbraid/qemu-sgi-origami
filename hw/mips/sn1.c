@@ -230,6 +230,7 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     Chardev *l1_console = serial_hd(0);
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
+    DeviceState *l1_uart_dev;
     MemoryRegion *bedrock_widget;
     SysBusDevice *bedrock;
 
@@ -238,9 +239,17 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     if (l1_console) {
         qdev_prop_set_chr(s->l1, "chardev", l1_console);
     }
-    sysbus_realize(SYS_BUS_DEVICE(s->l1), &error_fatal);
+    qdev_realize(s->l1, NULL, &error_fatal);
     object_unref(OBJECT(s->l1));
-    l1_uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->l1), 0);
+
+    l1_uart_dev = qdev_new(TYPE_SGI_L1_UART);
+    object_property_add_child(OBJECT(machine), "l1-uart",
+                              OBJECT(l1_uart_dev));
+    object_property_set_link(OBJECT(l1_uart_dev), "controller",
+                             OBJECT(s->l1), &error_abort);
+    sysbus_realize(SYS_BUS_DEVICE(l1_uart_dev), &error_fatal);
+    object_unref(OBJECT(l1_uart_dev));
+    l1_uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
 
     s->bedrock = qdev_new(TYPE_SGI_BEDROCK);
     object_property_add_child(OBJECT(machine), "bedrock", OBJECT(s->bedrock));
