@@ -717,6 +717,13 @@ static void ii_init(Object *obj)
                           SGI_BEDROCK_IO_REG_SIZE);
     memory_region_init_io(&s->pio, obj, &ii_pio_ops, s,
                           TYPE_SGI_BEDROCK_IO "-pio", SGI_BEDROCK_IO_PIO_SIZE);
+    /*
+     * A widget reached through this window may answer synchronously, with
+     * DMA or an interrupt packet that returns through our own inbound
+     * region.  The re-entrancy guard is per device, so an outer PIO
+     * callback would block that second dispatch.  Inbound stays guarded.
+     */
+    s->pio.disable_reentrancy_guard = true;
     memory_region_init_io(&s->inbound, obj, &ii_inbound_ops, s,
                           TYPE_SGI_BEDROCK_IO "-inbound",
                           SGI_BEDROCK_IO_INBOUND_SIZE);
