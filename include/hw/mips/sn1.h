@@ -30,6 +30,9 @@ struct SN1MachineState {
     MemoryRegion prom_local;
     MemoryRegion prom_local_high;
     MemoryRegion prom_remote;
+    MemoryRegion prom_flash;
+    MemoryRegion prom_flash_payload;
+    MemoryRegion prom_flash_erased;
 };
 
 #endif
