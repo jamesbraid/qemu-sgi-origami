@@ -1,0 +1,126 @@
+/*
+ * SGI Origin 2000 shared module management
+ *
+ * Copyright (c) 2026 Origami contributors
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef HW_MISC_SGI_O2000_MODULE_MGMT_H
+#define HW_MISC_SGI_O2000_MODULE_MGMT_H
+
+#include "hw/core/qdev.h"
+#include "hw/core/irq.h"
+#include "hw/i2c/i2c.h"
+#include "hw/misc/sgi-elsc.h"
+#include "qemu/timer.h"
+#include "qom/object.h"
+
+#define TYPE_SGI_O2000_MODULE_MGMT "sgi-o2000-module-management"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIO2000ModuleMgmtState, SGI_O2000_MODULE_MGMT)
+
+/* One adapter per node board on a four-node module. */
+#define SGI_O2000_ADAPTER_COUNT     4
+/* The module controller drives the wire as the participant after them. */
+#define SGI_O2000_WIRE_MASTERS      (SGI_O2000_ADAPTER_COUNT + 1)
+
+/*
+ * 2048 addressable bytes of management NVRAM reached across eight consecutive
+ * slave addresses from 0x50, the top three bits of the eleven-bit byte address
+ * choosing among them. Whether that is one part or several is unestablished;
+ * the guest-visible logical space is the contract.
+ */
+#define SGI_O2000_NVRAM_FIRST_ADDR  0x50
+#define SGI_O2000_NVRAM_ADDRESSES   8
+#define SGI_O2000_NVRAM_PAGE_BYTES  256
+#define SGI_O2000_NVRAM_BYTES \
+    (SGI_O2000_NVRAM_ADDRESSES * SGI_O2000_NVRAM_PAGE_BYTES)
+
+/* The controller's own reserved region, and the fields a boot reads from it. */
+#define SGI_O2000_NVRAM_RESERVED_PAGE   7
+#define SGI_O2000_NVRAM_VALIDITY_OFFSET 0
+#define SGI_O2000_NVRAM_VALIDITY_VALUE  0x37
+#define SGI_O2000_NVRAM_MODULE_OFFSET   8
+
+/* The logical MSC endpoint. */
+#define SGI_O2000_MSC_ADDRESS       0x08
+
+struct SGIO2000ModuleMgmtState {
+    DeviceState parent_obj;
+
+    /* Model-derived identity written into the reserved NVRAM region. */
+    uint8_t module_number;
+
+    I2CBus *bus;
+    DeviceState *adapters[SGI_O2000_ADAPTER_COUNT];
+    SGIElscState *msc;
+
+    qemu_irq reset_out;
+    qemu_irq nmi_out;
+    qemu_irq power_out;
+
+    QEMUTimer *service_timer;
+    QEMUTimer *message_timer;
+    QEMUTimer *pulse_timer;
+    int64_t service_deadline;
+    int64_t message_deadline;
+    int64_t pulse_deadline;
+
+    uint16_t recovery_ticks;
+    uint8_t processor_code;
+    uint8_t pending_messages;   /* One bit per processor code. */
+    uint8_t console_processor;
+    uint8_t grant_byte;
+    uint8_t grant_bit;
+    uint8_t grant_state;
+    bool grant_bit_sampled;
+    bool grant_active;
+    bool wire_scl;
+    bool wire_sda;
+    bool publication_enabled;
+    bool controller_request;
+    bool controller_granted;
+    bool serial_request;
+    bool serial_granted;
+    bool slave_active;
+    bool console_input_pending;
+    bool power_on;
+    bool pulse_active;
+    bool pulse_nmi;
+};
+
+I2CBus *sgi_o2000_module_mgmt_get_bus(SGIO2000ModuleMgmtState *s);
+DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
+                                               unsigned index);
+
+/*
+ * Controller-side requests the scheduler arbitrates against processor grants.
+ * A request stays pending until the scheduler grants it; the caller releases
+ * the grant when its transaction ends.
+ */
+void sgi_o2000_module_mgmt_set_controller_request(SGIO2000ModuleMgmtState *s,
+                                                  bool pending);
+void sgi_o2000_module_mgmt_set_serial_request(SGIO2000ModuleMgmtState *s,
+                                              bool pending);
+void sgi_o2000_module_mgmt_release_controller(SGIO2000ModuleMgmtState *s);
+void sgi_o2000_module_mgmt_release_serial(SGIO2000ModuleMgmtState *s);
+bool sgi_o2000_module_mgmt_controller_granted(SGIO2000ModuleMgmtState *s);
+bool sgi_o2000_module_mgmt_serial_granted(SGIO2000ModuleMgmtState *s);
+
+void sgi_o2000_module_mgmt_set_message(SGIO2000ModuleMgmtState *s,
+                                       unsigned processor, bool pending);
+void sgi_o2000_module_mgmt_message_fetched(SGIO2000ModuleMgmtState *s,
+                                           unsigned processor);
+void sgi_o2000_module_mgmt_set_publication(SGIO2000ModuleMgmtState *s,
+                                           bool enabled);
+void sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on);
+/*
+ * Whether a destructive controller command can be carried out now. A command
+ * this answers false for must be refused rather than acknowledged.
+ */
+bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
+                                       SGIElscAction action);
+void sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s);
+void sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s);
+
+#endif /* HW_MISC_SGI_O2000_MODULE_MGMT_H */
