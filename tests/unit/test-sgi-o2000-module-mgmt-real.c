@@ -4,6 +4,7 @@
  * one shared module wire, driven the way firmware drives them.
  */
 #include "qemu/osdep.h"
+#include "chardev/char.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
@@ -12,11 +13,13 @@
 #include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "qapi/error.h"
 #include "qemu/aio.h"
+#include "qemu/config-file.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "system/cpu-timers.h"
 #include "system/reset.h"
+#include "system/system.h"
 
 #define DATA_REG        0
 #define CTRL_REG        PCF8584_A0_STRIDE
@@ -56,9 +59,11 @@ void cpus_set_virtual_clock(int64_t value)
 }
 
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
+enum { TEST_PARTIAL = 1, TEST_CONSOLE };
 
 typedef struct Fixture {
     SGIO2000ModuleMgmtState *module;
+    Chardev *chr;
     PCF8584State *adapter[SGI_O2000_ADAPTER_COUNT];
     int level[3];
     unsigned raises[3];
@@ -81,7 +86,7 @@ static void advance_to(int64_t time)
 
 static void init_adapter(Fixture *f, unsigned slot);
 
-static void setup(Fixture *f, gconstpointer unused)
+static void setup(Fixture *f, gconstpointer options)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
     static const char *const names[] = { "reset", "nmi", "power" };
@@ -99,6 +104,11 @@ static void setup(Fixture *f, gconstpointer unused)
         qdev_connect_gpio_out_named(dev, names[i], 0,
                                     qemu_allocate_irq(line_handler, f, i));
     }
+    if (options == GINT_TO_POINTER(TEST_CONSOLE)) {
+        f->chr = qemu_chr_new("reinitialize-console", "null", NULL);
+        g_assert_nonnull(f->chr);
+        qdev_prop_set_chr(dev, "chardev", f->chr);
+    }
     qdev_realize(dev, NULL, &error_abort);
     f->module = SGI_O2000_MODULE_MGMT(dev);
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
@@ -112,6 +122,9 @@ static void teardown(Fixture *f, gconstpointer unused)
 {
     object_unparent(OBJECT(f->module));
     object_unref(OBJECT(f->module));
+    if (f->chr) {
+        object_unparent(OBJECT(f->chr));
+    }
 }
 
 static void run_tick(Fixture *f)
@@ -233,18 +246,12 @@ static void stop_transfer(Fixture *f, unsigned a)
     g_assert_not_reached();
 }
 
-/*
- * One framed command and its response, ending the way firmware ends one:
- * every response byte acknowledged, then the closing repeated START to an
- * address nobody answers, then STOP.
- */
-static unsigned msc_command(Fixture *f, unsigned a, const char *text,
-                            uint8_t *response, unsigned cap)
+/* Send a framed request and prepare its response for register reads. */
+static void msc_begin_response(Fixture *f, unsigned a, const char *text)
 {
     uint8_t request[16];
     unsigned i, len = strlen(text) + 2;
     uint8_t sum = 0;
-    unsigned total;
 
     g_assert_cmpuint(len, <=, sizeof(request));
     request[0] = strlen(text);
@@ -260,6 +267,20 @@ static unsigned msc_command(Fixture *f, unsigned a, const char *text,
     }
     g_assert_true(restart_transfer(f, a, SGI_O2000_MSC_ADDRESS, true));
     g_assert_true(discard_byte(f, a));
+}
+
+/*
+ * One framed command and its response, ending the way firmware ends one:
+ * every response byte acknowledged, then the closing repeated START to an
+ * address nobody answers, then STOP.
+ */
+static unsigned msc_command(Fixture *f, unsigned a, const char *text,
+                            uint8_t *response, unsigned cap)
+{
+    unsigned i, total;
+    uint8_t sum = 0;
+
+    msc_begin_response(f, a, text);
     response[0] = take_byte(f, a, false);
     total = (unsigned)response[0] + 2;
     g_assert_cmpuint(total, <=, cap);
@@ -662,6 +683,127 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 2);
 }
 
+/* Drain only when the test explicitly crosses the deferred-action boundary. */
+static void drain_actions(void)
+{
+    while (aio_poll(qemu_get_aio_context(), false)) {
+        continue;
+    }
+}
+
+static void expect_response(Fixture *f, const char *command, const char *text)
+{
+    uint8_t response[96];
+
+    msc_command(f, 0, command, response, sizeof(response));
+    g_assert_cmpuint(response[0], ==, strlen(text));
+    g_assert_cmpmem(&response[1], response[0], text, strlen(text));
+}
+
+/* Reinitialization must not cancel an acknowledged action waiting for AIO. */
+static void test_reinitialize_committed(Fixture *f, gconstpointer unused)
+{
+    SGIElscState *s = f->module->msc;
+
+    expect_response(f, "pas none", "ok");
+    expect_response(f, "rst", "ok");
+    g_assert_true(s->deferred_committed);
+    g_assert_true(s->deferred_scheduled);
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
+
+    sgi_elsc_reinitialize(s);
+    /* More terminal events before polling must not duplicate the action. */
+    expect_response(f, "ver", "ok origami");
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
+    g_assert_true(f->module->pulse_active);
+    advance_to(f->module->pulse_deadline);
+    expect_response(f, "ver", "ok origami");
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
+    g_assert_false(f->module->pulse_active);
+}
+
+static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
+{
+    SGIElscState *s = f->module->msc;
+
+    expect_response(f, "pas none", "ok");
+    msc_begin_response(f, 0, "rst");
+    if (partial) {
+        /* Stop before the wire prefetch reaches the acknowledgement end. */
+        g_assert_cmpuint(take_byte(f, 0, false), ==, 2);
+    }
+    g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_RESET);
+    g_assert_false(s->deferred_committed);
+    g_assert_cmpuint(s->txpos, <, s->txlen);
+
+    sgi_elsc_reinitialize(s);
+    /* Clock the discarded response and its terminal event before a request. */
+    take_byte(f, 0, false);
+    take_byte(f, 0, true);
+    stop_transfer(f, 0);
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
+    expect_response(f, "ver", "ok origami");
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
+    g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_NONE);
+    /* The retained supervisor gate still permits a subsequent real action. */
+    expect_response(f, "rst", "ok");
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
+    advance_to(f->module->pulse_deadline);
+}
+
+static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
+{
+    SGIElscState *s = f->module->msc;
+    static const uint8_t input[] = { 's', 't', 'a', 'l', 'e', 0x14, 'x' };
+    static const uint8_t fresh[] = { 'N' };
+
+    expect_response(f, "pas none", "ok");
+    expect_response(f, "dsp RETAINED", "ok");
+    expect_response(f, "tas A", "ok 0");
+    qemu_chr_be_write(f->chr, input, sizeof(input));
+    g_assert_cmpuint(s->rx_queue_len, ==, 5);
+    g_assert_true(s->in_escape);
+    g_assert_true(f->module->console_input_pending);
+
+    msc_begin_response(f, 0, "ver");
+    g_assert_cmpuint(s->txlen, >, s->txpos);
+    g_assert_cmpint(s->resp_owner, >=, 0);
+    take_byte(f, 0, true);
+    stop_transfer(f, 0);
+    g_assert_true(start_transfer(f, 0, SGI_O2000_MSC_ADDRESS, false));
+    g_assert_true(send_byte(f, 0, 3));
+    g_assert_true(send_byte(f, 0, 'v'));
+    g_assert_cmpuint(s->rxlen, ==, 2);
+    g_assert_true(f->module->slave_active);
+
+    sgi_elsc_reinitialize(s);
+    g_assert_cmpuint(s->rxlen, ==, 0);
+    g_assert_cmpuint(s->txlen, ==, 0);
+    g_assert_cmpuint(s->txpos, ==, 0);
+    g_assert_cmpint(s->resp_owner, ==, -1);
+    g_assert_false(f->module->slave_active);
+    g_assert_false(f->module->console_input_pending);
+    stop_transfer(f, 0);
+
+    /* Input after recovery escapes neither into the old line nor old queue. */
+    qemu_chr_be_write(f->chr, fresh, sizeof(fresh));
+    expect_response(f, "get", "acp 0 N");
+    expect_response(f, "tas B", "ok A");
+    g_assert_cmpmem(s->display, sizeof(s->display), "RETAINED", 8);
+    expect_response(f, "dsc 0 X", "ok");
+    g_assert_cmpmem(s->display, sizeof(s->display), "XETAINED", 8);
+    expect_response(f, "rst", "ok");
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
+    advance_to(f->module->pulse_deadline);
+}
+
 int main(int argc, char **argv)
 {
     Object *machine;
@@ -670,6 +812,7 @@ int main(int argc, char **argv)
     qemu_init_main_loop(&error_abort);
     qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
     module_call_init(MODULE_INIT_QOM);
+    qemu_add_opts(&qemu_chardev_opts);
     machine = object_property_add_new_container(object_get_root(), "machine");
     object_property_add_new_container(machine, "unattached");
     qemu_register_resettable(OBJECT(sysbus_get_default()));
@@ -696,6 +839,16 @@ int main(int argc, char **argv)
                teardown);
     g_test_add("/sgi-o2000-module-management/shared/closing-resync",
                Fixture, NULL, setup, test_closing_resync_is_terminal,
+               teardown);
+    g_test_add("/sgi-o2000-module-management/reinitialize/committed", Fixture,
+               NULL, setup, test_reinitialize_committed, teardown);
+    g_test_add("/sgi-o2000-module-management/reinitialize/unread", Fixture,
+               NULL, setup, test_reinitialize_uncommitted, teardown);
+    g_test_add("/sgi-o2000-module-management/reinitialize/partial", Fixture,
+               GINT_TO_POINTER(TEST_PARTIAL), setup,
+               test_reinitialize_uncommitted, teardown);
+    g_test_add("/sgi-o2000-module-management/reinitialize/queues", Fixture,
+               GINT_TO_POINTER(TEST_CONSOLE), setup, test_reinitialize_queues,
                teardown);
     return g_test_run();
 }
