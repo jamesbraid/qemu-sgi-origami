@@ -8,10 +8,13 @@
 
 #define BASE 0x11000000ULL
 #define PATH "/machine/peripheral/l1"
+#define L1 "/machine/peripheral/l1c"
+#define UART " -device sgi-l1-uart,id=l1,controller=l1c"
 
 static QTestState *start(void)
 {
-    QTestState *s = qtest_init("-M none -cpu R10000 -device sgi-l1,id=l1 -S");
+    QTestState *s = qtest_init("-M none -cpu R10000 -device sgi-l1,id=l1c"
+                               UART " -S");
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     return s;
 }
@@ -116,7 +119,7 @@ static void test_frames(void)
     }
     g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
     result = qtest_qmp(s, "{'execute':'qom-get','arguments':"
-                         "{'path':%s,'property':'display-line-2'}}", PATH);
+                         "{'path':%s,'property':'display-line-2'}}", L1);
     g_assert_cmpstr(qdict_get_str(result, "return"), ==, "a~}");
     qtest_writeq(s, BASE, 0x7e);
     for (unsigned i = 0; i < 150; i++) {
@@ -194,7 +197,10 @@ static QTestState *start_files(const char *spd, const char *board,
 {
     QTestState *s = qtest_initf(
         "-M none -cpu R10000 -S %s -device '{\"driver\":\"sgi-l1\","
-        "\"id\":\"l1\",\"spd-eeprom\":[\"%s\"],\"board-eeprom\":[\"%s\"]}'",
+        "\"id\":\"l1c\",\"spd-eeprom\":[\"%s\"],\"board-eeprom\":[\"%s\"]}' "
+        /* JSON devices are created after key=value ones; keep the order. */
+        "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+        "\"controller\":\"l1c\"}'",
         extra, spd, board);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     return s;
@@ -300,8 +306,8 @@ static void test_migration(void)
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    to = qtest_init("-M none -cpu R10000 -device sgi-l1,id=l1 "
-                    "-S -incoming defer");
+    to = qtest_init("-M none -cpu R10000 -device sgi-l1,id=l1c" UART
+                    " -S -incoming defer");
     qtest_sysbus_mmio_map(to, PATH, 0, BASE);
     send_frame(from, request, sizeof(request), false);
     qtest_writeq(from, BASE, 0x7e);
@@ -376,8 +382,8 @@ static void test_eeprom_migration(void)
 static void test_metadata(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                              "-device sgi-l1,id=l1,revision-major=1,"
-                              "revision-minor=18,revision-patch=5");
+                              "-device sgi-l1,id=l1c,revision-major=1,"
+                              "revision-minor=18,revision-patch=5" UART);
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 5 };
     const uint8_t expected[] = { 0x30, 0, 0, 0, 0, 3,
                                  0, 0, 0, 0, 1,
@@ -425,7 +431,7 @@ static void test_console(void)
     const uint8_t output[] = { 0x44, 'P', 'R', 'O', 'M' };
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     s = qtest_initf("-M none -cpu R10000 -S -chardev socket,id=console,fd=%d "
-                    "-device sgi-l1,id=l1,chardev=console", sv[1]);
+                    "-device sgi-l1,id=l1c,chardev=console" UART, sv[1]);
     close(sv[1]);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     console_expect(sv[0], "001c01-L1> ");
@@ -470,7 +476,7 @@ static void test_console(void)
 static void test_poweroff(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S -no-shutdown "
-                              "-device sgi-l1,id=l1");
+                              "-device sgi-l1,id=l1c" UART);
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 0, 1,
                                 1, '*', ' ', 'p', 'w', 'r', ' ', 'd', 0 };
     uint8_t reply[129];
@@ -494,14 +500,14 @@ static void assert_display(QTestState *s, const char *expected)
 {
     g_autoptr(QDict) result = qtest_qmp(s,
         "{'execute':'qom-get','arguments':"
-        "{'path':%s,'property':'display-line-2'}}", PATH);
+        "{'path':%s,'property':'display-line-2'}}", L1);
     g_assert_cmpstr(qdict_get_str(result, "return"), ==, expected);
 }
 
 static void test_route_forms(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                              "-device sgi-l1,id=l1,rack=7,bay=11");
+                              "-device sgi-l1,id=l1c,rack=7,bay=11" UART);
     uint8_t request[] = { 0x12, 0, 0, 0, 0, 0, 3 };
     uint8_t expected[] = { 0x32, 0, 0, 0, 0, 2,
                            0, 0, 0, 1, 0xcb, 0, 0, 0, 0, 'C' };
@@ -546,7 +552,7 @@ static void reject_route(QTestState *s, uint32_t address, bool malformed)
 static void test_route_rejection(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                              "-device sgi-l1,id=l1,rack=7,bay=11");
+                              "-device sgi-l1,id=l1c,rack=7,bay=11" UART);
     const uint8_t initial[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1,
                                 1, 'k', 'e', 'e', 'p', 0 };
     const uint32_t local = 0x0ffff006;
@@ -730,7 +736,7 @@ static void test_uart_irq_migration(void)
     for (unsigned state = 0; state < 3; state++) {
         QTestState *from = start();
         QTestState *to = qtest_init("-M none -cpu R10000 -S -incoming defer "
-                                    "-device sgi-l1,id=l1");
+                                    "-device sgi-l1,id=l1c" UART);
         qtest_sysbus_mmio_map(to, PATH, 0, BASE);
         qtest_irq_intercept_out_named(to, PATH, "uart");
         qtest_writeq(from, BASE + 8, 3);
@@ -860,7 +866,7 @@ static void test_node_position(void)
     qtest_quit(s);
 
     s = qtest_init("-M none -cpu R10000 -S "
-                   "-device sgi-l1,id=l1,node-position=2");
+                   "-device sgi-l1,id=l1c,node-position=2" UART);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
     console_select(s, 4, 0);
@@ -886,7 +892,7 @@ static void test_node_position_range(void)
         return;
     }
     s = qtest_init("-M none -cpu R10000 -S "
-                   "-device sgi-l1,id=l1,node-position=4");
+                   "-device sgi-l1,id=l1c,node-position=4" UART);
     qtest_quit(s);
 }
 
@@ -902,7 +908,7 @@ static void test_node_position_migration(void)
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     to = qtest_init("-M none -cpu R10000 -S -incoming defer "
-                    "-device sgi-l1,id=l1");
+                    "-device sgi-l1,id=l1c" UART);
     qtest_sysbus_mmio_map(to, PATH, 0, BASE);
     console_select(from, 0x60, 0);
     g_assert_cmpuint(node_position(from, 0x0ffff006), ==, 3);
@@ -916,6 +922,35 @@ static void test_node_position_migration(void)
     qtest_quit(to);
     unlink(socket);
     g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_uart_unlinked(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*L1 UART window needs a controller link*");
+        return;
+    }
+    s = qtest_init("-M none -cpu R10000 -S -device sgi-l1-uart,id=l1");
+    qtest_quit(s);
+}
+
+static void test_uart_shared(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*L1 controller already has a UART window*");
+        return;
+    }
+    s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,id=l1c" UART
+                   " -device sgi-l1-uart,id=l2,controller=l1c");
+    qtest_quit(s);
 }
 
 int main(int argc, char **argv)
@@ -942,5 +977,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/node-position-migration",
                    test_node_position_migration);
     qtest_add_func("sn1/l1/node-position-range", test_node_position_range);
+    qtest_add_func("sn1/l1/uart-unlinked", test_uart_unlinked);
+    qtest_add_func("sn1/l1/uart-shared", test_uart_shared);
     return g_test_run();
 }
