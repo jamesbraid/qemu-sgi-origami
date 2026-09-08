@@ -229,39 +229,48 @@ def _parallel_send(host_ports, payloads):
 
     if len(host_ports) != len(payloads):
         raise ValueError("each parallel host port needs one payload")
-    start = threading.Barrier(len(host_ports) + 1)
+    sockets = []
+    try:
+        for port in host_ports:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=30)
+            sock.settimeout(SEND_TIMEOUT_SECONDS)
+            sockets.append(sock)
+    except OSError as error:
+        for sock in sockets:
+            sock.close()
+        raise base._Harness(f"parallel sender failed: {error}") from error
+
+    start = threading.Event()
     done = [0] * len(host_ports)
     errors = [None] * len(host_ports)
 
-    def one(i, port, payload):
+    def one(i, sock, payload):
         start.wait()
         try:
             try:
-                s = socket.create_connection(("127.0.0.1", port), timeout=30)
-                s.settimeout(SEND_TIMEOUT_SECONDS)
                 try:
-                    s.sendall(payload)
+                    sock.sendall(payload)
                 finally:
-                    s.shutdown(socket.SHUT_WR)
-                    s.settimeout(30)
+                    sock.shutdown(socket.SHUT_WR)
+                    sock.settimeout(30)
                     try:
-                        while s.recv(65536):
+                        while sock.recv(65536):
                             pass
                     except OSError:
                         pass
-                    s.close()
+                    sock.close()
                 done[i] = len(payload)
             except OSError as error:
                 errors[i] = str(error)
         except Exception as error:  # make worker failures visible to the test
             errors[i] = str(error)
 
-    threads = [threading.Thread(target=one, args=(i, port, payloads[i]))
-               for i, port in enumerate(host_ports)]
+    threads = [threading.Thread(target=one, args=(i, sockets[i], payloads[i]))
+               for i in range(len(host_ports))]
     for t in threads:
         t.start()
-    start.wait()
     t0 = time.monotonic()
+    start.set()
     for t in threads:
         t.join()
     elapsed = time.monotonic() - t0

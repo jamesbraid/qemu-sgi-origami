@@ -204,6 +204,7 @@ tests_mips64_unit = [
   'lib_matrix',
   'lib_prom',
   'irix_eg_net_verdict',
+  'irix_eg_perf_helpers',
   'irix_eg_perf_verdict',
   'irix_tg_verdict',
   'irix_tg_perf_verdict',
