@@ -927,9 +927,10 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
      * the seam that is not part of the recv data path. Every such event
      * schedules it (the bottom half's own committed-flag guard keeps that
      * idempotent), so whichever boundary a given response reaches -- a NACK, a
-     * STOP, a repeated START in either direction -- fires it, and none fire it
-     * mid-read. Only the recv data path itself does not schedule, because that
-     * is where the guest is still taking the frame's bytes.
+     * STOP, a repeated START back to this controller or away to another
+     * address -- fires it, and none fire it mid-read. Only the recv data path
+     * itself does not schedule, because that is where the guest is still
+     * taking the frame's bytes.
      */
     switch (event) {
     case I2C_START_SEND:
@@ -947,6 +948,18 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
          * fully-fetched response, which reaches no other boundary.
          */
         elsc_request_complete(s);
+        elsc_fire_committed_action(s);
+        break;
+    case I2C_RESTART:
+        /*
+         * A repeated START to somebody else's address. The controller is no
+         * longer addressed and will see no STOP, so this is its last event in
+         * the transaction: it has to report itself idle here or a module
+         * scheduler waiting on that would wait forever, and it has to carry
+         * out a committed action here or the closing resync to the invalid
+         * address would swallow one whose "ok" the guest already has.
+         */
+        elsc_module_slave_active(s, false);
         elsc_fire_committed_action(s);
         break;
     case I2C_NACK:
