@@ -20,6 +20,38 @@
 #define MACHINE MACHINE_BASE ",hub-registers=/objects/hub/hub[0] -S"
 #define MACHINE_NO_HUB MACHINE_BASE " -S"
 
+/*
+ * A widget reached through the PIO window can answer synchronously, and
+ * its answer arrives back at this device's inbound region: an ordinary
+ * DMA write, or an interrupt packet aimed at the node's registers.  Both
+ * land while the PIO callback is still running.  Linking widget 8 to this
+ * device's own inbound region stands in for that round trip; the crossbar
+ * and the device behind it add nothing the re-entrancy guard can see,
+ * because the flag it tests belongs to whichever device's callback is
+ * running, not to the region named in its warning.
+ */
+#define MACHINE_LOOPBACK_BASE \
+    "-M none -cpu R10000 -m 256M " \
+    "-object memory-backend-ram,id=dma,size=32M " \
+    "-object memory-backend-ram,id=hub,size=8M " \
+    "-device sgi-bedrock-io,id=io," \
+    "dma-memory=/objects/dma/dma[0]," \
+    "widget-8=" IO_PATH "/sgi-bedrock-io-inbound[0],"
+#define MACHINE_LOOPBACK \
+    MACHINE_LOOPBACK_BASE "hub-registers=/objects/hub/hub[0] -S"
+/* The node's register window pointed back at inbound, to re-enter it. */
+#define MACHINE_LOOPBACK_HUB \
+    MACHINE_LOOPBACK_BASE \
+    "hub-registers=" IO_PATH "/sgi-bedrock-io-inbound[0] -S"
+
+/*
+ * Big window 0 carries the crosstalk register form, big window 1 plain
+ * memory, once the translation entries below are programmed.  Both reach
+ * the widget, which is this device's inbound region.
+ */
+#define PIO_REGISTER_FORM(offset) (PIO_BASE + 0x20000000 + (offset))
+#define PIO_MEMORY_FORM(offset) (PIO_BASE + 0x40000000 + (offset))
+
 /* Crosstalk address terms of the interrupt-send form. */
 #define XIO_REGISTER (UINT64_C(1) << 47)
 #define XIO_NODE(n) ((uint64_t)(n) << 39)
@@ -469,6 +501,96 @@ static void test_inbound_protection(void)
     dma_writeq(s, 0x190000, UINT64_MAX);
     qtest_writeq(s, REG_BASE + DEVICE_MASK, 1);
     g_assert_cmphex(dma_readq(s, 0x190000), ==, 0);
+    qtest_quit(s);
+}
+
+static QTestState *io_start_loopback(const char *machine, const char *extra)
+{
+    QTestState *s = qtest_initf("%s %s", machine, extra);
+
+    /*
+     * Registers and the PIO window only.  Inbound is deliberately left
+     * unmapped: an address space built over a region that is also a
+     * subregion of the system space renders it at that system address,
+     * so mapping inbound here would move it out of reach of the
+     * crosstalk addresses the PIO window forms.
+     */
+    qtest_sysbus_mmio_map(s, IO_PATH, 0, REG_BASE);
+    qtest_sysbus_mmio_map(s, IO_PATH, 1, PIO_BASE);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    return s;
+}
+
+static void program_loopback_entries(QTestState *s)
+{
+    qtest_writeq(s, REG_BASE + ITTE0, 0x1800);     /* widget 8, I/O space */
+    qtest_writeq(s, REG_BASE + ITTE0 + 8, 0x800);  /* widget 8, memory */
+}
+
+static void test_pio_target_answers_through_inbound(void)
+{
+    QTestState *s = io_start_loopback(MACHINE_LOOPBACK, "");
+
+    program_loopback_entries(s);
+
+    /*
+     * An interrupt packet: the widget writes the node's register window
+     * in its checked remote form while our PIO callback is still on the
+     * stack.  The same door reads it back out of the node's registers.
+     */
+    qtest_writeq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0x90),
+                 UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0x90)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0x98)), ==,
+                    0);
+
+    /* The same nesting for an ordinary inbound DMA write to memory. */
+    qtest_writeq(s, PIO_MEMORY_FORM(0x2000), UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, PIO_MEMORY_FORM(0x2000)), ==,
+                    UINT64_C(0xfedcba9876543210));
+
+    /* Neither path escapes the inbound access check. */
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(1 << 8));
+    qtest_writeq(s, PIO_MEMORY_FORM(0x2008), UINT64_MAX);
+    qtest_writeq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0xa0), UINT64_MAX);
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PIO_MEMORY_FORM(0x2008)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0xa0)), ==,
+                    0);
+    qtest_quit(s);
+
+    /* Nor the device mask.  It is write-one-to-set, so start it clear. */
+    s = io_start_loopback(MACHINE_LOOPBACK,
+                          "-global sgi-bedrock-io.device-mask-reset=0");
+    program_loopback_entries(s);
+    qtest_writeq(s, PIO_MEMORY_FORM(0x2000), UINT64_MAX);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, 1);
+    g_assert_cmphex(qtest_readq(s, PIO_MEMORY_FORM(0x2000)), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_inbound_keeps_its_guard(void)
+{
+    QTestState *s = io_start_loopback(MACHINE_LOOPBACK_HUB, "");
+
+    program_loopback_entries(s);
+
+    /* One level of nesting reaches memory: inbound answers a PIO. */
+    qtest_writeq(s, PIO_MEMORY_FORM(0x90), UINT64_C(0x1111111111111111));
+    g_assert_cmphex(qtest_readq(s, PIO_MEMORY_FORM(0x90)), ==,
+                    UINT64_C(0x1111111111111111));
+
+    /*
+     * Two levels must not.  Here the node's register window is inbound
+     * itself, so forwarding re-enters that region while its own callback
+     * runs, and its guard refuses the write; memory keeps the earlier
+     * value.  Exempting inbound as well would let this through.
+     */
+    qtest_writeq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0x90),
+                 UINT64_C(0x2222222222222222));
+    g_assert_cmphex(qtest_readq(s, PIO_MEMORY_FORM(0x90)), ==,
+                    UINT64_C(0x1111111111111111));
     qtest_quit(s);
 }
 
@@ -980,6 +1102,10 @@ int main(int argc, char **argv)
                    test_inbound_protection);
     qtest_add_func("sn1/bedrock-io/inbound-register-access",
                    test_inbound_register_access);
+    qtest_add_func("sn1/bedrock-io/pio-target-answers-through-inbound",
+                   test_pio_target_answers_through_inbound);
+    qtest_add_func("sn1/bedrock-io/inbound-keeps-its-guard",
+                   test_inbound_keeps_its_guard);
     qtest_add_func("sn1/bedrock-io/bte", test_bte_copy_and_zero);
     qtest_add_func("sn1/bedrock-io/bte-error-termination",
                    test_bte_error_and_termination);
