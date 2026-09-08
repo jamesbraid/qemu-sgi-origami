@@ -107,6 +107,10 @@
 #define INT_MODE_WRITABLE       0xffu
 /* Three bits per pin naming the device that owns it, eight pins. */
 #define INT_DEVICE_WRITABLE     0xffffffu
+/* The widget-level destination: a target widget and the address's top half. */
+#define INT_DEST_ADDRESS_UPPER  0xffffu
+#define INT_DEST_WIDGET_SHIFT   16
+#define INT_DEST_WIDGET         (0xfu << INT_DEST_WIDGET_SHIFT)
 /* A host address field and the bit number to set in the host's register. */
 #define INT_HOST_ADDRESS        (0x3ffu << 8)
 #define INT_HOST_FIELD          0xffu
@@ -1155,32 +1159,92 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
  * 47:38, bits 7:0 the interrupt number.
  */
 #define INT_HOST_ADDR_SHIFT     8
+#define INT_HOST_ADDR_BITS      10
 #define XTALK_NODE_SHIFT        38
+#define XTALK_NODE_MASK         0x1ffu
 
 /* Where the Hub's interrupt-modify register sits inside a node's Hub window. */
 #define HUB_NODE_WINDOW         0x01800000
 #define HUB_INT_MODIFY          0x90
 #define HUB_INT_MODIFY_SET      0x100
 
-/* A write to the Hub's interrupt-modify register; bit 8 selects raise. */
-static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, unsigned int node,
-                                         uint64_t offset, unsigned int bit,
-                                         bool set)
+/* A write to the host's interrupt register; data bit 8 selects raise. */
+static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, hwaddr where,
+                                         unsigned int bit, bool set)
 {
     uint64_t value = bit | (set ? HUB_INT_MODIFY_SET : 0);
-    hwaddr where = s->fabric_base +
-                   ((uint64_t)node << s->fabric_node_shift) + offset;
 
     address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
                       NULL);
 }
 
+/*
+ * A fabric address is one flat space, so a machine that has widgets to tell
+ * apart spends four bits of it on the destination widget -- which crosstalk
+ * carries in a packet header, beside the address, not inside it. An address
+ * whose own bits reach those four is one the flattening cannot represent:
+ * composing it would name a different widget, so refuse it and say so.
+ */
+static bool sgi_bridge_widget_field_is_free(SGIBridgeState *s,
+                                            uint64_t address,
+                                            const char *what)
+{
+    if (!s->fabric_widget_shift ||
+        !(address & MAKE_64BIT_MASK(s->fabric_widget_shift,
+                                    SGI_BRIDGE_WIDGET_BITS))) {
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-bridge: %s crosstalk address 0x%" PRIx64 " reaches the "
+                  "destination widget this machine keeps at bit %u of a "
+                  "fabric address; refusing it rather than sending it to the "
+                  "widget the overlap names\n",
+                  what, address, s->fabric_widget_shift);
+    return false;
+}
+
+/*
+ * Where a packet lands when the machine spends no bits on a widget: the Hub
+ * window of the node the destination names. This substitutes a fixed window
+ * offset for the address the guest programmed, so it is an approximation of
+ * the chip rather than the composition below -- one that agrees with the
+ * chip because the guests we run point the destination pair at the Hub's own
+ * interrupt-modify register. It is what this model did before the widget
+ * field existed and it is kept unchanged.
+ */
+static hwaddr sgi_bridge_node_packet(SGIBridgeState *s, unsigned int node,
+                                     uint64_t offset)
+{
+    return s->fabric_base + ((uint64_t)node << s->fabric_node_shift) + offset;
+}
+
+/* And where it lands when it does: the programmed address, under its widget. */
+static hwaddr sgi_bridge_widget_packet(SGIBridgeState *s, unsigned int widget,
+                                       uint64_t dest)
+{
+    return s->fabric_base +
+           (((uint64_t)widget << s->fabric_widget_shift) | dest);
+}
+
+/* The widget-level destination pair: one crosstalk address and its widget. */
+static uint64_t sgi_bridge_int_dest(SGIBridgeState *s, unsigned int *widget)
+{
+    uint32_t upper = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)];
+    uint32_t lower = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)];
+
+    *widget = (upper & INT_DEST_WIDGET) >> INT_DEST_WIDGET_SHIFT;
+    return ((uint64_t)(upper & INT_DEST_ADDRESS_UPPER) << 32) | lower;
+}
+
 static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
 {
-    uint64_t addr = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
-    unsigned int node;
+    uint32_t host = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
+    unsigned int address = (host & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT;
+    unsigned int widget;
+    uint64_t dest;
+    hwaddr where;
 
-    if (!addr) {
+    if (!host) {
         /* An unprogrammed destination is an interrupt nobody routed. */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge: interrupt pin %d changed with no "
@@ -1188,9 +1252,20 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
         return;
     }
 
-    node = ((addr & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT) & 0x1ff;
-    sgi_bridge_deliver_interrupt(s, node, HUB_NODE_WINDOW + HUB_INT_MODIFY,
-                                 addr & INT_HOST_FIELD, set);
+    if (s->fabric_widget_shift) {
+        /* The pin's own bits replace the destination's, they do not join. */
+        dest = sgi_bridge_int_dest(s, &widget);
+        dest = deposit64(dest, XTALK_NODE_SHIFT, INT_HOST_ADDR_BITS, address);
+        if (!sgi_bridge_widget_field_is_free(s, dest, "an interrupt's")) {
+            return;
+        }
+        where = sgi_bridge_widget_packet(s, widget, dest);
+    } else {
+        where = sgi_bridge_node_packet(s, address & XTALK_NODE_MASK,
+                                       HUB_NODE_WINDOW + HUB_INT_MODIFY);
+    }
+
+    sgi_bridge_deliver_interrupt(s, where, host & INT_HOST_FIELD, set);
 }
 
 /* Chip errors go to the host-error bit at the widget destination pair. */
@@ -1198,11 +1273,16 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
 {
     unsigned int number = s->reg[SGI_BRIDGE_SLOT(BRIDGE_HOST_ERR_FIELD)] &
                           INT_HOST_FIELD;
-    uint64_t upper = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)];
-    uint64_t lower = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)];
-    uint64_t dest = ((upper & 0xffffu) << 32) | (uint32_t)lower;
-    unsigned int node;
+    unsigned int widget;
+    uint64_t dest = sgi_bridge_int_dest(s, &widget);
+    hwaddr where;
 
+    /*
+     * An unrouted error is one nobody asked for. Under a widget field this
+     * also refuses widget W at crosstalk address zero, which a guest could
+     * legitimately program: the guard predates the field and the datasheet
+     * is silent about it, so it stays as it was.
+     */
     if (!dest) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge: invalid-address error with no destination "
@@ -1210,10 +1290,18 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
         return;
     }
 
-    node = (dest >> XTALK_NODE_SHIFT) & 0x1ff;
-    sgi_bridge_deliver_interrupt(s, node,
-                                 dest & ((1ULL << XTALK_NODE_SHIFT) - 1),
-                                 number, true);
+    if (s->fabric_widget_shift) {
+        if (!sgi_bridge_widget_field_is_free(s, dest, "an error interrupt's")) {
+            return;
+        }
+        where = sgi_bridge_widget_packet(s, widget, dest);
+    } else {
+        where = sgi_bridge_node_packet(
+            s, (dest >> XTALK_NODE_SHIFT) & XTALK_NODE_MASK,
+            dest & MAKE_64BIT_MASK(0, XTALK_NODE_SHIFT));
+    }
+
+    sgi_bridge_deliver_interrupt(s, where, number, true);
 }
 
 static void sgi_bridge_update_pin(SGIBridgeState *s, int pin)
@@ -1264,14 +1352,26 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
 }
 
 /*
- * The unsettled seam with the machine's fabric representation: the offset
- * is the address and the widget is carried but not applied.
+ * Where a transfer lands in this machine's fabric address space. A machine
+ * that spends no bits on a widget takes the offset as the whole address:
+ * the Hub applies no translation of its own to a transfer a device started,
+ * so a crosstalk offset arriving from this chip is already the node
+ * physical. One that does spend bits puts the target widget in them, and
+ * refuses an offset that reaches them rather than misrouting it.
  */
-static hwaddr sgi_bridge_compose_xtalk(SGIBridgeState *s,
-                                       unsigned int target_widget,
-                                       hwaddr offset)
+static bool sgi_bridge_compose_xtalk(SGIBridgeState *s,
+                                     unsigned int target_widget,
+                                     hwaddr offset, hwaddr *fabric)
 {
-    return offset;
+    if (!s->fabric_widget_shift) {
+        *fabric = offset;
+        return true;
+    }
+    if (!sgi_bridge_widget_field_is_free(s, offset, "a transfer's")) {
+        return false;
+    }
+    *fabric = ((hwaddr)target_widget << s->fabric_widget_shift) | offset;
+    return true;
 }
 
 /*
@@ -1384,6 +1484,7 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
     uint64_t ate;
     unsigned int index;
     hwaddr offset;
+    hwaddr fabric;
 
     if (slot >= 0) {
         trace_sgi_bridge_dma_xlate(addr, slot, flag);
@@ -1410,9 +1511,11 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
                           "sgi-bridge: 64-bit DMA names widget 0, which the "
                           "crossbar cannot answer\n");
         }
-        entry.translated_addr =
-            sgi_bridge_compose_xtalk(s, widget, addr & BRIDGE_XTALK_PASS) &
-            ~page_mask;
+        if (!sgi_bridge_compose_xtalk(s, widget, addr & BRIDGE_XTALK_PASS,
+                                      &fabric)) {
+            return entry;
+        }
+        entry.translated_addr = fabric & ~page_mask;
         entry.perm = IOMMU_RW;
         trace_sgi_bridge_dma_xlate_64(addr, entry.translated_addr, widget);
         return entry;
@@ -1431,8 +1534,10 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
         }
 
         widget = (direct & DIRECT_WIDGET) >> DIRECT_WIDGET_SHIFT;
-        entry.translated_addr =
-            sgi_bridge_compose_xtalk(s, widget, offset) & ~page_mask;
+        if (!sgi_bridge_compose_xtalk(s, widget, offset, &fabric)) {
+            return entry;
+        }
+        entry.translated_addr = fabric & ~page_mask;
         entry.perm = IOMMU_RW;
         trace_sgi_bridge_dma_xlate_direct(addr, entry.translated_addr, widget);
         return entry;
@@ -1459,9 +1564,11 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
         return entry;
     }
 
-    entry.translated_addr =
-        sgi_bridge_compose_xtalk(s, (ate & ATE_TARGET_WIDGET) >> 8,
-                                 ate & ATE_ADDRESS) & ~page_mask;
+    if (!sgi_bridge_compose_xtalk(s, (ate & ATE_TARGET_WIDGET) >> 8,
+                                  ate & ATE_ADDRESS, &fabric)) {
+        return entry;
+    }
+    entry.translated_addr = fabric & ~page_mask;
     entry.perm = IOMMU_RW;
     return entry;
 }
@@ -1715,6 +1822,12 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                          "packets travel");
         return;
     }
+    if (s->fabric_widget_shift > SGI_BRIDGE_WIDGET_SHIFT_MAX) {
+        error_setg(errp, "the I/O bridge fabric widget shift %u would put the "
+                   "widget number outside a 64-bit address; %u is the largest",
+                   s->fabric_widget_shift, SGI_BRIDGE_WIDGET_SHIFT_MAX);
+        return;
+    }
 
     /*
      * The MicroLAN bus and the one part on it: the board identity EPROM,
@@ -1932,6 +2045,15 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT64("fabric-base", SGIBridgeState, fabric_base, 0),
     DEFINE_PROP_UINT32("fabric-node-shift", SGIBridgeState,
                        fabric_node_shift, 0),
+    /*
+     * Which four bits of a fabric address keep the destination widget.
+     * Zero means the machine keeps none, so this belongs with fabric-base
+     * and fabric-node-shift rather than taking the Hub's
+     * xtalk-widget-shift name, where zero is refused because it has no
+     * such meaning.
+     */
+    DEFINE_PROP_UINT32("fabric-widget-shift", SGIBridgeState,
+                       fabric_widget_shift, 0),
     DEFINE_PROP_UINT32("revision", SGIBridgeState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIBridgeState, part, 0xc002),
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),
