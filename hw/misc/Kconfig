@@ -277,6 +277,12 @@ config SGI_ELSC
     bool
     select I2C
 
+config SGI_O2000_MODULE_MGMT
+    bool
+    select AT24C
+    select PCF8584
+    select SGI_ELSC
+
 config SGI_IOC3
     bool
     default y if PCI_DEVICES

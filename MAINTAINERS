@@ -1513,6 +1513,7 @@ F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/sn0-*
 F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sn1-*
+F: tests/unit/test-sgi-o2000-module-mgmt*.c
 
 Jazz
 M: Hervé Poussineau <hpoussin@reactos.org>
