@@ -18,7 +18,7 @@
 #define HUB_INTERRUPT_SEND(node, pi) \
     (INBOUND_BASE + HUB_REMOTE_WINDOW + ((uint64_t)(node) << 39) + \
      (pi) * UINT64_C(0x200000) + 0x90)
-#define L1_PATH "/machine/peripheral/l1"
+#define L1_PATH "/machine/peripheral/l1c"
 #define IO_BASE (BASE + UINT64_C(0x400000))
 #define LB_BASE (BASE + UINT64_C(0x600000))
 #define XB_BASE (BASE + UINT64_C(0x700000))
@@ -37,9 +37,9 @@
 #define MACHINE MACHINE_BASE BEDROCK_DEVICE " -S"
 #define MACHINE_L1 \
     MACHINE_BASE \
-    "-device sgi-l1,id=l1 " \
+    "-device sgi-l1,id=l1c -device sgi-l1-uart,id=l1,controller=l1c " \
     BEDROCK_DEVICE \
-    ",l1-uart=/machine/peripheral/l1/sgi-l1[0],initiator-region=5 -S"
+    ",l1-uart=/machine/peripheral/l1/sgi-l1-uart[0],initiator-region=5 -S"
 
 static QTestState *bedrock_start(const char *extra)
 {
@@ -376,9 +376,9 @@ static void test_parent_l1_invalid_region(void)
         return;
     }
     s = qtest_init(MACHINE_BASE
-        "-device sgi-l1,id=l1 "
+        "-device sgi-l1,id=l1c -device sgi-l1-uart,id=l1,controller=l1c "
         BEDROCK_DEVICE
-        ",l1-uart=/machine/peripheral/l1/sgi-l1[0],initiator-region=64 -S");
+        ",l1-uart=/machine/peripheral/l1/sgi-l1-uart[0],initiator-region=64 -S");
     qtest_quit(s);
 }
 
@@ -394,9 +394,9 @@ static void test_parent_l1_missing_region(void)
         return;
     }
     s = qtest_init(MACHINE_BASE
-        "-device sgi-l1,id=l1 "
+        "-device sgi-l1,id=l1c -device sgi-l1-uart,id=l1,controller=l1c "
         BEDROCK_DEVICE
-        ",l1-uart=/machine/peripheral/l1/sgi-l1[0] -S");
+        ",l1-uart=/machine/peripheral/l1/sgi-l1-uart[0] -S");
     qtest_quit(s);
 }
 
