@@ -5,6 +5,7 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/datadir.h"
+#include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "chardev/char.h"
@@ -43,10 +44,12 @@
 
 #define SN1_HUB_LOCAL_REGISTERS (SN1_SPACE_HUB + UINT64_C(0x10000000))
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
+#define SN1_HUB_LOCAL_FLASH (SN1_SPACE_HUB + UINT64_C(0x1a000000))
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_REGISTERS (SN1_SPACE_HUB + UINT64_C(0x30000000))
 #define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
+#define SN1_FLASH_VIEW_SIZE (16 * MiB)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 #define SN1_XBRIDGE_HEAD_F 0xf
@@ -160,6 +163,60 @@ static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
     }
 }
 
+static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sn1: flash programming unsupported, dropping 0x%" PRIx64
+                  " at flash offset 0x%" HWADDR_PRIx "\n", value, offset);
+}
+
+static uint64_t sn1_flash_payload_read(void *opaque, hwaddr offset,
+                                       unsigned size)
+{
+    SN1MachineState *s = opaque;
+
+    return ldn_be_p((uint8_t *)memory_region_get_ram_ptr(&s->prom) + offset,
+                    size);
+}
+
+static void sn1_flash_payload_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size)
+{
+    sn1_flash_reject_write(offset, value);
+}
+
+static uint64_t sn1_flash_erased_read(void *opaque, hwaddr offset,
+                                      unsigned size)
+{
+    return MAKE_64BIT_MASK(0, size * 8);
+}
+
+static void sn1_flash_erased_write(void *opaque, hwaddr offset, uint64_t value,
+                                   unsigned size)
+{
+    sn1_flash_reject_write(offset + SN1_PROM_SIZE, value);
+}
+
+static const MemoryRegionOps sn1_flash_payload_ops = {
+    .read = sn1_flash_payload_read,
+    .write = sn1_flash_payload_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+static const MemoryRegionOps sn1_flash_erased_ops = {
+    .read = sn1_flash_erased_read,
+    .write = sn1_flash_erased_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
 static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                           Error **errp)
 {
@@ -221,6 +278,26 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     memory_region_add_subregion(system, SN1_HUB_LOCAL_HIGH_BOOT,
                                 &s->prom_local_high);
     memory_region_add_subregion(system, SN1_HUB_REMOTE_BOOT, &s->prom_remote);
+
+    /*
+     * The second software PROM selection sits 32 MiB above the boot window
+     * and spans the flash part's published 16 MiB logical capacity. Mirroring
+     * the supplied payload there and reading the remainder as erased is a
+     * compatibility choice, not a fitted-part or decoder claim. Both halves
+     * answer through callbacks so that every rejected write is logged.
+     */
+    memory_region_init(&s->prom_flash, OBJECT(machine), "sn1.prom.flash",
+                       SN1_FLASH_VIEW_SIZE);
+    memory_region_init_io(&s->prom_flash_payload, OBJECT(machine),
+                          &sn1_flash_payload_ops, s, "sn1.prom.flash-payload",
+                          SN1_PROM_SIZE);
+    memory_region_init_io(&s->prom_flash_erased, OBJECT(machine),
+                          &sn1_flash_erased_ops, s, "sn1.prom.flash-erased",
+                          SN1_FLASH_VIEW_SIZE - SN1_PROM_SIZE);
+    memory_region_add_subregion(&s->prom_flash, 0, &s->prom_flash_payload);
+    memory_region_add_subregion(&s->prom_flash, SN1_PROM_SIZE,
+                                &s->prom_flash_erased);
+    memory_region_add_subregion(system, SN1_HUB_LOCAL_FLASH, &s->prom_flash);
     return true;
 }
 
