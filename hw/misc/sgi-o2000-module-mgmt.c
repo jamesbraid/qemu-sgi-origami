@@ -72,19 +72,23 @@ static void mgmt_reset_state(SGIO2000ModuleMgmtState *s)
 }
 
 /*
- * The controller's own reinitialisation: its I2C interface and protocol
- * queues go back to reset while the publication enable latch is left alone.
+ * The controller's own reinitialisation: its wire interface and its protocol
+ * queues go back to reset, and the publication enable latch is left alone.
+ * It reaches no further. A reset does not establish a reset of the peers on
+ * a shared bus, and what an owner's reset does to a peer's transfer is not
+ * settled, so the node adapters and the shared NVRAM stay untouched here. A
+ * module reset reaches the nodes through the reset line the machine wires.
  * Never called from a reset phase, where resetting another object aborts.
  */
 static void mgmt_reinitialize(SGIO2000ModuleMgmtState *s)
 {
-    unsigned i;
-
     mgmt_reset_state(s);
-    bus_cold_reset(BUS(s->bus));
-    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
-        device_cold_reset(s->adapters[i]);
+    if (i2c_wire_reset_master(s->bus, GRANT_MASTER) == -ENOTSUP) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: reinitialised while "
+                      "driving the shared wire\n");
     }
+    device_cold_reset(DEVICE(s->msc));
 }
 
 static void mgmt_recovery_tick(SGIO2000ModuleMgmtState *s)
@@ -133,13 +137,29 @@ static void mgmt_wire_event(void *opaque, const I2CWireEvent *event)
 
     switch (s->grant_state) {
     case GRANT_START:
-        if (old_scl && event->scl && old_sda && !event->sda) {
-            s->grant_state = GRANT_BITS;
-            s->grant_bit = 0;
-            s->grant_bit_sampled = false;
-            /* One high interval of START hold before the first clock. */
-            mgmt_stage(s, s->grant_byte & 0x80, true, WIRE_HALF_PERIOD_NS);
+        if (!(old_scl && event->scl && old_sda && !event->sda)) {
+            break;
         }
+        if (!(i2c_wire_contenders(s->bus) & (1ULL << GRANT_MASTER))) {
+            /*
+             * A peer opened the bus between the eligibility check and this
+             * controller's own line transition, so the START belongs to it.
+             * Drop the grant rather than clock a byte onto its transaction.
+             */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-o2000-module-management: a peer's START "
+                          "overtook the controller's grant\n");
+            s->grant_active = false;
+            s->grant_state = GRANT_IDLE;
+            i2c_wire_reset_master(s->bus, GRANT_MASTER);
+            mgmt_recovery_tick(s);
+            break;
+        }
+        s->grant_state = GRANT_BITS;
+        s->grant_bit = 0;
+        s->grant_bit_sampled = false;
+        /* One high interval of START hold before the first clock. */
+        mgmt_stage(s, s->grant_byte & 0x80, true, WIRE_HALF_PERIOD_NS);
         break;
     case GRANT_BITS:
         if (!old_scl && event->scl) {
@@ -262,23 +282,31 @@ static void mgmt_pulse_complete(void *opaque)
     }
 }
 
-static void mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
+static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
 {
+    if (s->pulse_active) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: %s requested during a %s "
+                      "pulse\n", nmi ? "NMI" : "reset",
+                      s->pulse_nmi ? "NMI" : "reset");
+        return false;
+    }
     s->pulse_active = true;
     s->pulse_nmi = nmi;
     qemu_set_irq(nmi ? s->nmi_out : s->reset_out, 1);
     s->pulse_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PULSE_NS;
     timer_mod_ns(s->pulse_timer, s->pulse_deadline);
+    return true;
 }
 
-void sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s)
+bool sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s)
 {
-    mgmt_start_pulse(s, false);
+    return mgmt_start_pulse(s, false);
 }
 
-void sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s)
+bool sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s)
 {
-    mgmt_start_pulse(s, true);
+    return mgmt_start_pulse(s, true);
 }
 
 void sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on)
@@ -380,21 +408,22 @@ DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
 
 /*
  * A destructive command must not be acknowledged unless it will happen. The
- * lines are required at realize, so the reachable refusal is an overlapping
- * pulse, whose handling no source establishes.
+ * lines are required at realize, so the reachable refusal is a command that
+ * arrives while a pulse is still running. No source settles that overlap, so
+ * every destructive action is refused for the duration rather than each
+ * being given a different answer. That is a model choice, not a fact.
  */
 bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
                                        SGIElscAction action)
 {
+    if (s->pulse_active) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: destructive command "
+                      "during a %s pulse\n", s->pulse_nmi ? "NMI" : "reset");
+        return false;
+    }
     switch (action) {
     case SGI_ELSC_ACTION_RESET:
-        if (s->pulse_active) {
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-o2000-module-management: reset requested "
-                          "during a %s pulse\n",
-                          s->pulse_nmi ? "NMI" : "reset");
-            return false;
-        }
         return s->reset_out != NULL;
     case SGI_ELSC_ACTION_CYCLE:
     case SGI_ELSC_ACTION_SHUTDOWN:
@@ -434,13 +463,26 @@ static void mgmt_elsc_slave_active(void *opaque, bool active)
     ((SGIO2000ModuleMgmtState *)opaque)->slave_active = active;
 }
 
+/*
+ * Automatic input selection follows the processor that most recently sent
+ * console output. Two model choices sit here, neither of them established:
+ * the controller starts pointed at code zero, so input arriving before any
+ * processor has spoken is announced to code zero; and the value handed over
+ * is a QEMU CPU index treated as a grant processor code, which assumes how
+ * the machine enumerates processors.
+ */
 static void mgmt_elsc_console_owner(void *opaque, unsigned processor)
 {
     SGIO2000ModuleMgmtState *s = opaque;
 
-    if (processor < PROCESSOR_CODES) {
-        s->console_processor = processor;
+    if (processor >= PROCESSOR_CODES) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-o2000-module-management: console output from "
+                      "processor %u, outside the eight published codes\n",
+                      processor);
+        return;
     }
+    s->console_processor = processor;
 }
 
 static void mgmt_elsc_console_input(void *opaque, bool pending)
