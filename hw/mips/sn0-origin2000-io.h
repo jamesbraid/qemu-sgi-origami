@@ -8,6 +8,8 @@
 typedef struct SN0Origin2000HubIO {
     MemoryRegion face;
     AddressSpace target;
+    AddressSpace local_registers;
+    MemoryRegion local_register_view;
     uint64_t memory_size;
     uint64_t xtalk_base;
     uint64_t node_stride;

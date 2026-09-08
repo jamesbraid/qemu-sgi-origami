@@ -54,6 +54,46 @@ static uint64_t packet(QTestState *q, uint64_t addr, unsigned size,
     return packet_from(q, 0, addr, size, write, data);
 }
 
+static void test_physical_identity(void)
+{
+    QTestState *q = start();
+    uint64_t probe = (1ULL << 47) | 0x01600000;
+    uint64_t status[2];
+    unsigned i, bit, size;
+
+    /* Equal node identities must not collapse two physical receivers. */
+    hub_write(q, 0, 0x600000, 0);
+    hub_write(q, 1, 0x600000, 1 << 18);
+    status[0] = hub_read(q, 0, 0x600000);
+    status[1] = hub_read(q, 1, 0x600000);
+    g_assert_cmphex(status[0], !=, status[1]);
+    for (i = 0; i < 2; i++) {
+        g_assert_cmphex(packet_from(q, i, probe, 8, false, 0), ==, 0);
+        g_assert_cmphex(qtest_readq(q, CONTROL + i * 0x1000 + 8), ==,
+                        status[i]);
+    }
+    hub_write(q, 1, 0x600000, 0x2300);
+    g_assert_cmphex(packet_from(q, 1, probe, 8, false, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(q, CONTROL + 0x1008), ==,
+                    hub_read(q, 1, 0x600000));
+
+    for (bit = 0; bit < 47; bit++) {
+        g_assert_cmphex(packet(q, probe ^ (1ULL << bit), 8, false, 0), !=, 0);
+    }
+    for (size = 1; size < 8; size *= 2) {
+        g_assert_cmphex(packet(q, probe, size, false, 0), !=, 0);
+    }
+    g_assert_cmphex(packet(q, probe, 8, true, 0x7700), !=, 0);
+    g_assert_cmphex(hub_read(q, 0, 0x600000), ==, status[0]);
+    g_assert_cmphex(packet(q, 0x01600000, 8, true, 0xaabbccdd), ==, 0);
+    g_assert_cmphex(packet(q, 0x01600000, 8, false, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(q, CONTROL + 8), ==, 0xaabbccdd);
+    g_assert_cmphex(packet(q, 4, 4, true, 0x12345678), ==, 0);
+    g_assert_cmphex(packet(q, 4, 4, false, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(q, CONTROL + 8), ==, 0x12345678);
+    qtest_quit(q);
+}
+
 static void test_memory(void)
 {
     QTestState *q = start();
@@ -255,7 +295,13 @@ static void test_migration(void)
     g_assert_cmphex(hub_read(to, 0, 0xb0), ==, 1 << 7);
     g_assert_cmphex(packet(to, memory, 8, false, 0), ==, 0);
     g_assert_cmphex(qtest_readq(to, CONTROL + 8), ==, 0x76543210);
+    g_assert_cmphex(packet(to, (1ULL << 47) | 0x01600000, 8, false, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(to, CONTROL + 8), ==,
+                    hub_read(to, 0, 0x600000));
     hub_write(to, 0, 0x600000, 0x1900);
+    g_assert_cmphex(packet(to, (1ULL << 47) | 0x01600000, 8, false, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(to, CONTROL + 8), ==,
+                    hub_read(to, 0, 0x600000));
     g_assert_cmphex(packet(to, irq, 8, true, 0x47), !=, 0);
     irq = (1ULL << 47) | (0x19ULL << 38) | 0x01800090;
     g_assert_cmphex(packet(to, irq, 8, true, 0x47), ==, 0);
@@ -269,6 +315,7 @@ static void test_migration(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sn0/hub-packet/physical-identity", test_physical_identity);
     qtest_add_func("/sn0/hub-packet/memory", test_memory);
     qtest_add_func("/sn0/hub-packet/interrupt", test_irq);
     qtest_add_func("/sn0/hub-packet/reject", test_rejections);

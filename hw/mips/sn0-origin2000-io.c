@@ -9,6 +9,8 @@
 #define PACKET_IO (1ULL << 47)
 #define PACKET_NASID_SHIFT 38
 #define PACKET_MODIFY 0x01800090ULL
+#define PACKET_IDENTITY 0x01600000ULL
+#define HUB_NETWORK_IDENTITY 0x600000
 #define SUPPORTED_NODE_STRIDE (1ULL << 32)
 #define SUPPORTED_NASIDS 256
 
@@ -42,12 +44,17 @@ static MemTxResult packet_read(void *opaque, hwaddr addr, uint64_t *data,
     uint8_t bytes[8] = { 0 };
     hwaddr target;
     MemTxResult result;
+    AddressSpace *space = &io->target;
 
     *data = 0;
-    if (!packet_address(io, addr, size, false, &target)) {
+    if (size == 8 && addr == (PACKET_IO | PACKET_IDENTITY)) {
+        /* The selected physical receiver, even when reset NASIDs coincide. */
+        space = &io->local_registers;
+        target = 0;
+    } else if (!packet_address(io, addr, size, false, &target)) {
         return MEMTX_ERROR;
     }
-    result = address_space_read(&io->target, target, attrs,
+    result = address_space_read(space, target, attrs,
                                 bytes + 8 - size, size);
     *data = ldq_be_p(bytes);
     return result;
@@ -103,11 +110,19 @@ bool sn0_origin2000_hub_io_init(SN0Origin2000HubIO *io, SN0NodeState *node,
                           "sn0.hub.packet", 1ULL << 48);
     address_space_init(&io->target, &node->device_view,
                        "sn0.hub.packet.target");
+    /* Keep the sole local register independent of its system-bus placement. */
+    memory_region_init_alias(&io->local_register_view, OBJECT(node),
+                             "sn0.hub.packet.local-register-view",
+                             &node->hub.regs, HUB_NETWORK_IDENTITY, 8);
+    address_space_init(&io->local_registers, &io->local_register_view,
+                       "sn0.hub.packet.local-registers");
     return true;
 }
 
 void sn0_origin2000_hub_io_destroy(SN0Origin2000HubIO *io)
 {
+    address_space_destroy(&io->local_registers);
+    object_unparent(OBJECT(&io->local_register_view));
     address_space_destroy(&io->target);
     object_unparent(OBJECT(&io->face));
 }
