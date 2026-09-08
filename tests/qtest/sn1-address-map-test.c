@@ -1460,7 +1460,14 @@ static void test_l1_operator_console_uses_serial0(const void *data)
     qts = machine_start_with(prom_path, extra);
     g_assert_cmpint(close(sv[1]), ==, 0);
 
-    expect_console_text(sv[0], "001c01-L1> ");
+    /* The L1 powers the node at start and enters console mode on its own. */
+    expect_console_text(sv[0], "INFO: 001c01 powering up the system.\r\n"
+                               "001c01-L1> \r\n"
+                               "entering console mode  001c01 CPU0, "
+                               "<CTRL_T> to escape to L1\r\n");
+    g_assert_cmpint(write(sv[0], "\024\r", 2), ==, 2);
+    expect_console_text(sv[0], "escaping to L1 system controller\r\n"
+                               "001c01-L1> ");
 
     qtest_quit(qts);
     g_assert_cmpint(close(sv[0]), ==, 0);
