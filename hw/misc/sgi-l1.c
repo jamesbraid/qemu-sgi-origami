@@ -160,6 +160,18 @@ static void l1_display_print(SGIL1State *s)
 
 static const char *const l1_reasons[] = { "", "COMMAND", "PANEL", "OS" };
 
+/* The stored brick-type character the identity request returns. */
+static uint32_t l1_brick_type_character(SGIL1State *s)
+{
+    if (!strcmp(s->brick_type, "ip35")) {
+        return 0x43;
+    }
+    if (!strcmp(s->brick_type, "ip37")) {
+        return 0x33;
+    }
+    return 0x34;
+}
+
 static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length);
 
 static void l1_reason(SGIL1State *s, uint8_t reason)
@@ -173,7 +185,7 @@ static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
                           const char *text)
 {
     uint8_t payload[127];
-    g_autofree char *line = g_strdup_printf("\r\n%03uc%02u ATTN: %s",
+    g_autofree char *line = g_strdup_printf("\r\n%03uc%02u ATTN: %s\r\n",
                                             s->rack, s->bay, text);
     unsigned n = 0, length = strlen(line) + 1;
 
@@ -316,7 +328,8 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
     uint16_t crc = 0xffff;
     unsigned n = 0;
 
-    assert(length <= 127);
+    /* The firmware's frame is 128 payload bytes including the header. */
+    assert(length <= 128);
     if (!s->uart) {
         qemu_log_mask(LOG_UNIMP, "sgi-l1: no UART window attached\n");
         return;
@@ -342,7 +355,7 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
 static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
                      unsigned count, const uint8_t *fields, unsigned length)
 {
-    uint8_t payload[127];
+    uint8_t payload[128];
 
     assert(length <= sizeof(payload) - 6);
     payload[0] = 0x20 | channel;
@@ -396,14 +409,16 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
     uint32_t requested = ldl_be_p(args + 16);
     unsigned index, length;
     SGIL1EEPROM *record;
-    uint8_t fields[121];
+    uint8_t fields[122];
 
     if (args[0] || args[5] || args[10] || args[15]) {
         l1_reply(s, channel, -100, 0, NULL, 0);
         return;
     }
-    if (component >= 16) {
-        /* The absent check precedes the range check. */
+    /* The absent check precedes the range check: no file in any area. */
+    if (component >= 16 || (!s->records[component].length &&
+                            !s->records[16 + component].length &&
+                            !s->records[32 + component].length)) {
         l1_reply(s, channel, -104, 0, NULL, 0);
         return;
     }
@@ -432,12 +447,13 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
             return;
         }
     }
-    if (offset > record->length) {
+    /* An offset at or past the area is out of range. */
+    if (offset >= record->length) {
         l1_reply(s, channel, -105, 0, NULL, 0);
         return;
     }
     length = MIN(requested, record->length - offset);
-    if (length > 115) {
+    if (length > 116) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: EEPROM reply exceeds frame capacity\n");
         l1_reply(s, channel, -105, 0, NULL, 0);
@@ -883,7 +899,7 @@ static void l1_request(SGIL1State *s)
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
     if (!l1_local(s, address)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
+        qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: no receiver for destination 0x%08x\n", address);
         l1_router_error(s, channel);
         return;
@@ -933,7 +949,7 @@ static void l1_request(SGIL1State *s)
                       address & 0x1f);
         return;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1: no receiver for task %u\n",
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: no receiver for task %u\n",
                       address & 0x1f);
         return;
     }
@@ -1064,7 +1080,7 @@ static void l1_request(SGIL1State *s)
             break;
         }
         if (args[0] == 0 && args[5] == 0 && args[10] == 0) {
-            l1_log(s, "N0: PROM %u.%u (PR %u)", ldl_be_p(args + 1),
+            l1_log(s, "N0: PROM %x.%x (PR %u)", ldl_be_p(args + 1),
                    ldl_be_p(args + 6), ldl_be_p(args + 11));
         }
         s->events_enabled = false;
@@ -1120,7 +1136,7 @@ static void l1_request(SGIL1State *s)
         break;
     case 0x1002:
     case 0x1007:
-        if (count != 1) {
+        if (count < 1) {
             error = -100;
             break;
         }
@@ -1162,26 +1178,18 @@ static void l1_request(SGIL1State *s)
     }
     case 2:
     case 3:
-        if (count != 0) {
-            error = -100;
-            break;
-        }
         fields[0] = 0;
         stl_be_p(fields + 1, (s->rack << 6) | s->bay);
         field_count = 1;
         field_length = 5;
         if (command == 3) {
             fields[5] = 0;
-            stl_be_p(fields + 6, 'C');
+            stl_be_p(fields + 6, l1_brick_type_character(s));
             field_count = 2;
             field_length = 10;
         }
         break;
     case 5:
-        if (count) {
-            error = -100;
-            break;
-        }
         if (s->revision_major < 0) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: firmware revision metadata not configured\n");
@@ -1196,7 +1204,7 @@ static void l1_request(SGIL1State *s)
         field_length = 15;
         break;
     case 6:
-        if (count != 4 || args_len != 20) {
+        if (count < 4 || args_len < 20) {
             error = -100;
             break;
         }
@@ -1367,6 +1375,7 @@ static int l1_post_load(void *opaque, int version_id)
     if (s->command_len >= sizeof(s->command) ||
         s->frame_len > SGI_L1_FRAME_SIZE ||
         s->port_field > 0x7f ||
+        s->two_bit_setting > 3 || s->debug_switches > 0xffff ||
         s->log_head >= SGI_L1_LOG_ENTRIES ||
         s->log_len > SGI_L1_LOG_ENTRIES ||
         s->rack >= 0x3ff || s->bay >= 0x3f ||
@@ -1480,6 +1489,14 @@ static void l1_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "L1 node-position must be 0 to 3");
         return;
     }
+    if (!s->brick_type) {
+        s->brick_type = g_strdup("ip45");
+    }
+    if (strcmp(s->brick_type, "ip45") && strcmp(s->brick_type, "ip35") &&
+        strcmp(s->brick_type, "ip37")) {
+        error_setg(errp, "L1 brick-type must be ip45, ip35 or ip37");
+        return;
+    }
     if (s->debug_switches > 0xffff || s->processors > 32 ||
         (s->system_serial && strlen(s->system_serial) > 32) ||
         (s->brick_serial && strlen(s->brick_serial) > 32)) {
@@ -1562,6 +1579,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_STRING("system-serial", SGIL1State, system_serial),
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
+    DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
 };
 
 static void l1_init(Object *obj)
@@ -1602,6 +1620,7 @@ static void l1_finalize(Object *obj)
     }
     g_free(s->system_serial);
     g_free(s->brick_serial);
+    g_free(s->brick_type);
 }
 
 /* UART window reset, migration and construction. */
