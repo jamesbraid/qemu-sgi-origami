@@ -1958,7 +1958,13 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     dc->realize = sgi_bridge_realize;
     dc->unrealize = sgi_bridge_unrealize;
     dc->vmsd = &vmstate_sgi_bridge;
-    dc->user_creatable = false;
+    /*
+     * A machine wires this chip to a fabric and a board identity, and a
+     * command line can wire the same links to test parts instead -- which
+     * is how the chip's own address arithmetic is asserted without a
+     * machine's constants standing between the test and the answer.
+     */
+    dc->user_creatable = true;
     hc->plug = sgi_bridge_plug;
     hc->is_hotpluggable_bus = sgi_bridge_is_hotpluggable_bus;
     rc->phases.hold = sgi_bridge_reset_hold;
