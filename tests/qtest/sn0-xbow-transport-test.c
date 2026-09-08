@@ -95,10 +95,14 @@ static void test_attributes_errors(void)
     qtest_writeq(qts, CONTROL + 0x80, (10ULL << 48) | 0xdead0);
     qtest_writeq(qts, CONTROL + 0x88, 1);
     g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+    qtest_writeq(qts, PACKET + (10ULL << 48) + 0x100,
+                 0xfedcba9876543210ULL);
+    g_assert_cmphex(field(qts, 3, 0), ==, 4);
+    g_assert_cmphex(field(qts, 3, 16), ==, 0xfedcba9876543210ULL);
     qtest_writeq(qts, CONTROL + 0x88, 2);
     g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
-    g_assert_cmphex(field(qts, 3, 0), ==, 4);
-    g_assert_cmphex(field(qts, 3, 16), ==, 0x1032547698badcfeULL);
+    g_assert_cmphex(field(qts, 3, 0), ==, 5);
+    g_assert_cmphex(field(qts, 3, 16), ==, 0xfedcba9876543210ULL);
     g_assert_cmphex(field(qts, 3, 24), ==, 0x1234);
     qtest_quit(qts);
 }
