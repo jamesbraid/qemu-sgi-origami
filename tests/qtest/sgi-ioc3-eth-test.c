@@ -1132,11 +1132,8 @@ static void tx_one(QTestState *qts, uint32_t base, uint32_t slot,
     ioc3_writel(qts, ENET_TX_PRODUCE, (slot + 1) * TX_DESC_SIZE);
 }
 
-/*
- * One size per case so each reports its own verdict against the
- * snapshot-and-write-back defect these exist to fail on.
- */
-static void test_a_reply_inside_the_walk_at_one_size(const void *data)
+/* One size per case so a packet-size boundary reports its own verdict. */
+static void test_a_reply_after_the_walk_at_one_size(const void *data)
 {
     const uint32_t size = GPOINTER_TO_UINT(data);
     QTestState *qts;
@@ -1169,7 +1166,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         build_icmp_echo(frame, size, gw_mac);
         tx_one(qts, base, slot, frame, size);
 
-        /* No polling: a wait would also pass on a late delivery. */
+        /* The main loop runs the queued receive before this read returns. */
         g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                         (slot + 1) * RX_RING_STRIDE);
 
@@ -1188,7 +1185,7 @@ static void test_a_reply_inside_the_walk_at_one_size(const void *data)
         g_assert_cmphex(landed[13], ==, 0x00);
         g_assert_cmphex(landed[34], ==, 0x00);
 
-        /* The receive source survived the walk that carried it. */
+        /* The receive source is combined with the completed transmit. */
         status = ioc3_readl(qts, ENET_INT_STATUS);
         g_assert_cmphex(status & ENET_INT_RX_TIMER, ==, ENET_INT_RX_TIMER);
         ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
@@ -1494,11 +1491,11 @@ int main(int argc, char **argv)
                         test_a_transmit_buffer_that_cannot_be_read);
 
     for (i = 0; i < ARRAY_SIZE(walk_sizes); i++) {
-        char *name = g_strdup_printf("sgi-ioc3-eth/reply-inside-the-walk/%u",
+        char *name = g_strdup_printf("sgi-ioc3-eth/reply-after-the-walk/%u",
                                      walk_sizes[i]);
 
         qtest_add_data_func(name, GUINT_TO_POINTER(walk_sizes[i]),
-                            test_a_reply_inside_the_walk_at_one_size);
+                            test_a_reply_after_the_walk_at_one_size);
         g_free(name);
     }
     qtest_add_data_func("sgi-ioc3-eth/burst-behind-one-doorbell", NULL,

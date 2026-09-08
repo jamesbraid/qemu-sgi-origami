@@ -621,6 +621,22 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
 void qtest_writel(QTestState *s, uint64_t addr, uint32_t value);
 
 /**
+ * qtest_writel_then_readl:
+ * @s: #QTestState instance to operate on.
+ * @write_addr: Guest address to write to.
+ * @value: Value being written.
+ * @read_addr: Guest address to read from.
+ *
+ * Sends both operations in one batch, before the server yields to its main
+ * loop. This lets a test distinguish work done inside the write callback from
+ * work deferred to a bottom half.
+ *
+ * Returns: Value read from @read_addr.
+ */
+uint32_t qtest_writel_then_readl(QTestState *s, uint64_t write_addr,
+                                 uint32_t value, uint64_t read_addr);
+
+/**
  * qtest_writeq:
  * @s: #QTestState instance to operate on.
  * @addr: Guest address to write to.

@@ -3388,11 +3388,7 @@ static void test_the_ethernet_interrupt_line_drops_when_acknowledged(
     close(sv[0]);
 }
 
-/*
- * User-mode networking answers inside the doorbell write, so an engine
- * snapshotting the status register around the walk reports only the
- * transmit sources and the frame's interrupt is lost.
- */
+/* User-mode networking answers synchronously while the doorbell is handled. */
 static QTestState *sn0_ioc3_attach_with_user_net(void)
 {
     QTestState *qts = qtest_init("-M origin200 "
@@ -3404,7 +3400,7 @@ static QTestState *sn0_ioc3_attach_with_user_net(void)
     return qts;
 }
 
-static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
+static void test_a_backend_reply_waits_until_after_transmit(const void *data)
 {
     QTestState *qts;
     /*
@@ -3424,7 +3420,7 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     uint32_t ring = RAM_SCRATCH + 0x8000;
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
     uint32_t word0, word1, status;
-    unsigned int i;
+    unsigned int attempt, i;
 
     qts = sn0_ioc3_attach_with_user_net();
 
@@ -3465,13 +3461,20 @@ static void test_a_reply_during_transmit_keeps_its_interrupt(const void *data)
     qtest_writel(qts, TX_RING_HI, 0);
     qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
 
-    qtest_writel(qts, TX_PRODUCE, 128);
-
     /*
-     * No polling: the reply is delivered inside the doorbell write, and a
-     * wait would also pass on a later delivery.
+     * The synchronous backend reply must not re-enter receive while the
+     * transmit doorbell is still being handled.
      */
-    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+    g_assert_cmphex(qtest_writel_then_readl(qts, TX_PRODUCE, 128,
+                                            RX_CONSUME), ==, 0);
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) == 8) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpuint(attempt, <, 200);
 
     word0 = qtest_readl(qts, rxbuf + 0);
     g_assert_cmphex(word0 & 0x80000000u, ==, 0x80000000u);
@@ -4819,8 +4822,8 @@ int main(int argc, char **argv)
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
     qtest_add_data_func("sn0/ioc3/ethernet-no-reply-raises-nothing", NULL,
                         test_a_transmit_with_no_reply_raises_nothing);
-    qtest_add_data_func("sn0/ioc3/ethernet-reply-during-transmit", NULL,
-                        test_a_reply_during_transmit_keeps_its_interrupt);
+    qtest_add_data_func("sn0/ioc3/ethernet-reply-after-transmit", NULL,
+                        test_a_backend_reply_waits_until_after_transmit);
     qtest_add_data_func("sn0/ioc3/media-interface-never-busy", NULL,
                         test_the_media_interface_never_reads_busy);
     qtest_add_data_func("sn0/ioc3/buffer-ram-halves-are-distinct", NULL,

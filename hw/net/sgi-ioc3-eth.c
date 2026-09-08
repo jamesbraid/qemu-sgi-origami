@@ -5,6 +5,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qapi/error.h"
 #include "hw/net/sgi-ioc3-eth.h"
 #include "hw/core/irq.h"
@@ -92,7 +93,7 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
     uint32_t mcr = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL);
     uint32_t need = SGI_IOC3_ENET_MCR_RX_DMA_EN | SGI_IOC3_ENET_MCR_RX_EN;
 
-    if ((mcr & need) != need) {
+    if (s->defer_backend_rx || (mcr & need) != need) {
         return false;
     }
 
@@ -404,6 +405,13 @@ static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
            (SGI_IOC3_ENET_MCR_TX_DMA_EN | SGI_IOC3_ENET_MCR_TX_EN);
 }
 
+static void sgi_ioc3_eth_rx_flush(void *opaque)
+{
+    SGIIOC3EthState *s = opaque;
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
+}
+
 static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 {
     uint32_t tx_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_RING_LO);
@@ -415,11 +423,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
                        << 32) | (tx_lo & SGI_IOC3_ENET_TX_BASE_MASK);
     uint32_t consume = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_CONSUME) &
                        SGI_IOC3_ENET_TX_CONSUME_MASK;
-    /*
-     * Sources accumulate apart from the status register: a backend can
-     * answer from inside the send and raise a receive source mid-walk.
-     */
     bool loopback = sgi_ioc3_eth_looping_back(s);
+    bool sent_to_backend = false;
     uint32_t raised = 0;
     bool completed_one = false;
 
@@ -497,7 +502,9 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
                 sgi_ioc3_eth_deliver(s, s->frame, len,
                                      sgi_ioc3_eth_mac_loopback(s));
             } else {
+                s->defer_backend_rx = true;
                 qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
+                sent_to_backend = true;
             }
         }
 
@@ -520,6 +527,11 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS,
                       sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) | raised);
     sgi_ioc3_enet_update_irq(s);
+
+    s->defer_backend_rx = false;
+    if (sent_to_backend) {
+        qemu_bh_schedule(s->rx_flush_bh);
+    }
 }
 
 static uint64_t sgi_ioc3_enet_read_impl(void *opaque, hwaddr addr,
@@ -709,6 +721,8 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     s->nic = qemu_new_nic(&sgi_ioc3_eth_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), dev->id,
                           &dev->mem_reentrancy_guard, s);
+    s->rx_flush_bh = qemu_bh_new_guarded(sgi_ioc3_eth_rx_flush, s,
+                                         &dev->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 
     /* The callback fires on change only; read the initial link state. */
@@ -719,6 +733,7 @@ static void sgi_ioc3_eth_unrealize(DeviceState *dev)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(dev);
 
+    qemu_bh_delete(s->rx_flush_bh);
     qemu_del_nic(s->nic);
     address_space_destroy(&s->dma_as);
 }
@@ -727,6 +742,8 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(obj);
 
+    qemu_bh_cancel(s->rx_flush_bh);
+    s->defer_backend_rx = false;
     sgi_ioc3_eth_reset_registers(s, false);
 }
 
