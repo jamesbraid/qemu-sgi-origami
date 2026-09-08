@@ -104,6 +104,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_CMDRING      0x700
 #define TI_CMD_SET_PROMISC_MODE 0x0a
 #define TI_CMD_CODE_PROMISC_ENB 0x01
+#define TI_CMD_SET_MAC_ADDR 0x0c
 #define TI_CMD_SET_RX_JUMBO_PROD_IDX 0x10
 #define TI_MHC_CLEARINT     0x00000002
 #define TI_MHC_MASK_INTS    0x00000040
@@ -1460,6 +1461,173 @@ static void test_receive(const void *data)
     close(sv[0]);
 }
 
+static void set_station_address(QTestState *qts, const uint8_t mac[6])
+{
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_PAR0,
+                 ((uint32_t)mac[0] << 8) | mac[1]);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_PAR1,
+                 ((uint32_t)mac[2] << 24) |
+                 ((uint32_t)mac[3] << 16) |
+                 ((uint32_t)mac[4] << 8) | mac[5]);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_CMDRING,
+                 (uint32_t)TI_CMD_SET_MAC_ADDR << 24);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_CMDPROD_IDX, 1);
+}
+
+/* The SET_MAC_ADDR command makes the address in PAR0/PAR1 active. */
+static void test_set_mac_command_updates_filter(const void *data)
+{
+    static const uint8_t new_mac[6] = {
+        0x52, 0x54, 0x00, 0x65, 0x43, 0x21,
+    };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[sizeof(rx_frame_ours)];
+    uint8_t landed[sizeof(rx_frame_ours)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    set_station_address(qts, new_mac);
+
+    /* Only the frame for the new address may consume the posted buffer. */
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    memcpy(frame, rx_frame_ours, sizeof(frame));
+    memcpy(frame, new_mac, sizeof(new_mac));
+    net_send_frame(sv[0], frame, sizeof(frame));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* A chip reset makes the configured address active again. */
+static void test_reset_restores_configured_mac(const void *data)
+{
+    static const uint8_t new_mac[6] = {
+        0x52, 0x54, 0x00, 0x65, 0x43, 0x21,
+    };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[sizeof(rx_frame_ours)];
+    uint8_t landed[sizeof(rx_frame_ours)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+    set_station_address(qts, new_mac);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+
+    go_operational(qts);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    /* The pre-reset programmed address must no longer consume the buffer. */
+    memcpy(frame, rx_frame_ours, sizeof(frame));
+    memcpy(frame, new_mac, sizeof(new_mac));
+    net_send_frame(sv[0], frame, sizeof(frame));
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void tigon_migrate(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+/* Migration preserves the station address currently filtering traffic. */
+static void test_programmed_mac_survives_migration(const void *data)
+{
+    static const uint8_t new_mac[6] = {
+        0x52, 0x54, 0x00, 0x65, 0x43, 0x21,
+    };
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    int from_sv[2], to_sv[2];
+    QTestState *from, *to;
+    uint8_t frame[sizeof(rx_frame_ours)];
+    uint8_t landed[sizeof(rx_frame_ours)];
+
+    tmpdir = g_dir_make_tmp("sn0-tigon-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    socket = g_build_filename(tmpdir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    from = tigon_init_netdev(from_sv[1]);
+    close(from_sv[1]);
+    go_operational(from);
+    qtest_memset(from, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(from, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(from, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    set_station_address(from, new_mac);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    dest_args = g_strdup_printf(
+        "-M origin200 -netdev socket,fd=%d,id=n0 "
+        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 -incoming %s",
+        to_sv[1], uri);
+    to = qtest_init(dest_args);
+    close(to_sv[1]);
+    tigon_migrate(from, uri);
+
+    /* The configured address must remain inactive after migration. */
+    net_send_frame(to_sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    memcpy(frame, rx_frame_ours, sizeof(frame));
+    memcpy(frame, new_mac, sizeof(new_mac));
+    net_send_frame(to_sv[0], frame, sizeof(frame));
+    g_assert_cmphex(wait_return_prod(to), ==, 1);
+    qtest_memread(to, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    qtest_quit(to);
+    qtest_quit(from);
+    close(to_sv[0]);
+    close(from_sv[0]);
+    unlink(socket);
+    g_assert_cmpint(rmdir(tmpdir), ==, 0);
+}
+
 /*
  * Build an IPv4 frame of a given protocol and total payload length, with the
  * L4 checksum field left zero. Returns the frame length. The caller owns the
@@ -2315,6 +2483,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/payload-skips-lane-swap", NULL,
                         test_payload_skips_lane_swap);
     qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
+    qtest_add_data_func("/sn0/tigon/set-mac-command-updates-filter", NULL,
+                        test_set_mac_command_updates_filter);
+    qtest_add_data_func("/sn0/tigon/reset-restores-configured-mac", NULL,
+                        test_reset_restores_configured_mac);
+    qtest_add_data_func("/sn0/tigon/programmed-mac-survives-migration", NULL,
+                        test_programmed_mac_survives_migration);
     qtest_add_data_func("/sn0/tigon/receive-payload-dma-error", NULL,
                         test_receive_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,

@@ -59,6 +59,7 @@ struct TigonState {
 
     NICState *nic;
     NICConf conf;
+    MACAddr station_addr;    /* active filter; conf holds the reset address */
 
     /* PCI identity, configurable so the SGI board is one instantiation. */
     uint16_t vendor_id;
