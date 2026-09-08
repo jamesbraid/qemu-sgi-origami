@@ -318,6 +318,8 @@ static bool l1_task_command(uint32_t address, uint16_t command)
     case 3:
     case 5:
     case 6:
+    case 0xe:
+    case 0x1002:
     case 0x1004:
     case 0x1005:
         return true;
@@ -384,6 +386,24 @@ static void l1_request(SGIL1State *s)
         field_count = command == 0xa ? 2 : 1;
         field_length = 5 * field_count;
         memset(fields, 0, field_length);
+        break;
+    case 0xe:
+        /* The firmware reads no argument here, so extra ones are answered. */
+        fields[0] = 0;
+        stl_be_p(fields + 1, (s->port_field >> 5) & 3);
+        field_count = 1;
+        field_length = 5;
+        break;
+    case 0x1002:
+        if (count != 1) {
+            error = -100;
+            break;
+        }
+        if (args[0] != 0) {
+            error = -105;
+            break;
+        }
+        s->port_field = ((s->port_field & 0x60) | ldl_be_p(args + 1)) & 0x7f;
         break;
     case 0x1004:
     case 0x1005:
@@ -608,6 +628,7 @@ static void l1_reset_enter(Object *obj, ResetType type)
     s->console_mode = s->return_to_console = false;
     s->command_len = 0;
     memset(s->display, 0, sizeof(s->display));
+    s->port_field = s->node_position << 5;
 }
 
 static void l1_reset_hold(Object *obj, ResetType type)
@@ -633,6 +654,11 @@ static int l1_post_load(void *opaque, int version_id)
     }
     if (version_id < 2) {
         s->thre_pending = false;
+    }
+    if (version_id < 3) {
+        s->port_field = s->node_position << 5;
+    } else if (s->port_field > 0x7f) {
+        return -EINVAL;
     }
     l1_update_irq(s);
     return 0;
@@ -665,7 +691,7 @@ static const VMStateDescription vmstate_l1_record = {
 
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
@@ -690,6 +716,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT32(queue_head, SGIL1State),
         VMSTATE_UINT32(queue_len, SGIL1State),
         VMSTATE_UINT8_2DARRAY(display, SGIL1State, 2, 128),
+        VMSTATE_UINT8_V(port_field, SGIL1State, 3),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -712,6 +739,10 @@ static void l1_realize(DeviceState *dev, Error **errp)
     }
     if (s->rack >= 0x3ff || s->bay >= 0x3f) {
         error_setg(errp, "L1 rack or bay must be a concrete destination");
+        return;
+    }
+    if (s->node_position > 3) {
+        error_setg(errp, "L1 node-position must be 0 to 3");
         return;
     }
     for (unsigned area = 0; area < 3; area++) {
@@ -771,6 +802,7 @@ static const Property l1_properties[] = {
                       spd_files, qdev_prop_string, char *),
     DEFINE_PROP_UINT32("rack", SGIL1State, rack, 1),
     DEFINE_PROP_UINT32("bay", SGIL1State, bay, 1),
+    DEFINE_PROP_UINT32("node-position", SGIL1State, node_position, 0),
 };
 
 static void l1_init(Object *obj)
