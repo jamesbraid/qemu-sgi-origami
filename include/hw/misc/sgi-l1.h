@@ -41,6 +41,14 @@ struct SGIL1State {
     bool escaped;
     bool warned_off;
     bool promreq_debug;
+    bool power_down_pending;
+    uint32_t debug_switches;
+    uint32_t partition;
+    uint8_t two_bit_setting;
+    uint8_t last_reason[2];
+    char *system_serial;
+    char *brick_serial;
+    uint32_t processors;
     GString *capture;
     uint8_t command[128];
     uint32_t command_len;
