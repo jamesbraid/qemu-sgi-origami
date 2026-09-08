@@ -16,6 +16,7 @@
 #include "hw/nvram/eeprom_at24c.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "migration/vmstate.h"
 #include "system/block-backend.h"
 #include "qom/object.h"
 
@@ -80,6 +81,15 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
         ee->changed = false;
         break;
     case I2C_NACK:
+        break;
+    case I2C_RESTART:
+        /*
+         * A repeated start keeps the transaction open, so nothing is
+         * cleared: the collected address and the counter it set are what
+         * the read half of a combined write-then-read runs on. The cells
+         * a preceding write dirtied stay dirty, and the next event that
+         * does reach a boundary writes them back.
+         */
         break;
     default:
         return -1;
@@ -227,6 +237,40 @@ void at24c_eeprom_reset(DeviceState *state)
     ee->haveaddr = 0;
 }
 
+/*
+ * An image whose counter or address progress does not fit its own size came
+ * from a corrupt or foreign stream: both index memory this device allocated
+ * from rsize, and asize bounds the address bytes send() will still collect.
+ */
+static int at24c_eeprom_post_load(void *opaque, int version_id)
+{
+    EEPROMState *ee = opaque;
+
+    if (ee->cur >= ee->rsize || ee->haveaddr > ee->asize) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_at24c_eeprom = {
+    .name = TYPE_AT24C_EE,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = at24c_eeprom_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(parent_obj, EEPROMState),
+        VMSTATE_UINT16(cur, EEPROMState),
+        VMSTATE_BOOL(changed, EEPROMState),
+        VMSTATE_UINT8(haveaddr, EEPROMState),
+        /*
+         * rsize is a property, so realize has sized mem before any load;
+         * the buffer follows it rather than a compile-time bound.
+         */
+        VMSTATE_VBUFFER_UINT32(mem, EEPROMState, 0, NULL, rsize),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const Property at24c_eeprom_props[] = {
     DEFINE_PROP_UINT32("rom-size", EEPROMState, rsize, 0),
     DEFINE_PROP_UINT8("address-size", EEPROMState, asize, 0),
@@ -241,6 +285,8 @@ void at24c_eeprom_class_init(ObjectClass *klass, const void *data)
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
     dc->realize = &at24c_eeprom_realize;
+    dc->vmsd = &vmstate_at24c_eeprom;
+    k->supports_master_ids = true;
     k->event = &at24c_eeprom_event;
     k->recv = &at24c_eeprom_recv;
     k->send = &at24c_eeprom_send;
