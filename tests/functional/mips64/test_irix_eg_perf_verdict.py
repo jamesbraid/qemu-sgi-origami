@@ -49,7 +49,8 @@ import unittest
 def mtu_probe_result(rc, output):
     """Classify one IRIX ifconfig MTU request from status and diagnostics."""
     error = next((line.strip() for line in output.splitlines()
-                  if "SIOC" in line and "MTU" in line), None)
+                  if "mtu" in line.lower() and
+                  ("sioc" in line.lower() or "ioctl" in line.lower())), None)
     if error:
         return f"refused ({error})"
     return "accepted" if rc == 0 else f"refused (rc {rc})"
@@ -307,6 +308,13 @@ class EgPerfVerdictTest(unittest.TestCase):
         self.assertEqual(
             result,
             "refused (ifconfig: SIOCSIFMTU: Invalid argument)")
+
+    def test_irix_mtu_ioctl_error_refuses_zero_status(self):
+        result = mtu_probe_result(
+            0, "# ioctl (set mtu): Invalid argument\r\n")
+        self.assertEqual(
+            result,
+            "refused (# ioctl (set mtu): Invalid argument)")
 
     def test_mtu_success_without_error_is_accepted(self):
         self.assertEqual(mtu_probe_result(0, ""), "accepted")
