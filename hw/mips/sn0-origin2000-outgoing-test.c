@@ -640,8 +640,10 @@ static void lifetime_finalize(Object *obj)
 {
     SN0OutgoingLifetime *life = OUTGOING_LIFETIME(obj);
 
-    qatomic_inc(&life->test->finalized);
-    object_unref(OBJECT(life->test));
+    if (life->test) {
+        qatomic_inc(&life->test->finalized);
+        object_unref(OBJECT(life->test));
+    }
 }
 
 static const TypeInfo lifetime_type = {
