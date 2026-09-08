@@ -506,6 +506,16 @@ static uint32_t wait_return_prod(QTestState *qts)
     return qtest_readl(qts, RETURN_PROD_PHYS);
 }
 
+static void assert_return_prod_stays(QTestState *qts, uint32_t expected)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 20; attempt++) {
+        g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, expected);
+        g_usleep(5000);
+    }
+}
+
 static QTestState *tigon_init_netdev(int guest_fd)
 {
     return qtest_initf("-M origin200 "
@@ -1181,19 +1191,29 @@ static void test_receive_payload_dma_error(const void *data)
     int sv[2];
     QTestState *qts;
     uint8_t landed[sizeof(rx_frame_ours)];
+    uint8_t returned[32], return_sentinel[sizeof(returned)];
+    uint32_t word2;
 
+    memset(return_sentinel, 0x5a, sizeof(return_sentinel));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = tigon_init_netdev_128m(sv[1]);
     close(sv[1]);
 
     go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
 
-    post_std_rx_buffer(qts, 0, UNMAPPED_PAYLOAD_PHYS, 0, 2048);
+    qtest_memwrite(qts, RETURN_RING_PHYS, return_sentinel,
+                   sizeof(return_sentinel));
+    post_std_rx_buffer(qts, 0, UNMAPPED_PAYLOAD_PHYS, 7, 2048);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
 
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
 
-    g_assert_cmphex(wait_return_prod(qts), ==, 0);
+    assert_return_prod_stays(qts, 0);
+    qtest_memread(qts, RETURN_RING_PHYS, returned, sizeof(returned));
+    g_assert_cmpmem(returned, sizeof(returned), return_sentinel,
+                    sizeof(return_sentinel));
+    g_assert_false(irq_asserted(qts));
 
     /* Repair slot 0 in place without posting another descriptor. */
     qtest_memset(qts, RX_BUF_PHYS, 0, sizeof(landed));
@@ -1201,9 +1221,14 @@ static void test_receive_payload_dma_error(const void *data)
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
 
     g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 7);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
     qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed),
                     rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_true(irq_asserted(qts));
+    assert_return_prod_stays(qts, 1);
 
     qtest_quit(qts);
     close(sv[0]);
