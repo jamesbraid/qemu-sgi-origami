@@ -493,8 +493,8 @@ static MemTxResult tigon_dma_read_frame(TigonState *s, uint64_t addr,
 static MemTxResult tigon_dma_write_frame(TigonState *s, uint64_t addr,
                                          const uint8_t *src, uint32_t len)
 {
-    return dma_memory_write(tigon_payload_as(s), addr, src, len,
-                            MEMTXATTRS_UNSPECIFIED);
+    /* Ordered return and producer writes publish these packet bytes. */
+    return dma_memory_write_relaxed(tigon_payload_as(s), addr, src, len);
 }
 
 /*
