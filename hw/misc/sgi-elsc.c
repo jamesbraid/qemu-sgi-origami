@@ -806,18 +806,14 @@ static void elsc_deferred_action_bh(void *opaque)
      * ended the transfer) and none of them ends it themselves, so a survived
      * shutdown wedges the bus exactly as a reset would.
      *
-     * Which call releases it depends on the bus. i2c_end_transfer() is the
-     * anonymous path and asserts that no participant ids are configured, so
-     * a shared module bus needs its owning master named instead. Neither is
-     * called on an idle bus: there is nothing matched to release, and no
-     * owner is resolved between a stop and the next start.
+     * Only the anonymous bus is released here. i2c_end_transfer() asserts
+     * that no participant ids are configured, and the named alternative
+     * cannot help: i2c_master_owns() is false for every wire-mode bus, and
+     * a wire bus has no resolved owner between a stop and the next start.
+     * Such a bus ends its transfer at the STOP its master drives.
      */
-    if (i2c_bus_busy(s->bus)) {
-        if (s->bus->master_count) {
-            i2c_master_end_transfer(s->bus, s->bus->owner);
-        } else {
-            i2c_end_transfer(s->bus);
-        }
+    if (!s->bus->master_count && i2c_bus_busy(s->bus)) {
+        i2c_end_transfer(s->bus);
     }
 
     switch (action) {
