@@ -9,6 +9,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -2024,6 +2025,150 @@ static void test_the_pending_banks_reject_writes(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
 
+    qtest_quit(qts);
+}
+
+static void pi_cpu_writeq(QTestState *qts, unsigned int cpu,
+                          uint64_t reg, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, HUB_LOCAL + reg,
+                                    bytes, sizeof(bytes)));
+}
+
+static uint64_t pi_cpu_readq(QTestState *qts, unsigned int cpu, uint64_t reg)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, HUB_LOCAL + reg,
+                                   bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void pi_assert_cpu_causes(QTestState *qts, unsigned int node,
+                                 uint32_t cause_a, uint32_t cause_b)
+{
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+            "{'execute': 'human-monitor-command', 'arguments': {"
+            "'command-line': 'info registers', 'cpu-index': %u}}", cpu);
+        const char *field;
+        uint32_t cause;
+        uint32_t expected = cpu / 2 == node ?
+                            (cpu % 2 ? cause_b : cause_a) : 0;
+
+        g_assert_true(qdict_haskey(response, "return"));
+        field = strstr(qdict_get_str(response, "return"), "Cause");
+        g_assert_nonnull(field);
+        g_assert_cmpint(sscanf(field, "Cause %" SCNx32, &cause), ==, 1);
+        g_test_message("CPU %u: Cause 0x%08x, expected PI bits 0x%03x",
+                       cpu, cause, expected);
+        g_assert_cmphex(cause & 0xc00, ==, expected);
+    }
+}
+
+/*
+ * Linux db2ddb87143519e20a95aa36c60b36107b736a58:
+ * arch/mips/include/asm/sn/intr.h maps PEND0/PEND1 to CPU levels 2/3
+ * and completes a clear with an uncached PEND0 read. ip27-irq.c programs
+ * each slice's masks; ip27-reset.c requests NI_PORT_RESET = 0x81.
+ * Keep the CPU wires intact: output interception would replace them.
+ */
+static void test_pi_pending_reaches_cpu_cause(const void *data)
+{
+    static const struct {
+        uint64_t pending;
+        uint64_t mask_a;
+        uint64_t mask_b;
+        unsigned int level;
+        uint32_t cause;
+    } banks[] = {
+        { PI_INT_PEND0, PI_INT_MASK0_A, PI_INT_MASK0_B, 12, 0x400 },
+        { PI_INT_PEND1, PI_INT_MASK1_A, PI_INT_MASK1_B, 70, 0x800 },
+    };
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+
+    for (unsigned int phase = 0; phase < 2; phase++) {
+        if (phase) {
+            pi_cpu_writeq(qts, 0, NI_PORT_RESET, 0x81);
+            qtest_qmp_eventwait(qts, "RESET");
+        }
+        /* Initialize both phases explicitly, without assuming reset values. */
+        for (unsigned int node = 0; node < 2; node++) {
+            for (unsigned int bank = 0; bank < ARRAY_SIZE(banks); bank++) {
+                unsigned int cpu = node * 2;
+
+                pi_cpu_writeq(qts, cpu, banks[bank].mask_a, 0);
+                pi_cpu_writeq(qts, cpu, banks[bank].mask_b, 0);
+                pi_cpu_writeq(qts, cpu, PI_INT_MODIFY, banks[bank].level);
+                pi_cpu_readq(qts, cpu, PI_INT_PEND0);
+            }
+        }
+        pi_assert_cpu_causes(qts, 0, 0, 0);
+
+        for (unsigned int node = 0; node < 2; node++) {
+            for (unsigned int bank = 0; bank < ARRAY_SIZE(banks); bank++) {
+                unsigned int cpu = node * 2;
+                unsigned int level = banks[bank].level;
+                uint64_t bit = 1ULL << (level % 64);
+                uint64_t mask_a = banks[bank].mask_a;
+                uint64_t mask_b = banks[bank].mask_b;
+                uint32_t cause = banks[bank].cause;
+
+                g_test_message("phase %u node %u bank %u", phase, node, bank);
+
+                /* Masks programmed before the pending bit. */
+                pi_cpu_writeq(qts, cpu, mask_a, bit);
+                pi_cpu_writeq(qts, cpu, mask_b, bit);
+                pi_cpu_writeq(qts, cpu, PI_INT_MODIFY, 0x100 | level);
+                g_assert_cmphex(pi_cpu_readq(qts, cpu, banks[bank].pending) &
+                                bit, ==, bit);
+                pi_assert_cpu_causes(qts, node, cause, cause);
+                pi_cpu_writeq(qts, cpu, PI_INT_MODIFY, level);
+                pi_cpu_readq(qts, cpu, PI_INT_PEND0);
+                g_assert_cmphex(pi_cpu_readq(qts, cpu, banks[bank].pending) &
+                                bit, ==, 0);
+                pi_assert_cpu_causes(qts, node, 0, 0);
+
+                /* A pending bit remains stored while each slice masks it. */
+                pi_cpu_writeq(qts, cpu, mask_a, 0);
+                pi_cpu_writeq(qts, cpu, mask_b, 0);
+                pi_cpu_writeq(qts, cpu, PI_INT_MODIFY, 0x100 | level);
+                pi_assert_cpu_causes(qts, node, 0, 0);
+                pi_cpu_writeq(qts, cpu, mask_a, bit);
+                pi_assert_cpu_causes(qts, node, cause, 0);
+                pi_cpu_writeq(qts, cpu, mask_b, bit);
+                pi_assert_cpu_causes(qts, node, cause, cause);
+                pi_cpu_writeq(qts, cpu, mask_a, 0);
+                pi_assert_cpu_causes(qts, node, 0, cause);
+                pi_cpu_writeq(qts, cpu, mask_b, 0);
+                pi_assert_cpu_causes(qts, node, 0, 0);
+                g_assert_cmphex(pi_cpu_readq(qts, cpu, banks[bank].pending) &
+                                bit, ==, bit);
+                pi_cpu_writeq(qts, cpu, mask_a, bit);
+                pi_assert_cpu_causes(qts, node, cause, 0);
+
+                /* Complete the clear before observing CPU deassertion. */
+                pi_cpu_writeq(qts, cpu, PI_INT_MODIFY, level);
+                pi_cpu_readq(qts, cpu, PI_INT_PEND0);
+                g_assert_cmphex(pi_cpu_readq(qts, cpu, banks[bank].pending) &
+                                bit, ==, 0);
+                pi_assert_cpu_causes(qts, node, 0, 0);
+                pi_cpu_writeq(qts, cpu, mask_b, bit);
+                pi_assert_cpu_causes(qts, node, 0, 0);
+                pi_cpu_writeq(qts, cpu, mask_a, 0);
+                pi_cpu_writeq(qts, cpu, mask_b, 0);
+            }
+        }
+    }
     qtest_quit(qts);
 }
 
@@ -4044,6 +4189,8 @@ int main(int argc, char **argv)
                         test_a_masked_pending_bit_raises_nothing);
     qtest_add_data_func("sn0/hub/pending-banks-masked-per-processor", NULL,
                         test_pending_banks_are_masked_per_processor);
+    qtest_add_data_func("sn0/hub/pi-pending-reaches-cpu-cause", NULL,
+                        test_pi_pending_reaches_cpu_cause);
     qtest_add_data_func("sn0/hub/one-wire-reset-cancels-a-slot", NULL,
                         test_a_reset_cancels_a_running_slot);
     qtest_add_data_func("sn0/hub/one-wire-resets-to-its-timing", NULL,
