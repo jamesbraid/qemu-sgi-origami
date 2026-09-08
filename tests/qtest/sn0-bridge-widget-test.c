@@ -60,7 +60,9 @@
 #define DMA_REG_LENGTH          0x04
 #define DMA_REG_SEED            0x08
 #define DMA_REG_GO              0x0c
+#define DMA_REG_SOURCE          0x14
 #define DMA_REG_ADDRESS_HI      0x18
+#define DMA_REG_SOURCE_HI       0x1c
 
 /* The board part the identity page carries; twelve characters, no semicolon. */
 #define BOARD_PART              "030-1244-001"
@@ -89,22 +91,8 @@
 #define ATE_OFF         0x19000
 #define WIDE_OFF        0x1a000
 
-/*
- * Two shifts. 24 is where a widget's own memory-mapped face sits inside its
- * crosstalk space, which puts the widget field low enough that an ordinary
- * transfer offset can reach it -- the overflow cases below need that. 34 is
- * what the machine's own address map uses, so the routing case runs at both.
- */
-#define WIDGET_SHIFT    24
-#define MACHINE_SHIFT   34
-
-/*
- * An address bit inside the widget field at 24, and the widget it composes
- * to: widget 3 with that bit set names widget 7, which is where a chip that
- * merged the two instead of refusing would put the packet.
- */
-#define SPILL_BIT       (1ULL << 26)
-#define SPILL_WIDGET    (DIRECT_WIDGET | (unsigned)(SPILL_BIT >> WIDGET_SHIFT))
+/* Packet routing keeps all 48 address bits below the widget field. */
+#define WIDGET_SHIFT    48
 
 /*
  * The Hub window an interrupt packet is addressed into with no widget field,
@@ -140,9 +128,6 @@
 
 /* A word nothing here writes, so "no packet" is an assertion of its own. */
 #define SENTINEL        0xfeedfacecafebeefULL
-
-/* The guest-error line a refusal owes, so that it is observable. */
-#define REFUSED_FRAGMENT "reaches the destination widget"
 
 #define DMA_LEN         16
 #define DIRECT_SEED     0x30
@@ -193,7 +178,6 @@ static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
         "-device sgi-xtalk-test-target,id=node1,size=1M "
         "-device sgi-xtalk-test-target,id=w3,size=1M "
         "-device sgi-xtalk-test-target,id=w5,size=1M "
-        "-device sgi-xtalk-test-target,id=w7,size=1M "
         "-device sgi-xtalk-test-target,id=wb,size=1M "
         "-device sgi-xtalk-test-target,id=pin,size=1M "
         "-device sgi-xtalk-test-target,id=replaced,size=1M "
@@ -211,8 +195,6 @@ static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
                           target(DIRECT_WIDGET));
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/w5", 0,
                           target(ATE_WIDGET));
-    qtest_sysbus_mmio_map(qts, "/machine/peripheral/w7", 0,
-                          target(SPILL_WIDGET));
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/wb", 0,
                           target(WIDE_WIDGET));
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/pin", 0, dest_base());
@@ -350,69 +332,6 @@ static void test_transfers_carry_their_target_widget(void)
 }
 
 /* And at the shift the machine's own address map uses. */
-static void test_transfers_carry_a_widget_at_the_machine_shift(void)
-{
-    assert_transfers_carry_their_widget(MACHINE_SHIFT);
-}
-
-/*
- * A transfer whose own address reaches the widget field is one this
- * flattening cannot carry, so it is refused rather than delivered to the
- * widget the overlap names -- widget 7 here, which keeps what it had.
- */
-static void test_a_transfer_over_the_widget_field_is_refused(void)
-{
-    QTestState *qts = head_start(WIDGET_SHIFT);
-    uint64_t spilled = target(SPILL_WIDGET) + DIRECT_OFF;
-
-    card_start(qts);
-    aim_the_routes(qts);
-    qtest_writeq(qts, spilled, SENTINEL);
-
-    card_transfer(qts, 0x80000000ULL | SPILL_BIT | DIRECT_OFF, DIRECT_SEED);
-    g_assert_cmphex(qtest_readq(qts, spilled), ==, SENTINEL);
-
-    /* An address that clears the field still goes through, at the same head. */
-    card_transfer(qts, 0x80000000ULL | DIRECT_OFF, DIRECT_SEED);
-    assert_landed(qts, target(DIRECT_WIDGET) + DIRECT_OFF, DIRECT_SEED);
-
-    qtest_quit(qts);
-}
-
-/* A refusal nothing reports is a transfer that vanished, so it is logged. */
-static bool refusal_was_logged(uint64_t pci_addr)
-{
-    g_autofree char *path = g_strdup_printf("%s/sn0-bridge-widget-XXXXXX.log",
-                                            g_get_tmp_dir());
-    g_autofree char *option = NULL;
-    g_autofree char *found = NULL;
-    QTestState *qts;
-    bool seen;
-    int fd = g_mkstemp(path);
-
-    g_assert_cmpint(fd, >=, 0);
-    close(fd);
-    option = g_strdup_printf("-d guest_errors -D %s", path);
-
-    qts = head_start_with(WIDGET_SHIFT, option);
-    card_start(qts);
-    aim_the_routes(qts);
-    card_transfer(qts, pci_addr, DIRECT_SEED);
-    qtest_quit(qts);
-
-    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
-    seen = strstr(found, REFUSED_FRAGMENT) != NULL;
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    return seen;
-}
-
-static void test_a_refused_transfer_is_reported(void)
-{
-    g_assert_true(refusal_was_logged(0x80000000ULL | SPILL_BIT | DIRECT_OFF));
-    /* The same head and the same route, one address bit lower: nothing said. */
-    g_assert_false(refusal_was_logged(0x80000000ULL | DIRECT_OFF));
-}
-
 /*
  * One pin's own host address: the bit it is to set, under a field that
  * selects a node on a head with no widget field and replaces the
@@ -558,27 +477,6 @@ static void test_a_pin_host_address_replaces_the_destination_bits(void)
     qtest_quit(qts);
 }
 
-/*
- * A destination whose own address reaches the widget field is refused the
- * same way a transfer is: widget 3 with that bit set names widget 7, which
- * keeps what it had.
- */
-static void test_a_destination_over_the_widget_field_is_refused(void)
-{
-    QTestState *qts = head_start(WIDGET_SHIFT);
-    uint64_t spilled = target(SPILL_WIDGET) + PIN_OFF;
-
-    aim_the_destination(qts, DIRECT_WIDGET, 0, SPILL_BIT | PIN_OFF);
-    route_the_pin(qts, 0);
-    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << PIN);
-    qtest_writeq(qts, spilled, SENTINEL);
-
-    drive_the_pin(qts, 1);
-    g_assert_cmphex(qtest_readq(qts, spilled), ==, SENTINEL);
-
-    qtest_quit(qts);
-}
-
 /* A pin whose enable bit is clear sends nothing, however it is routed. */
 static void test_a_masked_pin_sends_no_packet(void)
 {
@@ -688,29 +586,138 @@ static void test_a_shift_past_the_address_is_refused(void)
     g_assert_nonnull(strstr(error_output, "fabric widget shift 61"));
 }
 
-/* And the shift itself builds a head that comes up and answers. */
-static void test_the_largest_shift_is_accepted(void)
+/* A valid head quits through QMP; invalid geometry must fail realization. */
+static void assert_geometry_refused(const char *properties)
 {
-    QTestState *qts = head_start(60);
+    g_autofree char *device = g_strdup_printf(
+        "sgi-bridge,board-part=" BOARD_PART
+        ",fabric=/machine/unattached/system[0],%s", properties);
+    const char *args[] = {
+        "/bin/sh", "-c",
+        "printf '%s\n' '{\"execute\":\"qmp_capabilities\"}' "
+        "'{\"execute\":\"quit\"}' | \"$@\"", "bridge-geometry",
+        qtest_qemu_binary(NULL), "-M", "none,accel=qtest", "-display", "none",
+        "-qmp", "stdio", "-device", device, NULL,
+    };
+    g_autofree char *error_output = NULL;
+    g_autofree char *output = NULL;
+    int status;
 
-    g_assert_cmphex((qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)) >>
-                     ID_PART_SHIFT) & 0xffff, ==, ID_PART);
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              &output, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error_output, "packet fabric"));
+}
+
+static void test_packet_geometry(void)
+{
+    assert_geometry_refused("fabric-widget-shift=34");
+    assert_geometry_refused("fabric-widget-shift=1");
+    assert_geometry_refused("fabric-widget-shift=60");
+    assert_geometry_refused("fabric-widget-shift=48,fabric-base=1");
+    assert_geometry_refused("fabric-widget-shift=48,"
+                            "fabric-base=0xffffffffffffffff");
+}
+
+/* All DMA decoders retain bit 47 and the last bytes of the 48-bit slot. */
+static void test_full_packet_dma(void)
+{
+    unsigned plain, big, lane;
+
+    for (plain = 0; plain < 2; plain++) {
+        for (big = 0; big < 2; big++) {
+            for (lane = 0; lane < 2; lane++) {
+                g_autofree char *extra = g_strdup_printf(
+                    "-device sgi-xtalk-test-target,id=full,size=1M "
+                    "-global sgi-bridge-dma-test.plain-dma=%s",
+                    plain ? "on" : "off");
+                QTestState *qts = head_start_with(48, extra);
+                uint64_t end = 1ULL << 48;
+                uint64_t last = end - DMA_LEN;
+                uint64_t page = big ? 16384 : 4096;
+                uint64_t at = (15ULL << 48) | last;
+                uint64_t routes[] = {
+                    0xfffffff0ULL,
+                    0x40000000ULL | (page - DMA_LEN),
+                    (15ULL << 60) | last,
+                };
+                unsigned route, i;
+                uint8_t bytes[DMA_LEN];
+
+                qtest_sysbus_mmio_map(qts, "/machine/peripheral/full", 0,
+                                     (15ULL << 48) | (end - (1ULL << 20)));
+                card_start(qts);
+                if (lane) {
+                    qtest_writel(qts, REG(BRIDGE_DEVICE(CARD_SLOT)),
+                                 DEV_MEMORY_SPACE | (CARD_MMIO >> 20));
+                }
+                if (big) {
+                    uint32_t control = qtest_readl(qts, REG(0x20));
+                    qtest_writel(qts, REG(0x20), control | (1U << 21));
+                }
+                qtest_writel(qts, REG(BRIDGE_DIRECT_MAP),
+                             (15U << 20) | 0x1ffff);
+                qtest_writeq(qts, ATE(0), (end - page) | (15U << 8) | 1);
+                for (route = 0; route < G_N_ELEMENTS(routes); route++) {
+                    uint8_t seed = 0x40 + route * 0x20;
+                    card_transfer(qts, routes[route], seed);
+                    qtest_memread(qts, at, bytes, sizeof(bytes));
+                    for (i = 0; i < sizeof(bytes); i++) {
+                        unsigned index = lane && !plain ? i ^ 3 : i;
+                        g_assert_cmpuint(bytes[i], ==, seed + index);
+                    }
+                    /* Read through the same decoder into a distinct range. */
+                    qtest_writel(qts, WINDOW0 + DMA_REG_SOURCE,
+                                 (uint32_t)routes[route]);
+                    qtest_writel(qts, WINDOW0 + DMA_REG_SOURCE_HI,
+                                 routes[route] >> 32);
+                    qtest_writel(qts, WINDOW0 + DMA_REG_ADDRESS,
+                                 (uint32_t)(routes[route] - DMA_LEN));
+                    qtest_writel(qts, WINDOW0 + DMA_REG_ADDRESS_HI,
+                                 (routes[route] - DMA_LEN) >> 32);
+                    qtest_writel(qts, WINDOW0 + DMA_REG_GO, 2);
+                    qtest_memread(qts, at - DMA_LEN, bytes, sizeof(bytes));
+                    for (i = 0; i < sizeof(bytes); i++) {
+                        unsigned index = lane && !plain ? i ^ 3 : i;
+                        g_assert_cmpuint(bytes[i], ==, seed + index);
+                    }
+                }
+                qtest_quit(qts);
+            }
+        }
+    }
+}
+
+static void test_full_packet_interrupts(void)
+{
+    QTestState *qts = head_start(48);
+    uint64_t pin = target(WIDE_WIDGET) | (0x3ffULL << 38) | CARRIED_BIT;
+    uint64_t error = target(WIDE_WIDGET) | (0xffffULL << 32);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/pin", 0, pin);
+    aim_the_destination(qts, WIDE_WIDGET, DEST_UPPER, PIN_OFF);
+    route_the_pin(qts, 0x3ff);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1U << PIN);
+    drive_the_pin(qts, 1);
+    g_assert_cmphex(qtest_readq(qts, pin + PIN_OFF), ==, INT_SET | PIN_NUMBER);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/pin", 0, error);
+    provoke_the_error(qts, WIDE_WIDGET, 0xffff);
+    g_assert_cmphex(qtest_readq(qts, error + ERR_OFF), ==,
+                    INT_SET | ERR_NUMBER);
     qtest_quit(qts);
 }
 
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sn0/bridge-widget/full-packet-dma", test_full_packet_dma);
+    qtest_add_func("/sn0/bridge-widget/full-packet-interrupts",
+                   test_full_packet_interrupts);
+    qtest_add_func("/sn0/bridge-widget/packet-geometry", test_packet_geometry);
     qtest_add_func("/sn0/bridge-widget/transfer-offsets",
                    test_transfers_land_at_their_offset);
     qtest_add_func("/sn0/bridge-widget/transfer-widgets",
                    test_transfers_carry_their_target_widget);
-    qtest_add_func("/sn0/bridge-widget/transfer-machine-shift",
-                   test_transfers_carry_a_widget_at_the_machine_shift);
-    qtest_add_func("/sn0/bridge-widget/transfer-overflow",
-                   test_a_transfer_over_the_widget_field_is_refused);
-    qtest_add_func("/sn0/bridge-widget/transfer-overflow-logged",
-                   test_a_refused_transfer_is_reported);
     qtest_add_func("/sn0/bridge-widget/pin-node",
                    test_a_pin_packet_addresses_the_named_node);
     qtest_add_func("/sn0/bridge-widget/pin-node-stride",
@@ -721,8 +728,6 @@ int main(int argc, char **argv)
                    test_a_pin_packet_carries_its_target_widget);
     qtest_add_func("/sn0/bridge-widget/pin-host-replaces",
                    test_a_pin_host_address_replaces_the_destination_bits);
-    qtest_add_func("/sn0/bridge-widget/destination-overflow",
-                   test_a_destination_over_the_widget_field_is_refused);
     qtest_add_func("/sn0/bridge-widget/pin-masked",
                    test_a_masked_pin_sends_no_packet);
     qtest_add_func("/sn0/bridge-widget/pin-falling",
@@ -733,7 +738,5 @@ int main(int argc, char **argv)
                    test_a_chip_error_carries_the_widget_destination);
     qtest_add_func("/sn0/bridge-widget/shift-limit",
                    test_a_shift_past_the_address_is_refused);
-    qtest_add_func("/sn0/bridge-widget/shift-largest",
-                   test_the_largest_shift_is_accepted);
     return g_test_run();
 }
