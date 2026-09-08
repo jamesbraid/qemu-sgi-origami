@@ -6,9 +6,12 @@
  * management endpoints and the real system bus into a host binary, so the
  * device behaviour under test is the shipping behaviour.  What is missing
  * around them is the rest of a machine: an address space, a monitor, a
- * network and block layer, an audio backend, a processor, and the migration
- * format for a QEMUTimer.  Every definition below stands in for one of
- * those, and none of them sits on a path either test takes.
+ * network and block layer, an audio backend, and a processor.  Each of those
+ * gets a definition below that stands in for it, and none of them sits on a
+ * path either test takes.
+ *
+ * The timer vmstate at the end of this file is the exception, and is a real
+ * implementation rather than a stand-in.  Its own comment says why.
  */
 #include "qemu/osdep.h"
 #include "hw/core/cpu.h"
@@ -16,6 +19,8 @@
 #include "monitor/monitor.h"
 #include "net/net.h"
 #include "qemu/audio.h"
+#include "qemu/timer.h"
+#include "../migration/qemu-file.h"
 #include "system/address-spaces.h"
 #include "system/blockdev.h"
 #include "system/memory.h"
@@ -132,29 +137,54 @@ void blockdev_auto_del(BlockBackend *blk)
 }
 
 /*
- * A QEMUTimer's migration format lives in migration/savevm.c, which cannot
- * be linked into a host unit test.  The endpoint's own device vmstate names
- * it for its arbitration timer, but neither test saves or loads that
- * vmstate: the migration test moves the coordinator's vmstate, the shared
- * bus, each endpoint's I2C slave state and each adapter's vmstate.  Saving
- * an endpoint's device vmstate here would need the real thing, so say so
- * instead of inventing a stream format.
+ * Not a stub. The migration test moves each endpoint's own device vmstate,
+ * and that names vmstate_info_timer for the arbitration timer, so this has
+ * to carry a real expiry across the stream rather than refuse.
+ *
+ * QEMU keeps the timer's stream format in migration/savevm.c, which a host
+ * unit test cannot link, and timer_put()/timer_get() are declared in
+ * qemu/timer.h but defined only there. Everything the format needs is
+ * already linked here: timer_expire_time_ns(), timer_mod_ns() and
+ * timer_del() from util/qemu-timer.c, qemu_put_be64() and qemu_get_be64()
+ * from migration/qemu-file.c. So the two are defined below exactly as
+ * savevm.c defines them, and the bytes written here are the bytes QEMU
+ * writes: one big-endian expiry, with all-ones meaning no timer armed.
  */
-static bool load_timer_unsupported(QEMUFile *f, void *pv, size_t size,
-                                   const VMStateField *field, Error **errp)
+void timer_put(QEMUFile *f, QEMUTimer *ts)
 {
-    g_assert_not_reached();
+    uint64_t expire_time = timer_expire_time_ns(ts);
+
+    qemu_put_be64(f, expire_time);
 }
 
-static bool save_timer_unsupported(QEMUFile *f, void *pv, size_t size,
-                                   const VMStateField *field,
-                                   JSONWriter *vmdesc, Error **errp)
+void timer_get(QEMUFile *f, QEMUTimer *ts)
 {
-    g_assert_not_reached();
+    uint64_t expire_time = qemu_get_be64(f);
+
+    if (expire_time != -1) {
+        timer_mod_ns(ts, expire_time);
+    } else {
+        timer_del(ts);
+    }
+}
+
+static bool load_timer(QEMUFile *f, void *pv, size_t size,
+                       const VMStateField *field, Error **errp)
+{
+    timer_get(f, pv);
+    return true;
+}
+
+static bool save_timer(QEMUFile *f, void *pv, size_t size,
+                       const VMStateField *field, JSONWriter *vmdesc,
+                       Error **errp)
+{
+    timer_put(f, pv);
+    return true;
 }
 
 const VMStateInfo vmstate_info_timer = {
     .name = "timer",
-    .load = load_timer_unsupported,
-    .save = save_timer_unsupported,
+    .load = load_timer,
+    .save = save_timer,
 };
