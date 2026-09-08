@@ -27,8 +27,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIO2000ModuleMgmtState, SGI_O2000_MODULE_MGMT)
 /*
  * 2048 addressable bytes of management NVRAM reached across eight consecutive
  * slave addresses from 0x50, the top three bits of the eleven-bit byte address
- * choosing among them. Whether that is one part or several is unestablished;
- * the guest-visible logical space is the contract.
+ * choosing among them. Whether that is one part or several is unestablished.
+ * The guest-visible logical space is the contract.
+ *
+ * The model builds it from eight 256-byte parts, which decides one thing the
+ * contract does not: a sequential read running off the end of a page wraps to
+ * the start of that same page, where one 2 KiB part occupying eight addresses
+ * would carry on into the next. No firmware path reads across that boundary.
  */
 #define SGI_O2000_NVRAM_FIRST_ADDR  0x50
 #define SGI_O2000_NVRAM_ADDRESSES   8
@@ -120,7 +125,11 @@ void sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on);
  */
 bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
                                        SGIElscAction action);
-void sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s);
-void sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s);
+/*
+ * Drive the reviewed hundred-millisecond pulse. Both refuse, and answer
+ * false, while a pulse is already running: nothing settles that overlap.
+ */
+bool sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s);
+bool sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s);
 
 #endif /* HW_MISC_SGI_O2000_MODULE_MGMT_H */
