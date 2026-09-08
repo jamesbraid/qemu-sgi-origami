@@ -226,6 +226,50 @@ static void stop_transfer(Fixture *f, unsigned a)
     g_assert_not_reached();
 }
 
+/*
+ * One framed command and its response, ending the way firmware ends one:
+ * every response byte acknowledged, then the closing repeated START to an
+ * address nobody answers, then STOP.
+ */
+static unsigned msc_command(Fixture *f, unsigned a, const char *text,
+                            uint8_t *response, unsigned cap)
+{
+    uint8_t request[16];
+    unsigned i, len = strlen(text) + 2;
+    uint8_t sum = 0;
+    unsigned total;
+
+    g_assert_cmpuint(len, <=, sizeof(request));
+    request[0] = strlen(text);
+    memcpy(&request[1], text, strlen(text));
+    for (i = 0; i < strlen(text) + 1; i++) {
+        sum += request[i];
+    }
+    request[strlen(text) + 1] = (uint8_t)-(int)sum;
+
+    g_assert_true(start_transfer(f, a, SGI_O2000_MSC_ADDRESS, false));
+    for (i = 0; i < len; i++) {
+        g_assert_true(send_byte(f, a, request[i]));
+    }
+    g_assert_true(restart_transfer(f, a, SGI_O2000_MSC_ADDRESS, true));
+    g_assert_true(discard_byte(f, a));
+    response[0] = take_byte(f, a, false);
+    total = (unsigned)response[0] + 2;
+    g_assert_cmpuint(total, <=, cap);
+    for (i = 1; i < total; i++) {
+        response[i] = take_byte(f, a, false);
+    }
+    g_assert_false(restart_transfer(f, a, INVALID_ADDRESS, false));
+    stop_transfer(f, a);
+
+    sum = 0;
+    for (i = 0; i < total; i++) {
+        sum += response[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+    return total;
+}
+
 /* One logical NVRAM byte, addressed the way the eleven-bit space is split. */
 static uint8_t nvram_read(Fixture *f, unsigned a, uint16_t offset)
 {
@@ -555,10 +599,64 @@ static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
     /* And the scheduler is not left waiting on a controller that went away. */
     g_assert_false(f->module->slave_active);
     advance_to(f->module->pulse_deadline);
-    /* The reset took the adapters with it, as a module reset does. */
-    init_adapter(f, 0);
+    /*
+     * The controller reinitialises itself and nothing else. A node's adapter
+     * is reached by the reset line the machine wires, which no unit test
+     * has, so here it keeps the address its node gave it.
+     */
+    g_assert_cmphex(f->adapter[0]->own_address, ==, ADAPTER_OWN_ADDRESS(0));
     run_tick(f);
     g_assert_cmphex(f->adapter[0]->data, ==, GRANT_BASE);
+}
+
+/*
+ * The whole point of the refusal: a guest that asks for a reset the
+ * controller cannot carry out is told so, rather than handed an "ok" it
+ * would take as proof and stop trying.
+ */
+static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
+{
+    uint8_t response[96];
+    unsigned total;
+
+    total = msc_command(f, 0, "pas none", response, sizeof(response));
+    g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
+
+    /* A pulse is running, so the controller cannot start another action. */
+    g_assert_true(sgi_o2000_module_mgmt_pulse_reset(f->module));
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
+
+    total = msc_command(f, 0, "rst", response, sizeof(response));
+    g_assert_cmpuint(total, >=, 5);
+    g_assert_cmpint(memcmp(&response[1], "err", 3), ==, 0);
+    while (aio_poll(qemu_get_aio_context(), false)) {
+        continue;
+    }
+    /* Refused, so no second pulse and no fabricated action. */
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
+
+    /* "pwr d" gets the same answer, not a different one. */
+    total = msc_command(f, 0, "pwr d 0", response, sizeof(response));
+    g_assert_cmpint(memcmp(&response[1], "err", 3), ==, 0);
+    g_assert_cmpint(f->level[LINE_POWER], ==, 1);
+
+    /*
+     * Once the pulse ends the same command is accepted again. The controller
+     * reinitialised its protocol queues on the way out of the pulse, and the
+     * supervisor gate is part of those, so it has to be opened again first.
+     */
+    advance_to(f->module->pulse_deadline);
+    total = msc_command(f, 0, "rst", response, sizeof(response));
+    g_assert_cmpint(memcmp(&response[1], "err perm", 8), ==, 0);
+
+    total = msc_command(f, 0, "pas none", response, sizeof(response));
+    g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
+    total = msc_command(f, 0, "rst", response, sizeof(response));
+    g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
+    while (aio_poll(qemu_get_aio_context(), false)) {
+        continue;
+    }
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 2);
 }
 
 int main(int argc, char **argv)
@@ -590,6 +688,9 @@ int main(int argc, char **argv)
                NULL, setup, test_msc_version_exchange, teardown);
     g_test_add("/sgi-o2000-module-management/shared/destructive-command",
                Fixture, NULL, setup, test_destructive_command, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/destructive-refused",
+               Fixture, NULL, setup, test_destructive_command_refused,
+               teardown);
     g_test_add("/sgi-o2000-module-management/shared/closing-resync",
                Fixture, NULL, setup, test_closing_resync_is_terminal,
                teardown);

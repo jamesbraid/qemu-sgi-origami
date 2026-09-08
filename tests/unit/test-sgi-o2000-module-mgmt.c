@@ -7,6 +7,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
+#include "hw/i2c/pcf8584.h"
 #include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
@@ -131,6 +132,26 @@ static void teardown(Fixture *f, gconstpointer unused)
 {
     object_unparent(OBJECT(f->module));
     object_unref(OBJECT(f->module));
+}
+
+/*
+ * A node's own address, written the way its firmware writes it, so a test can
+ * tell whether something reached over and reset that node's adapter.
+ */
+static void give_adapter_an_address(Fixture *f, unsigned slot, uint8_t address)
+{
+    PCF8584State *adapter =
+        PCF8584(sgi_o2000_module_mgmt_get_adapter(f->module, slot));
+
+    pcf8584_write_register(adapter, PCF8584_A0_STRIDE, PCF8584_CTL_PIN, 1);
+    pcf8584_write_register(adapter, 0, address, 1);
+    g_assert_cmphex(pcf8584_read_register(adapter, 0, 1), ==, address);
+}
+
+static uint8_t adapter_address(Fixture *f, unsigned slot)
+{
+    return PCF8584(sgi_o2000_module_mgmt_get_adapter(f->module, slot))
+        ->own_address;
 }
 
 /* One service tick, then long enough for any grant it starts to finish. */
@@ -304,6 +325,8 @@ static void test_message_expiry(Fixture *f, gconstpointer unused)
  */
 static void test_recovery_reinitialises(Fixture *f, gconstpointer unused)
 {
+    give_adapter_an_address(f, 0, 0x09);
+    give_adapter_an_address(f, 3, 0x0c);
     run_ticks(f, 3);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE + 2);
 
@@ -321,6 +344,15 @@ static void test_recovery_reinitialises(Fixture *f, gconstpointer unused)
 
     run_tick(f);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
+
+    /*
+     * The controller reinitialised itself and reached no further. A node may
+     * hold the bus for as long as it likes, so a recovery that took its
+     * peers' adapters down would lose three nodes' configuration because one
+     * was slow.
+     */
+    g_assert_cmphex(adapter_address(f, 0), ==, 0x09);
+    g_assert_cmphex(adapter_address(f, 3), ==, 0x0c);
 }
 
 /* A serial command holding the path leaves the recovery counter alone. */
@@ -421,10 +453,17 @@ static void test_machine_reset(Fixture *f, gconstpointer unused)
     run_ticks(f, 3);
     sgi_o2000_module_mgmt_set_message(f->module, 5, true);
     sgi_o2000_module_mgmt_set_controller_request(f->module, true);
-    run_tick(f);
     sgi_o2000_module_mgmt_pulse_reset(f->module);
     g_assert_cmpint(f->level[LINE_RESET], ==, 1);
     g_assert_cmpuint(f->module->pending_messages, !=, 0);
+    /*
+     * Stop inside a grant, so the wire is genuinely occupied when the reset
+     * lands. Resetting from an idle bus asserts nothing about the wire.
+     */
+    advance_to(f->module->service_deadline + 20000);
+    g_assert_true(f->module->grant_active);
+    g_assert_true(i2c_bus_busy(bus));
+    g_assert_cmphex(i2c_wire_contenders(bus), !=, 0);
 
     qemu_devices_reset(RESET_TYPE_COLD);
 
@@ -527,6 +566,7 @@ static void transfer_complex(Fixture *f, QEMUFile *file, bool save)
     }
     QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
         I2CSlave *slave = I2C_SLAVE(kid->child);
+        const VMStateDescription *own = DEVICE_GET_CLASS(kid->child)->vmsd;
 
         if (save) {
             g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave,
@@ -536,6 +576,18 @@ static void transfer_complex(Fixture *f, QEMUFile *file, bool save)
             g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave,
                                                slave, 1, &error_abort),
                             ==, 0);
+        }
+        /* An endpoint whose own state is just its bus state moves once. */
+        if (!own || own == &vmstate_i2c_slave) {
+            continue;
+        }
+        if (save) {
+            g_assert_cmpint(vmstate_save_state(file, own, kid->child, NULL,
+                                               &error_abort), ==, 0);
+        } else {
+            g_assert_cmpint(vmstate_load_state(file, own, kid->child,
+                                               own->version_id,
+                                               &error_abort), ==, 0);
         }
     }
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
