@@ -48,6 +48,7 @@ struct SGIL1State {
     uint8_t last_reason[2];
     char *system_serial;
     char *brick_serial;
+    char *brick_type;
     uint32_t processors;
     GString *capture;
     uint8_t command[128];

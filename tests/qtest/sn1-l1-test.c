@@ -10,6 +10,9 @@
 #define BASE 0x11000000ULL
 
 static void expect_router_error(QTestState *s, uint8_t subchannel);
+static size_t general(QTestState *s, uint16_t code, const uint8_t *args,
+                      size_t args_len, unsigned count, uint8_t *reply);
+static void integer(uint8_t *out, uint32_t value);
 #define PATH "/machine/peripheral/l1"
 #define L1 "/machine/peripheral/l1c"
 #define UART " -device sgi-l1-uart,id=l1,controller=l1c"
@@ -76,7 +79,7 @@ static size_t receive(QTestState *s, uint8_t *p)
             b ^= 0x20;
             escape = false;
         }
-        g_assert_cmpuint(n, <, 129);
+        g_assert_cmpuint(n, <, 131);
         p[n++] = b;
         crc = fcs(crc, b);
     }
@@ -111,7 +114,7 @@ static void test_frames(void)
                                 1, 1, 'a', 0x7e, 0x7d, 0 };
     const uint8_t success[] = { 0x30, 0, 0, 0, 0, 0 };
     const uint8_t wire[] = { 0x7e, 0x30, 0, 0, 0, 0, 0, 0x5f, 0x30, 0x7e };
-    uint8_t reply[129];
+    uint8_t reply[131];
     g_autoptr(QDict) result = NULL;
     send_frame(s, display, sizeof(display), true);
     g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
@@ -147,8 +150,8 @@ static void test_identity(void)
     QTestState *s = start();
     uint8_t request[] = { 0x11, 0x0f, 0xff, 0xf0, 6, 0, 3, 0 };
     uint8_t expected[] = { 0x31, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65,
-                           0, 0, 0, 0, 'C' };
-    uint8_t reply[129];
+                           0, 0, 0, 0, '4' };
+    uint8_t reply[131];
     for (unsigned i = 0; i < 2; i++) {
         send_frame(s, request, sizeof(request) - i, false);
         g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
@@ -164,7 +167,7 @@ static void test_errors(void)
 {
     QTestState *s = start();
     uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0xab, 0xcd, 0 };
-    uint8_t reply[129];
+    uint8_t reply[131];
     const uint8_t unknown[] = { 0x30, 0xff, 0xff, 0xff, 0x9b, 0 };
     const uint8_t count[] = { 0x30, 0xff, 0xff, 0xff, 0x9c, 0 };
     send_frame(s, request, sizeof(request), false);
@@ -253,9 +256,10 @@ static void test_eeprom(void)
         g_assert_cmphex(reply[11], ==, 0xc0);
         g_assert_cmpmem(reply + 12, 64, spd + 64 * i, 64);
     }
-    g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 115, reply), ==, 127);
-    g_assert_cmpmem(reply + 12, 115, spd, 115);
-    g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 116, reply), ==, 6);
+    /* 116 bytes fill the 128-byte frame; 117 answers the declared minus 105. */
+    g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 116, reply), ==, 128);
+    g_assert_cmpmem(reply + 12, 116, spd, 116);
+    g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 117, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x97);
     g_assert_cmpuint(eeprom_read(s, 0, 4, 28, 127, reply), ==, 112);
     g_assert_cmpmem(reply + 12, 100, spd + 28, 100);
@@ -265,6 +269,36 @@ static void test_eeprom(void)
     g_assert_cmphex(reply[4], ==, 0x98);
     g_assert_cmpuint(eeprom_read(s, 0, 4, 129, 1, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x97);
+    /*
+     * Component 6 is beyond the table; an absent component answers minus
+     * 104 before any range check; area 5 on a present one is minus 105.
+     */
+    g_assert_cmpuint(eeprom_read(s, 6, 4, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    g_assert_cmpuint(eeprom_read(s, 1, 5, 200, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    g_assert_cmpuint(eeprom_read(s, 0, 5, 0, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x97);
+    /* An offset at or past the area is out of range. */
+    g_assert_cmpuint(eeprom_read(s, 0, 4, 128, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x97);
+    {
+        /* Five arguments are served as four; three answer minus 100. */
+        uint8_t five[33] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 6, 5 };
+        uint8_t three[23] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 6, 3 };
+
+        five[12] = 0;
+        five[17] = 4;
+        five[27] = 64;
+        five[32] = 9;
+        send_frame(s, five, sizeof(five), false);
+        g_assert_cmpuint(receive(s, reply), ==, 76);
+        three[12] = 0;
+        three[17] = 4;
+        send_frame(s, three, sizeof(three), false);
+        g_assert_cmpuint(receive(s, reply), ==, 6);
+        g_assert_cmphex(reply[4], ==, 0x9c);
+    }
     qtest_quit(s);
     spd[63]++;
     g_assert_true(g_file_set_contents(spd_path, (char *)spd,
@@ -302,7 +336,7 @@ static void test_migration(void)
     g_autofree char *socket = NULL, *uri = NULL;
     QTestState *from = start(), *to;
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-    uint8_t reply[129];
+    uint8_t reply[131];
     uint16_t crc = 0xffff;
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
@@ -347,7 +381,7 @@ static void test_eeprom_migration(void)
     g_autofree char *socket = NULL, *uri = NULL;
     g_autofree char *source = NULL, *destination = NULL;
     QTestState *from, *to;
-    uint8_t reply[129];
+    uint8_t reply[131];
     const uint8_t source_bytes[] = { 0xa5, 0x7e, 0x7d };
     const uint8_t destination_bytes[] = { 0x33, 0x44 };
     g_assert_no_error(error);
@@ -390,7 +424,7 @@ static void test_metadata(void)
                                  0, 0, 0, 0, 1,
                                  0, 0, 0, 0, 18,
                                  0, 0, 0, 0, 5 };
-    uint8_t reply[129];
+    uint8_t reply[131];
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
@@ -488,7 +522,7 @@ static void test_console(void)
 {
     int fd;
     QTestState *s = console_start(&fd, "", "");
-    uint8_t reply[129];
+    uint8_t reply[131];
     /* The PROM prints on its CPU's subchannel, which keeps input there. */
     const uint8_t output[] = { 0x40, 'P', 'R', 'O', 'M' };
 
@@ -598,7 +632,7 @@ static void test_poweroff(void)
     QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 0, 1,
                                 1, '*', ' ', 'p', 'w', 'r', ' ', 'd', 0 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     send_frame(s, request, sizeof(request), false);
@@ -661,6 +695,19 @@ static void test_signals_off(void)
     assert_display(s, "L1 running");
     console_send(fd, "log\r");
     console_expect(fd, STAMP "L1 booting\r\n" PROMPT);
+    /* A console-task request with the node off gets the warning reply. */
+    {
+        const uint8_t console_in[] = { 0x10, 0x0f, 0xff, 0xf0, 5, 0, 0, 1,
+                                       0, 0, 0, 0, 0x41 };
+        const char *warning = "WARNING: power on " ID " appears off!";
+        uint8_t reply[131];
+
+        send_frame(s, console_in, sizeof(console_in), false);
+        g_assert_cmpuint(receive(s, reply), ==, 7 + strlen(warning) + 1);
+        g_assert_cmphex(reply[4], ==, 0xff);
+        g_assert_cmphex(reply[5], ==, 1);
+        g_assert_cmpstr((char *)reply + 7, ==, warning);
+    }
     qtest_quit(s);
     close(fd);
 }
@@ -671,7 +718,7 @@ static void test_node_power_line(void)
     QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
     uint8_t select[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
                          0, 0, 0, 0, 4 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     qtest_irq_intercept_out_named(s, L1, "node-power");
@@ -811,7 +858,7 @@ static void test_reboot_l1(void)
     for (unsigned subchannel = 1; subchannel <= 23; subchannel += 22) {
         uint8_t events[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x07, 1,
                              0, 0, 0, 0, subchannel };
-        uint8_t reply[129];
+        uint8_t reply[131];
         g_autoptr(QDict) result = NULL;
 
         s = console_start(&fd, "", "");
@@ -840,7 +887,7 @@ static void test_selection(void)
     const uint8_t volunteer[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x03 };
     const uint8_t events[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x07, 1,
                                0, 0, 0, 0, 23 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     console_send(fd, "\024select\r");
@@ -914,7 +961,7 @@ static void test_lifecycle_persistence(void)
     int fd;
     QTestState *s = console_start(&fd, "", RTC);
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     console_send(fd, "\024display 2 kept\r");
@@ -955,12 +1002,29 @@ static void test_lifecycle_migration(void)
                             RETURN_CPU0);
     console_send(from_fd, "\024display 2 moved\r");
     console_expect(from_fd, ESCAPE RETURN_CPU0);
+    {
+        uint8_t args[5], reply[131];
+
+        integer(args, 0x1234);
+        g_assert_cmpuint(general(from, 0x1001, args, 5, 1, reply), ==, 6);
+        integer(args, 5);
+        g_assert_cmpuint(general(from, 0x1006, args, 5, 1, reply), ==, 6);
+    }
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     wait_migration(from);
     assert_display(to, "moved");
+    {
+        uint8_t reply[131];
+
+        g_assert_cmpuint(general(to, 0x0001, NULL, 0, 0, reply), ==, 11);
+        g_assert_cmphex(reply[9], ==, 0x12);
+        g_assert_cmphex(reply[10], ==, 0x34);
+        g_assert_cmpuint(general(to, 0x0009, NULL, 0, 0, reply), ==, 11);
+        g_assert_cmphex(reply[10], ==, 5);
+    }
     console_send(to_fd, "\024log\r");
     console_expect(to_fd, ESCAPE STAMP "L1 booting\r\n"
                           STAMP "auto power up initiated\r\n"
@@ -997,7 +1061,7 @@ static void expect_router_error(QTestState *s, uint8_t subchannel)
 {
     const uint8_t expected[] = { 0x20 | subchannel, 0xff, 0xff, 0xff, 0xff,
                                  0, 0, 0, 8 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
     g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
@@ -1008,8 +1072,8 @@ static void expect_identity(QTestState *s, uint8_t subchannel,
 {
     const uint8_t expected[] = { 0x20 | subchannel, 0, 0, 0, 0, 2,
                                  0, 0, 0, packed >> 8, packed, 0, 0, 0, 0,
-                                 'C' };
-    uint8_t reply[129];
+                                 '4' };
+    uint8_t reply[131];
 
     g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
     g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
@@ -1081,7 +1145,7 @@ static void test_tasks(void)
         0, 1, 4, 7, 8, 9, 10, 11, 12, 13, 17, 20, 22, 23, 24, 25, 26,
         27, 28, 29, 30, 31, 2, 14, 15, 16, 19
     };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     for (unsigned i = 0; i < G_N_ELEMENTS(silent); i++) {
         set_destination(request, 0x0ffff000 | silent[i]);
@@ -1268,7 +1332,7 @@ static void test_request_log(void)
     const uint8_t identity[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
     const uint8_t command[] = { 0x11, 0x0f, 0xff, 0xf0, 3, 0, 0, 1,
                                 1, 'l', '1', 0 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     console_send(fd, "\024l1dbg\r");
@@ -1291,15 +1355,24 @@ static void test_request_log(void)
                        STAMP "auto power up initiated\r\n"
                        STAMP "power up (COMMAND)\r\n"
                        STAMP "L1REQ: 00041205 - 0003\r\n" RETURN_CPU0);
-    console_send(fd, "\024l1dbg req off\r");
+    console_send(fd, "\024l1dbg promreq on\r");
     console_expect(fd, ESCAPE RETURN_CPU0);
+    console_send(fd, "\024reboot_l1\r");
+    console_expect(fd, ESCAPE);
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    console_send(fd, "l1dbg\r");
+    console_expect(fd, "L1 PROM request debugging is off\r\n" PROMPT);
+    console_send(fd, "\004");
+    console_expect(fd, ENTER_CPU0);
     send_frame(s, identity, sizeof(identity), false);
     expect_identity(s, 16, 0x41);
     console_send(fd, "\024log\r");
     console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
                        STAMP "auto power up initiated\r\n"
                        STAMP "power up (COMMAND)\r\n"
-                       STAMP "L1REQ: 00041205 - 0003\r\n" RETURN_CPU0);
+                       STAMP "L1REQ: 00041205 - 0003\r\n"
+                       STAMP "L1 booting\r\n" RETURN_CPU0);
     qtest_quit(s);
     close(fd);
 }
@@ -1310,7 +1383,7 @@ static void test_console_retarget(void)
     int fd;
     QTestState *s = console_start(&fd, "", "");
     const uint8_t output[] = { 0x50, 'P', 'R', 'O', 'M' };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     send_frame(s, output, sizeof(output), false);
@@ -1327,7 +1400,7 @@ static void test_task_commands(void)
 {
     QTestState *s = start();
     uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 3, 0 };
-    uint8_t reply[129];
+    uint8_t reply[131];
     /* The interpreter takes any code; without its text it answers minus 100. */
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
@@ -1359,7 +1432,7 @@ static void test_settings_queries(void)
                           0, 0, 0, 0, 0x55 };
     uint8_t expected[16] = { 0x37, 0, 0, 0, 0, 1 };
     const uint8_t bad_count[] = { 0x37, 0xff, 0xff, 0xff, 0x9c, 0 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
         unsigned length = commands[i] == 10 ? 16 : 11;
@@ -1376,6 +1449,17 @@ static void test_settings_queries(void)
         g_assert_cmpuint(receive(s, reply), ==, length);
         g_assert_cmpmem(reply, length, expected, length);
         request[7] = 0;
+        if (commands[i] == 1) {
+            /* The identity request accepts an extra integer too. */
+            uint8_t identity[] = { 0x17, 0x0f, 0xff, 0xf0, 6, 0, 3, 1,
+                                   0, 0, 0, 0, 9 };
+            const uint8_t answer[] = { 0x37, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65,
+                                       0, 0, 0, 0, '4' };
+
+            send_frame(s, identity, sizeof(identity), false);
+            g_assert_cmpuint(receive(s, reply), ==, sizeof(answer));
+            g_assert_cmpmem(reply, sizeof(answer), answer, sizeof(answer));
+        }
         request[4] = 3;
         /* The interpreter takes any code but wants one text argument. */
         send_frame(s, request, 8, false);
@@ -1394,7 +1478,7 @@ static void test_uart_interrupts(void)
 {
     QTestState *s = start();
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     send_frame(s, request, sizeof(request), false);
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1);
@@ -1468,7 +1552,7 @@ static void test_uart_irq_migration(void)
     g_autofree char *dir = g_dir_make_tmp("sn1-l1-irq-migrate-XXXXXX", &error);
     g_autofree char *socket = NULL, *uri = NULL;
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
@@ -1517,7 +1601,7 @@ static void expect_wire(QTestState *s, const uint8_t *wire, size_t n)
 static uint32_t node_position(QTestState *s, uint32_t address)
 {
     uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0x0e };
-    uint8_t reply[129];
+    uint8_t reply[131];
     set_destination(request, address);
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 11);
@@ -1532,7 +1616,7 @@ static void console_select(QTestState *s, uint32_t argument, int32_t code)
     uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x02, 1,
                           0, argument >> 24, argument >> 16, argument >> 8,
                           argument };
-    uint8_t reply[129];
+    uint8_t reply[131];
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, (uint8_t)code);
@@ -1557,7 +1641,7 @@ static void test_node_position(void)
                                     1, 'x', 0 };
     const uint8_t wire_range[] = { 0x7e, 0x30, 0xff, 0xff, 0xff, 0x97, 0,
                                    0x71, 0x92, 0x7e };
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     send_frame(s, request, sizeof(request), false);
     expect_wire(s, wire, sizeof(wire));
@@ -1845,6 +1929,20 @@ static void test_general_actions(void)
     integer(args + 5, 210);
     g_assert_cmpuint(general(s, 0x100b, args, 10, 2, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x9c);
+    {
+        uint8_t three[15];
+
+        integer(three, 6);
+        integer(three + 5, 210);
+        integer(three + 10, 3);
+        g_assert_cmpuint(general(s, 0x100b, three, 15, 3, reply), ==, 6);
+        g_assert_cmphex(reply[4], ==, 0);
+        console_send(fd, "\024log\r");
+        console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                           STAMP "auto power up initiated\r\n"
+                           STAMP "power up (COMMAND)\r\n"
+                           STAMP "N0: PROM 6.d2 (PR 3)\r\n" RETURN_CPU0);
+    }
     g_assert_cmpuint(general(s, 0x100c, args, 10, 2, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0);
     g_assert_cmpuint(general(s, 0x100c, args, 5, 1, reply), ==, 6);
@@ -1887,7 +1985,26 @@ static void test_general_actions(void)
     console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
                        STAMP "auto power up initiated\r\n"
                        STAMP "power up (COMMAND)\r\n"
+                       STAMP "N0: PROM 6.d2 (PR 3)\r\n"
                        STAMP "reset (OS)\r\n" RETURN_CPU0);
+    /* 0x2006 while on: a power cycle, down then up, both logged as OS. */
+    {
+        uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x06, 0 };
+
+        send_frame(s, request, sizeof(request), false);
+    }
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "N0: PROM 6.d2 (PR 3)\r\n"
+                       STAMP "reset (OS)\r\n"
+                       STAMP "power down (OS)\r\n"
+                       STAMP "power up (OS)\r\n" RETURN_CPU0);
     /* 0x2005 powers the node off: success first, then the shutdown. */
     g_assert_cmpuint(general(s, 0x2005, NULL, 0, 0, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0);
@@ -1897,7 +2014,10 @@ static void test_general_actions(void)
     console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
                        STAMP "auto power up initiated\r\n"
                        STAMP "power up (COMMAND)\r\n"
+                       STAMP "N0: PROM 6.d2 (PR 3)\r\n"
                        STAMP "reset (OS)\r\n"
+                       STAMP "power down (OS)\r\n"
+                       STAMP "power up (OS)\r\n"
                        STAMP "power down (OS)\r\n" PROMPT);
     /*
      * 0x2006 power-cycles: from off it is a power-up, whose reset cuts
@@ -1923,7 +2043,7 @@ static void test_general_actions(void)
 static void test_display_requests(void)
 {
     QTestState *s = start();
-    uint8_t reply[129];
+    uint8_t reply[131];
     const uint8_t text[] = { 1, 'h', 'i', 0x01, 'x', 0 };
     const uint8_t not_text[] = { 0, 0, 0, 0, 1 };
 
@@ -1944,7 +2064,7 @@ static void test_reboot_request(void)
 {
     int fd;
     QTestState *s = console_start(&fd, "", RTC);
-    uint8_t reply[129];
+    uint8_t reply[131];
 
     console_expect(fd, POWERING ENTER_CPU0);
     console_send(fd, "\024display 2 gone\r");
@@ -1974,7 +2094,7 @@ static void test_power_down_event(void)
     const uint8_t event_head[] = { 0x40 | 23, 0, 4, 0x10, 4, 0, 0, 0x80, 0, 2,
                                    0, 0, 0, 0, 0, 1 };
     const char *expected_text = "\r\n" ID " ATTN: Power Down: issue 'pwr d' "
-                                "again to immediately power down.";
+                                "again to immediately power down.\r\n";
 
     console_expect(fd, POWERING ENTER_CPU0);
     integer(args, 23);
