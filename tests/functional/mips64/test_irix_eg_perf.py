@@ -34,7 +34,10 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_irix_eg_net as base  # noqa: E402
-from test_irix_eg_perf_verdict import eg_perf_verdict  # noqa: E402
+from test_irix_eg_perf_verdict import (  # noqa: E402
+    eg_perf_verdict,
+    mtu_probe_result,
+)
 
 TCP_GUEST_PORT = 5001
 UDP_GUEST_PORT = 5002
@@ -218,35 +221,43 @@ def _forget_console_history(con):
     del con.buf[:]
 
 
-def _parallel_send(host_ports, per_stream_bytes):
+def _parallel_send(host_ports, payloads):
     """Drive N concurrent TCP senders, one per host port, and return the
-    aggregate Mbit/s over the wall-clock of the whole batch. Near one stream's
-    rate means the streams serialised; near N times means they scaled."""
+    aggregate Mbit/s and exact sent counts. Near one stream's rate means the
+    streams serialised; near N times means they scaled."""
     import threading
 
-    payload = os.urandom(per_stream_bytes)
+    if len(host_ports) != len(payloads):
+        raise ValueError("each parallel host port needs one payload")
     start = threading.Barrier(len(host_ports) + 1)
     done = [0] * len(host_ports)
+    errors = [None] * len(host_ports)
 
-    def one(i, port):
-        s = socket.create_connection(("127.0.0.1", port), timeout=30)
-        s.settimeout(SEND_TIMEOUT_SECONDS)
+    def one(i, port, payload):
         start.wait()
         try:
-            s.sendall(payload)
-        finally:
-            s.shutdown(socket.SHUT_WR)
-            s.settimeout(30)
             try:
-                while s.recv(65536):
-                    pass
-            except OSError:
-                pass
-            s.close()
-        done[i] = len(payload)
+                s = socket.create_connection(("127.0.0.1", port), timeout=30)
+                s.settimeout(SEND_TIMEOUT_SECONDS)
+                try:
+                    s.sendall(payload)
+                finally:
+                    s.shutdown(socket.SHUT_WR)
+                    s.settimeout(30)
+                    try:
+                        while s.recv(65536):
+                            pass
+                    except OSError:
+                        pass
+                    s.close()
+                done[i] = len(payload)
+            except OSError as error:
+                errors[i] = str(error)
+        except Exception as error:  # make worker failures visible to the test
+            errors[i] = str(error)
 
-    threads = [threading.Thread(target=one, args=(i, p))
-               for i, p in enumerate(host_ports)]
+    threads = [threading.Thread(target=one, args=(i, port, payloads[i]))
+               for i, port in enumerate(host_ports)]
     for t in threads:
         t.start()
     start.wait()
@@ -254,8 +265,12 @@ def _parallel_send(host_ports, per_stream_bytes):
     for t in threads:
         t.join()
     elapsed = time.monotonic() - t0
+    if any(errors):
+        raise base._Harness("parallel sender failed: " +
+                            "; ".join(e for e in errors if e))
     total = sum(done)
-    return (total * 8 / elapsed / 1e6) if elapsed > 0 else 0.0
+    rate = (total * 8 / elapsed / 1e6) if elapsed > 0 else 0.0
+    return rate, done
 
 
 def _parse_ttcp_rate(text):
@@ -377,7 +392,9 @@ if base.QemuSystemTest is not None:
             log_path = self.log_file('irix-eg-perf.log')
             con = base._Console(vm.console_socket, log_path,
                                 exited=lambda: vm.exitcode() is not None)
-            results = {"tcp_verify": None, "tcp_mbps": None,
+            results = {"mode": "parallel" if PARALLEL else "standard",
+                       "topology": {"smp": SMP, "accel": ACCEL},
+                       "tcp_verify": None, "tcp_mbps": None,
                        "udp_mbps": None, "udp_loss": None}
             login = eg_up = False
             try:
@@ -467,38 +484,103 @@ if base.QemuSystemTest is not None:
                     # concurrent. If the aggregate is near the single, the
                     # streams serialised (the BQL-held-per-word-DMA plateau);
                     # near N times, they scaled.
-                    ports = [_usernet_hostport(vm, 'tcp', TCP_GUEST_PORT + 1 + i)
-                             for i in range(PARALLEL)]
-                    self.assertNotIn(None, ports, "missing parallel hostfwd")
-                    for i in range(PARALLEL):
-                        con.send("ttcp -r -s -p %d -l 65536 >/dev/null 2>&1 &"
-                                 % (TCP_GUEST_PORT + 1 + i))
-                    con.run("echo READY""PAR", "parready", timeout=60)
-                    time.sleep(3)
-                    single = _parallel_send(ports[:1], TCP_THROUGHPUT_BYTES)
-                    # relaunch the receivers the single run consumed
-                    for i in range(PARALLEL):
-                        con.send("ttcp -r -s -p %d -l 65536 >/dev/null 2>&1 &"
-                                 % (TCP_GUEST_PORT + 1 + i))
-                    con.run("echo READY""PAR2", "parready2", timeout=60)
-                    time.sleep(3)
-                    aggregate = _parallel_send(ports, TCP_THROUGHPUT_BYTES)
-                    results["parallel"] = {
-                        "streams": PARALLEL,
-                        "single_mbps": round(single, 1),
-                        "aggregate_mbps": round(aggregate, 1),
-                        "scaling": round(aggregate / single, 2) if single else 0,
-                        "load": [round(os.getloadavg()[0], 1)],
-                    }
+                    if eg_up:
+                        ports = [
+                            _usernet_hostport(
+                                vm, 'tcp', TCP_GUEST_PORT + 1 + i)
+                            for i in range(PARALLEL)]
+                        self.assertNotIn(None, ports,
+                                         "missing parallel hostfwd")
+
+                        payloads = []
+                        copies = []
+                        for i in range(PARALLEL + 1):
+                            path = os.path.join(
+                                served_dir, f'parallel-{i}.bin')
+                            with open(path, 'wb') as payload_file:
+                                payload_file.write(
+                                    os.urandom(TCP_THROUGHPUT_BYTES))
+                            host_crc, host_bytes = base._host_cksum(path)
+                            with open(path, 'rb') as payload_file:
+                                payloads.append(payload_file.read())
+                            copies.append({"host_cksum": host_crc,
+                                           "host_bytes": host_bytes})
+
+                        con.send(
+                            "ttcp -r -p %d -l 65536 "
+                            ">/tmp/eg-par-single.bin 2>/dev/null &" %
+                            (TCP_GUEST_PORT + 1))
+                        time.sleep(3)
+                        single, sent = _parallel_send(
+                            ports[:1], payloads[:1])
+                        con.run("wait", "parsingle",
+                                timeout=LEG_TIMEOUT_SECONDS)
+                        gcrc, gbytes = con.two_values(
+                            "dd if=/tmp/eg-par-single.bin bs=8192 count=%d "
+                            "2>/dev/null | cksum | sed 's/^/CK=/'" %
+                            (TCP_THROUGHPUT_BYTES // 8192),
+                            "parsingleck",
+                            rb"CK=(\d+)\s+(\d+)",
+                            timeout=120)
+                        single_copy = dict(copies[0])
+                        single_copy.update({"sent_bytes": sent[0],
+                                            "guest_cksum": gcrc,
+                                            "guest_bytes": gbytes})
+
+                        for i in range(PARALLEL):
+                            con.send(
+                                "ttcp -r -p %d -l 65536 "
+                                ">/tmp/eg-par-%d.bin 2>/dev/null &" %
+                                (TCP_GUEST_PORT + 1 + i, i))
+                        time.sleep(3)
+                        aggregate, sent = _parallel_send(
+                            ports, payloads[1:])
+                        con.run("wait", "paraggregate",
+                                timeout=LEG_TIMEOUT_SECONDS)
+                        stream_copies = []
+                        for i in range(PARALLEL):
+                            gcrc, gbytes = con.two_values(
+                                "dd if=/tmp/eg-par-%d.bin bs=8192 count=%d "
+                                "2>/dev/null | cksum | sed 's/^/CK=/'" %
+                                (i, TCP_THROUGHPUT_BYTES // 8192),
+                                "parck%d" % i,
+                                rb"CK=(\d+)\s+(\d+)",
+                                timeout=120)
+                            copy = dict(copies[i + 1])
+                            copy.update({"sent_bytes": sent[i],
+                                         "guest_cksum": gcrc,
+                                         "guest_bytes": gbytes})
+                            stream_copies.append(copy)
+
+                        results["parallel"] = {
+                            "streams": PARALLEL,
+                            "single_mbps": round(single, 1),
+                            "aggregate_mbps": round(aggregate, 1),
+                            "scaling": (round(aggregate / single, 2)
+                                        if single else 0),
+                            "single_copy": single_copy,
+                            "copies": stream_copies,
+                            "load": [round(os.getloadavg()[0], 1)],
+                        }
+                    else:
+                        results["parallel"] = None
                     # Persist the parallel result here: this leg returns early,
-                    # before the normal summary write, so write it ourselves.
+                    # before the standard transport legs, so score and write it
+                    # here rather than bypassing the verdict.
                     import json as _json
                     _sum = self.log_file('irix-eg-perf-summary.json')
+                    _report = eg_perf_verdict(login, eg_up, results)
                     with open(_sum, 'w') as _f:
                         _json.dump({"login": login, "eg_up": eg_up,
-                                    "results": results}, _f, indent=2,
+                                    "results": results, "report": _report},
+                                   _f, indent=2,
                                    default=str)
                         _f.write("\n")
+                    self.assertEqual(
+                        _report["verdict"], "PASS",
+                        "IRIX eg parallel transport problems: " +
+                        "; ".join(_report["problems"]) +
+                        f" (full report: {_sum}, console log: {log_path})")
                     return
 
                 seg_before = self._netstat_counter(
@@ -583,6 +665,9 @@ if base.QemuSystemTest is not None:
                     udp_out)
                 results["udp_mbps"] = umbps
                 results["udp_bytes"] = ubytes
+                results["udp_datagrams_sent"] = UDP_BUFS
+                results["udp_datagram_bytes"] = UDP_BUFLEN
+                results["udp_bytes_sent"] = UDP_BUFLEN * UDP_BUFS
                 if ubytes is not None:
                     results["udp_loss"] = 1.0 - (ubytes /
                                                  float(UDP_BUFLEN * UDP_BUFS))
@@ -680,10 +765,12 @@ if base.QemuSystemTest is not None:
                 mtu = {}
                 for want in (9000, 4096, 2048):
                     try:
+                        output_start = len(con.buf)
                         rc = con.run(f"ifconfig {base.IFACE} mtu {want}",
                                      f"mtu{want}", timeout=60)
-                        mtu[want] = ("accepted" if rc == 0
-                                     else "refused (rc %d)" % rc)
+                        output = bytes(con.buf[output_start:]).decode(
+                            "utf-8", "replace")
+                        mtu[want] = mtu_probe_result(rc, output)
                     except base._Harness:
                         mtu[want] = "refused"
                 try:

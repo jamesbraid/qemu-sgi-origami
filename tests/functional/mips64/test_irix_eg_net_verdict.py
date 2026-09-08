@@ -74,6 +74,10 @@ def eg_net_verdict(login_reached, eg_up, transfer, rx):
             "the transfer was not attempted: "
             + (transfer.get("reason") or "no reason recorded"))
     else:
+        if transfer.get("reason") is not None:
+            problems.append(
+                "the completed transfer still records a failure reason: "
+                + str(transfer["reason"]))
         gc = transfer.get("guest_cksum")
         gb = transfer.get("guest_bytes")
         hc = transfer.get("host_cksum")
@@ -147,6 +151,14 @@ class EgNetVerdictTest(unittest.TestCase):
                            {"ipkts_before": 0, "ipkts_after": 5})
         self.assertEqual(r["verdict"], "FAIL")
         self.assertTrue(any("no tftp" in p for p in r["problems"]))
+
+    def test_completed_transfer_with_stale_reason_fails(self):
+        leg = _good_transfer()
+        leg["reason"] = "not reached"
+        r = eg_net_verdict(True, True, leg,
+                           {"ipkts_before": 0, "ipkts_after": 5})
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("failure reason" in p for p in r["problems"]))
 
     def test_size_mismatch_fails(self):
         leg = _good_transfer()
