@@ -70,6 +70,15 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
         ee->haveaddr = 0;
         /* fallthrough */
     case I2C_START_RECV:
+    /*
+     * A repeated start keeps the transaction open, so the collected address
+     * and the counter it set survive: they are what the read half of a
+     * combined write-then-read runs on. But a repeated start to somebody
+     * else's address drops this device with no later boundary, and reset
+     * clears the dirty flag without writing, so it has to flush here or a
+     * backed image can lose the write for good.
+     */
+    case I2C_RESTART:
         DPRINTK("clear\n");
         if (ee->blk && ee->changed) {
             int ret = blk_pwrite(ee->blk, 0, ee->rsize, ee->mem, 0);
@@ -81,15 +90,6 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
         ee->changed = false;
         break;
     case I2C_NACK:
-        break;
-    case I2C_RESTART:
-        /*
-         * A repeated start keeps the transaction open, so nothing is
-         * cleared: the collected address and the counter it set are what
-         * the read half of a combined write-then-read runs on. The cells
-         * a preceding write dirtied stay dirty, and the next event that
-         * does reach a boundary writes them back.
-         */
         break;
     default:
         return -1;
