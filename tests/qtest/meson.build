@@ -288,6 +288,13 @@ if not config_all_devices.has_key('CONFIG_SN0_HUB_PACKET_TEST')
   sn0_hub_packet_qtests = []
 endif
 
+sn0_xbow_transport_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
+    ['sn0-xbow-transport-test'] : [])
+if not config_all_devices.has_key('CONFIG_SGI_XBOW_TRANSPORT_TEST')
+  sn0_xbow_transport_qtests = []
+endif
+
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
@@ -352,6 +359,7 @@ qtests_mips64 = \
                                                    'sn0-debug-breakpoint-test',
                                                    'sn0-tlb-query-test'] : []) + \
   sn0_xbow_qtests + \
+  sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
   sn0_hub_packet_qtests
 

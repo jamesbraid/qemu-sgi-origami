@@ -353,15 +353,21 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
     unsigned int port;
     unsigned int link;
 
+    memory_region_transaction_begin();
     for (port = 0; port < SGI_XBOW_LINKS; port++) {
         memory_region_set_enabled(&s->ingress[port], sgi_xbow_alive(s, port));
+        memory_region_set_enabled(&s->packet_ingress[port],
+                                  sgi_xbow_alive(s, port));
         for (link = 0; link < SGI_XBOW_LINKS; link++) {
             if (sgi_xbow_routed(s, port, link)) {
                 memory_region_set_enabled(&s->route[port][link],
                                           sgi_xbow_alive(s, link));
+                memory_region_set_enabled(&s->packet_route[port][link],
+                                          sgi_xbow_alive(s, link));
             }
         }
     }
+    memory_region_transaction_commit();
 }
 
 /*
@@ -877,24 +883,48 @@ MemoryRegion *sgi_xbow_ingress(SGIXbowState *s, unsigned int widget)
     return &s->ingress[widget - SGI_XBOW_FIRST_WIDGET];
 }
 
-bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
-                            MemoryRegion *face, Error **errp)
+MemoryRegion *sgi_xbow_packet_ingress(SGIXbowState *s, unsigned int widget)
+{
+    g_assert(widget >= SGI_XBOW_FIRST_WIDGET && widget < SGI_XBOW_WIDGETS);
+    return &s->packet_ingress[widget - SGI_XBOW_FIRST_WIDGET];
+}
+
+bool sgi_xbow_attach_endpoint(SGIXbowState *s, unsigned int widget,
+                              MemoryRegion *cpu_face, MemoryRegion *packet_face,
+                              Error **errp)
 {
     unsigned int link;
 
+    if (DEVICE(s)->realized) {
+        error_setg(errp, "crossbar endpoints must be attached "
+                   "before realization");
+        return false;
+    }
     if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS) {
         error_setg(errp, "crossbar widget %u is outside its link range",
                    widget);
         return false;
     }
+    if (!cpu_face || !packet_face || !memory_region_size(cpu_face) ||
+        !memory_region_size(packet_face)) {
+        error_setg(errp, "crossbar endpoints require two initialized faces");
+        return false;
+    }
     link = widget - SGI_XBOW_FIRST_WIDGET;
-    if (s->face[link]) {
+    if (s->face[link] || s->packet_face[link]) {
         error_setg(errp, "crossbar widget %u already has a face attached",
                    widget);
         return false;
     }
-    s->face[link] = face;
+    s->face[link] = cpu_face;
+    s->packet_face[link] = packet_face;
     return true;
+}
+
+bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
+                            MemoryRegion *face, Error **errp)
+{
+    return sgi_xbow_attach_endpoint(s, widget, face, face, errp);
 }
 
 static void sgi_xbow_get_links_alive(Object *obj, Visitor *v, const char *name,
@@ -1041,9 +1071,9 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     unsigned int port;
     unsigned int link;
 
-    if (!s->span) {
+    if (!s->span || s->span > SGI_XBOW_PACKET_SIZE) {
         error_setg(errp, "the crossbar needs the size of one crosstalk "
-                         "widget space");
+                         "widget space, no larger than 48 address bits");
         return;
     }
     if ((s->links_present_prop | s->startup_links_alive_prop) &
@@ -1061,6 +1091,19 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         error_setg(errp,
                    "crossbar identity fields exceed their register widths");
         return;
+    }
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        if (s->packet_face[link] && !s->face[link]) {
+            error_setg(errp, "crossbar packet endpoint requires a CPU face");
+            return;
+        }
+        if (s->face[link] && !memory_region_size(s->face[link])) {
+            error_setg(errp, "crossbar endpoint is not initialized");
+            return;
+        }
+        if (!s->packet_face[link]) {
+            s->packet_face[link] = s->face[link];
+        }
     }
     s->link_present = sgi_xbow_links_of(s->links_present_prop);
     s->link_startup = sgi_xbow_links_of(s->startup_links_alive_prop);
@@ -1091,6 +1134,17 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
                                     (hwaddr)XBOW_FIRST_ILLEGAL_WIDGET *
                                     s->span, &s->illegal[port]);
         sysbus_init_mmio(sbd, &s->ingress[port]);
+        {
+            g_autofree char *packet = g_strdup_printf("%s.packet", name);
+            g_autofree char *regs = g_strdup_printf("%s.packet", view);
+
+            memory_region_init(&s->packet_ingress[port], OBJECT(dev), packet,
+                               SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+            memory_region_init_alias(&s->packet_regs_view[port], OBJECT(dev),
+                                     regs, &s->regs, 0, s->span);
+            memory_region_add_subregion(&s->packet_ingress[port], 0,
+                                        &s->packet_regs_view[port]);
+        }
 
         for (link = 0; link < SGI_XBOW_LINKS; link++) {
             g_autofree char *route = NULL;
@@ -1102,11 +1156,31 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
                                     sgi_xbow_widget(port),
                                     sgi_xbow_widget(link));
             memory_region_init_alias(&s->route[port][link], OBJECT(dev), route,
-                                     s->face[link], 0, s->span);
+                                     s->face[link], 0,
+                                     MIN(s->span,
+                                         memory_region_size(s->face[link])));
             memory_region_add_subregion(&s->ingress[port],
                                         (hwaddr)sgi_xbow_widget(link) *
                                         s->span, &s->route[port][link]);
+            {
+                g_autofree char *packet = g_strdup_printf("%s.packet", route);
+
+                memory_region_init_alias(&s->packet_route[port][link],
+                                         OBJECT(dev), packet,
+                                         s->packet_face[link], 0,
+                                         MIN(SGI_XBOW_PACKET_SIZE,
+                                             memory_region_size(
+                                                 s->packet_face[link])));
+                memory_region_add_subregion(&s->packet_ingress[port],
+                                            (hwaddr)sgi_xbow_widget(link) *
+                                            SGI_XBOW_PACKET_SIZE,
+                                            &s->packet_route[port][link]);
+            }
         }
+    }
+
+    for (port = 0; port < SGI_XBOW_LINKS; port++) {
+        sysbus_init_mmio(sbd, &s->packet_ingress[port]);
     }
 
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
@@ -1117,7 +1191,7 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         }
         name = g_strdup_printf("sgi-xbow.widget%u.packets",
                                sgi_xbow_widget(link));
-        address_space_init(&s->face_as[link], s->face[link], name);
+        address_space_init(&s->face_as[link], s->packet_face[link], name);
     }
 }
 

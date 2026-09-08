@@ -202,3 +202,5 @@ system_ss.add(when: 'CONFIG_SGI_BEDROCK_FLASH',
               if_true: files('sgi-bedrock-flash.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK',
               if_true: files('sgi-bedrock.c', 'sgi-bedrock-pi.c'))
+
+system_ss.add(when: 'CONFIG_SGI_XBOW_TRANSPORT_TEST', if_true: files('sgi-xbow-transport-test.c'))
