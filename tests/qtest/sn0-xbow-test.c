@@ -1014,10 +1014,9 @@ static void test_link_reset_pulse(void)
 }
 
 /*
- * A whole-machine reset puts the configured startup health back and drops
- * an outstanding assertion without sending anything. The only deassertion
- * the contract describes follows an acknowledgment, and a reset is not one:
- * the value already delivered stays where it landed.
+ * Check startup health and the absence of a reset-off write to this RAM
+ * endpoint. Combined reset of actual Hub pending banks is a separate machine
+ * acceptance test; this fixture cannot establish that receiving behavior.
  */
 static void test_reset_restores_startup_health(void)
 {

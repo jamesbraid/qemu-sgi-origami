@@ -27,6 +27,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXbowState, SGI_XBOW)
 #define SGI_XBOW_WIDGETS        16
 #define SGI_XBOW_LINKS          8
 #define SGI_XBOW_FIRST_WIDGET   8
+#define SGI_XBOW_PACKET_ADDRESS_BITS 48
+#define SGI_XBOW_PACKET_SIZE (1ULL << SGI_XBOW_PACKET_ADDRESS_BITS)
 
 typedef struct SGIXbowLink {
     SGIXbowState *xbow;
@@ -53,6 +55,8 @@ struct SGIXbowState {
      */
     MemoryRegion ingress[SGI_XBOW_LINKS];
     MemoryRegion route[SGI_XBOW_LINKS][SGI_XBOW_LINKS];
+    MemoryRegion packet_ingress[SGI_XBOW_LINKS];
+    MemoryRegion packet_route[SGI_XBOW_LINKS][SGI_XBOW_LINKS];
 
     /*
      * The widget numbers between the register block and the first link,
@@ -64,6 +68,7 @@ struct SGIXbowState {
     /* The register block, and the view of it each link port is given. */
     MemoryRegion regs;
     MemoryRegion regs_view[SGI_XBOW_LINKS];
+    MemoryRegion packet_regs_view[SGI_XBOW_LINKS];
 
     /*
      * What a packet addressed to each widget reaches, from the machine.
@@ -73,6 +78,7 @@ struct SGIXbowState {
      * crosstalk address selects.
      */
     MemoryRegion *face[SGI_XBOW_LINKS];
+    MemoryRegion *packet_face[SGI_XBOW_LINKS];
     AddressSpace face_as[SGI_XBOW_LINKS];
 
     /* How much crosstalk space one widget owns, which the machine defines. */
@@ -145,7 +151,15 @@ struct SGIXbowState {
  */
 MemoryRegion *sgi_xbow_ingress(SGIXbowState *s, unsigned int widget);
 
-/* What a packet addressed to this widget reaches. Set before realize. */
+/* Full packet address, with destination widget in bits 51:48. */
+MemoryRegion *sgi_xbow_packet_ingress(SGIXbowState *s, unsigned int widget);
+
+/* Both initialized endpoint faces must be supplied before realization. */
+bool sgi_xbow_attach_endpoint(SGIXbowState *s, unsigned int widget,
+                              MemoryRegion *cpu_face, MemoryRegion *packet_face,
+                              Error **errp);
+
+/* Legacy endpoints use the same face in both views. Set before realize. */
 bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
                             MemoryRegion *face, Error **errp);
 
