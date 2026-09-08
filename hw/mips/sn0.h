@@ -382,6 +382,10 @@ void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
 void sn0_model_configure_diagnostic(SN0MachineState *s,
                                     unsigned int node_index);
 
+/* Call once in order; set optional node links between these two phases. */
+void sn0_origin2000_prepare_nodes(MachineState *machine);
+void sn0_origin2000_realize_nodes(MachineState *machine);
+
 extern const SN0FlashImplementation sn0_flash;
 
 void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
