@@ -1365,10 +1365,8 @@ uint32_t qtest_writel_then_readl(QTestState *s, uint64_t write_addr,
     uint64_t result;
     int ret;
 
-    qtest_sendf(s, "writel 0x%" PRIx64 " 0x%x\n"
-                   "readl 0x%" PRIx64 "\n",
+    qtest_sendf(s, "writel_readl 0x%" PRIx64 " 0x%x 0x%" PRIx64 "\n",
                 write_addr, value, read_addr);
-    qtest_rsp(s);
     args = qtest_rsp_args(s, 2);
     ret = qemu_strtou64(args[1], NULL, 0, &result);
     g_assert(!ret && result <= UINT32_MAX);

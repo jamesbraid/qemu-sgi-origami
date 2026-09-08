@@ -189,6 +189,15 @@ static void *qtest_server_send_opaque;
  *
  * .. code-block:: none
  *
+ *  > writel_readl WRITE_ADDR VALUE READ_ADDR
+ *  < OK VALUE
+ *
+ * Perform a target-endian 32-bit write followed by a target-endian 32-bit
+ * read in one command.  The server does not yield to the main loop between
+ * the two accesses.
+ *
+ * .. code-block:: none
+ *
  *  > read ADDR SIZE [CPU_INDEX]
  *  < OK DATA
  *
@@ -583,6 +592,26 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
             value = cpu_inl(addr);
         }
         qtest_sendf(chr, "OK 0x%04x\n", value);
+    } else if (strcmp(words[0], "writel_readl") == 0) {
+        uint64_t write_addr, value, read_addr;
+        uint32_t write_data, read_data;
+
+        if (!words[1] || !words[2] || !words[3] || words[4] ||
+            qemu_strtou64(words[1], NULL, 0, &write_addr) ||
+            qemu_strtou64(words[2], NULL, 0, &value) ||
+            qemu_strtou64(words[3], NULL, 0, &read_addr)) {
+            qtest_send(chr, "FAIL invalid writel_readl arguments\n");
+            return;
+        }
+
+        write_data = value;
+        tswap32s(&write_data);
+        address_space_write(first_cpu->as, write_addr,
+                            MEMTXATTRS_UNSPECIFIED, &write_data, 4);
+        address_space_read(first_cpu->as, read_addr, MEMTXATTRS_UNSPECIFIED,
+                           &read_data, 4);
+        qtest_sendf(chr, "OK 0x%016" PRIx64 "\n",
+                    (uint64_t)tswap32(read_data));
     } else if (strcmp(words[0], "writeb") == 0 ||
                strcmp(words[0], "writew") == 0 ||
                strcmp(words[0], "writel") == 0 ||

@@ -627,9 +627,9 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value);
  * @value: Value being written.
  * @read_addr: Guest address to read from.
  *
- * Sends both operations in one batch, before the server yields to its main
- * loop. This lets a test distinguish work done inside the write callback from
- * work deferred to a bottom half.
+ * Performs both operations in one qtest protocol command. The server does not
+ * yield to its main loop between them, so a test can distinguish work done in
+ * the write callback from work deferred to a bottom half.
  *
  * Returns: Value read from @read_addr.
  */
