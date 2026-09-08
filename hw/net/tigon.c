@@ -361,28 +361,72 @@ static bool tigon_bd_bigendian(TigonState *s)
     return (s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)] & TI_OPMODE_BYTESWAP_BD) != 0;
 }
 
-static uint32_t tigon_dma_ld32(TigonState *s, uint64_t addr)
-{
-    PCIDevice *pci = PCI_DEVICE(s);
-    uint32_t v = 0;
+enum {
+    TIGON_MAX_BD_WORDS = 8,
+};
 
-    if (tigon_bd_bigendian(s)) {
-        ldl_be_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
-    } else {
-        ldl_le_pci_dma(pci, addr, &v, MEMTXATTRS_UNSPECIFIED);
+/*
+ * Keep each descriptor in one ordered DMA request. Completion and producer
+ * words use the single-word helper so a complete descriptor is visible first.
+ */
+static MemTxResult tigon_dma_read_words(TigonState *s, uint64_t addr,
+                                        uint32_t *words, size_t count)
+{
+    AddressSpace *as = pci_get_address_space(PCI_DEVICE(s));
+    bool bigendian = tigon_bd_bigendian(s);
+    MemTxResult result;
+    size_t bytes;
+    size_t i;
+
+    assert(count > 0 && count <= TIGON_MAX_BD_WORDS);
+    bytes = count * sizeof(*words);
+    result = dma_memory_read(as, addr, words, bytes,
+                             MEMTXATTRS_UNSPECIFIED);
+    trace_tigon_dma("read", addr, bytes, result);
+    if (result != MEMTX_OK) {
+        memset(words, 0, bytes);
+        return result;
     }
-    return v;
+
+    for (i = 0; i < count; i++) {
+        words[i] = bigendian ? be32_to_cpu(words[i])
+                             : le32_to_cpu(words[i]);
+    }
+    return MEMTX_OK;
 }
 
-static void tigon_dma_st32(TigonState *s, uint64_t addr, uint32_t v)
+static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
+                                         const uint32_t *words, size_t count)
 {
-    PCIDevice *pci = PCI_DEVICE(s);
+    AddressSpace *as = pci_get_address_space(PCI_DEVICE(s));
+    bool bigendian = tigon_bd_bigendian(s);
+    uint32_t raw[TIGON_MAX_BD_WORDS];
+    MemTxResult result;
+    size_t bytes;
+    size_t i;
 
-    if (tigon_bd_bigendian(s)) {
-        stl_be_pci_dma(pci, addr, v, MEMTXATTRS_UNSPECIFIED);
-    } else {
-        stl_le_pci_dma(pci, addr, v, MEMTXATTRS_UNSPECIFIED);
+    assert(count > 0 && count <= ARRAY_SIZE(raw));
+    bytes = count * sizeof(*words);
+    for (i = 0; i < count; i++) {
+        raw[i] = bigendian ? cpu_to_be32(words[i])
+                           : cpu_to_le32(words[i]);
     }
+    result = dma_memory_write(as, addr, raw, bytes,
+                              MEMTXATTRS_UNSPECIFIED);
+    trace_tigon_dma("write", addr, bytes, result);
+    return result;
+}
+
+static MemTxResult tigon_dma_read32(TigonState *s, uint64_t addr,
+                                    uint32_t *v)
+{
+    return tigon_dma_read_words(s, addr, v, 1);
+}
+
+static MemTxResult tigon_dma_write32(TigonState *s, uint64_t addr,
+                                     uint32_t v)
+{
+    return tigon_dma_write_words(s, addr, &v, 1);
 }
 
 /*
@@ -390,16 +434,32 @@ static void tigon_dma_st32(TigonState *s, uint64_t addr, uint32_t v)
  * (struct ti_hostaddr), so read and write it as two words rather than one
  * 64-bit quantity -- the word order is fixed regardless of the swap setting.
  */
-static uint64_t tigon_dma_ld_addr(TigonState *s, uint64_t addr)
+static MemTxResult tigon_dma_read_addr(TigonState *s, uint64_t addr,
+                                       uint64_t *v)
 {
-    return ((uint64_t)tigon_dma_ld32(s, addr) << 32) |
-           tigon_dma_ld32(s, addr + 4);
+    uint32_t words[2];
+    MemTxResult result;
+
+    result = tigon_dma_read_words(s, addr, words, ARRAY_SIZE(words));
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    *v = ((uint64_t)words[0] << 32) | words[1];
+    return MEMTX_OK;
 }
 
-static void tigon_dma_st_addr(TigonState *s, uint64_t addr, uint64_t v)
+static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
+                                     uint64_t *buf_addr, uint32_t *word)
 {
-    tigon_dma_st32(s, addr, v >> 32);
-    tigon_dma_st32(s, addr + 4, v & 0xffffffff);
+    uint32_t words[3];
+    MemTxResult result;
+
+    result = tigon_dma_read_words(s, addr, words, ARRAY_SIZE(words));
+    if (result == MEMTX_OK) {
+        *buf_addr = ((uint64_t)words[0] << 32) | words[1];
+        *word = words[2];
+    }
+    return result;
 }
 
 /*
@@ -441,47 +501,110 @@ static MemTxResult tigon_dma_write_frame(TigonState *s, uint64_t addr,
  * releases the CPU, so this runs at firmware-up, when both preconditions hold,
  * rather than at GENINFO_LO write time when the RCBs are not yet populated.
  */
-static void tigon_parse_gib(TigonState *s)
+static MemTxResult tigon_parse_gib(TigonState *s)
 {
     uint64_t g = s->gib_base;
     uint64_t tx_rcb = g + TI_GIB_TX_RCB;
     uint64_t ret_rcb = g + TI_GIB_RETURN_RCB;
-    uint32_t ret_word;
+    uint64_t ev_ring_base, ev_prodidx_ptr;
+    uint64_t tx_ring_base, std_rx_ring_base, jumbo_rx_ring_base;
+    uint64_t return_ring_base, return_prodidx_ptr, tx_considx_ptr;
+    uint32_t tx_word, ret_word, return_ring_max;
+    MemTxResult result;
 
-    s->ev_ring_base = tigon_dma_ld_addr(s, g + TI_GIB_EV_RCB);
-    s->ev_prodidx_ptr = tigon_dma_ld_addr(s, g + TI_GIB_EV_PRODIDX_PTR);
-
-    s->tx_ring_base = tigon_dma_ld_addr(s, tx_rcb);
-    s->tx_host_ring =
-        (tigon_dma_ld32(s, tx_rcb + 8) & TI_RCB_FLAG_HOST_RING) != 0;
-
-    s->std_rx_ring_base = tigon_dma_ld_addr(s, g + TI_GIB_STD_RX_RCB);
-    s->jumbo_rx_ring_base =
-        tigon_dma_ld_addr(s, g + TI_GIB_JUMBO_RX_RCB);
-
-    s->return_ring_base = tigon_dma_ld_addr(s, ret_rcb);
-    ret_word = tigon_dma_ld32(s, ret_rcb + 8);
-    s->return_ring_max = ret_word >> 16;
-    if (s->return_ring_max == 0) {
-        s->return_ring_max = TI_RETURN_RING_CNT;   /* 0 means 2048 */
+    result = tigon_dma_read_addr(s, g + TI_GIB_EV_RCB, &ev_ring_base);
+    if (result != MEMTX_OK) {
+        return result;
     }
-    s->return_prodidx_ptr = tigon_dma_ld_addr(s, g + TI_GIB_RETURN_PRODIDX_PTR);
-    s->tx_considx_ptr = tigon_dma_ld_addr(s, g + TI_GIB_TX_CONSIDX_PTR);
+    result = tigon_dma_read_addr(s, g + TI_GIB_EV_PRODIDX_PTR,
+                                 &ev_prodidx_ptr);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read_addr(s, tx_rcb, &tx_ring_base);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read32(s, tx_rcb + 8, &tx_word);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read_addr(s, g + TI_GIB_STD_RX_RCB,
+                                 &std_rx_ring_base);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read_addr(s, g + TI_GIB_JUMBO_RX_RCB,
+                                 &jumbo_rx_ring_base);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read_addr(s, ret_rcb, &return_ring_base);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read32(s, ret_rcb + 8, &ret_word);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read_addr(s, g + TI_GIB_RETURN_PRODIDX_PTR,
+                                 &return_prodidx_ptr);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    result = tigon_dma_read_addr(s, g + TI_GIB_TX_CONSIDX_PTR,
+                                 &tx_considx_ptr);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+
+    return_ring_max = ret_word >> 16;
+    if (return_ring_max == 0) {
+        return_ring_max = TI_RETURN_RING_CNT;   /* 0 means 2048 */
+    }
+    s->ev_ring_base = ev_ring_base;
+    s->ev_prodidx_ptr = ev_prodidx_ptr;
+    s->tx_ring_base = tx_ring_base;
+    s->tx_host_ring = (tx_word & TI_RCB_FLAG_HOST_RING) != 0;
+    s->std_rx_ring_base = std_rx_ring_base;
+    s->jumbo_rx_ring_base = jumbo_rx_ring_base;
+    s->return_ring_base = return_ring_base;
+    s->return_ring_max = return_ring_max;
+    s->return_prodidx_ptr = return_prodidx_ptr;
+    s->tx_considx_ptr = tx_considx_ptr;
+    return MEMTX_OK;
 }
 
-static void tigon_post_event(TigonState *s, uint8_t event, uint16_t code,
-                             uint16_t idx)
+static MemTxResult tigon_post_event(TigonState *s, uint8_t event,
+                                    uint16_t code, uint16_t idx)
 {
     uint64_t slot = s->ev_ring_base + (uint64_t)s->event_prodidx * 8;
-    uint32_t eventx = ((uint32_t)event << 24) |
-                      ((uint32_t)(code & 0xfff) << 12) | (idx & 0xfff);
+    uint32_t words[2] = {
+        ((uint32_t)event << 24) |
+        ((uint32_t)(code & 0xfff) << 12) | (idx & 0xfff),
+        0,
+    };
+    uint32_t next = (s->event_prodidx + 1) % TI_EVENT_RING_CNT;
+    MemTxResult result;
 
-    tigon_dma_st32(s, slot, eventx);
-    tigon_dma_st32(s, slot + 4, 0);   /* reserved word */
-    s->event_prodidx = (s->event_prodidx + 1) % TI_EVENT_RING_CNT;
-    tigon_dma_st32(s, s->ev_prodidx_ptr, s->event_prodidx);
+    result = tigon_dma_write_words(s, slot, words, ARRAY_SIZE(words));
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: event descriptor write at 0x%" PRIx64
+                      " failed; event held\n", slot);
+        return result;
+    }
+    result = tigon_dma_write32(s, s->ev_prodidx_ptr, next);
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: event producer write at 0x%" PRIx64
+                      " failed; event held\n", s->ev_prodidx_ptr);
+        return result;
+    }
+    s->event_prodidx = next;
     s->irq_asserted = true;
     tigon_update_irq(s);
+    return MEMTX_OK;
 }
 
 /*
@@ -495,9 +618,16 @@ static void tigon_try_firmware_up(TigonState *s)
     if (s->firmware_up || !s->cpu_a_released || !s->gib_valid) {
         return;
     }
-    tigon_parse_gib(s);
+    if (tigon_parse_gib(s) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: general information block read at 0x%" PRIx64
+                      " failed; firmware held\n", s->gib_base);
+        return;
+    }
+    if (tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0) != MEMTX_OK) {
+        return;
+    }
     s->firmware_up = true;
-    tigon_post_event(s, TI_EV_FIRMWARE_UP, 0, 0);
     /*
      * Coming up is a transition from refusing frames to accepting them, so it
      * has to re-offer anything held, exactly as posting a buffer does. A
@@ -656,7 +786,9 @@ static void tigon_tx(TigonState *s, uint32_t prod)
     uint8_t frame[TIGON_MAX_FRAME_SIZE];
     uint32_t frame_len = 0;
     uint16_t frame_cksum = 0;   /* checksum-offload flags across the frame */
-    uint32_t frame_start = s->tx_considx;
+    uint32_t cons = s->tx_considx;
+    bool completed = false;
+    bool walked = false;
 
     if (!s->firmware_up) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -676,13 +808,24 @@ static void tigon_tx(TigonState *s, uint32_t prod)
         prod %= TI_TX_RING_CNT;
     }
 
-    while (s->tx_considx != prod) {
-        uint64_t desc = s->tx_ring_base + (uint64_t)s->tx_considx * 16;
-        uint64_t buf = tigon_dma_ld_addr(s, desc);
-        uint32_t word = tigon_dma_ld32(s, desc + 8);
-        uint16_t len = word >> 16;      /* big-endian: length high, flags low */
-        uint16_t flags = word & 0xffff;
+    while (cons != prod) {
+        uint64_t desc = s->tx_ring_base + (uint64_t)cons * 16;
+        uint64_t buf;
+        uint32_t word;
+        uint16_t len;
+        uint16_t flags;
 
+        if (tigon_dma_read_bd(s, desc, &buf, &word) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "tigon: transmit descriptor read at 0x%" PRIx64
+                          " failed; ring walk stopped\n", desc);
+            if (completed) {
+                tigon_completion_irq(s, false);
+            }
+            return;
+        }
+        len = word >> 16;
+        flags = word & 0xffff;
         if (len > sizeof(frame) - frame_len) {
             len = sizeof(frame) - frame_len;
         }
@@ -690,12 +833,15 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit payload read at 0x%" PRIx64
                           " failed; ring walk stopped\n", buf);
-            s->tx_considx = frame_start;
+            if (completed) {
+                tigon_completion_irq(s, false);
+            }
             return;
         }
+        walked = true;
         frame_len += len;
         frame_cksum |= flags & (TI_BDFLAG_TCP_UDP_CKSUM | TI_BDFLAG_IP_CKSUM);
-        s->tx_considx = (s->tx_considx + 1) % TI_TX_RING_CNT;
+        cons = (cons + 1) % TI_TX_RING_CNT;
 
         if (flags & TI_BDFLAG_END) {
             /*
@@ -718,15 +864,39 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             if (csum && tigon_frame_offloadable(frame, frame_len)) {
                 net_checksum_calculate(frame, frame_len, csum);
             }
+            if (tigon_dma_write32(s, s->tx_considx_ptr, cons) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "tigon: transmit consumer write at 0x%" PRIx64
+                              " failed; frame held\n", s->tx_considx_ptr);
+                if (completed) {
+                    tigon_completion_irq(s, false);
+                }
+                return;
+            }
             qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
+            s->tx_considx = cons;
+            completed = true;
             frame_len = 0;
             frame_cksum = 0;
-            frame_start = s->tx_considx;
         }
     }
 
-    tigon_dma_st32(s, s->tx_considx_ptr, s->tx_considx);
-    tigon_completion_irq(s, false);
+    if (!walked) {
+        if (tigon_dma_write32(s, s->tx_considx_ptr, cons) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "tigon: transmit consumer write at 0x%" PRIx64
+                          " failed; ring walk stopped\n", s->tx_considx_ptr);
+            if (completed) {
+                tigon_completion_irq(s, false);
+            }
+            return;
+        }
+        s->tx_considx = cons;
+        completed = true;
+    }
+    if (completed) {
+        tigon_completion_irq(s, false);
+    }
 }
 
 static void tigon_reset_state(TigonState *s)
@@ -1189,13 +1359,32 @@ static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, size_t size,
     return false;
 }
 
+static MemTxResult tigon_write_rx_return(TigonState *s, uint64_t addr,
+                                         uint64_t buf_addr,
+                                         uint32_t word2, uint32_t word3,
+                                         uint32_t checksums)
+{
+    uint32_t words[TIGON_MAX_BD_WORDS] = {
+        buf_addr >> 32,
+        buf_addr & 0xffffffff,
+        word2,
+        word3,
+        checksums,
+        0,
+        0,
+        0,
+    };
+
+    return tigon_dma_write_words(s, addr, words, ARRAY_SIZE(words));
+}
+
 static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
                              size_t size)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
     uint16_t flags = 0;
     uint64_t rx_desc, buf_addr, ret_desc;
-    uint32_t rx_word;
+    uint32_t rx_word, next_return_prod;
     uint16_t buf_idx, buf_len;
     size_t landed;
     bool jumbo;
@@ -1247,9 +1436,13 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     } else {
         rx_desc = s->std_rx_ring_base + (uint64_t)s->std_rx_considx * 32;
     }
-    buf_addr = tigon_dma_ld_addr(s, rx_desc);
+    if (tigon_dma_read_bd(s, rx_desc, &buf_addr, &rx_word) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: receive descriptor read at 0x%" PRIx64
+                      " failed; frame held\n", rx_desc);
+        return 0;
+    }
     /* Big-endian word: buffer index in the high half, length in the low. */
-    rx_word = tigon_dma_ld32(s, rx_desc + 8);
     buf_idx = rx_word >> 16;
     buf_len = rx_word & 0xffff;
     /*
@@ -1286,30 +1479,39 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
                       " failed; frame dropped\n", buf_addr);
         return size;
     }
+    /* Post a receive-return descriptor naming the buffer and the length. */
+    ret_desc = s->return_ring_base + (uint64_t)s->return_prodidx * 32;
+    if (tigon_write_rx_return(s, ret_desc, buf_addr,
+                              ((uint32_t)buf_idx << 16) |
+                              (landed & 0xffff),
+                              ((uint32_t)(jumbo
+                                          ? TI_BDTYPE_RECV_JUMBO_BD
+                                          : TI_BDTYPE_RECV_BD) << 16) |
+                              flags | TI_BDFLAG_END |
+                              (jumbo ? TI_BDFLAG_JUMBO_RING : 0),
+                              tigon_rx_checksums(buf, size)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: receive return descriptor write at 0x%"
+                      PRIx64 " failed; frame held\n", ret_desc);
+        return 0;
+    }
+
+    next_return_prod = (s->return_prodidx + 1) % s->return_ring_max;
+    if (tigon_dma_write32(s, s->return_prodidx_ptr,
+                          next_return_prod) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: receive return producer write at 0x%" PRIx64
+                      " failed; frame held\n", s->return_prodidx_ptr);
+        return 0;
+    }
+
     if (jumbo) {
         s->jumbo_rx_considx =
             (s->jumbo_rx_considx + 1) % TI_JUMBO_RX_RING_CNT;
     } else {
         s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
     }
-
-    /* Post a receive-return descriptor naming the buffer and the length. */
-    ret_desc = s->return_ring_base + (uint64_t)s->return_prodidx * 32;
-    tigon_dma_st_addr(s, ret_desc, buf_addr);
-    tigon_dma_st32(s, ret_desc + 8,
-                   ((uint32_t)buf_idx << 16) | (landed & 0xffff));
-    tigon_dma_st32(s, ret_desc + 12,
-                   ((uint32_t)(jumbo ? TI_BDTYPE_RECV_JUMBO_BD
-                                     : TI_BDTYPE_RECV_BD) << 16) |
-                   flags | TI_BDFLAG_END |
-                   (jumbo ? TI_BDFLAG_JUMBO_RING : 0));
-    tigon_dma_st32(s, ret_desc + 16, tigon_rx_checksums(buf, size));
-    tigon_dma_st32(s, ret_desc + 20, 0);   /* error flags / vlan tag */
-    tigon_dma_st32(s, ret_desc + 24, 0);   /* reserved */
-    tigon_dma_st32(s, ret_desc + 28, 0);   /* opaque cookie */
-
-    s->return_prodidx = (s->return_prodidx + 1) % s->return_ring_max;
-    tigon_dma_st32(s, s->return_prodidx_ptr, s->return_prodidx);
+    s->return_prodidx = next_return_prod;
     tigon_completion_irq(s, true);
 
     return size;
