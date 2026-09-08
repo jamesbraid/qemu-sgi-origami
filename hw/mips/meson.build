@@ -17,12 +17,15 @@ mips_ss.add(when: 'CONFIG_SGI_SN0',
                            'sn0-origin2000.c', 'sn0-origin2000-model.c',
                            'sn0-origin2000-management-model.c',
                            'sn0-origin2000-model-consumer.c',
+                           'sn0-origin2000-io.c',
                            'sn0-fabric-routed.c',
                            'sn0-origin200-model.c'),
             if_false: files('sn0-qmp-stub.c'))
 mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
             if_true: files('sn0-origin2000-flash-test.c',
                            'sn0-origin2000-model-test.c'))
+mips_ss.add(when: 'CONFIG_SN0_HUB_PACKET_TEST',
+            if_true: files('sn0-origin2000-io-test.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1', if_true: files('sn1.c'))
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
