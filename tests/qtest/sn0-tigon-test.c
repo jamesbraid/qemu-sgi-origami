@@ -838,6 +838,7 @@ static void test_transmit_payload_dma_error(const void *data)
     close(sv[1]);
 
     go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
 
     write_rcb_addr(qts, TX_RING_PHYS + 0, UNMAPPED_PAYLOAD_PHYS);
     qtest_writel(qts, TX_RING_PHYS + 8,
@@ -849,6 +850,7 @@ static void test_transmit_payload_dma_error(const void *data)
     g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 0);
     g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
     g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+    g_assert_false(irq_asserted(qts));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -870,6 +872,7 @@ static void test_transmit_fragment_dma_error_retry(const void *data)
     net_recv_timeout(sv[0], 5);
 
     go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
 
     qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
     write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
@@ -886,6 +889,7 @@ static void test_transmit_fragment_dma_error_retry(const void *data)
     g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 0);
     g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
     g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+    g_assert_false(irq_asserted(qts));
 
     /* Repair only the failed fragment and retry the same producer. */
     write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS + FIRST_LEN);
@@ -895,6 +899,9 @@ static void test_transmit_fragment_dma_error_retry(const void *data)
     g_assert_cmpint(len, ==, sizeof(test_frame));
     g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
     g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 2);
+    g_assert_true(irq_asserted(qts));
+    g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
 
     qtest_quit(qts);
     close(sv[0]);
