@@ -484,8 +484,10 @@ static AddressSpace *tigon_payload_as(TigonState *s)
 static MemTxResult tigon_dma_read_frame(TigonState *s, uint64_t addr,
                                         uint8_t *dst, uint32_t len)
 {
-    return dma_memory_read(tigon_payload_as(s), addr, dst, len,
-                           MEMTXATTRS_UNSPECIFIED);
+    /*
+     * Ordered descriptor reads precede this; ordered status writes publish it.
+     */
+    return dma_memory_read_relaxed(tigon_payload_as(s), addr, dst, len);
 }
 
 static MemTxResult tigon_dma_write_frame(TigonState *s, uint64_t addr,
