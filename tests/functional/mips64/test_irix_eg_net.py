@@ -359,7 +359,8 @@ if QemuSystemTest is not None:
             except _Harness as e:
                 leg["reason"] = str(e)
                 return leg
-            leg.update({"attempted": True, "guest_cksum": guest_crc,
+            leg.update({"attempted": True, "reason": None,
+                       "guest_cksum": guest_crc,
                        "guest_bytes": guest_size})
             return leg
 

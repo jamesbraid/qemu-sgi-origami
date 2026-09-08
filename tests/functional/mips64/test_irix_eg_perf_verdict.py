@@ -37,9 +37,52 @@ Why each clause matters:
   and an emulated receiver drains slower than a host fills, so loss measures
   the sender's pacing far more than the adapter. Recording it keeps the
   number honest without turning it into a false alarm.
+
+- Parallel mode scores its own contract instead of returning before the
+  verdict. It requires eg to be up, one measured baseline, one aggregate
+  rate, and independent host/guest checksums and byte counts for every stream.
 """
 
 import unittest
+
+
+def mtu_probe_result(rc, output):
+    """Classify one IRIX ifconfig MTU request from status and diagnostics."""
+    error = next((line.strip() for line in output.splitlines()
+                  if "SIOC" in line and "MTU" in line), None)
+    if error:
+        return f"refused ({error})"
+    return "accepted" if rc == 0 else f"refused (rc {rc})"
+
+
+def _check_copy(problems, label, copy):
+    if not copy:
+        problems.append(f"{label} has no byte-integrity evidence")
+        return
+
+    gc, gb = copy.get("guest_cksum"), copy.get("guest_bytes")
+    hc, hb = copy.get("host_cksum"), copy.get("host_bytes")
+    sent = copy.get("sent_bytes")
+    if gc is None or gb is None:
+        problems.append(f"{label} has no guest checksum and byte count")
+        return
+    if hb is None or hb <= 0:
+        problems.append(f"{label} has no non-empty host byte count")
+    if sent is None:
+        problems.append(f"{label} has no sender byte count")
+    elif hb is not None and sent != hb:
+        problems.append(
+            f"{label} sender wrote {sent} bytes of the {hb}-byte payload")
+    if hb is not None and gb != hb:
+        problems.append(
+            f"{label} size mismatch: the guest received {gb} bytes, "
+            f"the host sent {hb}")
+    if hc is None:
+        problems.append(f"{label} has no host checksum")
+    elif gc != hc:
+        problems.append(
+            f"{label} checksum mismatch: the guest computed {gc}, "
+            f"the host computed {hc}")
 
 
 def eg_perf_verdict(login_reached, eg_up, results):
@@ -47,7 +90,7 @@ def eg_perf_verdict(login_reached, eg_up, results):
 
     login_reached, eg_up: booleans for the two upstream milestones.
 
-    results: the dict the test records --
+    results: the standard-mode dict the test records --
         {"tcp_verify": {"host_cksum": str, "host_bytes": int,
                         "guest_cksum": str or None,
                         "guest_bytes": int or None} or None,
@@ -56,6 +99,10 @@ def eg_perf_verdict(login_reached, eg_up, results):
          "udp_loss": float or None,
          "udp_bytes": int or None,
          "tcp_segments_delta": int or None}
+
+        Parallel mode instead carries mode="parallel" and a parallel dict
+        with one single_copy, one copy per stream, and both rates. Each copy
+        records host, sender, and guest byte counts plus host/guest checksums.
 
     Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
     clause holds; problems names every clause that did not, so one run reports
@@ -67,6 +114,32 @@ def eg_perf_verdict(login_reached, eg_up, results):
         problems.append("the guest never reached a root shell")
     if not eg_up:
         problems.append("the eg interface never came up configured")
+
+    if results.get("mode") == "parallel":
+        parallel = results.get("parallel")
+        if not parallel:
+            problems.append("no parallel throughput was measured")
+        else:
+            streams = parallel.get("streams")
+            copies = parallel.get("copies") or []
+            if not isinstance(streams, int) or streams <= 0:
+                problems.append("the parallel stream count is invalid")
+            elif len(copies) != streams:
+                problems.append(
+                    f"parallel byte evidence covers {len(copies)} of "
+                    f"{streams} streams")
+            _check_copy(problems, "the single-stream baseline",
+                        parallel.get("single_copy"))
+            for index, copy in enumerate(copies):
+                _check_copy(problems, f"parallel stream {index}", copy)
+            if parallel.get("single_mbps") is None:
+                problems.append("no single-stream baseline was measured")
+            if parallel.get("aggregate_mbps") is None:
+                problems.append("no parallel aggregate rate was measured")
+        return {
+            "verdict": "PASS" if not problems else "FAIL",
+            "problems": problems,
+        }
 
     verify = results.get("tcp_verify")
     if not verify:
@@ -162,6 +235,24 @@ def _good_results():
     }
 
 
+def _good_parallel_results():
+    def copy(index):
+        return {"host_cksum": str(1000 + index), "host_bytes": 4194304,
+                "sent_bytes": 4194304,
+                "guest_cksum": str(1000 + index), "guest_bytes": 4194304}
+
+    return {
+        "mode": "parallel",
+        "parallel": {
+            "streams": 2,
+            "single_mbps": 258.1,
+            "aggregate_mbps": 527.2,
+            "single_copy": copy(0),
+            "copies": [copy(1), copy(2)],
+        },
+    }
+
+
 class EgPerfVerdictTest(unittest.TestCase):
     def test_all_clauses_hold_is_pass(self):
         r = eg_perf_verdict(True, True, _good_results())
@@ -177,6 +268,48 @@ class EgPerfVerdictTest(unittest.TestCase):
         r = eg_perf_verdict(True, False, _good_results())
         self.assertEqual(r["verdict"], "FAIL")
         self.assertTrue(any("never came up" in p for p in r["problems"]))
+
+    def test_parallel_without_eg_fails(self):
+        r = eg_perf_verdict(True, False, _good_parallel_results())
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("never came up" in p for p in r["problems"]))
+
+    def test_parallel_with_independent_byte_evidence_passes(self):
+        r = eg_perf_verdict(True, True, _good_parallel_results())
+        self.assertEqual(r["verdict"], "PASS")
+        self.assertEqual(r["problems"], [])
+
+    def test_parallel_missing_one_stream_copy_fails(self):
+        res = _good_parallel_results()
+        res["parallel"]["copies"].pop()
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("covers 1 of 2" in p for p in r["problems"]))
+
+    def test_parallel_checksum_mismatch_fails(self):
+        res = _good_parallel_results()
+        res["parallel"]["copies"][1]["guest_cksum"] = "wrong"
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("parallel stream 1 checksum mismatch" in p
+                            for p in r["problems"]))
+
+    def test_parallel_missing_sender_count_fails(self):
+        res = _good_parallel_results()
+        del res["parallel"]["copies"][0]["sent_bytes"]
+        r = eg_perf_verdict(True, True, res)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertTrue(any("sender byte count" in p for p in r["problems"]))
+
+    def test_mtu_ioctl_error_refuses_zero_status(self):
+        result = mtu_probe_result(
+            0, "ifconfig: SIOCSIFMTU: Invalid argument\r\n")
+        self.assertEqual(
+            result,
+            "refused (ifconfig: SIOCSIFMTU: Invalid argument)")
+
+    def test_mtu_success_without_error_is_accepted(self):
+        self.assertEqual(mtu_probe_result(0, ""), "accepted")
 
     def test_missing_transfer_fails(self):
         res = _good_results()
