@@ -567,6 +567,9 @@ static void test_power(void)
     console_expect(fd, ESCAPE "power appears on\r\n" RETURN_CPU0);
     console_send(fd, "\024power up\r");
     console_expect(fd, ESCAPE "Power is already on\r\n" RETURN_CPU0);
+    /* The first power-off request while up is deferred; the second acts. */
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
     console_send(fd, "\024power down\r");
     console_expect(fd, ESCAPE PROMPT);
     qtest_qmp_eventwait(s, "SHUTDOWN");
@@ -674,6 +677,10 @@ static void test_node_power_line(void)
     qtest_irq_intercept_out_named(s, L1, "node-power");
     send_frame(s, select, sizeof(select), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
+    /* The first power-off request while up is deferred; the second acts. */
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE "returning to console mode  " ID " console, "
+                       "<CTRL_T> to escape to L1\r\n");
     console_send(fd, "\024power down\r");
     console_expect(fd, ESCAPE PROMPT);
     qtest_qmp_eventwait(s, "SHUTDOWN");
@@ -883,6 +890,9 @@ static void test_display_command(void)
                        "line 2: \"hello       \"\r\n"
                        "leds:  PWR=on    SERVICE=off     FAULT=off\r\n"
                        RETURN_CPU0);
+    /* The first power-off request while up is deferred; the second acts. */
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
     console_send(fd, "\024power down\r");
     console_expect(fd, ESCAPE PROMPT);
     qtest_qmp_eventwait(s, "SHUTDOWN");
@@ -1064,12 +1074,12 @@ static void test_tasks(void)
     const uint8_t echoed[] = { 0x30, 0, 0, 0xab, 0xcd, 2,
                                0, 0, 0, 0, 5, 1, 'h', 'i', 0 };
     const uint8_t console_in[] = { 0x10, 0x0f, 0xff, 0xf0, 4 << 5 | 5,
-                                   0x00, 0x41 };
+                                   0x00, 0x00, 1, 0, 0, 0, 0, 0x41 };
     const uint8_t console_in_21[] = { 0x10, 0x0f, 0xff, 0xf0, 2 << 5 | 21,
-                                      0x12, 0x62 };
+                                      0x12, 0x34, 1, 0, 0, 0, 0, 0x62 };
     static const unsigned silent[] = {
-        0, 1, 4, 7, 8, 9, 10, 11, 12, 13, 15, 17, 20, 22, 23, 24, 25, 26,
-        27, 28, 29, 30, 31, 2, 14, 16, 19
+        0, 1, 4, 7, 8, 9, 10, 11, 12, 13, 17, 20, 22, 23, 24, 25, 26,
+        27, 28, 29, 30, 31, 2, 14, 15, 16, 19
     };
     uint8_t reply[129];
 
@@ -1080,7 +1090,7 @@ static void test_tasks(void)
     send_frame(s, loopback, sizeof(loopback), false);
     g_assert_cmpuint(receive(s, reply), ==, sizeof(echoed));
     g_assert_cmpmem(reply, sizeof(echoed), echoed, sizeof(echoed));
-    /* The Bedrock console tasks send the code's low byte back as input. */
+    /* The Bedrock console tasks send the first argument back as input. */
     send_frame(s, console_in, sizeof(console_in), false);
     g_assert_cmpuint(receive(s, reply), ==, 2);
     g_assert_cmphex(reply[0], ==, 4);
@@ -1360,10 +1370,11 @@ static void test_settings_queries(void)
             g_assert_cmpuint(receive(s, reply), ==, length);
             g_assert_cmpmem(reply, length, expected, length);
         }
+        /* Extra arguments are accepted: the same reply comes back. */
         request[7] = 1;
         send_frame(s, request, sizeof(request), false);
-        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_count));
-        g_assert_cmpmem(reply, sizeof(bad_count), bad_count, sizeof(bad_count));
+        g_assert_cmpuint(receive(s, reply), ==, length);
+        g_assert_cmpmem(reply, length, expected, length);
         request[7] = 0;
         request[4] = 3;
         /* The interpreter takes any code but wants one text argument. */
@@ -1700,6 +1711,290 @@ static void test_uart_shared(void)
     qtest_quit(s);
 }
 
+static size_t general(QTestState *s, uint16_t code, const uint8_t *args,
+                      size_t args_len, unsigned count, uint8_t *reply)
+{
+    uint8_t request[136] = { 0x10, 0x0f, 0xff, 0xf0, 6, code >> 8, code,
+                             count };
+    size_t n = 8;
+
+    if (args_len) {
+        memcpy(request + 8, args, args_len);
+        n += args_len;
+    }
+    send_frame(s, request, n, false);
+    return receive(s, reply);
+}
+
+static void integer(uint8_t *out, uint32_t value)
+{
+    out[0] = 0;
+    out[1] = value >> 24;
+    out[2] = value >> 16;
+    out[3] = value >> 8;
+    out[4] = value;
+}
+
+/* The read-only rows the firmware serves that the model answers from state. */
+static void test_general_reads(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,id=l1c,"
+                               "revision-major=1,revision-minor=44,"
+                               "revision-patch=0,debug-switches=0x10d,"
+                               "system-serial=L1234567,partition=3" UART);
+    uint8_t reply[129], args[10];
+    static const uint8_t revision[] = { 0x30, 0, 0, 0, 0, 3, 0, 0, 0, 0, 1,
+                                        0, 0, 0, 0, 44, 0, 0, 0, 0, 0 };
+    static const uint8_t serial[] = { 0x30, 0, 0, 0, 0, 1, 1,
+                                      'L', '1', '2', '3', '4', '5', '6', '7',
+                                      0 };
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    /* 0x0001 debug switches, 0x0009 partition: stored settings. */
+    g_assert_cmpuint(general(s, 0x0001, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[9], ==, 0x01);
+    g_assert_cmphex(reply[10], ==, 0x0d);
+    g_assert_cmpuint(general(s, 0x0009, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[10], ==, 3);
+    /* 0x1001 writes the switches; 0x1006 the partition; both answer 0. */
+    integer(args, 0x4);
+    g_assert_cmpuint(general(s, 0x1001, args, 5, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmpuint(general(s, 0x0001, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[10], ==, 4);
+    integer(args, 7);
+    g_assert_cmpuint(general(s, 0x1006, args, 5, 1, reply), ==, 6);
+    g_assert_cmpuint(general(s, 0x0009, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[10], ==, 7);
+    g_assert_cmpuint(general(s, 0x1001, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    /* 0x0005 firmware revision, 0x0008 system serial. */
+    g_assert_cmpuint(general(s, 0x0005, NULL, 0, 0, reply), ==,
+                     sizeof(revision));
+    g_assert_cmpmem(reply, sizeof(revision), revision, sizeof(revision));
+    g_assert_cmpuint(general(s, 0x0008, NULL, 0, 0, reply), ==,
+                     sizeof(serial));
+    g_assert_cmpmem(reply, sizeof(serial), serial, sizeof(serial));
+    /* 0x0004 brick serial: none configured, minus 104. */
+    g_assert_cmpuint(general(s, 0x0004, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    /* 0x000a port speeds, 0x000b the two-bit setting, 0x1008 sets it. */
+    g_assert_cmpuint(general(s, 0x000a, NULL, 0, 0, reply), ==, 16);
+    g_assert_cmpuint(general(s, 0x000b, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[10], ==, 0);
+    integer(args, 2);
+    g_assert_cmpuint(general(s, 0x1008, args, 5, 1, reply), ==, 6);
+    g_assert_cmpuint(general(s, 0x000b, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[10], ==, 2);
+    integer(args, 7);
+    g_assert_cmpuint(general(s, 0x1008, args, 5, 1, reply), ==, 6);
+    g_assert_cmpuint(general(s, 0x000b, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[10], ==, 3);
+    /* 0x000c, 0x000d: no attached bricks, so rack 0 bay 0 type 0 per port. */
+    g_assert_cmpuint(general(s, 0x000c, NULL, 0, 0, reply), ==, 6 + 8 * 5);
+    g_assert_cmphex(reply[5], ==, 8);
+    g_assert_cmpuint(general(s, 0x000d, NULL, 0, 0, reply), ==, 6 + 4 * 5);
+    /* 0x000f last event reasons: none yet, then COMMAND after a reset. */
+    g_assert_cmpuint(general(s, 0x000f, NULL, 0, 0, reply), ==, 16);
+    /* 0x0010 processor masks: two processors known. */
+    g_assert_cmpuint(general(s, 0x0010, NULL, 0, 0, reply), ==, 6 + 4 * 5);
+    g_assert_cmphex(reply[10], ==, 1);
+    g_assert_cmphex(reply[15], ==, 2);
+    /* 0x0011 scan record: not modeled, minus 106 with a status. */
+    g_assert_cmpuint(general(s, 0x0011, NULL, 0, 0, reply), ==, 11);
+    g_assert_cmphex(reply[4], ==, 0x96);
+    /* 0x4000 inventory: empty, minus 104. */
+    g_assert_cmpuint(general(s, 0x4000, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    /* 0x0007 EEPROM format: nothing configured, minus 104 for any index. */
+    integer(args, 0);
+    g_assert_cmpuint(general(s, 0x0007, args, 5, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    integer(args, 9);
+    g_assert_cmpuint(general(s, 0x0007, args, 5, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    /* Codes with no handler in this image answer minus 101. */
+    g_assert_cmpuint(general(s, 0x2000, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    g_assert_cmpuint(general(s, 0x4001, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9b);
+    qtest_quit(s);
+}
+
+/* Action and setting requests answer the fieldless success, or their error. */
+static void test_general_actions(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
+    uint8_t reply[129], args[10];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    qtest_irq_intercept_out_named(s, L1, "node-reset");
+    /* 0x1009 front-panel control: two ints, selector at most 2. */
+    integer(args, 1);
+    integer(args + 5, 1);
+    g_assert_cmpuint(general(s, 0x1009, args, 10, 2, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    integer(args + 5, 3);
+    g_assert_cmpuint(general(s, 0x1009, args, 10, 2, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x97);
+    g_assert_cmpuint(general(s, 0x1009, args, 5, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    /* 0x100b PROM version: exactly three ints; 0x100c: exactly two. */
+    integer(args, 6);
+    integer(args + 5, 210);
+    g_assert_cmpuint(general(s, 0x100b, args, 10, 2, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    g_assert_cmpuint(general(s, 0x100c, args, 10, 2, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmpuint(general(s, 0x100c, args, 5, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    /* 0x1007 then 0x100a: the registration is cleared. */
+    integer(args, 23);
+    g_assert_cmpuint(general(s, 0x1007, args, 5, 1, reply), ==, 6);
+    g_assert_cmpuint(general(s, 0x100a, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    {
+        g_autoptr(QDict) result = qtest_qmp(s,
+            "{'execute':'qom-get','arguments':"
+            "{'path':%s,'property':'event-subchannel'}}", L1);
+        g_assert_cmpint(qdict_get_int(result, "return"), ==, 0);
+    }
+    /* 0x2007, 0x2008: not on this brick type. */
+    g_assert_cmpuint(general(s, 0x2007, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x94);
+    /* 0x2002 to 0x2004: PCI slot operations, minus 100 without a handler. */
+    integer(args, 0);
+    integer(args + 5, 0xff);
+    g_assert_cmpuint(general(s, 0x2002, args, 10, 2, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9c);
+    /*
+     * 0x2001 resets the node, logged as OS. Its reply is queued and then
+     * cut off by the reset it triggers, as the contract records; the
+     * window comes back empty.
+     */
+    {
+        uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x01, 0 };
+
+        send_frame(s, request, sizeof(request), false);
+    }
+    qtest_qmp_eventwait(s, "RESET");
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+    g_assert_cmpuint(general(s, 0x000f, NULL, 0, 0, reply), ==, 16);
+    g_assert_cmphex(reply[10], ==, 3);
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "reset (OS)\r\n" RETURN_CPU0);
+    /* 0x2005 powers the node off: success first, then the shutdown. */
+    g_assert_cmpuint(general(s, 0x2005, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    assert_display(s, "Powered Down");
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "reset (OS)\r\n"
+                       STAMP "power down (OS)\r\n" PROMPT);
+    /*
+     * 0x2006 power-cycles: from off it is a power-up, whose reset cuts
+     * off the reply the way 0x2001's does.
+     */
+    console_send(fd, "\004");
+    console_expect(fd, ENTER_CPU0);
+    {
+        uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x06, 0 };
+
+        send_frame(s, request, sizeof(request), false);
+    }
+    /* Nobody escaped, so the guest's power-up prints the locked-state form. */
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    assert_display(s, "Powered Up");
+    qtest_quit(s);
+    close(fd);
+}
+
+/* The two display requests write line 2 as the firmware does. */
+static void test_display_requests(void)
+{
+    QTestState *s = start();
+    uint8_t reply[129];
+    const uint8_t text[] = { 1, 'h', 'i', 0x01, 'x', 0 };
+    const uint8_t not_text[] = { 0, 0, 0, 0, 1 };
+
+    g_assert_cmpuint(general(s, 0x1004, text, sizeof(text), 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    assert_display(s, "hi?x");
+    g_assert_cmpuint(general(s, 0x1005, text, sizeof(text), 1, reply), ==, 6);
+    assert_display(s, "hi?x");
+    g_assert_cmpuint(general(s, 0x1005, not_text, sizeof(not_text), 1, reply),
+                     ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x9a);
+    assert_display(s, "hi?x");
+    qtest_quit(s);
+}
+
+/* 0x4002 restarts the controller and logs the request. */
+static void test_reboot_request(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", RTC);
+    uint8_t reply[129];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024display 2 gone\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    g_assert_cmpuint(general(s, 0x4002, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    assert_display(s, "L1 running");
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "L1REQ_REBOOT requested...\r\n"
+                       STAMP "L1 booting\r\n" PROMPT);
+    qtest_quit(s);
+    close(fd);
+}
+
+/* The first power-off request while up sends the 0x8000 event and defers. */
+static void test_power_down_event(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
+    uint8_t reply[129], args[5];
+    /* Source: rack 1 in bits 27:18, bay 1 in 17:12, task 4. */
+    const uint8_t event_head[] = { 0x40 | 23, 0, 4, 0x10, 4, 0, 0, 0x80, 0, 2,
+                                   0, 0, 0, 0, 0, 1 };
+    const char *expected_text = "\r\n" ID " ATTN: Power Down: issue 'pwr d' "
+                                "again to immediately power down.";
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    integer(args, 23);
+    g_assert_cmpuint(general(s, 0x1007, args, 5, 1, reply), ==, 6);
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    g_assert_cmpuint(receive(s, reply), ==,
+                     sizeof(event_head) + strlen(expected_text) + 1);
+    g_assert_cmpmem(reply, sizeof(event_head), event_head, sizeof(event_head));
+    g_assert_cmpstr((char *)reply + sizeof(event_head), ==, expected_text);
+    assert_display(s, "Powered Up");
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    assert_display(s, "Powered Down");
+    qtest_quit(s);
+    close(fd);
+}
+
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1733,6 +2028,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/receive-tolerance", test_receive_tolerance);
     qtest_add_func("sn1/l1/request-log", test_request_log);
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
+    qtest_add_func("sn1/l1/general-reads", test_general_reads);
+    qtest_add_func("sn1/l1/general-actions", test_general_actions);
+    qtest_add_func("sn1/l1/display-requests", test_display_requests);
+    qtest_add_func("sn1/l1/reboot-request", test_reboot_request);
+    qtest_add_func("sn1/l1/power-down-event", test_power_down_event);
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
     qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);

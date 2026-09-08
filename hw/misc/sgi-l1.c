@@ -158,11 +158,57 @@ static void l1_display_print(SGIL1State *s)
 
 /* Node power and reset as the L1 drives them. */
 
-static void l1_power_down(SGIL1State *s, const char *source)
+static const char *const l1_reasons[] = { "", "COMMAND", "PANEL", "OS" };
+
+static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length);
+
+static void l1_reason(SGIL1State *s, uint8_t reason)
 {
+    s->last_reason[1] = s->last_reason[0];
+    s->last_reason[0] = reason;
+}
+
+/* The 0x8000 event: the first power-off request while up is deferred. */
+static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
+                          const char *text)
+{
+    uint8_t payload[127];
+    g_autofree char *line = g_strdup_printf("\r\n%03uc%02u ATTN: %s",
+                                            s->rack, s->bay, text);
+    unsigned n = 0, length = strlen(line) + 1;
+
+    if (!s->events_enabled || length > sizeof(payload) - 16) {
+        return;
+    }
+    payload[n++] = 0x40 | (s->event_subchannel & 0x1f);
+    stl_be_p(payload + n, (s->rack << 18) | (s->bay << 12) | 4);
+    n += 4;
+    stl_be_p(payload + n, code);
+    n += 4;
+    payload[n++] = 2;
+    payload[n++] = 0;
+    stl_be_p(payload + n, number);
+    n += 4;
+    payload[n++] = 1;
+    memcpy(payload + n, line, length);
+    l1_emit(s, payload, n + length);
+}
+
+static void l1_power_down(SGIL1State *s, uint8_t reason)
+{
+    const char *source = l1_reasons[reason];
+
     if (!s->node_power) {
         return;
     }
+    if (reason == 1 && !s->power_down_pending && !s->capture) {
+        s->power_down_pending = true;
+        l1_send_event(s, 0x8000, 0, "Power Down: issue 'pwr d' again to "
+                      "immediately power down.");
+        return;
+    }
+    s->power_down_pending = false;
+    l1_reason(s, reason);
     s->node_power = false;
     l1_display_set(s, 1, "Powered Down");
     l1_log(s, "power down (%s)", source);
@@ -170,11 +216,14 @@ static void l1_power_down(SGIL1State *s, const char *source)
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
 }
 
-static void l1_power_up(SGIL1State *s, const char *source, bool restart)
+static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
 {
+    const char *source = l1_reasons[reason];
     bool returning = s->escaped;
 
+    l1_reason(s, reason);
     s->node_power = true;
+    s->power_down_pending = false;
     /* The selection returns to CPU 0 at every power-up. */
     s->port_field &= 0x60;
     l1_display_set(s, 1, "Powered Up");
@@ -192,13 +241,14 @@ static void l1_power_up(SGIL1State *s, const char *source, bool restart)
     l1_mode_message(s, returning);
 }
 
-static void l1_node_reset(SGIL1State *s)
+static void l1_node_reset(SGIL1State *s, uint8_t reason)
 {
     if (!s->node_power) {
         return;
     }
+    l1_reason(s, reason);
     l1_display_set(s, 1, "Reset done");
-    l1_log(s, "reset (COMMAND)");
+    l1_log(s, "reset (%s)", l1_reasons[reason]);
     /* The hold time is not modeled: the line pulses. */
     qemu_irq_pulse(s->node_reset_out);
     qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
@@ -233,6 +283,7 @@ static void l1_boot(SGIL1State *s)
     s->in_frame = s->escape = s->overflow = false;
     s->port_field = s->node_position << 5;
     s->promreq_debug = false;
+    s->power_down_pending = false;
     /* A registered event subchannel of 4 or more is non-volatile. */
     if (s->event_subchannel < 4) {
         s->events_enabled = false;
@@ -351,7 +402,17 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
         l1_reply(s, channel, -100, 0, NULL, 0);
         return;
     }
-    if (component >= 16 || (area != 1 && area != 2 && area != 4)) {
+    if (component >= 16) {
+        /* The absent check precedes the range check. */
+        l1_reply(s, channel, -104, 0, NULL, 0);
+        return;
+    }
+    if (area > 4) {
+        l1_reply(s, channel, -105, 0, NULL, 0);
+        return;
+    }
+    if (area != 1 && area != 2 && area != 4) {
+        /* Areas 0 and 3 carry no file-backed record in this model. */
         l1_reply(s, channel, -104, 0, NULL, 0);
         return;
     }
@@ -487,18 +548,18 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
             if (s->node_power) {
                 l1_printf(s, "Power is already on\r\n");
             } else {
-                l1_power_up(s, "COMMAND", true);
+                l1_power_up(s, 1, true);
                 own_prompt = true;
             }
         } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
-            l1_power_down(s, "COMMAND");
+            l1_power_down(s, 1);
         } else if (argc == 2 && !strcmp(argv[1], "check")) {
             l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
         } else {
             l1_invalid(s, "power");
         }
     } else if (l1_word(argv[0], "reset", "rst")) {
-        l1_node_reset(s);
+        l1_node_reset(s, 1);
     } else if (l1_word(argv[0], "softreset", "softrst")) {
         if (s->node_power) {
             l1_display_set(s, 1, "Sft rst done");
@@ -754,12 +815,38 @@ static bool l1_task_command(uint16_t command)
     case 3:
     case 5:
     case 6:
+    case 4:
+    case 7:
+    case 8:
+    case 0xb:
+    case 0xc:
+    case 0xd:
     case 0xe:
+    case 0xf:
+    case 0x10:
+    case 0x11:
+    case 0x1001:
     case 0x1002:
     case 0x1003:
     case 0x1004:
     case 0x1005:
+    case 0x1006:
     case 0x1007:
+    case 0x1008:
+    case 0x1009:
+    case 0x100a:
+    case 0x100b:
+    case 0x100c:
+    case 0x2001:
+    case 0x2002:
+    case 0x2003:
+    case 0x2004:
+    case 0x2005:
+    case 0x2006:
+    case 0x2007:
+    case 0x2008:
+    case 0x4000:
+    case 0x4002:
         return true;
     default:
         return false;
@@ -776,7 +863,7 @@ static void l1_request(SGIL1State *s)
     unsigned count, args_len;
     const uint8_t *args;
     int32_t error = 0;
-    uint8_t fields[15];
+    uint8_t fields[48];
     unsigned field_count = 0, field_length = 0;
 
     if ((p[0] & 0xe0) == 0x40) {
@@ -816,9 +903,19 @@ static void l1_request(SGIL1State *s)
         return;
     case 5:
     case 21: {
-        /* The Bedrock console tasks hand the code's low byte back as input. */
-        uint8_t payload[] = { (address >> 5) & 0x1f, command };
+        /* The Bedrock console tasks hand the first argument back as input. */
+        uint8_t payload[] = { (address >> 5) & 0x1f,
+                              args_len >= 5 ? args[4] : 0 };
 
+        if (!s->node_power) {
+            uint8_t warning[40] = { 1 };
+            g_autofree char *text = g_strdup_printf(
+                "WARNING: power on %03uc%02u appears off!", s->rack, s->bay);
+
+            pstrcpy((char *)warning + 1, sizeof(warning) - 1, text);
+            l1_reply(s, channel, -1, 1, warning, 2 + strlen(text));
+            return;
+        }
         l1_emit(s, payload, sizeof(payload));
         return;
     }
@@ -829,6 +926,7 @@ static void l1_request(SGIL1State *s)
         return;
     case 2:
     case 14:
+    case 15:
     case 16:
     case 19:
         qemu_log_mask(LOG_UNIMP, "sgi-l1: task %u not modeled\n",
@@ -857,16 +955,162 @@ static void l1_request(SGIL1State *s)
     switch (command) {
     case 1:
     case 9:
+    case 0xb:
+        fields[0] = 0;
+        stl_be_p(fields + 1, command == 1 ? s->debug_switches :
+                 command == 9 ? s->partition : s->two_bit_setting);
+        field_count = 1;
+        field_length = 5;
+        break;
     case 0xa:
-        if (count) {
-            error = -100;
-            break;
-        }
-        /* Fixed values for the single-chassis protocol model. */
-        field_count = command == 0xa ? 2 : 1;
+        /* Port speeds: the model's two zero integers. */
+        field_count = 2;
+        field_length = 10;
+        memset(fields, 0, field_length);
+        break;
+    case 0xc:
+    case 0xd:
+        /* No attached bricks: rack 0, bay 0, type 0 per port. */
+        field_count = command == 0xc ? 8 : 4;
         field_length = 5 * field_count;
         memset(fields, 0, field_length);
         break;
+    case 0xf:
+        fields[0] = fields[5] = 0;
+        stl_be_p(fields + 1, s->last_reason[0]);
+        stl_be_p(fields + 6, s->last_reason[1]);
+        field_count = 2;
+        field_length = 10;
+        break;
+    case 0x10:
+        if (!s->processors) {
+            error = -108;
+            break;
+        }
+        /* One mask word; every known processor present and enabled. */
+        fields[0] = fields[5] = fields[10] = fields[15] = 0;
+        stl_be_p(fields + 1, 1);
+        stl_be_p(fields + 6, s->processors);
+        stl_be_p(fields + 11, (1u << s->processors) - 1);
+        stl_be_p(fields + 16, (1u << s->processors) - 1);
+        field_count = 4;
+        field_length = 20;
+        break;
+    case 0x11:
+        /* The scan master is not modeled: minus 106 with a status. */
+        fields[0] = 0;
+        stl_be_p(fields + 1, 1);
+        l1_reply(s, channel, -106, 1, fields, 5);
+        return;
+    case 4:
+    case 8: {
+        const char *serial = command == 4 ? s->brick_serial : s->system_serial;
+
+        if (!serial || !serial[0]) {
+            error = -104;
+            break;
+        }
+        fields[0] = 1;
+        pstrcpy((char *)fields + 1, sizeof(fields) - 1, serial);
+        field_count = 1;
+        field_length = 2 + strlen((char *)fields + 1);
+        break;
+    }
+    case 7:
+        if (count < 1) {
+            error = -100;
+            break;
+        }
+        /* No component carries a format record in this model. */
+        error = -104;
+        break;
+    case 0x1001:
+    case 0x1006:
+    case 0x1008:
+        if (count < 1) {
+            error = -100;
+            break;
+        }
+        if (args[0] != 0) {
+            error = -105;
+            break;
+        }
+        if (command == 0x1001) {
+            s->debug_switches = ldl_be_p(args + 1) & 0xffff;
+        } else if (command == 0x1006) {
+            s->partition = ldl_be_p(args + 1);
+        } else {
+            s->two_bit_setting = ldl_be_p(args + 1) & 3;
+        }
+        break;
+    case 0x1009:
+        if (count < 2) {
+            error = -100;
+            break;
+        }
+        if (args[0] != 0 || args[5] != 0 || (ldl_be_p(args + 6) & 0xf) > 2) {
+            error = -105;
+            break;
+        }
+        /* The panel action is not modeled beyond its acceptance. */
+        break;
+    case 0x100a:
+        s->events_enabled = false;
+        s->event_subchannel = 0;
+        break;
+    case 0x100b:
+        if (count != 3) {
+            error = -100;
+            break;
+        }
+        if (args[0] == 0 && args[5] == 0 && args[10] == 0) {
+            l1_log(s, "N0: PROM %u.%u (PR %u)", ldl_be_p(args + 1),
+                   ldl_be_p(args + 6), ldl_be_p(args + 11));
+        }
+        s->events_enabled = false;
+        s->event_subchannel = 0;
+        break;
+    case 0x100c:
+        if (count != 2) {
+            error = -100;
+        }
+        /* The per-processor entry is stored by the firmware; not read back. */
+        break;
+    case 0x2001:
+        l1_reply(s, channel, 0, 0, NULL, 0);
+        l1_node_reset(s, 3);
+        return;
+    case 0x2002:
+    case 0x2003:
+    case 0x2004:
+        /* This board installs no PCI slot handler: minus 100. */
+        error = -100;
+        break;
+    case 0x2005:
+        l1_reply(s, channel, 0, 0, NULL, 0);
+        l1_power_down(s, 3);
+        return;
+    case 0x2006:
+        l1_reply(s, channel, 0, 0, NULL, 0);
+        if (s->node_power) {
+            s->power_down_pending = true;
+            l1_power_down(s, 3);
+        }
+        l1_power_up(s, 3, true);
+        return;
+    case 0x2007:
+    case 0x2008:
+        error = -108;
+        break;
+    case 0x4000:
+        /* The inventory is empty in this model. */
+        error = -104;
+        break;
+    case 0x4002:
+        l1_reply(s, channel, 0, 0, NULL, 0);
+        l1_log(s, "L1REQ_REBOOT requested...");
+        l1_boot(s);
+        return;
     case 0xe:
         /* The firmware reads no argument here, so extra ones are answered. */
         fields[0] = 0;
@@ -896,14 +1140,26 @@ static void l1_request(SGIL1State *s)
         /* Volunteering the only node changes nothing visible. */
         break;
     case 0x1004:
-    case 0x1005:
-        if (count != 1 || args[0] != 1) {
+    case 0x1005: {
+        char *line = (char *)s->display[1];
+
+        if (count < 1) {
             error = -100;
             break;
         }
-        pstrcpy((char *)s->display[command - 0x1004], 128,
-                (const char *)args + 1);
+        if (args[0] != 1) {
+            error = -102;
+            break;
+        }
+        /* Both codes write the software line; unprintable bytes become ?. */
+        pstrcpy(line, sizeof(s->display[1]), (const char *)args + 1);
+        for (char *c = line; *c; c++) {
+            if ((unsigned char)*c < 0x20 || (unsigned char)*c > 0x7e) {
+                *c = '?';
+            }
+        }
         break;
+    }
     case 2:
     case 3:
         if (count != 0) {
@@ -1155,11 +1411,11 @@ static const VMStateDescription vmstate_l1_record = {
     },
 };
 
-/* Version 6 widened the receive frame to the firmware's cap. */
+/* Version 7 carries the settings the general task reads and writes. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
@@ -1170,6 +1426,11 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_BOOL(escaped, SGIL1State),
         VMSTATE_BOOL(warned_off, SGIL1State),
         VMSTATE_BOOL(promreq_debug, SGIL1State),
+        VMSTATE_BOOL(power_down_pending, SGIL1State),
+        VMSTATE_UINT32(debug_switches, SGIL1State),
+        VMSTATE_UINT32(partition, SGIL1State),
+        VMSTATE_UINT8(two_bit_setting, SGIL1State),
+        VMSTATE_UINT8_ARRAY(last_reason, SGIL1State, 2),
         VMSTATE_UINT8_ARRAY(command, SGIL1State, 128),
         VMSTATE_UINT32(command_len, SGIL1State),
         VMSTATE_UINT32(rack, SGIL1State),
@@ -1219,6 +1480,12 @@ static void l1_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "L1 node-position must be 0 to 3");
         return;
     }
+    if (s->debug_switches > 0xffff || s->processors > 32 ||
+        (s->system_serial && strlen(s->system_serial) > 32) ||
+        (s->brick_serial && strlen(s->brick_serial) > 32)) {
+        error_setg(errp, "L1 setting out of range");
+        return;
+    }
     for (unsigned area = 0; area < 3; area++) {
         if (counts[area] > 16) {
             error_setg(errp, "L1 EEPROM area has more than 16 components");
@@ -1261,7 +1528,7 @@ static void l1_realize(DeviceState *dev, Error **errp)
         l1_log(s, "auto power up initiated");
         l1_printf(s, "INFO: %03uc%02u powering up the system.\r\n", s->rack,
                   s->bay);
-        l1_power_up(s, "COMMAND", false);
+        l1_power_up(s, 1, false);
     }
 }
 
@@ -1290,6 +1557,11 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("bay", SGIL1State, bay, 1),
     DEFINE_PROP_UINT32("node-position", SGIL1State, node_position, 0),
     DEFINE_PROP_BOOL("auto-power", SGIL1State, auto_power, true),
+    DEFINE_PROP_UINT32("debug-switches", SGIL1State, debug_switches, 0),
+    DEFINE_PROP_UINT32("partition", SGIL1State, partition, 0),
+    DEFINE_PROP_STRING("system-serial", SGIL1State, system_serial),
+    DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
+    DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
 };
 
 static void l1_init(Object *obj)
@@ -1328,6 +1600,8 @@ static void l1_finalize(Object *obj)
     for (unsigned i = 0; i < 48; i++) {
         g_free(s->records[i].data);
     }
+    g_free(s->system_serial);
+    g_free(s->brick_serial);
 }
 
 /* UART window reset, migration and construction. */
