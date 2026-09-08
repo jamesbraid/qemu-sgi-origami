@@ -15,8 +15,8 @@ struct SN0HubPacketTest {
     SN0NodeState *node;
     SN0Origin2000HubIO io;
     MemoryRegion control;
-    AddressSpace packets;
-    AddressSpace claims;
+    AddressSpace *packets;
+    AddressSpace *claims;
     MemoryRegion recording;
     uint64_t forwarded;
     uint64_t observed_attrs;
@@ -36,7 +36,7 @@ static MemTxResult recording_read(void *opaque, hwaddr addr, uint64_t *value,
     MemTxResult result;
     s->forwarded++;
     s->observed_attrs = attrs.requester_id | ((uint64_t)attrs.secure << 16);
-    result = address_space_read(&s->claims, addr, attrs,
+    result = address_space_read(s->claims, addr, attrs,
                                 bytes + 8 - size, size);
     *value = ldq_be_p(bytes);
     return result;
@@ -50,7 +50,7 @@ static MemTxResult recording_write(void *opaque, hwaddr addr, uint64_t value,
     s->forwarded++;
     s->observed_attrs = attrs.requester_id | ((uint64_t)attrs.secure << 16);
     stq_be_p(bytes, value);
-    return address_space_write(&s->claims, addr, attrs, bytes + 8 - size, size);
+    return address_space_write(s->claims, addr, attrs, bytes + 8 - size, size);
 }
 
 static const MemoryRegionOps recording_ops = {
@@ -109,7 +109,7 @@ static void control_write(void *opaque, hwaddr addr, uint64_t value,
         if (value) {
             stq_be_p(bytes, s->data);
         }
-        s->result = address_space_rw(&s->packets, s->address,
+        s->result = address_space_rw(s->packets, s->address,
                                      attrs, buffer, s->size, value != 0);
         if (!value) {
             s->data = ldq_be_p(bytes);
@@ -136,19 +136,24 @@ static void packet_test_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "a realized Origin 2000 node is required");
         return;
     }
-    if (!sn0_origin2000_hub_io_init(&s->io, s->node, errp)) {
+    if (!sn0_origin2000_hub_io_init(&s->io, OBJECT(s), s->node, errp)) {
         return;
     }
-    address_space_init(&s->claims, &s->node->device_view, "sn0.test.claims");
+    s->claims = g_new0(AddressSpace, 1);
+    address_space_init(s->claims, &s->node->device_view, "sn0.test.claims");
     memory_region_init_io(&s->recording, OBJECT(s), &recording_ops, s,
                           "sn0.test.forwarding", UINT64_MAX);
     /* The control access forwards through this recording region. */
     s->recording.disable_reentrancy_guard = true;
-    address_space_destroy(&s->io.target);
-    address_space_init(&s->io.target, &s->recording, "sn0.test.target");
-    address_space_init(&s->packets, &s->io.face, "sn0.test.packets");
+    address_space_destroy_free(s->io.target);
+    s->io.target = g_new0(AddressSpace, 1);
+    address_space_init(s->io.target, &s->recording, "sn0.test.target");
+    s->packets = g_new0(AddressSpace, 1);
+    address_space_init(s->packets, &s->io.face, "sn0.test.packets");
     memory_region_init_io(&s->control, OBJECT(s), &control_ops, s,
                           "sn0.test.packet.control", 64);
+    /* The test control deliberately invokes its own packet guard. */
+    s->control.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->control);
     sysbus_mmio_map(SYS_BUS_DEVICE(s), 0, s->base);
 }
@@ -156,9 +161,9 @@ static void packet_test_realize(DeviceState *dev, Error **errp)
 static void packet_test_unrealize(DeviceState *dev)
 {
     SN0HubPacketTest *s = SN0_HUB_PACKET_TEST(dev);
-    address_space_destroy(&s->packets);
+    address_space_destroy_free(g_steal_pointer(&s->packets));
     sn0_origin2000_hub_io_destroy(&s->io);
-    address_space_destroy(&s->claims);
+    address_space_destroy_free(g_steal_pointer(&s->claims));
 }
 
 static const Property packet_test_properties[] = {

@@ -194,7 +194,7 @@ static void origin2000_load_flash(MachineState *machine)
     }
 }
 
-static void origin2000_init(MachineState *machine)
+void sn0_origin2000_prepare_nodes(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     const SN0ModelComposition *c = s->composition;
@@ -204,6 +204,7 @@ static void origin2000_init(MachineState *machine)
     unsigned int flash_count = 0;
     size_t i;
 
+    g_assert(!s->nodes);
     if (!sn0_origin2000_validate(c, &error_fatal)) {
         return;
     }
@@ -300,7 +301,7 @@ static void origin2000_init(MachineState *machine)
         const SN0ModelPhysicalNode *physical = NULL;
         SN0NodeState *node;
         QList *banks = qlist_new();
-        unsigned int bank, slice, node_index;
+        unsigned int bank, node_index;
 
         for (i = 0; i < c->node_count; i++) {
             if (c->nodes[i].cpu_first_id == cpu_index) {
@@ -335,16 +336,37 @@ static void origin2000_init(MachineState *machine)
         object_property_set_link(OBJECT(&node->hub), "fabric",
                                  OBJECT(s->fabric), &error_fatal);
         qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint", node_index);
-        sn0_diagnostic_attach(s, node_index);
+        ram_offset += physical->memory_mib * MiB;
+    }
+}
+
+void sn0_origin2000_realize_nodes(MachineState *machine)
+{
+    SN0MachineState *s = SN0_MACHINE(machine);
+    size_t i;
+
+    g_assert(s->nodes);
+    for (i = 0; i < s->num_nodes; i++) {
+        SN0NodeState *node = s->nodes[i];
+        const SN0ModelPhysicalNode *physical = node->physical;
+        unsigned int slice;
+
+        g_assert(!DEVICE(node)->realized);
+        sn0_diagnostic_attach(s, i);
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
         for (slice = 0; slice < physical->cpu_count; slice++) {
-            machine->possible_cpus->cpus[cpu_index + slice].cpu =
+            machine->possible_cpus->cpus[physical->cpu_first_id + slice].cpu =
                 CPU(node->cpu[slice]);
         }
-        ram_offset += physical->memory_mib * MiB;
     }
     sn0_fabric_build(s->fabric);
     origin2000_load_flash(machine);
+}
+
+static void origin2000_init(MachineState *machine)
+{
+    sn0_origin2000_prepare_nodes(machine);
+    sn0_origin2000_realize_nodes(machine);
 }
 
 static const char * const origin2000_cpu_types[] = {

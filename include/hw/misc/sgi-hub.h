@@ -132,10 +132,12 @@ struct SGIHubState {
     /* The seven big windows, as one region for the machine to place. */
     MemoryRegion bwin;
     MemoryRegion bwin_window[SGI_HUB_BWIN_ENTRIES];
+    MemoryRegion bwin_io_window[SGI_HUB_BWIN_ENTRIES];
     MemoryRegion bwin_empty;
 
     /* Crosstalk space and widget stride, both the machine's to define. */
     MemoryRegion *xtalk;
+    MemoryRegion *xtalk_io;
     uint32_t xtalk_widget_shift;
 
     /* The engines' view of the fabric: the device claim view, as a space. */

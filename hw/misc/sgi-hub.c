@@ -634,19 +634,29 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
     uint64_t widget = (entry & IO_BWIN_WIDGET_MASK) >> IO_BWIN_WIDGET_SHIFT;
     uint64_t slice = (uint64_t)(entry & IO_BWIN_SLICE_MASK)
                      << IO_BWIN_SLICE_SHIFT;
-    /* Widget I/O space is not modelled; the window is left reaching nothing. */
-    if (entry & IO_BWIN_SPACE) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-hub: big window %u asks for widget %" PRIu64 "'s "
-                      "I/O space, which this machine does not model; it will "
-                      "reach no widget\n", n, widget);
-        memory_region_set_enabled(&s->bwin_window[n], false);
-        return;
-    }
 
-    memory_region_set_alias_offset(&s->bwin_window[n],
-                                   (widget << s->xtalk_widget_shift) | slice);
-    memory_region_set_enabled(&s->bwin_window[n], true);
+    memory_region_transaction_begin();
+    memory_region_set_enabled(&s->bwin_window[n], false);
+    if (s->xtalk_io) {
+        memory_region_set_enabled(&s->bwin_io_window[n], false);
+    }
+    if (entry & IO_BWIN_SPACE) {
+        if (!s->xtalk_io || n != 0 || slice) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-hub: unsupported I/O big window %u, widget %"
+                          PRIu64 ", slice 0x%" PRIx64 "\n", n, widget, slice);
+        } else {
+            memory_region_set_alias_offset(&s->bwin_io_window[n],
+                                           widget << s->xtalk_widget_shift);
+            memory_region_set_enabled(&s->bwin_io_window[n], true);
+        }
+    } else {
+        memory_region_set_alias_offset(&s->bwin_window[n],
+                                       (widget << s->xtalk_widget_shift) |
+                                       slice);
+        memory_region_set_enabled(&s->bwin_window[n], true);
+    }
+    memory_region_transaction_commit();
 }
 
 /* Floor beneath the windows: zero is a choice, no source says what is real. */
@@ -2858,6 +2868,13 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "translate into");
         return;
     }
+    if (s->xtalk_io &&
+        (s->xtalk_widget_shift != 34 ||
+         memory_region_size(s->xtalk_io) != (1ULL << 38))) {
+        error_setg(errp, "Hub I/O target requires a 34-bit widget stride "
+                         "and a 38-bit address space");
+        return;
+    }
     if (s->onewire_serial & ~MD_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "the Hub one-wire serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
@@ -3098,6 +3115,14 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                                  s->xtalk, 0, SGI_HUB_BWIN_SIZE);
         memory_region_add_subregion(&s->bwin, (hwaddr)n * SGI_HUB_BWIN_SIZE,
                                     &s->bwin_window[n]);
+        if (s->xtalk_io) {
+            memory_region_init_alias(&s->bwin_io_window[n], OBJECT(dev),
+                                     name, s->xtalk_io, 0, SGI_HUB_BWIN_SIZE);
+            memory_region_set_enabled(&s->bwin_io_window[n], false);
+            memory_region_add_subregion_overlap(&s->bwin,
+                                                 (hwaddr)n * SGI_HUB_BWIN_SIZE,
+                                                 &s->bwin_io_window[n], 0);
+        }
         g_free(name);
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bwin);
@@ -3348,6 +3373,8 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
                        xtalk_widget_shift, 0),
+    DEFINE_PROP_LINK("xtalk-io", SGIHubState, xtalk_io, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
     DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("claim-view0", SGIHubState, claim_view[0],
