@@ -110,6 +110,7 @@
 #define TI_CMD_SET_PROMISC_MODE 0x0a
 #define TI_CMD_CODE_PROMISC_ENB 0x01
 #define TI_CMD_CODE_PROMISC_DIS 0x02
+#define TI_CMD_SET_MAC_ADDR      0x0c
 /*
  * The command-path jumbo producer push. The public header marks it obsolete
  * in favour of the mailbox doorbell, but the IRIX eg driver drives its jumbo
@@ -529,6 +530,21 @@ static void tigon_link_timer(void *opaque)
 /* A brief virtual delay stands in for link negotiation. */
 #define TIGON_LINK_DELAY_NS 50000000
 
+static void tigon_set_station_address(TigonState *s)
+{
+    uint32_t par0 = s->gcr[TIGON_GCR_IDX(TI_GCR_PAR0)];
+    uint32_t par1 = s->gcr[TIGON_GCR_IDX(TI_GCR_PAR1)];
+    uint8_t *m = s->station_addr.a;
+
+    m[0] = par0 >> 8;
+    m[1] = par0;
+    m[2] = par1 >> 24;
+    m[3] = par1 >> 16;
+    m[4] = par1 >> 8;
+    m[5] = par1;
+    qemu_format_nic_info_str(qemu_get_queue(s->nic), m);
+}
+
 /*
  * Command doorbell. The firmware drains the NIC-resident command ring and
  * advances the command consumer index the driver polls after posting a
@@ -555,6 +571,8 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
                       TIGON_LINK_DELAY_NS);
         } else if ((cmd >> 24) == TI_CMD_SET_PROMISC_MODE) {
             s->promisc = ((cmd >> 16) & 0xff) == TI_CMD_CODE_PROMISC_ENB;
+        } else if ((cmd >> 24) == TI_CMD_SET_MAC_ADDR) {
+            tigon_set_station_address(s);
         } else if ((cmd >> 24) == TI_CMD_SET_RX_JUMBO_PROD_IDX) {
             /* The index rides in the command word's low 12 bits. */
             uint32_t idx = cmd & 0xfff;
@@ -767,6 +785,11 @@ static void tigon_reset_state(TigonState *s)
     s->irq_asserted = false;
     memset(&s->eeprom, 0, sizeof(s->eeprom));
     s->eeprom.last_sda = true;   /* an idle serial line floats high */
+    s->station_addr = s->conf.macaddr;
+    if (s->nic) {
+        qemu_format_nic_info_str(qemu_get_queue(s->nic),
+                                 s->station_addr.a);
+    }
 
     /*
      * Seed the MAC/station-address registers the firmware would present once
@@ -774,7 +797,7 @@ static void tigon_reset_state(TigonState *s)
      * carries bytes 0-1, PAR1 carries bytes 2-5.
      */
     {
-        const uint8_t *m = s->conf.macaddr.a;
+        const uint8_t *m = s->station_addr.a;
         s->gcr[TIGON_GCR_IDX(TI_GCR_PAR0)] = ((uint32_t)m[0] << 8) | m[1];
         s->gcr[TIGON_GCR_IDX(TI_GCR_PAR1)] = ((uint32_t)m[2] << 24) |
                                              ((uint32_t)m[3] << 16) |
@@ -1151,7 +1174,7 @@ static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, size_t size,
         *flags = TI_BDFLAG_BCAST_PKT;
         return true;
     }
-    if (memcmp(dest, s->conf.macaddr.a, 6) == 0) {
+    if (memcmp(dest, s->station_addr.a, 6) == 0) {
         *flags = TI_BDFLAG_UCAST_PKT;
         return true;
     }
@@ -1355,6 +1378,7 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
+    s->station_addr = s->conf.macaddr;
     s->nic = qemu_new_nic(&tigon_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), DEVICE(dev)->id,
                           &DEVICE(dev)->mem_reentrancy_guard, s);
@@ -1398,7 +1422,13 @@ static const VMStateDescription vmstate_tigon_eeprom = {
  */
 static int tigon_post_load(void *opaque, int version_id)
 {
-    tigon_update_irq(opaque);
+    TigonState *s = opaque;
+
+    if (version_id < 2) {
+        s->station_addr = s->conf.macaddr;
+    }
+    qemu_format_nic_info_str(qemu_get_queue(s->nic), s->station_addr.a);
+    tigon_update_irq(s);
     return 0;
 }
 
@@ -1410,11 +1440,12 @@ static int tigon_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, TigonState),
+        VMSTATE_UINT8_ARRAY_V(station_addr.a, TigonState, 6, 2),
         VMSTATE_UINT32(misc_host_ctl, TigonState),
         VMSTATE_UINT32(misc_local_ctl, TigonState),
         VMSTATE_UINT32(pci_state, TigonState),
