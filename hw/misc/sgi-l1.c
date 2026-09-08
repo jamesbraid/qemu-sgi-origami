@@ -1,10 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Protocol responder for the processor-facing Origin 300 L1 UART. */
+/*
+ * Origin 300 L1 system controller: the controller itself, and the node-side
+ * UART window through which the Bedrock speaks its packet protocol.
+ */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/bswap.h"
@@ -13,21 +17,44 @@
 #include "qemu/module.h"
 #include "system/runstate.h"
 
-static uint8_t l1_irq_cause(SGIL1State *s)
+/* The UART window: registers, interrupt and the byte queue toward the node. */
+
+static uint8_t l1_uart_irq_cause(SGIL1UARTState *u)
 {
-    if ((s->ier & 1) && s->queue_len) {
+    if ((u->ier & 1) && u->queue_len) {
         return 4;
     }
-    if ((s->ier & 2) && s->thre_pending) {
+    if ((u->ier & 2) && u->thre_pending) {
         return 2;
     }
     return 1;
 }
 
-static void l1_update_irq(SGIL1State *s)
+static void l1_uart_update_irq(SGIL1UARTState *u)
 {
-    qemu_set_irq(s->uart, l1_irq_cause(s) != 1);
+    qemu_set_irq(u->irq, l1_uart_irq_cause(u) != 1);
 }
+
+static unsigned l1_uart_room(SGIL1UARTState *u)
+{
+    return SGI_L1_QUEUE_SIZE - u->queue_len;
+}
+
+static bool l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n)
+{
+    if (n > l1_uart_room(u)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1: receive queue full\n");
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        u->queue[(u->queue_head + u->queue_len++) % SGI_L1_QUEUE_SIZE] =
+            bytes[i];
+    }
+    l1_uart_update_irq(u);
+    return true;
+}
+
+/* The controller side. */
 
 static uint16_t l1_fcs(uint16_t value, uint8_t byte)
 {
@@ -45,6 +72,10 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
     unsigned n = 0;
 
     assert(length <= 127);
+    if (!s->uart) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: no UART window attached\n");
+        return;
+    }
     for (unsigned i = 0; i < length; i++) {
         crc = l1_fcs(crc, payload[i]);
     }
@@ -60,15 +91,7 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
         encoded[n++] = byte;
     }
     encoded[n++] = 0x7e;
-    if (n > SGI_L1_QUEUE_SIZE - s->queue_len) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1: receive queue full\n");
-        return;
-    }
-    for (unsigned i = 0; i < n; i++) {
-        s->queue[(s->queue_head + s->queue_len++) % SGI_L1_QUEUE_SIZE] =
-            encoded[i];
-    }
-    l1_update_irq(s);
+    l1_uart_queue(s->uart, encoded, n);
 }
 
 static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
@@ -231,7 +254,7 @@ static int l1_console_can_receive(void *opaque)
     SGIL1State *s = opaque;
 
     /* One input byte can expand to an eight-byte escaped console frame. */
-    return SGI_L1_QUEUE_SIZE - s->queue_len >= 8;
+    return s->uart && l1_uart_room(s->uart) >= 8;
 }
 
 static void l1_console_receive(void *opaque, const uint8_t *buf, int size)
@@ -514,72 +537,75 @@ static void l1_parse(SGIL1State *s, uint8_t byte)
     s->frame[s->frame_len++] = byte;
 }
 
-static uint64_t l1_read(void *opaque, hwaddr offset, unsigned size)
+/* The UART window's register file. */
+
+static uint64_t l1_uart_read(void *opaque, hwaddr offset, unsigned size)
 {
-    SGIL1State *s = opaque;
+    SGIL1UARTState *u = opaque;
     uint8_t value;
 
     switch (offset) {
     case 0:
-        if (s->lcr & 0x80) {
-            return s->divisor[0];
+        if (u->lcr & 0x80) {
+            return u->divisor[0];
         }
-        if (!s->queue_len) {
+        if (!u->queue_len) {
             return 0;
         }
-        value = s->queue[s->queue_head];
-        s->queue_head = (s->queue_head + 1) % SGI_L1_QUEUE_SIZE;
-        s->queue_len--;
-        l1_update_irq(s);
-        qemu_chr_fe_accept_input(&s->chr);
+        value = u->queue[u->queue_head];
+        u->queue_head = (u->queue_head + 1) % SGI_L1_QUEUE_SIZE;
+        u->queue_len--;
+        l1_uart_update_irq(u);
+        qemu_chr_fe_accept_input(&u->controller->chr);
         return value;
     case 8:
-        return s->lcr & 0x80 ? s->divisor[1] : s->ier;
+        return u->lcr & 0x80 ? u->divisor[1] : u->ier;
     case 0x10:
-        value = l1_irq_cause(s);
+        value = l1_uart_irq_cause(u);
         if (value == 2) {
-            s->thre_pending = false;
-            l1_update_irq(s);
+            u->thre_pending = false;
+            l1_uart_update_irq(u);
         }
         return value;
     case 0x18:
-        return s->lcr;
+        return u->lcr;
     case 0x20:
-        return s->mcr;
+        return u->mcr;
     case 0x28:
-        return 0x60 | (s->queue_len != 0);
+        return 0x60 | (u->queue_len != 0);
     case 0x30:
         return 0x10;
     case 0x38:
-        return s->scratch;
+        return u->scratch;
     default:
         g_assert_not_reached();
     }
 }
 
-static void l1_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+static void l1_uart_write(void *opaque, hwaddr offset, uint64_t value,
+                          unsigned size)
 {
-    SGIL1State *s = opaque;
+    SGIL1UARTState *u = opaque;
 
     switch (offset) {
     case 0:
-        if (s->lcr & 0x80) {
-            s->divisor[0] = value;
+        if (u->lcr & 0x80) {
+            u->divisor[0] = value;
         } else {
-            s->thre_pending = false;
-            l1_update_irq(s);
-            l1_parse(s, value);
-            s->thre_pending = (s->ier & 2) != 0;
+            u->thre_pending = false;
+            l1_uart_update_irq(u);
+            l1_parse(u->controller, value);
+            u->thre_pending = (u->ier & 2) != 0;
         }
         break;
     case 8:
-        if (s->lcr & 0x80) {
-            s->divisor[1] = value;
+        if (u->lcr & 0x80) {
+            u->divisor[1] = value;
         } else {
-            if ((value & 2) && !(s->ier & 2)) {
-                s->thre_pending = true;
+            if ((value & 2) && !(u->ier & 2)) {
+                u->thre_pending = true;
             }
-            s->ier = value;
+            u->ier = value;
             if (value & 0xfc) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-l1: unsupported UART interrupt enables\n");
@@ -588,52 +614,46 @@ static void l1_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         break;
     case 0x10:
         if (value & 2) {
-            s->queue_head = s->queue_len = 0;
+            u->queue_head = u->queue_len = 0;
         }
         break;
     case 0x18:
-        s->lcr = value;
+        u->lcr = value;
         break;
     case 0x20:
-        s->mcr = value;
+        u->mcr = value;
         break;
     case 0x38:
-        s->scratch = value;
+        u->scratch = value;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-l1: write to read-only UART register\n");
         break;
     }
-    l1_update_irq(s);
+    l1_uart_update_irq(u);
 }
 
-static const MemoryRegionOps l1_ops = {
-    .read = l1_read,
-    .write = l1_write,
+static const MemoryRegionOps l1_uart_ops = {
+    .read = l1_uart_read,
+    .write = l1_uart_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 8, .max_access_size = 8 },
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
+/* Controller reset, migration and construction. */
+
 static void l1_reset_enter(Object *obj, ResetType type)
 {
     SGIL1State *s = SGI_L1(obj);
 
-    s->lcr = s->ier = s->mcr = s->scratch = 0;
-    s->thre_pending = false;
-    memset(s->divisor, 0, sizeof(s->divisor));
-    s->frame_len = s->queue_head = s->queue_len = 0;
+    s->frame_len = 0;
     s->in_frame = s->escape = s->overflow = false;
     s->console_mode = s->return_to_console = false;
     s->command_len = 0;
     memset(s->display, 0, sizeof(s->display));
     s->port_field = s->node_position << 5;
-}
-
-static void l1_reset_hold(Object *obj, ResetType type)
-{
-    l1_update_irq(SGI_L1(obj));
 }
 
 static int l1_post_load(void *opaque, int version_id)
@@ -642,8 +662,7 @@ static int l1_post_load(void *opaque, int version_id)
 
     if (s->command_len >= sizeof(s->command) ||
         s->frame_len > SGI_L1_FRAME_SIZE ||
-        s->queue_len > SGI_L1_QUEUE_SIZE ||
-        s->queue_head >= SGI_L1_QUEUE_SIZE ||
+        s->port_field > 0x7f ||
         s->display[0][127] || s->display[1][127]) {
         return -EINVAL;
     }
@@ -652,15 +671,6 @@ static int l1_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
-    if (version_id < 2) {
-        s->thre_pending = false;
-    }
-    if (version_id < 3) {
-        s->port_field = s->node_position << 5;
-    } else if (s->port_field > 0x7f) {
-        return -EINVAL;
-    }
-    l1_update_irq(s);
     return 0;
 }
 
@@ -689,10 +699,11 @@ static const VMStateDescription vmstate_l1_record = {
     },
 };
 
+/* Version 4 moved the UART window's registers and queue to their own device. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 3,
-    .minimum_version_id = 1,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
@@ -701,22 +712,13 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_BOOL(return_to_console, SGIL1State),
         VMSTATE_UINT8_ARRAY(command, SGIL1State, 128),
         VMSTATE_UINT32(command_len, SGIL1State),
-        VMSTATE_UINT8(lcr, SGIL1State),
-        VMSTATE_UINT8(ier, SGIL1State),
-        VMSTATE_BOOL_V(thre_pending, SGIL1State, 2),
-        VMSTATE_UINT8(mcr, SGIL1State),
-        VMSTATE_UINT8(scratch, SGIL1State),
-        VMSTATE_UINT8_ARRAY(divisor, SGIL1State, 2),
         VMSTATE_UINT8_ARRAY(frame, SGIL1State, SGI_L1_FRAME_SIZE),
         VMSTATE_UINT32(frame_len, SGIL1State),
         VMSTATE_BOOL(in_frame, SGIL1State),
         VMSTATE_BOOL(escape, SGIL1State),
         VMSTATE_BOOL(overflow, SGIL1State),
-        VMSTATE_UINT8_ARRAY(queue, SGIL1State, SGI_L1_QUEUE_SIZE),
-        VMSTATE_UINT32(queue_head, SGIL1State),
-        VMSTATE_UINT32(queue_len, SGIL1State),
         VMSTATE_UINT8_2DARRAY(display, SGIL1State, 2, 128),
-        VMSTATE_UINT8_V(port_field, SGIL1State, 3),
+        VMSTATE_UINT8(port_field, SGIL1State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -805,27 +807,17 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("node-position", SGIL1State, node_position, 0),
 };
 
-static void l1_init(Object *obj)
-{
-    SGIL1State *s = SGI_L1(obj);
-
-    memory_region_init_io(&s->mmio, obj, &l1_ops, s, TYPE_SGI_L1, SGI_L1_SIZE);
-    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
-    qdev_init_gpio_out_named(DEVICE(obj), &s->uart, "uart", 1);
-}
-
 static void l1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->desc = "SGI L1 processor UART protocol responder";
+    dc->desc = "SGI L1 system controller";
     dc->realize = l1_realize;
     dc->vmsd = &vmstate_l1;
     dc->user_creatable = true;
     device_class_set_props(dc, l1_properties);
     rc->phases.enter = l1_reset_enter;
-    rc->phases.hold = l1_reset_hold;
     object_class_property_add_str(klass, "display-line-1", l1_display_first_get,
                                   NULL);
     object_class_property_add_str(klass, "display-line-2",
@@ -840,18 +832,136 @@ static void l1_finalize(Object *obj)
     }
 }
 
-static const TypeInfo l1_info = {
-    .name = TYPE_SGI_L1,
-    .parent = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SGIL1State),
-    .instance_init = l1_init,
-    .instance_finalize = l1_finalize,
-    .class_init = l1_class_init,
-};
+/* UART window reset, migration and construction. */
 
-static void l1_register_types(void)
+static void l1_uart_reset_enter(Object *obj, ResetType type)
 {
-    type_register_static(&l1_info);
+    SGIL1UARTState *u = SGI_L1_UART(obj);
+
+    u->lcr = u->ier = u->mcr = u->scratch = 0;
+    u->thre_pending = false;
+    memset(u->divisor, 0, sizeof(u->divisor));
+    u->queue_head = u->queue_len = 0;
 }
 
-type_init(l1_register_types)
+static ResettableChildForeach l1_uart_parent_child_foreach;
+
+/* The bus-less controller is reset as this window's child for now. */
+static void l1_uart_reset_child_foreach(Object *obj, ResettableChildCallback cb,
+                                        void *opaque, ResetType type)
+{
+    SGIL1UARTState *u = SGI_L1_UART(obj);
+
+    l1_uart_parent_child_foreach(obj, cb, opaque, type);
+    if (u->controller) {
+        cb(OBJECT(u->controller), opaque, type);
+    }
+}
+
+static void l1_uart_reset_hold(Object *obj, ResetType type)
+{
+    l1_uart_update_irq(SGI_L1_UART(obj));
+}
+
+static int l1_uart_post_load(void *opaque, int version_id)
+{
+    SGIL1UARTState *u = opaque;
+
+    if (u->queue_len > SGI_L1_QUEUE_SIZE ||
+        u->queue_head >= SGI_L1_QUEUE_SIZE) {
+        return -EINVAL;
+    }
+    l1_uart_update_irq(u);
+    return 0;
+}
+
+static const VMStateDescription vmstate_l1_uart = {
+    .name = TYPE_SGI_L1_UART,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = l1_uart_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(lcr, SGIL1UARTState),
+        VMSTATE_UINT8(ier, SGIL1UARTState),
+        VMSTATE_BOOL(thre_pending, SGIL1UARTState),
+        VMSTATE_UINT8(mcr, SGIL1UARTState),
+        VMSTATE_UINT8(scratch, SGIL1UARTState),
+        VMSTATE_UINT8_ARRAY(divisor, SGIL1UARTState, 2),
+        VMSTATE_UINT8_ARRAY(queue, SGIL1UARTState, SGI_L1_QUEUE_SIZE),
+        VMSTATE_UINT32(queue_head, SGIL1UARTState),
+        VMSTATE_UINT32(queue_len, SGIL1UARTState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void l1_uart_controller_check(const Object *obj, const char *name,
+                                     Object *value, Error **errp)
+{
+    SGIL1State *controller = SGI_L1(value);
+
+    if (!controller) {
+        error_setg(errp, "%s cannot be set to NULL", name);
+        return;
+    }
+    if (controller->uart) {
+        error_setg(errp, "L1 controller already has a UART window");
+    }
+}
+
+static void l1_uart_realize(DeviceState *dev, Error **errp)
+{
+    SGIL1UARTState *u = SGI_L1_UART(dev);
+
+    if (!u->controller) {
+        error_setg(errp, "L1 UART window needs a controller link");
+        return;
+    }
+    u->controller->uart = u;
+}
+
+static void l1_uart_init(Object *obj)
+{
+    SGIL1UARTState *u = SGI_L1_UART(obj);
+
+    memory_region_init_io(&u->mmio, obj, &l1_uart_ops, u, TYPE_SGI_L1_UART,
+                          SGI_L1_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &u->mmio);
+    qdev_init_gpio_out_named(DEVICE(obj), &u->irq, "uart", 1);
+    object_property_add_link(obj, "controller", TYPE_SGI_L1,
+                             (Object **)&u->controller,
+                             l1_uart_controller_check, OBJ_PROP_LINK_STRONG);
+}
+
+static void l1_uart_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
+
+    dc->desc = "SGI L1 processor-side UART window";
+    dc->realize = l1_uart_realize;
+    dc->vmsd = &vmstate_l1_uart;
+    dc->user_creatable = true;
+    rc->phases.enter = l1_uart_reset_enter;
+    rc->phases.hold = l1_uart_reset_hold;
+    l1_uart_parent_child_foreach = rc->child_foreach;
+    rc->child_foreach = l1_uart_reset_child_foreach;
+}
+
+static const TypeInfo l1_types[] = {
+    {
+        .name = TYPE_SGI_L1,
+        .parent = TYPE_DEVICE,
+        .instance_size = sizeof(SGIL1State),
+        .instance_finalize = l1_finalize,
+        .class_init = l1_class_init,
+    },
+    {
+        .name = TYPE_SGI_L1_UART,
+        .parent = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(SGIL1UARTState),
+        .instance_init = l1_uart_init,
+        .class_init = l1_uart_class_init,
+    },
+};
+
+DEFINE_TYPES(l1_types)

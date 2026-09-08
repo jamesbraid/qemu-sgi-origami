@@ -7,6 +7,8 @@
 
 #define TYPE_SGI_L1 "sgi-l1"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1State, SGI_L1)
+#define TYPE_SGI_L1_UART "sgi-l1-uart"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_SIZE 0x40
 #define SGI_L1_FRAME_SIZE 129
 #define SGI_L1_QUEUE_SIZE 4096
@@ -16,11 +18,10 @@ typedef struct SGIL1EEPROM {
     uint8_t *data;
 } SGIL1EEPROM;
 
+/* The controller: what the L1 keeps on its own side of the link. */
 struct SGIL1State {
-    SysBusDevice parent_obj;
-    MemoryRegion mmio;
-    qemu_irq uart;
-    bool thre_pending;
+    DeviceState parent_obj;
+    SGIL1UARTState *uart;
     CharFrontend chr;
     int32_t revision_major;
     int32_t revision_minor;
@@ -40,19 +41,29 @@ struct SGIL1State {
     uint32_t bay;
     uint32_t node_position;
     uint8_t port_field;
-    uint8_t lcr;
-    uint8_t ier;
-    uint8_t mcr;
-    uint8_t scratch;
-    uint8_t divisor[2];
     uint8_t frame[SGI_L1_FRAME_SIZE];
     uint32_t frame_len;
     bool in_frame;
     bool escape;
     bool overflow;
+    uint8_t display[2][128];
+};
+
+/* The node-side junk-bus UART window through which the Bedrock reaches it. */
+struct SGIL1UARTState {
+    SysBusDevice parent_obj;
+    MemoryRegion mmio;
+    qemu_irq irq;
+    SGIL1State *controller;
+    bool thre_pending;
+    uint8_t lcr;
+    uint8_t ier;
+    uint8_t mcr;
+    uint8_t scratch;
+    uint8_t divisor[2];
     uint8_t queue[SGI_L1_QUEUE_SIZE];
     uint32_t queue_head;
     uint32_t queue_len;
-    uint8_t display[2][128];
 };
+
 #endif
