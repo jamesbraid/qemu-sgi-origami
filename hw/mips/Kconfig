@@ -121,3 +121,8 @@ config MIPS_BOSTON
 
 config FW_CFG_MIPS
     bool
+
+config SN0_HUB_PACKET_TEST
+    bool
+    default y
+    depends on SGI_SN0 && TEST_DEVICES

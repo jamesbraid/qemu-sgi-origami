@@ -345,7 +345,9 @@ qtests_mips64 = \
                                                    'sn0-debug-breakpoint-test',
                                                    'sn0-tlb-query-test'] : []) + \
   sn0_xbow_qtests + \
-  sn1_xbridge_qtests
+  sn1_xbridge_qtests + \
+  (config_all_devices.has_key('CONFIG_SN0_HUB_PACKET_TEST') ?
+    ['sn0-origin2000-hub-packet-test'] : [])
 
 qtests_mips64el = qtests_mips
 
