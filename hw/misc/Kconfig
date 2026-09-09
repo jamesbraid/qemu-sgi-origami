@@ -342,6 +342,11 @@ config SGI_BEDROCK_XB
     bool
     default y if TEST_DEVICES
 
+config SGI_BEDROCK_FLASH
+    bool
+    default y if TEST_DEVICES
+    select PFLASH_CFI02
+
 config SGI_BEDROCK
     bool
     select SGI_BEDROCK_IO
