@@ -476,6 +476,12 @@ static bool sn0_origin2000_xtalk_fit_board(SN0Origin2000XtalkState *s,
 /*
  * Whether this board is whole: the chip realized, and every function the
  * descriptor names built behind it.
+ *
+ * Releasing an incomplete board is also what disposes of a function the PCI
+ * core refused: unparenting the chip unparents its bus, which takes every
+ * device still on that bus with it. So no unparent is needed where a function
+ * is refused -- but that holds only while this rule releases every board short
+ * of complete. Narrow the rule and the unparent has to come back.
  */
 static bool sn0_origin2000_xtalk_board_complete(SN0Origin2000XtalkBoard *board)
 {

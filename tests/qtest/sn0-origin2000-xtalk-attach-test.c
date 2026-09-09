@@ -679,6 +679,14 @@ static void test_the_monitor_reads_pci_after_a_retry(void)
  * at the end of machine init that every device under the machine is
  * realized, so the function the PCI core refused has to have come off the
  * board rather than stayed on it unrealized.
+ *
+ * There is deliberately no companion case for a function that fails after
+ * taking its host configuration. Nothing on a command line can reach one
+ * today, and it would drive the same branch on the same state to the same
+ * outcome, because a missing entry is all this rule can see. That changes
+ * when the board gains its NVRAM backend: that path runs after the ethernet
+ * entry is claimed, so a bad or busy image becomes an ordinary way to reach
+ * the case this one only argues. Add the fixture with the backend.
  */
 static void test_a_part_built_board_ends_the_attach(void)
 {
