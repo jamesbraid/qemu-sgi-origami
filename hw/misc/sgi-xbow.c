@@ -8,7 +8,9 @@
  * widget identities 8 through 15, and the ninth terminating at logical
  * widget zero, where these registers answer. The switch translates no
  * address and reorders no byte. A packet's destination widget selects the
- * output port and its offset travels unchanged.
+ * output port and its offset travels unchanged. Widget zero and the eight
+ * links are the only destinations a packet may name; any other number is
+ * an error reported on the port that received it.
  */
 
 #include "qemu/osdep.h"
@@ -102,6 +104,8 @@
 
 /* Link status, and which link control enable answers for each condition. */
 #define XBOW_LINK_ALIVE             BIT(31)
+#define XBOW_LINK_MULTIPLE_ERROR    BIT(18)
+#define XBOW_LINK_ILLEGAL_DEST      BIT(17)
 #define XBOW_LINK_BANDWIDTH_SOURCE  0x0000ff00u
 #define XBOW_LINK_MAX_RETRY         BIT(5)
 #define XBOW_LINK_STATUS_ERRORS     0x0007fffb
@@ -132,6 +136,11 @@
 
 /* Every widget mask names widgets 8 through 15 and nothing below. */
 #define XBOW_WIDGET_MASK            0xff00u
+
+/* Widget zero and the links are legal destinations; 1 through 7 are not. */
+#define XBOW_FIRST_ILLEGAL_WIDGET   1
+#define XBOW_ILLEGAL_WIDGETS        (SGI_XBOW_FIRST_WIDGET - \
+                                     XBOW_FIRST_ILLEGAL_WIDGET)
 
 /*
  * Two Crossbow core cycles of link reset, at the nominal 100 MHz core the
@@ -355,26 +364,58 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
     }
 }
 
+/*
+ * The first-error latch holds the crosstalk command word of the packet
+ * that failed and suppresses later logging until software writes it back.
+ * A processor access through a memory region carries no command word to
+ * put there, and filling the register with anything else would report a
+ * packet that never existed, so the register and both error address halves
+ * stay zero. Nine conditions share that one latch -- widget zero's access
+ * error and an illegal destination on each of the eight links -- and this
+ * prints whenever any of them finds its own status clear, which is a good
+ * deal more often than the latch itself would rearm.
+ */
+static void sgi_xbow_log_uncaptured_packet(void)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-xbow: the failing packet is not recorded; the "
+                  "first-error latch is not modeled\n");
+}
+
 static void sgi_xbow_record_access_error(SGIXbowState *s)
 {
     if (s->status & XBOW_STATUS_ACCESS_ERROR) {
         s->status |= XBOW_STATUS_MULTIPLE_ERROR;
     } else {
-        /*
-         * The first-error latch holds the crosstalk command word of the
-         * packet that failed and suppresses later logging until software
-         * writes it back. A processor access through a memory region
-         * carries no command word to put there, and filling the register
-         * with anything else would report a packet that never existed, so
-         * the register and both error address halves stay zero. This says
-         * so on each error that finds the status clear, which is close to
-         * but not the same as the latch's own rearming.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-xbow: the failing packet is not recorded; the "
-                      "first-error latch is not modeled\n");
+        sgi_xbow_log_uncaptured_packet();
     }
     s->status |= XBOW_STATUS_ACCESS_ERROR;
+    sgi_xbow_update_interrupt(s);
+}
+
+/*
+ * A destination number that is neither widget zero nor a link decodes to
+ * no port at all, so the error belongs to the port the packet arrived at
+ * rather than to anything it was addressed to. A repeat while the first
+ * one still stands reports the second, and the packet goes nowhere either
+ * way. A link that is merely down or unpopulated is a different case: its
+ * number is legal and nothing here latches for it.
+ */
+static void sgi_xbow_record_illegal_destination(SGIXbowState *s,
+                                                unsigned int port,
+                                                unsigned int widget)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbow: widget %u addressed widget %u, which is not a "
+                  "destination this switch has\n", sgi_xbow_widget(port),
+                  widget);
+    if (s->link_status[port] & XBOW_LINK_ILLEGAL_DEST) {
+        s->link_status[port] |= XBOW_LINK_MULTIPLE_ERROR;
+    } else {
+        sgi_xbow_log_uncaptured_packet();
+    }
+    s->link_status[port] |= XBOW_LINK_ILLEGAL_DEST;
+    s->link_event[port] |= XBOW_LINK_ILLEGAL_DEST;
     sgi_xbow_update_interrupt(s);
 }
 
@@ -771,6 +812,65 @@ static const MemoryRegionOps sgi_xbow_ops = {
     .impl.unaligned = true,
 };
 
+static unsigned int sgi_xbow_illegal_widget(const SGIXbowState *s, hwaddr addr)
+{
+    return XBOW_FIRST_ILLEGAL_WIDGET + addr / s->span;
+}
+
+/*
+ * One region per port covers the whole illegal range, so the port a packet
+ * entered by is what selects the status register that records it. Nothing
+ * is delivered and no value is invented for a read.
+ */
+static MemTxResult sgi_xbow_illegal_read(void *opaque, hwaddr addr,
+                                         uint64_t *data, unsigned int size,
+                                         MemTxAttrs attrs)
+{
+    SGIXbowLink *context = opaque;
+    SGIXbowState *s = context->xbow;
+
+    *data = 0;
+    sgi_xbow_record_illegal_destination(s, context->link,
+                                        sgi_xbow_illegal_widget(s, addr));
+    return MEMTX_ERROR;
+}
+
+static MemTxResult sgi_xbow_illegal_write(void *opaque, hwaddr addr,
+                                          uint64_t value, unsigned int size,
+                                          MemTxAttrs attrs)
+{
+    SGIXbowLink *context = opaque;
+    SGIXbowState *s = context->xbow;
+
+    sgi_xbow_record_illegal_destination(s, context->link,
+                                        sgi_xbow_illegal_widget(s, addr));
+    return MEMTX_ERROR;
+}
+
+/*
+ * One report per host access, at every width and alignment. Two fields
+ * below decide it: the implementation width, which covers anything a host
+ * can issue in one go, and the implementation's unaligned flag, without
+ * which an access crossing a natural boundary is broken into pieces.
+ * Narrowing either splits one packet into two reports. Where an access
+ * ends does not matter, because QEMU hands a region an access that starts
+ * inside it whole rather than clipping it at the region's end: one
+ * running off the top of the range is reported once, against the widget
+ * it began in, and the part beyond is swallowed as the hole here
+ * swallowed it before.
+ */
+static const MemoryRegionOps sgi_xbow_illegal_ops = {
+    .read_with_attrs = sgi_xbow_illegal_read,
+    .write_with_attrs = sgi_xbow_illegal_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
 MemoryRegion *sgi_xbow_ingress(SGIXbowState *s, unsigned int widget)
 {
     g_assert(widget >= SGI_XBOW_FIRST_WIDGET && widget < SGI_XBOW_WIDGETS);
@@ -975,12 +1075,21 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         g_autofree char *view =
             g_strdup_printf("sgi-xbow.widget%u.registers",
                             sgi_xbow_widget(port));
+        g_autofree char *missing =
+            g_strdup_printf("sgi-xbow.widget%u.illegal-destinations",
+                            sgi_xbow_widget(port));
 
         memory_region_init(&s->ingress[port], OBJECT(dev), name,
                            SGI_XBOW_WIDGETS * s->span);
         memory_region_init_alias(&s->regs_view[port], OBJECT(dev), view,
                                  &s->regs, 0, s->span);
         memory_region_add_subregion(&s->ingress[port], 0, &s->regs_view[port]);
+        memory_region_init_io(&s->illegal[port], OBJECT(dev),
+                              &sgi_xbow_illegal_ops, &s->link_context[port],
+                              missing, XBOW_ILLEGAL_WIDGETS * s->span);
+        memory_region_add_subregion(&s->ingress[port],
+                                    (hwaddr)XBOW_FIRST_ILLEGAL_WIDGET *
+                                    s->span, &s->illegal[port]);
         sysbus_init_mmio(sbd, &s->ingress[port]);
 
         for (link = 0; link < SGI_XBOW_LINKS; link++) {
