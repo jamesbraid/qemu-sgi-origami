@@ -2,6 +2,7 @@
 /* Descriptor-owned Origin 2000 Crosstalk assembly storage. */
 
 #include "qemu/osdep.h"
+#include CONFIG_DEVICES /* CONFIG_SN0_XTALK_ASSEMBLY_TEST */
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -81,8 +82,10 @@ struct SN0Origin2000XtalkState {
     SN0Origin2000XtalkSource source[ORIGIN2000_XTALK_NODES];
     SN0Origin2000XtalkDestination destination[ORIGIN2000_XTALK_NODES];
     bool attached;
+#ifdef CONFIG_SN0_XTALK_ASSEMBLY_TEST
     const char *test_board_part;
     int test_crossbow_failure;
+#endif
     SN0Origin2000XtalkBoard board[ORIGIN2000_XTALK_IO_BOARDS];
     bool cleaned;
     /* A realized Hub still aliases an outgoing face of this object's. */
@@ -90,6 +93,60 @@ struct SN0Origin2000XtalkState {
 };
 
 static ObjectUnparent *parent_unparent;
+
+/*
+ * Fault injection, built only where the fixture machines that drive it are.
+ * The two setters below are the only way in, so an assembly built without
+ * those machines carries neither the state nor a path that reaches it.
+ */
+#ifdef CONFIG_SN0_XTALK_ASSEMBLY_TEST
+static void sn0_origin2000_xtalk_arm_hooks(SN0Origin2000XtalkState *s)
+{
+    s->test_crossbow_failure = -1;
+}
+
+static const char *sn0_origin2000_xtalk_board_part(
+    SN0Origin2000XtalkState *s, const SN0ModelIoBoard *record)
+{
+    return s->test_board_part ? s->test_board_part : record->bridge->part;
+}
+
+static void sn0_origin2000_xtalk_break_crossbow(SN0Origin2000XtalkState *s,
+                                                size_t index)
+{
+    if ((int)index == s->test_crossbow_failure) {
+        /* A span the provider refuses, set where a retry can clear it. */
+        qdev_prop_set_uint64(DEVICE(s->crossbow[index]), "span", 0);
+    }
+}
+
+void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
+                                              const char *part)
+{
+    machine->origin2000_xtalk->test_board_part = part;
+}
+
+void sn0_origin2000_xtalk_set_test_crossbow_failure(SN0MachineState *machine,
+                                                    int index)
+{
+    machine->origin2000_xtalk->test_crossbow_failure = index;
+}
+#else
+static void sn0_origin2000_xtalk_arm_hooks(SN0Origin2000XtalkState *s)
+{
+}
+
+static const char *sn0_origin2000_xtalk_board_part(
+    SN0Origin2000XtalkState *s, const SN0ModelIoBoard *record)
+{
+    return record->bridge->part;
+}
+
+static void sn0_origin2000_xtalk_break_crossbow(SN0Origin2000XtalkState *s,
+                                                size_t index)
+{
+}
+#endif
 
 static uint16_t crossbow_present_mask(const SN0ModelComposition *model,
                                       unsigned int crossbow_index)
@@ -294,8 +351,7 @@ static bool sn0_origin2000_xtalk_build_bridge(SN0Origin2000XtalkState *s,
     qdev_prop_set_uint32(bridge, "revision", record->bridge->revision);
     qdev_prop_set_uint64(bridge, "onewire-serial", record->bridge->serial);
     qdev_prop_set_string(bridge, "board-part",
-                         s->test_board_part ? s->test_board_part :
-                         record->bridge->part);
+                         sn0_origin2000_xtalk_board_part(s, record));
     qdev_prop_set_string(bridge, "pci-bus-name", bus_name);
     /*
      * A switched fabric carries the destination widget, so the chip keeps it
@@ -637,7 +693,7 @@ bool sn0_origin2000_xtalk_prepare(SN0MachineState *machine, Error **errp)
 
     s = SN0_ORIGIN2000_XTALK(object_new(TYPE_SN0_ORIGIN2000_XTALK));
     s->machine = machine;
-    s->test_crossbow_failure = -1;
+    sn0_origin2000_xtalk_arm_hooks(s);
     object_property_add_child(OBJECT(machine), "xtalk", OBJECT(s));
     machine->origin2000_xtalk = s;
     object_unref(OBJECT(s));
@@ -765,10 +821,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
     }
 
     for (i = 0; i < model->crossbow_count; i++) {
-        if ((int)i == s->test_crossbow_failure) {
-            /* A span the provider refuses, set where a retry can clear it. */
-            qdev_prop_set_uint64(DEVICE(s->crossbow[i]), "span", 0);
-        }
+        sn0_origin2000_xtalk_break_crossbow(s, i);
         if (!sysbus_realize(SYS_BUS_DEVICE(s->crossbow[i]), errp)) {
             goto unwind;
         }
@@ -866,18 +919,6 @@ void sn0_origin2000_xtalk_destroy(SN0MachineState *machine)
     object_unparent(OBJECT(s));
     object_property_add_child(OBJECT(machine), "xtalk-retired[*]", OBJECT(s));
     object_unref(OBJECT(s));
-}
-
-void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
-                                              const char *part)
-{
-    machine->origin2000_xtalk->test_board_part = part;
-}
-
-void sn0_origin2000_xtalk_set_test_crossbow_failure(SN0MachineState *machine,
-                                                    int index)
-{
-    machine->origin2000_xtalk->test_crossbow_failure = index;
 }
 
 bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine)
