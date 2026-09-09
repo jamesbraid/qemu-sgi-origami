@@ -462,6 +462,7 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
         if (source->bound) {
             memory_region_del_subregion(&source->packet_proxy,
                                         &source->packet_alias);
+            memory_region_set_enabled(&source->packet_proxy, false);
             memory_region_del_subregion(&s->machine->nodes[i]->xtalk,
                                         &source->cpu_alias);
             source->bound = false;
