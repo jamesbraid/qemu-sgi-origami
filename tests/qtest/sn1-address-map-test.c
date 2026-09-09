@@ -50,6 +50,7 @@
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
 #define HUB_LOCAL_FLASH (SPACE_HUB + UINT64_C(0x1a000000))
+#define HUB_DIRECTORY (SPACE_HUB + UINT64_C(0x1c0000000))
 #define HUB_LOCAL_HIGH_BOOT (SPACE_HUB + UINT64_C(0x1fc00000))
 #define HUB_REMOTE_REGISTERS (SPACE_HUB + UINT64_C(0x30000000))
 #define HUB_REMOTE_BOOT (SPACE_HUB + UINT64_C(0x38000000))
@@ -77,6 +78,14 @@
 #define FLASH_UNLOCK1 UINT64_C(0x1550)
 #define FLASH_ERASED_TARGET UINT64_C(0x200000)
 #define FLASH_PAYLOAD_TARGET UINT64_C(0x1000)
+/*
+ * The directory words for memory line 0x1a00000 and for the last line of
+ * 512 MiB, and the aperture the node ends with.
+ */
+#define DIRECTORY_LINE_1A00000 UINT64_C(0x340000)
+#define DIRECTORY_LAST_FITTED UINT64_C(0x3fffff0)
+#define DIRECTORY_FIRST_ABSENT UINT64_C(0x4000000)
+#define DIRECTORY_APERTURE UINT64_C(0x40000000)
 
 #define EXEC_STATE_PHYS UINT64_C(0x100000)
 #define EXEC_STATE_KSEG1_HI 0xa010
@@ -1839,6 +1848,60 @@ static void assert_flash_everywhere(QTestState *qts, uint64_t offset,
     }
 }
 
+static void test_directory_backdoor_window(const void *data)
+{
+    QTestState *qts = machine_start();
+    /* A format-masked word beside an opaque one, both distinctive. */
+    const uint64_t entry = UINT64_C(0xc001d00d);
+    const uint64_t counter = UINT64_C(0x0123456789abcdef);
+    const uint64_t carrier = HUB_DIRECTORY + DIRECTORY_LINE_1A00000;
+    const uint64_t last = HUB_DIRECTORY + DIRECTORY_LAST_FITTED;
+    const uint64_t absent = HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT;
+
+    /*
+     * The window answers at the carrier the contract names, which needs the
+     * machine's memory linked to the controller for the device to realize.
+     */
+    g_assert_cmphex(qtest_readq(qts, carrier), ==, 0);
+    qtest_writeq(qts, carrier, entry);
+    qtest_writeq(qts, carrier + 8, counter);
+
+    /* The two words of one carrier are independent storage. */
+    g_assert_cmphex(qtest_readq(qts, carrier), ==, entry);
+    g_assert_cmphex(qtest_readq(qts, carrier + 8), ==, counter);
+
+    /* Neither leaks into the carriers on either side. */
+    g_assert_cmphex(qtest_readq(qts, carrier - 0x10), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, carrier - 0x10 + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, carrier + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, carrier + 0x10 + 8), ==, 0);
+
+    /* The memory this machine fits reaches exactly this far. */
+    qtest_writeq(qts, last, entry);
+    qtest_writeq(qts, last + 8, counter);
+    g_assert_cmphex(qtest_readq(qts, last), ==, entry);
+    g_assert_cmphex(qtest_readq(qts, last + 8), ==, counter);
+
+    /* One carrier further is past the fitted memory and is refused. */
+    qtest_writeq(qts, absent, UINT64_C(0x13579bdf2468ace0));
+    qtest_writeq(qts, absent + 8, UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(qts, absent), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, absent + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, last), ==, entry);
+    g_assert_cmphex(qtest_readq(qts, last + 8), ==, counter);
+
+    /* The aperture is the last part of the node's address space. */
+    assert_flat_view_unmapped(qts, HUB_DIRECTORY + DIRECTORY_APERTURE);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, carrier), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, carrier + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, last), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, last + 8), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_boot_flash_backs_every_prom_view(const void *data)
 {
     g_autofree char *flash = create_flash_image();
@@ -2592,6 +2655,8 @@ int main(int argc, char **argv)
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
                         test_l1_has_no_identity_records_by_default);
+    qtest_add_data_func("sn1/address-map/directory-backdoor-window", NULL,
+                        test_directory_backdoor_window);
     qtest_add_data_func("sn1/address-map/boot-flash-backs-prom-views", NULL,
                         test_boot_flash_backs_every_prom_view);
     qtest_add_data_func("sn1/address-map/boot-flash-migration", NULL,
