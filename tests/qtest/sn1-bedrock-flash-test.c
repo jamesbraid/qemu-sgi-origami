@@ -62,6 +62,16 @@ static void image_write_be64(const char *path, uint64_t offset, uint64_t value)
     image_write(path, offset, bytes, sizeof(bytes));
 }
 
+static void image_read(const char *path, uint64_t offset, void *buffer,
+                       size_t length)
+{
+    int fd = open(path, O_RDONLY);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pread(fd, buffer, length, offset), ==, (ssize_t)length);
+    g_assert_cmpint(close(fd), ==, 0);
+}
+
 /*
  * Programming only clears bits, so a sector a test means to program has to
  * start out erased. The images are otherwise left sparse.
@@ -77,7 +87,11 @@ static void image_erase_sector(const char *path, uint64_t offset)
 static QTestState *flash_start(const char *image, const char *options,
                                const char *extra)
 {
-    QTestState *s = qtest_initf("-M none -cpu R10000 -S "
+    /*
+     * The machine runs rather than being held stopped: erase completes on a
+     * virtual-clock timer, and that clock only advances while it does.
+     */
+    QTestState *s = qtest_initf("-M none -cpu R10000 "
                                 "-drive if=none,id=fl,file=%s,format=raw%s "
                                 "-device sgi-bedrock-flash,id=flash,drive=fl "
                                 "%s", image, options, extra);
@@ -94,6 +108,29 @@ static void flash_program(QTestState *s, uint64_t base, uint64_t offset,
     qtest_writeq(s, base + UNLOCK1, 0x55);
     qtest_writeq(s, base + UNLOCK0, 0xa0);
     qtest_writeq(s, base + BYTE(offset), word);
+}
+
+static void flash_reset_to_array(QTestState *s, uint64_t base)
+{
+    qtest_writeq(s, base + UNLOCK0, 0xf0);
+}
+
+static void flash_enter_query(QTestState *s, uint64_t base)
+{
+    qtest_writeq(s, base + QUERY, 0x98);
+}
+
+static void flash_erase_sector(QTestState *s, uint64_t base, uint64_t offset)
+{
+    qtest_writeq(s, base + UNLOCK0, 0xaa);
+    qtest_writeq(s, base + UNLOCK1, 0x55);
+    qtest_writeq(s, base + UNLOCK0, 0x80);
+    qtest_writeq(s, base + UNLOCK0, 0xaa);
+    qtest_writeq(s, base + UNLOCK1, 0x55);
+    qtest_writeq(s, base + BYTE(offset), 0x30);
+    /* The window for further sector commands, then the erase itself. */
+    qtest_clock_step_next(s);
+    qtest_clock_step_next(s);
 }
 
 static char *sized_image(const char *tag, uint64_t size)
@@ -246,6 +283,517 @@ static void test_selections_alias(void)
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
+/*
+ * The query command rides the same 64-bit store as any other command, at
+ * eight times its flash word address, and the answers come back as 16-bit
+ * values at twice the query index. Identifiers are a separate mode the
+ * firmware never enters, and nothing here depends on them.
+ */
+static void test_query_mode(void)
+{
+    g_autofree char *image = flash_image("query");
+    QTestState *s;
+
+    /* Array contents the query answers cannot be confused with. */
+    image_write_be64(image, 0x20, 0xdeadbeefdeadbeefULL);
+    image_write_be64(image, 0x28, 0xdeadbeefdeadbeefULL);
+
+    s = flash_start(image, "", "");
+    /* A command at the wrong offset is not the query command. */
+    qtest_writeq(s, PRIMARY + 0x55, 0x98);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
+
+    qtest_writeq(s, PRIMARY + QUERY, 0x98);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x11)), ==, 'R');
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x12)), ==, 'Y');
+    /* The AMD-compatible primary command set. */
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x13)), ==, 0x0002);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x14)), ==, 0x0000);
+    /* Both selections are the same device, so both are in query mode. */
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + QUERY_READ(0x10)), ==, 'Q');
+
+    flash_reset_to_array(s, PRIMARY);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
+                    0xdeadbeefdeadbeefULL);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * Programming reaches the start, the middle and the last word of a sector,
+ * puts the two bytes of each word down in that order, and survives the run
+ * that wrote it.
+ */
+static void test_program(void)
+{
+    g_autofree char *image = flash_image("program");
+    uint8_t stored[4];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_write_be64(image, SECTOR_SIZE, 0x8899aabbccddeeffULL);
+
+    s = flash_start(image, "", "");
+    flash_program(s, PRIMARY, 0, 0x1234);
+    /* Polling the programmed word sees the new data, so the write is done. */
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1234);
+    g_assert_cmphex(qtest_readb(s, PRIMARY + 0), ==, 0x12);
+    g_assert_cmphex(qtest_readb(s, PRIMARY + 1), ==, 0x34);
+
+    flash_program(s, PRIMARY, SECTOR_SIZE / 2, 0xa55a);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE / 2), ==, 0xa55a);
+    flash_program(s, PRIMARY, SECTOR_SIZE - 2, 0x0f1e);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
+    /* Programming the last word of a sector does not touch the next one. */
+    g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE), ==, 0x8899);
+    qtest_quit(s);
+
+    image_read(image, 0, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0x12);
+    g_assert_cmphex(stored[1], ==, 0x34);
+    g_assert_cmphex(stored[2], ==, 0xff);
+
+    s = flash_start(image, "", "");
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE / 2), ==, 0xa55a);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * An erase clears one 64 KiB sector and leaves the sectors either side of it
+ * alone, whether it is the first sector or one further up.
+ *
+ * Because a command address is four times the flash offset it names, a
+ * 16 MiB window only reaches the first 4 MiB of the part for erase and
+ * programming. Everything above that is readable but cannot be commanded
+ * through this window. Sector 0x3f is the highest one this test can erase.
+ */
+static void test_sector_erase(void)
+{
+    g_autofree char *image = flash_image("erase");
+    const uint64_t high = 0x3f * SECTOR_SIZE;
+    QTestState *s;
+
+    image_write_be64(image, 0, 0x1111111111111111ULL);
+    image_write_be64(image, SECTOR_SIZE - 8, 0x2222222222222222ULL);
+    image_write_be64(image, SECTOR_SIZE, 0x3333333333333333ULL);
+    image_write_be64(image, high - 8, 0x4444444444444444ULL);
+    image_write_be64(image, high, 0x5555555555555555ULL);
+    image_write_be64(image, high + SECTOR_SIZE - 8, 0x6666666666666666ULL);
+    image_write_be64(image, high + SECTOR_SIZE, 0x7777777777777777ULL);
+
+    s = flash_start(image, "", "");
+    flash_erase_sector(s, PRIMARY, 0);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE - 8), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
+                    0x3333333333333333ULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high), ==,
+                    0x5555555555555555ULL);
+
+    flash_erase_sector(s, ALTERNATE, high);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high - 8), ==,
+                    0x4444444444444444ULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high + SECTOR_SIZE - 8), ==,
+                    UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high + SECTOR_SIZE), ==,
+                    0x7777777777777777ULL);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static char *log_file(const char *tag)
+{
+    char *path = g_strdup_printf("%s/sn1-bedrock-flash-%s-XXXXXX.log",
+                                 g_get_tmp_dir(), tag);
+    int fd = g_mkstemp(path);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static unsigned count_lines(const char *text, const char *needle)
+{
+    unsigned found = 0;
+
+    for (const char *p = strstr(text, needle); p; p = strstr(p + 1, needle)) {
+        found++;
+    }
+    return found;
+}
+
+/*
+ * The one place where the width of a flash cycle is visible. A 64-bit store
+ * has to reach the flash as a single two-byte cycle; split into two one-byte
+ * cycles it would be two commands, and the firmware's programming sequence
+ * would fall apart. The CFI device's own trace says which happened.
+ *
+ * A store with anything set above the flash word is not something the
+ * firmware ever sends, and the board's answer to it is unknown. Refuse it
+ * outright: say so, start no cycle, and leave the data alone.
+ */
+static void test_cfi_cycle_width(void)
+{
+    g_autofree char *image = flash_image("cycle");
+    g_autofree char *good_log = log_file("cycle-good");
+    g_autofree char *wide_log = log_file("cycle-wide");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    uint8_t stored[2];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+
+    extra = g_strdup_printf("-d trace:pflash_io_write -D %s", good_log);
+    s = flash_start(image, "", extra);
+    flash_program(s, PRIMARY, 0x100, 0x1234);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(good_log, &found, NULL, NULL));
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 4);
+    g_assert_cmpuint(count_lines(found, "size:1"), ==, 0);
+    g_assert_nonnull(strstr(found, "offset:0x0aaa size:2 value:0x00aa"));
+    g_assert_nonnull(strstr(found, "offset:0x0554 size:2 value:0x0055"));
+    g_assert_nonnull(strstr(found, "offset:0x0aaa size:2 value:0x00a0"));
+    g_assert_nonnull(strstr(found, "offset:0x0100 size:2 value:0x1234"));
+    g_clear_pointer(&found, g_free);
+
+    g_free(extra);
+    extra = g_strdup_printf("-d guest_errors,trace:pflash_io_write -D %s",
+                            wide_log);
+    s = flash_start(image, "", extra);
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xa0);
+    qtest_writeq(s, PRIMARY + BYTE(0x200), 0x15678);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(wide_log, &found, NULL, NULL));
+    /* The three unlock cycles reached the flash; the data cycle did not. */
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 3);
+    g_assert_null(strstr(found, "value:0x5678"));
+    g_assert_nonnull(strstr(found, "sets bits above the 16-bit flash word"));
+
+    image_read(image, 0x200, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0xff);
+    g_assert_cmphex(stored[1], ==, 0xff);
+
+    g_assert_cmpint(unlink(good_log), ==, 0);
+    g_assert_cmpint(unlink(wide_log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * A reset returns the flash to plain array reads from wherever it was, and
+ * an unfinished command sequence does not survive it: a data or erase cycle
+ * arriving after the reset is a stray write, not the completion of what was
+ * started before.
+ */
+static void test_reset_states(void)
+{
+    g_autofree char *image = flash_image("reset");
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_write_be64(image, 0x20, 0xdeadbeefdeadbeefULL);
+    image_write_be64(image, SECTOR_SIZE, 0x3333333333333333ULL);
+
+    s = flash_start(image, "", "");
+
+    /* Stored bytes survive a reset taken during ordinary reads. */
+    flash_program(s, PRIMARY, 0x400, 0xc3c3);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0x400), ==, 0xc3c3);
+
+    /* Query mode does not. */
+    flash_enter_query(s, PRIMARY);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
+
+    /* Nor does a program sequence waiting for its data. */
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xa0);
+    qtest_system_reset(s);
+    qtest_writeq(s, PRIMARY + BYTE(0x402), 0x0f0f);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0x402), ==, 0xffff);
+
+    /* Nor an erase sequence waiting for its sector. */
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0x80);
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
+    qtest_system_reset(s);
+    qtest_writeq(s, PRIMARY + BYTE(SECTOR_SIZE), 0x30);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
+                    0x3333333333333333ULL);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0x400), ==, 0xc3c3);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * A read-only image still boots and reads, and neither programming nor
+ * erasing changes a byte of it.
+ *
+ * The CFI device gives no failure indication for this case: the program
+ * cycle simply stores nothing and the erase reports completion, so the only
+ * thing this test can pin down is that the data is untouched. Reporting the
+ * failure belongs to the CFI device rather than to the adapter.
+ */
+static void test_read_only(void)
+{
+    g_autofree char *image = flash_image("readonly");
+    uint8_t before[16], after[16];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_write_be64(image, 0x400, 0x0123456789abcdefULL);
+    image_write_be64(image, SECTOR_SIZE, 0x3333333333333333ULL);
+    image_read(image, 0x400, before, sizeof(before));
+
+    s = flash_start(image, ",readonly=on", "");
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
+                    0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
+
+    flash_program(s, PRIMARY, 0x100, 0x1234);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0x100), ==, 0xffff);
+    flash_program(s, PRIMARY, 0x400, 0x0000);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
+                    0x0123456789abcdefULL);
+
+    flash_erase_sector(s, PRIMARY, 0);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
+                    0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
+                    0x3333333333333333ULL);
+    qtest_quit(s);
+
+    image_read(image, 0x400, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void wait_for_migration(QTestState *from)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(from,
+                                              "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+typedef struct {
+    char *directory;
+    char *socket;
+    char *uri;
+    char *source;
+    char *destination;
+    QTestState *from;
+    QTestState *to;
+} FlashMigration;
+
+/*
+ * The destination starts from an image that differs from the source's, so
+ * reading the source's bytes on the destination shows they travelled rather
+ * than having been there all along.
+ */
+static void migration_start(FlashMigration *m, const char *tag)
+{
+    GError *error = NULL;
+    g_autofree char *pattern = g_strdup_printf("sn1-bedrock-flash-%s-XXXXXX",
+                                               tag);
+
+    m->directory = g_dir_make_tmp(pattern, &error);
+    g_assert_no_error(error);
+    m->socket = g_build_filename(m->directory, "migration.sock", NULL);
+    m->uri = g_strdup_printf("unix:%s", m->socket);
+    m->source = flash_image(tag);
+    m->destination = flash_image(tag);
+    image_erase_sector(m->source, 0);
+    image_write_be64(m->source, 0x1e0000, 0xfeedfacecafef00dULL);
+    image_write_be64(m->destination, 0x1e0000, 0x1111111111111111ULL);
+    m->from = flash_start(m->source, "", "");
+    m->to = flash_start(m->destination, "", "-incoming defer");
+}
+
+static void migration_run(FlashMigration *m)
+{
+    qtest_qmp_assert_success(m->to,
+        "{'execute': 'migrate-incoming', 'arguments': {'uri': %s}}", m->uri);
+    qtest_qmp_assert_success(m->from,
+        "{'execute': 'migrate', 'arguments': {'uri': %s}}", m->uri);
+    wait_for_migration(m->from);
+}
+
+static void migration_finish(FlashMigration *m)
+{
+    qtest_quit(m->from);
+    qtest_quit(m->to);
+    /* QEMU removes the migration socket on its way out. */
+    unlink(m->socket);
+    g_assert_cmpint(unlink(m->source), ==, 0);
+    g_assert_cmpint(unlink(m->destination), ==, 0);
+    g_assert_cmpint(rmdir(m->directory), ==, 0);
+    g_free(m->directory);
+    g_free(m->socket);
+    g_free(m->uri);
+    g_free(m->source);
+    g_free(m->destination);
+}
+
+/* Ordinary reads: the stored bytes cross to the destination. */
+static void test_migration_stored_bytes(void)
+{
+    FlashMigration m;
+
+    migration_start(&m, "migrate-bytes");
+    flash_program(m.from, PRIMARY, 0x400, 0xc3c3);
+    migration_run(&m);
+    g_assert_cmphex(qtest_readw(m.to, PRIMARY + 0x400), ==, 0xc3c3);
+    g_assert_cmphex(qtest_readq(m.to, PRIMARY + 0x1e0000), ==,
+                    0xfeedfacecafef00dULL);
+    g_assert_cmphex(qtest_readq(m.to, ALTERNATE + 0x1e0000), ==,
+                    0xfeedfacecafef00dULL);
+    migration_finish(&m);
+}
+
+/* Query mode crosses too, and the destination can leave it. */
+static void test_migration_query_mode(void)
+{
+    FlashMigration m;
+
+    migration_start(&m, "migrate-query");
+    flash_enter_query(m.from, PRIMARY);
+    migration_run(&m);
+    g_assert_cmphex(qtest_readw(m.to, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
+    g_assert_cmphex(qtest_readw(m.to, PRIMARY + QUERY_READ(0x13)), ==, 0x0002);
+    flash_reset_to_array(m.to, PRIMARY);
+    g_assert_cmphex(qtest_readq(m.to, PRIMARY + 0x1e0000), ==,
+                    0xfeedfacecafef00dULL);
+    migration_finish(&m);
+}
+
+/* A command sequence half issued on the source finishes on the destination. */
+static void test_migration_partial_command(void)
+{
+    FlashMigration m;
+
+    migration_start(&m, "migrate-partial");
+    qtest_writeq(m.from, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeq(m.from, PRIMARY + UNLOCK1, 0x55);
+    qtest_writeq(m.from, PRIMARY + UNLOCK0, 0xa0);
+    migration_run(&m);
+    qtest_writeq(m.to, PRIMARY + BYTE(0x600), 0x5aa5);
+    g_assert_cmphex(qtest_readw(m.to, PRIMARY + 0x600), ==, 0x5aa5);
+    migration_finish(&m);
+}
+
+static void assert_writes_stay_in_first_sector(const char *log)
+{
+    const char *needle = "data offset:0x";
+    unsigned seen = 0;
+
+    for (const char *p = strstr(log, needle); p; p = strstr(p + 1, needle)) {
+        uint64_t offset = g_ascii_strtoull(p + strlen(needle), NULL, 16);
+
+        g_assert_cmphex(offset, <, SECTOR_SIZE);
+        seen++;
+    }
+    g_assert_cmpuint(seen, ==, SECTOR_SIZE / 2);
+}
+
+/*
+ * The access pattern the firmware uses to update its own configuration:
+ * read the first sector, change one 80-byte block inside it, erase the
+ * sector, program the whole 64 KiB back, and read it to check. The sector
+ * data here is generated, and the block is an arbitrary distinct run of
+ * bytes.
+ *
+ * What matters is the reach of the operation. One erase, at the first
+ * sector; one program cycle per word, all inside it; and the rest of the
+ * part, including the two offsets the firmware keeps its logs at, untouched.
+ */
+static void test_first_sector_rewrite(void)
+{
+    g_autofree char *image = flash_image("rewrite");
+    g_autofree char *log = log_file("rewrite");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree uint8_t *seed = g_malloc(SECTOR_SIZE);
+    g_autofree uint8_t *expected = g_malloc(SECTOR_SIZE);
+    g_autofree uint8_t *sector = g_malloc(SECTOR_SIZE);
+    uint8_t block[0x50];
+    QTestState *s;
+
+    for (unsigned i = 0; i < SECTOR_SIZE; i++) {
+        seed[i] = (i * 7 + 0x31) & 0xff;
+    }
+    for (unsigned i = 0; i < sizeof(block); i++) {
+        block[i] = 0xa0 + i;
+    }
+    memcpy(expected, seed, SECTOR_SIZE);
+    memcpy(expected + 0x60, block, sizeof(block));
+
+    image_write(image, 0, seed, SECTOR_SIZE);
+    image_write_be64(image, SECTOR_SIZE, 0x1111111111111111ULL);
+    image_write_be64(image, 0x1e0000, 0xfeedfacecafef00dULL);
+    image_write_be64(image, 0x1f0000, 0x0badc0debaadf00dULL);
+    image_write_be64(image, FLASH_SIZE - 8, 0x0123456789abcdefULL);
+
+    extra = g_strdup_printf("-d trace:pflash_sector_erase_start,"
+                            "trace:pflash_data_write -D %s", log);
+    s = flash_start(image, "", extra);
+
+    qtest_memread(s, PRIMARY, sector, SECTOR_SIZE);
+    g_assert_cmpmem(sector, SECTOR_SIZE, seed, SECTOR_SIZE);
+    memcpy(sector + 0x60, block, sizeof(block));
+
+    flash_erase_sector(s, PRIMARY, 0);
+    for (unsigned i = 0; i < SECTOR_SIZE; i += 2) {
+        flash_program(s, PRIMARY, i, (sector[i] << 8) | sector[i + 1]);
+    }
+
+    qtest_memread(s, PRIMARY, sector, SECTOR_SIZE);
+    g_assert_cmpmem(sector, SECTOR_SIZE, expected, SECTOR_SIZE);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
+                    0x1111111111111111ULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x1e0000), ==,
+                    0xfeedfacecafef00dULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x1f0000), ==,
+                    0x0badc0debaadf00dULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + FLASH_SIZE - 8), ==,
+                    0x0123456789abcdefULL);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpuint(count_lines(found, "start sector erase"), ==, 1);
+    g_assert_nonnull(strstr(found, "start sector erase at: 0x0000-0xffff"));
+    assert_writes_stay_in_first_sector(found);
+
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -253,5 +801,19 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-flash/one-to-one-reads",
                    test_one_to_one_reads);
     qtest_add_func("sn1/bedrock-flash/selections-alias", test_selections_alias);
+    qtest_add_func("sn1/bedrock-flash/query-mode", test_query_mode);
+    qtest_add_func("sn1/bedrock-flash/program", test_program);
+    qtest_add_func("sn1/bedrock-flash/sector-erase", test_sector_erase);
+    qtest_add_func("sn1/bedrock-flash/cfi-cycle-width", test_cfi_cycle_width);
+    qtest_add_func("sn1/bedrock-flash/reset-states", test_reset_states);
+    qtest_add_func("sn1/bedrock-flash/read-only", test_read_only);
+    qtest_add_func("sn1/bedrock-flash/migration-stored-bytes",
+                   test_migration_stored_bytes);
+    qtest_add_func("sn1/bedrock-flash/migration-query-mode",
+                   test_migration_query_mode);
+    qtest_add_func("sn1/bedrock-flash/migration-partial-command",
+                   test_migration_partial_command);
+    qtest_add_func("sn1/bedrock-flash/first-sector-rewrite",
+                   test_first_sector_rewrite);
     return g_test_run();
 }

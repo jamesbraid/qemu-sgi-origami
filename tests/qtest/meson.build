@@ -55,6 +55,10 @@ slow_qtests = {
   # workstation that was also building and testing other trees. 180s leaves that
   # spread the same room the 120s left the figure it was set from.
   'sn0-isp12160-test': 180,
+  # sn1-bedrock-flash-test rewrites a whole 64 KiB sector one flash word at a
+  # time, which is four qtest round trips per word, and starts eight further
+  # QEMU processes for the rejection and migration cases.
+  'sn1-bedrock-flash-test': 180,
 }
 
 qtest_priorities = {
