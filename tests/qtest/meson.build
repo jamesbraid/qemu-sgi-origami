@@ -329,6 +329,7 @@ qtests_mips64 = \
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-model-test',
                                                    'sn0-origin2000-test',
+                                                   'sn0-origin2000-pflash-test',
                                                    'sn0-smp-test',
                                                    'sn0-cross-node-test',
                                                    'sn0-warm-reset-test',

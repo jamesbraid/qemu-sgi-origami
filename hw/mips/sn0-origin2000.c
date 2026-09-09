@@ -12,6 +12,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sn0-fabric-routed.h"
 #include "hw/misc/sgi-router.h"
+#include "system/blockdev.h"
 #include "system/numa.h"
 #include "system/qtest.h"
 #include "sn0.h"
@@ -176,6 +177,9 @@ static void origin2000_load_flash(MachineState *machine)
         uint64_t size = memory_region_size(chip);
         uint8_t *image = memory_region_get_ram_ptr(chip);
 
+        if (node->flash_drive) {
+            continue;
+        }
         if ((uint64_t)image_size > size) {
             error_setg(&error_fatal,
                        "firmware image '%s' exceeds flash capacity",
@@ -196,6 +200,8 @@ static void origin2000_init(MachineState *machine)
     const SN0ModelComposition *c = s->composition;
     uint64_t ram_offset = 0;
     unsigned int cpu_index;
+    BlockBackend *flash_drives[4] = { NULL };
+    unsigned int flash_count = 0;
     size_t i;
 
     if (!sn0_origin2000_validate(c, &error_fatal)) {
@@ -221,9 +227,25 @@ static void origin2000_init(MachineState *machine)
         error_setg(&error_fatal, "composition '%s' installs %" PRIu64 " MiB",
                    c->name, origin2000_memory_size(c) / MiB);
     }
+    for (i = 0; i < c->node_count; i++) {
+        DriveInfo *drive = drive_get_by_index(IF_PFLASH, i);
+
+        if (drive) {
+            flash_drives[i] = blk_by_legacy_dinfo(drive);
+            flash_count++;
+        }
+    }
+    if (flash_count && flash_count != c->node_count) {
+        error_setg(&error_fatal,
+                   "Origin 2000 requires all four node pflash drives");
+    }
+    if (flash_count && machine->firmware) {
+        error_setg(&error_fatal,
+                   "Origin 2000 cannot combine -bios with node pflash drives");
+    }
     /* Register tests deliberately construct the machine without vendor bits. */
     if (machine->kernel_filename || s->synthesized_firmware ||
-        (!machine->firmware && !qtest_enabled())) {
+        (!machine->firmware && !flash_count && !qtest_enabled())) {
         error_setg(&error_fatal, "Origin 2000 requires supplied firmware");
     }
     if (machine->numa_state && machine->numa_state->num_nodes) {
@@ -290,6 +312,7 @@ static void origin2000_init(MachineState *machine)
         node_index = physical->slot - 1;
         node = s->nodes[node_index];
         node->physical = physical;
+        node->flash_drive = flash_drives[node_index];
         node->hardware = c->hardware;
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_index);
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", physical->cpu_first_id);

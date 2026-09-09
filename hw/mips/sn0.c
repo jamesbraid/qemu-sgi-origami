@@ -1023,11 +1023,13 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
     /*
-     * An Am29F080, byte-wide, with no backing drive -- the firmware builder
-     * seeds the image after realize. Never mapped directly; every view goes
-     * through the Hub.
+     * Without a backing drive the firmware loader seeds this byte-wide
+     * flash after realize. Every view uses the same flash device.
      */
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
+    if (node->flash_drive) {
+        qdev_prop_set_drive(flash_dev, "drive", node->flash_drive);
+    }
     qdev_prop_set_uint32(flash_dev, "num-blocks",
                          flash_reset->size / implementation->sector_size);
     qdev_prop_set_uint32(flash_dev, "sector-length",
