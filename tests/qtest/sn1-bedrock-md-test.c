@@ -142,6 +142,10 @@ static void test_reset(void)
 
     program_all(s);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x76543210);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
+                 UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18),
+                 UINT64_C(0xfedcba9876543210));
     qtest_system_reset(s);
     assert_storage_zero(s);
     g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, 0);
@@ -149,6 +153,11 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, MD(0x40000)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(s,
+                               DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
                     ==, 0);
     qtest_quit(s);
 }
@@ -159,6 +168,11 @@ static void test_directory_storage(void)
 
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(s,
+                               DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
+                    ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)), ==, 0);
 
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000),
@@ -167,13 +181,31 @@ static void test_directory_storage(void)
                     ==, UINT64_C(0x01234567));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)), ==, 0);
 
-    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x10),
-                 0x76543210);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
+                 UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
+                    ==, UINT64_C(0xfedcba9876543210));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, UINT64_C(0x01234567));
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x76543210);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
+                    ==, UINT64_C(0xfedcba9876543210));
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x10),
+                 0x76543210);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18),
+                 UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, UINT64_C(0x76543210));
     g_assert_cmphex(qtest_readq(s,
                                DIRECTORY(DIRECTORY_LINE_01A00000 + 0x10)),
                     ==, 0x76543210);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
+                    ==, UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s,
+                               DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
+                    ==, UINT64_C(0x0123456789abcdef));
 
     qtest_writeq(s, MD(0x40000), 1);
     qtest_writeq(s, DIRECTORY(DIRECTORY_OTHER_LINE),
@@ -181,7 +213,7 @@ static void test_directory_storage(void)
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)),
                     ==, UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
-                    ==, UINT64_C(0x01234567));
+                    ==, UINT64_C(0x76543210));
     qtest_quit(s);
 }
 
@@ -191,34 +223,50 @@ static void test_directory_access_policy(void)
     g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
     g_autofree char *contents = NULL;
     QTestState *s = start(extra);
-    uint64_t addr = DIRECTORY(DIRECTORY_LINE_01A00000);
-    uint64_t value = UINT64_C(0x1122334455667788);
+    const uint64_t addr[] = {
+        DIRECTORY(DIRECTORY_LINE_01A00000),
+        DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
+    };
+    const uint64_t value[] = {
+        UINT64_C(0x1122334455667788),
+        UINT64_C(0x8877665544332211),
+    };
 
     qtest_writeq(s, MD(0x40000), 1);
-    qtest_writeq(s, addr, value);
-    qtest_writeb(s, addr, 0);
-    qtest_writew(s, addr, 0);
-    qtest_writel(s, addr, 0);
-    qtest_writeq(s, addr + 1, 0);
-    qtest_writeq(s, addr + 8, 0);
-    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_512M), 0);
-    g_assert_cmphex(qtest_readq(s, addr), ==, value);
-    g_assert_cmphex(qtest_readb(s, addr), ==, 0);
-    g_assert_cmphex(qtest_readw(s, addr), ==, 0);
-    g_assert_cmphex(qtest_readl(s, addr), ==, 0);
-    g_assert_cmphex(qtest_readq(s, addr + 1), ==, 0);
-    g_assert_cmphex(qtest_readq(s, addr + 8), ==, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(addr); i++) {
+        qtest_writeq(s, addr[i], value[i]);
+        qtest_writeb(s, addr[i], 0);
+        qtest_writew(s, addr[i], 0);
+        qtest_writel(s, addr[i], 0);
+        qtest_writeq(s, addr[i] + 1, 0);
+        g_assert_cmphex(qtest_readq(s, addr[i]), ==, value[i]);
+        g_assert_cmphex(qtest_readb(s, addr[i]), ==, 0);
+        g_assert_cmphex(qtest_readw(s, addr[i]), ==, 0);
+        g_assert_cmphex(qtest_readl(s, addr[i]), ==, 0);
+        g_assert_cmphex(qtest_readq(s, addr[i] + 1), ==, 0);
+    }
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_512M),
+                 UINT64_C(0x13579bdf2468ace0));
     g_assert_cmphex(qtest_readq(s,
                                DIRECTORY(DIRECTORY_FIRST_ABSENT_512M)),
                     ==, 0);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_512M + 8),
+                 UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s,
+                               DIRECTORY(DIRECTORY_FIRST_ABSENT_512M + 8)),
+                    ==, 0);
 
     qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_512M), 0xc001d00d);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_512M + 8),
+                 UINT64_C(0x0123456789abcdef));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_512M)),
                     ==, 0xc001d00d);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_512M + 8)),
+                    ==, UINT64_C(0x0123456789abcdef));
     qtest_quit(s);
 
     contents = log_file_take(log);
-    g_assert_nonnull(strstr(contents, "not an aligned 64-bit directory word"));
+    g_assert_nonnull(strstr(contents, "not an aligned 64-bit carrier word"));
     g_assert_nonnull(strstr(contents, "outside fitted node memory"));
 }
 
@@ -253,6 +301,8 @@ static void test_without_node_memory(void)
     qtest_sysbus_mmio_map(s, MD_PATH, 1, DIRECTORY_BASE);
     qtest_writeq(s, DIRECTORY(0), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(0)), ==, 0);
+    qtest_writeq(s, DIRECTORY(8), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(8)), ==, 0);
     qtest_quit(s);
 }
 
@@ -530,6 +580,10 @@ static void test_migration(void)
     qtest_writeq(from, MD(0x40000), 3);
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000),
                  UINT64_C(0x89abcdef01234567));
+    qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
+                 UINT64_C(0xfedcba9876543210));
+    qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18),
+                 UINT64_C(0x0123456789abcdef));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -548,6 +602,11 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
     g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, UINT64_C(0x89abcdef01234567));
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
+                    ==, UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(to,
+                               DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
+                    ==, UINT64_C(0x0123456789abcdef));
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);

@@ -205,10 +205,10 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
                       "node memory\n", access);
         return false;
     }
-    if (size != 8 || offset % 16 != 0) {
+    if (size != 8 || offset % 8 != 0) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-md: %u-byte directory %s at offset 0x%"
-                      HWADDR_PRIx " is not an aligned 64-bit directory word\n",
+                      HWADDR_PRIx " is not an aligned 64-bit carrier word\n",
                       size, access, offset);
         return false;
     }
@@ -225,16 +225,25 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
 static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockMDState *s = opaque;
+    unsigned index = offset / 16;
 
-    return s->directory[offset / 16] & md_directory_mask(s);
+    if (offset & 8) {
+        return s->page_counters[index];
+    }
+    return s->directory[index] & md_directory_mask(s);
 }
 
 static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
                                unsigned size)
 {
     SGIBedrockMDState *s = opaque;
+    unsigned index = offset / 16;
 
-    s->directory[offset / 16] = value & md_directory_mask(s);
+    if (offset & 8) {
+        s->page_counters[index] = value;
+    } else {
+        s->directory[index] = value & md_directory_mask(s);
+    }
 }
 
 static const MemoryRegionOps md_directory_ops = {
@@ -286,11 +295,13 @@ static void md_reset_enter(Object *obj, ResetType type)
     if (s->directory) {
         memset(s->directory, 0,
                s->directory_entries * sizeof(*s->directory));
+        memset(s->page_counters, 0,
+               s->directory_entries * sizeof(*s->page_counters));
     }
 }
 
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 2, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 3, .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
         VMSTATE_UINT64(memory_config, SGIBedrockMDState),
@@ -300,6 +311,9 @@ static const VMStateDescription vmstate_md = {
                              SGI_BEDROCK_MD_STORAGE),
         VMSTATE_VARRAY_UINT32(directory, SGIBedrockMDState,
                               directory_entries, 2,
+                              vmstate_info_uint64, uint64_t),
+        VMSTATE_VARRAY_UINT32(page_counters, SGIBedrockMDState,
+                              directory_entries, 3,
                               vmstate_info_uint64, uint64_t),
         VMSTATE_END_OF_LIST()
     },
@@ -345,6 +359,7 @@ static void md_realize(DeviceState *dev, Error **errp)
     }
     s->directory_entries = node_size / 128;
     s->directory = g_new0(uint64_t, s->directory_entries);
+    s->page_counters = g_new0(uint64_t, s->directory_entries);
 }
 
 static void md_unrealize(DeviceState *dev)
@@ -352,6 +367,7 @@ static void md_unrealize(DeviceState *dev)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
 
     g_clear_pointer(&s->directory, g_free);
+    g_clear_pointer(&s->page_counters, g_free);
     s->directory_entries = 0;
 }
 
@@ -379,6 +395,7 @@ static void md_finalize(Object *obj)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
     g_clear_pointer(&s->directory, g_free);
+    g_clear_pointer(&s->page_counters, g_free);
 }
 
 static const TypeInfo md_info = {
