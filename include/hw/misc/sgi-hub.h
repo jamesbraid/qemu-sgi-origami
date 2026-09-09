@@ -265,6 +265,8 @@ struct SGIHubState {
     uint64_t ni_diag_parms;
     uint8_t ni_meta_route[SGI_HUB_META_ROUTES];
     uint8_t ni_local_route[SGI_HUB_LOCAL_ROUTES];
+    uint32_t ni_meta_route_written;
+    uint16_t ni_local_route_written;
 
     uint64_t io_link_status;
     uint64_t io_widget_control;
@@ -328,6 +330,8 @@ struct SGIHubState {
 };
 
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
+bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
+                         uint8_t *turn);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
 
 /* The fabric's side of the interface: this endpoint's map or link state moved. */

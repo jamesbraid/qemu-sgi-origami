@@ -84,6 +84,11 @@ typedef struct SN0FabricVectorAccess {
     uint64_t value;
     /* The programmed node number of the device that answered. */
     uint32_t source;
+    /*
+     * Reply Router output ports, low nibble first; zero with no reply or no
+     * Routers. This is transport metadata, not a Hub register latch.
+     */
+    uint64_t reply_vector;
 } SN0FabricVectorAccess;
 
 struct SN0FabricState {
@@ -103,6 +108,8 @@ struct SN0FabricState {
 struct SN0FabricClass {
     DeviceClass parent_class;
 
+    /* Whether this Hub endpoint has an operational physical link. */
+    bool (*link_up)(SN0FabricState *f, unsigned int endpoint);
     /* Recompute every endpoint's map from the reported numbers and links. */
     void (*recompute)(SN0FabricState *f);
     /* Walk a vector from an endpoint's port and perform the access. */
@@ -118,6 +125,13 @@ unsigned int sn0_fabric_add_endpoint(SN0FabricState *f, SGIHubState *hub,
                                      uint32_t stride);
 void sn0_fabric_add_link(SN0FabricState *f, const char *name,
                          unsigned int a, unsigned int b);
+/* Adapter helpers; link names and down-state share one migration stream. */
+unsigned int sn0_fabric_add_named_link(SN0FabricState *f, const char *name);
+bool sn0_fabric_link_enabled(SN0FabricState *f, unsigned int index);
+void sn0_fabric_recompute(SN0FabricState *f);
+void sn0_fabric_notify_all(SN0FabricState *f);
+void sn0_fabric_publish(SN0FabricState *f, unsigned int endpoint,
+                        const int16_t *map);
 void sn0_fabric_build(SN0FabricState *f);
 unsigned int sn0_fabric_endpoint_count(SN0FabricState *f);
 

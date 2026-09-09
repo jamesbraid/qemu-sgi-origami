@@ -60,19 +60,37 @@ unsigned int sn0_fabric_add_endpoint(SN0FabricState *f, SGIHubState *hub,
     return f->endpoints->len - 1;
 }
 
-void sn0_fabric_add_link(SN0FabricState *f, const char *name,
-                         unsigned int a, unsigned int b)
+unsigned int sn0_fabric_add_named_link(SN0FabricState *f, const char *name)
 {
     SN0FabricLink link = {
         .name = g_strdup(name),
-        .a = a,
-        .b = b,
+        .a = UINT_MAX,
+        .b = UINT_MAX,
     };
 
     g_assert(!f->built);
-    g_assert(a < f->endpoints->len && b < f->endpoints->len && a != b);
     g_assert(f->links->len < 64);
     g_array_append_val(f->links, link);
+    return f->links->len - 1;
+}
+
+void sn0_fabric_add_link(SN0FabricState *f, const char *name,
+                         unsigned int a, unsigned int b)
+{
+    unsigned int index;
+    SN0FabricLink *link;
+
+    g_assert(a < f->endpoints->len && b < f->endpoints->len && a != b);
+    index = sn0_fabric_add_named_link(f, name);
+    link = sn0_fabric_link(f, index);
+    link->a = a;
+    link->b = b;
+}
+
+bool sn0_fabric_link_enabled(SN0FabricState *f, unsigned int index)
+{
+    g_assert(index < f->links->len);
+    return !sn0_fabric_link_down(f, index);
 }
 
 unsigned int sn0_fabric_endpoint_count(SN0FabricState *f)
@@ -80,7 +98,7 @@ unsigned int sn0_fabric_endpoint_count(SN0FabricState *f)
     return f->endpoints->len;
 }
 
-static void sn0_fabric_recompute(SN0FabricState *f)
+void sn0_fabric_recompute(SN0FabricState *f)
 {
     if (f->built) {
         SN0_FABRIC_GET_CLASS(f)->recompute(f);
@@ -88,7 +106,7 @@ static void sn0_fabric_recompute(SN0FabricState *f)
 }
 
 /* Every endpoint hears a link change, map or not: its status bit moves. */
-static void sn0_fabric_notify_all(SN0FabricState *f)
+void sn0_fabric_notify_all(SN0FabricState *f)
 {
     unsigned int n;
 
@@ -111,7 +129,7 @@ void sn0_fabric_build(SN0FabricState *f)
  * Install a freshly computed map and tell the Hub only when it changed:
  * every table or number write recomputes, and most change nothing.
  */
-static void sn0_fabric_publish(SN0FabricState *f, unsigned int index,
+void sn0_fabric_publish(SN0FabricState *f, unsigned int index,
                                const int16_t *map)
 {
     SN0FabricEndpoint *endpoint = sn0_fabric_endpoint(f, index);
@@ -158,6 +176,12 @@ SGIHubState *sn0_fabric_hub_for_number(SN0FabricState *f,
 
 bool sn0_fabric_link_up(SN0FabricState *f, unsigned int endpoint)
 {
+    return SN0_FABRIC_GET_CLASS(f)->link_up(f, endpoint);
+}
+
+static bool sn0_fabric_direct_link_up(SN0FabricState *f,
+                                      unsigned int endpoint)
+{
     unsigned int n;
 
     for (n = 0; n < f->links->len; n++) {
@@ -176,6 +200,7 @@ SN0FabricVectorResult sn0_fabric_vector(SN0FabricState *f,
                                         uint64_t vector,
                                         SN0FabricVectorAccess *access)
 {
+    access->reply_vector = 0;
     return SN0_FABRIC_GET_CLASS(f)->vector(f, endpoint, vector, access);
 }
 
@@ -398,6 +423,7 @@ static void sn0_fabric_direct_class_init(ObjectClass *klass, const void *data)
 {
     SN0FabricClass *fc = SN0_FABRIC_CLASS(klass);
 
+    fc->link_up = sn0_fabric_direct_link_up;
     fc->recompute = sn0_fabric_direct_recompute;
     fc->vector = sn0_fabric_direct_vector;
     fc->routes = sn0_fabric_direct_routes;
