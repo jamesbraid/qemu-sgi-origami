@@ -574,6 +574,43 @@ static void test_access_type_split(void)
 }
 
 /*
+ * An erase in progress has to be visible through the command set, because
+ * that is the only thing the firmware's polling loop can see. While it runs,
+ * reads answer with status rather than array data: the done bit is clear and
+ * the toggle bit changes between consecutive reads. Once it finishes, reads
+ * go back to the array.
+ */
+static void test_erase_polling(void)
+{
+    g_autofree char *image = flash_image("polling");
+    uint16_t first, second;
+    QTestState *s;
+
+    image_write_be64(image, 0, 0x0123456789abcdefULL);
+
+    s = flash_start(image, "", "");
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0x80);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + BYTE(0), 0x30);
+
+    first = qtest_readw(s, PRIMARY + 0);
+    second = qtest_readw(s, PRIMARY + 0);
+    /* Not finished, and busy: the done bit is clear, the toggle bit moves. */
+    g_assert_cmphex(first & 0x80, ==, 0);
+    g_assert_cmphex((first ^ second) & 0x40, ==, 0x40);
+
+    qtest_clock_step_next(s);
+    qtest_clock_step_next(s);
+    /* Finished: the array answers again, erased. */
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
  * The one place where the width of a flash cycle is visible. A 64-bit store
  * has to reach the flash as a single two-byte cycle; split into two one-byte
  * cycles it would be two commands, and the firmware's programming sequence
@@ -1019,6 +1056,8 @@ int main(int argc, char **argv)
                    test_remote_aperture);
     qtest_add_func("sn1/bedrock-flash/access-type-split",
                    test_access_type_split);
+    qtest_add_func("sn1/bedrock-flash/erase-polling",
+                   test_erase_polling);
     qtest_add_func("sn1/bedrock-flash/cfi-cycle-width", test_cfi_cycle_width);
     qtest_add_func("sn1/bedrock-flash/narrow-writes", test_narrow_writes);
     qtest_add_func("sn1/bedrock-flash/reset-states", test_reset_states);
