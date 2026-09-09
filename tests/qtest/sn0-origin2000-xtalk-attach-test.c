@@ -550,7 +550,8 @@ static void test_an_attach_takes_the_host_backends_it_is_given(void)
 }
 
 /*
- * The machine owner's terminal teardown, run after a successful attach.
+ * Terminal teardown, where a machine owner would run it: after a successful
+ * attach. No machine calls it yet -- these fixtures are its only callers.
  * Nothing exercised that before, and it took the machine down: the board's
  * devices were released with bus children still queued for release, so the
  * reference handed back a grace period later named storage already freed.
