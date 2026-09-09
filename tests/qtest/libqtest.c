@@ -1396,6 +1396,15 @@ uint32_t qtest_writel_then_readl_poll(QTestState *s, uint64_t write_addr,
     return qtest_writel_readl(s, write_addr, value, read_addr, after_poll);
 }
 
+void qtest_writel_then_writel(QTestState *s, uint64_t first_addr,
+                              uint32_t first_value, uint64_t second_addr,
+                              uint32_t second_value)
+{
+    qtest_sendf(s, "writel_writel 0x%" PRIx64 " 0x%x 0x%" PRIx64 " 0x%x\n",
+                first_addr, first_value, second_addr, second_value);
+    qtest_rsp(s);
+}
+
 void qtest_writeq(QTestState *s, uint64_t addr, uint64_t value)
 {
     qtest_write(s, "writeq", addr, value);
