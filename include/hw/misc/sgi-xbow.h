@@ -54,6 +54,13 @@ struct SGIXbowState {
     MemoryRegion ingress[SGI_XBOW_LINKS];
     MemoryRegion route[SGI_XBOW_LINKS][SGI_XBOW_LINKS];
 
+    /*
+     * The widget numbers between the register block and the first link,
+     * which name no destination on any switch. They decode so that a
+     * packet carrying one is reported on the port that received it.
+     */
+    MemoryRegion illegal[SGI_XBOW_LINKS];
+
     /* The register block, and the view of it each link port is given. */
     MemoryRegion regs;
     MemoryRegion regs_view[SGI_XBOW_LINKS];
