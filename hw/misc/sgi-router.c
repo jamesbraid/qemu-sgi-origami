@@ -12,6 +12,9 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
+#include "hw/1wire/onewire.h"
+#include "hw/1wire/ds2505.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "hw/misc/sgi-router.h"
@@ -90,10 +93,31 @@
 #define RR_PROTECTION_META_SHIFT   6
 #define RR_PROTECTION_META_MASK    UINT64_C(0x1f)
 
+typedef enum RouterNICPhase {
+    ROUTER_NIC_IDLE,
+    ROUTER_NIC_DRIVING,
+    ROUTER_NIC_SAMPLING,
+} RouterNICPhase;
+
 struct SGIRouterState {
     DeviceState parent_obj;
 
     uint8_t chip_inputs;
+
+    OneWireBus *nic_bus;
+    DeviceState *nic;
+    QEMUTimer *nic_timer;
+    uint64_t nic_clock_hz;
+    uint64_t nic_serial;
+    char *nic_image;
+    bool nic_present;
+    uint8_t nic_population;
+    uint8_t nic_phase;
+    uint8_t nic_candidate;
+    uint16_t nic_pulse;
+    uint16_t nic_sample;
+    int64_t nic_release_ns;
+    int64_t nic_sample_ns;
 
     void (*changed)(void *opaque);
     void *changed_opaque;
@@ -120,6 +144,101 @@ struct SGIRouterState {
     bool meta_valid[RR_META_TABLE_COUNT];
     bool local_valid[RR_LOCAL_TABLE_COUNT];
 };
+
+/* These are reviewed compatibility cases, not a divider transfer formula. */
+static bool sgi_router_nic_calibrated(SGIRouterState *s, uint64_t value)
+{
+    unsigned int first = extract64(value, 20, 7);
+    unsigned int second = extract64(value, 27, 7);
+
+    return first == second &&
+           ((s->nic_clock_hz == 97500000 && first == 47) ||
+            (s->nic_clock_hz == 100000000 && first == 49));
+}
+
+static bool sgi_router_nic_waveform(unsigned int pulse, unsigned int sample)
+{
+    return (pulse == 520 && sample == 65) ||
+           (pulse == 6 && (sample == 13 || sample == 110)) ||
+           (pulse == 80 && sample == 30);
+}
+
+static void sgi_router_nic_idle(SGIRouterState *s)
+{
+    s->nic_phase = ROUTER_NIC_IDLE;
+    s->nic_candidate = 0;
+    s->nic_pulse = 0;
+    s->nic_sample = 0;
+    s->nic_release_ns = 0;
+    s->nic_sample_ns = 0;
+}
+
+static void sgi_router_nic_tick(void *opaque)
+{
+    SGIRouterState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (s->nic_phase == ROUTER_NIC_DRIVING && now >= s->nic_release_ns) {
+        if (s->nic_pulse == 520) {
+            s->nic_candidate = !onewire_reset(s->nic_bus);
+        } else {
+            bool result = onewire_touch_bit(s->nic_bus, s->nic_pulse == 6);
+
+            /*
+             * Retaining a short-read bit through 19us is a reviewed
+             * compatibility approximation beyond DS2505's 15us window.
+             * The two late write samples see the released line instead.
+             */
+            s->nic_candidate = s->nic_sample == 13 ? result : 1;
+        }
+        s->nic_phase = ROUTER_NIC_SAMPLING;
+    }
+    if (s->nic_phase == ROUTER_NIC_SAMPLING && now >= s->nic_sample_ns) {
+        s->nic_ulan |= RR_NIC_DONE | s->nic_candidate;
+        sgi_router_nic_idle(s);
+    }
+    if (s->nic_phase != ROUTER_NIC_IDLE) {
+        timer_mod(s->nic_timer, s->nic_phase == ROUTER_NIC_DRIVING ?
+                               s->nic_release_ns : s->nic_sample_ns);
+    }
+}
+
+static bool sgi_router_nic_write(SGIRouterState *s, uint64_t value)
+{
+    unsigned int pulse = extract64(value, 10, 10);
+    unsigned int sample = extract64(value, 2, 8);
+    int64_t now;
+
+    /* Reject-and-preserve is the model policy for undocumented overlap. */
+    if (s->nic_phase != ROUTER_NIC_IDLE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-router: one-wire write while busy\n");
+        return false;
+    }
+    if (!sgi_router_nic_calibrated(s, value) ||
+        !sgi_router_nic_waveform(pulse, sample)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-router: unsupported one-wire clock %" PRIu64
+                      " phases %" PRIu64 "/%" PRIu64 " pulse %u sample %u\n",
+                      s->nic_clock_hz, extract64(value, 20, 7),
+                      extract64(value, 27, 7), pulse, sample);
+        return false;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (now < 0 || now > INT64_MAX - (pulse + sample) * 1000) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-router: one-wire clock overflow\n");
+        return false;
+    }
+    s->nic_ulan = value & RR_NIC_PHASE_MASK;
+    s->nic_phase = ROUTER_NIC_DRIVING;
+    s->nic_candidate = 0;
+    s->nic_pulse = pulse;
+    s->nic_sample = sample;
+    s->nic_release_ns = now + pulse * 1000;
+    s->nic_sample_ns = s->nic_release_ns + sample * 1000;
+    timer_mod(s->nic_timer, s->nic_release_ns);
+    return true;
+}
 
 static void sgi_router_changed(SGIRouterState *s)
 {
@@ -328,9 +447,7 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         sgi_router_changed(s);
         return true;
     case RR_NIC_ULAN:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-router: one-wire bit slots are not implemented\n");
-        return false;
+        return sgi_router_nic_write(s, value);
     case RR_BIST_DATA:
         s->bist_data = value;
         return true;
@@ -496,6 +613,8 @@ static void sgi_router_reset_enter(Object *obj, ResetType type)
     s->scratch0 = 0;
     s->scratch1 = 0;
     s->diag_parms = 0;
+    timer_del(s->nic_timer);
+    sgi_router_nic_idle(s);
     s->nic_ulan = RR_NIC_RESET;
     s->bist_data = 0;
 
@@ -531,12 +650,52 @@ static bool sgi_router_array_masked(const uint64_t *values, size_t count,
     return true;
 }
 
+static int sgi_router_pre_load(void *opaque)
+{
+    SGIRouterState *s = opaque;
+
+    timer_del(s->nic_timer);
+    return 0;
+}
+
+static bool sgi_router_nic_state_valid(SGIRouterState *s)
+{
+    if (s->nic_phase == ROUTER_NIC_IDLE) {
+        return s->nic_candidate == 0 && s->nic_pulse == 0 &&
+               s->nic_sample == 0 && s->nic_release_ns == 0 &&
+               s->nic_sample_ns == 0 && (s->nic_ulan & RR_NIC_DONE) &&
+               ((s->nic_ulan & RR_NIC_PHASE_MASK) ==
+                (RR_NIC_RESET & RR_NIC_PHASE_MASK) ||
+                sgi_router_nic_calibrated(s, s->nic_ulan));
+    }
+    if (s->nic_phase > ROUTER_NIC_SAMPLING ||
+        !sgi_router_nic_calibrated(s, s->nic_ulan) ||
+        !sgi_router_nic_waveform(s->nic_pulse, s->nic_sample) ||
+        (s->nic_ulan & 3) || s->nic_candidate > 1 ||
+        (s->nic_phase == ROUTER_NIC_DRIVING && s->nic_candidate) ||
+        s->nic_release_ns < s->nic_pulse * 1000 ||
+        s->nic_release_ns > INT64_MAX - s->nic_sample * 1000 ||
+        s->nic_sample_ns != s->nic_release_ns + s->nic_sample * 1000) {
+        return false;
+    }
+    if (s->nic_phase == ROUTER_NIC_SAMPLING) {
+        if (s->nic_pulse == 520) {
+            return s->nic_candidate == !s->nic_present;
+        }
+        if (s->nic_sample != 13 || !s->nic_present) {
+            return s->nic_candidate == 1;
+        }
+    }
+    return true;
+}
+
 static int sgi_router_post_load(void *opaque, int version_id)
 {
     SGIRouterState *s = opaque;
     unsigned int i;
 
-    if ((s->status_control & ~RR_STATUS_CONTROL_MASK) ||
+    if (!sgi_router_nic_state_valid(s) ||
+        (s->status_control & ~RR_STATUS_CONTROL_MASK) ||
         (s->local_errors & ~RR_STATUS_LOCAL_ERROR_MASK) ||
         (s->protection_config & ~RR_PROTECTION_MASK) ||
         (s->global_parms & RR_GLOBAL_READ_ONLY) != RR_GLOBAL_READ_ONLY ||
@@ -564,14 +723,19 @@ static int sgi_router_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    if (s->nic_phase != ROUTER_NIC_IDLE) {
+        timer_mod(s->nic_timer, s->nic_phase == ROUTER_NIC_DRIVING ?
+                               s->nic_release_ns : s->nic_sample_ns);
+    }
     sgi_router_changed(s);
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_router = {
     .name = "sgi-router",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .pre_load = sgi_router_pre_load,
     .post_load = sgi_router_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(status_control, SGIRouterState),
@@ -595,6 +759,15 @@ static const VMStateDescription vmstate_sgi_router = {
         VMSTATE_BOOL_ARRAY(meta_valid, SGIRouterState, RR_META_TABLE_COUNT),
         VMSTATE_BOOL_ARRAY(local_valid, SGIRouterState,
                            RR_LOCAL_TABLE_COUNT),
+        VMSTATE_UINT64_EQUAL(nic_clock_hz, SGIRouterState),
+        VMSTATE_UINT64_EQUAL(nic_serial, SGIRouterState),
+        VMSTATE_UINT8_EQUAL(nic_population, SGIRouterState),
+        VMSTATE_UINT8(nic_phase, SGIRouterState),
+        VMSTATE_UINT8(nic_candidate, SGIRouterState),
+        VMSTATE_UINT16(nic_pulse, SGIRouterState),
+        VMSTATE_UINT16(nic_sample, SGIRouterState),
+        VMSTATE_INT64(nic_release_ns, SGIRouterState),
+        VMSTATE_INT64(nic_sample_ns, SGIRouterState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -607,16 +780,88 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "chip-inputs must fit in four bits");
         return;
     }
+    if (s->nic_serial >> 48) {
+        error_setg(errp, "nic-serial must fit in 48 bits");
+        return;
+    }
+    if (s->nic_image && !s->nic_present) {
+        error_setg(errp, "nic-image requires nic-present");
+        return;
+    }
+    if (s->nic_present) {
+        g_autofree char *image = NULL;
+        gsize length = 0;
+
+        if (s->nic_image) {
+            g_autoptr(GError) error = NULL;
+            GStatBuf image_stat;
+
+            if (g_stat(s->nic_image, &image_stat) < 0) {
+                error_setg_errno(errp, errno, "cannot stat NIC image '%s'",
+                                 s->nic_image);
+                return;
+            }
+            if (image_stat.st_size > DS2505_DATA_SIZE) {
+                error_setg(errp, "NIC image '%s' exceeds 2048 bytes",
+                           s->nic_image);
+                return;
+            }
+            if (!g_file_get_contents(s->nic_image, &image, &length, &error)) {
+                error_setg(errp, "cannot read NIC image '%s': %s",
+                           s->nic_image, error->message);
+                return;
+            }
+            if (length > DS2505_DATA_SIZE) {
+                error_setg(errp, "NIC image '%s' exceeds 2048 bytes",
+                           s->nic_image);
+                return;
+            }
+        }
+        s->nic = qdev_new(TYPE_ONEWIRE_DS2505);
+        qdev_prop_set_uint8(s->nic, "family", 0x0b);
+        qdev_prop_set_uint64(s->nic, "serial", s->nic_serial);
+        if (image) {
+            ds2505_set_image(s->nic, (uint8_t *)image, length);
+        }
+        object_property_add_child(OBJECT(dev), "nic", OBJECT(s->nic));
+        if (!qdev_realize_and_unref(s->nic, BUS(s->nic_bus), errp)) {
+            return;
+        }
+    }
+    s->nic_population = s->nic_present;
     qemu_register_resettable(OBJECT(dev));
 }
 
 static void sgi_router_unrealize(DeviceState *dev)
 {
+    SGIRouterState *s = SGI_ROUTER(dev);
+
+    timer_del(s->nic_timer);
+    if (s->nic) {
+        qdev_unrealize(s->nic);
+    }
     qemu_unregister_resettable(OBJECT(dev));
+}
+
+static void sgi_router_init(Object *obj)
+{
+    SGIRouterState *s = SGI_ROUTER(obj);
+
+    s->nic_bus = onewire_create_bus(DEVICE(obj), "onewire");
+    s->nic_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_router_nic_tick, s);
+}
+
+static void sgi_router_finalize(Object *obj)
+{
+    timer_free(SGI_ROUTER(obj)->nic_timer);
 }
 
 static const Property sgi_router_properties[] = {
     DEFINE_PROP_UINT8("chip-inputs", SGIRouterState, chip_inputs, 1),
+    DEFINE_PROP_UINT64("nic-clock-hz", SGIRouterState, nic_clock_hz, 100000000),
+    DEFINE_PROP_UINT64("nic-serial", SGIRouterState, nic_serial, 0),
+    DEFINE_PROP_BOOL("nic-present", SGIRouterState, nic_present, true),
+    DEFINE_PROP_STRING("nic-image", SGIRouterState, nic_image),
 };
 
 static void sgi_router_class_init(ObjectClass *oc, const void *data)
@@ -640,6 +885,8 @@ static const TypeInfo sgi_router_types[] = {
         .parent = TYPE_DEVICE,
         .instance_size = sizeof(SGIRouterState),
         .class_init = sgi_router_class_init,
+        .instance_init = sgi_router_init,
+        .instance_finalize = sgi_router_finalize,
     },
 };
 

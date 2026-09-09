@@ -15,6 +15,8 @@ slow_qtests = {
   'pxe-test': 610,
   'prom-env-test': 360,
   'boot-serial-test': 360,
+  # Complete one-wire memory reads transfer every bit through QMP.
+  'sn0-router-nic-test': 300,
   'qos-test': 120,
   'vmgenid-test': 610,
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
@@ -272,7 +274,8 @@ if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
 endif
 
 sn0_router_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-router-test'] : [])
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
+    ['sn0-router-test', 'sn0-router-nic-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_ROUTER_TEST')
   sn0_router_qtests = []
 endif

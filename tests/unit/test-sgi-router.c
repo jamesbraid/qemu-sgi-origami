@@ -18,6 +18,9 @@
 #include "migration/savevm.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
+#include "qemu/main-loop.h"
+#include "qemu/timer.h"
+#include "system/cpu-timers.h"
 #include "system/reset.h"
 
 #define RR_STATUS_REV_ID       0x00000
@@ -66,6 +69,18 @@
 #define NIC_DIVIDERS_RESET     ((UINT64_C(0x31) << 27) | \
                                 (UINT64_C(0x31) << 20))
 #define NIC_DONE               (UINT64_C(1) << 1)
+
+static int64_t virtual_time;
+
+int64_t cpus_get_virtual_clock(void)
+{
+    return virtual_time;
+}
+
+void cpus_set_virtual_clock(int64_t value)
+{
+    virtual_time = value;
+}
 
 typedef struct Fixture {
     DeviceState *dev;
@@ -143,6 +158,22 @@ static void observe_change(void *opaque)
                     observer->expected);
     /* Publishing physical link state must not re-enter the observer. */
     sgi_router_set_port_link(observer->fixture->router, 3, true, true);
+}
+
+static void test_nic_slot_deadline(Fixture *f, gconstpointer unused)
+{
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t request = NIC_DIVIDERS_RESET | (UINT64_C(520) << 10) |
+                       (UINT64_C(65) << 2);
+
+    write_reg(f, 1, RR_NIC_ULAN, request);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN), ==, NIC_DIVIDERS_RESET);
+    qemu_clock_advance_virtual_time(start + 520000);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, 0);
+    qemu_clock_advance_virtual_time(start + 584999);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, 0);
+    qemu_clock_advance_virtual_time(start + 585000);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, NIC_DONE);
 }
 
 static void test_change_notifications(Fixture *f, gconstpointer unused)
@@ -552,8 +583,8 @@ static void test_migration(Fixture *f, gconstpointer unused)
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, vmsd, target_router, 1,
-                                      &error_abort), ==, 0);
+    g_assert_cmpint(vmstate_load_state(file, vmsd, target_router,
+                                      vmsd->version_id, &error_abort), ==, 0);
     g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
@@ -577,7 +608,8 @@ static void test_migration(Fixture *f, gconstpointer unused)
     /* The first migrated field is status_control, a big-endian uint64. */
     g_assert_cmpint(pwrite(fd, &invalid_status, 1, 0), ==, 1);
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, vmsd, target_router, 1, &err),
+    g_assert_cmpint(vmstate_load_state(file, vmsd, target_router,
+                                      vmsd->version_id, &err),
                     ==, -EINVAL);
     error_free(err);
     qemu_fclose(file);
@@ -587,6 +619,210 @@ static void test_migration(Fixture *f, gconstpointer unused)
     close(fd);
     object_unparent(OBJECT(target));
     object_unref(OBJECT(target));
+}
+
+static DeviceState *new_nic_router(uint64_t clock, uint64_t serial,
+                                    bool present)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
+
+    qdev_prop_set_uint64(dev, "nic-clock-hz", clock);
+    qdev_prop_set_uint64(dev, "nic-serial", serial);
+    qdev_prop_set_bit(dev, "nic-present", present);
+    qdev_realize(dev, NULL, &error_abort);
+    device_cold_reset(dev);
+    return dev;
+}
+
+static void test_nic_calibration(void)
+{
+    const uint64_t clocks[] = { 97500000, 100000000, 99000000 };
+    const unsigned int phases[] = { 47, 49, 48 };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(clocks); i++) {
+        DeviceState *dev = new_nic_router(clocks[i], 0, true);
+        Fixture f = { dev, SGI_ROUTER(dev) };
+        uint64_t before = read_reg(&f, 1, RR_NIC_ULAN);
+
+        for (unsigned int j = 0; j < G_N_ELEMENTS(phases); j++) {
+            uint64_t request = ((uint64_t)phases[j] << 27) |
+                               ((uint64_t)phases[j] << 20) |
+                               (UINT64_C(520) << 10) | (65 << 2);
+            bool supported = i == j && i < 2;
+
+            g_assert_cmpint(access_reg(f.router, 1, SN0_FABRIC_VECTOR_WRITE,
+                                       RR_NIC_ULAN, request, NULL), ==,
+                             supported);
+            if (supported) {
+                qemu_clock_advance_virtual_time(
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 585000);
+                g_assert_cmphex(read_reg(&f, 1, RR_NIC_ULAN) & 3, ==, NIC_DONE);
+                before = read_reg(&f, 1, RR_NIC_ULAN);
+            } else {
+                g_assert_cmphex(read_reg(&f, 1, RR_NIC_ULAN), ==, before);
+            }
+        }
+        object_unparent(OBJECT(dev));
+        object_unref(OBJECT(dev));
+    }
+}
+
+static void test_nic_serial_limit(void)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
+    Error *err = NULL;
+
+    qdev_prop_set_uint64(dev, "nic-serial", UINT64_C(1) << 48);
+    g_assert_false(qdev_realize(dev, NULL, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), "48 bits"));
+    error_free(err);
+    object_unparent(OBJECT(dev));
+    object_unref(OBJECT(dev));
+}
+
+static void test_nic_delayed_callback(Fixture *f, gconstpointer unused)
+{
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+              (UINT64_C(520) << 10) | (65 << 2));
+    /* Advance without dispatching the intermediate release event. */
+    virtual_time = start + 1000000;
+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, NIC_DONE);
+    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        bool one = (0x33 >> bit) & 1; /* Read ROM. */
+        unsigned int pulse = one ? 6 : 80;
+        unsigned int sample = one ? 110 : 30;
+
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  ((uint64_t)pulse << 10) | ((uint64_t)sample << 2));
+        qemu_clock_advance_virtual_time(virtual_time + (pulse + sample) * 1000);
+    }
+    write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+              (UINT64_C(6) << 10) | (13 << 2));
+    virtual_time += 1000000;
+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, 3);
+    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    /* Family 0x0b: the next two bits are one then zero, not skipped bits. */
+    for (unsigned int bit = 1; bit <= 2; bit++) {
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  (UINT64_C(6) << 10) | (13 << 2));
+        qemu_clock_advance_virtual_time(virtual_time + 19000);
+        g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                        bit == 1 ? 3 : 2);
+    }
+}
+
+static int load_nic_state(Fixture *source, Fixture *target)
+{
+    g_autofree char *path = NULL;
+    const VMStateDescription *vmsd = DEVICE_GET_CLASS(source->dev)->vmsd;
+    int fd = g_file_open_tmp("router-nic-state-XXXXXX", &path, NULL);
+    QEMUFile *file;
+    Error *err = NULL;
+    int result;
+
+    g_assert_cmpint(fd, >=, 0);
+    unlink(path);
+    file = state_file(fd, true);
+    g_assert_cmpint(vmstate_save_state(file, vmsd, source->router,
+                                      NULL, &error_abort), ==, 0);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    file = state_file(fd, false);
+    result = vmstate_load_state(file, vmsd, target->router,
+                                vmsd->version_id, &err);
+    error_free(err);
+    qemu_fclose(file);
+    close(fd);
+    return result;
+}
+
+static void test_nic_migration_config(Fixture *f, gconstpointer unused)
+{
+    const uint64_t clocks[] = { 97500000, 100000000, 100000000 };
+    const uint64_t serials[] = { 0, 1, 0 };
+    const bool present[] = { true, true, false };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(clocks); i++) {
+        DeviceState *dev = new_nic_router(clocks[i], serials[i], present[i]);
+        Fixture target = { dev, SGI_ROUTER(dev) };
+
+        g_assert_cmpint(load_nic_state(f, &target), ==, -EINVAL);
+        object_unparent(OBJECT(dev));
+        object_unref(OBJECT(dev));
+    }
+}
+
+static void corrupt_nic_field(Fixture *f, const char *name, uint64_t value)
+{
+    const VMStateDescription *vmsd = DEVICE_GET_CLASS(f->dev)->vmsd;
+
+    /* Serialize malicious values through the actual migration field layout. */
+    for (const VMStateField *field = vmsd->fields; field->name; field++) {
+        void *address = (char *)f->router + field->offset;
+
+        if (strcmp(field->name, name)) {
+            continue;
+        }
+        switch (field->size) {
+        case 1:
+            *(uint8_t *)address = value;
+            return;
+        case 2:
+            *(uint16_t *)address = value;
+            return;
+        case 8:
+            *(uint64_t *)address = value;
+            return;
+        default:
+            g_assert_not_reached();
+        }
+    }
+    g_assert_not_reached();
+}
+
+static void test_nic_migration_invalid(Fixture *f, gconstpointer unused)
+{
+    const struct {
+        const char *field;
+        uint64_t value;
+        bool sampled;
+    } cases[] = {
+        { "nic_phase", 3 },
+        { "nic_candidate", 2 },
+        { "nic_pulse", 7 },
+        { "nic_sample", 14 },
+        { "nic_release_ns", UINT64_MAX },
+        { "nic_sample_ns", 0 },
+        { "nic_ulan", NIC_DIVIDERS_RESET | NIC_DONE },
+        { "nic_candidate", 1, true },
+    };
+    DeviceState *dev = new_nic_router(100000000, 0, true);
+    Fixture target = { dev, SGI_ROUTER(dev) };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        device_cold_reset(f->dev);
+        device_cold_reset(dev);
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  (UINT64_C(520) << 10) | (65 << 2));
+        if (cases[i].sampled) {
+            qemu_clock_advance_virtual_time(virtual_time + 520000);
+        }
+        write_reg(&target, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  (UINT64_C(6) << 10) | (13 << 2));
+        corrupt_nic_field(f, cases[i].field, cases[i].value);
+        g_assert_cmpint(load_nic_state(f, &target), ==, -EINVAL);
+        device_cold_reset(f->dev);
+        virtual_time += 1000000;
+        /* Failed load cancels the destination's previously pending timer. */
+        g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    }
+    object_unparent(OBJECT(dev));
+    object_unref(OBJECT(dev));
 }
 
 static void test_cold_reset(Fixture *f, gconstpointer unused)
@@ -628,12 +864,20 @@ static void test_init_machine(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qemu_init_main_loop(&error_abort);
+    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
     module_call_init(MODULE_INIT_QOM);
     test_init_machine();
 
 #define ADD_TEST(name, fn) \
     g_test_add("/sgi-router/" name, Fixture, GUINT_TO_POINTER(0xf), \
                fixture_setup, fn, fixture_teardown)
+    g_test_add_func("/sgi-router/nic-calibration", test_nic_calibration);
+    g_test_add_func("/sgi-router/nic-serial-limit", test_nic_serial_limit);
+    ADD_TEST("nic-delayed-callback", test_nic_delayed_callback);
+    ADD_TEST("nic-migration-config", test_nic_migration_config);
+    ADD_TEST("nic-migration-invalid", test_nic_migration_invalid);
+    ADD_TEST("nic-slot-deadline", test_nic_slot_deadline);
     ADD_TEST("identity-and-link-state", test_identity_and_link_state);
     ADD_TEST("fabric-access-boundary", test_fabric_access_boundary);
     ADD_TEST("reset-values", test_reset_values);

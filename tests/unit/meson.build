@@ -80,6 +80,8 @@ tests = {
                                  'test-sgi-o2000-module-mgmt-stubs.c',
                                  qom, hwcore, migration, io, chardev, block],
   'test-sgi-router': ['../../hw/misc/sgi-router.c', '../../hw/core/reset.c',
+                      '../../hw/1wire/core.c', '../../hw/1wire/crc.c',
+                      '../../hw/1wire/ds2505.c',
                       qom, hwcore, migration, io],
   'test-logging': [],
   'test-qapi-util': [],

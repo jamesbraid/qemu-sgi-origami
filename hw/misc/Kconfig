@@ -303,6 +303,7 @@ config SGI_ROUTER_TEST
 
 config SGI_ROUTER
     bool
+    select ONEWIRE
 
 config SGI_XBOW
     bool
