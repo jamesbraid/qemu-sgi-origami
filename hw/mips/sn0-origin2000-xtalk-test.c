@@ -126,6 +126,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0XtalkAttachTest, XTALK_ATTACH_TEST)
 struct SN0XtalkAttachTest {
     SN0MachineState parent_obj;
     bool verified;
+    /* Make the board refuse to realize, to reach attach's unwind. */
+    bool refuse_board;
     /*
      * Where a processor finds widget zero of its own node's switch. A
      * processor addresses its own node unqualified; another node's takes
@@ -143,6 +145,16 @@ struct SN0XtalkAttachTest {
 static bool xtalk_attach_test_get_verified(Object *obj, Error **errp)
 {
     return XTALK_ATTACH_TEST(obj)->verified;
+}
+
+static bool xtalk_attach_test_get_refuse(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->refuse_board;
+}
+
+static void xtalk_attach_test_set_refuse(Object *obj, bool value, Error **errp)
+{
+    XTALK_ATTACH_TEST(obj)->refuse_board = value;
 }
 
 /*
@@ -272,6 +284,22 @@ static void xtalk_attach_test_init(MachineState *machine)
     error_free(err);
 
     sn0_origin2000_realize_nodes(machine);
+
+    /*
+     * A failed attach has to come back as an error rather than take the
+     * machine with it. The unwind runs with realized Hubs, which is the
+     * case that cannot undo preparation, so it must undo only its own work
+     * and leave a machine that can be attached again.
+     */
+    if (test->refuse_board) {
+        sn0_origin2000_xtalk_set_test_board_part(sn0, "far too long a part");
+        err = NULL;
+        g_assert(!sn0_origin2000_xtalk_attach(sn0, &err));
+        g_assert(err);
+        error_free(err);
+        sn0_origin2000_xtalk_set_test_board_part(sn0, NULL);
+    }
+
     if (!sn0_origin2000_xtalk_attach(sn0, &error_fatal)) {
         return;
     }
@@ -301,6 +329,9 @@ static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)
     mc->init = xtalk_attach_test_init;
     object_class_property_add_bool(oc, "verified",
                                    xtalk_attach_test_get_verified, NULL);
+    object_class_property_add_bool(oc, "refuse-board",
+                                   xtalk_attach_test_get_refuse,
+                                   xtalk_attach_test_set_refuse);
 }
 
 static const TypeInfo xtalk_attach_test_type = {

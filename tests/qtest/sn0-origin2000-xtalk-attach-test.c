@@ -67,10 +67,15 @@
 #define WIDGET_HUB_B    10
 #define WIDGET_EMPTY    11
 
+static QTestState *attach_start_with(const char *extra)
+{
+    return qtest_initf("-M origin2000-xtalk-attach-test%s -m 256M "
+                       "-nodefaults -display none -serial none", extra);
+}
+
 static QTestState *attach_start(void)
 {
-    return qtest_init("-M origin2000-xtalk-attach-test -m 256M "
-                      "-nodefaults -display none -serial none");
+    return attach_start_with("");
 }
 
 /* The machine says where its own window is, so the test cannot drift. */
@@ -338,6 +343,22 @@ static void test_the_board_carries_the_functions_the_descriptor_named(void)
     qtest_quit(qts);
 }
 
+/*
+ * A board that refuses to realize has to come back as an error, not take the
+ * machine with it. The unwind runs with realized Hubs, which is the case that
+ * cannot give preparation back, so it undoes only what attaching did -- and
+ * the machine attaches cleanly on the retry, which is what proves it.
+ */
+static void test_a_failed_attach_leaves_a_machine_to_retry(void)
+{
+    QTestState *qts = attach_start_with(",refuse-board=on");
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    g_assert_cmphex(switch_readl(qts, 0, XBOW_ID) & ID_ALWAYS_ONE, ==,
+                    ID_ALWAYS_ONE);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -352,6 +373,8 @@ int main(int argc, char **argv)
                    test_each_node_reads_its_own_switch);
     qtest_add_func("sn0/origin2000/xtalk-attach/no-route-to-itself",
                    test_a_node_has_no_route_to_itself);
+    qtest_add_func("sn0/origin2000/xtalk-attach/failed-attach-can-retry",
+                   test_a_failed_attach_leaves_a_machine_to_retry);
     qtest_add_func("sn0/origin2000/xtalk-attach/processor-reads-the-board",
                    test_a_processor_reads_the_board);
     qtest_add_func("sn0/origin2000/xtalk-attach/board-on-one-switch",

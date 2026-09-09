@@ -75,6 +75,7 @@ struct SN0Origin2000XtalkState {
     SN0Origin2000XtalkSource source[ORIGIN2000_XTALK_NODES];
     SN0Origin2000XtalkDestination destination[ORIGIN2000_XTALK_NODES];
     bool attached;
+    const char *test_board_part;
     SN0Origin2000XtalkBoard board[ORIGIN2000_XTALK_IO_BOARDS];
     bool cleaned;
 };
@@ -253,7 +254,9 @@ static bool sn0_origin2000_xtalk_build_board(SN0Origin2000XtalkState *s,
 
     qdev_prop_set_uint32(bridge, "revision", record->bridge->revision);
     qdev_prop_set_uint64(bridge, "onewire-serial", record->bridge->serial);
-    qdev_prop_set_string(bridge, "board-part", record->bridge->part);
+    qdev_prop_set_string(bridge, "board-part",
+                         s->test_board_part ? s->test_board_part :
+                         record->bridge->part);
     qdev_prop_set_string(bridge, "pci-bus-name", bus_name);
     /*
      * A switched fabric carries the destination widget, so the chip keeps it
@@ -313,23 +316,27 @@ static void sn0_origin2000_xtalk_release_board(SN0Origin2000XtalkBoard *board)
     board->pci_count = 0;
     if (board->bridge) {
         qdev_unrealize(DEVICE(board->bridge));
+        /*
+         * Unparent as well as unrealize: the owner keeps the child by name,
+         * so leaving it behind makes a second attempt collide with the
+         * corpse of the first rather than build a board.
+         */
+        object_unparent(OBJECT(board->bridge));
+        board->bridge = NULL;
     }
 }
 
-static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
+/*
+ * Undo what attaching did and nothing else. A failed attach leaves the
+ * prepared machine it was given, because tearing that down would mean
+ * unlinking a property from a Hub that is realized by then, which the
+ * property refuses. Keeping the two halves separate also means a caller
+ * that recovers from a failed attach has something to recover to.
+ */
+static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s)
 {
     size_t i;
 
-    if (s->cleaned) {
-        return;
-    }
-    s->cleaned = true;
-
-    for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
-        if (s->crossbow[i]) {
-            sgi_xbow_quiesce(s->crossbow[i]);
-        }
-    }
     /*
      * Aliases come out before the ingress regions they point into, and the
      * inbound decoders come out before the node regions they root on. Both
@@ -379,10 +386,40 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
         }
     }
     s->attached = false;
+}
+
+static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
+{
+    size_t i;
+
+    if (s->cleaned) {
+        return;
+    }
+    s->cleaned = true;
+    /*
+     * Quiescing a switch is terminal by contract, so it belongs here and
+     * not in the unwind a failed attach runs -- a machine that is going to
+     * be attached again needs switches that still work.
+     */
+    for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
+        if (s->crossbow[i]) {
+            sgi_xbow_quiesce(s->crossbow[i]);
+        }
+    }
+    sn0_origin2000_xtalk_cleanup_attach(s);
+
     for (i = 0; i < ARRAY_SIZE(s->source); i++) {
         SN0Origin2000XtalkSource *source = &s->source[i];
 
-        if (source->linked) {
+        /*
+         * A realized Hub refuses to give this link up, and it does not have
+         * to: the face it points at is storage of this object's, which
+         * outlives the Hub because it is released at finalization. Only an
+         * unrealized Hub is unlinked, which is the teardown of a machine
+         * that never finished being built.
+         */
+        if (source->linked &&
+            !DEVICE(&s->machine->nodes[i]->hub)->realized) {
             object_property_set_link(OBJECT(&s->machine->nodes[i]->hub),
                                      "xtalk-io", NULL, &error_abort);
             source->linked = false;
@@ -645,7 +682,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
     return true;
 
 unwind:
-    sn0_origin2000_xtalk_destroy(machine);
+    sn0_origin2000_xtalk_cleanup_attach(s);
     return false;
 }
 
@@ -659,6 +696,12 @@ void sn0_origin2000_xtalk_destroy(SN0MachineState *machine)
     s = machine->origin2000_xtalk;
     sn0_origin2000_xtalk_cleanup(s);
     object_unparent(OBJECT(s));
+}
+
+void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
+                                              const char *part)
+{
+    machine->origin2000_xtalk->test_board_part = part;
 }
 
 bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine)
