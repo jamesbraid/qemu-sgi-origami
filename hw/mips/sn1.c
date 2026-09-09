@@ -35,6 +35,23 @@
 #include "sn1-model.h"
 
 #define SN1_CONFIG0_RESET_INPUT UINT32_C(0x009aa985)
+
+/*
+ * Addresses the generated model does not carry. The model owns the payload
+ * views, the register windows and the node's memory; the boot spaces and the
+ * two back doors below are the machine's own, so they stay here until the
+ * model describes them.
+ */
+#define SN1_SPACE_HUB UINT64_C(0x10000000000)
+#define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
+#define SN1_HUB_LOCAL_FLASH (SN1_SPACE_HUB + UINT64_C(0x1a000000))
+#define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
+#define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
+#define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
+#define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
+#define SN1_PROM_RESET UINT64_C(0x1fc00000)
+#define SN1_FLASH_VIEW_SIZE (16 * MiB)
+
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
 static const VMStateDescription vmstate_sn1_machine = {
@@ -466,6 +483,8 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
                         model->bedrock_initiator_region);
     object_property_set_link(OBJECT(s->bedrock), "dma-memory", OBJECT(system),
                              &error_abort);
+    object_property_set_link(OBJECT(s->bedrock), "node-memory",
+                             OBJECT(machine->ram), &error_abort);
     object_property_set_link(OBJECT(s->bedrock), "l1-uart", OBJECT(l1_uart),
                              &error_abort);
 
@@ -506,6 +525,13 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
                                         &s->bedrock_node, 1);
     memory_region_add_subregion(system, model->hub_remote_registers_address,
                                 sysbus_mmio_get_region(bedrock, 3));
+    /*
+     * The directory back door is the last part of the node's address space,
+     * one word per fitted memory line. Firmware initialises it before it
+     * trusts memory, so nothing boots without it.
+     */
+    memory_region_add_subregion(system, SN1_HUB_DIRECTORY,
+                                sysbus_mmio_get_region(bedrock, 5));
 
     for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
         MIPSCPU *mips_cpu = MIPS_CPU(s->cpu[cpu]);
