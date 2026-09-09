@@ -49,6 +49,38 @@
 #define PCI_SUBSYSTEM   0x2c
 #define PCI_SLOTS       8
 
+/*
+ * A transfer the board starts. The card is added by the fixture rather than
+ * by the descriptor, so the shipped board keeps exactly the parts it names.
+ */
+#define DMA_DEVICE      3
+#define DMA_MMIO        0x01000000u
+#define BRIDGE_DIRECT_MAP   0x080
+#define BRIDGE_DEVICE(n)    (0x200 + 8 * (n))
+#define DEV_SWAP_TRANSLATED (1u << 20)
+#define DEV_SWAP_DIRECT     (1u << 19)
+#define DEV_MEMORY_SPACE    (1u << 12)
+#define DIRECT_WIDGET_SHIFT 20
+#define PCI_COMMAND         0x04
+#define PCI_COMMAND_MEMORY_MASTER 0x0006
+#define PCI_BAR0            0x10
+#define DMA_REG_ADDRESS     0x00
+#define DMA_REG_LENGTH      0x04
+#define DMA_REG_SEED        0x08
+#define DMA_REG_GO          0x0c
+#define DMA_REG_ADDRESS_HI  0x18
+/*
+ * The chip's device windows are not a uniform stride: the first two slots
+ * get two megabytes each and the rest one, all from 0x200000. Slot three
+ * therefore starts at 0x700000, and writing to 0x200000 would land in the
+ * first SCSI adapter's window instead of the card's.
+ */
+#define DMA_WINDOW          0x700000
+#define DMA_LEN             16
+#define DMA_TARGET          UINT64_C(0x02000000)
+#define DMA_SEED            0x40
+#define PCI_DIRECT          UINT64_C(0x80000000)
+
 #define ISP1040_IDENTITY  (0x1077u | (0x1020u << 16))
 #define IOC3_IDENTITY     (0x10a9u | (0x0003u << 16))
 #define IOC3_SUBSYSTEM_VENDOR 0x10a9u
@@ -60,6 +92,21 @@
 #define LINK_MAX_RETRY  (1u << 5)
 #define AUX_PRESENT     (1u << 5)
 #define AUX_FAILURE     (1u << 6)
+
+/*
+ * The pieces a Hub's own packet source needs: its register block and its
+ * big windows, both inside the node's crosstalk space, the table entry that
+ * aims window zero at a widget in I/O space, and the one offset that window
+ * carries -- the identity of the Hub at the far end, answered from its own
+ * register rather than from anything the sender supplies.
+ */
+#define HUB_REGISTERS   0x1000000
+#define BIG_WINDOW      0x20000000
+#define HUB_IO_BWIN0    0x400160
+#define BWIN_IO_SPACE   (1u << 12)
+#define BWIN_WIDGET(w)  ((w) << 8)
+#define PACKET_IDENTITY 0x01600000
+#define NI_STATUS       0x600000
 
 /* The module's population: base I/O at 8, Hubs at 9 and 10, nothing at 11. */
 #define WIDGET_IO       8
@@ -119,14 +166,16 @@ static unsigned int node_widget(QTestState *qts, unsigned int node)
     return widget;
 }
 
-static const char *runstate(QTestState *qts)
+/* Whether a refused access has stopped the machine. */
+static bool stopped_on_error(QTestState *qts)
 {
     QDict *response = qtest_qmp_assert_success_ref(qts,
         "{ 'execute': 'query-status' }");
-    const char *status = g_strdup(qdict_get_str(response, "status"));
+    bool stopped = g_str_equal(qdict_get_str(response, "status"),
+                               "internal-error");
 
     qobject_unref(response);
-    return status;
+    return stopped;
 }
 
 static uint32_t switch_readl(QTestState *qts, unsigned int node,
@@ -163,6 +212,25 @@ static bool board_link_present(QTestState *qts, unsigned int node)
 {
     return switch_readl(qts, node, XBOW_LINK(WIDGET_IO) + LINK_AUX) &
            AUX_PRESENT;
+}
+
+/* Which node sits at a widget, so a transfer can be checked where it lands. */
+static unsigned int node_at_widget(QTestState *qts, unsigned int widget)
+{
+    unsigned int node;
+
+    /*
+     * Both switches number their widgets the same way, so the widget alone
+     * names two nodes and one of them the board cannot reach at all. The
+     * link register says which switch a node is on.
+     */
+    for (node = 0; node < NODES; node++) {
+        if (node_widget(qts, node) == widget &&
+            board_link_present(qts, node)) {
+            return node;
+        }
+    }
+    g_assert_not_reached();
 }
 
 /* The machine's own structural checks ran during init. */
@@ -263,7 +331,7 @@ static void test_a_node_has_no_route_to_itself(void)
         qtest_memread_cpu(qts, NODE_CPU(node),
                           xtalk_window(qts) + WIDGET_SLOT(own), bytes,
                           sizeof(bytes));
-        g_assert_cmpstr(runstate(qts), !=, "internal-error");
+        g_assert_false(stopped_on_error(qts));
     }
     qtest_quit(qts);
 }
@@ -306,7 +374,7 @@ static void test_only_the_nodes_sharing_its_switch_reach_the_board(void)
                         ID_MANUFACTURER(id) == BRIDGE_MANUFACTURER;
 
         g_assert_cmpint(answered, ==, board_link_present(qts, node));
-        g_assert_cmpstr(runstate(qts), !=, "internal-error");
+        g_assert_false(stopped_on_error(qts));
         reached += answered;
     }
 
@@ -359,6 +427,320 @@ static void test_a_failed_attach_leaves_a_machine_to_retry(void)
     qtest_quit(qts);
 }
 
+static uint64_t hub_readq(QTestState *qts, unsigned int node,
+                          uint64_t offset)
+{
+    uint8_t bytes[sizeof(uint64_t)];
+
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(node),
+                                    xtalk_window(qts) + HUB_REGISTERS +
+                                    offset, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+/*
+ * What a Hub gets when it asks a widget who it is. The window entry names
+ * the widget; the reply comes back through this Hub's own packet source, so
+ * the answer says which switch port that source is attached to.
+ */
+static uint64_t peer_identity(QTestState *qts, unsigned int node,
+                              unsigned int widget)
+{
+    uint8_t entry[sizeof(uint64_t)];
+    uint8_t bytes[sizeof(uint64_t)];
+
+    stq_be_p(entry, BWIN_IO_SPACE | BWIN_WIDGET(widget));
+    g_assert_true(qtest_memwrite_cpu(qts, NODE_CPU(node),
+                                     xtalk_window(qts) + HUB_REGISTERS +
+                                     HUB_IO_BWIN0, entry, sizeof(entry)));
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(node),
+                                    xtalk_window(qts) + BIG_WINDOW +
+                                    PACKET_IDENTITY, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+/*
+ * The packet side of the switch, which no identity read through a processor
+ * window touches: each Hub sends from its own port, so it reaches the Hub
+ * sharing its switch and cannot reach itself. Attaching the sources to each
+ * other's ports inverts both halves of that.
+ */
+static void test_a_hub_asks_its_switch_mate_who_it_is(void)
+{
+    QTestState *qts = attach_start();
+    unsigned int a = node_at_widget(qts, WIDGET_HUB_A);
+    unsigned int b = node_at_widget(qts, WIDGET_HUB_B);
+
+    g_assert_cmphex(hub_readq(qts, a, NI_STATUS), !=, 0);
+    g_assert_cmphex(peer_identity(qts, a, WIDGET_HUB_B), ==,
+                    hub_readq(qts, b, NI_STATUS));
+    g_assert_cmphex(peer_identity(qts, b, WIDGET_HUB_A), ==,
+                    hub_readq(qts, a, NI_STATUS));
+
+    /* A link does not send to itself here either, and nothing answers. */
+    g_assert_cmphex(peer_identity(qts, a, WIDGET_HUB_A), ==, 0);
+    g_assert_cmphex(peer_identity(qts, b, WIDGET_HUB_B), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * The other Hub's processor-side face, which refuses every access and stops
+ * the machine. Reaching it needs a node on the same switch, which the two
+ * Hub widgets are. The no-route-to-itself check argues this face is wired by
+ * the machine not stopping; this is the same claim from the other side. The
+ * second access is what a paired take-and-release of the stop lock would
+ * deadlock or double-release on.
+ */
+static void test_the_other_hubs_face_refuses_and_stops(void)
+{
+    QTestState *qts = attach_start();
+    unsigned int own = node_widget(qts, 0);
+    unsigned int peer = own == WIDGET_HUB_A ? WIDGET_HUB_B : WIDGET_HUB_A;
+    uint8_t bytes[sizeof(uint32_t)];
+
+    g_assert_false(stopped_on_error(qts));
+    qtest_memread_cpu(qts, NODE_CPU(0), xtalk_window(qts) + WIDGET_SLOT(peer),
+                      bytes, sizeof(bytes));
+    g_assert_true(stopped_on_error(qts));
+    qtest_memread_cpu(qts, NODE_CPU(0), xtalk_window(qts) + WIDGET_SLOT(peer),
+                      bytes, sizeof(bytes));
+    g_assert_true(stopped_on_error(qts));
+    qtest_quit(qts);
+}
+
+/* The switch carrying the board: base I/O at 8, the two Hubs at 9 and 10. */
+#define CROSSBOW0       "/machine/xtalk/crossbow0"
+#define PRESENT         ((1u << WIDGET_IO) | (1u << WIDGET_HUB_A) | \
+                         (1u << WIDGET_HUB_B))
+
+static void set_links_alive(QTestState *qts, unsigned int widgets)
+{
+    qtest_qmp_assert_success(qts,
+        "{ 'execute': 'qom-set', 'arguments': {"
+        "  'path': '" CROSSBOW0 "', 'property': 'links-alive',"
+        "  'value': %u } }", widgets);
+}
+
+static void board_writel(QTestState *qts, unsigned int node,
+                         unsigned int offset, uint32_t value)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, NODE_CPU(node),
+                                     xtalk_window(qts) + board_slot(qts) +
+                                     offset, bytes, sizeof(bytes)));
+}
+
+static void board_reg_writel(QTestState *qts, unsigned int node,
+                             unsigned int offset, uint32_t value)
+{
+    board_writel(qts, node, offset + REG_DATA, value);
+}
+
+/*
+ * A processor's bytes leave in the machine's own order; turning them round
+ * for a little-endian card is the chip's byte-lane job, not the test's.
+ */
+static void card_writel(QTestState *qts, unsigned int node, unsigned int reg,
+                        uint32_t value)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, NODE_CPU(node),
+                                     xtalk_window(qts) + board_slot(qts) +
+                                     DMA_WINDOW + reg, bytes, sizeof(bytes)));
+}
+
+/*
+ * Give the card its registers, let it master the bus, aim its window at
+ * them, and point the direct route at a Hub. Both byte-lane bits are set so
+ * a transfer carries the bytes it was given: what these read is the address.
+ */
+static void card_start(QTestState *qts, unsigned int node,
+                       unsigned int widget)
+{
+    board_writel(qts, node, BRIDGE_CFG0(DMA_DEVICE) + PCI_BAR0, DMA_MMIO);
+    board_writel(qts, node, BRIDGE_CFG0(DMA_DEVICE) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY_MASTER);
+    board_reg_writel(qts, node, BRIDGE_DEVICE(DMA_DEVICE),
+                     DEV_SWAP_TRANSLATED | DEV_SWAP_DIRECT |
+                     DEV_MEMORY_SPACE | (DMA_MMIO >> 20));
+    board_reg_writel(qts, node, BRIDGE_DIRECT_MAP,
+                     widget << DIRECT_WIDGET_SHIFT);
+}
+
+static void card_transfer(QTestState *qts, unsigned int node,
+                          uint64_t pci_addr, uint32_t seed)
+{
+    card_writel(qts, node, DMA_REG_ADDRESS, (uint32_t)pci_addr);
+    card_writel(qts, node, DMA_REG_ADDRESS_HI, pci_addr >> 32);
+    card_writel(qts, node, DMA_REG_LENGTH, DMA_LEN);
+    card_writel(qts, node, DMA_REG_SEED, seed);
+    card_writel(qts, node, DMA_REG_GO, 1);
+}
+
+/*
+ * A pattern no transfer produces. Zeroing and asserting zero cannot tell a
+ * transfer that never arrived from one that arrived carrying zeroes.
+ */
+static void sentinel_bytes(uint8_t *bytes, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        bytes[i] = 0xa5 ^ (uint8_t)(i * 7);
+    }
+}
+
+static void seed_the_landing(QTestState *qts, unsigned int node)
+{
+    uint8_t sentinel[DMA_LEN];
+
+    sentinel_bytes(sentinel, sizeof(sentinel));
+    g_assert_true(qtest_memwrite_cpu(qts, NODE_CPU(node), DMA_TARGET,
+                                     sentinel, sizeof(sentinel)));
+}
+
+static void assert_landed(QTestState *qts, unsigned int node, uint32_t seed)
+{
+    uint8_t seen[DMA_LEN];
+    unsigned int i;
+
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(node), DMA_TARGET, seen,
+                                    sizeof(seen)));
+    for (i = 0; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(seed + i));
+    }
+}
+
+static void assert_untouched(QTestState *qts, unsigned int node)
+{
+    uint8_t seen[DMA_LEN];
+    uint8_t sentinel[DMA_LEN];
+    unsigned int i;
+
+    sentinel_bytes(sentinel, sizeof(sentinel));
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(node), DMA_TARGET, seen,
+                                    sizeof(seen)));
+    for (i = 0; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, sentinel[i]);
+    }
+}
+
+static QTestState *dma_start(void)
+{
+    return attach_start_with(" -device sgi-bridge-dma-test,"
+                             "bus=pci.baseio0,addr=3");
+}
+
+/*
+ * A transfer the board starts reaches the Hub its route names, and only
+ * that one. Aiming it twice is what separates a switch that routes on the
+ * destination field from one that delivers to whoever is listening.
+ */
+static void test_board_dma_reaches_the_widget_it_names(void)
+{
+    QTestState *qts = dma_start();
+    unsigned int a = node_at_widget(qts, WIDGET_HUB_A);
+    unsigned int b = node_at_widget(qts, WIDGET_HUB_B);
+
+    seed_the_landing(qts, a);
+    seed_the_landing(qts, b);
+    card_start(qts, a, WIDGET_HUB_A);
+    card_transfer(qts, a, PCI_DIRECT | DMA_TARGET, DMA_SEED);
+    assert_landed(qts, a, DMA_SEED);
+    assert_untouched(qts, b);
+
+    seed_the_landing(qts, a);
+    card_start(qts, a, WIDGET_HUB_B);
+    card_transfer(qts, a, PCI_DIRECT | DMA_TARGET, DMA_SEED);
+    assert_landed(qts, b, DMA_SEED);
+    assert_untouched(qts, a);
+    qtest_quit(qts);
+}
+
+/*
+ * A destination whose link is down receives nothing, and the other one is
+ * unaffected. A switch could get this right looking only at where a packet
+ * is addressed. The board is driven from the node whose link stays up,
+ * because a processor reaches it across the same switch.
+ */
+static void test_a_down_destination_takes_only_its_own_traffic(void)
+{
+    QTestState *qts = dma_start();
+    unsigned int down = node_at_widget(qts, WIDGET_HUB_A);
+    unsigned int driver = node_at_widget(qts, WIDGET_HUB_B);
+
+    seed_the_landing(qts, down);
+    seed_the_landing(qts, driver);
+    set_links_alive(qts, PRESENT & ~(1u << WIDGET_HUB_A));
+
+    card_start(qts, driver, WIDGET_HUB_A);
+    card_transfer(qts, driver, PCI_DIRECT | DMA_TARGET, DMA_SEED);
+    assert_untouched(qts, down);
+
+    card_start(qts, driver, WIDGET_HUB_B);
+    card_transfer(qts, driver, PCI_DIRECT | DMA_TARGET, DMA_SEED);
+    assert_landed(qts, driver, DMA_SEED);
+    qtest_quit(qts);
+}
+
+/*
+ * The board's own link is the one every transfer leaves by. With it down
+ * nothing the board sends arrives at either Hub, and restoring it brings the
+ * programming from before back without a processor touching the chip again.
+ *
+ * That link is also the one a processor reaches the board over, so this
+ * cannot say which of the two refusals stopped the transfer. Separating them
+ * needs a source a processor can still drive with its link down, which is
+ * what the Hub-source check below uses.
+ */
+static void test_a_down_source_stops_every_transfer(void)
+{
+    QTestState *qts = dma_start();
+    unsigned int a = node_at_widget(qts, WIDGET_HUB_A);
+    unsigned int b = node_at_widget(qts, WIDGET_HUB_B);
+
+    card_start(qts, a, WIDGET_HUB_A);
+    seed_the_landing(qts, a);
+    seed_the_landing(qts, b);
+
+    set_links_alive(qts, PRESENT & ~(1u << WIDGET_IO));
+    card_transfer(qts, a, PCI_DIRECT | DMA_TARGET, DMA_SEED);
+    assert_untouched(qts, a);
+    assert_untouched(qts, b);
+
+    set_links_alive(qts, PRESENT);
+    card_transfer(qts, a, PCI_DIRECT | DMA_TARGET, DMA_SEED);
+    assert_landed(qts, a, DMA_SEED);
+    assert_untouched(qts, b);
+    qtest_quit(qts);
+}
+
+/*
+ * A source sends nothing while its own link is down, however alive the
+ * widget it names. A Hub is the source that shows this: a processor drives
+ * its own Hub's packet source through the node rather than across the
+ * switch, so the trigger survives the link going down. A switch that looked
+ * only at where a packet was addressed would deliver this one.
+ */
+static void test_a_down_source_sends_nothing(void)
+{
+    QTestState *qts = attach_start();
+    unsigned int a = node_at_widget(qts, WIDGET_HUB_A);
+    unsigned int b = node_at_widget(qts, WIDGET_HUB_B);
+    uint64_t identity = hub_readq(qts, b, NI_STATUS);
+
+    g_assert_cmphex(peer_identity(qts, a, WIDGET_HUB_B), ==, identity);
+    set_links_alive(qts, PRESENT & ~(1u << WIDGET_HUB_A));
+    g_assert_cmphex(peer_identity(qts, a, WIDGET_HUB_B), ==, 0);
+    set_links_alive(qts, PRESENT);
+    g_assert_cmphex(peer_identity(qts, a, WIDGET_HUB_B), ==, identity);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -373,8 +755,20 @@ int main(int argc, char **argv)
                    test_each_node_reads_its_own_switch);
     qtest_add_func("sn0/origin2000/xtalk-attach/no-route-to-itself",
                    test_a_node_has_no_route_to_itself);
+    qtest_add_func("sn0/origin2000/xtalk-attach/hub-face-refuses",
+                   test_the_other_hubs_face_refuses_and_stops);
+    qtest_add_func("sn0/origin2000/xtalk-attach/packet-peer-identity",
+                   test_a_hub_asks_its_switch_mate_who_it_is);
     qtest_add_func("sn0/origin2000/xtalk-attach/failed-attach-can-retry",
                    test_a_failed_attach_leaves_a_machine_to_retry);
+    qtest_add_func("sn0/origin2000/xtalk-attach/board-dma-reaches-its-widget",
+                   test_board_dma_reaches_the_widget_it_names);
+    qtest_add_func("sn0/origin2000/xtalk-attach/down-destination-only-its-own",
+                   test_a_down_destination_takes_only_its_own_traffic);
+    qtest_add_func("sn0/origin2000/xtalk-attach/down-source-stops-everything",
+                   test_a_down_source_stops_every_transfer);
+    qtest_add_func("sn0/origin2000/xtalk-attach/down-source-sends-nothing",
+                   test_a_down_source_sends_nothing);
     qtest_add_func("sn0/origin2000/xtalk-attach/processor-reads-the-board",
                    test_a_processor_reads_the_board);
     qtest_add_func("sn0/origin2000/xtalk-attach/board-on-one-switch",
