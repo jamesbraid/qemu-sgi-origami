@@ -38,16 +38,16 @@ slow_qtests = {
   'sn0-bridge-test': 240,
   'sn0-model-test': 240,
   # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
-  # deadline was separately widened to 120s to tolerate CI scheduling delay (see
-  # tests/qtest/sn0-ioc3-serial-test.c). Match this whole-test budget to that
-  # deadline, or meson's 60s default kills the test before its own deadline can
-  # fire, resurfacing the same flake as a timeout kill instead.
-  'sn0-ioc3-serial-test': 120,
-  # sn0-elsc-test's AUX socket-accept deadline was likewise widened to 120s
-  # (see tests/qtest/sn0-elsc-test.c). Match its whole-test budget to that
-  # deadline, or meson's 60s default kills the binary before the accept can
-  # complete under load, resurfacing the same flake as a timeout kill.
-  'sn0-elsc-test': 120,
+  # deadline is 120s to tolerate scheduling delay (see
+  # tests/qtest/sn0-ioc3-serial-test.c). This budget has to exceed that deadline,
+  # not equal it: a stalled socket reaches both at the same instant, and whichever
+  # wins decides whether the run reports which socket stalled or just says the
+  # binary was killed. Leave room for the deadline to fire and the test to report.
+  'sn0-ioc3-serial-test': 240,
+  # sn0-elsc-test's AUX socket-accept deadline is likewise 120s (see
+  # tests/qtest/sn0-elsc-test.c), and needs the same headroom above it for the
+  # same reason.
+  'sn0-elsc-test': 240,
   # sn0-isp12160-test holds a read behind a block filter in each recovery case,
   # so its runtime tracks host load: 75.9s measured at a load average near 90,
   # against meson's 60s default, and a timeout kill was seen there. The backlog,
