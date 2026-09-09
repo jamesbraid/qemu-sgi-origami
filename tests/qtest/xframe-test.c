@@ -896,6 +896,56 @@ static void test_receive_fetches_descriptor_once(void)
 }
 
 /*
+ * RX_TRAFFIC_INT is a sticky, level-triggered completion source. Once the
+ * first frame has latched ring 0, another completed frame cannot change the
+ * delivered IRQ state until the guest acknowledges it. Recomputing that
+ * unchanged state on every frame only repeats host work in a bulk receive.
+ */
+static void test_receive_recomputes_pending_irq_once(void)
+{
+    const char *event = "xframe_rx_completion_irq_recompute";
+    XframeTx t;
+    uint8_t frame[64] = { 0 };
+    uint64_t slot0 = RX_RING_BASE;
+    uint64_t slot1 = RX_RING_BASE + RXD_SIZE;
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_args = NULL;
+    g_autofree char *trace = NULL;
+    const char *p;
+    unsigned recomputes = 0;
+    int fd;
+
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+    fd = g_file_open_tmp("xframe-rx-trace-XXXXXX", &trace_path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    trace_args = g_strdup_printf(
+        "-trace xframe_rx_completion_irq_recompute,file=%s", trace_path);
+    xframe_tx_start_args(&t, trace_args);
+    sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
+    xframe_program_rxd(&t, slot0, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_program_rxd(&t, slot1, RX_BUF1, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rxd_consumed(&t, slot0, 5000));
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rxd_consumed(&t, slot1, 5000));
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, RX_TRAFFIC_RING0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+    xframe_tx_stop(&t);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, NULL));
+    for (p = trace; (p = strstr(p, event)); p++) {
+        recomputes++;
+    }
+    g_assert_cmpuint(recomputes, ==, 1);
+    g_assert_cmpint(g_unlink(trace_path), ==, 0);
+}
+
+/*
  * Guest-driven hang class: a receive ring base far out of range must not
  * walk off into nothing, spin, or wedge the device -- no frame lands and the
  * device stays alive, the receive-side counterpart of the transmit slice's
@@ -4593,6 +4643,8 @@ int main(int argc, char **argv)
                    test_receive_delivers_a_frame);
     qtest_add_func("xframe/receive-fetches-descriptor-once",
                    test_receive_fetches_descriptor_once);
+    qtest_add_func("xframe/receive-recomputes-pending-irq-once",
+                   test_receive_recomputes_pending_irq_once);
     qtest_add_func("xframe/receive-out-of-range-ring-pointer-is-safe",
                    test_receive_out_of_range_ring_pointer_is_safe);
     qtest_add_func("xframe/receive-filtered-frame-does-not-wedge",
