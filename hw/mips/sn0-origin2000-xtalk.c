@@ -78,6 +78,7 @@ struct SN0Origin2000XtalkState {
     SN0Origin2000XtalkDestination destination[ORIGIN2000_XTALK_NODES];
     bool attached;
     const char *test_board_part;
+    int test_crossbow_failure;
     SN0Origin2000XtalkBoard board[ORIGIN2000_XTALK_IO_BOARDS];
     bool cleaned;
     /* A realized Hub still aliases an outgoing face of this object's. */
@@ -179,6 +180,37 @@ static uint32_t sn0_origin2000_ioc3_population(
            (population->parallel ? SGI_IOC3_POPULATION_PARALLEL : 0) |
            (population->onewire_identity ?
             SGI_IOC3_POPULATION_ONEWIRE_IDENTITY : 0);
+}
+
+/*
+ * The switches, from the descriptor. Attaching builds these as well as
+ * preparation does, because a switch keeps every endpoint it is given and a
+ * failed attach has no way to hand those back.
+ */
+static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
+{
+    const SN0ModelComposition *model = s->machine->composition;
+    size_t i;
+
+    for (i = 0; i < model->crossbow_count; i++) {
+        g_autofree char *name = g_strdup_printf("crossbow%zu", i);
+        const SN0ModelCrossbow *descriptor = &model->crossbows[i];
+        DeviceState *crossbow = qdev_new(TYPE_SGI_XBOW);
+
+        object_property_add_child(OBJECT(s), name, OBJECT(crossbow));
+        s->crossbow[i] = SGI_XBOW(crossbow);
+        object_unref(OBJECT(crossbow));
+        qdev_prop_set_uint64(crossbow, "span", SN0_XTALK_WIDGET_SIZE);
+        qdev_prop_set_bit(crossbow, "stop-on-link-reset", true);
+        qdev_prop_set_uint32(crossbow, "revision", descriptor->revision);
+        qdev_prop_set_uint32(crossbow, "part", descriptor->part);
+        qdev_prop_set_uint32(crossbow, "manufacturer",
+                             descriptor->manufacturer);
+        qdev_prop_set_uint16(crossbow, "links-present",
+                             crossbow_present_mask(model, i));
+        qdev_prop_set_uint16(crossbow, "startup-links-alive",
+                             descriptor->initially_operational_links);
+    }
 }
 
 /*
@@ -333,12 +365,10 @@ static void sn0_origin2000_xtalk_release_board(SN0Origin2000XtalkBoard *board)
 }
 
 /*
- * The switches, given up for good. Their routes are aliases of the faces the
- * machine attached, so a switch has to be gone before any of those faces is,
- * and unrealizing one is not that: its routes still name the storage until it
- * is finalized. Only terminal teardown comes here, because a switch that has
- * been unrealized once refuses everything afterwards and cannot be attached
- * to again.
+ * The switches, given up. Their routes are aliases of the faces the machine
+ * attached, so a switch has to be gone before any of those faces is, and
+ * unrealizing one is not that: its routes still name the storage until it is
+ * finalized.
  */
 static void sn0_origin2000_xtalk_release_crossbows(SN0Origin2000XtalkState *s)
 {
@@ -415,26 +445,31 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
      * of them would be freed with a route still naming it. An unrealized
      * object here has nothing to undo and says so.
      */
-    if (terminal) {
-        sn0_origin2000_xtalk_release_crossbows(s);
-    } else {
-        for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
-            if (s->crossbow[i]) {
-                qdev_unrealize(DEVICE(s->crossbow[i]));
-            }
-        }
-    }
+    sn0_origin2000_xtalk_release_crossbows(s);
     for (i = 0; i < ARRAY_SIZE(s->board); i++) {
         sn0_origin2000_xtalk_release_board(&s->board[i]);
     }
     sn0_origin2000_xtalk_settle_releases();
-    for (i = 0; i < ARRAY_SIZE(s->destination); i++) {
-        SN0Origin2000XtalkDestination *destination = &s->destination[i];
+    if (terminal) {
+        for (i = 0; i < ARRAY_SIZE(s->destination); i++) {
+            SN0Origin2000XtalkDestination *destination = &s->destination[i];
 
-        if (destination->initialized) {
-            sn0_origin2000_hub_io_destroy(&destination->inbound);
-            destination->initialized = false;
+            if (destination->initialized) {
+                sn0_origin2000_hub_io_destroy(&destination->inbound);
+                destination->initialized = false;
+            }
         }
+    } else {
+        /*
+         * What a retry needs back. The switches are built again rather than
+         * reused: a switch keeps the endpoints it was given and refuses a
+         * second set, and once unrealized it refuses realization too, so
+         * there is nothing to reuse. The Hub decoders and refusing faces are
+         * left alone in the other direction -- they are storage of this
+         * object's, they can be initialized once only, and nothing is
+         * pointing at them now that the switches are gone.
+         */
+        sn0_origin2000_xtalk_build_crossbows(s);
     }
     s->attached = false;
 }
@@ -448,9 +483,12 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
     }
     s->cleaned = true;
     /*
-     * Quiescing a switch is terminal by contract, so it belongs here and
-     * not in the unwind a failed attach runs -- a machine that is going to
-     * be attached again needs switches that still work.
+     * Quiesce before anything is detached, including a switch that never
+     * finished realizing: unrealizing a realized switch quiesces it, but
+     * one that failed earlier never gets there and still has to have its
+     * link timers cancelled. It is terminal either way -- a quiesced switch
+     * refuses everything afterwards, realization included -- which is why a
+     * failed attach does not come here and recovers with new switches.
      */
     for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
         if (s->crossbow[i]) {
@@ -548,29 +586,12 @@ bool sn0_origin2000_xtalk_prepare(SN0MachineState *machine, Error **errp)
 
     s = SN0_ORIGIN2000_XTALK(object_new(TYPE_SN0_ORIGIN2000_XTALK));
     s->machine = machine;
+    s->test_crossbow_failure = -1;
     object_property_add_child(OBJECT(machine), "xtalk", OBJECT(s));
     machine->origin2000_xtalk = s;
     object_unref(OBJECT(s));
 
-    for (i = 0; i < model->crossbow_count; i++) {
-        g_autofree char *name = g_strdup_printf("crossbow%zu", i);
-        const SN0ModelCrossbow *descriptor = &model->crossbows[i];
-        DeviceState *crossbow = qdev_new(TYPE_SGI_XBOW);
-
-        object_property_add_child(OBJECT(s), name, OBJECT(crossbow));
-        s->crossbow[i] = SGI_XBOW(crossbow);
-        object_unref(OBJECT(crossbow));
-        qdev_prop_set_uint64(crossbow, "span", SN0_XTALK_WIDGET_SIZE);
-        qdev_prop_set_bit(crossbow, "stop-on-link-reset", true);
-        qdev_prop_set_uint32(crossbow, "revision", descriptor->revision);
-        qdev_prop_set_uint32(crossbow, "part", descriptor->part);
-        qdev_prop_set_uint32(crossbow, "manufacturer",
-                             descriptor->manufacturer);
-        qdev_prop_set_uint16(crossbow, "links-present",
-                             crossbow_present_mask(model, i));
-        qdev_prop_set_uint16(crossbow, "startup-links-alive",
-                             descriptor->initially_operational_links);
-    }
+    sn0_origin2000_xtalk_build_crossbows(s);
 
     for (i = 0; i < model->node_count; i++) {
         g_autofree char *name =
@@ -645,34 +666,35 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
         }
     }
 
-    for (i = 0; i < model->io_board_count; i++) {
-        if (!sn0_origin2000_xtalk_build_board(s, i, errp)) {
-            goto unwind;
-        }
-    }
-
     for (i = 0; i < model->xtalk_attachment_count; i++) {
         const SN0ModelXtalkAttachment *attachment =
             &model->xtalk_attachments[i];
         SN0Origin2000XtalkDestination *destination =
             &s->destination[attachment->node_index];
         SGIXbowState *crossbow = s->crossbow[attachment->crossbow_index];
-        g_autofree char *name = NULL;
 
         destination->owner = s;
         destination->node_index = attachment->node_index;
         destination->widget = attachment->widget;
-        if (!sn0_origin2000_hub_io_init(&destination->inbound, OBJECT(s),
-                                        machine->nodes[attachment->node_index],
-                                        errp)) {
-            goto unwind;
-        }
-        destination->initialized = true;
+        /*
+         * Built once and kept. Both of these are storage of this object's
+         * that can be initialized once only, so a retry reuses what a failed
+         * attempt left rather than initializing over it.
+         */
+        if (!destination->initialized) {
+            g_autofree char *name =
+                g_strdup_printf("node%u-cpu-face", attachment->node_index);
 
-        name = g_strdup_printf("node%u-cpu-face", attachment->node_index);
-        memory_region_init_io(&destination->cpu_refusal, OBJECT(s),
-                              &sn0_origin2000_cpu_refusal_ops, destination,
-                              name, SN0_XTALK_WIDGET_SIZE);
+            if (!sn0_origin2000_hub_io_init(
+                    &destination->inbound, OBJECT(s),
+                    machine->nodes[attachment->node_index], errp)) {
+                goto unwind;
+            }
+            memory_region_init_io(&destination->cpu_refusal, OBJECT(s),
+                                  &sn0_origin2000_cpu_refusal_ops, destination,
+                                  name, SN0_XTALK_WIDGET_SIZE);
+            destination->initialized = true;
+        }
         if (!sgi_xbow_attach_endpoint(crossbow, attachment->widget,
                                       &destination->cpu_refusal,
                                       &destination->inbound.face, errp)) {
@@ -680,7 +702,22 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
         }
     }
 
+    /*
+     * The board after the Hubs, though either order builds the same machine:
+     * both have to precede the switch realize below, and this way a board
+     * that refuses leaves an unwind with something to undo.
+     */
+    for (i = 0; i < model->io_board_count; i++) {
+        if (!sn0_origin2000_xtalk_build_board(s, i, errp)) {
+            goto unwind;
+        }
+    }
+
     for (i = 0; i < model->crossbow_count; i++) {
+        if ((int)i == s->test_crossbow_failure) {
+            /* A span the provider refuses, set where a retry can clear it. */
+            qdev_prop_set_uint64(DEVICE(s->crossbow[i]), "span", 0);
+        }
         if (!sysbus_realize(SYS_BUS_DEVICE(s->crossbow[i]), errp)) {
             goto unwind;
         }
@@ -771,6 +808,12 @@ void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
                                               const char *part)
 {
     machine->origin2000_xtalk->test_board_part = part;
+}
+
+void sn0_origin2000_xtalk_set_test_crossbow_failure(SN0MachineState *machine,
+                                                    int index)
+{
+    machine->origin2000_xtalk->test_crossbow_failure = index;
 }
 
 bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine)

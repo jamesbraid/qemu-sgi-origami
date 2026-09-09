@@ -415,7 +415,9 @@ static void test_the_board_carries_the_functions_the_descriptor_named(void)
  * A board that refuses to realize has to come back as an error, not take the
  * machine with it. The unwind runs with realized Hubs, which is the case that
  * cannot give preparation back, so it undoes only what attaching did -- and
- * the machine attaches cleanly on the retry, which is what proves it.
+ * the machine attaches cleanly on the retry, which is what proves it. Every
+ * Hub endpoint is attached by the time the board is built, so this is a
+ * failure with the whole of that to give back rather than the first step.
  */
 static void test_a_failed_attach_leaves_a_machine_to_retry(void)
 {
@@ -424,6 +426,30 @@ static void test_a_failed_attach_leaves_a_machine_to_retry(void)
     g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
     g_assert_cmphex(switch_readl(qts, 0, XBOW_ID) & ID_ALWAYS_ONE, ==,
                     ID_ALWAYS_ONE);
+    qtest_quit(qts);
+}
+
+/*
+ * The last failure an attach can have: one switch realized, the other
+ * refusing. Recovering from that means giving both switches up and building
+ * them again, because a switch keeps the endpoints it was handed, refuses a
+ * second set, and refuses to realize once it has been unrealized. So the
+ * retry is only real if the machine that comes out of it routes -- reading a
+ * switch register says the switches came back, and reading the board through
+ * one says their endpoints did too.
+ */
+static void test_a_failed_switch_leaves_a_machine_to_retry(void)
+{
+    QTestState *qts = attach_start_with(",refuse-crossbow=on");
+    uint32_t id;
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    g_assert_cmphex(switch_readl(qts, 0, XBOW_ID) & ID_ALWAYS_ONE, ==,
+                    ID_ALWAYS_ONE);
+    id = board_reg_readl(qts, 0, BRIDGE_IDENTIFICATION);
+    g_assert_cmpuint(ID_PART(id), ==, BRIDGE_PART);
+    g_assert_cmpuint(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
+    g_assert_false(stopped_on_error(qts));
     qtest_quit(qts);
 }
 
@@ -795,6 +821,8 @@ int main(int argc, char **argv)
                    test_a_hub_asks_its_switch_mate_who_it_is);
     qtest_add_func("sn0/origin2000/xtalk-attach/failed-attach-can-retry",
                    test_a_failed_attach_leaves_a_machine_to_retry);
+    qtest_add_func("sn0/origin2000/xtalk-attach/failed-switch-can-retry",
+                   test_a_failed_switch_leaves_a_machine_to_retry);
     qtest_add_func("sn0/origin2000/xtalk-attach/attached-machine-tears-down",
                    test_an_attached_machine_can_be_torn_down);
     qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-big-window",

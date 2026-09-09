@@ -18,4 +18,8 @@ bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine);
 void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
                                               const char *part);
 
+/* Test hook: force one Crossbow to refuse realization; -1 for none. */
+void sn0_origin2000_xtalk_set_test_crossbow_failure(SN0MachineState *machine,
+                                                    int index);
+
 #endif
