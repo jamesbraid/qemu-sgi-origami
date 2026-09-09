@@ -32,6 +32,8 @@ typedef struct SN0Origin2000XtalkSource {
     MemoryRegion cpu_alias;
     bool linked;
     bool bound;
+    /* The two aliases above are storage that initializes once only. */
+    bool initialized;
 } SN0Origin2000XtalkSource;
 
 /*
@@ -67,6 +69,8 @@ typedef struct SN0Origin2000XtalkBoard {
     MemoryRegion packet_proxy;
     MemoryRegion packet_alias;
     bool bound;
+    /* As on a source: the alias above initializes once only. */
+    bool initialized;
 } SN0Origin2000XtalkBoard;
 
 struct SN0Origin2000XtalkState {
@@ -788,6 +792,16 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
         g_autofree char *cpu_name =
             g_strdup_printf("node%u-cpu-ingress", attachment->node_index);
 
+        /*
+         * Initialized once only, for the reason the destination decoders
+         * are: memory_region_init() zeroes the object, drops the property
+         * table it had and adds a second child property on the owner
+         * naming the same storage, so the owner's finalize would unref
+         * something already finalized. Nothing between here and the end of
+         * attach can fail, so this runs once -- and the assertion is what
+         * says so if a failure point ever moves above it.
+         */
+        assert(!source->initialized);
         memory_region_init_alias(&source->packet_alias, OBJECT(s), packet_name,
                                  packet, 0, memory_region_size(packet));
         memory_region_add_subregion(&source->packet_proxy, 0,
@@ -796,6 +810,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
                                  0, memory_region_size(cpu));
         memory_region_add_subregion(&machine->nodes[attachment->node_index]
                                     ->xtalk, 0, &source->cpu_alias);
+        source->initialized = true;
         source->bound = true;
         memory_region_set_enabled(&source->packet_proxy, true);
     }
@@ -809,10 +824,12 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
         g_autofree char *name =
             g_strdup_printf("baseio%zu-packet-ingress", i);
 
+        assert(!board->initialized);
         memory_region_init_alias(&board->packet_alias, board->owner, name,
                                  packet, 0, memory_region_size(packet));
         memory_region_add_subregion(&board->packet_proxy, 0,
                                     &board->packet_alias);
+        board->initialized = true;
         board->bound = true;
         memory_region_set_enabled(&board->packet_proxy, true);
     }
