@@ -4,6 +4,9 @@
 #include "qemu/bitops.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/qapi-visit-common.h"
+#include "qapi/visitor.h"
+#include "qobject/qlist.h"
 #include "qemu/datadir.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
@@ -73,6 +76,78 @@ static void sn1_cpu_b_enable(void *opaque, int n, int level)
     }
 }
 
+/*
+ * The controller holds one identification record per file, in order. The
+ * machine names the files and claims nothing about what is in them: no
+ * default record, and no record implied by the memory size.
+ */
+typedef struct SN1IdentityRecords {
+    const char *name;
+    ptrdiff_t offset;
+    const char *description;
+} SN1IdentityRecords;
+
+static const SN1IdentityRecords sn1_identity_records[] = {
+    {
+        "chassis-eeprom", offsetof(SN1MachineState, chassis_eeprom),
+        "Files holding the chassis identification records, in order",
+    },
+    {
+        "board-eeprom", offsetof(SN1MachineState, board_eeprom),
+        "Files holding the board identification records, in order",
+    },
+    {
+        "spd-eeprom", offsetof(SN1MachineState, spd_eeprom),
+        "Files holding the memory module presence-detect records, in order",
+    },
+};
+
+static strList **sn1_identity_slot(Object *obj, void *opaque)
+{
+    const SN1IdentityRecords *records = opaque;
+
+    return (strList **)((char *)SN1_MACHINE(obj) + records->offset);
+}
+
+static void sn1_get_identity_records(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    visit_type_strList(v, name, sn1_identity_slot(obj, opaque), errp);
+}
+
+static void sn1_set_identity_records(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    strList **slot = sn1_identity_slot(obj, opaque);
+    strList *replacement = NULL;
+
+    if (!visit_type_strList(v, name, &replacement, errp)) {
+        return;
+    }
+    qapi_free_strList(*slot);
+    *slot = replacement;
+}
+
+static void sn1_set_l1_identity_records(SN1MachineState *s)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(sn1_identity_records); i++) {
+        const SN1IdentityRecords *records = &sn1_identity_records[i];
+        strList *file = *sn1_identity_slot(OBJECT(s), (void *)records);
+        QList *files;
+
+        if (!file) {
+            continue;
+        }
+        files = qlist_new();
+        for (; file; file = file->next) {
+            qlist_append_str(files, file->value);
+        }
+        qdev_prop_set_array(s->l1, records->name, files);
+    }
+}
+
 static void sn1_machine_init(Object *obj)
 {
     SN1MachineState *s = SN1_MACHINE(obj);
@@ -90,6 +165,10 @@ static void sn1_machine_finalize(Object *obj)
     vmstate_unregister(NULL, &vmstate_sn1_machine, s);
     g_free(s->cpu);
     g_free(s->prom_views);
+    for (size_t i = 0; i < ARRAY_SIZE(sn1_identity_records); i++) {
+        qapi_free_strList(*sn1_identity_slot(obj, (void *)
+                                             &sn1_identity_records[i]));
+    }
 }
 
 static void sn1_cpu_reset(void *opaque)
@@ -289,6 +368,7 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     if (l1_console) {
         qdev_prop_set_chr(s->l1, "chardev", l1_console);
     }
+    sn1_set_l1_identity_records(s);
     qdev_realize(s->l1, NULL, &error_fatal);
     object_unref(OBJECT(s->l1));
 
@@ -517,6 +597,17 @@ static void origin300_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = model->cpu_count;
     mc->default_ram_size = model->ram_size;
     mc->default_ram_id = "sn1.ram";
+
+    for (size_t i = 0; i < ARRAY_SIZE(sn1_identity_records); i++) {
+        const SN1IdentityRecords *records = &sn1_identity_records[i];
+
+        object_class_property_add(oc, records->name, "strList",
+                                  sn1_get_identity_records,
+                                  sn1_set_identity_records, NULL,
+                                  (void *)records);
+        object_class_property_set_description(oc, records->name,
+                                              records->description);
+    }
 }
 
 static const TypeInfo origin300_machine_type = {

@@ -5,6 +5,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/irq.h"
+#include "qapi/qapi-builtin-types.h"
 
 #define TYPE_SN1_MACHINE MACHINE_TYPE_NAME("origin300")
 OBJECT_DECLARE_SIMPLE_TYPE(SN1MachineState, SN1_MACHINE)
@@ -28,6 +29,10 @@ struct SN1MachineState {
     MemoryRegion prom_flash;
     MemoryRegion prom_flash_payload;
     MemoryRegion prom_flash_erased;
+
+    strList *chassis_eeprom;
+    strList *board_eeprom;
+    strList *spd_eeprom;
 };
 
 #endif
