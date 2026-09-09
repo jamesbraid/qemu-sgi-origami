@@ -58,6 +58,7 @@ struct TigonState {
     MemoryRegion sram_win;  /* 2 KB SRAM window, 0x800..0xFFF */
 
     NICState *nic;
+    QEMUBH *rx_flush_bh;
     NICConf conf;
     MACAddr station_addr;    /* active filter; conf holds the reset address */
     AddressSpace *descriptor_as; /* immutable, borrowed PCI DMA route */
@@ -133,6 +134,10 @@ struct TigonState {
     uint32_t jumbo_rx_considx;
     uint32_t jumbo_rx_prodidx;
     uint32_t cmd_considx;
+
+    /* Transient ordering state for synchronous backend receive callbacks. */
+    bool defer_backend_rx;
+    bool backend_rx_deferred;
 
     /* Internal pending-interrupt latch. */
     bool irq_asserted;
