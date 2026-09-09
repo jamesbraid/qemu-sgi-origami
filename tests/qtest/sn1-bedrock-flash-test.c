@@ -12,8 +12,21 @@
 #include "qobject/qdict.h"
 
 #define FLASH_PATH "/machine/peripheral/flash"
-#define PRIMARY 0x10000000ULL
-#define ALTERNATE 0x20000000ULL
+
+/*
+ * The two boot spaces, at their machine-bus addresses. A command or
+ * programming store is relative to these; an ordinary read is relative to the
+ * software read address it lands in, which is why the two disagree at
+ * SECOND_READ.
+ */
+#define HUB 0x10000000000ULL
+#define LOCAL (HUB + 0x18000000ULL)
+#define REMOTE (HUB + 0x38000000ULL)
+
+/* One PROM stride into a boot space: the second software read address. */
+#define SECOND_READ 0x02000000ULL
+#define PRIMARY LOCAL
+#define ALTERNATE (LOCAL + SECOND_READ)
 
 #define FLASH_SIZE (16 * 1024 * 1024)
 #define SECTOR_SIZE (64 * 1024)
@@ -31,17 +44,20 @@
 #define QUERY_READ(i) ((uint64_t)(i) * 2)
 
 /*
- * A store at bus offset 4n carries the flash word at payload byte n, so the
- * payload bytes a view can address are those whose bus offset still falls
- * inside it -- a quarter of the view. Both numbers below are arithmetic on
- * that transform and on the view size. Neither is a statement about the
- * fitted part, and neither settles whether the hardware commands the whole
- * part through one view. Widen the view or change the transform and they
- * move with it.
+ * The whole backing is commandable: a store at window offset 4n reaches
+ * backing byte n, and 4 * 16 MiB fits inside a 128 MiB boot space. The last
+ * word begins at backing byte LAST_WORD and the first store with no backing
+ * word behind it is at window offset WRITE_LIMIT.
  */
-#define VIEW_COMMANDABLE_BYTES (FLASH_SIZE / 4)
-#define VIEW_LAST_COMMANDABLE_WORD (VIEW_COMMANDABLE_BYTES - 2)
-#define VIEW_LAST_COMMANDABLE_SECTOR (VIEW_COMMANDABLE_BYTES - SECTOR_SIZE)
+#define LAST_WORD (FLASH_SIZE - 2)
+#define LAST_SECTOR (FLASH_SIZE - SECTOR_SIZE)
+#define WRITE_LIMIT (4ULL * FLASH_SIZE)
+/*
+ * A sector for the erase-bounds case: far above the quarter of the backing
+ * the superseded mapping could reach, and with a neighbour on each side so
+ * the bounds have something either way to check.
+ */
+#define HIGH_SECTOR (FLASH_SIZE - 2 * SECTOR_SIZE)
 
 static char *sized_image(const char *tag, off_t size)
 {
@@ -115,8 +131,8 @@ static QTestState *flash_start(const char *image, const char *options,
                                 "-device sgi-bedrock-flash,id=flash,drive=fl "
                                 "%s", image, options, extra);
 
-    qtest_sysbus_mmio_map(s, FLASH_PATH, 0, PRIMARY);
-    qtest_sysbus_mmio_map(s, FLASH_PATH, 1, ALTERNATE);
+    qtest_sysbus_mmio_map(s, FLASH_PATH, 0, LOCAL);
+    qtest_sysbus_mmio_map(s, FLASH_PATH, 1, REMOTE);
     return s;
 }
 
@@ -272,9 +288,9 @@ static void test_selections_alias(void)
                     0x0123456789abcdefULL);
 
     /* A word programmed through one selection is readable through the other. */
-    flash_program(s, PRIMARY, 0x20000, 0x0f0f);
+    flash_program(s, LOCAL, 0x20000, 0x0f0f);
     g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x20000), ==, 0x0f0f);
-    flash_program(s, ALTERNATE, 0x20002, 0x33cc);
+    flash_program(s, REMOTE, 0x20002, 0x33cc);
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0x20002), ==, 0x33cc);
 
     qtest_system_reset(s);
@@ -312,10 +328,10 @@ static void test_query_mode(void)
      * It is a well-formed store at an aligned address, so the adapter
      * forwards it, and the flash must not read it as the query command.
      */
-    qtest_writeq(s, PRIMARY + 0x550, 0x98);
+    qtest_writeq(s, LOCAL + 0x550, 0x98);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
 
-    qtest_writeq(s, PRIMARY + QUERY, 0x98);
+    qtest_writeq(s, LOCAL + QUERY, 0x98);
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x11)), ==, 'R');
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x12)), ==, 'Y');
@@ -325,7 +341,7 @@ static void test_query_mode(void)
     /* Both selections are the same device, so both are in query mode. */
     g_assert_cmphex(qtest_readw(s, ALTERNATE + QUERY_READ(0x10)), ==, 'Q');
 
-    flash_reset_to_array(s, PRIMARY);
+    flash_reset_to_array(s, LOCAL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
     g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
                     0xdeadbeefdeadbeefULL);
@@ -345,33 +361,32 @@ static void test_program(void)
     QTestState *s;
 
     image_erase_sector(image, 0);
-    image_erase_sector(image, VIEW_LAST_COMMANDABLE_SECTOR);
+    image_erase_sector(image, LAST_SECTOR);
     image_write_be64(image, SECTOR_SIZE, 0x8899aabbccddeeffULL);
 
     s = flash_start(image, "", "");
-    flash_program(s, PRIMARY, 0, 0x1234);
+    flash_program(s, LOCAL, 0, 0x1234);
     /* Polling the programmed word sees the new data, so the write is done. */
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1234);
     g_assert_cmphex(qtest_readb(s, PRIMARY + 0), ==, 0x12);
     g_assert_cmphex(qtest_readb(s, PRIMARY + 1), ==, 0x34);
 
-    flash_program(s, PRIMARY, SECTOR_SIZE / 2, 0xa55a);
+    flash_program(s, LOCAL, SECTOR_SIZE / 2, 0xa55a);
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE / 2), ==, 0xa55a);
-    flash_program(s, PRIMARY, SECTOR_SIZE - 2, 0x0f1e);
+    flash_program(s, LOCAL, SECTOR_SIZE - 2, 0x0f1e);
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
     /* Programming the last word of a sector does not touch the next one. */
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE), ==, 0x8899);
 
     /*
-     * The transform at both ends of the view: the lowest store addresses
-     * payload byte zero, and the highest store the view admits addresses the
-     * payload byte four times below its top. Reads are one-to-one, so
-     * finding each word back at its payload offset is what pins 4n.
+     * The transform at both ends of the backing: the lowest store reaches
+     * backing byte zero and the highest reaches the last word. Reads are
+     * one-to-one, so finding each word back at its backing offset pins 4n.
      */
     QEMU_BUILD_BUG_ON(BYTE(2) != 8);
-    QEMU_BUILD_BUG_ON(BYTE(VIEW_LAST_COMMANDABLE_WORD) != FLASH_SIZE - 8);
-    flash_program(s, PRIMARY, VIEW_LAST_COMMANDABLE_WORD, 0x9876);
-    g_assert_cmphex(qtest_readw(s, PRIMARY + VIEW_LAST_COMMANDABLE_WORD), ==,
+    QEMU_BUILD_BUG_ON(BYTE(LAST_WORD) != WRITE_LIMIT - 8);
+    flash_program(s, LOCAL, LAST_WORD, 0x9876);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + LAST_WORD), ==,
                     0x9876);
     qtest_quit(s);
 
@@ -384,7 +399,7 @@ static void test_program(void)
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1234);
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE / 2), ==, 0xa55a);
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
-    g_assert_cmphex(qtest_readw(s, PRIMARY + VIEW_LAST_COMMANDABLE_WORD), ==,
+    g_assert_cmphex(qtest_readw(s, PRIMARY + LAST_WORD), ==,
                     0x9876);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
@@ -394,19 +409,14 @@ static void test_program(void)
  * An erase clears one 64 KiB sector and leaves the sectors either side of it
  * alone, whether it is the first sector or one further up.
  *
- * The upper sector is the highest one this view can name, which follows from
- * the same 4n transform the programming case pins rather than from anything
- * about the part: its sector address has to have a bus offset inside the
- * view. Everything above it reads one-to-one but has no bus offset here to
- * command it with. What the hardware does about that is an open question for
- * the address map; this test pins the transform and lets the extent follow,
- * so a different view or transform moves it rather than leaving this number
- * standing.
+ * The upper sector is the last one in the backing, reached through the other
+ * boot space. Both are commandable because a store at window offset 4n has
+ * the whole 16 MiB behind it inside a 128 MiB space.
  */
 static void test_sector_erase(void)
 {
     g_autofree char *image = flash_image("erase");
-    const off_t high_sector = VIEW_LAST_COMMANDABLE_SECTOR;
+    const off_t high_sector = HIGH_SECTOR;
     QTestState *s;
 
     image_write_be64(image, 0, 0x1111111111111111ULL);
@@ -419,7 +429,7 @@ static void test_sector_erase(void)
     image_write_be64(image, high_sector + SECTOR_SIZE, 0x7777777777777777ULL);
 
     s = flash_start(image, "", "");
-    flash_erase_sector(s, PRIMARY, 0);
+    flash_erase_sector(s, LOCAL, 0);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE - 8), ==, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
@@ -427,9 +437,10 @@ static void test_sector_erase(void)
     g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector), ==,
                     0x5555555555555555ULL);
 
-    QEMU_BUILD_BUG_ON(BYTE(VIEW_LAST_COMMANDABLE_SECTOR) !=
-                      FLASH_SIZE - SECTOR_SIZE * 4);
-    flash_erase_sector(s, ALTERNATE, high_sector);
+    /* Commandable, and out of reach of the mapping this one replaced. */
+    QEMU_BUILD_BUG_ON(BYTE(HIGH_SECTOR) >= WRITE_LIMIT);
+    QEMU_BUILD_BUG_ON(HIGH_SECTOR < FLASH_SIZE / 4);
+    flash_erase_sector(s, REMOTE, high_sector);
     g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector - 8), ==,
                     0x4444444444444444ULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector), ==, UINT64_MAX);
@@ -463,6 +474,106 @@ static unsigned count_lines(const char *text, const char *needle)
 }
 
 /*
+ * The whole 16 MiB is commandable through either boot space. Program the
+ * first word, the midpoint word and the last word, and check each landed at
+ * the backing offset a quarter of its window offset. The last word carries
+ * two distinct bytes so a swapped final lane shows up, and its second byte is
+ * the highest backing byte there is.
+ *
+ * The first store with no backing word behind it must be refused before any
+ * flash cycle, which is what separates an exclusive bound from an inclusive
+ * one: the refused offset is exactly four times the backing size.
+ */
+static void check_aperture(const char *tag, uint64_t base)
+{
+    g_autofree char *image = flash_image(tag);
+    g_autofree char *log = log_file(tag);
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    uint8_t stored[2];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_erase_sector(image, FLASH_SIZE / 2);
+    image_erase_sector(image, LAST_SECTOR);
+
+    extra = g_strdup_printf("-d guest_errors,trace:pflash_io_write -D %s", log);
+    s = flash_start(image, "", extra);
+
+    flash_program(s, base, 0, 0x1122);
+    flash_program(s, base, FLASH_SIZE / 2, 0x3344);
+    flash_program(s, base, LAST_WORD, 0x5566);
+
+    /* Read back through the first software read address, one-to-one. */
+    g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1122);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + FLASH_SIZE / 2), ==, 0x3344);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + LAST_WORD), ==, 0x5566);
+    /* Both lanes of the last word, the second being the highest byte. */
+    g_assert_cmphex(qtest_readb(s, PRIMARY + LAST_WORD), ==, 0x55);
+    g_assert_cmphex(qtest_readb(s, PRIMARY + FLASH_SIZE - 1), ==, 0x66);
+
+    /* One past the last backing word: refused, no cycle, nothing stored. */
+    qtest_writeq(s, base + WRITE_LIMIT, 0xaa);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "past the last backing word"));
+    /* Three programs of four cycles each, and not one more. */
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 12);
+
+    image_read(image, FLASH_SIZE - 2, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0x55);
+    g_assert_cmphex(stored[1], ==, 0x66);
+
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void test_local_aperture(void)
+{
+    check_aperture("local-aperture", LOCAL);
+}
+
+static void test_remote_aperture(void)
+{
+    check_aperture("remote-aperture", REMOTE);
+}
+
+/*
+ * One address, two meanings. At a stride into the boot space an ordinary read
+ * starts the second software read address at backing byte zero, while a store
+ * reaches the middle of the backing. Anything that decodes writes from the
+ * read address instead -- the superseded mapping, and the 4 MiB ceiling that
+ * came with it -- fails here.
+ */
+static void test_access_type_split(void)
+{
+    g_autofree char *image = flash_image("split");
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_erase_sector(image, FLASH_SIZE / 2);
+    image_write_be64(image, 0, 0xfeedfacecafef00dULL);
+
+    s = flash_start(image, "", "");
+
+    /* The read at that address starts the second view, at backing zero. */
+    g_assert_cmphex(qtest_readq(s, LOCAL + SECOND_READ), ==,
+                    qtest_readq(s, PRIMARY + 0));
+
+    /* The store at the same address reaches the midpoint word instead. */
+    flash_program(s, LOCAL, FLASH_SIZE / 2, 0x0f1e);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + FLASH_SIZE / 2), ==, 0x0f1e);
+    /* Backing zero, which a per-view decoder would have hit, is untouched. */
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, 0xfeedfacecafef00dULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0), ==, 0xfeedfacecafef00dULL);
+    /* And the midpoint is visible through the second read address too. */
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + FLASH_SIZE / 2), ==, 0x0f1e);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
  * The one place where the width of a flash cycle is visible. A 64-bit store
  * has to reach the flash as a single two-byte cycle; split into two one-byte
  * cycles it would be two commands, and the firmware's programming sequence
@@ -486,7 +597,7 @@ static void test_cfi_cycle_width(void)
 
     extra = g_strdup_printf("-d trace:pflash_io_write -D %s", good_log);
     s = flash_start(image, "", extra);
-    flash_program(s, PRIMARY, 0x100, 0x1234);
+    flash_program(s, LOCAL, 0x100, 0x1234);
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(good_log, &found, NULL, NULL));
@@ -502,10 +613,10 @@ static void test_cfi_cycle_width(void)
     extra = g_strdup_printf("-d guest_errors,trace:pflash_io_write -D %s",
                             wide_log);
     s = flash_start(image, "", extra);
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xa0);
-    qtest_writeq(s, PRIMARY + BYTE(0x200), 0x15678);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xa0);
+    qtest_writeq(s, LOCAL + BYTE(0x200), 0x15678);
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(wide_log, &found, NULL, NULL));
@@ -549,9 +660,9 @@ static void test_narrow_writes(void)
     s = flash_start(image, "", extra);
 
     /* Outside any command sequence: nothing should reach the flash at all. */
-    qtest_writeb(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writew(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writel(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeb(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writew(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writel(s, LOCAL + UNLOCK0, 0xaa);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, 0x0123456789abcdefULL);
 
     /*
@@ -561,10 +672,10 @@ static void test_narrow_writes(void)
      * the flash is left waiting for that payload and reads status rather than
      * the array -- the image below is where the damage would show.
      */
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xa0);
-    qtest_writew(s, PRIMARY + BYTE(0), 0x0000);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xa0);
+    qtest_writew(s, LOCAL + BYTE(0), 0x0000);
     qtest_quit(s);
 
     image_read(image, 0, head, sizeof(head));
@@ -597,32 +708,32 @@ static void test_reset_states(void)
     s = flash_start(image, "", "");
 
     /* Stored bytes survive a reset taken during ordinary reads. */
-    flash_program(s, PRIMARY, 0x400, 0xc3c3);
+    flash_program(s, LOCAL, 0x400, 0xc3c3);
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0x400), ==, 0xc3c3);
 
     /* Query mode does not. */
-    flash_enter_query(s, PRIMARY);
+    flash_enter_query(s, LOCAL);
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
 
     /* Nor does a program sequence waiting for its data. */
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xa0);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xa0);
     qtest_system_reset(s);
-    qtest_writeq(s, PRIMARY + BYTE(0x402), 0x0f0f);
+    qtest_writeq(s, LOCAL + BYTE(0x402), 0x0f0f);
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0x402), ==, 0xffff);
 
     /* Nor an erase sequence waiting for its sector. */
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0x80);
-    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0x80);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
     qtest_system_reset(s);
-    qtest_writeq(s, PRIMARY + BYTE(SECTOR_SIZE), 0x30);
+    qtest_writeq(s, LOCAL + BYTE(SECTOR_SIZE), 0x30);
     g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
                     0x3333333333333333ULL);
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0x400), ==, 0xc3c3);
@@ -656,13 +767,13 @@ static void test_read_only(void)
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
 
-    flash_program(s, PRIMARY, 0x100, 0x1234);
+    flash_program(s, LOCAL, 0x100, 0x1234);
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0x100), ==, 0xffff);
-    flash_program(s, PRIMARY, 0x400, 0x0000);
+    flash_program(s, LOCAL, 0x400, 0x0000);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
                     0x0123456789abcdefULL);
 
-    flash_erase_sector(s, PRIMARY, 0);
+    flash_erase_sector(s, LOCAL, 0);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
@@ -765,7 +876,7 @@ static void test_migration_stored_bytes(void)
     FlashMigration m;
 
     migration_start(&m, "migrate-bytes");
-    flash_program(m.from, PRIMARY, 0x400, 0xc3c3);
+    flash_program(m.from, LOCAL, 0x400, 0xc3c3);
     migration_run(&m);
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + 0x400), ==, 0xc3c3);
     g_assert_cmphex(qtest_readq(m.to, PRIMARY + 0x1e0000), ==,
@@ -781,11 +892,11 @@ static void test_migration_query_mode(void)
     FlashMigration m;
 
     migration_start(&m, "migrate-query");
-    flash_enter_query(m.from, PRIMARY);
+    flash_enter_query(m.from, LOCAL);
     migration_run(&m);
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + QUERY_READ(0x13)), ==, 0x0002);
-    flash_reset_to_array(m.to, PRIMARY);
+    flash_reset_to_array(m.to, LOCAL);
     g_assert_cmphex(qtest_readq(m.to, PRIMARY + 0x1e0000), ==,
                     0xfeedfacecafef00dULL);
     migration_finish(&m);
@@ -797,11 +908,11 @@ static void test_migration_partial_command(void)
     FlashMigration m;
 
     migration_start(&m, "migrate-partial");
-    qtest_writeq(m.from, PRIMARY + UNLOCK0, 0xaa);
-    qtest_writeq(m.from, PRIMARY + UNLOCK1, 0x55);
-    qtest_writeq(m.from, PRIMARY + UNLOCK0, 0xa0);
+    qtest_writeq(m.from, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(m.from, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(m.from, LOCAL + UNLOCK0, 0xa0);
     migration_run(&m);
-    qtest_writeq(m.to, PRIMARY + BYTE(0x600), 0x5aa5);
+    qtest_writeq(m.to, LOCAL + BYTE(0x600), 0x5aa5);
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + 0x600), ==, 0x5aa5);
     migration_finish(&m);
 }
@@ -866,9 +977,9 @@ static void test_first_sector_rewrite(void)
     g_assert_cmpmem(sector, SECTOR_SIZE, seed, SECTOR_SIZE);
     memcpy(sector + 0x60, block, sizeof(block));
 
-    flash_erase_sector(s, PRIMARY, 0);
+    flash_erase_sector(s, LOCAL, 0);
     for (unsigned i = 0; i < SECTOR_SIZE; i += 2) {
-        flash_program(s, PRIMARY, i, (sector[i] << 8) | sector[i + 1]);
+        flash_program(s, LOCAL, i, (sector[i] << 8) | sector[i + 1]);
     }
 
     qtest_memread(s, PRIMARY, sector, SECTOR_SIZE);
@@ -902,6 +1013,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-flash/query-mode", test_query_mode);
     qtest_add_func("sn1/bedrock-flash/program", test_program);
     qtest_add_func("sn1/bedrock-flash/sector-erase", test_sector_erase);
+    qtest_add_func("sn1/bedrock-flash/local-aperture",
+                   test_local_aperture);
+    qtest_add_func("sn1/bedrock-flash/remote-aperture",
+                   test_remote_aperture);
+    qtest_add_func("sn1/bedrock-flash/access-type-split",
+                   test_access_type_split);
     qtest_add_func("sn1/bedrock-flash/cfi-cycle-width", test_cfi_cycle_width);
     qtest_add_func("sn1/bedrock-flash/narrow-writes", test_narrow_writes);
     qtest_add_func("sn1/bedrock-flash/reset-states", test_reset_states);

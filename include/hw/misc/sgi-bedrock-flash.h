@@ -17,14 +17,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockFlashState, SGI_BEDROCK_FLASH)
  */
 #define SGI_BEDROCK_FLASH_SECTOR_SIZE (64 * KiB)
 
-/* The primary and the alternate software selection. */
-#define SGI_BEDROCK_FLASH_SELECTIONS 2
+/* Each boot space, and the second software read address one stride into it. */
+#define SGI_BEDROCK_FLASH_WINDOW_SIZE (128 * MiB)
+#define SGI_BEDROCK_FLASH_SECOND_READ (32 * MiB)
 
-typedef struct SGIBedrockFlashView {
+/*
+ * A store at window offset 4n carries the word at backing byte n, so the
+ * 16 MiB backing occupies the first 64 MiB of the window and this is the
+ * first offset with no backing word behind it.
+ */
+#define SGI_BEDROCK_FLASH_WRITE_LIMIT (4 * SGI_BEDROCK_FLASH_SIZE)
+
+/* The local and the remote boot space. */
+#define SGI_BEDROCK_FLASH_WINDOWS 2
+
+typedef struct SGIBedrockFlashWindow {
     MemoryRegion mmio;
     SGIBedrockFlashState *adapter;
     unsigned index;
-} SGIBedrockFlashView;
+} SGIBedrockFlashWindow;
 
 struct SGIBedrockFlashState {
     SysBusDevice parent_obj;
@@ -33,7 +44,7 @@ struct SGIBedrockFlashState {
     DeviceState *flash;
     MemoryRegion *flash_mmio;
 
-    SGIBedrockFlashView view[SGI_BEDROCK_FLASH_SELECTIONS];
+    SGIBedrockFlashWindow window[SGI_BEDROCK_FLASH_WINDOWS];
 };
 
 #endif
