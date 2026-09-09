@@ -551,6 +551,28 @@ static void test_a_retried_attach_keeps_its_host_backends(void)
 }
 
 /*
+ * The other half of the split, with the same two backends at stake. A chip
+ * that refuses to realize has no functions behind it -- they are built on
+ * the bus realize creates -- so that board has taken nothing, and the
+ * assembly is free to release it and build a second one. The retry has to
+ * come back with the drive and the address the command line asked for, the
+ * same as an attach that never failed.
+ */
+static void test_a_rebuilt_board_takes_the_host_backends(void)
+{
+    QTestState *qts = attach_start_backed(",refuse-board=on");
+    g_autofree char *mac = NULL;
+    g_autofree char *owner = NULL;
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    mac = qom_string(qts, "/machine/xtalk/baseio0/ioc3", "mac");
+    g_assert_cmpstr(mac, ==, ASKED_MAC);
+    owner = block_backend_owner(qts, "scsi0-hd0");
+    g_assert_cmpstr(owner, ==, DRIVE_OWNER);
+    qtest_quit(qts);
+}
+
+/*
  * The control: the same command line without the refusal. Without it the
  * check above cannot tell a retry that lost its backends from a fixture
  * that never had them.
@@ -1004,6 +1026,8 @@ int main(int argc, char **argv)
                    test_an_attach_takes_the_host_backends_it_is_given);
     qtest_add_func("sn0/origin2000/xtalk-attach/retry-keeps-its-backends",
                    test_a_retried_attach_keeps_its_host_backends);
+    qtest_add_func("sn0/origin2000/xtalk-attach/rebuild-takes-its-backends",
+                   test_a_rebuilt_board_takes_the_host_backends);
     qtest_add_func("sn0/origin2000/xtalk-attach/attached-machine-tears-down",
                    test_an_attached_machine_can_be_torn_down);
     qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-big-window",
