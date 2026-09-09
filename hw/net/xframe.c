@@ -2692,8 +2692,12 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         xframe_rx_advance_page(s);
     }
 
-    s->rx_traffic_int |= XFRAME_RX_TRAFFIC_RING0;
-    xframe_update_irq(s);
+    /* A latched receive source cannot change INTx again until its ACK. */
+    if (!(s->rx_traffic_int & XFRAME_RX_TRAFFIC_RING0)) {
+        s->rx_traffic_int |= XFRAME_RX_TRAFFIC_RING0;
+        trace_xframe_rx_completion_irq_recompute();
+        xframe_update_irq(s);
+    }
     timer_del(s->rx_recovery_timer);
 
     return size;

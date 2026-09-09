@@ -561,3 +561,4 @@ tigon_rx_doorbell(const char *ring, uint32_t prod) "%s ring producer -> %u"
 
 # xframe.c
 xframe_rx_descriptor_fetch(uint64_t addr, unsigned size) "addr 0x%" PRIx64 " size %u"
+xframe_rx_completion_irq_recompute(void) ""
