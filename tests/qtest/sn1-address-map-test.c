@@ -55,6 +55,13 @@
 #define HUB_REMOTE_BOOT (SPACE_HUB + UINT64_C(0x38000000))
 #define L1_UART UINT64_C(0x80)
 #define L1_SCRATCH UINT64_C(0x38)
+#define L1_UART_BASE (HUB_REMOTE_REGISTERS + L1_UART)
+#define L1_UART_STATUS UINT64_C(0x28)
+#define L1_STATUS_READY UINT64_C(0x61)
+#define L1_EEPROM_CHASSIS 1
+#define L1_EEPROM_BOARD 2
+#define L1_EEPROM_SPD 4
+#define L1_REPLY_ABSENT 0x98
 
 #define PROM_RESET UINT64_C(0x1fc00000)
 #define PROM_SIZE UINT64_C(0x1686a8)
@@ -1587,6 +1594,180 @@ static void assert_flash_view(QTestState *qts)
                     ==, 0xff);
 }
 
+/*
+ * The controller speaks the same framed protocol through the machine's
+ * mapped window as it does on its own bus, so these helpers mirror the
+ * device test's, addressed at the window instead.
+ */
+static uint16_t l1_fcs(uint16_t value, uint8_t byte)
+{
+    value ^= byte;
+    for (unsigned bit = 0; bit < 8; bit++) {
+        value = (value & 1) ? (value >> 1) ^ 0x8408 : value >> 1;
+    }
+    return value;
+}
+
+static void l1_put(QTestState *qts, uint8_t byte)
+{
+    if (byte == 0x7e || byte == 0x7d) {
+        qtest_writeq(qts, L1_UART_BASE, 0x7d);
+        byte ^= 0x20;
+    }
+    qtest_writeq(qts, L1_UART_BASE, byte);
+}
+
+static void l1_send(QTestState *qts, const uint8_t *frame, size_t length)
+{
+    uint16_t crc = 0xffff;
+
+    qtest_writeq(qts, L1_UART_BASE, 0x7e);
+    for (size_t i = 0; i < length; i++) {
+        crc = l1_fcs(crc, frame[i]);
+        l1_put(qts, frame[i]);
+    }
+    crc = ~crc;
+    l1_put(qts, crc);
+    l1_put(qts, crc >> 8);
+    qtest_writeq(qts, L1_UART_BASE, 0x7e);
+}
+
+static size_t l1_receive(QTestState *qts, uint8_t *reply)
+{
+    size_t length = 0;
+    bool escape = false;
+    uint16_t crc = 0xffff;
+
+    g_assert_cmphex(qtest_readq(qts, L1_UART_BASE + L1_UART_STATUS), ==,
+                    L1_STATUS_READY);
+    g_assert_cmphex(qtest_readq(qts, L1_UART_BASE), ==, 0x7e);
+    for (;;) {
+        uint8_t byte;
+
+        g_assert_cmphex(qtest_readq(qts, L1_UART_BASE + L1_UART_STATUS), ==,
+                        L1_STATUS_READY);
+        byte = qtest_readq(qts, L1_UART_BASE);
+        if (byte == 0x7e) {
+            break;
+        }
+        if (byte == 0x7d && !escape) {
+            escape = true;
+            continue;
+        }
+        if (escape) {
+            byte ^= 0x20;
+            escape = false;
+        }
+        g_assert_cmpuint(length, <, 131);
+        reply[length++] = byte;
+        crc = l1_fcs(crc, byte);
+    }
+    g_assert_false(escape);
+    g_assert_cmpuint(length, >=, 3);
+    g_assert_cmphex(crc, ==, 0xf0b8);
+    return length - 2;
+}
+
+static size_t l1_eeprom_read(QTestState *qts, unsigned component,
+                             unsigned area, unsigned offset, unsigned length,
+                             uint8_t *reply)
+{
+    uint8_t request[28] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 6, 4 };
+    const unsigned values[] = { component, area, offset, length };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+        stl_be_p(request + 9 + 5 * i, values[i]);
+    }
+    l1_send(qts, request, sizeof(request));
+    return l1_receive(qts, reply);
+}
+
+static char *write_record(const char *directory, const char *name,
+                          const uint8_t *bytes, size_t length)
+{
+    g_autoptr(GError) error = NULL;
+    char *path = g_build_filename(directory, name, NULL);
+
+    g_assert_true(g_file_set_contents(path, (const char *)bytes, length,
+                                      &error));
+    g_assert_no_error(error);
+    return path;
+}
+
+static void test_l1_identity_records_come_from_the_command_line(
+        const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-identity-XXXXXX", &error);
+    g_autofree char *chassis_path = NULL;
+    g_autofree char *board_path = NULL;
+    g_autofree char *spd_path = NULL;
+    g_autofree char *extra = NULL;
+    /*
+     * Synthetic bytes owned by this test. The controller's presence-detect
+     * area rejects a record whose first 64 bytes do not sum to zero, so the
+     * fixture satisfies that and says nothing else.
+     */
+    uint8_t chassis[24], board[40], spd[128] = { 0 };
+    uint8_t reply[131];
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    memset(chassis, 0xc1, sizeof(chassis));
+    memset(board, 0xb2, sizeof(board));
+    spd[0] = 64;
+    spd[63] = 192;
+    memset(spd + 64, 0x5d, 64);
+    chassis_path = write_record(directory, "chassis.bin", chassis,
+                                sizeof(chassis));
+    board_path = write_record(directory, "board.bin", board, sizeof(board));
+    spd_path = write_record(directory, "spd.bin", spd, sizeof(spd));
+
+    extra = g_strdup_printf("-M origin300,chassis-eeprom.0=%s,"
+                            "board-eeprom.0=%s,spd-eeprom.0=%s "
+                            "-cpu R14000 -smp 2 -bios %s -display none",
+                            chassis_path, board_path, spd_path, prom_path);
+    qts = qtest_init(extra);
+
+    /* Each named file answers as component zero of its own area. */
+    g_assert_cmpuint(l1_eeprom_read(qts, 0, L1_EEPROM_CHASSIS, 0,
+                                    sizeof(chassis), reply), ==,
+                     12 + sizeof(chassis));
+    g_assert_cmpmem(reply + 12, sizeof(chassis), chassis, sizeof(chassis));
+    g_assert_cmpuint(l1_eeprom_read(qts, 0, L1_EEPROM_BOARD, 0, sizeof(board),
+                                    reply), ==, 12 + sizeof(board));
+    g_assert_cmpmem(reply + 12, sizeof(board), board, sizeof(board));
+    g_assert_cmpuint(l1_eeprom_read(qts, 0, L1_EEPROM_SPD, 64, 64, reply),
+                     ==, 76);
+    g_assert_cmpmem(reply + 12, 64, spd + 64, 64);
+
+    /* Nothing was invented for a second module. */
+    g_assert_cmpuint(l1_eeprom_read(qts, 1, L1_EEPROM_SPD, 0, 1, reply), ==,
+                     6);
+    g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(chassis_path), ==, 0);
+    g_assert_cmpint(g_unlink(board_path), ==, 0);
+    g_assert_cmpint(g_unlink(spd_path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_l1_has_no_identity_records_by_default(const void *data)
+{
+    QTestState *qts = machine_start();
+    uint8_t reply[131];
+
+    /* No file, no record: the machine supplies nothing of its own. */
+    for (unsigned area = 1; area <= 4; area++) {
+        g_assert_cmpuint(l1_eeprom_read(qts, 0, area, 0, 1, reply), ==, 6);
+        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+    }
+
+    qtest_quit(qts);
+}
+
 static void test_prom_second_stride_view(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -2229,6 +2410,10 @@ int main(int argc, char **argv)
                         test_prom_four_read_only_views);
     qtest_add_data_func("sn1/address-map/prom-flat-view-extents", NULL,
                         test_prom_flat_view_extents);
+    qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
+                        test_l1_identity_records_come_from_the_command_line);
+    qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
+                        test_l1_has_no_identity_records_by_default);
     qtest_add_data_func("sn1/address-map/prom-second-stride-view", NULL,
                         test_prom_second_stride_view);
     qtest_add_data_func("sn1/address-map/prom-size-is-exact", NULL,
