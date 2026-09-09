@@ -193,6 +193,210 @@ static void test_migration(gconstpointer opaque)
     g_rmdir(dir);
 }
 
+static QTestState *start_refusal(void)
+{
+    return start("-global sgi-xbow-transport-test.stop-on-link-reset=on");
+}
+
+static void reset_write(QTestState *qts, unsigned link, bool packet)
+{
+    qtest_writeq(qts, CONTROL + 0x80, 0x134 + link * 0x40);
+    qtest_writeq(qts, CONTROL + 0xc0, packet);
+}
+
+static void test_reset_refusal(void)
+{
+    QTestState *qts = start_refusal();
+    uint64_t state;
+    uint32_t registers[8][3];
+    const unsigned offsets[] = { 4, 12, 60 };
+    uint64_t high = qtest_readq(qts, CONTROL + 0xa0);
+    uint64_t low = qtest_readq(qts, CONTROL + 0xa8);
+    unsigned i, j, port;
+
+    qtest_writel(qts, CPU + 0x10c, (1U << 24) | 2);
+    state = qtest_readq(qts, CONTROL + 0x90);
+    for (port = 0; port < 8; port++) {
+        for (j = 0; j < G_N_ELEMENTS(offsets); j++) {
+            registers[port][j] = qtest_readl(qts,
+                CPU + 0x100 + port * 0x40 + offsets[j]);
+        }
+    }
+
+    for (i = 0; i < 8; i++) {
+        reset_write(qts, i, i & 1);
+        g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+        g_assert_cmphex(qtest_readq(qts, CONTROL + 0x90), ==, state);
+        g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 0);
+        for (port = 0; port < 8; port++) {
+            for (j = 0; j < G_N_ELEMENTS(offsets); j++) {
+                g_assert_cmphex(qtest_readl(qts,
+                    PACKET + 0x100 + port * 0x40 + offsets[j]), ==,
+                    registers[port][j]);
+            }
+        }
+    }
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    qtest_clock_step(qts, 1000);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa0), ==, high);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low);
+    qtest_writeq(qts, PACKET + (10ULL << 48) + 0x100, 0x1234);
+    g_assert_cmphex(field(qts, 3, 16), ==, 0x1234);
+    qtest_quit(qts);
+}
+
+static void test_quiesce(void)
+{
+    QTestState *qts = start("");
+    uint64_t low;
+
+    reset_write(qts, 0, true);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa0), ==, 1);
+    low = qtest_readq(qts, CONTROL + 0xa8);
+    qtest_writeq(qts, CONTROL + 0xb8, 1);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low + 1);
+    qtest_writeq(qts, CONTROL + 0xc8, 1);
+    qtest_writeq(qts, CONTROL + 0xb8, 1);
+    qtest_system_reset(qts);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    qtest_clock_step(qts, 1000);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low + 1);
+    qtest_writeq(qts, PACKET + (10ULL << 48) + 0x100, 0x1234);
+    g_assert_cmphex(field(qts, 3, 0), ==, 0);
+    {
+        QDict *error = qtest_qmp_assert_failure_ref(qts,
+            "{ 'execute': 'qom-set', 'arguments': { 'path': '" XBOW "',"
+            "'property': 'links-alive', 'value': 1792 } }");
+        qobject_unref(error);
+    }
+    reset_write(qts, 2, false);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+    qtest_quit(qts);
+}
+
+static void test_reset_load(gconstpointer opaque)
+{
+    bool truncated = GPOINTER_TO_UINT(opaque);
+    QTestState *qts = start_refusal();
+    uint64_t high = qtest_readq(qts, CONTROL + 0xa0);
+    uint64_t low = qtest_readq(qts, CONTROL + 0xa8);
+
+    qtest_writeq(qts, CONTROL + 0xd0, truncated);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    qtest_clock_step(qts, 3000000);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa0), ==, high);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low);
+    qtest_quit(qts);
+}
+
+static void test_stale_reset_timer(void)
+{
+    QTestState *qts = start_refusal();
+    uint64_t low = qtest_readq(qts, CONTROL + 0xa8);
+
+    qtest_writeq(qts, CONTROL + 0xd8, 1);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    qtest_clock_step(qts, 1000);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low);
+    qtest_quit(qts);
+}
+
+static void test_default_reset_load(void)
+{
+    QTestState *qts = start("");
+    uint64_t low = qtest_readq(qts, CONTROL + 0xa8);
+    uint64_t high = qtest_readq(qts, CONTROL + 0xa0);
+
+    qtest_writeq(qts, CONTROL + 0xd0, 0);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa0), ==, high + 1);
+    /* Restoration reports all eight levels, seven of them low. */
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low + 7);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xb0), ==, 1000000);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    qtest_clock_step(qts, 999999);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 1);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xa8), ==, low + 8);
+    qtest_quit(qts);
+}
+
+static void wait_status(QTestState *qts, const char *status)
+{
+    int64_t deadline = g_get_monotonic_time() + 5000000;
+
+    for (;;) {
+        QDict *reply = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+        bool matches = !strcmp(qdict_get_str(qdict_get_qdict(reply, "return"),
+                                            "status"), status);
+        qobject_unref(reply);
+        if (matches) {
+            return;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+static void test_running_refusal(void)
+{
+    QTestState *qts = qtest_initf(
+        "-M sgi-xbow-transport-test -cpu R10000 -S -accel tcg "
+        "-device loader,addr=0xffffffff80000000,cpu-num=0 "
+        "-global sgi-xbow-transport-test.stop-on-link-reset=on");
+    uint32_t program[] = {
+        0x3c088000, 0x8d090100, 0x25290001,
+        0xad090100, 0x1000fffc, 0,
+    };
+    unsigned i, pass;
+
+    /* Public MIPS instructions increment RAM, proving CPU execution. */
+    for (i = 0; i < G_N_ELEMENTS(program); i++) {
+        qtest_writel(qts, i * 4, program[i]);
+    }
+    for (pass = 0; pass < 2; pass++) {
+        int64_t deadline = g_get_monotonic_time() + 5000000;
+        qtest_writel(qts, 0x100, 0);
+        qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+        while (!qtest_readl(qts, 0x100)) {
+            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        }
+        reset_write(qts, pass, pass);
+        g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
+        wait_status(qts, "internal-error");
+        g_assert_cmphex(qtest_readq(qts, CONTROL + 0x98), ==, 0);
+        qtest_system_reset(qts);
+    }
+    qtest_quit(qts);
+}
+
+static void test_lifetime(void)
+{
+    QTestState *qts = start("");
+    unsigned cycle;
+
+    for (cycle = 0; cycle < 2; cycle++) {
+        int64_t deadline = g_get_monotonic_time() + 5000000;
+        qtest_writeq(qts, CONTROL + 0xe0, 1);
+        g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xe0), ==, cycle);
+        qtest_writeq(qts, CONTROL + 0xe0, 0);
+        while (qtest_readq(qts, CONTROL + 0xe0) != cycle + 1) {
+            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+            g_usleep(1000);
+        }
+    }
+    qtest_writeq(qts, CONTROL + 0xe8, 1);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), ==, 3);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -207,5 +411,17 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/xbow-transport/gating", test_gating);
     qtest_add_func("/sn0/xbow-transport/attributes-errors",
                    test_attributes_errors);
+    qtest_add_func("/sn0/xbow-transport/reset-refusal", test_reset_refusal);
+    qtest_add_func("/sn0/xbow-transport/quiesce", test_quiesce);
+    qtest_add_func("/sn0/xbow-transport/stale-reset-timer",
+                   test_stale_reset_timer);
+    qtest_add_data_func("/sn0/xbow-transport/reset-load/invalid", NULL,
+                        test_reset_load);
+    qtest_add_data_func("/sn0/xbow-transport/reset-load/truncated",
+                        GUINT_TO_POINTER(1), test_reset_load);
+    qtest_add_func("/sn0/xbow-transport/reset-load/default",
+                   test_default_reset_load);
+    qtest_add_func("/sn0/xbow-transport/running-refusal", test_running_refusal);
+    qtest_add_func("/sn0/xbow-transport/lifetime", test_lifetime);
     return g_test_run();
 }
