@@ -28,38 +28,10 @@
 #include "system/system.h"
 #include "cpu.h"
 #include "cpu-qom.h"
+#include "sn1-model.h"
 
-#define SN1_CPU_CLOCK_HZ 500000000
-#define SN1_RAM_SIZE (512 * MiB)
-#define SN1_HUB_LOCAL_MEMORY_SIZE (256 * MiB)
-#define SN1_HUB_SPECIAL_WINDOW_SIZE (128 * MiB)
-#define SN1_PROM_SIZE UINT64_C(0x1686a8)
 #define SN1_CONFIG0_RESET_INPUT UINT32_C(0x009aa985)
-
-#define SN1_SPACE_HUB UINT64_C(0x10000000000)
-#define SN1_SPACE_XTALK UINT64_C(0x20000000000)
-
-#define SN1_BEDROCK_LOCAL (SN1_SPACE_XTALK + UINT64_C(0x01000000))
-#define SN1_BEDROCK_NODE0 (SN1_SPACE_XTALK + UINT64_C(0x01800000))
-
-#define SN1_HUB_LOCAL_REGISTERS (SN1_SPACE_HUB + UINT64_C(0x10000000))
-#define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
-#define SN1_HUB_LOCAL_FLASH (SN1_SPACE_HUB + UINT64_C(0x1a000000))
-#define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
-#define SN1_HUB_REMOTE_REGISTERS (SN1_SPACE_HUB + UINT64_C(0x30000000))
-#define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
-#define SN1_PROM_RESET UINT64_C(0x1fc00000)
-#define SN1_FLASH_VIEW_SIZE (16 * MiB)
-
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
-#define SN1_XBRIDGE_HEAD_F 0xf
-#define SN1_IO8_SCSI_SLOT 1
-#define SN1_IO8_SCSI_PIN 1
-#define SN1_IO8_IOC3_SLOT 4
-#define SN1_IO8_IOC3_ETH_PIN 4
-#define SN1_IO8_IOC3_SUPERIO_PIN 0
-#define SN1_IO8_USB_SLOT 5
-#define SN1_IO8_USB_PIN 5
 
 static const VMStateDescription vmstate_sn1_machine = {
     .name = "sn1-machine",
@@ -116,6 +88,8 @@ static void sn1_machine_finalize(Object *obj)
     SN1MachineState *s = SN1_MACHINE(obj);
 
     vmstate_unregister(NULL, &vmstate_sn1_machine, s);
+    g_free(s->cpu);
+    g_free(s->prom_views);
 }
 
 static void sn1_cpu_reset(void *opaque)
@@ -142,7 +116,8 @@ static void sn1_machine_reset(MachineState *machine, ResetType type)
 
 static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
 {
-    for (unsigned int i = 0; i < SN1_PROCESSORS; i++) {
+    s->cpu = g_new0(CPUState *, sn1_origin300_model.cpu_count);
+    for (unsigned int i = 0; i < sn1_origin300_model.cpu_count; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u", i);
         DeviceState *cpu_dev = qdev_new(machine->cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
@@ -194,7 +169,7 @@ static uint64_t sn1_flash_erased_read(void *opaque, hwaddr offset,
 static void sn1_flash_erased_write(void *opaque, hwaddr offset, uint64_t value,
                                    unsigned size)
 {
-    sn1_flash_reject_write(offset + SN1_PROM_SIZE, value);
+    sn1_flash_reject_write(offset + sn1_origin300_model.prom_size, value);
 }
 
 static const MemoryRegionOps sn1_flash_payload_ops = {
@@ -220,6 +195,7 @@ static const MemoryRegionOps sn1_flash_erased_ops = {
 static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                           Error **errp)
 {
+    const SN1MachineModel *model = &sn1_origin300_model;
     MemoryRegion *system = get_system_memory();
     g_autoptr(GError) local_error = NULL;
     g_autofree char *contents = NULL;
@@ -242,9 +218,10 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                    machine->firmware, local_error->message);
         return false;
     }
-    if (length != SN1_PROM_SIZE) {
+    if (length != model->prom_size) {
         error_setg(errp,
-                   "origin300: PROM image must be exactly 1476264 bytes");
+                   "origin300: PROM image must be exactly %" PRIu64 " bytes",
+                   model->prom_size);
         return false;
     }
     if (machine->kernel_filename) {
@@ -253,57 +230,53 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     }
 
     if (!memory_region_init_ram_flags_nomigrate(&s->prom, OBJECT(machine),
-                                                "sn1.prom", SN1_PROM_SIZE, 0,
+                                                "sn1.prom", model->prom_size, 0,
                                                 errp)) {
         return false;
     }
     memory_region_set_readonly(&s->prom, true);
     /* The stock PROM bytes are part of snapshots despite being immutable. */
     vmstate_register_ram_global(&s->prom);
-    memcpy(memory_region_get_ram_ptr(&s->prom), contents, SN1_PROM_SIZE);
-    memory_region_set_dirty(&s->prom, 0, SN1_PROM_SIZE);
+    memcpy(memory_region_get_ram_ptr(&s->prom), contents, model->prom_size);
+    memory_region_set_dirty(&s->prom, 0, model->prom_size);
 
-    memory_region_init_alias(&s->prom_reset, OBJECT(machine),
-                             "sn1.prom.reset", &s->prom, 0, SN1_PROM_SIZE);
-    memory_region_init_alias(&s->prom_local, OBJECT(machine),
-                             "sn1.prom.local", &s->prom, 0, SN1_PROM_SIZE);
-    memory_region_init_alias(&s->prom_local_high, OBJECT(machine),
-                             "sn1.prom.local-high", &s->prom, 0,
-                             SN1_PROM_SIZE);
-    memory_region_init_alias(&s->prom_remote, OBJECT(machine),
-                             "sn1.prom.remote", &s->prom, 0, SN1_PROM_SIZE);
-    memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
-                                        &s->prom_reset, 1);
-    memory_region_add_subregion(system, SN1_HUB_LOCAL_BOOT, &s->prom_local);
-    memory_region_add_subregion(system, SN1_HUB_LOCAL_HIGH_BOOT,
-                                &s->prom_local_high);
-    memory_region_add_subregion(system, SN1_HUB_REMOTE_BOOT, &s->prom_remote);
+    s->prom_views = g_new0(MemoryRegion, model->num_prom_views);
+    for (size_t i = 0; i < model->num_prom_views; i++) {
+        const SN1ModelPromView *view = &model->prom_views[i];
+
+        memory_region_init_alias(&s->prom_views[i], OBJECT(machine),
+                                 view->name, &s->prom, view->offset,
+                                 view->size);
+        /* PROM views take precedence where their carriers overlap RAM. */
+        memory_region_add_subregion_overlap(system, view->address,
+                                            &s->prom_views[i], 1);
+    }
 
     /*
-     * The second software PROM selection sits 32 MiB above the boot window
-     * and spans the flash part's published 16 MiB logical capacity. Mirroring
-     * the supplied payload there and reading the remainder as erased is a
-     * compatibility choice, not a fitted-part or decoder claim. Both halves
-     * answer through callbacks so that every rejected write is logged.
+     * The second software PROM selection mirrors the supplied payload and
+     * reads the remainder as erased. Both halves use callbacks so that every
+     * rejected write is logged.
      */
     memory_region_init(&s->prom_flash, OBJECT(machine), "sn1.prom.flash",
-                       SN1_FLASH_VIEW_SIZE);
+                       model->prom_second_selection.size);
     memory_region_init_io(&s->prom_flash_payload, OBJECT(machine),
                           &sn1_flash_payload_ops, s, "sn1.prom.flash-payload",
-                          SN1_PROM_SIZE);
-    memory_region_init_io(&s->prom_flash_erased, OBJECT(machine),
-                          &sn1_flash_erased_ops, s, "sn1.prom.flash-erased",
-                          SN1_FLASH_VIEW_SIZE - SN1_PROM_SIZE);
+                          model->prom_size);
+    memory_region_init_io(
+        &s->prom_flash_erased, OBJECT(machine), &sn1_flash_erased_ops, s,
+        "sn1.prom.flash-erased",
+        model->prom_second_selection.size - model->prom_size);
     memory_region_add_subregion(&s->prom_flash, 0, &s->prom_flash_payload);
-    memory_region_add_subregion(&s->prom_flash, SN1_PROM_SIZE,
+    memory_region_add_subregion(&s->prom_flash, model->prom_size,
                                 &s->prom_flash_erased);
-    memory_region_add_subregion(system, SN1_HUB_LOCAL_FLASH, &s->prom_flash);
+    memory_region_add_subregion(system, model->prom_second_selection.address,
+                                &s->prom_flash);
     return true;
 }
 
 static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
 {
-    static const unsigned int xbridge_widgets[] = { 0, 0xe, 0xf };
+    const SN1MachineModel *model = &sn1_origin300_model;
     Chardev *l1_console = serial_hd(0);
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
@@ -330,10 +303,12 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
 
     s->bedrock = qdev_new(TYPE_SGI_BEDROCK);
     object_property_add_child(OBJECT(machine), "bedrock", OBJECT(s->bedrock));
-    qdev_prop_set_uint32(s->bedrock, "processor-count", SN1_PROCESSORS);
-    qdev_prop_set_uint8(s->bedrock, "revision", 2);
-    qdev_prop_set_uint8(s->bedrock, "local-region", 0);
-    qdev_prop_set_uint8(s->bedrock, "initiator-region", 0);
+    qdev_prop_set_uint32(s->bedrock, "processor-count", model->cpu_count);
+    qdev_prop_set_uint8(s->bedrock, "revision", model->bedrock_revision);
+    qdev_prop_set_uint8(s->bedrock, "local-region",
+                        model->bedrock_local_region);
+    qdev_prop_set_uint8(s->bedrock, "initiator-region",
+                        model->bedrock_initiator_region);
     object_property_set_link(OBJECT(s->bedrock), "dma-memory", OBJECT(system),
                              &error_abort);
     object_property_set_link(OBJECT(s->bedrock), "l1-uart", OBJECT(l1_uart),
@@ -341,12 +316,12 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
 
     s->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(machine), "xbridge", OBJECT(s->xbridge));
-    qdev_prop_set_uint8(s->xbridge, "host-port", 0xa);
+    qdev_prop_set_uint8(s->xbridge, "host-port", model->xbridge_host_port);
     bedrock_widget = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bedrock), 2);
     object_property_set_link(OBJECT(s->xbridge), "fabric",
                              OBJECT(bedrock_widget), &error_abort);
-    for (size_t i = 0; i < ARRAY_SIZE(xbridge_widgets); i++) {
-        unsigned int widget = xbridge_widgets[i];
+    for (size_t i = 0; i < model->num_xbridge_widgets; i++) {
+        unsigned int widget = model->xbridge_widgets[i];
         g_autofree char *property = g_strdup_printf("widget-%u", widget);
 
         object_property_set_link(OBJECT(s->bedrock), property,
@@ -364,20 +339,20 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     qdev_connect_gpio_out_named(s->bedrock, "cpu-enable", 1,
                                 &s->cpu_b_enable);
 
-    memory_region_add_subregion(system, SN1_SPACE_XTALK,
+    memory_region_add_subregion(system, model->xtalk_address,
                                 sysbus_mmio_get_region(bedrock, 1));
-    memory_region_add_subregion_overlap(system, SN1_BEDROCK_LOCAL,
+    memory_region_add_subregion_overlap(system, model->bedrock_local_address,
                                         sysbus_mmio_get_region(bedrock, 0), 1);
     memory_region_init_alias(&s->bedrock_node, OBJECT(machine),
                              "sn1.bedrock.node0",
                              sysbus_mmio_get_region(bedrock, 0), 0,
-                             SGI_BEDROCK_SIZE);
-    memory_region_add_subregion_overlap(system, SN1_BEDROCK_NODE0,
+                             model->bedrock_node.size);
+    memory_region_add_subregion_overlap(system, model->bedrock_node.address,
                                         &s->bedrock_node, 1);
-    memory_region_add_subregion(system, SN1_HUB_REMOTE_REGISTERS,
+    memory_region_add_subregion(system, model->hub_remote_registers_address,
                                 sysbus_mmio_get_region(bedrock, 3));
 
-    for (unsigned int cpu = 0; cpu < SN1_PROCESSORS; cpu++) {
+    for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
         MIPSCPU *mips_cpu = MIPS_CPU(s->cpu[cpu]);
 
         qdev_connect_gpio_out_named(
@@ -392,49 +367,14 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     }
 }
 
-static void sn1_create_io8_scsi(SN1MachineState *s, MachineState *machine)
+static void sn1_configure_ioc3(PCIDevice *ioc3, const SN1ModelPciDevice *model)
 {
-    PCIDevice *scsi = pci_new(PCI_DEVFN(SN1_IO8_SCSI_SLOT, 0),
-                              "qlogic-isp12160");
-
-    object_property_add_child(OBJECT(machine), "io8-scsi", OBJECT(scsi));
-    qdev_connect_gpio_out_named(
-        s->xbridge, "head-f-pci-intx",
-        SN1_IO8_SCSI_SLOT * PCI_NUM_PINS,
-        qdev_get_gpio_in_named(s->xbridge, "head-f-pin", SN1_IO8_SCSI_PIN));
-    pci_realize_and_unref(scsi,
-                          sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
-                                              SN1_XBRIDGE_HEAD_F),
-                          &error_fatal);
-}
-
-static void sn1_create_io8_usb(SN1MachineState *s, MachineState *machine)
-{
-    PCIDevice *usb = pci_new(PCI_DEVFN(SN1_IO8_USB_SLOT, 0),
-                             "lucent-ohci");
-
-    object_property_add_child(OBJECT(machine), "io8-usb", OBJECT(usb));
-    qdev_connect_gpio_out_named(
-        s->xbridge, "head-f-pci-intx",
-        SN1_IO8_USB_SLOT * PCI_NUM_PINS,
-        qdev_get_gpio_in_named(s->xbridge, "head-f-pin", SN1_IO8_USB_PIN));
-    pci_realize_and_unref(usb,
-                          sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
-                                              SN1_XBRIDGE_HEAD_F),
-                          &error_fatal);
-}
-
-static void sn1_create_io8_ioc3(SN1MachineState *s, MachineState *machine)
-{
-    PCIDevice *ioc3 = pci_new(PCI_DEVFN(SN1_IO8_IOC3_SLOT, 0),
-                              TYPE_SGI_IOC3);
     DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
     BlockBackend *nvram_blk = nvram_dinfo ?
         blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
     Chardev *serial_a = serial_hd(1);
     Chardev *serial_b = serial_hd(2);
 
-    object_property_add_child(OBJECT(machine), "io8-ioc3", OBJECT(ioc3));
     if (serial_a) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_a);
     }
@@ -445,66 +385,101 @@ static void sn1_create_io8_ioc3(SN1MachineState *s, MachineState *machine)
         qdev_prop_set_chr(DEVICE(ioc3), "parallel-chardev",
                           parallel_hds[0]);
     }
-    qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", 0xffff);
-    qdev_prop_set_uint32(DEVICE(ioc3), "population",
-                         SGI_IOC3_POPULATION_ETHERNET |
-                         SGI_IOC3_POPULATION_SERIAL_A |
-                         SGI_IOC3_POPULATION_SERIAL_B |
-                         SGI_IOC3_POPULATION_PARALLEL);
+    qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", model->subsystem_id);
+    qdev_prop_set_uint32(DEVICE(ioc3), "population", model->population);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
-                        SGI_IOC3_TIMEKEEPER_M48T35);
+                        model->timekeeper_kind);
     if (nvram_blk) {
         qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", nvram_blk);
     }
+}
 
-    qdev_connect_gpio_out_named(
-        s->xbridge, "head-f-pci-intx",
-        SN1_IO8_IOC3_SLOT * PCI_NUM_PINS,
-        qdev_get_gpio_in_named(s->xbridge, "head-f-pin",
-                               SN1_IO8_IOC3_ETH_PIN));
-    pci_realize_and_unref(ioc3,
-                          sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
-                                              SN1_XBRIDGE_HEAD_F),
-                          &error_fatal);
-    pci_set_byte(ioc3->config + PCI_REVISION_ID, SGI_IOC3_REVISION);
-    qdev_connect_gpio_out(
-        DEVICE(ioc3), 0,
-        qdev_get_gpio_in_named(s->xbridge, "head-f-pin",
-                               SN1_IO8_IOC3_SUPERIO_PIN));
+static const char *sn1_pci_type(SN1ModelPciKind kind)
+{
+    switch (kind) {
+    case SN1_PCI_ISP12160:
+        return "qlogic-isp12160";
+    case SN1_PCI_IOC3:
+        return TYPE_SGI_IOC3;
+    case SN1_PCI_LUCENT_OHCI:
+        return "lucent-ohci";
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void sn1_create_pci_devices(SN1MachineState *s, MachineState *machine)
+{
+    const SN1MachineModel *model = &sn1_origin300_model;
+
+    for (size_t i = 0; i < model->num_pci_devices; i++) {
+        const SN1ModelPciDevice *entry = &model->pci_devices[i];
+        PCIDevice *dev = pci_new(PCI_DEVFN(entry->device, entry->function),
+                                  sn1_pci_type(entry->kind));
+        g_autofree char *intx = g_strdup_printf("head-%x-pci-intx",
+                                                entry->widget);
+        g_autofree char *pin = g_strdup_printf("head-%x-pin", entry->widget);
+
+        object_property_add_child(OBJECT(machine), entry->name, OBJECT(dev));
+        if (entry->kind == SN1_PCI_IOC3) {
+            sn1_configure_ioc3(dev, entry);
+        }
+        qdev_connect_gpio_out_named(
+            s->xbridge, intx, entry->device * PCI_NUM_PINS,
+            qdev_get_gpio_in_named(s->xbridge, pin, entry->interrupt_pin));
+        pci_realize_and_unref(dev,
+                              sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
+                                                  entry->widget),
+                              &error_fatal);
+        pci_set_byte(dev->config + PCI_REVISION_ID, entry->revision);
+        pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID,
+                     entry->subsystem_vendor_id);
+        pci_set_word(dev->config + PCI_SUBSYSTEM_ID, entry->subsystem_id);
+        if (entry->kind == SN1_PCI_IOC3) {
+            qdev_connect_gpio_out(
+                DEVICE(dev), 0,
+                qdev_get_gpio_in_named(s->xbridge, pin, entry->superio_pin));
+        }
+    }
 }
 
 static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
 {
+    const SN1MachineModel *model = &sn1_origin300_model;
     MemoryRegion *system = get_system_memory();
 
-    memory_region_add_subregion(system, 0, machine->ram);
+    memory_region_add_subregion(system, model->ram_address, machine->ram);
     memory_region_init_alias(&s->hub_memory, OBJECT(machine),
                              "sn1.hub.local-memory", machine->ram, 0,
-                             SN1_HUB_LOCAL_MEMORY_SIZE);
-    memory_region_add_subregion(system, SN1_SPACE_HUB, &s->hub_memory);
+                             model->hub_memory.size);
+    memory_region_add_subregion(system, model->hub_memory.address,
+                                &s->hub_memory);
 
     memory_region_init(&s->hub_local_registers, OBJECT(machine),
                        "sn1.hub.local-registers",
-                       SN1_HUB_SPECIAL_WINDOW_SIZE);
-    memory_region_add_subregion(system, SN1_HUB_LOCAL_REGISTERS,
+                       model->hub_local_registers.size);
+    memory_region_add_subregion(system, model->hub_local_registers.address,
                                 &s->hub_local_registers);
 }
 
 static void origin300_init(MachineState *machine)
 {
     SN1MachineState *s = SN1_MACHINE(machine);
+    const SN1MachineModel *model = &sn1_origin300_model;
 
-    if (machine->ram_size != SN1_RAM_SIZE) {
-        error_setg(&error_fatal, "origin300 requires 512 MiB of RAM");
+    if (machine->ram_size != model->ram_size) {
+        error_setg(&error_fatal, "origin300 requires %" PRIu64 " MiB of RAM",
+                   model->ram_size / MiB);
         return;
     }
-    if (machine->smp.cpus != SN1_PROCESSORS) {
-        error_setg(&error_fatal, "origin300 requires two processors");
+    if (machine->smp.cpus != model->cpu_count) {
+        error_setg(&error_fatal, "origin300 requires %u processors",
+                   model->cpu_count);
         return;
     }
 
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk, SN1_CPU_CLOCK_HZ);
+    clock_set_hz(s->cpu_refclk, model->cpu_clock_hz);
 
     sn1_map_memory(s, machine);
     if (!sn1_load_prom(s, machine, &error_fatal)) {
@@ -512,28 +487,35 @@ static void origin300_init(MachineState *machine)
     }
     sn1_create_cpus(s, machine);
     sn1_create_bedrock(s, machine);
-    sn1_create_io8_scsi(s, machine);
-    sn1_create_io8_ioc3(s, machine);
-    sn1_create_io8_usb(s, machine);
+    sn1_create_pci_devices(s, machine);
+}
+
+static const char *sn1_cpu_type(SN1ModelCpuKind kind)
+{
+    switch (kind) {
+    case SN1_CPU_R14000:
+        return MIPS_CPU_TYPE_NAME("R14000");
+    default:
+        g_assert_not_reached();
+    }
 }
 
 static void origin300_class_init(ObjectClass *oc, const void *data)
 {
-    static const char * const valid_cpu_types[] = {
-        MIPS_CPU_TYPE_NAME("R14000"),
-        NULL,
-    };
+    static const char *valid_cpu_types[2];
+    const SN1MachineModel *model = &sn1_origin300_model;
     MachineClass *mc = MACHINE_CLASS(oc);
 
-    mc->desc = "SGI Origin 300 (IP45)";
+    valid_cpu_types[0] = sn1_cpu_type(model->cpu_kind);
+    mc->desc = model->description;
     mc->init = origin300_init;
     mc->reset = sn1_machine_reset;
-    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R14000");
+    mc->default_cpu_type = valid_cpu_types[0];
     mc->valid_cpu_types = valid_cpu_types;
-    mc->default_cpus = 2;
-    mc->min_cpus = 2;
-    mc->max_cpus = 2;
-    mc->default_ram_size = SN1_RAM_SIZE;
+    mc->default_cpus = model->cpu_count;
+    mc->min_cpus = model->cpu_count;
+    mc->max_cpus = model->cpu_count;
+    mc->default_ram_size = model->ram_size;
     mc->default_ram_id = "sn1.ram";
 }
 

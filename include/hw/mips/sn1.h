@@ -9,13 +9,11 @@
 #define TYPE_SN1_MACHINE MACHINE_TYPE_NAME("origin300")
 OBJECT_DECLARE_SIMPLE_TYPE(SN1MachineState, SN1_MACHINE)
 
-#define SN1_PROCESSORS 2
-
 struct SN1MachineState {
     MachineState parent_obj;
 
     Clock *cpu_refclk;
-    CPUState *cpu[SN1_PROCESSORS];
+    CPUState **cpu;
     IRQState cpu_b_enable;
     bool cpu_b_enabled;
     DeviceState *bedrock;
@@ -26,10 +24,7 @@ struct SN1MachineState {
     MemoryRegion bedrock_node;
     MemoryRegion hub_local_registers;
     MemoryRegion prom;
-    MemoryRegion prom_reset;
-    MemoryRegion prom_local;
-    MemoryRegion prom_local_high;
-    MemoryRegion prom_remote;
+    MemoryRegion *prom_views;
     MemoryRegion prom_flash;
     MemoryRegion prom_flash_payload;
     MemoryRegion prom_flash_erased;
