@@ -260,6 +260,7 @@ typedef struct SN0NodeState {
     MemoryRegion device_view;
 
     PFlashCFI02 *flash;
+    BlockBackend *flash_drive;
     uint64_t flash_size;
     MemoryRegion flash_reset_view;
     MemoryRegion flash_hub_view;
