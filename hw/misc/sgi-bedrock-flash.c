@@ -1,24 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Origin 300 boot flash: the adapter that carries boot-window bus cycles to a
- * CFI flash device.
+ * Origin 300 boot flash: adapts Bedrock boot-window cycles to a CFI device.
  *
- * Reads are one-to-one: the byte at boot-window offset n is the byte at flash
- * offset n. Commands and programming data travel the other way round. They
- * arrive as 64-bit stores whose low 16 bits carry one flash word and whose
- * upper 48 bits are zero, and the flash word at index n is addressed by the
- * store at offset 8n. One store is therefore one two-byte flash cycle at
- * flash offset 8n / 4, never two one-byte cycles.
+ * Reads are one-to-one. Commands and programming arrive as 64-bit stores
+ * carrying one 16-bit word zero-extended to 64 bits, the word at index n
+ * addressed by the store at offset 8n, so a store is one two-byte cycle,
+ * never two one-byte cycles. A value with anything above the word set is
+ * outside that interface, so it is refused rather than masked down to fit.
+ * Published documentation also describes a byte-write view putting byte n at
+ * 8n; the firmware drives the 16-bit path modelled here, and a narrower
+ * store is refused rather than guessed at. What a selection can command
+ * follows from that transform and the view size; whether the hardware
+ * commands the whole part through one selection is unresolved.
  *
- * Unknown, and so not modelled: which part is fitted, how many packages carry
- * the 16 MiB, how packages map to the two software selections, the
- * chip-select equations, what an absent part answers, and what the board
- * decodes outside the two selections. The two selections here reach one
- * device so that firmware sees its own writes back through either one; that
- * is a compatibility choice, not a claim about the board. Each selection
- * covers exactly the published 16 MiB and nothing beyond it. The
- * manufacturer and device identifiers the CFI device answers with are its own
- * defaults and identify no real part.
+ * Unknown, so not modelled: the fitted part, package count, how packages map
+ * to the two selections, the chip-select equations, what an absent part
+ * answers, and the decode outside the two selections. Both selections reach
+ * one device so that firmware sees its own writes back through either one;
+ * that is a compatibility choice, not a claim about the board. The CFI
+ * device's identifiers are its defaults and name no part.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-flash.h"
@@ -85,6 +85,10 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
         return MEMTX_ERROR;
     }
     if (value > UINT16_MAX) {
+        /*
+         * No cycle is issued, so the flash stays wherever the sequence had
+         * reached and the next read may return status rather than data.
+         */
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s selection: "
                       "write of 0x%" PRIx64 " at 0x%" HWADDR_PRIx " sets bits "
                       "above the 16-bit flash word; refused without a flash "
@@ -149,6 +153,7 @@ static void flash_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint32(s->flash, "sector-length",
                          SGI_BEDROCK_FLASH_SECTOR_SIZE);
     qdev_prop_set_uint8(s->flash, "width", 2);
+    /* Above one, the CFI device publishes an undispatchable container. */
     qdev_prop_set_uint8(s->flash, "mappings", 1);
     qdev_prop_set_uint8(s->flash, "big-endian", 1);
     qdev_prop_set_uint16(s->flash, "unlock-addr0", FLASH_UNLOCK_ADDR0);

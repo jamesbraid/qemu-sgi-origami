@@ -8,8 +8,13 @@
 #define TYPE_SGI_BEDROCK_FLASH "sgi-bedrock-flash"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockFlashState, SGI_BEDROCK_FLASH)
 
-/* Published logical capacity of the boot flash, and its erase granularity. */
+/* Published logical capacity of the boot flash. */
 #define SGI_BEDROCK_FLASH_SIZE (16 * MiB)
+/*
+ * The granularity the firmware's own rewrite erases and reprograms in. That
+ * is a property of what the firmware does, not a published property of
+ * whatever part is fitted.
+ */
 #define SGI_BEDROCK_FLASH_SECTOR_SIZE (64 * KiB)
 
 /* The primary and the alternate software selection. */
