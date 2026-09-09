@@ -667,6 +667,30 @@ static void test_the_monitor_reads_pci_after_a_retry(void)
     qtest_quit(qts);
 }
 
+/*
+ * A board that could not be finished ends the attach for good. A function
+ * takes its host configuration partway through its own realize, so from
+ * outside a board that is short of complete cannot be told apart from one
+ * that took a drive or an ethernet address and then failed. Building a
+ * second board would produce a machine quietly missing what the first took,
+ * so the assembly gives the board up and refuses to attach again.
+ *
+ * Reaching this point at all is the other half of the check. qdev asserts
+ * at the end of machine init that every device under the machine is
+ * realized, so the function the PCI core refused has to have come off the
+ * board rather than stayed on it unrealized.
+ */
+static void test_a_part_built_board_ends_the_attach(void)
+{
+    QTestState *qts = attach_start_with(",refuse-function=on");
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "refused-again"));
+    g_assert_false(qtest_qom_get_bool(qts, "/machine", "verified"));
+    g_assert_cmpuint(pci_functions_seen(qts), ==, 0);
+    g_assert_false(stopped_on_error(qts));
+    qtest_quit(qts);
+}
+
 static uint64_t hub_readq(QTestState *qts, unsigned int node,
                           uint64_t offset)
 {
@@ -1028,6 +1052,8 @@ int main(int argc, char **argv)
                    test_a_retried_attach_keeps_its_host_backends);
     qtest_add_func("sn0/origin2000/xtalk-attach/rebuild-takes-its-backends",
                    test_a_rebuilt_board_takes_the_host_backends);
+    qtest_add_func("sn0/origin2000/xtalk-attach/part-built-board-is-final",
+                   test_a_part_built_board_ends_the_attach);
     qtest_add_func("sn0/origin2000/xtalk-attach/attached-machine-tears-down",
                    test_an_attached_machine_can_be_torn_down);
     qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-big-window",
