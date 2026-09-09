@@ -1947,7 +1947,20 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 static void sgi_bridge_unrealize(DeviceState *dev)
 {
     SGIBridgeState *s = SGI_BRIDGE(dev);
+    PCIHostState *phb = PCI_HOST_BRIDGE(dev);
     int slot;
+
+    /*
+     * pci_register_root_bus() put this chip on the PCI core's file-scope
+     * list of host bridges and took no reference for it. query-pci and
+     * pci_qdev_find_device() both walk that list, so an entry left behind
+     * hands them a bridge that has been freed. Undoing the registration is
+     * this device's job; nothing else in the core does it.
+     *
+     * qbus_unrealize() inside pci_root_bus_cleanup() is a second call on a
+     * bus device_set_realized() has already unrealized, and is a no-op.
+     */
+    pci_unregister_root_bus(phb->bus);
 
     address_space_destroy(&s->plain_dma_as);
     for (slot = SGI_BRIDGE_DEVICES - 1; slot >= 0; slot--) {
