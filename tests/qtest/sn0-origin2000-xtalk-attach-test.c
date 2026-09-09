@@ -130,6 +130,13 @@ static QTestState *attach_start(void)
 #define ASKED_MAC "52:54:00:aa:bb:cc"
 
 /*
+ * The adapter the one legacy drive lands behind: the first SCSI function the
+ * descriptor names, on its own channel. A drive that survived on paper but
+ * came back under a different adapter -- or under nothing -- fails here.
+ */
+#define DRIVE_OWNER "/machine/xtalk/baseio0/isp0/scsi.0/legacy[0]"
+
+/*
  * The same fixture given the two host backends a real command line brings:
  * one legacy SCSI drive for the first adapter and one ethernet
  * configuration for the IOC3. Both are claimed while the board is built.
@@ -156,27 +163,36 @@ static char *qom_string(QTestState *qts, const char *path,
     return value;
 }
 
-/* Whether the monitor can still see the drive the command line named. */
-static bool block_backend_attached(QTestState *qts, const char *name)
+/*
+ * Which device owns the drive the command line named, as the monitor
+ * reports it, or the empty string where no backend of that name is
+ * attached to anything. The owner is the point: a rebuilt board leaves the
+ * drive behind, and a drive nothing has claimed is still a drive.
+ */
+static char *block_backend_owner(QTestState *qts, const char *name)
 {
     QDict *response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
     QList *devices;
     QListEntry *entry;
-    bool found = false;
+    char *owner = g_strdup("");
 
     g_assert_true(qdict_haskey(response, "return"));
     devices = qdict_get_qlist(response, "return");
     g_assert_nonnull(devices);
     QLIST_FOREACH_ENTRY(devices, entry) {
         QDict *device = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *qdev;
 
         g_assert_nonnull(device);
-        if (g_str_equal(qdict_get_str(device, "device"), name)) {
-            found = true;
+        if (!g_str_equal(qdict_get_str(device, "device"), name)) {
+            continue;
         }
+        qdev = qdict_get_try_str(device, "qdev");
+        g_free(owner);
+        owner = g_strdup(qdev ? qdev : "");
     }
     qobject_unref(response);
-    return found;
+    return owner;
 }
 
 /* The machine says where its own window is, so the test cannot drift. */
@@ -524,11 +540,13 @@ static void test_a_retried_attach_keeps_its_host_backends(void)
 {
     QTestState *qts = attach_start_backed(",refuse-crossbow=on");
     g_autofree char *mac = NULL;
+    g_autofree char *owner = NULL;
 
     g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
     mac = qom_string(qts, "/machine/xtalk/baseio0/ioc3", "mac");
     g_assert_cmpstr(mac, ==, ASKED_MAC);
-    g_assert_true(block_backend_attached(qts, "scsi0-hd0"));
+    owner = block_backend_owner(qts, "scsi0-hd0");
+    g_assert_cmpstr(owner, ==, DRIVE_OWNER);
     qtest_quit(qts);
 }
 
@@ -541,11 +559,13 @@ static void test_an_attach_takes_the_host_backends_it_is_given(void)
 {
     QTestState *qts = attach_start_backed("");
     g_autofree char *mac = NULL;
+    g_autofree char *owner = NULL;
 
     g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
     mac = qom_string(qts, "/machine/xtalk/baseio0/ioc3", "mac");
     g_assert_cmpstr(mac, ==, ASKED_MAC);
-    g_assert_true(block_backend_attached(qts, "scsi0-hd0"));
+    owner = block_backend_owner(qts, "scsi0-hd0");
+    g_assert_cmpstr(owner, ==, DRIVE_OWNER);
     qtest_quit(qts);
 }
 
