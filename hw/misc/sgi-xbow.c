@@ -18,6 +18,9 @@
 #include "qapi/visitor.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
+#include "qemu/main-loop.h"
+#include "system/runstate.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -136,6 +139,7 @@
 
 /* Every widget mask names widgets 8 through 15 and nothing below. */
 #define XBOW_WIDGET_MASK            0xff00u
+#define XBOW_TIMER_INACTIVE         -1
 
 /* Widget zero and the links are legal destinations; 1 through 7 are not. */
 #define XBOW_FIRST_ILLEGAL_WIDGET   1
@@ -286,7 +290,7 @@ static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
                       "nothing attached; no packet sent\n", target);
         return false;
     }
-    address_space_stq_be(&s->face_as[link], address,
+    address_space_stq_be(s->face_as[link], address,
                          data | (raise ? XBOW_INTERRUPT_ASSERT : 0),
                          MEMTXATTRS_UNSPECIFIED, NULL);
     return true;
@@ -321,6 +325,9 @@ static void sgi_xbow_update_interrupt(SGIXbowState *s)
     unsigned int link;
     bool pending;
 
+    if (s->quiesced) {
+        return;
+    }
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         if (sgi_xbow_link_requesting(s, link)) {
             s->status |= XBOW_STATUS_LINK_REQUEST(link);
@@ -353,6 +360,9 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
     unsigned int port;
     unsigned int link;
 
+    if (s->quiesced) {
+        return;
+    }
     memory_region_transaction_begin();
     for (port = 0; port < SGI_XBOW_LINKS; port++) {
         memory_region_set_enabled(&s->ingress[port], sgi_xbow_alive(s, port));
@@ -536,6 +546,9 @@ static void sgi_xbow_link_reset_expire(void *opaque)
     SGIXbowLink *context = opaque;
     SGIXbowState *s = context->xbow;
 
+    if (s->quiesced || s->stop_on_link_reset) {
+        return;
+    }
     s->link_reset_asserted &= ~BIT(context->link);
     qemu_set_irq(s->link_reset[context->link], 0);
 }
@@ -591,6 +604,9 @@ static MemTxResult sgi_xbow_read(void *opaque, hwaddr addr, uint64_t *data,
     hwaddr reg;
     uint32_t value;
 
+    if (s->quiesced) {
+        return MEMTX_ERROR;
+    }
     *data = 0;
     if (!sgi_xbow_decode(addr, size, &slot) ||
         !sgi_xbow_accessible(slot, false)) {
@@ -708,6 +724,9 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
     hwaddr slot;
     hwaddr reg;
 
+    if (s->quiesced) {
+        return MEMTX_ERROR;
+    }
     if (!sgi_xbow_decode(addr, size, &slot) ||
         !sgi_xbow_accessible(slot, true)) {
         return sgi_xbow_refuse(s, addr, size, true);
@@ -799,6 +818,17 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
          * produces no response needs an adapter that keeps that bit;
          * nothing here fabricates a successful response.
          */
+        if (s->stop_on_link_reset) {
+            g_autofree char *path = object_get_canonical_path(OBJECT(s));
+
+            assert(bql_locked());
+            error_report("%s: unsupported link reset: widget %u, "
+                         "write address 0x%" HWADDR_PRIx ", width %u",
+                         path, sgi_xbow_widget(link), addr, size);
+            qemu_system_vmstop_request_prepare();
+            qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+            return MEMTX_ERROR;
+        }
         sgi_xbow_start_link_reset(s, link);
         return MEMTX_OK;
     default:
@@ -895,6 +925,10 @@ bool sgi_xbow_attach_endpoint(SGIXbowState *s, unsigned int widget,
 {
     unsigned int link;
 
+    if (s->quiesced) {
+        error_setg(errp, "crossbar is quiesced");
+        return false;
+    }
     if (DEVICE(s)->realized) {
         error_setg(errp, "crossbar endpoints must be attached "
                    "before realization");
@@ -951,6 +985,10 @@ static void sgi_xbow_set_links_alive(Object *obj, Visitor *v, const char *name,
     uint8_t changed;
     unsigned int link;
 
+    if (s->quiesced) {
+        error_setg(errp, "crossbar is quiesced");
+        return;
+    }
     if (!visit_type_uint16(v, name, &widgets, errp)) {
         return;
     }
@@ -1018,6 +1056,9 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
     SGIXbowState *s = SGI_XBOW(obj);
     unsigned int link;
 
+    if (s->quiesced) {
+        return;
+    }
     s->status = 0;
     s->err_upper = 0;
     s->err_lower = 0;
@@ -1054,6 +1095,9 @@ static void sgi_xbow_reset_hold(Object *obj, ResetType type)
     SGIXbowState *s = SGI_XBOW(obj);
     unsigned int link;
 
+    if (s->quiesced) {
+        return;
+    }
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         qemu_set_irq(s->link_reset[link], 0);
     }
@@ -1071,6 +1115,10 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     unsigned int port;
     unsigned int link;
 
+    if (s->quiesced) {
+        error_setg(errp, "crossbar is quiesced");
+        return;
+    }
     if (!s->span || s->span > SGI_XBOW_PACKET_SIZE) {
         error_setg(errp, "the crossbar needs the size of one crosstalk "
                          "widget space, no larger than 48 address bits");
@@ -1191,8 +1239,40 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         }
         name = g_strdup_printf("sgi-xbow.widget%u.packets",
                                sgi_xbow_widget(link));
-        address_space_init(&s->face_as[link], s->packet_face[link], name);
+        s->face_as[link] = g_new0(AddressSpace, 1);
+        address_space_init(s->face_as[link], s->packet_face[link], name);
     }
+    s->regions_initialized = true;
+}
+
+void sgi_xbow_quiesce(SGIXbowState *s)
+{
+    unsigned int link;
+
+    assert(bql_locked());
+    if (s->quiesced) {
+        return;
+    }
+    s->quiesced = true;
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        timer_del(s->link_reset_timer[link]);
+        s->link_reset_deadline[link] = XBOW_TIMER_INACTIVE;
+    }
+    if (s->regions_initialized) {
+        memory_region_transaction_begin();
+        memory_region_set_enabled(&s->regs, false);
+        for (link = 0; link < SGI_XBOW_LINKS; link++) {
+            memory_region_set_enabled(&s->ingress[link], false);
+            memory_region_set_enabled(&s->packet_ingress[link], false);
+        }
+        memory_region_transaction_commit();
+    }
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        if (s->link_reset_asserted & BIT(link)) {
+            qemu_set_irq(s->link_reset[link], 0);
+        }
+    }
+    s->link_reset_asserted = 0;
 }
 
 static void sgi_xbow_unrealize(DeviceState *dev)
@@ -1200,9 +1280,11 @@ static void sgi_xbow_unrealize(DeviceState *dev)
     SGIXbowState *s = SGI_XBOW(dev);
     unsigned int link;
 
+    sgi_xbow_quiesce(s);
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
-        if (s->face[link]) {
-            address_space_destroy(&s->face_as[link]);
+        if (s->face_as[link]) {
+            address_space_destroy_free(s->face_as[link]);
+            s->face_as[link] = NULL;
         }
     }
 }
@@ -1212,12 +1294,40 @@ static void sgi_xbow_unrealize(DeviceState *dev)
  * links have moved since launch keeps that state across the transfer, and
  * the routes and outputs derived from it are rebuilt here.
  */
+static int sgi_xbow_pre_save(void *opaque)
+{
+    SGIXbowState *s = opaque;
+    unsigned int link;
+
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        int64_t deadline = timer_expire_time_ns(s->link_reset_timer[link]);
+
+        if (timer_pending(s->link_reset_timer[link]) && deadline < 0) {
+            return -EINVAL;
+        }
+        s->link_reset_deadline[link] = deadline;
+    }
+    return 0;
+}
+
+static int sgi_xbow_pre_load(void *opaque)
+{
+    SGIXbowState *s = opaque;
+    unsigned int link;
+
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        timer_del(s->link_reset_timer[link]);
+        s->link_reset_deadline[link] = XBOW_TIMER_INACTIVE;
+    }
+    return s->quiesced ? -EINVAL : 0;
+}
+
 static int sgi_xbow_post_load(void *opaque, int version_id)
 {
     SGIXbowState *s = opaque;
     unsigned int link;
 
-    if (s->link_alive & ~s->link_present) {
+    if (s->quiesced || (s->link_alive & ~s->link_present)) {
         return -EINVAL;
     }
     /*
@@ -1229,17 +1339,35 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
      * it without re-driving an edge the destination already had.
      */
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        if (s->link_reset_deadline[link] < XBOW_TIMER_INACTIVE) {
+            return -EINVAL;
+        }
+        if (s->stop_on_link_reset &&
+            ((s->link_reset_asserted & BIT(link)) ||
+             s->link_reset_deadline[link] != XBOW_TIMER_INACTIVE)) {
+            return -EINVAL;
+        }
+    }
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
         qemu_set_irq(s->link_reset[link],
                      !!(s->link_reset_asserted & BIT(link)));
     }
     sgi_xbow_sync_routes(s);
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        if (s->link_reset_deadline[link] != XBOW_TIMER_INACTIVE) {
+            timer_mod_ns(s->link_reset_timer[link],
+                         s->link_reset_deadline[link]);
+        }
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_xbow = {
     .name = "sgi-xbow",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .pre_save = sgi_xbow_pre_save,
+    .pre_load = sgi_xbow_pre_load,
     .post_load = sgi_xbow_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(status, SGIXbowState),
@@ -1267,8 +1395,8 @@ static const VMStateDescription vmstate_sgi_xbow = {
         VMSTATE_UINT8(link_eight_bit, SGIXbowState),
         VMSTATE_UINT8(link_reset_asserted, SGIXbowState),
         VMSTATE_BOOL(interrupt_asserted, SGIXbowState),
-        VMSTATE_TIMER_PTR_ARRAY(link_reset_timer, SGIXbowState,
-                                SGI_XBOW_LINKS),
+        VMSTATE_INT64_ARRAY(link_reset_deadline, SGIXbowState,
+                            SGI_XBOW_LINKS),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1280,6 +1408,8 @@ static const VMStateDescription vmstate_sgi_xbow = {
  */
 static const Property sgi_xbow_properties[] = {
     DEFINE_PROP_UINT64("span", SGIXbowState, span, 0),
+    DEFINE_PROP_BOOL("stop-on-link-reset", SGIXbowState,
+                     stop_on_link_reset, false),
     DEFINE_PROP_UINT32("revision", SGIXbowState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIXbowState, part, 0),
     DEFINE_PROP_UINT32("manufacturer", SGIXbowState, manufacturer, 0),
@@ -1301,6 +1431,7 @@ static void sgi_xbow_instance_init(Object *obj)
 
         s->link_context[link].xbow = s;
         s->link_context[link].link = link;
+        s->link_reset_deadline[link] = XBOW_TIMER_INACTIVE;
         s->link_reset_timer[link] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                                  sgi_xbow_link_reset_expire,
                                                  &s->link_context[link]);

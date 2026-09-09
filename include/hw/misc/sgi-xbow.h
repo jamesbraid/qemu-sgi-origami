@@ -79,7 +79,10 @@ struct SGIXbowState {
      */
     MemoryRegion *face[SGI_XBOW_LINKS];
     MemoryRegion *packet_face[SGI_XBOW_LINKS];
-    AddressSpace face_as[SGI_XBOW_LINKS];
+    AddressSpace *face_as[SGI_XBOW_LINKS];
+    bool regions_initialized;
+    bool quiesced;
+    bool stop_on_link_reset;
 
     /* How much crosstalk space one widget owns, which the machine defines. */
     uint64_t span;
@@ -139,6 +142,7 @@ struct SGIXbowState {
 
     qemu_irq link_reset[SGI_XBOW_LINKS];
     QEMUTimer *link_reset_timer[SGI_XBOW_LINKS];
+    int64_t link_reset_deadline[SGI_XBOW_LINKS];
     SGIXbowLink link_context[SGI_XBOW_LINKS];
 };
 
@@ -150,6 +154,9 @@ struct SGIXbowState {
  * the ports itself.
  */
 MemoryRegion *sgi_xbow_ingress(SGIXbowState *s, unsigned int widget);
+
+/* Terminal host teardown. Hold the BQL and keep endpoints connected. */
+void sgi_xbow_quiesce(SGIXbowState *s);
 
 /* Full packet address, with destination widget in bits 51:48. */
 MemoryRegion *sgi_xbow_packet_ingress(SGIXbowState *s, unsigned int widget);
