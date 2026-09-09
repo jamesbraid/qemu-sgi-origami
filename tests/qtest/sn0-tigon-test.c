@@ -1372,9 +1372,9 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
 
     /*
      * User networking answers the ARP request from qemu_send_packet(). The
-     * paired command observes only work completed inside this doorbell: the
-     * receive-return descriptor must still be unowned until transmit has
-     * finished publishing its consumer index and interrupt.
+     * first read observes ownership before polling, when the receive-return
+     * descriptor must still be unowned. The second read follows one AIO poll,
+     * when the queued reply must have published receive ownership.
      */
     rx_flags = qtest_writel_then_readl_poll(
         qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1,
