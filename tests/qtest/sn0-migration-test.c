@@ -69,11 +69,15 @@
 #define I2C_CTRL                0x220008
 #define I2C_CTL_PIN             0x80
 #define I2C_CTL_ESO             0x40
+#define I2C_CTL_ES1             0x20
 #define I2C_CTL_STA             0x04
 #define I2C_CTL_STO             0x02
 #define I2C_CTL_ACK             0x01
 #define I2C_STS_LRB             0x08
 #define ELSC_ADDR               0x08
+#define ARB_SIGNAL_AFTER_STAGE  0xe1
+#define ARB_TICK_NS             (1000 * 1000)
+#define ARB_PARTIAL_NS          (400 * 1000)
 
 /* PCI type 0 configuration space, and the window each device sits behind. */
 #define BRIDGE_CFG0             0x020000
@@ -467,9 +471,10 @@ static void test_network_routes_survive_migration(const void *data)
 /*
  * A first START is split across two guest writes: the address reaches the
  * PCF8584 data register before the control write asserts START.  Migrate in
- * that interval, then advance the destination far enough for the ELSC's
- * arbitration timer to fire.  The staged-address state must move with the
- * byte or the next broadcast replaces it before START consumes it.
+ * that interval after code 0's grant and part of code 1's one-millisecond
+ * interval. Migration must preserve both the remaining interval and next
+ * code. Code 1 then replaces readable S0 exactly at its deadline, while the
+ * separately staged address still makes START reach the ELSC.
  */
 static void test_staged_i2c_start_survives_migration(const void *data)
 {
@@ -478,13 +483,22 @@ static void test_staged_i2c_start_survives_migration(const void *data)
     g_autofree gchar *dest_cmdline = NULL;
     GError *err = NULL;
     QTestState *from, *to;
+    int64_t source_time;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
     g_assert(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
+    qtest_writeq(from, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN);
+    qtest_writeq(from, HUB_LOCAL + I2C_DATA, 0x7f);
+    qtest_writeq(from, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN | I2C_CTL_ES1);
+    qtest_writeq(from, HUB_LOCAL + I2C_DATA, 0x1c);
+    qtest_writeq(from, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN);
+    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + I2C_DATA), ==, 0x7f);
+    qtest_writeq(from, HUB_LOCAL + I2C_DATA, 0x09);
     qtest_writeq(from, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN | I2C_CTL_ESO);
+    source_time = qtest_clock_step(from, ARB_PARTIAL_NS);
     qtest_writeq(from, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
     g_assert_cmphex(qtest_readq(from, HUB_LOCAL + I2C_DATA), ==,
                     ELSC_ADDR << 1);
@@ -492,10 +506,14 @@ static void test_staged_i2c_start_survives_migration(const void *data)
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
     migrate_stopped_vm(from, uri);
+    qtest_clock_set(to, source_time);
 
-    qtest_clock_step(to, 500 * 1000);
+    qtest_clock_step(to, ARB_TICK_NS - ARB_PARTIAL_NS - 1);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_DATA), ==,
                     ELSC_ADDR << 1);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_DATA), ==,
+                    ARB_SIGNAL_AFTER_STAGE);
     qtest_writeq(to, HUB_LOCAL + I2C_CTRL,
                  I2C_CTL_PIN | I2C_CTL_ESO | I2C_CTL_STA | I2C_CTL_ACK);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_CTRL) & I2C_STS_LRB,

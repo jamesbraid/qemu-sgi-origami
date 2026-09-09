@@ -100,6 +100,7 @@ struct PCF8584State {
     bool start_pending;         /* a repeated start awaits its address byte */
     /* An idle data-register write awaits an immediate first START. */
     bool start_address_staged;
+    uint8_t start_address;      /* outbound byte kept apart from readable S0 */
 
     /*
      * The matched 7-bit address, valid while transfer is set: how a

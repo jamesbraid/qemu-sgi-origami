@@ -491,6 +491,21 @@ bool i2c_scan_bus(I2CBus *bus, uint8_t address, bool broadcast,
     return broadcast;
 }
 
+static void i2c_notify_unmatched_address(I2CBus *bus, uint8_t address,
+                                         bool recv)
+{
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+        I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(slave);
+
+        if (sc->unmatched_address) {
+            sc->unmatched_address(slave, address, recv);
+        }
+    }
+}
+
 /* TODO: Make this handle multiple masters.  */
 /*
  * Start or continue an i2c transaction.  When this is called for the
@@ -539,6 +554,10 @@ static int i2c_do_start_transfer(I2CBus *bus, uint8_t address,
     }
 
     if (QLIST_EMPTY(&bus->current_devs)) {
+        if (bus_scanned) {
+            i2c_notify_unmatched_address(bus, address,
+                                         event == I2C_START_RECV);
+        }
         return 1;
     }
 

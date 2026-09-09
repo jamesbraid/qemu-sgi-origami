@@ -77,6 +77,12 @@ struct I2CSlaveClass {
     void (*wire_address)(I2CSlave *s, uint8_t address_byte);
 
     /*
+     * Observe an address phase on an untimed bus that selected no receiver.
+     * This notification does not acknowledge or select the observer.
+     */
+    void (*unmatched_address)(I2CSlave *s, uint8_t address, bool recv);
+
+    /*
      * Check if this device matches the address provided.  Returns bool of
      * true if it matches (or broadcast), and updates the device list, false
      * otherwise.

@@ -139,10 +139,12 @@ static bool pcf8584_wire_bit(PCF8584State *s)
 /* A fresh START: SDA falls with both lines released, after the free time. */
 static void pcf8584_wire_begin_start(PCF8584State *s)
 {
+    uint8_t addr = s->start_address_staged ? s->start_address : s->data;
+
     s->start_address_staged = false;
-    s->wire_shift = s->data;
-    s->recv = s->data & 1;
-    s->cur_addr7 = s->data >> 1;
+    s->wire_shift = addr;
+    s->recv = addr & 1;
+    s->cur_addr7 = addr >> 1;
     s->wire_address_byte = true;
     s->wire_active = true;
     s->wire_phase = PCF8584_WIRE_START_SDA;
@@ -411,6 +413,7 @@ static void pcf8584_wire_write_data(PCF8584State *s, uint8_t val)
          * of a first start. A peer occupying the bus is not our transfer.
          */
         s->data = val;
+        s->start_address = val;
         s->start_address_staged = true;
         return;
     }
@@ -546,6 +549,7 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
     if (s->status & PCF8584_STS_BB) {
         /* Bus free: the address byte staged ahead of the control write. */
         s->data = val;
+        s->start_address = val;
         s->start_address_staged = true;
         return;
     }
@@ -618,9 +622,12 @@ static void pcf8584_write_control(PCF8584State *s, uint8_t val)
             s->start_pending = true;
             s->status |= PCF8584_STS_PIN;
         } else {
+            uint8_t addr = s->start_address_staged ? s->start_address :
+                                                        s->data;
+
             /* First start: the address is already staged in the register. */
             s->status |= PCF8584_STS_PIN;
-            pcf8584_start(s, s->data);
+            pcf8584_start(s, addr);
         }
         return;
     }
@@ -814,14 +821,7 @@ static int pcf8584_bcast_rx_event(I2CSlave *dev, enum i2c_event event)
 {
     PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
 
-    /*
-     * Addressed as slave: only a directed hit on the programmed address, not
-     * the general call. The controller also matches the general call so it
-     * receives the ELSC's arbitration broadcast into its data register, but
-     * that broadcast must not raise AAS -- the firmware polls the arbitration
-     * signal there and wedges if every broadcast marks it addressed as a
-     * slave, never reaching the DIP-switch read.
-     */
+    /* Only a directed hit on the programmed address raises AAS. */
     if (rx->directed && (event == I2C_START_SEND || event == I2C_START_RECV)) {
         rx->chip->status |= PCF8584_STS_AAS;
     }
@@ -832,19 +832,34 @@ static int pcf8584_bcast_rx_send(I2CSlave *dev, uint8_t data)
 {
     PCF8584BcastRxState *rx = PCF8584_BCAST_RX(dev);
 
-    /*
-     * A staged first-start address is preserved until START consumes it,
-     * or a delayed START would target an arbitration byte.
-     */
-    if (!rx->chip->start_address_staged) {
-        rx->chip->data = data;
-    }
+    rx->chip->data = data;
     return 0;
 }
 
 static uint8_t pcf8584_bcast_rx_recv(I2CSlave *dev)
 {
     return PCF8584_BCAST_RX(dev)->chip->data;
+}
+
+static void pcf8584_observe_address(PCF8584State *s, uint8_t address_byte)
+{
+    if (!(s->control & PCF8584_CTL_ESO) || !s->own_address ||
+        (address_byte >> 1) == s->own_address ||
+        address_byte == I2C_BROADCAST) {
+        return;
+    }
+    s->data = address_byte;
+}
+
+static void pcf8584_bcast_rx_unmatched_address(I2CSlave *dev,
+                                                uint8_t address, bool recv)
+{
+    PCF8584State *s = PCF8584_BCAST_RX(dev)->chip;
+    uint8_t address_byte = (address << 1) | recv;
+
+    if (address_byte >= 0xe0 && address_byte <= 0xef) {
+        pcf8584_observe_address(s, address_byte);
+    }
 }
 
 /* PIN goes active only after all nine clocks, the acknowledgement included. */
@@ -911,15 +926,7 @@ static void pcf8584_bcast_rx_wire_address(I2CSlave *dev, uint8_t address_byte)
 {
     PCF8584State *s = PCF8584_BCAST_RX(dev)->chip;
 
-    if (!s->own_address || (address_byte >> 1) == s->own_address ||
-        address_byte == I2C_BROADCAST) {
-        return;
-    }
-    /* Same reason as the receive side: a staged start address is not data. */
-    if (s->start_address_staged) {
-        return;
-    }
-    s->data = address_byte;
+    pcf8584_observe_address(s, address_byte);
 }
 
 static void pcf8584_bcast_rx_class_init(ObjectClass *klass, const void *data)
@@ -933,6 +940,7 @@ static void pcf8584_bcast_rx_class_init(ObjectClass *klass, const void *data)
     sc->recv = pcf8584_bcast_rx_recv;
     sc->wire_service = pcf8584_bcast_rx_wire_service;
     sc->wire_address = pcf8584_bcast_rx_wire_address;
+    sc->unmatched_address = pcf8584_bcast_rx_unmatched_address;
 }
 
 static void pcf8584_reset_hold(Object *obj, ResetType type)
@@ -950,6 +958,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->recv = false;
     s->start_pending = false;
     s->start_address_staged = false;
+    s->start_address = 0;
     s->cur_addr7 = 0;
 
     s->wire_phase = PCF8584_WIRE_IDLE;
@@ -1046,6 +1055,10 @@ static int pcf8584_post_load(void *opaque, int version_id)
 {
     PCF8584State *s = opaque;
 
+    if (version_id < 4 && s->start_address_staged) {
+        s->start_address = s->data;
+    }
+
     if (s->wire_phase >= PCF8584_WIRE_PHASE_COUNT ||
         s->wire_hold_release >= PCF8584_HOLD_COUNT ||
         s->wire_bit > 8 || s->wire_free_at < 0 ||
@@ -1078,7 +1091,7 @@ static int pcf8584_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = pcf8584_post_load,
     .fields = (const VMStateField[]) {
@@ -1092,6 +1105,7 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL(recv, PCF8584State),
         VMSTATE_BOOL(start_pending, PCF8584State),
         VMSTATE_BOOL_V(start_address_staged, PCF8584State, 2),
+        VMSTATE_UINT8_V(start_address, PCF8584State, 4),
         VMSTATE_UINT8(cur_addr7, PCF8584State),
         VMSTATE_UINT8_V(wire_phase, PCF8584State, 3),
         VMSTATE_UINT8_V(wire_bit, PCF8584State, 3),
