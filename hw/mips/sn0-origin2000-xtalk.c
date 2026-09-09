@@ -9,6 +9,7 @@
 #include "hw/misc/sgi-xbow.h"
 #include "hw/scsi/qlogic-isp.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
 #include "system/runstate.h"
 #include "sn0.h"
 #include "sn0-origin2000-io.h"
@@ -111,9 +112,10 @@ static uint16_t crossbow_present_mask(const SN0ModelComposition *model,
  * the diagnostic is unconditional, because the alternative is answering with
  * a number no hardware would have produced. The pair of stop calls is
  * ordered: prepare takes the lock that request releases, so neither may be
- * called alone. The request is asynchronous and qtest can keep issuing
- * accesses after it, so every access refuses on its own rather than trusting
- * the machine to have stopped.
+ * called alone, and neither is safe from an unserialized callback. The
+ * request is asynchronous and qtest can keep issuing accesses after it, so
+ * every access refuses on its own rather than trusting the machine to have
+ * stopped.
  */
 static MemTxResult sn0_origin2000_cpu_refusal(void *opaque, hwaddr addr,
                                               uint64_t *data, unsigned size,
@@ -121,6 +123,7 @@ static MemTxResult sn0_origin2000_cpu_refusal(void *opaque, hwaddr addr,
 {
     SN0Origin2000XtalkDestination *destination = opaque;
 
+    assert(bql_locked());
     error_report("Origin 2000 node %u widget %u: unsupported %u-byte %s at "
                  "0x%" HWADDR_PRIx " on the processor-side Hub face, which "
                  "has no cleared decode; stopping instead of answering",
