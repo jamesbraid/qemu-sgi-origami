@@ -707,22 +707,28 @@ void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
 bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine)
 {
     SN0Origin2000XtalkState *s = machine->origin2000_xtalk;
-    size_t i, j;
+    size_t i;
 
     if (!s) {
         return false;
     }
     for (i = 0; i < ARRAY_SIZE(s->source); i++) {
-        if (s->source[i].packet_proxy.enabled ||
-            memory_region_size(&s->source[i].packet_proxy) !=
+        SN0Origin2000XtalkSource *source = &s->source[i];
+
+        if (source->packet_proxy.enabled ||
+            memory_region_size(&source->packet_proxy) !=
             ORIGIN2000_PACKET_SIZE) {
             return false;
         }
-        for (j = 0; j < i; j++) {
-            if (&s->source[i].packet_proxy ==
-                &s->source[j].packet_proxy) {
-                return false;
-            }
+        /*
+         * Which proxy this Hub's own adapter sends into, read back from the
+         * adapter. Handing every Hub one shared ingress is the mistake this
+         * catches, and it is the sender that has to be asked: the proxies
+         * are separate members of an array whatever they are wired to.
+         */
+        if (!source->outgoing.packets ||
+            source->outgoing.packets->root != &source->packet_proxy) {
+            return false;
         }
     }
     return !s->board[0].packet_proxy.enabled &&
